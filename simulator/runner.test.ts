@@ -23,6 +23,7 @@ import {
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import { createSimulatorScenario, formatSimulatorReport, runSimulation } from "./runner.js";
+import { simulatorHealthWarningsForRows } from "./health-warnings.js";
 import {
   validateOverseerVerdict,
   type FindingCarryoverCache,
@@ -30,7 +31,12 @@ import {
 } from "./overseer.js";
 import type { PersonaSession, PriorBorgTurn } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
-import type { MetricsRow, OverseerVerdict, RawOverseerVerdict } from "./types.js";
+import type {
+  MetricsRow,
+  OverseerVerdict,
+  RawOverseerVerdict,
+  SimulatorHealthWarningKind,
+} from "./types.js";
 
 const tempDirs: string[] = [];
 
@@ -511,6 +517,304 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("active_goals_growth_high");
     expect(report).toContain("observed=0.75");
     expect(report).toContain("threshold=0.5");
+  });
+
+  it("formats overseer checkpoint statuses as labelled fields", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-status-label-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 10,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [
+        {
+          ts: Date.now(),
+          turn_counter: 10,
+          status: "concerning",
+          observations: ["Capability overclaim found."],
+          recommendation: "Healthy with one concerning note.",
+          findings: [
+            {
+              category: "K",
+              claim_status: "unsupported",
+              source_kind: "emitted_output",
+              status_impact: "concerning",
+              assistant_stream_entry_id: "strm_capability_report",
+              assistant_ts: 12,
+              quoted_emitted_span: "I'll monitor p95",
+              evidence_summary: "Borg promised external monitoring.",
+            },
+            {
+              category: "I",
+              claim_status: "grounded",
+              source_kind: "snapshot_memory",
+              status_impact: "none",
+              evidence_summary: "Instrumentation is stable.",
+            },
+          ],
+          rejected_findings: [],
+          raw_verdict: {
+            status: "healthy",
+            observations: ["Capability overclaim found."],
+            recommendation: "Healthy with one concerning note.",
+            findings: [],
+          },
+        },
+      ],
+      turnFailures: [],
+      finalMetrics: metricsRow(10),
+      durationMs: 1,
+    });
+
+    expect(report).toContain("- Turn 10:");
+    expect(report).toContain("Raw status: healthy");
+    expect(report).toContain("Recommendation: Healthy with one concerning note.");
+    expect(report).toContain("Behavioral status: concerning");
+    expect(report).toContain("Substrate status: healthy");
+    expect(report).toContain("Worst status: concerning");
+    expect(report).toContain("Open concerns:");
+    expect(report).not.toContain("Turn 10: concerning --");
+  });
+
+  it("detects expanded simulator health warnings with conservative thresholds", () => {
+    const capabilityOverclaimCheckpoint: OverseerVerdict = {
+      ts: Date.now(),
+      turn_counter: 20,
+      status: "concerning",
+      observations: ["Capability overclaim found."],
+      recommendation: "Inspect.",
+      findings: [
+        {
+          category: "K",
+          claim_status: "unsupported",
+          source_kind: "emitted_output",
+          status_impact: "concerning",
+          assistant_stream_entry_id: "strm_capability_warning",
+          quoted_emitted_span: "I'll monitor p95",
+          evidence_summary: "Borg promised external monitoring.",
+        },
+      ],
+      rejected_findings: [],
+      raw_verdict: {
+        status: "concerning",
+        observations: ["Capability overclaim found."],
+        recommendation: "Inspect.",
+        findings: [],
+      },
+    };
+    const cases: Array<{
+      name: string;
+      rows: MetricsRow[];
+      expectedKinds: SimulatorHealthWarningKind[];
+      scenarioKey?: string;
+      overseerCheckpoints?: OverseerVerdict[];
+    }> = [
+      {
+        name: "active actions final high fires",
+        rows: [{ ...metricsRow(12), action_record_count_active: 31 }],
+        expectedKinds: ["active_actions_final_high"],
+      },
+      {
+        name: "committed actions final high fires",
+        rows: [{ ...metricsRow(12), action_record_count_committed_to_do: 19 }],
+        expectedKinds: ["committed_to_do_actions_final_high"],
+      },
+      {
+        name: "committed actions at threshold does not fire",
+        rows: [{ ...metricsRow(12), action_record_count_committed_to_do: 18 }],
+        expectedKinds: [],
+      },
+      {
+        name: "actions per turn high fires",
+        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 9 }],
+        expectedKinds: ["actions_per_turn_high"],
+      },
+      {
+        name: "incident action density threshold is relaxed",
+        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 9 }],
+        scenarioKey: "coding-incident",
+        expectedKinds: [],
+      },
+      {
+        name: "incident action density still fires above relaxed threshold",
+        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 13 }],
+        scenarioKey: "coding-incident",
+        expectedKinds: ["actions_per_turn_high"],
+      },
+      {
+        name: "low action canonicalization rate fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            action_record_count_total: 30,
+            action_record_count_canonicalized: 0,
+          },
+        ],
+        expectedKinds: ["action_canonicalization_rate_low"],
+      },
+      {
+        name: "zero action denominator does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            action_record_count_total: 0,
+            action_record_count_canonicalized: 0,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "retrieval latency max high fires",
+        rows: [{ ...metricsRow(12), retrieval_latency_ms: 30_001 }],
+        expectedKinds: ["retrieval_latency_max_high"],
+      },
+      {
+        name: "retrieval latency at threshold does not fire",
+        rows: [{ ...metricsRow(12), retrieval_latency_ms: 30_000 }],
+        expectedKinds: [],
+      },
+      {
+        name: "deliberation latency max high fires",
+        rows: [{ ...metricsRow(12), deliberation_latency_ms: 120_001 }],
+        expectedKinds: ["deliberation_latency_max_high"],
+      },
+      {
+        name: "deliberation latency at threshold does not fire",
+        rows: [{ ...metricsRow(12), deliberation_latency_ms: 120_000 }],
+        expectedKinds: [],
+      },
+      {
+        name: "semantic revision LLM calls high fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            decision_artifact_semantic_revisions_attempted: 41,
+            decision_artifact_semantic_nodes_marked_superseded: 41,
+          },
+        ],
+        expectedKinds: ["semantic_revision_llm_calls_high"],
+      },
+      {
+        name: "semantic revision LLM calls at threshold does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            decision_artifact_semantic_revisions_attempted: 40,
+            decision_artifact_semantic_nodes_marked_superseded: 40,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "semantic revision transition yield low fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            decision_artifact_semantic_revisions_attempted: 6,
+            decision_artifact_semantic_nodes_marked_superseded: 1,
+          },
+        ],
+        expectedKinds: ["semantic_revision_transition_yield_low"],
+      },
+      {
+        name: "zero semantic revision denominator does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            decision_artifact_semantic_revisions_attempted: 0,
+            decision_artifact_semantic_nodes_marked_superseded: 0,
+            decision_artifact_semantic_nodes_marked_contradicted: 0,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "classifier degraded rate high fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            frame_anomaly_classifier_calls: 10,
+            frame_anomaly_degraded_count: 3,
+          },
+        ],
+        expectedKinds: ["classifier_degraded_rate_high"],
+      },
+      {
+        name: "zero classifier denominator does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            frame_anomaly_classifier_calls: 0,
+            frame_anomaly_degraded_count: 0,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "capability overclaim count high fires",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [capabilityOverclaimCheckpoint],
+        expectedKinds: ["capability_overclaim_count_high"],
+      },
+      {
+        name: "capability overclaim carryover demotion does not fire",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [
+          {
+            ...capabilityOverclaimCheckpoint,
+            findings: [
+              {
+                ...capabilityOverclaimCheckpoint.findings[0]!,
+                status_impact: "none",
+                carryover_demoted: true,
+              },
+            ],
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "review queue backlog high fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            review_queue_open_count_by_type: {
+              ...metricsRow(12).review_queue_open_count_by_type,
+              contradiction: 51,
+            },
+          },
+        ],
+        expectedKinds: ["review_queue_backlog_high"],
+      },
+      {
+        name: "review queue backlog at threshold does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            review_queue_open_count_by_type: {
+              ...metricsRow(12).review_queue_open_count_by_type,
+              contradiction: 50,
+            },
+          },
+        ],
+        expectedKinds: [],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const warnings = simulatorHealthWarningsForRows(testCase.rows, {
+        scenarioKey: testCase.scenarioKey,
+        overseerCheckpoints: testCase.overseerCheckpoints,
+      });
+
+      expect(
+        warnings.map((warning) => warning.kind),
+        testCase.name,
+      ).toEqual(testCase.expectedKinds);
+    }
   });
 
   it("builds emission baseline config overrides", () => {

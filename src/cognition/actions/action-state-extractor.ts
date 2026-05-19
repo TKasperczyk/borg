@@ -27,6 +27,7 @@ import {
   type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../host-capabilities.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -45,6 +46,7 @@ export const ACTION_CANDIDATE_CLASSIFICATIONS = [
   "conversational_acknowledgment",
   "decision_or_preference",
   "already_represented",
+  "outside_borg_capability",
   "none",
 ] as const;
 
@@ -111,6 +113,8 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "When speaker_entity_id is supplied and the current speaker asserts a first-person action, set actor to that speaker_entity_id. Use actor=user only when no speaker entity is supplied. Use actor=borg only for actions Borg is responsible for.",
+  "Borg-owned actions must stay inside the host capability boundary below.",
+  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
   "In group chat, first-person user actions belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Set audience_entity_id only when the current message clearly scopes the action to a supplied audience; otherwise use null so Borg can default it to the current audience.",
   "",
@@ -119,6 +123,7 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   '- conversational_acknowledgment: a remark about state, mood, or transition that is not a task, such as "going to sleep", "heading back", "got it", or "thanks". Not memory-worthy as an action.',
   '- decision_or_preference: a settled decision or preference belongs to the decision artifact or commitments, not as a standalone action, such as "lock the service as the anchor", "avoid one-off handoffs", or "we prefer evenings".',
   "- already_represented: covered by an existing active action, commitment, or goal already in memory.",
+  '- outside_borg_capability: a Borg-owned action that would require external document editing, production monitoring, scheduled future work, proactive outbound messaging, unwired tool execution, physical action, payment, or real-world attendance, such as "I\'ll seed the postmortem doc by morning", "I\'ll monitor p95", or "I\'ll send the reminder later".',
   "- none: not memory-worthy at all.",
   "",
   "States:",
@@ -239,6 +244,7 @@ function zeroClassificationCounts(): Record<ActionCandidateClassificationCountKe
     conversational_acknowledgment: 0,
     decision_or_preference: 0,
     already_represented: 0,
+    outside_borg_capability: 0,
     none: 0,
     invalid_classification: 0,
   };
@@ -822,11 +828,13 @@ export class ActionStateExtractor {
       }
 
       try {
-        const activeActions = this.options.actionRepository.list({
-          states: ACTIVE_ACTION_STATES,
-          actor: record.actor,
-          audienceEntityId: record.audience_entity_id,
-        }).filter((action) => sameActionDedupAxis(action, record));
+        const activeActions = this.options.actionRepository
+          .list({
+            states: ACTIVE_ACTION_STATES,
+            actor: record.actor,
+            audienceEntityId: record.audience_entity_id,
+          })
+          .filter((action) => sameActionDedupAxis(action, record));
         const embeddings =
           activeActions.length === 0
             ? []

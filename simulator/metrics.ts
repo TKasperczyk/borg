@@ -91,6 +91,7 @@ type MemoryBandMetricCounts = Pick<
 export type MetricsCaptureOptions = {
   tracePath?: string;
   semanticRevisionVerdictCacheSize?: () => number;
+  scenarioKey?: string;
 };
 
 export type MetricsCaptureContext = {
@@ -676,6 +677,7 @@ function identityValueStatus(value: unknown): unknown {
 export class MetricsCapture {
   private readonly filepath: string;
   private readonly tracePath?: string;
+  private readonly scenarioKey?: string;
   private readonly semanticRevisionVerdictCacheSize: () => number;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
@@ -690,6 +692,7 @@ export class MetricsCapture {
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
     this.tracePath = options.tracePath;
+    this.scenarioKey = options.scenarioKey;
     this.semanticRevisionVerdictCacheSize =
       options.semanticRevisionVerdictCacheSize ?? decisionArtifactSemanticRevisionVerdictCacheSize;
   }
@@ -698,9 +701,15 @@ export class MetricsCapture {
     return this.healthWarnings.map((warning) => ({ ...warning }));
   }
 
+  listRows(): MetricsRow[] {
+    return this.capturedRows.map((row) => ({ ...row }));
+  }
+
   private recordHealthWarnings(row: MetricsRow): void {
     this.capturedRows.push(row);
-    const warnings = simulatorHealthWarningsForRows(this.capturedRows);
+    const warnings = simulatorHealthWarningsForRows(this.capturedRows, {
+      scenarioKey: this.scenarioKey,
+    });
     const currentKinds = new Set(warnings.map((warning) => warning.kind));
     const risingWarnings = warnings.filter(
       (warning) => !this.activeHealthWarningKinds.has(warning.kind),

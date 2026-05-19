@@ -1,12 +1,120 @@
-import type { MetricsRow, SimulatorHealthWarning } from "./types.js";
+import type { MetricsRow, OverseerVerdict, SimulatorHealthWarning } from "./types.js";
 
+// Existing goal thresholds: high enough to catch runaway promotion without
+// flagging ordinary long-running planning scenarios.
 export const ACTIVE_GOAL_HIGH_THRESHOLD = 25;
 export const ACTIVE_GOAL_GROWTH_START_TURN = 20;
 export const ACTIVE_GOAL_GROWTH_WINDOW_ROWS = 10;
 export const ACTIVE_GOAL_GROWTH_THRESHOLD_PER_TURN = 0.5;
 
+// Action thresholds: incident scenarios can legitimately create denser action
+// state, so only sustained/final accumulation is flagged.
+export const ACTIVE_ACTION_FINAL_HIGH_THRESHOLD = 30;
+export const COMMITTED_TO_DO_ACTION_FINAL_HIGH_THRESHOLD = 18;
+export const ACTIONS_PER_TURN_HIGH_THRESHOLD = 8;
+export const INCIDENT_ACTIONS_PER_TURN_HIGH_THRESHOLD = 12;
+
+// Canonicalization is expected to remain sparse, but a large action set with
+// almost no canonicalization is a stabilization signal.
+export const ACTION_CANONICALIZATION_MIN_TOTAL_ACTIONS = 30;
+export const ACTION_CANONICALIZATION_RATE_LOW_THRESHOLD = 0.05;
+
+// Latency thresholds are deliberately above ordinary local variance.
+export const RETRIEVAL_LATENCY_MAX_HIGH_THRESHOLD_MS = 30_000;
+export const DELIBERATION_LATENCY_MAX_HIGH_THRESHOLD_MS = 120_000;
+
+// Semantic revision thresholds target runaway LLM churn and low state-change
+// yield over a full simulator run, not one-off misses.
+export const SEMANTIC_REVISION_LLM_CALLS_HIGH_THRESHOLD = 40;
+export const SEMANTIC_REVISION_TRANSITION_YIELD_MIN_CALLS = 6;
+export const SEMANTIC_REVISION_TRANSITION_YIELD_LOW_THRESHOLD = 0.25;
+
+// Classifier degradation is noisy in tiny samples; wait for a meaningful call
+// count before flagging.
+export const CLASSIFIER_DEGRADED_RATE_MIN_CALLS = 10;
+export const CLASSIFIER_DEGRADED_RATE_HIGH_THRESHOLD = 0.2;
+
+// Any validated capability overclaim is worth surfacing in P0 stabilization.
+export const CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD = 0;
+
+// Review backlog needs to be large enough to indicate drain trouble, not just
+// a few expected review items.
+export const REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD = 50;
+
+export type SimulatorHealthWarningOptions = {
+  scenarioKey?: string;
+  overseerCheckpoints?: readonly OverseerVerdict[];
+};
+
+function total(values: Record<string, number>): number {
+  return Object.values(values).reduce((sum, value) => sum + value, 0);
+}
+
+function latestWarning(input: {
+  row: MetricsRow;
+  kind: SimulatorHealthWarning["kind"];
+  threshold: number;
+  observedValue: number;
+}): SimulatorHealthWarning {
+  return {
+    kind: input.kind,
+    turn_counter: input.row.turn_counter,
+    turnId: input.row.turnId,
+    threshold: input.threshold,
+    observed_value: input.observedValue,
+  };
+}
+
+function maxNumberRow(
+  rows: readonly MetricsRow[],
+  value: (row: MetricsRow) => number | null,
+): { row: MetricsRow; value: number } | null {
+  let max: { row: MetricsRow; value: number } | null = null;
+
+  for (const row of rows) {
+    const rowValue = value(row);
+
+    if (rowValue === null) {
+      continue;
+    }
+
+    if (max === null || rowValue > max.value) {
+      max = { row, value: rowValue };
+    }
+  }
+
+  return max;
+}
+
+function capabilityOverclaimCount(
+  overseerCheckpoints: readonly OverseerVerdict[] | undefined,
+): number {
+  if (overseerCheckpoints === undefined) {
+    return 0;
+  }
+
+  return overseerCheckpoints.reduce((sum, checkpoint) => {
+    return (
+      sum +
+      checkpoint.findings.filter(
+        (finding) =>
+          finding.category === "K" &&
+          finding.carryover_demoted !== true &&
+          finding.status_impact !== "none",
+      ).length
+    );
+  }, 0);
+}
+
+function actionsPerTurnThreshold(options: SimulatorHealthWarningOptions): number {
+  return options.scenarioKey === "coding-incident"
+    ? INCIDENT_ACTIONS_PER_TURN_HIGH_THRESHOLD
+    : ACTIONS_PER_TURN_HIGH_THRESHOLD;
+}
+
 export function simulatorHealthWarningsForRows(
   rows: readonly MetricsRow[],
+  options: SimulatorHealthWarningOptions = {},
 ): SimulatorHealthWarning[] {
   const latest = rows.at(-1);
 
@@ -27,9 +135,7 @@ export function simulatorHealthWarningsForRows(
   }
 
   if (latest.turn_counter > ACTIVE_GOAL_GROWTH_START_TURN) {
-    const postStartRows = rows.filter(
-      (row) => row.turn_counter > ACTIVE_GOAL_GROWTH_START_TURN,
-    );
+    const postStartRows = rows.filter((row) => row.turn_counter > ACTIVE_GOAL_GROWTH_START_TURN);
     const windowRows = postStartRows.slice(-ACTIVE_GOAL_GROWTH_WINDOW_ROWS);
     const first = windowRows[0];
     const last = windowRows.at(-1);
@@ -56,6 +162,172 @@ export function simulatorHealthWarningsForRows(
         });
       }
     }
+  }
+
+  if (latest.action_record_count_active > ACTIVE_ACTION_FINAL_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "active_actions_final_high",
+        threshold: ACTIVE_ACTION_FINAL_HIGH_THRESHOLD,
+        observedValue: latest.action_record_count_active,
+      }),
+    );
+  }
+
+  if (latest.action_record_count_committed_to_do > COMMITTED_TO_DO_ACTION_FINAL_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "committed_to_do_actions_final_high",
+        threshold: COMMITTED_TO_DO_ACTION_FINAL_HIGH_THRESHOLD,
+        observedValue: latest.action_record_count_committed_to_do,
+      }),
+    );
+  }
+
+  const maxActionsPerTurn = maxNumberRow(rows, (row) => row.action_record_creation_count_this_turn);
+  const actionTurnThreshold = actionsPerTurnThreshold(options);
+
+  if (maxActionsPerTurn !== null && maxActionsPerTurn.value > actionTurnThreshold) {
+    warnings.push(
+      latestWarning({
+        row: maxActionsPerTurn.row,
+        kind: "actions_per_turn_high",
+        threshold: actionTurnThreshold,
+        observedValue: maxActionsPerTurn.value,
+      }),
+    );
+  }
+
+  if (latest.action_record_count_total >= ACTION_CANONICALIZATION_MIN_TOTAL_ACTIONS) {
+    const canonicalizationRate =
+      latest.action_record_count_canonicalized / latest.action_record_count_total;
+
+    if (canonicalizationRate < ACTION_CANONICALIZATION_RATE_LOW_THRESHOLD) {
+      warnings.push(
+        latestWarning({
+          row: latest,
+          kind: "action_canonicalization_rate_low",
+          threshold: ACTION_CANONICALIZATION_RATE_LOW_THRESHOLD,
+          observedValue: canonicalizationRate,
+        }),
+      );
+    }
+  }
+
+  const maxRetrievalLatency = maxNumberRow(rows, (row) => row.retrieval_latency_ms);
+
+  if (
+    maxRetrievalLatency !== null &&
+    maxRetrievalLatency.value > RETRIEVAL_LATENCY_MAX_HIGH_THRESHOLD_MS
+  ) {
+    warnings.push(
+      latestWarning({
+        row: maxRetrievalLatency.row,
+        kind: "retrieval_latency_max_high",
+        threshold: RETRIEVAL_LATENCY_MAX_HIGH_THRESHOLD_MS,
+        observedValue: maxRetrievalLatency.value,
+      }),
+    );
+  }
+
+  const maxDeliberationLatency = maxNumberRow(rows, (row) => row.deliberation_latency_ms);
+
+  if (
+    maxDeliberationLatency !== null &&
+    maxDeliberationLatency.value > DELIBERATION_LATENCY_MAX_HIGH_THRESHOLD_MS
+  ) {
+    warnings.push(
+      latestWarning({
+        row: maxDeliberationLatency.row,
+        kind: "deliberation_latency_max_high",
+        threshold: DELIBERATION_LATENCY_MAX_HIGH_THRESHOLD_MS,
+        observedValue: maxDeliberationLatency.value,
+      }),
+    );
+  }
+
+  const semanticRevisionCalls = rows.reduce(
+    (sum, row) => sum + row.decision_artifact_semantic_revisions_attempted,
+    0,
+  );
+
+  if (semanticRevisionCalls > SEMANTIC_REVISION_LLM_CALLS_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "semantic_revision_llm_calls_high",
+        threshold: SEMANTIC_REVISION_LLM_CALLS_HIGH_THRESHOLD,
+        observedValue: semanticRevisionCalls,
+      }),
+    );
+  }
+
+  if (semanticRevisionCalls >= SEMANTIC_REVISION_TRANSITION_YIELD_MIN_CALLS) {
+    const semanticTransitions = rows.reduce(
+      (sum, row) =>
+        sum +
+        row.decision_artifact_semantic_nodes_marked_superseded +
+        row.decision_artifact_semantic_nodes_marked_contradicted,
+      0,
+    );
+    const transitionYield = semanticTransitions / semanticRevisionCalls;
+
+    if (transitionYield < SEMANTIC_REVISION_TRANSITION_YIELD_LOW_THRESHOLD) {
+      warnings.push(
+        latestWarning({
+          row: latest,
+          kind: "semantic_revision_transition_yield_low",
+          threshold: SEMANTIC_REVISION_TRANSITION_YIELD_LOW_THRESHOLD,
+          observedValue: transitionYield,
+        }),
+      );
+    }
+  }
+
+  const classifierCalls = rows.reduce((sum, row) => sum + row.frame_anomaly_classifier_calls, 0);
+
+  if (classifierCalls >= CLASSIFIER_DEGRADED_RATE_MIN_CALLS) {
+    const classifierDegraded = rows.reduce((sum, row) => sum + row.frame_anomaly_degraded_count, 0);
+    const degradedRate = classifierDegraded / classifierCalls;
+
+    if (degradedRate > CLASSIFIER_DEGRADED_RATE_HIGH_THRESHOLD) {
+      warnings.push(
+        latestWarning({
+          row: latest,
+          kind: "classifier_degraded_rate_high",
+          threshold: CLASSIFIER_DEGRADED_RATE_HIGH_THRESHOLD,
+          observedValue: degradedRate,
+        }),
+      );
+    }
+  }
+
+  const overclaimCount = capabilityOverclaimCount(options.overseerCheckpoints);
+
+  if (overclaimCount > CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "capability_overclaim_count_high",
+        threshold: CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD,
+        observedValue: overclaimCount,
+      }),
+    );
+  }
+
+  const reviewQueueBacklog = total(latest.review_queue_open_count_by_type);
+
+  if (reviewQueueBacklog > REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "review_queue_backlog_high",
+        threshold: REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD,
+        observedValue: reviewQueueBacklog,
+      }),
+    );
   }
 
   return warnings;

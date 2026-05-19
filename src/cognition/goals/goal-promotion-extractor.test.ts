@@ -137,6 +137,44 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
   });
 
+  it("renders capability-aware not_borg_responsibility guidance without adding taxonomy values", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            classification: "not_borg_responsibility",
+            description: "Borg will monitor p95 and send the incident note later",
+            reason: "The candidate asks Borg to perform external monitoring and later messaging.",
+            confidence: 0.96,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await expect(
+      extractor.extract(
+        createExtractorInput({
+          userMessage: "You monitor p95 and send the incident note later.",
+        }),
+      ),
+    ).resolves.toEqual([]);
+
+    expect(GOAL_PROMOTION_CLASSIFICATIONS).toEqual([
+      "durable_borg_goal",
+      "one_off",
+      "not_borg_responsibility",
+      "already_represented",
+      "none",
+    ]);
+    expect(llm.requests[0]?.system).toContain("monitoring p95");
+    expect(llm.requests[0]?.system).toContain("scheduled document edits");
+    expect(llm.requests[0]?.system).toContain("Borg host capability boundary");
+  });
+
   it("returns no candidates when the LLM finds no Borg role", async () => {
     const llm = new FakeLLMClient({
       responses: [goalPromotionResponse([])],

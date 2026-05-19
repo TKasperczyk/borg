@@ -69,7 +69,9 @@ function makeExtractorInput(currentUserStreamEntryId: StreamEntryId) {
   };
 }
 
-function makeActionRecord(overrides: Partial<ActionRecord> & { description: string }): ActionRecord {
+function makeActionRecord(
+  overrides: Partial<ActionRecord> & { description: string },
+): ActionRecord {
   const nowMs = overrides.created_at ?? 1_000;
 
   return {
@@ -121,7 +123,10 @@ function makeActionRepository(records: ActionRecord[] = []) {
         return false;
       }
 
-      if (filter.openQuestionId !== undefined && record.open_question_id !== filter.openQuestionId) {
+      if (
+        filter.openQuestionId !== undefined &&
+        record.open_question_id !== filter.openQuestionId
+      ) {
         return false;
       }
 
@@ -346,6 +351,10 @@ describe("ActionStateExtractor", () => {
       description: "review the open API patch",
     },
     {
+      classification: "outside_borg_capability",
+      description: "seed the postmortem doc by morning",
+    },
+    {
       classification: "none",
       description: "not relevant to memory",
     },
@@ -412,6 +421,56 @@ describe("ActionStateExtractor", () => {
       });
     },
   );
+
+  it("rejects Borg-owned actions outside host capability as observable taxonomy rejects", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const add = vi.fn();
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            classification: "outside_borg_capability",
+            description: "seed the postmortem doc by morning",
+            actor: "borg",
+            state: "committed_to_do",
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add },
+      clock: new FixedClock(2_000),
+      turnId: "turn_action_capability_boundary",
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event, data) => events.push({ event, data }),
+      },
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      userMessage: "I'll seed the postmortem doc by morning.",
+    });
+
+    expect(records).toEqual([]);
+    expect(add).not.toHaveBeenCalled();
+    expect(llm.requests[0]?.system).toContain("outside_borg_capability");
+    expect(llm.requests[0]?.system).toContain("external_document_editing");
+    expect(events).toContainEqual({
+      event: "action_candidate_classification_rejected",
+      data: {
+        turnId: "turn_action_capability_boundary",
+        classification: "outside_borg_capability",
+        description_excerpt: "seed the postmortem doc by morning",
+        reason: "non_concrete_classification",
+      },
+    });
+  });
 
   it("rejects items missing classification with invalid_classification telemetry", async () => {
     const currentUserStreamEntryId = createStreamEntryId();

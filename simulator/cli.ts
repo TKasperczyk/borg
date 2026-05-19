@@ -153,6 +153,7 @@ function assertParsedPersonaSelection(options: ParsedOptions): void {
 function selectPersonas(options: ParsedOptions): {
   personas: readonly Persona[];
   channelName?: string;
+  scenarioKey?: string;
 } {
   if (options.scenario !== undefined && options.scenario.trim().length > 0) {
     if (options.personas !== undefined && options.personas.trim().length > 0) {
@@ -168,6 +169,7 @@ function selectPersonas(options: ParsedOptions): {
     return {
       personas: scenario.personas,
       channelName: scenario.channelName,
+      scenarioKey: scenario.key,
     };
   }
 
@@ -284,6 +286,7 @@ async function main(): Promise<void> {
     persona: primaryPersona,
     ...(selection.personas.length <= 1 ? {} : { personas: selection.personas }),
     ...(selection.channelName === undefined ? {} : { channelName: selection.channelName }),
+    ...(selection.scenarioKey === undefined ? {} : { scenarioKey: selection.scenarioKey }),
     totalTurns: parsePositiveInteger(options.turns, "--turns", 1000),
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
     maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),

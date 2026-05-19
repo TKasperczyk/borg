@@ -18,6 +18,7 @@ import {
 import { isNaturalSilenceSuppressionReason } from "../src/cognition/generation/types.js";
 
 import { MetricsCapture } from "./metrics.js";
+import { simulatorHealthWarningsForRows } from "./health-warnings.js";
 import { buildMemorySnapshotMarkdown } from "./memory-snapshot.js";
 import { appendJsonlLine } from "./jsonl.js";
 import {
@@ -29,6 +30,7 @@ import {
   type PriorBorgTurn,
 } from "./persona.js";
 import { runOverseer, type FindingCarryoverCache, type RunOverseerOptions } from "./overseer.js";
+import { statusFromSeverity, statusImpactSeverity, statusSeverity } from "./status-severity.js";
 import type {
   MetricsRow,
   OverseerVerdict,
@@ -57,6 +59,7 @@ export type SimulatorRunnerOptions = {
   channelName?: string;
   personaScheduler?: PersonaScheduler;
   totalTurns: number;
+  scenarioKey?: string;
   metricsPath: string;
   overseerAuditPath?: string;
   checkEvery: number;
@@ -587,6 +590,7 @@ export class SimulatorRunner {
     });
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
+      scenarioKey: this.options.scenarioKey,
     });
     const personaSessions = createPersonaSessions(this.options, personas);
     const personaRoleBleedLlmClient =
@@ -968,6 +972,11 @@ export class SimulatorRunner {
         });
       }
 
+      const postHocHealthWarnings = simulatorHealthWarningsForRows(metrics.listRows(), {
+        scenarioKey: this.options.scenarioKey,
+        overseerCheckpoints,
+      }).filter((warning) => warning.kind === "capability_overclaim_count_high");
+
       return {
         runId: this.options.runId,
         persona: primaryPersona.key,
@@ -978,7 +987,7 @@ export class SimulatorRunner {
         sessions,
         suppressionEvents,
         overseerCheckpoints,
-        healthWarnings: metrics.listHealthWarnings(),
+        healthWarnings: [...metrics.listHealthWarnings(), ...postHocHealthWarnings],
         turnFailures: this.turnFailures,
         finalMetrics,
         durationMs: performance.now() - started,
@@ -1024,6 +1033,48 @@ function reportFindingLine(
 
 function isCarryoverDemotedFinding(finding: OverseerVerdict["findings"][number]): boolean {
   return finding.carryover_demoted === true;
+}
+
+function findingImpactSeverity(finding: OverseerVerdict["findings"][number]): number {
+  return statusImpactSeverity(finding.status_impact);
+}
+
+function isSubstrateFinding(finding: OverseerVerdict["findings"][number]): boolean {
+  return finding.category === "I";
+}
+
+function statusFromFindings(
+  findings: readonly OverseerVerdict["findings"][number][],
+): OverseerVerdict["status"] {
+  return statusFromSeverity(
+    findings.reduce((max, finding) => Math.max(max, findingImpactSeverity(finding)), 0),
+  );
+}
+
+function checkpointStatusSummary(checkpoint: OverseerVerdict): {
+  behavioralStatus: OverseerVerdict["status"];
+  substrateStatus: OverseerVerdict["status"];
+  worstStatus: OverseerVerdict["status"];
+} {
+  const activeFindings = checkpoint.findings.filter(
+    (finding) => !isCarryoverDemotedFinding(finding),
+  );
+  const behavioralStatus = statusFromFindings(
+    activeFindings.filter((finding) => !isSubstrateFinding(finding)),
+  );
+  const substrateStatus = statusFromFindings(activeFindings.filter(isSubstrateFinding));
+
+  return {
+    behavioralStatus,
+    substrateStatus,
+    worstStatus: statusFromSeverity(
+      Math.max(statusSeverity(behavioralStatus), statusSeverity(substrateStatus)),
+    ),
+  };
+}
+
+function reportConcernLine(finding: OverseerVerdict["findings"][number]): string {
+  return `[${finding.category} ${finding.status_impact ?? "none"}] ${finding.evidence_summary}`;
 }
 
 function reportCarryoverFindingLine(finding: OverseerVerdict["findings"][number]): string {
@@ -1126,24 +1177,31 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     lines.push("No overseer checkpoints scheduled.", "");
   } else {
     for (const checkpoint of report.overseerCheckpoints) {
-      lines.push(
-        `- Turn ${checkpoint.turn_counter}: ${checkpoint.status} -- ${checkpoint.recommendation}`,
-      );
-      if (checkpoint.raw_verdict.status !== checkpoint.status) {
-        lines.push(`  - Original LLM status: ${checkpoint.raw_verdict.status}`);
-        lines.push("  - Original LLM observations (validator adjusted findings):");
-        for (const observation of checkpoint.observations) {
-          lines.push(`    - ${observation}`);
-        }
-      } else {
-        for (const observation of checkpoint.observations) {
-          lines.push(`  - ${observation}`);
-        }
-      }
       const activeFindings = checkpoint.findings.filter(
         (finding) => !isCarryoverDemotedFinding(finding),
       );
       const carryoverFindings = checkpoint.findings.filter(isCarryoverDemotedFinding);
+      const openConcerns = activeFindings.filter((finding) => findingImpactSeverity(finding) > 0);
+      const statusSummary = checkpointStatusSummary(checkpoint);
+
+      lines.push(`- Turn ${checkpoint.turn_counter}:`);
+      lines.push(`  - Raw status: ${checkpoint.raw_verdict.status}`);
+      lines.push(`  - Behavioral status: ${statusSummary.behavioralStatus}`);
+      lines.push(`  - Substrate status: ${statusSummary.substrateStatus}`);
+      lines.push(`  - Worst status: ${statusSummary.worstStatus}`);
+      if (openConcerns.length === 0) {
+        lines.push("  - Open concerns: none");
+      } else {
+        lines.push("  - Open concerns:");
+        for (const finding of openConcerns) {
+          lines.push(`    - ${reportConcernLine(finding)}`);
+        }
+      }
+      lines.push(`  - Recommendation: ${checkpoint.raw_verdict.recommendation}`);
+      lines.push("  - Observations:");
+      for (const observation of checkpoint.observations) {
+        lines.push(`    - ${observation}`);
+      }
 
       if (activeFindings.length > 0) {
         lines.push("  - Validated findings:");

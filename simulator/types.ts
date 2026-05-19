@@ -113,7 +113,20 @@ export type MetricsRow = {
   overseer_due_on_suppressed_turn: boolean;
 };
 
-export type SimulatorHealthWarningKind = "active_goals_high" | "active_goals_growth_high";
+export type SimulatorHealthWarningKind =
+  | "active_goals_high"
+  | "active_goals_growth_high"
+  | "active_actions_final_high"
+  | "committed_to_do_actions_final_high"
+  | "actions_per_turn_high"
+  | "action_canonicalization_rate_low"
+  | "retrieval_latency_max_high"
+  | "deliberation_latency_max_high"
+  | "semantic_revision_llm_calls_high"
+  | "semantic_revision_transition_yield_low"
+  | "classifier_degraded_rate_high"
+  | "capability_overclaim_count_high"
+  | "review_queue_backlog_high";
 
 export type SimulatorHealthWarning = {
   kind: SimulatorHealthWarningKind;
@@ -136,7 +149,18 @@ export type OverseerVerdict = {
   raw_verdict: RawOverseerVerdict;
 };
 
-export type OverseerFindingCategory = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J";
+export type OverseerFindingCategory =
+  | "A"
+  | "B"
+  | "C"
+  | "D"
+  | "E"
+  | "F"
+  | "G"
+  | "H"
+  | "I"
+  | "J"
+  | "K";
 
 export type OverseerClaimStatus = "grounded" | "unsupported" | "contradicted" | "unclear";
 

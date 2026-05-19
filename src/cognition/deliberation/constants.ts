@@ -1,3 +1,5 @@
+import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../host-capabilities.js";
+
 // Constants shared by deliberation prompt assembly, planning, and finalization.
 export const DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS = 8_000;
 export const DEFAULT_DELIBERATION_PLAN_MAX_TOKENS = 2_000;
@@ -32,6 +34,8 @@ export const DEFAULT_HOST_CAPABILITIES_SECTION = [
   "- Scheduled check-ins or reminders that surface to participants",
   "- External notifications (email, SMS, push, etc.)",
   "- Real-time polling of external state",
+  "",
+  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
 ].join("\n");
 export const VOICE_AND_POSTURE_SECTION = [
   "Voice and posture:",

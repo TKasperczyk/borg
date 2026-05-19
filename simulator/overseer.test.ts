@@ -138,6 +138,7 @@ function metricsRow(turn: number): MetricsRow {
       conversational_acknowledgment: 0,
       decision_or_preference: 0,
       already_represented: 0,
+      outside_borg_capability: 0,
       none: 0,
       invalid_classification: 0,
     },
@@ -1511,6 +1512,104 @@ describe("simulator overseer", () => {
     expect(verdict.status).toBe("concerning");
     expect(verdict.findings).toHaveLength(1);
     expect(verdict.rejected_findings).toHaveLength(1);
+  });
+
+  it("accepts capability-consistency findings for unsupported Borg overclaims", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I'll seed the postmortem doc by morning and monitor p95 from here.",
+      timestamp: 55,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-capability.jsonl",
+      turnCounter: 10,
+      totalTurns: 10,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["K unsupported: Borg promised external future work."],
+        recommendation: "Flag the capability overclaim.",
+        findings: [
+          {
+            category: "K",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "seed the postmortem doc by morning",
+            evidence_summary: "Borg claimed external document editing and scheduled future work.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("concerning");
+    expect(verdict.findings).toEqual([
+      expect.objectContaining({
+        category: "K",
+        claim_status: "unsupported",
+        status_impact: "concerning",
+      }),
+    ]);
+    expect(requests[0]?.messages[0]?.content).toContain("K. CAPABILITY CONSISTENCY");
+    expect(requests[0]?.messages[0]?.content).toContain("external_document_editing");
+    expect(requests[0]?.tools[0]?.input_schema).toEqual(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          findings: expect.objectContaining({
+            items: expect.objectContaining({
+              properties: expect.objectContaining({
+                category: expect.objectContaining({
+                  enum: expect.arrayContaining(["K"]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("rejects unclear capability-consistency findings without quoted emitted spans", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I may monitor p95 overnight.",
+      timestamp: 57,
+    });
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-capability-unclear.jsonl",
+      turnCounter: 10,
+      totalTurns: 10,
+      client: createClient([], {
+        status: "concerning",
+        observations: ["K unclear: possible capability overclaim lacks quote."],
+        recommendation: "Inspect.",
+        findings: [
+          {
+            category: "K",
+            claim_status: "unclear",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Potential external monitoring promise without quoted span.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.findings).toEqual([]);
+    expect(verdict.rejected_findings).toEqual([
+      expect.objectContaining({
+        category: "K",
+        claim_status: "unclear",
+        validation_warning: expect.stringContaining("quoted_emitted_span"),
+      }),
+    ]);
   });
 
   it("emits a trace event when validation rejects a finding", async () => {

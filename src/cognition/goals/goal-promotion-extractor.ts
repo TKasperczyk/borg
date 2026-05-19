@@ -11,6 +11,7 @@ import {
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
+import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../host-capabilities.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -137,21 +138,23 @@ const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "If a supplied active goal already covers the request, classify as already_represented and set duplicate_of_goal_id.",
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
+  "Borg-owned durable goals must stay inside the host capability boundary below.",
+  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
   "",
   "Classifications:",
-  "- durable_borg_goal: Borg must track, monitor, maintain, or revisit across turns.",
+  "- durable_borg_goal: Borg must track conversation-state or memory-state, maintain remembered decision-log context, or revisit an unresolved conversation responsibility across turns. Monitoring means memory/conversation tracking unless the host explicitly provides external monitoring capability.",
   "- one_off: finite event, task, reply, or fact; no ongoing tracking.",
-  "- not_borg_responsibility: responsibility belongs elsewhere, not to Borg.",
+  "- not_borg_responsibility: responsibility belongs elsewhere, or the candidate asks Borg to do impossible host work such as monitoring p95, sending something later, scheduled document edits, physical attendance, payments, proactive notifications, external tool execution, or production/dashboard monitoring.",
   "- already_represented: a supplied active goal already covers the candidate.",
   "- none: not memory-worthy at all.",
   "",
   "Prefer one durable_borg_goal at most. When uncertain, emit no promotions. Return only the required tool call.",
   "",
   "Examples:",
-  "- Coding: track refactor across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility.",
+  "- Coding: track refactor decisions across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility; Borg will monitor p95 -> not_borg_responsibility.",
   "- Relationships: support through job search -> durable_borg_goal; send one message -> one_off; friend will respond -> not_borg_responsibility.",
-  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility.",
-  "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg responsibilities.",
+  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility; Borg will attend in person or make payments -> not_borg_responsibility.",
+  "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg memory/conversation responsibilities, not external monitoring.",
 ].join("\n");
 
 type ParsedGoalPromotion = z.infer<typeof goalPromotionSchema>;
@@ -236,10 +239,7 @@ type GoalPromotionParseResult = {
   rejectedByCapCount: number;
 };
 
-type GoalPromotionRejectedReason =
-  | "non_durable_classification"
-  | "low_confidence"
-  | "cap_exceeded";
+type GoalPromotionRejectedReason = "non_durable_classification" | "low_confidence" | "cap_exceeded";
 
 type GoalPromotionRejectedPromotion = {
   candidate_index: number;
