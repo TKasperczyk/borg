@@ -88,6 +88,12 @@ describe("simulator CLI", () => {
     expect(options.scenario).toBe("trip-planning");
   });
 
+  it("parses the coding incident simulator scenario", () => {
+    const options = parseSimulatorCliOptions(["node", "simulate", "--scenario", "coding-incident"]);
+
+    expect(options.scenario).toBe("coding-incident");
+  });
+
   it("preserves parsing without a -- separator", () => {
     const options = parseSimulatorCliOptions(["node", "cli.ts", "--mock", "--turns", "1"]);
 
