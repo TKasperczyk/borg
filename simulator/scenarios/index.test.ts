@@ -15,6 +15,11 @@ import {
   capabilityBoundaryArcs,
   capabilityBoundaryScenario,
 } from "./capability-boundary.js";
+import {
+  familyAgingParentArcKeys,
+  familyAgingParentArcs,
+  familyAgingParentScenario,
+} from "./family-aging-parent.js";
 import { findSimulatorScenario, simulatorScenarios } from "./index.js";
 import type { SimulatorScenarioDefinition } from "../types.js";
 
@@ -92,6 +97,24 @@ const regressionScenarioFixtures: readonly RegressionScenarioFixture[] = [
       "personal-preference-updated",
     ],
   },
+  {
+    scenario: familyAgingParentScenario,
+    exportedArcKeys: familyAgingParentArcKeys,
+    arcs: familyAgingParentArcs,
+    expectedPersonas: [
+      ["nora-family", "Nora"],
+      ["julian-family", "Julian"],
+      ["priya-family", "Priya"],
+    ],
+    expectedArcKeys: [
+      "initial-concern-surfacing",
+      "incident-accumulation",
+      "mom-conversation-aftermath",
+      "practical-care-planning",
+      "plan-revision-and-boundary-revocation",
+      "stable-cadence-and-capability-boundary",
+    ],
+  },
 ];
 
 function expectNonEmptyText(value: string): void {
@@ -114,6 +137,7 @@ describe("simulator scenarios", () => {
     expect(simulatorScenarios.map((scenario) => scenario.key)).toEqual([
       "trip-planning",
       "coding-incident",
+      "family-aging-parent",
       "capability-boundary",
       "action-lifecycle",
       "belief-revision-domains",
