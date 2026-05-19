@@ -92,7 +92,7 @@ const canonicalizesSchema = z
   })
   .strict()
   .optional()
-  .describe("Active planning state ids this locked artifact entry makes canonical.");
+  .describe("Active shared state ids this locked artifact entry makes canonical.");
 const ownerEntityIdSchema = z
   .string()
   .trim()
@@ -169,12 +169,12 @@ const decisionArtifactPatchSchema = z
 const DECISION_ARTIFACT_TOOL = {
   name: DECISION_ARTIFACT_TOOL_NAME,
   description:
-    "Compile shared planning decision state into additive, updating, superseding, or pruning operations.",
+    "Compile durable shared state for this audience into additive, updating, superseding, or pruning operations.",
   inputSchema: toToolInputSchema(decisionArtifactPatchSchema),
 } satisfies LLMToolDefinition;
 
 const DECISION_ARTIFACT_SYSTEM_PROMPT = [
-  "Compile canonical shared planning state from the previous artifact, the current user turn, and the prompt-visible ledger.",
+  "Compile canonical shared audience state from the previous artifact, the current user turn, and the prompt-visible ledger.",
   "Return only the required tool call.",
   "",
   "Scope:",
@@ -183,18 +183,18 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "- It must not invent facts, owners, or commitments.",
   "- Prefer no operations when uncertain.",
   "",
-  "The decision artifact is the canonical planning surface.",
-  "It captures canonical decisions about the plan itself, not tasks, commitments, observations, or social facts.",
+  "The decision artifact is the shared-state surface for this audience.",
+  "It captures durable decisions and constraints for this audience, not tasks, commitments, observations, or social facts.",
   "",
   "What belongs:",
-  '- locked: group-agreed canonical decisions about what, where, or when, such as "Granada is the final base, 3 nights".',
-  "- live: currently-under-discussion plan decisions the group is actively working on.",
-  '- pending: items awaiting verification or external information, such as "Alhambra booking window verification needed".',
+  '- locked: group-agreed durable decisions or constraints, such as "PR merge order: backend first, then frontend", "The party spared the duke", "No surprise visits this week", or "Granada is four nights".',
+  "- live: currently-under-discussion shared-state decisions or constraints the audience is actively working on.",
+  "- pending: items awaiting verification or external information before they can become durable shared state.",
   "- invalidated: assumptions explicitly overturned by later evidence; kept for context.",
   "- tentative: weak proposals not yet endorsed.",
   "",
   "What does not belong:",
-  '- Participant tasks, such as "Ben will check Alhambra booking"; those stay as action records.',
+  '- Participant tasks, such as "Alice will write the chapter 3 summary"; those stay as action records.',
   '- Assistant commitments, such as "Borg will send the status note tomorrow"; those stay as commitment records.',
   "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
   "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
@@ -221,7 +221,7 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "- supersede replaces an existing entry when the conversation changes or narrows it.",
   "- prune removes stale artifact clutter only when the supplied context makes it clearly obsolete.",
   "- If a similar entry already exists, prefer update or supersede instead of adding a new one.",
-  "- Prefer update, supersede, and prune over add whenever the existing artifact already carries the relevant planning state.",
+  "- Prefer update, supersede, and prune over add whenever the existing artifact already carries the relevant shared state.",
 ].join("\n");
 
 export type EmitDecisionArtifactPatch = z.infer<typeof decisionArtifactPatchSchema>;

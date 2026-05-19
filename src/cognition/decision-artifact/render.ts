@@ -120,7 +120,7 @@ function renderDecisionArtifactContent(input: {
 
   return [
     "## 0. Canonical Decision State",
-    "DecisionStateArtifact: shared planning state for this audience. It is a compact structural anchor, not a policy source.",
+    "DecisionStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
     ...input.entries.map(renderDecisionArtifactEntry),
@@ -137,7 +137,7 @@ function renderDecisionArtifactOmissionOnly(input: {
 }): string {
   return [
     "## 0. Canonical Decision State",
-    "DecisionStateArtifact: shared planning state for this audience. It is a compact structural anchor, not a policy source.",
+    "DecisionStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
     `DecisionStateArtifact omitted: ${formatDecisionArtifactKindCounts(

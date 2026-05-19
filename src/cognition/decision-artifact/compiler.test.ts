@@ -40,6 +40,7 @@ import {
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   compileDecisionArtifact,
+  DECISION_ARTIFACT_SYSTEM_PROMPT,
   DECISION_ARTIFACT_TOOL_NAME,
   type EmitDecisionArtifactPatch,
 } from "./compiler.js";
@@ -187,6 +188,16 @@ describe("compileDecisionArtifact", () => {
     );
   }
 
+  it("frames the compiler prompt as shared audience state instead of planning state", () => {
+    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).toContain("canonical shared audience state");
+    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).toContain(
+      "durable decisions and constraints for this audience",
+    );
+    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("canonical planning state");
+    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
+    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("shared planning decision state");
+  });
+
   it("adds a locked decision emitted by the LLM", async () => {
     const llmClient = new FakeLLMClient({
       responses: [
@@ -261,7 +272,7 @@ describe("compileDecisionArtifact", () => {
             directive_family: "release_window",
           },
         ],
-        actions: [{ id: actionId, text: "Track Granada planning" }],
+        actions: [{ id: actionId, text: "Track Granada decision" }],
         openQuestions: [{ id: openQuestionId, text: "Is Granada final?" }],
       },
     });
@@ -1160,7 +1171,7 @@ describe("compileDecisionArtifact", () => {
             {
               type: "add",
               kind: "live",
-              text: "Live planning decision",
+              text: "Live shared-state decision",
               owner_entity_id: audience,
               source_stream_entry_ids: [firstSource],
             },
@@ -1372,7 +1383,7 @@ describe("compileDecisionArtifact", () => {
             {
               type: "add",
               kind: "live",
-              text: "Live planning decision",
+              text: "Live shared-state decision",
               owner_entity_id: audience,
               source_stream_entry_ids: [firstSource],
             },
@@ -1422,7 +1433,7 @@ describe("compileDecisionArtifact", () => {
       {
         type: "add",
         kind: "live",
-        text: "Live planning decision",
+        text: "Live shared-state decision",
         provenance_stream_entry_ids: [currentStreamEntryId],
       },
     ]);
@@ -1444,7 +1455,7 @@ describe("compileDecisionArtifact", () => {
     expect(prompt.previous_artifact).toBeUndefined();
     expect(prompt.previous_artifact_summary?.active_entries?.live).toEqual([
       expect.objectContaining({
-        text: "Live planning decision",
+        text: "Live shared-state decision",
       }),
     ]);
   });
