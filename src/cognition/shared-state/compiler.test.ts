@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { decisionArtifactMigrations } from "../../memory/decision-artifacts/migrations.js";
-import { DecisionArtifactRepository } from "../../memory/decision-artifacts/repository.js";
-import type { DecisionArtifactEntryKind } from "../../memory/decision-artifacts/types.js";
+import { sharedStateMigrations } from "../../memory/decision-artifacts/migrations.js";
+import { SharedStateRepository } from "../../memory/decision-artifacts/repository.js";
+import type { SharedStateEntryKind } from "../../memory/decision-artifacts/types.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -31,21 +31,21 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
-import { renderDecisionStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
+import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
 import {
-  advanceDecisionArtifactCompileSkipAnchor,
-  buildDecisionArtifactLedgerPromptContext,
+  advanceSharedStateCompileSkipAnchor,
+  buildSharedStateLedgerPromptContext,
 } from "../lifecycle/turn-phase-coordinator.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
-  compileDecisionArtifact,
-  DECISION_ARTIFACT_SYSTEM_PROMPT,
-  DECISION_ARTIFACT_TOOL_NAME,
-  type EmitDecisionArtifactPatch,
+  compileSharedStateArtifact,
+  SHARED_STATE_SYSTEM_PROMPT,
+  SHARED_STATE_TOOL_NAME,
+  type EmitSharedStatePatch,
 } from "./compiler.js";
 
-function emitDecisionArtifactPatchResponse(patch: EmitDecisionArtifactPatch) {
+function emitSharedStateArtifactPatchResponse(patch: EmitSharedStatePatch) {
   return {
     text: "",
     input_tokens: 12,
@@ -54,7 +54,7 @@ function emitDecisionArtifactPatchResponse(patch: EmitDecisionArtifactPatch) {
     tool_calls: [
       {
         id: "toolu_decision_patch",
-        name: DECISION_ARTIFACT_TOOL_NAME,
+        name: SHARED_STATE_TOOL_NAME,
         input: patch,
       },
     ],
@@ -136,9 +136,9 @@ function evidenceLedger(entries: readonly EvidenceLedgerEntry[]): EvidenceLedger
   };
 }
 
-describe("compileDecisionArtifact", () => {
+describe("compileSharedStateArtifact", () => {
   let db: SqliteDatabase;
-  let repository: DecisionArtifactRepository;
+  let repository: SharedStateRepository;
   let clock: FixedClock;
   let audience: EntityId;
   let self: EntityId;
@@ -147,10 +147,10 @@ describe("compileDecisionArtifact", () => {
 
   beforeEach(() => {
     db = openDatabase(":memory:", {
-      migrations: composeMigrations(decisionArtifactMigrations, selfMigrations),
+      migrations: composeMigrations(sharedStateMigrations, selfMigrations),
     });
     clock = new FixedClock(2_000);
-    repository = new DecisionArtifactRepository({
+    repository = new SharedStateRepository({
       db,
       clock,
     });
@@ -189,19 +189,19 @@ describe("compileDecisionArtifact", () => {
   }
 
   it("frames the compiler prompt as shared audience state instead of planning state", () => {
-    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).toContain("canonical shared audience state");
-    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).toContain(
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("canonical shared audience state");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "durable decisions and constraints for this audience",
     );
-    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("canonical planning state");
-    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
-    expect(DECISION_ARTIFACT_SYSTEM_PROMPT).not.toContain("shared planning decision state");
+    expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical planning state");
+    expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
+    expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("shared planning decision state");
   });
 
   it("adds a locked decision emitted by the LLM", async () => {
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -215,7 +215,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact(baseInput(llmClient));
+    await compileSharedStateArtifact(baseInput(llmClient));
 
     const artifact = repository.get(audience);
     expect(artifact?.entries).toHaveLength(1);
@@ -229,7 +229,7 @@ describe("compileDecisionArtifact", () => {
       model: "claude-haiku-test",
       max_tokens: 1536,
       budget: "decision-artifact-compiler",
-      tool_choice: { type: "tool", name: DECISION_ARTIFACT_TOOL_NAME },
+      tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
     });
   });
 
@@ -240,7 +240,7 @@ describe("compileDecisionArtifact", () => {
     const openQuestionId = createOpenQuestionId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -260,7 +260,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       canonicalizationCandidates: {
         goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
@@ -298,7 +298,7 @@ describe("compileDecisionArtifact", () => {
     const unknownGoalId = createGoalId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -315,7 +315,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
@@ -358,7 +358,7 @@ describe("compileDecisionArtifact", () => {
     const goalId = createGoalId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -385,7 +385,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
@@ -432,7 +432,7 @@ describe("compileDecisionArtifact", () => {
     });
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -459,7 +459,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
@@ -512,7 +512,7 @@ describe("compileDecisionArtifact", () => {
     });
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -529,7 +529,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       canonicalizationCandidates: {
         goals: [{ id: goal.id, text: goal.description }],
@@ -554,7 +554,7 @@ describe("compileDecisionArtifact", () => {
       clock,
       embeddingClient,
     });
-    const artifactRepository = new DecisionArtifactRepository({
+    const artifactRepository = new SharedStateRepository({
       db: harness.db,
       clock,
     });
@@ -577,7 +577,7 @@ describe("compileDecisionArtifact", () => {
       );
       const llmClient = new FakeLLMClient({
         responses: [
-          emitDecisionArtifactPatchResponse({
+          emitSharedStateArtifactPatchResponse({
             operations: [
               {
                 type: "add",
@@ -599,7 +599,7 @@ describe("compileDecisionArtifact", () => {
         ],
       });
 
-      await compileDecisionArtifact({
+      await compileSharedStateArtifact({
         ...baseInput(llmClient),
         repository: artifactRepository,
         currentUserMessage: "Lock the project runtime as Node 22; the Node 20 note is stale.",
@@ -665,7 +665,7 @@ describe("compileDecisionArtifact", () => {
         clock,
         embeddingClient,
       });
-      const artifactRepository = new DecisionArtifactRepository({
+      const artifactRepository = new SharedStateRepository({
         db: harness.db,
         clock,
       });
@@ -689,7 +689,7 @@ describe("compileDecisionArtifact", () => {
         );
         const llmClient = new FakeLLMClient({
           responses: [
-            emitDecisionArtifactPatchResponse({
+            emitSharedStateArtifactPatchResponse({
               operations: [
                 {
                   type: "add",
@@ -718,7 +718,7 @@ describe("compileDecisionArtifact", () => {
           ),
         };
 
-        await compileDecisionArtifact({
+        await compileSharedStateArtifact({
           ...baseInput(llmClient),
           repository: artifactRepository,
           currentUserMessage: "Lock the project runtime as Node 22.",
@@ -787,10 +787,10 @@ describe("compileDecisionArtifact", () => {
       },
     );
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
@@ -869,7 +869,7 @@ describe("compileDecisionArtifact", () => {
     );
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -886,7 +886,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
@@ -934,7 +934,7 @@ describe("compileDecisionArtifact", () => {
     });
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -951,7 +951,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
@@ -1000,7 +1000,7 @@ describe("compileDecisionArtifact", () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1014,7 +1014,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
     });
@@ -1054,7 +1054,7 @@ describe("compileDecisionArtifact", () => {
 
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "supersede",
@@ -1072,7 +1072,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [firstSource, currentStreamEntryId],
     });
@@ -1096,7 +1096,7 @@ describe("compileDecisionArtifact", () => {
       responses: [throwingResponse],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       onDegraded,
     });
@@ -1115,10 +1115,10 @@ describe("compileDecisionArtifact", () => {
       },
     ]);
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    await compileDecisionArtifact(baseInput(llmClient));
+    await compileSharedStateArtifact(baseInput(llmClient));
 
     expect(repository.get(audience)?.record_version).toBe((initial?.record_version ?? 0) + 1);
     expect(repository.get(audience)?.last_compiled_stream_entry_id).toBe(currentStreamEntryId);
@@ -1128,10 +1128,10 @@ describe("compileDecisionArtifact", () => {
     const firstSource = createStreamEntryId();
     const secondSource = createStreamEntryId();
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
       allowedSourceStreamEntryIds: [firstSource],
@@ -1142,7 +1142,7 @@ describe("compileDecisionArtifact", () => {
       ledgerEntry({ streamEntryId: firstSource, streamIndex: 0, text: "first no-op turn" }),
       ledgerEntry({ streamEntryId: secondSource, streamIndex: 1, text: "second turn" }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
       previousArtifact: artifact,
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
@@ -1166,7 +1166,7 @@ describe("compileDecisionArtifact", () => {
     const thirdSource = createStreamEntryId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1177,18 +1177,18 @@ describe("compileDecisionArtifact", () => {
             },
           ],
         }),
-        emitDecisionArtifactPatchResponse({ operations: [] }),
+        emitSharedStateArtifactPatchResponse({ operations: [] }),
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
       allowedSourceStreamEntryIds: [firstSource],
     });
     const afterFirst = repository.get(audience);
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: secondSource,
       allowedSourceStreamEntryIds: [firstSource, secondSource],
@@ -1200,7 +1200,7 @@ describe("compileDecisionArtifact", () => {
       ledgerEntry({ streamEntryId: secondSource, streamIndex: 1, text: "no-op compile turn" }),
       ledgerEntry({ streamEntryId: thirdSource, streamIndex: 2, text: "third compile turn" }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
       previousArtifact: afterNoOp,
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
@@ -1229,7 +1229,7 @@ describe("compileDecisionArtifact", () => {
       ledgerEntry({ streamEntryId: anchorSource, streamIndex: 1, text: "anchor turn" }),
       ledgerEntry({ streamEntryId: deltaSource, streamIndex: 2, text: "visible delta turn" }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
       previousArtifact: repository.get(audience),
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
@@ -1238,7 +1238,7 @@ describe("compileDecisionArtifact", () => {
     });
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1252,7 +1252,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: deltaSource,
       promptVisibleLedger: context.promptVisibleLedger,
@@ -1293,7 +1293,7 @@ describe("compileDecisionArtifact", () => {
         text: "Trusted context remains citable.",
       }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
       previousArtifact: null,
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
@@ -1318,7 +1318,7 @@ describe("compileDecisionArtifact", () => {
     const trustedSource = createStreamEntryId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1332,7 +1332,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       promptVisibleLedger: "Trusted context and off-limits context are both visible.",
       allowedSourceStreamEntryIds: [trustedSource],
@@ -1378,7 +1378,7 @@ describe("compileDecisionArtifact", () => {
     const thirdSource = createStreamEntryId();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1392,14 +1392,14 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
       allowedSourceStreamEntryIds: [firstSource],
     });
 
     const afterFirst = repository.get(audience);
-    const skipped = advanceDecisionArtifactCompileSkipAnchor({
+    const skipped = advanceSharedStateCompileSkipAnchor({
       repository,
       audienceEntityId: audience,
       previousArtifact: afterFirst,
@@ -1411,7 +1411,7 @@ describe("compileDecisionArtifact", () => {
       ledgerEntry({ streamEntryId: skippedSource, streamIndex: 1, text: "skipped closure turn" }),
       ledgerEntry({ streamEntryId: thirdSource, streamIndex: 2, text: "third compile turn" }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
       previousArtifact: skipped.artifact,
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
@@ -1438,10 +1438,10 @@ describe("compileDecisionArtifact", () => {
       },
     ]);
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    await compileDecisionArtifact(baseInput(llmClient));
+    await compileSharedStateArtifact(baseInput(llmClient));
 
     const prompt = JSON.parse(llmClient.requests[0]?.messages[0]?.content ?? "{}") as {
       previous_artifact?: unknown;
@@ -1463,10 +1463,10 @@ describe("compileDecisionArtifact", () => {
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       promptVisibleLedger: "large ledger entry ".repeat(180_000),
       tracer: trace,
@@ -1517,10 +1517,10 @@ describe("compileDecisionArtifact", () => {
     );
 
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
     const trace = createTraceRecorder();
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [source, currentStreamEntryId],
       tracer: trace,
@@ -1549,7 +1549,7 @@ describe("compileDecisionArtifact", () => {
     const maxActiveEntries = 40;
     const liveRenderReservation = 8;
     const responses = Array.from({ length: 60 }, (_, index) =>
-      emitDecisionArtifactPatchResponse({
+      emitSharedStateArtifactPatchResponse({
         operations: [
           {
             type: "add",
@@ -1581,7 +1581,7 @@ describe("compileDecisionArtifact", () => {
     let sawLifecyclePrune = false;
 
     for (let index = 0; index < responses.length; index += 1) {
-      await compileDecisionArtifact({
+      await compileSharedStateArtifact({
         ...baseInput(llmClient),
         currentUserMessage: `Long planning turn ${index}`,
         tracer: trace,
@@ -1599,7 +1599,7 @@ describe("compileDecisionArtifact", () => {
             left.id.localeCompare(right.id),
         )
         .slice(0, Math.min(activeLive.length, liveRenderReservation));
-      const rendered = renderDecisionStateArtifact(artifact) ?? "";
+      const rendered = renderSharedStateArtifact(artifact) ?? "";
       const renderedLiveEntryCount = rendered.match(/kind=live/g)?.length ?? 0;
       const completed = trace.events
         .filter((event) => event.event === "decision_artifact_compile_completed")
@@ -1700,10 +1700,10 @@ describe("compileDecisionArtifact", () => {
     expect(replacementId).toBeDefined();
 
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
 
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [firstSource, secondSource, extraSource, currentStreamEntryId],
       lifecycle: {
@@ -1774,9 +1774,9 @@ describe("compileDecisionArtifact", () => {
 
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
-      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
     });
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [source, currentStreamEntryId],
       tracer: trace,
@@ -1843,7 +1843,7 @@ describe("compileDecisionArtifact", () => {
 
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "prune",
@@ -1853,7 +1853,7 @@ describe("compileDecisionArtifact", () => {
         }),
       ],
     });
-    const patch = await compileDecisionArtifact({
+    const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [firstSource, secondSource, currentStreamEntryId],
     });
@@ -1867,18 +1867,18 @@ describe("compileDecisionArtifact", () => {
     expect(artifact?.entries.find((entry) => entry.id === replacementId)).toBeUndefined();
   });
 
-  it("accepts all decision artifact kinds emitted by the compiler", async () => {
+  it("accepts all shared state kinds emitted by the compiler", async () => {
     const kinds = [
       "locked",
       "live",
       "tentative",
       "invalidated",
       "pending",
-    ] as const satisfies readonly DecisionArtifactEntryKind[];
+    ] as const satisfies readonly SharedStateEntryKind[];
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
       responses: [
-        emitDecisionArtifactPatchResponse({
+        emitSharedStateArtifactPatchResponse({
           operations: kinds.map((kind) => ({
             type: "add" as const,
             kind,
@@ -1890,7 +1890,7 @@ describe("compileDecisionArtifact", () => {
       ],
     });
 
-    await compileDecisionArtifact({
+    await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
     });

@@ -23,7 +23,7 @@ import {
   DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
 } from "../src/cognition/evidence-ledger/action-threads.js";
-import { decisionArtifactSemanticRevisionVerdictCacheSize } from "../src/cognition/decision-artifact/reconciliation.js";
+import { sharedStateSemanticRevisionVerdictCacheSize } from "../src/cognition/shared-state/reconciliation.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
@@ -125,7 +125,7 @@ type GoalPromotionMetricCounts = Pick<
   | "goal_promotion_cap_rejections"
 >;
 
-type DecisionArtifactSemanticRevisionMetricCounts = Pick<
+type SharedStateArtifactSemanticRevisionMetricCounts = Pick<
   MetricsRow,
   | "decision_artifact_semantic_revisions_attempted"
   | "decision_artifact_semantic_revisions_completed_succeeded"
@@ -405,9 +405,9 @@ function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromoti
   };
 }
 
-function decisionArtifactSemanticRevisionMetrics(
+function sharedStateSemanticRevisionMetrics(
   traceRecords: readonly TraceRecord[],
-): DecisionArtifactSemanticRevisionMetricCounts {
+): SharedStateArtifactSemanticRevisionMetricCounts {
   const completed = traceRecords.filter(
     (record) => record.event === "decision_artifact_semantic_revision_completed",
   );
@@ -694,7 +694,7 @@ export class MetricsCapture {
     this.tracePath = options.tracePath;
     this.scenarioKey = options.scenarioKey;
     this.semanticRevisionVerdictCacheSize =
-      options.semanticRevisionVerdictCacheSize ?? decisionArtifactSemanticRevisionVerdictCacheSize;
+      options.semanticRevisionVerdictCacheSize ?? sharedStateSemanticRevisionVerdictCacheSize;
   }
 
   listHealthWarnings(): SimulatorHealthWarning[] {
@@ -918,8 +918,8 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics(traceRecords);
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
-    const decisionArtifactSemanticRevisionMetricCounts =
-      decisionArtifactSemanticRevisionMetrics(traceRecords);
+    const sharedStateSemanticRevisionMetricCounts =
+      sharedStateSemanticRevisionMetrics(traceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     await this.emitActionDuplicatePressureTrace({
       borg,
@@ -1019,15 +1019,15 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
       decision_artifact_semantic_revisions_attempted:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
       decision_artifact_semantic_revisions_completed_succeeded:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
       decision_artifact_semantic_nodes_marked_superseded:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
       decision_artifact_semantic_nodes_marked_contradicted:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
       decision_artifact_semantic_revision_cache_hits:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
@@ -1071,9 +1071,7 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics([]);
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
-    const decisionArtifactSemanticRevisionMetricCounts = decisionArtifactSemanticRevisionMetrics(
-      [],
-    );
+    const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const row: MetricsRow = {
       event,
@@ -1161,15 +1159,15 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
       decision_artifact_semantic_revisions_attempted:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
       decision_artifact_semantic_revisions_completed_succeeded:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
       decision_artifact_semantic_nodes_marked_superseded:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
       decision_artifact_semantic_nodes_marked_contradicted:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
       decision_artifact_semantic_revision_cache_hits:
-        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
+        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };

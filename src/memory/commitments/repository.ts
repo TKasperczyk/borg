@@ -7,7 +7,7 @@ import {
   parseCommitmentId,
   parseEntityId,
   type CommitmentId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -195,7 +195,7 @@ export type EntityResolveOptions = {
 };
 
 export type CommitmentRevokeOptions = IdentityCasOptions & {
-  canonicalizedByArtifactEntryId?: DecisionArtifactEntryId | null;
+  canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
 export class EntityRepository {

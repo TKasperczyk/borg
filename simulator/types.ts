@@ -70,7 +70,7 @@ export type MetricsRow = {
   commitment_count_active: number;
   commitment_count_superseded: number;
   // These lifecycle counts are not mutually exclusive: commitments canonicalized
-  // through the decision artifact are revoked by design.
+  // through the shared state are revoked by design.
   commitment_count_revoked: number;
   commitment_count_expired: number;
   commitment_count_canonicalized: number;

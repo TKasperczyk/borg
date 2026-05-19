@@ -3,21 +3,21 @@ import { z } from "zod";
 import {
   actionIdHelpers,
   commitmentIdHelpers,
-  decisionArtifactEntryIdHelpers,
+  sharedStateEntryIdHelpers,
   entityIdHelpers,
   goalIdHelpers,
   openQuestionIdHelpers,
   streamEntryIdHelpers,
   type ActionId,
   type CommitmentId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type EntityId,
   type GoalId,
   type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 
-export const DECISION_ARTIFACT_ENTRY_KINDS = [
+export const SHARED_STATE_ENTRY_KINDS = [
   "locked",
   "live",
   "tentative",
@@ -25,115 +25,115 @@ export const DECISION_ARTIFACT_ENTRY_KINDS = [
   "pending",
 ] as const;
 
-export const ACTIVE_DECISION_ARTIFACT_ENTRY_KINDS = ["locked", "live"] as const;
+export const ACTIVE_SHARED_STATE_ENTRY_KINDS = ["locked", "live"] as const;
 
-export const decisionArtifactEntryIdSchema = z
+export const sharedStateEntryIdSchema = z
   .string()
-  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
-    message: "Invalid decision artifact entry id",
+  .refine((value) => sharedStateEntryIdHelpers.is(value), {
+    message: "Invalid shared state entry id",
   })
-  .transform((value) => value as DecisionArtifactEntryId);
+  .transform((value) => value as SharedStateEntryId);
 
-export const decisionArtifactEntityIdSchema = z
+export const sharedStateEntityIdSchema = z
   .string()
   .refine((value) => entityIdHelpers.is(value), {
-    message: "Invalid decision artifact entity id",
+    message: "Invalid shared state entity id",
   })
   .transform((value) => value as EntityId);
 
-export const decisionArtifactStreamEntryIdSchema = z
+export const sharedStateStreamEntryIdSchema = z
   .string()
   .refine((value) => streamEntryIdHelpers.is(value), {
-    message: "Invalid decision artifact stream entry id",
+    message: "Invalid shared state stream entry id",
   })
   .transform((value) => value as StreamEntryId);
 
-export const decisionArtifactEntryKindSchema = z.enum(DECISION_ARTIFACT_ENTRY_KINDS);
+export const sharedStateEntryKindSchema = z.enum(SHARED_STATE_ENTRY_KINDS);
 
-export const decisionArtifactGoalIdSchema = z
+export const sharedStateGoalIdSchema = z
   .string()
   .refine((value) => goalIdHelpers.is(value), {
-    message: "Invalid decision artifact canonicalized goal id",
+    message: "Invalid shared state canonicalized goal id",
   })
   .transform((value) => value as GoalId);
 
-export const decisionArtifactCommitmentIdSchema = z
+export const sharedStateCommitmentIdSchema = z
   .string()
   .refine((value) => commitmentIdHelpers.is(value), {
-    message: "Invalid decision artifact canonicalized commitment id",
+    message: "Invalid shared state canonicalized commitment id",
   })
   .transform((value) => value as CommitmentId);
 
-export const decisionArtifactActionIdSchema = z
+export const sharedStateActionIdSchema = z
   .string()
   .refine((value) => actionIdHelpers.is(value), {
-    message: "Invalid decision artifact canonicalized action id",
+    message: "Invalid shared state canonicalized action id",
   })
   .transform((value) => value as ActionId);
 
-export const decisionArtifactOpenQuestionIdSchema = z
+export const sharedStateOpenQuestionIdSchema = z
   .string()
   .refine((value) => openQuestionIdHelpers.is(value), {
-    message: "Invalid decision artifact canonicalized open question id",
+    message: "Invalid shared state canonicalized open question id",
   })
   .transform((value) => value as OpenQuestionId);
 
-export const decisionArtifactCanonicalizesSchema = z
+export const sharedStateCanonicalizesSchema = z
   .object({
-    goal_ids: z.array(decisionArtifactGoalIdSchema).default([]),
-    commitment_ids: z.array(decisionArtifactCommitmentIdSchema).default([]),
-    action_ids: z.array(decisionArtifactActionIdSchema).default([]),
-    open_question_ids: z.array(decisionArtifactOpenQuestionIdSchema).default([]),
+    goal_ids: z.array(sharedStateGoalIdSchema).default([]),
+    commitment_ids: z.array(sharedStateCommitmentIdSchema).default([]),
+    action_ids: z.array(sharedStateActionIdSchema).default([]),
+    open_question_ids: z.array(sharedStateOpenQuestionIdSchema).default([]),
   })
   .strict();
 
-export const decisionArtifactEntrySchema = z
+export const sharedStateEntrySchema = z
   .object({
-    id: decisionArtifactEntryIdSchema,
-    audience_entity_id: decisionArtifactEntityIdSchema,
-    kind: decisionArtifactEntryKindSchema,
+    id: sharedStateEntryIdSchema,
+    audience_entity_id: sharedStateEntityIdSchema,
+    kind: sharedStateEntryKindSchema,
     text: z.string().trim().min(1),
-    owner_entity_id: decisionArtifactEntityIdSchema.nullable(),
-    provenance_stream_entry_ids: z.array(decisionArtifactStreamEntryIdSchema).min(1),
-    last_updated_stream_entry_ids: z.array(decisionArtifactStreamEntryIdSchema).min(1),
+    owner_entity_id: sharedStateEntityIdSchema.nullable(),
+    provenance_stream_entry_ids: z.array(sharedStateStreamEntryIdSchema).min(1),
+    last_updated_stream_entry_ids: z.array(sharedStateStreamEntryIdSchema).min(1),
     created_at: z.number().finite(),
     last_updated_at: z.number().finite(),
-    superseded_by_id: decisionArtifactEntryIdSchema.nullable(),
+    superseded_by_id: sharedStateEntryIdSchema.nullable(),
     rank: z.number().int().nonnegative(),
-    canonicalizes: decisionArtifactCanonicalizesSchema,
+    canonicalizes: sharedStateCanonicalizesSchema,
   })
   .strict();
 
-export const decisionArtifactSchema = z
+export const sharedStateArtifactSchema = z
   .object({
-    audience_entity_id: decisionArtifactEntityIdSchema,
+    audience_entity_id: sharedStateEntityIdSchema,
     record_version: z.number().int().positive(),
     created_at: z.number().finite(),
     updated_at: z.number().finite(),
     last_compiled_at: z.number().finite().nullable(),
-    last_compiled_stream_entry_id: decisionArtifactStreamEntryIdSchema.nullable(),
-    entries: z.array(decisionArtifactEntrySchema),
+    last_compiled_stream_entry_id: sharedStateStreamEntryIdSchema.nullable(),
+    entries: z.array(sharedStateEntrySchema),
   })
   .strict();
 
-export type DecisionArtifactEntryKind = z.infer<typeof decisionArtifactEntryKindSchema>;
-export type DecisionArtifactCanonicalizes = z.infer<typeof decisionArtifactCanonicalizesSchema>;
-export type DecisionArtifactEntry = z.infer<typeof decisionArtifactEntrySchema>;
-export type DecisionArtifact = z.infer<typeof decisionArtifactSchema>;
-export type DecisionArtifactSourceTrustRejectionReason = "quarantined" | "inactive";
-export type DecisionArtifactSourceTrustResult =
+export type SharedStateEntryKind = z.infer<typeof sharedStateEntryKindSchema>;
+export type SharedStateCanonicalizes = z.infer<typeof sharedStateCanonicalizesSchema>;
+export type SharedStateEntry = z.infer<typeof sharedStateEntrySchema>;
+export type SharedStateArtifact = z.infer<typeof sharedStateArtifactSchema>;
+export type SharedStateSourceTrustRejectionReason = "quarantined" | "inactive";
+export type SharedStateSourceTrustResult =
   | {
       allowed: true;
       reason?: never;
     }
   | {
       allowed: false;
-      reason?: DecisionArtifactSourceTrustRejectionReason;
+      reason?: SharedStateSourceTrustRejectionReason;
     };
-export type DecisionArtifactSourceTrustValidator = (
+export type SharedStateSourceTrustValidator = (
   streamEntryId: StreamEntryId,
-) => DecisionArtifactSourceTrustResult;
+) => SharedStateSourceTrustResult;
 
-export const allowAllSourceTrustValidator: DecisionArtifactSourceTrustValidator = () => ({
+export const allowAllSharedStateSourceTrustValidator: SharedStateSourceTrustValidator = () => ({
   allowed: true,
 });

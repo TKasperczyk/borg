@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { DecisionArtifact } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
 
 export const evidenceLedgerSourceTypeSchema = z.enum([
@@ -127,7 +127,7 @@ export type EvidenceLedgerTranscriptOmittedReason = "over_budget";
 
 export type EvidenceLedger = {
   sections: EvidenceLedgerSection[];
-  decisionArtifact?: DecisionArtifact | null;
+  sharedState?: SharedStateArtifact | null;
   transcriptIncluded: boolean;
   transcriptCompacted: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;

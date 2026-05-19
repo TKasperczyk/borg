@@ -12,19 +12,19 @@ import {
 import { FixedClock } from "../../util/clock.js";
 import { IdentityCasMismatchError, StorageError } from "../../util/errors.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
-import { decisionArtifactMigrations } from "./migrations.js";
-import { DecisionArtifactRepository } from "./repository.js";
+import { sharedStateMigrations } from "./migrations.js";
+import { SharedStateRepository } from "./repository.js";
 
-describe("DecisionArtifactRepository", () => {
+describe("SharedStateRepository", () => {
   let db: SqliteDatabase;
-  let repository: DecisionArtifactRepository;
+  let repository: SharedStateRepository;
   const clock = new FixedClock(1_000);
 
   beforeEach(() => {
     db = openDatabase(":memory:", {
-      migrations: composeMigrations(decisionArtifactMigrations),
+      migrations: composeMigrations(sharedStateMigrations),
     });
-    repository = new DecisionArtifactRepository({
+    repository = new SharedStateRepository({
       db,
       clock,
     });
@@ -52,7 +52,7 @@ describe("DecisionArtifactRepository", () => {
 
     expect(thrown).toBeInstanceOf(StorageError);
     expect(thrown).toMatchObject({
-      code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+      code: "SHARED_STATE_SOURCE_NOT_TRUSTED",
     });
     expect((thrown as Error).cause).toMatchObject({
       streamEntryId: expected.streamEntryId,
@@ -105,7 +105,7 @@ describe("DecisionArtifactRepository", () => {
     const audience = createEntityId();
     const allowedSource = createStreamEntryId();
     const quarantinedSource = createStreamEntryId();
-    const trustedRepository = new DecisionArtifactRepository({
+    const trustedRepository = new SharedStateRepository({
       db,
       clock,
       sourceTrustValidator: (streamEntryId) =>
@@ -124,7 +124,7 @@ describe("DecisionArtifactRepository", () => {
 
       expect(thrown).toBeInstanceOf(StorageError);
       expect(thrown).toMatchObject({
-        code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+        code: "SHARED_STATE_SOURCE_NOT_TRUSTED",
       });
       expect((thrown as Error).cause).toMatchObject({
         streamEntryId: quarantinedSource,
@@ -187,7 +187,7 @@ describe("DecisionArtifactRepository", () => {
     const audience = createEntityId();
     const allowedSource = createStreamEntryId();
     const quarantinedSource = createStreamEntryId();
-    const trustedRepository = new DecisionArtifactRepository({
+    const trustedRepository = new SharedStateRepository({
       db,
       clock,
       sourceTrustValidator: (streamEntryId) =>
@@ -220,7 +220,7 @@ describe("DecisionArtifactRepository", () => {
     const firstSource = createStreamEntryId();
     const secondSource = createStreamEntryId();
     const quarantinedSource = createStreamEntryId();
-    const trustedRepository = new DecisionArtifactRepository({
+    const trustedRepository = new SharedStateRepository({
       db,
       clock,
       sourceTrustValidator: (streamEntryId) =>
@@ -265,7 +265,7 @@ describe("DecisionArtifactRepository", () => {
     const firstSource = createStreamEntryId();
     const replacementSource = createStreamEntryId();
     const quarantinedSource = createStreamEntryId();
-    const trustedRepository = new DecisionArtifactRepository({
+    const trustedRepository = new SharedStateRepository({
       db,
       clock,
       sourceTrustValidator: (streamEntryId) =>
@@ -446,16 +446,16 @@ describe("DecisionArtifactRepository", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-decision-artifact-"));
     const dbPath = join(tempDir, "borg.db");
     const firstDb = openDatabase(dbPath, {
-      migrations: composeMigrations(decisionArtifactMigrations),
+      migrations: composeMigrations(sharedStateMigrations),
     });
     const secondDb = openDatabase(dbPath, {
-      migrations: composeMigrations(decisionArtifactMigrations),
+      migrations: composeMigrations(sharedStateMigrations),
     });
-    const firstWriter = new DecisionArtifactRepository({
+    const firstWriter = new SharedStateRepository({
       db: firstDb,
       clock,
     });
-    const secondWriter = new DecisionArtifactRepository({
+    const secondWriter = new SharedStateRepository({
       db: secondDb,
       clock,
     });

@@ -1,8 +1,8 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
-  renderDecisionStateArtifact,
-  type DecisionArtifactRenderOptions,
-} from "../decision-artifact/render.js";
+  renderSharedStateArtifact,
+  type SharedStateRenderOptions,
+} from "../shared-state/render.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { renderSection } from "./section-rendering.js";
@@ -17,7 +17,7 @@ const HIERARCHY_GUIDANCE = [
 
 export function renderEvidenceLedger(
   ledger: EvidenceLedger,
-  options: { decisionArtifact?: DecisionArtifactRenderOptions } = {},
+  options: { sharedState?: SharedStateRenderOptions } = {},
 ): string | null {
   const transcriptStatus = ledger.transcriptIncluded
     ? ledger.transcriptCompacted
@@ -29,7 +29,7 @@ export function renderEvidenceLedger(
     HIERARCHY_GUIDANCE,
     transcriptStatus,
     `estimated_tokens=${ledger.estimatedTokens}`,
-    renderDecisionStateArtifact(ledger.decisionArtifact, options.decisionArtifact),
+    renderSharedStateArtifact(ledger.sharedState, options.sharedState),
     ...ledger.sections.map((section) => renderSection(section)),
   ]
     .filter((part): part is string => part !== null)
@@ -45,7 +45,7 @@ export function renderEvidenceLedger(
 
 export function estimateEvidenceLedgerPromptTokens(
   ledger: EvidenceLedger,
-  options: { decisionArtifact?: DecisionArtifactRenderOptions } = {},
+  options: { sharedState?: SharedStateRenderOptions } = {},
 ): number {
   return estimatePromptTokens(renderEvidenceLedger(ledger, options) ?? "");
 }

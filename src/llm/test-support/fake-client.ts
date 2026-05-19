@@ -348,7 +348,7 @@ function isActionStateExtractorFallbackRequest(options: LLMCompleteOptions): boo
   return options.budget === "action-state-extractor";
 }
 
-function isDecisionArtifactCompilerFallbackRequest(options: LLMCompleteOptions): boolean {
+function isSharedStateArtifactCompilerFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "decision-artifact-compiler";
 }
 
@@ -492,7 +492,7 @@ function isActionStateResponse(response: FakeLLMResponse | undefined): boolean {
   return false;
 }
 
-function isDecisionArtifactResponse(response: FakeLLMResponse | undefined): boolean {
+function isSharedStateArtifactResponse(response: FakeLLMResponse | undefined): boolean {
   if (response === undefined || typeof response === "function" || typeof response !== "object") {
     return false;
   }
@@ -726,7 +726,7 @@ function defaultActionStateResponse(): LLMCompleteResult {
   };
 }
 
-function defaultDecisionArtifactResponse(): LLMCompleteResult {
+function defaultSharedStateArtifactResponse(): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 0,
@@ -784,9 +784,7 @@ function defaultPersonaRoleBleedResponse(): LLMCompleteResult {
   };
 }
 
-function defaultClosureLoopClassifiedMessages(
-  messages: readonly LLMMessage[],
-): Array<{
+function defaultClosureLoopClassifiedMessages(messages: readonly LLMMessage[]): Array<{
   message_ref: string;
   role: "user" | "assistant";
   act: "substantive";
@@ -966,12 +964,12 @@ export class FakeLLMClient implements LLMClient {
     }
 
     if (
-      isDecisionArtifactCompilerFallbackRequest(options) &&
+      isSharedStateArtifactCompilerFallbackRequest(options) &&
       typeof response !== "function" &&
       scriptedResponseBudget(response) !== "decision-artifact-compiler" &&
-      !isDecisionArtifactResponse(response)
+      !isSharedStateArtifactResponse(response)
     ) {
-      return defaultDecisionArtifactResponse();
+      return defaultSharedStateArtifactResponse();
     }
 
     if (

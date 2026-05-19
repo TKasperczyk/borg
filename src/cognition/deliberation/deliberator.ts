@@ -354,7 +354,7 @@ export class Deliberator {
       context.evidenceLedger === undefined || context.evidenceLedger === null
         ? null
         : buildCompactPlannerLedgerPrompt(context.evidenceLedger, {
-            decisionArtifact: this.options.decisionArtifactRenderOptions,
+            sharedState: this.options.sharedStateRenderOptions,
           });
     const forcedContradictionOpenQuestionsPrompt =
       renderForcedContradictionOpenQuestionsPrompt(context);
@@ -373,11 +373,11 @@ export class Deliberator {
         estimated_tokens_by_section: toTraceJsonValue(
           compactPlannerLedger.traceSummary.estimatedTokensBySection,
         ),
-        decision_artifact_entry_count: compactPlannerLedger.traceSummary.decisionArtifactEntryCount,
+        decision_artifact_entry_count: compactPlannerLedger.traceSummary.sharedStateEntryCount,
         decision_artifact_rendered_token_estimate:
-          compactPlannerLedger.traceSummary.decisionArtifactRenderedTokens,
+          compactPlannerLedger.traceSummary.sharedStateRenderedTokens,
         decision_artifact_rendered_by_kind: toTraceJsonValue(
-          compactPlannerLedger.traceSummary.decisionArtifactRenderedByKind,
+          compactPlannerLedger.traceSummary.sharedStateRenderedByKind,
         ),
         total_estimated_tokens: compactPlannerLedger.traceSummary.totalEstimatedTokens,
         target_tokens: compactPlannerLedger.traceSummary.targetTokens,

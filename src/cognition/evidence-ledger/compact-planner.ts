@@ -1,11 +1,11 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
-import type { DecisionArtifact } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
 import {
-  renderDecisionStateArtifact,
-  summarizeDecisionStateArtifactRender,
-  type DecisionArtifactRenderOptions,
-} from "../decision-artifact/render.js";
-import type { DecisionArtifactKindCounts } from "../decision-artifact/selection.js";
+  renderSharedStateArtifact,
+  summarizeSharedStateArtifactRender,
+  type SharedStateRenderOptions,
+} from "../shared-state/render.js";
+import type { SharedStateKindCounts } from "../shared-state/selection.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
@@ -72,16 +72,16 @@ export type CompactPlannerLedgerOptions = {
   targetTokens?: number;
   hardCapTokens?: number;
   maxEntryTextTokens?: number;
-  decisionArtifact?: DecisionArtifactRenderOptions;
+  sharedState?: SharedStateRenderOptions;
 };
 
 export type CompactPlannerLedgerTraceSummary = {
   entryCountsBySection: Record<EvidenceLedgerSectionId, number>;
   omittedEntryCountsBySection: Record<EvidenceLedgerSectionId, number>;
   estimatedTokensBySection: Record<EvidenceLedgerSectionId, number>;
-  decisionArtifactEntryCount: number;
-  decisionArtifactRenderedTokens: number;
-  decisionArtifactRenderedByKind: DecisionArtifactKindCounts;
+  sharedStateEntryCount: number;
+  sharedStateRenderedTokens: number;
+  sharedStateRenderedByKind: SharedStateKindCounts;
   totalEstimatedTokens: number;
   targetTokens: number;
   hardCapTokens: number;
@@ -199,12 +199,12 @@ function compactSection(input: { section: EvidenceLedgerSection; maxEntryTextTok
 
 function totalCompactPromptTokens(
   sections: readonly CompactSectionResult[],
-  decisionArtifact: DecisionArtifact | null | undefined,
-  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
+  sharedState: SharedStateArtifact | null | undefined,
+  sharedStateOptions: SharedStateRenderOptions | undefined,
 ): number {
   return estimatePromptTokens(
     renderCompactPlannerLedgerPromptSection(
-      renderCompactPlannerLedgerContent(sections, decisionArtifact, decisionArtifactOptions),
+      renderCompactPlannerLedgerContent(sections, sharedState, sharedStateOptions),
     ) ?? "",
   );
 }
@@ -217,12 +217,10 @@ type CompactSectionResult = {
 function trimToTokenTarget(
   sections: CompactSectionResult[],
   targetTokens: number,
-  decisionArtifact: DecisionArtifact | null | undefined,
-  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
+  sharedState: SharedStateArtifact | null | undefined,
+  sharedStateOptions: SharedStateRenderOptions | undefined,
 ): CompactSectionResult[] {
-  while (
-    totalCompactPromptTokens(sections, decisionArtifact, decisionArtifactOptions) > targetTokens
-  ) {
+  while (totalCompactPromptTokens(sections, sharedState, sharedStateOptions) > targetTokens) {
     const trimIndex = [...sections]
       .reverse()
       .findIndex((section) => section.section.entries.length > 0);
@@ -245,11 +243,11 @@ function trimToTokenTarget(
 
 function renderCompactPlannerLedgerContent(
   sections: readonly CompactSectionResult[],
-  decisionArtifact: DecisionArtifact | null | undefined,
-  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
+  sharedState: SharedStateArtifact | null | undefined,
+  sharedStateOptions: SharedStateRenderOptions | undefined,
 ): string {
   return [
-    renderDecisionStateArtifact(decisionArtifact, decisionArtifactOptions),
+    renderSharedStateArtifact(sharedState, sharedStateOptions),
     COMPACT_PLANNER_LEDGER_GUIDANCE,
     ...sections.map((section) => renderCompactSection(section.section, section.omittedCount)),
   ]
@@ -310,27 +308,27 @@ export function buildCompactPlannerLedgerPrompt(
   const trimmedSections = trimToTokenTarget(
     compactSections,
     targetTokens,
-    ledger.decisionArtifact,
-    options.decisionArtifact,
+    ledger.sharedState,
+    options.sharedState,
   );
   const hardCappedSections = trimToTokenTarget(
     trimmedSections,
     hardCapTokens,
-    ledger.decisionArtifact,
-    options.decisionArtifact,
+    ledger.sharedState,
+    options.sharedState,
   );
   const content = renderCompactPlannerLedgerContent(
     hardCappedSections,
-    ledger.decisionArtifact,
-    options.decisionArtifact,
+    ledger.sharedState,
+    options.sharedState,
   );
   const promptSection = renderCompactPlannerLedgerPromptSection(content);
   const entryCountsBySection = emptySectionCountRecord();
   const omittedEntryCountsBySection = emptySectionCountRecord();
   const estimatedTokensBySection = emptySectionCountRecord();
-  const decisionArtifactSummary = summarizeDecisionStateArtifactRender(
-    ledger.decisionArtifact,
-    options.decisionArtifact,
+  const sharedStateSummary = summarizeSharedStateArtifactRender(
+    ledger.sharedState,
+    options.sharedState,
   );
 
   for (const section of hardCappedSections) {
@@ -347,9 +345,9 @@ export function buildCompactPlannerLedgerPrompt(
       entryCountsBySection,
       omittedEntryCountsBySection,
       estimatedTokensBySection,
-      decisionArtifactEntryCount: decisionArtifactSummary.renderedEntryCount,
-      decisionArtifactRenderedTokens: decisionArtifactSummary.estimatedTokens,
-      decisionArtifactRenderedByKind: decisionArtifactSummary.renderedByKind,
+      sharedStateEntryCount: sharedStateSummary.renderedEntryCount,
+      sharedStateRenderedTokens: sharedStateSummary.estimatedTokens,
+      sharedStateRenderedByKind: sharedStateSummary.renderedByKind,
       totalEstimatedTokens: estimatePromptTokens(promptSection ?? ""),
       targetTokens,
       hardCapTokens,

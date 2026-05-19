@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createDecisionArtifactEntryId, createStreamEntryId } from "../../util/ids.js";
+import { createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -176,7 +176,7 @@ describe("commitment repository", () => {
 
       commitments.revoke(revoked.id, "test revocation", manualProvenance);
       commitments.revoke(canonicalized.id, "canonicalized", manualProvenance, undefined, {
-        canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+        canonicalizedByArtifactEntryId: createSharedStateEntryId(),
       });
 
       expect(commitments.countActive()).toBe(1);

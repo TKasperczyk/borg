@@ -1,77 +1,77 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
-  DECISION_ARTIFACT_ENTRY_KINDS,
-  type DecisionArtifact,
-  type DecisionArtifactEntry,
-  type DecisionArtifactEntryKind,
+  SHARED_STATE_ENTRY_KINDS,
+  type SharedStateArtifact,
+  type SharedStateEntry,
+  type SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
 import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
-  activeDecisionArtifactEntries,
-  countDecisionArtifactEntriesByKind,
-  emptyDecisionArtifactKindCounts,
-  selectDecisionArtifactEntriesForRender,
-  subtractDecisionArtifactKindCounts,
+  activeSharedStateArtifactEntries,
+  countSharedStateArtifactEntriesByKind,
+  emptySharedStateKindCounts,
+  selectSharedStateArtifactEntriesForRender,
+  subtractSharedStateKindCounts,
   tokenDropIndex,
-  type DecisionArtifactKindCounts,
+  type SharedStateKindCounts,
 } from "./selection.js";
 
-const DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES = 30;
-const DEFAULT_DECISION_ARTIFACT_MAX_TOKENS = 3_000;
-const DEFAULT_DECISION_ARTIFACT_RESERVED_SLOTS = {
+const DEFAULT_SHARED_STATE_MAX_ENTRIES = 30;
+const DEFAULT_SHARED_STATE_MAX_TOKENS = 3_000;
+const DEFAULT_SHARED_STATE_RESERVED_SLOTS = {
   live: 8,
   invalidated: 3,
   pending: 3,
-} as const satisfies Partial<Record<DecisionArtifactEntryKind, number>>;
-const DEFAULT_DECISION_ARTIFACT_LOCKED_CAP = 14;
-const DECISION_ARTIFACT_SINGLE_ENTRY_FLOOR_TOKENS = 200;
-const DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
+} as const satisfies Partial<Record<SharedStateEntryKind, number>>;
+const DEFAULT_SHARED_STATE_LOCKED_CAP = 14;
+const SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS = 200;
+const SHARED_STATE_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
 
-export type DecisionStateArtifactRenderSummary = {
+export type SharedStateArtifactRenderSummary = {
   totalEntryCount: number;
   activeEntryCount: number;
   renderedEntryCount: number;
   omittedEntryCount: number;
   estimatedTokens: number;
-  renderedByKind: DecisionArtifactKindCounts;
-  omittedByKind: DecisionArtifactKindCounts;
+  renderedByKind: SharedStateKindCounts;
+  omittedByKind: SharedStateKindCounts;
 };
 
-export type DecisionArtifactRenderOptions = {
+export type SharedStateRenderOptions = {
   maxEntries?: number;
   maxTokens?: number;
-  reservedSlots?: Partial<Record<DecisionArtifactEntryKind, number>>;
+  reservedSlots?: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries?: number;
 };
 
-function decisionArtifactRenderOptions(
-  options: DecisionArtifactRenderOptions = {},
-): Required<DecisionArtifactRenderOptions> {
+function sharedStateRenderOptions(
+  options: SharedStateRenderOptions = {},
+): Required<SharedStateRenderOptions> {
   return {
-    maxEntries: normalizePositiveInteger(options.maxEntries, DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES),
-    maxTokens: normalizePositiveInteger(options.maxTokens, DEFAULT_DECISION_ARTIFACT_MAX_TOKENS),
+    maxEntries: normalizePositiveInteger(options.maxEntries, DEFAULT_SHARED_STATE_MAX_ENTRIES),
+    maxTokens: normalizePositiveInteger(options.maxTokens, DEFAULT_SHARED_STATE_MAX_TOKENS),
     reservedSlots: {
-      ...DEFAULT_DECISION_ARTIFACT_RESERVED_SLOTS,
+      ...DEFAULT_SHARED_STATE_RESERVED_SLOTS,
       ...(options.reservedSlots ?? {}),
     },
     lockedMaxEntries:
       options.lockedMaxEntries === undefined || !Number.isFinite(options.lockedMaxEntries)
-        ? DEFAULT_DECISION_ARTIFACT_LOCKED_CAP
+        ? DEFAULT_SHARED_STATE_LOCKED_CAP
         : Math.max(0, Math.floor(options.lockedMaxEntries)),
   };
 }
 
-function decisionArtifactRenderedCounts(input: {
-  activeEntries: readonly DecisionArtifactEntry[];
-  renderedEntries: readonly DecisionArtifactEntry[];
+function sharedStateRenderedCounts(input: {
+  activeEntries: readonly SharedStateEntry[];
+  renderedEntries: readonly SharedStateEntry[];
 }): {
-  renderedByKind: DecisionArtifactKindCounts;
-  omittedByKind: DecisionArtifactKindCounts;
+  renderedByKind: SharedStateKindCounts;
+  omittedByKind: SharedStateKindCounts;
   omittedEntryCount: number;
 } {
-  const activeByKind = countDecisionArtifactEntriesByKind(input.activeEntries);
-  const renderedByKind = countDecisionArtifactEntriesByKind(input.renderedEntries);
-  const omittedByKind = subtractDecisionArtifactKindCounts(activeByKind, renderedByKind);
+  const activeByKind = countSharedStateArtifactEntriesByKind(input.activeEntries);
+  const renderedByKind = countSharedStateArtifactEntriesByKind(input.renderedEntries);
+  const omittedByKind = subtractSharedStateKindCounts(activeByKind, renderedByKind);
 
   return {
     renderedByKind,
@@ -80,18 +80,18 @@ function decisionArtifactRenderedCounts(input: {
   };
 }
 
-function formatDecisionArtifactKindCounts(
-  counts: DecisionArtifactKindCounts,
+function formatSharedStateKindCounts(
+  counts: SharedStateKindCounts,
   options: { suffix?: string } = {},
 ): string {
-  const parts = DECISION_ARTIFACT_ENTRY_KINDS.flatMap((kind) =>
+  const parts = SHARED_STATE_ENTRY_KINDS.flatMap((kind) =>
     counts[kind] <= 0 ? [] : [`${counts[kind]} ${kind}${options.suffix ?? ""}`],
   );
 
   return parts.length === 0 ? "0 entries" : parts.join(", ");
 }
 
-function renderDecisionArtifactEntry(entry: DecisionArtifactEntry): string {
+function renderSharedStateEntry(entry: SharedStateEntry): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
   const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
 
@@ -101,71 +101,69 @@ function renderDecisionArtifactEntry(entry: DecisionArtifactEntry): string {
   ].join("\n");
 }
 
-function renderDecisionArtifactContent(input: {
-  artifact: DecisionArtifact;
-  entries: readonly DecisionArtifactEntry[];
-  omittedByKind: DecisionArtifactKindCounts;
-  renderedByKind: DecisionArtifactKindCounts;
+function renderSharedStateArtifactContent(input: {
+  artifact: SharedStateArtifact;
+  entries: readonly SharedStateEntry[];
+  omittedByKind: SharedStateKindCounts;
+  renderedByKind: SharedStateKindCounts;
 }): string {
   const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
   const omission =
     omittedCount <= 0
       ? null
       : [
-          `DecisionStateArtifact omitted: ${formatDecisionArtifactKindCounts(
-            input.omittedByKind,
-          )}.`,
-          `Retained: ${formatDecisionArtifactKindCounts(input.renderedByKind)}.`,
+          `SharedStateArtifact omitted: ${formatSharedStateKindCounts(input.omittedByKind)}.`,
+          `Retained: ${formatSharedStateKindCounts(input.renderedByKind)}.`,
         ].join(" ");
 
   return [
-    "## 0. Canonical Decision State",
-    "DecisionStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
+    "## 0. Shared Audience State",
+    "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
-    ...input.entries.map(renderDecisionArtifactEntry),
+    ...input.entries.map(renderSharedStateEntry),
     omission,
   ]
     .filter((part): part is string => part !== null)
     .join("\n");
 }
 
-function renderDecisionArtifactOmissionOnly(input: {
-  artifact: DecisionArtifact;
-  omittedByKind: DecisionArtifactKindCounts;
+function renderSharedStateArtifactOmissionOnly(input: {
+  artifact: SharedStateArtifact;
+  omittedByKind: SharedStateKindCounts;
   reason: string;
 }): string {
   return [
-    "## 0. Canonical Decision State",
-    "DecisionStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
+    "## 0. Shared Audience State",
+    "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
-    `DecisionStateArtifact omitted: ${formatDecisionArtifactKindCounts(
+    `SharedStateArtifact omitted: ${formatSharedStateKindCounts(
       input.omittedByKind,
     )}. Reason: ${input.reason}.`,
   ].join("\n");
 }
 
-export function truncateDecisionArtifactText(value: string, maxTokens: number): string {
+export function truncateSharedStateArtifactText(value: string, maxTokens: number): string {
   const maxChars = Math.max(
     0,
-    Math.floor(maxTokens) * 4 - DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER.length,
+    Math.floor(maxTokens) * 4 - SHARED_STATE_TEXT_TRUNCATION_MARKER.length,
   );
 
-  return `${value.slice(0, maxChars).trimEnd()}${DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER}`;
+  return `${value.slice(0, maxChars).trimEnd()}${SHARED_STATE_TEXT_TRUNCATION_MARKER}`;
 }
 
-function renderSingleEntryWithinDecisionArtifactCap(input: {
-  artifact: DecisionArtifact;
-  entry: DecisionArtifactEntry;
-  activeEntries: readonly DecisionArtifactEntry[];
+function renderSingleEntryWithinSharedStateArtifactCap(input: {
+  artifact: SharedStateArtifact;
+  entry: SharedStateEntry;
+  activeEntries: readonly SharedStateEntry[];
   maxTokens: number;
 }): { content: string; renderedEntryCount: number; omittedEntryCount: number } {
-  const counts = decisionArtifactRenderedCounts({
+  const counts = sharedStateRenderedCounts({
     activeEntries: input.activeEntries,
     renderedEntries: [input.entry],
   });
-  const emptyEntryContent = renderDecisionArtifactContent({
+  const emptyEntryContent = renderSharedStateArtifactContent({
     artifact: input.artifact,
     entries: [
       {
@@ -178,11 +176,11 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
-  if (remainingTokens < DECISION_ARTIFACT_SINGLE_ENTRY_FLOOR_TOKENS) {
+  if (remainingTokens < SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS) {
     return {
-      content: renderDecisionArtifactOmissionOnly({
+      content: renderSharedStateArtifactOmissionOnly({
         artifact: input.artifact,
-        omittedByKind: countDecisionArtifactEntriesByKind(input.activeEntries),
+        omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
         reason: "artifact entry too large to render",
       }),
       renderedEntryCount: 0,
@@ -190,12 +188,12 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
     };
   }
 
-  const content = renderDecisionArtifactContent({
+  const content = renderSharedStateArtifactContent({
     artifact: input.artifact,
     entries: [
       {
         ...input.entry,
-        text: truncateDecisionArtifactText(input.entry.text, remainingTokens),
+        text: truncateSharedStateArtifactText(input.entry.text, remainingTokens),
       },
     ],
     omittedByKind: counts.omittedByKind,
@@ -211,9 +209,9 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
   }
 
   return {
-    content: renderDecisionArtifactOmissionOnly({
+    content: renderSharedStateArtifactOmissionOnly({
       artifact: input.artifact,
-      omittedByKind: countDecisionArtifactEntriesByKind(input.activeEntries),
+      omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
       reason: "artifact entry too large to render",
     }),
     renderedEntryCount: 0,
@@ -221,12 +219,12 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
   };
 }
 
-function cappedDecisionArtifactRender(input: {
-  artifact: DecisionArtifact;
-  options?: DecisionArtifactRenderOptions;
-}): { content: string | null; summary: DecisionStateArtifactRenderSummary } {
-  const options = decisionArtifactRenderOptions(input.options);
-  const activeEntries = activeDecisionArtifactEntries(input.artifact);
+function cappedSharedStateArtifactRender(input: {
+  artifact: SharedStateArtifact;
+  options?: SharedStateRenderOptions;
+}): { content: string | null; summary: SharedStateArtifactRenderSummary } {
+  const options = sharedStateRenderOptions(input.options);
+  const activeEntries = activeSharedStateArtifactEntries(input.artifact);
 
   if (activeEntries.length === 0) {
     return {
@@ -237,24 +235,24 @@ function cappedDecisionArtifactRender(input: {
         renderedEntryCount: 0,
         omittedEntryCount: 0,
         estimatedTokens: 0,
-        renderedByKind: emptyDecisionArtifactKindCounts(),
-        omittedByKind: emptyDecisionArtifactKindCounts(),
+        renderedByKind: emptySharedStateKindCounts(),
+        omittedByKind: emptySharedStateKindCounts(),
       },
     };
   }
 
-  const activeCounts = countDecisionArtifactEntriesByKind(activeEntries);
-  let entries = selectDecisionArtifactEntriesForRender({
+  const activeCounts = countSharedStateArtifactEntriesByKind(activeEntries);
+  let entries = selectSharedStateArtifactEntriesForRender({
     entries: activeEntries,
     maxEntries: options.maxEntries,
     reservedSlots: options.reservedSlots,
     lockedMaxEntries: options.lockedMaxEntries,
   });
-  let counts = decisionArtifactRenderedCounts({
+  let counts = sharedStateRenderedCounts({
     activeEntries,
     renderedEntries: entries,
   });
-  let content = renderDecisionArtifactContent({
+  let content = renderSharedStateArtifactContent({
     artifact: input.artifact,
     entries,
     omittedByKind: counts.omittedByKind,
@@ -269,11 +267,11 @@ function cappedDecisionArtifactRender(input: {
       lockedMaxEntries: options.lockedMaxEntries,
     });
     entries = [...entries.slice(0, dropIndex), ...entries.slice(dropIndex + 1)];
-    counts = decisionArtifactRenderedCounts({
+    counts = sharedStateRenderedCounts({
       activeEntries,
       renderedEntries: entries,
     });
-    content = renderDecisionArtifactContent({
+    content = renderSharedStateArtifactContent({
       artifact: input.artifact,
       entries,
       omittedByKind: counts.omittedByKind,
@@ -282,7 +280,7 @@ function cappedDecisionArtifactRender(input: {
   }
 
   if (estimatePromptTokens(content) > options.maxTokens && entries.length === 1) {
-    const singleEntryRender = renderSingleEntryWithinDecisionArtifactCap({
+    const singleEntryRender = renderSingleEntryWithinSharedStateArtifactCap({
       artifact: input.artifact,
       entry: entries[0]!,
       activeEntries,
@@ -291,7 +289,7 @@ function cappedDecisionArtifactRender(input: {
 
     content = singleEntryRender.content;
     entries = entries.slice(0, singleEntryRender.renderedEntryCount);
-    counts = decisionArtifactRenderedCounts({
+    counts = sharedStateRenderedCounts({
       activeEntries,
       renderedEntries: entries,
     });
@@ -311,24 +309,24 @@ function cappedDecisionArtifactRender(input: {
   };
 }
 
-export function renderDecisionStateArtifact(
-  artifact: DecisionArtifact | null | undefined,
-  options?: DecisionArtifactRenderOptions,
+export function renderSharedStateArtifact(
+  artifact: SharedStateArtifact | null | undefined,
+  options?: SharedStateRenderOptions,
 ): string | null {
   if (artifact === null || artifact === undefined) {
     return null;
   }
 
-  return cappedDecisionArtifactRender({
+  return cappedSharedStateArtifactRender({
     artifact,
     options,
   }).content;
 }
 
-export function summarizeDecisionStateArtifactRender(
-  artifact: DecisionArtifact | null | undefined,
-  options?: DecisionArtifactRenderOptions,
-): DecisionStateArtifactRenderSummary {
+export function summarizeSharedStateArtifactRender(
+  artifact: SharedStateArtifact | null | undefined,
+  options?: SharedStateRenderOptions,
+): SharedStateArtifactRenderSummary {
   if (artifact === null || artifact === undefined) {
     return {
       totalEntryCount: 0,
@@ -336,12 +334,12 @@ export function summarizeDecisionStateArtifactRender(
       renderedEntryCount: 0,
       omittedEntryCount: 0,
       estimatedTokens: 0,
-      renderedByKind: emptyDecisionArtifactKindCounts(),
-      omittedByKind: emptyDecisionArtifactKindCounts(),
+      renderedByKind: emptySharedStateKindCounts(),
+      omittedByKind: emptySharedStateKindCounts(),
     };
   }
 
-  return cappedDecisionArtifactRender({
+  return cappedSharedStateArtifactRender({
     artifact,
     options,
   }).summary;

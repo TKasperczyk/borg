@@ -121,7 +121,7 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "Classifications:",
   "- concrete_action: a discrete task someone (Borg, the user, a participant, or a third party) will do, has done, is doing, or is considering doing. Has a clear actor and a clear thing being done.",
   '- conversational_acknowledgment: a remark about state, mood, or transition that is not a task, such as "going to sleep", "heading back", "got it", or "thanks". Not memory-worthy as an action.',
-  '- decision_or_preference: a settled decision or preference belongs to the decision artifact or commitments, not as a standalone action, such as "lock the service as the anchor", "avoid one-off handoffs", or "we prefer evenings".',
+  '- decision_or_preference: a settled decision or preference belongs to the shared state or commitments, not as a standalone action, such as "lock the service as the anchor", "avoid one-off handoffs", or "we prefer evenings".',
   "- already_represented: covered by an existing active action, commitment, or goal already in memory.",
   '- outside_borg_capability: a Borg-owned action that would require external document editing, production monitoring, scheduled future work, proactive outbound messaging, unwired tool execution, physical action, payment, or real-world attendance, such as "I\'ll seed the postmortem doc by morning", "I\'ll monitor p95", or "I\'ll send the reminder later".',
   "- none: not memory-worthy at all.",

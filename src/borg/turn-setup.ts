@@ -10,7 +10,7 @@ import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
-import type { DecisionArtifactRepository } from "../memory/decision-artifacts/index.js";
+import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type {
@@ -45,7 +45,7 @@ export type BuildTurnOrchestratorOptions = {
   semanticNodeRepository: SemanticNodeRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
-  decisionArtifactRepository: DecisionArtifactRepository;
+  sharedStateRepository: SharedStateRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;
@@ -81,7 +81,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     semanticNodeRepository: options.semanticNodeRepository,
     entityRepository: options.entityRepository,
     commitmentRepository: options.commitmentRepository,
-    decisionArtifactRepository: options.decisionArtifactRepository,
+    sharedStateRepository: options.sharedStateRepository,
     identityService: options.identityService,
     reviewQueueRepository: options.reviewQueueRepository,
     valuesRepository: options.valuesRepository,

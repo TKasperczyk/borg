@@ -4,9 +4,9 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
-  createDecisionArtifactEntryId,
-  parseDecisionArtifactEntryId,
-  type DecisionArtifactEntryId,
+  createSharedStateEntryId,
+  parseSharedStateEntryId,
+  type SharedStateEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -17,33 +17,33 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import {
-  decisionArtifactEntrySchema,
-  decisionArtifactCanonicalizesSchema,
-  decisionArtifactSchema,
-  allowAllSourceTrustValidator,
-  type DecisionArtifact,
-  type DecisionArtifactCanonicalizes,
-  type DecisionArtifactEntry,
-  type DecisionArtifactEntryKind,
-  type DecisionArtifactSourceTrustValidator,
+  sharedStateEntrySchema,
+  sharedStateCanonicalizesSchema,
+  sharedStateArtifactSchema,
+  allowAllSharedStateSourceTrustValidator,
+  type SharedStateArtifact,
+  type SharedStateCanonicalizes,
+  type SharedStateEntry,
+  type SharedStateEntryKind,
+  type SharedStateSourceTrustValidator,
 } from "./types.js";
 
-const DECISION_ARTIFACT_JSON_ARRAY_CODEC = {
-  errorCode: "DECISION_ARTIFACT_ROW_INVALID",
-  errorMessage: (label: string) => `Failed to parse decision artifact ${label}`,
+const SHARED_STATE_JSON_ARRAY_CODEC = {
+  errorCode: "SHARED_STATE_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to parse shared state ${label}`,
 } satisfies JsonArrayCodecOptions;
 
-const EMPTY_DECISION_ARTIFACT_CANONICALIZES: DecisionArtifactCanonicalizes = {
+const EMPTY_SHARED_STATE_CANONICALIZES: SharedStateCanonicalizes = {
   goal_ids: [],
   commitment_ids: [],
   action_ids: [],
   open_question_ids: [],
 };
 
-export type DecisionArtifactAddOperation = {
+export type SharedStateAddOperation = {
   type: "add";
-  id?: DecisionArtifactEntryId;
-  kind: DecisionArtifactEntryKind;
+  id?: SharedStateEntryId;
+  kind: SharedStateEntryKind;
   text: string;
   owner_entity_id?: EntityId | null;
   provenance_stream_entry_ids: readonly StreamEntryId[];
@@ -51,63 +51,63 @@ export type DecisionArtifactAddOperation = {
   created_at?: number;
   last_updated_at?: number;
   rank?: number;
-  canonicalizes?: DecisionArtifactCanonicalizes;
+  canonicalizes?: SharedStateCanonicalizes;
 };
 
-export type DecisionArtifactUpdateOperation = {
+export type SharedStateUpdateOperation = {
   type: "update";
-  id: DecisionArtifactEntryId;
-  kind?: DecisionArtifactEntryKind;
+  id: SharedStateEntryId;
+  kind?: SharedStateEntryKind;
   text?: string;
   owner_entity_id?: EntityId | null;
   add_provenance_stream_entry_ids?: readonly StreamEntryId[];
   last_updated_stream_entry_ids: readonly StreamEntryId[];
   last_updated_at?: number;
   rank?: number;
-  canonicalizes?: DecisionArtifactCanonicalizes;
+  canonicalizes?: SharedStateCanonicalizes;
 };
 
-export type DecisionArtifactSupersedeOperation = {
+export type SharedStateSupersedeOperation = {
   type: "supersede";
-  id: DecisionArtifactEntryId;
-  replacement: Omit<DecisionArtifactAddOperation, "type">;
+  id: SharedStateEntryId;
+  replacement: Omit<SharedStateAddOperation, "type">;
   last_updated_stream_entry_ids: readonly StreamEntryId[];
   last_updated_at?: number;
 };
 
-export type DecisionArtifactPruneOperation = {
+export type SharedStatePruneOperation = {
   type: "prune";
-  id: DecisionArtifactEntryId;
+  id: SharedStateEntryId;
 };
 
-export type DecisionArtifactOperation =
-  | DecisionArtifactAddOperation
-  | DecisionArtifactUpdateOperation
-  | DecisionArtifactSupersedeOperation
-  | DecisionArtifactPruneOperation;
+export type SharedStateOperation =
+  | SharedStateAddOperation
+  | SharedStateUpdateOperation
+  | SharedStateSupersedeOperation
+  | SharedStatePruneOperation;
 
-export type DecisionArtifactUpsertOptions = IdentityCasOptions & {
+export type SharedStateUpsertOptions = IdentityCasOptions & {
   now?: number;
   lastCompiledAt?: number | null;
   lastCompiledStreamEntryId?: StreamEntryId | null;
-  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
+  sourceTrustValidator?: SharedStateSourceTrustValidator;
 };
 
-export type DecisionArtifactRepositoryOptions = {
+export type SharedStateRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
-  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
+  sourceTrustValidator?: SharedStateSourceTrustValidator;
 };
 
 function parseStreamEntryIds(value: string, label: string): StreamEntryId[] {
-  return parseJsonArray<StreamEntryId>(value, label, DECISION_ARTIFACT_JSON_ARRAY_CODEC);
+  return parseJsonArray<StreamEntryId>(value, label, SHARED_STATE_JSON_ARRAY_CODEC);
 }
 
 function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[] {
   return [...new Set(values)];
 }
 
-function emptyCanonicalizes(): DecisionArtifactCanonicalizes {
+function emptyCanonicalizes(): SharedStateCanonicalizes {
   return {
     goal_ids: [],
     commitment_ids: [],
@@ -117,11 +117,11 @@ function emptyCanonicalizes(): DecisionArtifactCanonicalizes {
 }
 
 function uniqueCanonicalizes(
-  value: DecisionArtifactCanonicalizes | undefined,
-): DecisionArtifactCanonicalizes {
-  const source = value ?? EMPTY_DECISION_ARTIFACT_CANONICALIZES;
+  value: SharedStateCanonicalizes | undefined,
+): SharedStateCanonicalizes {
+  const source = value ?? EMPTY_SHARED_STATE_CANONICALIZES;
 
-  return decisionArtifactCanonicalizesSchema.parse({
+  return sharedStateCanonicalizesSchema.parse({
     goal_ids: [...new Set(source.goal_ids)],
     commitment_ids: [...new Set(source.commitment_ids)],
     action_ids: [...new Set(source.action_ids)],
@@ -130,9 +130,9 @@ function uniqueCanonicalizes(
 }
 
 function mergeCanonicalizes(
-  current: DecisionArtifactCanonicalizes,
-  next: DecisionArtifactCanonicalizes | undefined,
-): DecisionArtifactCanonicalizes {
+  current: SharedStateCanonicalizes,
+  next: SharedStateCanonicalizes | undefined,
+): SharedStateCanonicalizes {
   if (next === undefined) {
     return current;
   }
@@ -145,14 +145,14 @@ function mergeCanonicalizes(
   });
 }
 
-function parseCanonicalizes(value: unknown): DecisionArtifactCanonicalizes {
+function parseCanonicalizes(value: unknown): SharedStateCanonicalizes {
   if (value === null || value === undefined) {
     return emptyCanonicalizes();
   }
 
   try {
     const parsed = JSON.parse(String(value)) as unknown;
-    const result = decisionArtifactCanonicalizesSchema.safeParse(parsed);
+    const result = sharedStateCanonicalizesSchema.safeParse(parsed);
 
     if (!result.success) {
       throw result.error;
@@ -160,15 +160,15 @@ function parseCanonicalizes(value: unknown): DecisionArtifactCanonicalizes {
 
     return uniqueCanonicalizes(result.data);
   } catch (error) {
-    throw new StorageError("Failed to parse decision artifact canonicalizes", {
+    throw new StorageError("Failed to parse shared state canonicalizes", {
       cause: error,
-      code: "DECISION_ARTIFACT_ROW_INVALID",
+      code: "SHARED_STATE_ROW_INVALID",
     });
   }
 }
 
-function mapEntryRow(row: Record<string, unknown>): DecisionArtifactEntry {
-  const parsed = decisionArtifactEntrySchema.safeParse({
+function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
+  const parsed = sharedStateEntrySchema.safeParse({
     id: row.id,
     audience_entity_id: row.audience_entity_id,
     kind: row.kind,
@@ -196,9 +196,9 @@ function mapEntryRow(row: Record<string, unknown>): DecisionArtifactEntry {
   });
 
   if (!parsed.success) {
-    throw new StorageError("Decision artifact entry row failed validation", {
+    throw new StorageError("Shared state entry row failed validation", {
       cause: parsed.error,
-      code: "DECISION_ARTIFACT_ROW_INVALID",
+      code: "SHARED_STATE_ROW_INVALID",
     });
   }
 
@@ -207,9 +207,9 @@ function mapEntryRow(row: Record<string, unknown>): DecisionArtifactEntry {
 
 function mapArtifactRow(
   row: Record<string, unknown>,
-  entries: readonly DecisionArtifactEntry[],
-): DecisionArtifact {
-  const parsed = decisionArtifactSchema.safeParse({
+  entries: readonly SharedStateEntry[],
+): SharedStateArtifact {
+  const parsed = sharedStateArtifactSchema.safeParse({
     audience_entity_id: row.audience_entity_id,
     record_version: Number(row.record_version ?? 1),
     created_at: Number(row.created_at),
@@ -226,19 +226,19 @@ function mapArtifactRow(
   });
 
   if (!parsed.success) {
-    throw new StorageError("Decision artifact row failed validation", {
+    throw new StorageError("Shared state row failed validation", {
       cause: parsed.error,
-      code: "DECISION_ARTIFACT_ROW_INVALID",
+      code: "SHARED_STATE_ROW_INVALID",
     });
   }
 
   return parsed.data;
 }
 
-export class DecisionArtifactRepository {
+export class SharedStateRepository {
   private readonly clock: Clock;
 
-  constructor(private readonly options: DecisionArtifactRepositoryOptions) {
+  constructor(private readonly options: SharedStateRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
   }
 
@@ -246,7 +246,7 @@ export class DecisionArtifactRepository {
     return this.options.db;
   }
 
-  private listEntries(audienceEntityId: EntityId): DecisionArtifactEntry[] {
+  private listEntries(audienceEntityId: EntityId): SharedStateEntry[] {
     const rows = this.db
       .prepare(
         `
@@ -265,7 +265,7 @@ export class DecisionArtifactRepository {
     return rows.map((row) => mapEntryRow(row));
   }
 
-  get(audienceEntityId: EntityId): DecisionArtifact | null {
+  get(audienceEntityId: EntityId): SharedStateArtifact | null {
     const row = this.db
       .prepare("SELECT * FROM decision_artifacts WHERE audience_entity_id = ?")
       .get(audienceEntityId) as Record<string, unknown> | undefined;
@@ -277,7 +277,7 @@ export class DecisionArtifactRepository {
     return mapArtifactRow(row, this.listEntries(audienceEntityId));
   }
 
-  private getEntry(id: DecisionArtifactEntryId, audienceEntityId: EntityId): DecisionArtifactEntry {
+  private getEntry(id: SharedStateEntryId, audienceEntityId: EntityId): SharedStateEntry {
     const row = this.db
       .prepare(
         `
@@ -289,8 +289,8 @@ export class DecisionArtifactRepository {
       .get(id, audienceEntityId) as Record<string, unknown> | undefined;
 
     if (row === undefined) {
-      throw new StorageError(`Unknown decision artifact entry id: ${id}`, {
-        code: "DECISION_ARTIFACT_ENTRY_NOT_FOUND",
+      throw new StorageError(`Unknown shared state entry id: ${id}`, {
+        code: "SHARED_STATE_ENTRY_NOT_FOUND",
       });
     }
 
@@ -323,7 +323,7 @@ export class DecisionArtifactRepository {
   }
 
   private bumpParent(input: {
-    current: DecisionArtifact;
+    current: SharedStateArtifact;
     expectedVersion: number;
     nowMs: number;
     lastCompiledAt: number | null;
@@ -357,7 +357,7 @@ export class DecisionArtifactRepository {
   }
 
   private updateCompileMarker(input: {
-    current: DecisionArtifact;
+    current: SharedStateArtifact;
     expectedVersion: number;
     nowMs: number;
     lastCompiledAt: number | null;
@@ -390,8 +390,8 @@ export class DecisionArtifactRepository {
     });
   }
 
-  private insertEntry(entry: DecisionArtifactEntry): void {
-    const parsed = decisionArtifactEntrySchema.parse(entry);
+  private insertEntry(entry: SharedStateEntry): void {
+    const parsed = sharedStateEntrySchema.parse(entry);
 
     this.db
       .prepare(
@@ -420,15 +420,15 @@ export class DecisionArtifactRepository {
   }
 
   private sourceTrustValidator(
-    override: DecisionArtifactSourceTrustValidator | undefined,
-  ): DecisionArtifactSourceTrustValidator {
-    return override ?? this.options.sourceTrustValidator ?? allowAllSourceTrustValidator;
+    override: SharedStateSourceTrustValidator | undefined,
+  ): SharedStateSourceTrustValidator {
+    return override ?? this.options.sourceTrustValidator ?? allowAllSharedStateSourceTrustValidator;
   }
 
   private assertTrustedSourceStreamIds(
     streamEntryIds: readonly StreamEntryId[],
     field: "provenance_stream_entry_ids" | "last_updated_stream_entry_ids",
-    validator: DecisionArtifactSourceTrustValidator,
+    validator: SharedStateSourceTrustValidator,
   ): void {
     for (const streamEntryId of streamEntryIds) {
       const trust = validator(streamEntryId);
@@ -438,9 +438,9 @@ export class DecisionArtifactRepository {
       }
 
       throw new StorageError(
-        `Decision artifact ${field} contains a non-source-eligible stream entry: ${streamEntryId}`,
+        `Shared state ${field} contains a non-source-eligible stream entry: ${streamEntryId}`,
         {
-          code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+          code: "SHARED_STATE_SOURCE_NOT_TRUSTED",
           cause: {
             streamEntryId,
             field,
@@ -453,10 +453,10 @@ export class DecisionArtifactRepository {
 
   private addEntry(
     audienceEntityId: EntityId,
-    operation: Omit<DecisionArtifactAddOperation, "type">,
+    operation: Omit<SharedStateAddOperation, "type">,
     nowMs: number,
-    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
-  ): DecisionArtifactEntry {
+    sourceTrustValidator: SharedStateSourceTrustValidator,
+  ): SharedStateEntry {
     const provenanceStreamEntryIds = uniqueStreamEntryIds([
       ...operation.provenance_stream_entry_ids,
     ]);
@@ -475,8 +475,8 @@ export class DecisionArtifactRepository {
       sourceTrustValidator,
     );
 
-    const entry = decisionArtifactEntrySchema.parse({
-      id: operation.id ?? createDecisionArtifactEntryId(),
+    const entry = sharedStateEntrySchema.parse({
+      id: operation.id ?? createSharedStateEntryId(),
       audience_entity_id: audienceEntityId,
       kind: operation.kind,
       text: operation.text,
@@ -496,9 +496,9 @@ export class DecisionArtifactRepository {
 
   private updateEntry(
     audienceEntityId: EntityId,
-    operation: DecisionArtifactUpdateOperation,
+    operation: SharedStateUpdateOperation,
     nowMs: number,
-    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
+    sourceTrustValidator: SharedStateSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
     const addProvenance = operation.add_provenance_stream_entry_ids ?? [];
@@ -521,7 +521,7 @@ export class DecisionArtifactRepository {
       sourceTrustValidator,
     );
 
-    const next = decisionArtifactEntrySchema.parse({
+    const next = sharedStateEntrySchema.parse({
       ...current,
       kind: operation.kind ?? current.kind,
       text: operation.text ?? current.text,
@@ -567,16 +567,16 @@ export class DecisionArtifactRepository {
 
   private supersedeEntry(
     audienceEntityId: EntityId,
-    operation: DecisionArtifactSupersedeOperation,
+    operation: SharedStateSupersedeOperation,
     nowMs: number,
-    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
+    sourceTrustValidator: SharedStateSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
-    const replacementId = operation.replacement.id ?? createDecisionArtifactEntryId();
+    const replacementId = operation.replacement.id ?? createSharedStateEntryId();
 
     if (replacementId === current.id) {
-      throw new StorageError("Decision artifact replacement id must differ from superseded id", {
-        code: "DECISION_ARTIFACT_INVALID_OPERATION",
+      throw new StorageError("Shared state replacement id must differ from superseded id", {
+        code: "SHARED_STATE_INVALID_OPERATION",
       });
     }
 
@@ -584,7 +584,7 @@ export class DecisionArtifactRepository {
       audienceEntityId,
       {
         ...operation.replacement,
-        id: parseDecisionArtifactEntryId(replacementId),
+        id: parseSharedStateEntryId(replacementId),
       },
       nowMs,
       sourceTrustValidator,
@@ -600,7 +600,7 @@ export class DecisionArtifactRepository {
       sourceTrustValidator,
     );
 
-    decisionArtifactEntrySchema.parse({
+    sharedStateEntrySchema.parse({
       ...current,
       superseded_by_id: replacement.id,
       last_updated_at: lastUpdatedAt,
@@ -626,7 +626,7 @@ export class DecisionArtifactRepository {
       );
   }
 
-  private pruneEntry(audienceEntityId: EntityId, operation: DecisionArtifactPruneOperation): void {
+  private pruneEntry(audienceEntityId: EntityId, operation: SharedStatePruneOperation): void {
     const result = this.db
       .prepare(
         `
@@ -637,17 +637,17 @@ export class DecisionArtifactRepository {
       .run(operation.id, audienceEntityId);
 
     if (result.changes === 0) {
-      throw new StorageError(`Unknown decision artifact entry id: ${operation.id}`, {
-        code: "DECISION_ARTIFACT_ENTRY_NOT_FOUND",
+      throw new StorageError(`Unknown shared state entry id: ${operation.id}`, {
+        code: "SHARED_STATE_ENTRY_NOT_FOUND",
       });
     }
   }
 
   upsert(
     audienceEntityId: EntityId,
-    operations: readonly DecisionArtifactOperation[],
-    options: DecisionArtifactUpsertOptions = {},
-  ): DecisionArtifact | null {
+    operations: readonly SharedStateOperation[],
+    options: SharedStateUpsertOptions = {},
+  ): SharedStateArtifact | null {
     const current = this.get(audienceEntityId);
 
     if (operations.length === 0) {

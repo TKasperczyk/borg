@@ -43,7 +43,7 @@ import { composeMigrations, openDatabase } from "../src/storage/sqlite/index.js"
 import { ABORTED_TURN_EVENT, type StreamEntry } from "../src/stream/index.js";
 import {
   createActionId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEntityId,
   createStreamEntryId,
 } from "../src/util/ids.js";
@@ -1087,7 +1087,7 @@ describe("MetricsCapture", () => {
           created_at: 1_200,
           updated_at: 1_200,
           completed_at: 1_200,
-          canonicalized_by_artifact_entry_id: createDecisionArtifactEntryId(),
+          canonicalized_by_artifact_entry_id: createSharedStateEntryId(),
         }),
       );
 
@@ -1144,7 +1144,7 @@ describe("MetricsCapture", () => {
         { kind: "manual" },
         undefined,
         {
-          canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+          canonicalizedByArtifactEntryId: createSharedStateEntryId(),
         },
       );
 

@@ -37,7 +37,7 @@ import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
-import type { DecisionArtifactRenderOptions, EvidenceLedger } from "../evidence-ledger/index.js";
+import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledger/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../participants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -211,5 +211,5 @@ export type DeliberatorOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   hostCapabilities?: string;
-  decisionArtifactRenderOptions?: DecisionArtifactRenderOptions;
+  sharedStateRenderOptions?: SharedStateRenderOptions;
 };

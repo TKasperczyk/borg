@@ -10,7 +10,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createActionId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEntityId,
   createStreamEntryId,
   type ActionId,
@@ -176,7 +176,7 @@ describe("ActionRepository", () => {
         description: "Complete Atlas rollout",
         state: "completed",
         completed_at: 1_000,
-        canonicalized_by_artifact_entry_id: createDecisionArtifactEntryId(),
+        canonicalized_by_artifact_entry_id: createSharedStateEntryId(),
       }),
       { creationSource: "reflector" },
     );

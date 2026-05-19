@@ -6,7 +6,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import {
   createGoalId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type EntityId,
   type GoalId,
   type StreamEntryId,
@@ -55,7 +55,7 @@ const GOAL_SELECT_COLUMNS = `
 `;
 
 export type GoalStatusUpdateOptions = IdentityCasOptions & {
-  canonicalizedByArtifactEntryId?: DecisionArtifactEntryId | null;
+  canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
 export class GoalsRepository {

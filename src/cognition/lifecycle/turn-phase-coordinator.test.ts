@@ -7,14 +7,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type {
-  DecisionArtifact,
-  DecisionArtifactEntry,
-  DecisionArtifactEntryKind,
+  SharedStateArtifact,
+  SharedStateEntry,
+  SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
 import {
   createActionId,
   createCommitmentId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEntityId,
   createGoalId,
   createOpenQuestionId,
@@ -23,26 +23,24 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import {
-  QUARANTINED_USER_ENTRY_EVENT,
-  StreamReader,
-  StreamWriter,
-} from "../../stream/index.js";
+import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, StreamWriter } from "../../stream/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import {
-  DECISION_ARTIFACT_TOOL_NAME,
-  findUnsettledDecisionArtifactReconciliation,
-} from "../decision-artifact/index.js";
+  SHARED_STATE_TOOL_NAME,
+  findUnsettledSharedStateReconciliation,
+} from "../shared-state/index.js";
 import type { ClosureLoopAssessment } from "../generation/closure-loop.js";
 import {
-  buildDecisionArtifactLedgerPromptContext,
+  buildSharedStateLedgerPromptContext,
   buildContradictionRoutingOverride,
-  shouldSkipDecisionArtifactCompile,
+  shouldSkipSharedStateCompile,
   TurnPhaseCoordinator,
 } from "./turn-phase-coordinator.js";
+import type { TurnPhaseCoordinatorOptions } from "./turn-phase-coordinator.js";
+import { compileSharedStateArtifactForEvidenceLedger } from "./turn-phase/retrieval-phase.js";
 
 const PROMISE_COMMITMENT_TYPE = "promise" as const;
 const RULE_COMMITMENT_TYPE = "rule" as const;
@@ -51,17 +49,17 @@ const BOUNDARY_COMMITMENT_TYPE = "boundary" as const;
 const DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY = "deployment_window";
 const RELEASE_FREEZE_DIRECTIVE_FAMILY = "release_freeze";
 
-function decisionArtifactEntry(input: {
-  audience: DecisionArtifact["audience_entity_id"];
-  kind: DecisionArtifactEntryKind;
+function sharedStateEntry(input: {
+  audience: SharedStateArtifact["audience_entity_id"];
+  kind: SharedStateEntryKind;
   source: StreamEntryId;
   index?: number;
-  canonicalizes?: DecisionArtifactEntry["canonicalizes"];
-}): DecisionArtifactEntry {
+  canonicalizes?: SharedStateEntry["canonicalizes"];
+}): SharedStateEntry {
   const index = input.index ?? 0;
 
   return {
-    id: createDecisionArtifactEntryId(),
+    id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
     kind: input.kind,
     text: `${input.kind} decision`,
@@ -81,10 +79,10 @@ function decisionArtifactEntry(input: {
   };
 }
 
-function decisionArtifact(input: {
-  entries?: readonly DecisionArtifactEntry[];
+function sharedStateArtifact(input: {
+  entries?: readonly SharedStateEntry[];
   lastCompiledStreamEntryId?: StreamEntryId | null;
-}): DecisionArtifact {
+}): SharedStateArtifact {
   const source = input.lastCompiledStreamEntryId ?? createStreamEntryId();
   const audience = input.entries?.[0]?.audience_entity_id ?? createEntityId();
 
@@ -243,23 +241,20 @@ function openQuestionsById(questions: ReadonlyArray<{ id: string }>) {
   };
 }
 
-async function compileDecisionArtifactForEvidenceLedgerForTest(
+async function compileSharedStateArtifactForEvidenceLedgerForTest(
   coordinator: TurnPhaseCoordinator,
   input: {
     input: Record<string, unknown>;
     ledger: EvidenceLedger;
     promptVisibleLedger: string;
   },
-): Promise<DecisionArtifact | null> {
-  return (
-    coordinator as unknown as {
-      compileDecisionArtifactForEvidenceLedger(input: {
-        input: Record<string, unknown>;
-        ledger: EvidenceLedger;
-        promptVisibleLedger: string;
-      }): Promise<DecisionArtifact | null>;
-    }
-  ).compileDecisionArtifactForEvidenceLedger(input);
+): Promise<SharedStateArtifact | null> {
+  return compileSharedStateArtifactForEvidenceLedger({
+    options: (coordinator as unknown as { options: TurnPhaseCoordinatorOptions }).options,
+    input: input.input as never,
+    ledger: input.ledger,
+    promptVisibleLedger: input.promptVisibleLedger,
+  });
 }
 
 describe("buildContradictionRoutingOverride", () => {
@@ -338,9 +333,7 @@ describe("buildContradictionRoutingOverride", () => {
       evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
     });
 
-    expect(firstOverride?.contradictionFingerprints).toEqual([
-      "open_question:oq_aaaaaaaaaaaaaaaa",
-    ]);
+    expect(firstOverride?.contradictionFingerprints).toEqual(["open_question:oq_aaaaaaaaaaaaaaaa"]);
     expect(secondOverride?.contradictionFingerprints).toEqual(
       firstOverride?.contradictionFingerprints,
     );
@@ -383,9 +376,9 @@ describe("buildContradictionRoutingOverride", () => {
   });
 });
 
-describe("shouldSkipDecisionArtifactCompile", () => {
+describe("shouldSkipSharedStateCompile", () => {
   it("skips compile with reason quarantined_current_turn on frame-anomaly turns", () => {
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: false,
       previousArtifact: null,
       perceptionMode: "problem_solving",
@@ -408,11 +401,11 @@ describe("shouldSkipDecisionArtifactCompile", () => {
   it("skips idle turns when the previous artifact has no active in-flight decisions", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
-    const previousArtifact = decisionArtifact({
-      entries: [decisionArtifactEntry({ audience, source, kind: "locked" })],
+    const previousArtifact = sharedStateArtifact({
+      entries: [sharedStateEntry({ audience, source, kind: "locked" })],
       lastCompiledStreamEntryId: source,
     });
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact,
       perceptionMode: "idle",
@@ -430,13 +423,13 @@ describe("shouldSkipDecisionArtifactCompile", () => {
   it("does not skip idle turns when a live decision is active", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
-    const previousArtifact = decisionArtifact({
-      entries: [decisionArtifactEntry({ audience, source, kind: "live" })],
+    const previousArtifact = sharedStateArtifact({
+      entries: [sharedStateEntry({ audience, source, kind: "live" })],
       lastCompiledStreamEntryId: source,
     });
 
     expect(
-      shouldSkipDecisionArtifactCompile({
+      shouldSkipSharedStateCompile({
         enabled: true,
         previousArtifact,
         perceptionMode: "idle",
@@ -448,7 +441,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
 
   it("does not skip closure-shaped turns that contain durable state deltas", () => {
     const source = createStreamEntryId();
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact: null,
       perceptionMode: "problem_solving",
@@ -470,7 +463,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
 
   it("does not skip legacy-shaped closure turns once the state-delta axis is present", () => {
     const source = createStreamEntryId();
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact: null,
       perceptionMode: "problem_solving",
@@ -492,7 +485,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
 
   it("skips pure closure-shaped turns with no durable state delta", () => {
     const source = createStreamEntryId();
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact: null,
       perceptionMode: "problem_solving",
@@ -528,7 +521,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
       sourceStreamEntryIds: [source],
       reason: "Quick question before bed: thoughts on the rollback?",
     };
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact: null,
       perceptionMode: "problem_solving",
@@ -548,9 +541,9 @@ describe("shouldSkipDecisionArtifactCompile", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
     const goalId = createGoalId();
-    const previousArtifact = decisionArtifact({
+    const previousArtifact = sharedStateArtifact({
       entries: [
-        decisionArtifactEntry({
+        sharedStateEntry({
           audience,
           source,
           kind: "locked",
@@ -564,7 +557,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
       ],
       lastCompiledStreamEntryId: source,
     });
-    const unsettledReconciliation = findUnsettledDecisionArtifactReconciliation({
+    const unsettledReconciliation = findUnsettledSharedStateReconciliation({
       previousArtifact,
       repositories: {
         goalsRepository: {
@@ -581,7 +574,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
         openQuestionsRepository: { get: () => null },
       },
     });
-    const skip = shouldSkipDecisionArtifactCompile({
+    const skip = shouldSkipSharedStateCompile({
       enabled: true,
       previousArtifact,
       perceptionMode: "idle",
@@ -609,18 +602,18 @@ describe("shouldSkipDecisionArtifactCompile", () => {
   });
 });
 
-describe("TurnPhaseCoordinator decision artifact prefilter", () => {
+describe("TurnPhaseCoordinator shared state prefilter", () => {
   it("skips the compiler on frame-anomaly turns and leaves artifact entries unchanged", async () => {
     const audience = createEntityId();
     const self = createEntityId();
     const trustedSource = createStreamEntryId();
     const current = createStreamEntryId();
-    const originalEntry = decisionArtifactEntry({
+    const originalEntry = sharedStateEntry({
       audience,
       source: trustedSource,
       kind: "locked",
     });
-    let artifact: DecisionArtifact | null = decisionArtifact({
+    let artifact: SharedStateArtifact | null = sharedStateArtifact({
       entries: [originalEntry],
       lastCompiledStreamEntryId: trustedSource,
     });
@@ -635,7 +628,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           tool_calls: [
             {
               id: "toolu_decision_patch",
-              name: DECISION_ARTIFACT_TOOL_NAME,
+              name: SHARED_STATE_TOOL_NAME,
               input: {
                 operations: [
                   {
@@ -654,7 +647,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     });
     const coordinator = new TurnPhaseCoordinator({
       config: DEFAULT_CONFIG,
-      decisionArtifactRepository: {
+      sharedStateRepository: {
         get: () => artifact,
         upsert: (
           _audienceEntityId: unknown,
@@ -676,14 +669,13 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
                   updated_at: metadata?.now ?? artifact.updated_at,
                   last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
                   last_compiled_stream_entry_id:
-                    metadata?.lastCompiledStreamEntryId ??
-                    artifact.last_compiled_stream_entry_id,
+                    metadata?.lastCompiledStreamEntryId ?? artifact.last_compiled_stream_entry_id,
                   entries:
                     operations.length === 0
                       ? artifact.entries
                       : [
                           ...artifact.entries,
-                          decisionArtifactEntry({
+                          sharedStateEntry({
                             audience,
                             source: trustedSource,
                             kind: "locked",
@@ -737,7 +729,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       }),
     ]);
 
-    await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+    await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
       input: {
         audienceEntityId: audience,
         isUserTurn: true,
@@ -790,9 +782,9 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     let goalUpdateCount = 0;
     let actionUpdateCount = 0;
     let openQuestionResolveCount = 0;
-    let artifact: DecisionArtifact | null = decisionArtifact({
+    let artifact: SharedStateArtifact | null = sharedStateArtifact({
       entries: [
-        decisionArtifactEntry({
+        sharedStateEntry({
           audience,
           source,
           kind: "locked",
@@ -817,7 +809,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           tool_calls: [
             {
               id: "toolu_decision_patch",
-              name: DECISION_ARTIFACT_TOOL_NAME,
+              name: SHARED_STATE_TOOL_NAME,
               input: { operations: [] },
             },
           ],
@@ -826,7 +818,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     });
     const coordinator = new TurnPhaseCoordinator({
       config: DEFAULT_CONFIG,
-      decisionArtifactRepository: {
+      sharedStateRepository: {
         get: () => artifact,
         upsert: (
           _audienceEntityId: unknown,
@@ -848,8 +840,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
                   updated_at: metadata?.now ?? artifact.updated_at,
                   last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
                   last_compiled_stream_entry_id:
-                    metadata?.lastCompiledStreamEntryId ??
-                    artifact.last_compiled_stream_entry_id,
+                    metadata?.lastCompiledStreamEntryId ?? artifact.last_compiled_stream_entry_id,
                 };
 
           return artifact;
@@ -919,7 +910,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "quarantined current turn" }),
     ]);
 
-    await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+    await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
       input: {
         audienceEntityId: audience,
         isUserTurn: true,
@@ -973,7 +964,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     const sessionId = createSessionId();
     const audience = createEntityId();
     const self = createEntityId();
-    let artifact: DecisionArtifact | null = null;
+    let artifact: SharedStateArtifact | null = null;
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
 
     try {
@@ -1018,7 +1009,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             tool_calls: [
               {
                 id: "toolu_decision_patch",
-                name: DECISION_ARTIFACT_TOOL_NAME,
+                name: SHARED_STATE_TOOL_NAME,
                 input: {
                   operations: [
                     {
@@ -1045,7 +1036,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             dataDir: tempDir,
             sessionId: session,
           }),
-        decisionArtifactRepository: {
+        sharedStateRepository: {
           get: () => artifact,
           upsert: (
             _audienceEntityId: unknown,
@@ -1067,13 +1058,15 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
               }
 
               nextEntries.push({
-                id: createDecisionArtifactEntryId(),
+                id: createSharedStateEntryId(),
                 audience_entity_id: audience,
-                kind: operation.kind as DecisionArtifactEntryKind,
+                kind: operation.kind as SharedStateEntryKind,
                 text: String(operation.text),
                 owner_entity_id: audience,
-                provenance_stream_entry_ids: operation.provenance_stream_entry_ids as StreamEntryId[],
-                last_updated_stream_entry_ids: operation.last_updated_stream_entry_ids as StreamEntryId[],
+                provenance_stream_entry_ids:
+                  operation.provenance_stream_entry_ids as StreamEntryId[],
+                last_updated_stream_entry_ids:
+                  operation.last_updated_stream_entry_ids as StreamEntryId[],
                 created_at: now,
                 last_updated_at: now,
                 superseded_by_id: null,
@@ -1146,7 +1139,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         }),
       ]);
 
-      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+      await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
         input: {
           sessionId,
           audienceEntityId: audience,
@@ -1171,7 +1164,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       });
 
       expect(llmClient.requests).toHaveLength(0);
-      expect((artifact as DecisionArtifact | null)?.entries ?? []).toHaveLength(0);
+      expect((artifact as SharedStateArtifact | null)?.entries ?? []).toHaveLength(0);
       expect(events).toContainEqual(
         expect.objectContaining({
           event: "decision_artifact_compile_skipped",
@@ -1190,7 +1183,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     const sessionId = createSessionId();
     const audience = createEntityId();
     const self = createEntityId();
-    let artifact: DecisionArtifact | null = null;
+    let artifact: SharedStateArtifact | null = null;
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
 
     try {
@@ -1241,7 +1234,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             tool_calls: [
               {
                 id: "toolu_decision_patch",
-                name: DECISION_ARTIFACT_TOOL_NAME,
+                name: SHARED_STATE_TOOL_NAME,
                 input: { operations: [] },
               },
             ],
@@ -1271,7 +1264,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             dataDir: tempDir,
             sessionId: session,
           }),
-        decisionArtifactRepository: {
+        sharedStateRepository: {
           get: () => artifact,
           upsert: (
             _audienceEntityId: unknown,
@@ -1345,7 +1338,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         }),
       ]);
 
-      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+      await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
         input: {
           sessionId,
           audienceEntityId: audience,
@@ -1379,7 +1372,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           }),
         }),
       );
-      expect((artifact as DecisionArtifact | null)?.last_compiled_stream_entry_id).toBe(
+      expect((artifact as SharedStateArtifact | null)?.last_compiled_stream_entry_id).toBe(
         quarantinedEntry.id,
       );
 
@@ -1401,7 +1394,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         }),
       ]);
 
-      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+      await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
         input: {
           sessionId,
           audienceEntityId: audience,
@@ -1457,9 +1450,9 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     const source = createStreamEntryId();
     const current = createStreamEntryId();
     const goalId = createGoalId();
-    let artifact: DecisionArtifact | null = decisionArtifact({
+    let artifact: SharedStateArtifact | null = sharedStateArtifact({
       entries: [
-        decisionArtifactEntry({
+        sharedStateEntry({
           audience,
           source,
           kind: "locked",
@@ -1484,7 +1477,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           tool_calls: [
             {
               id: "toolu_decision_patch",
-              name: DECISION_ARTIFACT_TOOL_NAME,
+              name: SHARED_STATE_TOOL_NAME,
               input: { operations: [] },
             },
           ],
@@ -1493,7 +1486,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     });
     const coordinator = new TurnPhaseCoordinator({
       config: DEFAULT_CONFIG,
-      decisionArtifactRepository: {
+      sharedStateRepository: {
         get: () => artifact,
         upsert: (
           _audienceEntityId: unknown,
@@ -1515,8 +1508,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
                   updated_at: metadata?.now ?? artifact.updated_at,
                   last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
                   last_compiled_stream_entry_id:
-                    metadata?.lastCompiledStreamEntryId ??
-                    artifact.last_compiled_stream_entry_id,
+                    metadata?.lastCompiledStreamEntryId ?? artifact.last_compiled_stream_entry_id,
                 };
 
           return artifact;
@@ -1565,15 +1557,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "closure-shaped turn" }),
     ]);
 
-    await (
-      coordinator as unknown as {
-        compileDecisionArtifactForEvidenceLedger(input: {
-          input: Record<string, unknown>;
-          ledger: EvidenceLedger;
-          promptVisibleLedger: string;
-        }): Promise<DecisionArtifact | null>;
-      }
-    ).compileDecisionArtifactForEvidenceLedger({
+    await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
       input: {
         audienceEntityId: audience,
         isUserTurn: true,
@@ -1671,7 +1655,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           tool_calls: [
             {
               id: "toolu_decision_patch",
-              name: DECISION_ARTIFACT_TOOL_NAME,
+              name: SHARED_STATE_TOOL_NAME,
               input: { operations: [] },
             },
           ],
@@ -1680,7 +1664,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     });
     const coordinator = new TurnPhaseCoordinator({
       config: DEFAULT_CONFIG,
-      decisionArtifactRepository: {
+      sharedStateRepository: {
         get: () => null,
         upsert: () => null,
       },
@@ -1690,12 +1674,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         updateStatus: () => ({}),
       },
       commitmentRepository: {
-        list: () => [
-          promiseCommitment,
-          ruleCommitment,
-          preferenceCommitment,
-          boundaryCommitment,
-        ],
+        list: () => [promiseCommitment, ruleCommitment, preferenceCommitment, boundaryCommitment],
         get: () => null,
       },
       actionRepository: {
@@ -1743,15 +1722,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       ledgerEntry({ streamEntryId: current, streamIndex: 0, text: "release closure turn" }),
     ]);
 
-    await (
-      coordinator as unknown as {
-        compileDecisionArtifactForEvidenceLedger(input: {
-          input: Record<string, unknown>;
-          ledger: EvidenceLedger;
-          promptVisibleLedger: string;
-        }): Promise<DecisionArtifact | null>;
-      }
-    ).compileDecisionArtifactForEvidenceLedger({
+    await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
       input: {
         audienceEntityId: audience,
         isUserTurn: true,
@@ -1865,7 +1836,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             tool_calls: [
               {
                 id: "toolu_decision_patch",
-                name: DECISION_ARTIFACT_TOOL_NAME,
+                name: SHARED_STATE_TOOL_NAME,
                 input: {
                   operations: [
                     {
@@ -1892,7 +1863,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
             dataDir: tempDir,
             sessionId,
           }),
-        decisionArtifactRepository: {
+        sharedStateRepository: {
           get: () => null,
           upsert: () => {
             upsertCount += 1;
@@ -1945,15 +1916,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         }),
       ]);
 
-      await (
-        coordinator as unknown as {
-          compileDecisionArtifactForEvidenceLedger(input: {
-            input: Record<string, unknown>;
-            ledger: EvidenceLedger;
-            promptVisibleLedger: string;
-          }): Promise<DecisionArtifact | null>;
-        }
-      ).compileDecisionArtifactForEvidenceLedger({
+      await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
         input: {
           sessionId: currentSession,
           audienceEntityId: audience,
@@ -2012,7 +1975,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
   });
 });
 
-describe("buildDecisionArtifactLedgerPromptContext", () => {
+describe("buildSharedStateLedgerPromptContext", () => {
   it("renders only delta ledger entries after the previous compile anchor", () => {
     const older = createStreamEntryId();
     const anchor = createStreamEntryId();
@@ -2026,9 +1989,9 @@ describe("buildDecisionArtifactLedgerPromptContext", () => {
       ledgerEntry({ streamEntryId: nextTwo, streamIndex: 3, text: "new transcript two" }),
       ledgerEntry({ streamEntryId: current, streamIndex: 4, text: "current transcript" }),
     ]);
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
-      previousArtifact: decisionArtifact({ lastCompiledStreamEntryId: anchor }),
+      previousArtifact: sharedStateArtifact({ lastCompiledStreamEntryId: anchor }),
       fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
       enabled: true,
       minTailPerSection: 3,
@@ -2051,9 +2014,9 @@ describe("buildDecisionArtifactLedgerPromptContext", () => {
       ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "current transcript" }),
     ]);
     const fullPromptVisibleLedger = renderEvidenceLedger(ledger) ?? "";
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
-      previousArtifact: decisionArtifact({ lastCompiledStreamEntryId: createStreamEntryId() }),
+      previousArtifact: sharedStateArtifact({ lastCompiledStreamEntryId: createStreamEntryId() }),
       fullPromptVisibleLedger,
       enabled: true,
       minTailPerSection: 3,
@@ -2117,9 +2080,9 @@ describe("buildDecisionArtifactLedgerPromptContext", () => {
       ],
     };
     const fullPromptVisibleLedger = renderEvidenceLedger(ledger) ?? "";
-    const context = buildDecisionArtifactLedgerPromptContext({
+    const context = buildSharedStateLedgerPromptContext({
       ledger,
-      previousArtifact: decisionArtifact({ lastCompiledStreamEntryId: anchor }),
+      previousArtifact: sharedStateArtifact({ lastCompiledStreamEntryId: anchor }),
       fullPromptVisibleLedger,
       enabled: true,
       minTailPerSection: 1,

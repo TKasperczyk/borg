@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import {
   actionIdHelpers,
-  decisionArtifactEntryIdHelpers,
+  sharedStateEntryIdHelpers,
   entityIdHelpers,
   episodeIdHelpers,
   streamEntryIdHelpers,
   type ActionId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type EntityId,
   type EpisodeId,
   type GoalId,
@@ -59,10 +59,10 @@ export const actionStreamEntryIdSchema = z
 
 export const actionCanonicalizedByArtifactEntryIdSchema = z
   .string()
-  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
-    message: "Invalid action canonicalized decision artifact entry id",
+  .refine((value) => sharedStateEntryIdHelpers.is(value), {
+    message: "Invalid action canonicalized shared state entry id",
   })
-  .transform((value) => value as DecisionArtifactEntryId);
+  .transform((value) => value as SharedStateEntryId);
 
 const actionRecordShape = z.object({
   id: actionIdSchema,

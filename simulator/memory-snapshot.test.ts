@@ -11,7 +11,7 @@ import { ManualClock } from "../src/util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createActionId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEpisodeId,
   type SessionId,
 } from "../src/util/ids.js";
@@ -560,7 +560,7 @@ describe("simulator memory snapshot", () => {
         { kind: "manual" },
         undefined,
         {
-          canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+          canonicalizedByArtifactEntryId: createSharedStateEntryId(),
         },
       );
       commitments.supersede(superseded.id, replacement.id);

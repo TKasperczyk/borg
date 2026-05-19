@@ -179,7 +179,7 @@ function createNoGoalPromotionResponse() {
   };
 }
 
-function createDecisionArtifactPatchResponse(input: { operations: unknown[] }) {
+function createSharedStateArtifactPatchResponse(input: { operations: unknown[] }) {
   return {
     text: "",
     input_tokens: 4,
@@ -1295,7 +1295,7 @@ describe("Borg", () => {
     }
   });
 
-  it("renders the decision artifact above the compact planner ledger", async () => {
+  it("renders the shared audience state above the compact planner ledger", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_000);
@@ -1337,7 +1337,7 @@ describe("Borg", () => {
 
     try {
       const internal = borgInternals<{
-        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+        deps: Pick<BorgDependencies, "sharedStateRepository" | "entityRepository">;
       }>(borg);
       const audience = internal.deps.entityRepository.resolve("Spain planning", {
         kind: "group",
@@ -1349,7 +1349,7 @@ describe("Borg", () => {
       });
       const artifactSource = createStreamEntryId();
 
-      internal.deps.decisionArtifactRepository.upsert(audience, [
+      internal.deps.sharedStateRepository.upsert(audience, [
         {
           type: "add",
           kind: "locked",
@@ -1372,9 +1372,9 @@ describe("Borg", () => {
       );
       const plannerSystem = requestSystemText(plannerRequest);
       const finalizerSystem = requestSystemText(finalizerRequest);
-      const artifactIndex = plannerSystem.indexOf("## 0. Canonical Decision State");
+      const artifactIndex = plannerSystem.indexOf("## 0. Shared Audience State");
       const compactLedgerIndex = plannerSystem.indexOf("CompactPlannerLedger");
-      const finalizerArtifactIndex = finalizerSystem.indexOf("## 0. Canonical Decision State");
+      const finalizerArtifactIndex = finalizerSystem.indexOf("## 0. Shared Audience State");
       const currentUserSectionIndex = finalizerSystem.indexOf("## 1. Current User Message");
 
       expect(result.path).toBe("system_2");
@@ -1437,7 +1437,7 @@ describe("Borg", () => {
 
     try {
       const internal = borgInternals<{
-        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+        deps: Pick<BorgDependencies, "sharedStateRepository" | "entityRepository">;
       }>(borg);
       const audience = internal.deps.entityRepository.resolve("Spain planning", {
         kind: "group",
@@ -1459,7 +1459,7 @@ describe("Borg", () => {
         content: `Locked note: ${lockedFinalBase}`,
       });
 
-      internal.deps.decisionArtifactRepository.upsert(audience, [
+      internal.deps.sharedStateRepository.upsert(audience, [
         {
           type: "add",
           kind: "locked",
@@ -1493,14 +1493,14 @@ describe("Borg", () => {
         plannerSystem,
         "borg_compact_planner_ledger",
       );
-      const finalizerArtifactStart = finalizerSystem.indexOf("## 0. Canonical Decision State");
+      const finalizerArtifactStart = finalizerSystem.indexOf("## 0. Shared Audience State");
       const finalizerCurrentUserStart = finalizerSystem.indexOf("## 1. Current User Message");
       const finalizerArtifactSection = finalizerSystem.slice(
         finalizerArtifactStart,
         finalizerCurrentUserStart,
       );
       const persistedLockedTexts =
-        internal.deps.decisionArtifactRepository
+        internal.deps.sharedStateRepository
           .get(audience)
           ?.entries.filter((entry) => entry.kind === "locked" && entry.superseded_by_id === null)
           .map((entry) => entry.text) ?? [];
@@ -1517,7 +1517,7 @@ describe("Borg", () => {
     }
   });
 
-  it("rejects decision artifact citations outside the prompt-visible ledger", async () => {
+  it("rejects shared state citations outside the prompt-visible ledger", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -1533,7 +1533,7 @@ describe("Borg", () => {
           substantive: true,
           reason: "planning turn",
         }),
-        createDecisionArtifactPatchResponse({
+        createSharedStateArtifactPatchResponse({
           operations: [
             {
               type: "add",
@@ -1573,7 +1573,7 @@ describe("Borg", () => {
 
     try {
       const internal = borgInternals<{
-        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+        deps: Pick<BorgDependencies, "sharedStateRepository" | "entityRepository">;
       }>(borg);
       const audience = internal.deps.entityRepository.resolve("Spain planning", {
         kind: "group",
@@ -1596,7 +1596,7 @@ describe("Borg", () => {
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
 
-      expect(internal.deps.decisionArtifactRepository.get(audience)).toBeNull();
+      expect(internal.deps.sharedStateRepository.get(audience)).toBeNull();
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
           event: "decision_artifact_compile_completed",

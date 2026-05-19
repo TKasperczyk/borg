@@ -43,7 +43,7 @@ const evidenceLedgerSectionOptionsSchema = z
     maxTokens: z.number().int().positive().optional(),
   })
   .strict();
-const decisionArtifactKindSoftCapsSchema = z
+const sharedStateKindSoftCapsSchema = z
   .object({
     locked: z.number().int().positive().default(24),
     live: z.number().int().positive().default(10),
@@ -53,7 +53,7 @@ const decisionArtifactKindSoftCapsSchema = z
   })
   .strict()
   .prefault({});
-const decisionArtifactRenderReservedSlotsSchema = z
+const sharedStateRenderReservedSlotsSchema = z
   .object({
     live: z.number().int().nonnegative().default(8),
     invalidated: z.number().int().nonnegative().default(3),
@@ -61,7 +61,7 @@ const decisionArtifactRenderReservedSlotsSchema = z
   })
   .strict()
   .prefault({});
-const decisionArtifactPreviousArtifactSummaryMaxEntriesSchema = z
+const sharedStatePreviousArtifactSummaryMaxEntriesSchema = z
   .object({
     locked: z.number().int().nonnegative().default(14),
     live: z.number().int().nonnegative().default(8),
@@ -71,38 +71,38 @@ const decisionArtifactPreviousArtifactSummaryMaxEntriesSchema = z
   })
   .strict()
   .prefault({});
-const decisionArtifactPreviousArtifactSummaryConfigSchema = z
+const sharedStatePreviousArtifactSummaryConfigSchema = z
   .object({
-    maxEntries: decisionArtifactPreviousArtifactSummaryMaxEntriesSchema,
+    maxEntries: sharedStatePreviousArtifactSummaryMaxEntriesSchema,
     summaryTokenBudget: z.number().int().positive().default(6_000),
     maxEntryTextTokens: z.number().int().positive().default(1_000),
   })
   .strict()
   .prefault({});
-const decisionArtifactCompilerPrefilterConfigSchema = z
+const sharedStateCompilerPrefilterConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
   })
   .strict()
   .prefault({});
-const decisionArtifactLedgerDeltaConfigSchema = z
+const sharedStateLedgerDeltaConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
     minTailPerSection: z.number().int().nonnegative().default(3),
   })
   .strict()
   .prefault({});
-const decisionArtifactConfigSchema = z
+const sharedStateConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
-    kindSoftCaps: decisionArtifactKindSoftCapsSchema,
+    kindSoftCaps: sharedStateKindSoftCapsSchema,
     renderMaxEntries: z.number().int().positive().default(30),
     renderMaxTokens: z.number().int().positive().default(3_000),
-    renderReservedSlots: decisionArtifactRenderReservedSlotsSchema,
+    renderReservedSlots: sharedStateRenderReservedSlotsSchema,
     renderLockedCap: z.number().int().nonnegative().default(14),
-    previousArtifactSummary: decisionArtifactPreviousArtifactSummaryConfigSchema,
-    compilerPrefilter: decisionArtifactCompilerPrefilterConfigSchema,
-    ledgerDelta: decisionArtifactLedgerDeltaConfigSchema,
+    previousArtifactSummary: sharedStatePreviousArtifactSummaryConfigSchema,
+    compilerPrefilter: sharedStateCompilerPrefilterConfigSchema,
+    ledgerDelta: sharedStateLedgerDeltaConfigSchema,
   })
   .strict()
   .prefault({});
@@ -119,7 +119,7 @@ const evidenceLedgerConfigSchema = z
     sectionOptions: z
       .partialRecord(evidenceLedgerSectionIdSchema, evidenceLedgerSectionOptionsSchema)
       .default({}),
-    decisionArtifact: decisionArtifactConfigSchema,
+    decisionArtifact: sharedStateConfigSchema,
   })
   .prefault({});
 const cognitionThinkingConfigSchema = z

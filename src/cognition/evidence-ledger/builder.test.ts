@@ -308,7 +308,8 @@ function actionList(records: readonly ActionRecord[]) {
               ? action.audience_entity_id === null
               : action.audience_entity_id === filter.audienceEntityId)) &&
           (filter.goalId === undefined || action.goal_id === filter.goalId) &&
-          (filter.openQuestionId === undefined || action.open_question_id === filter.openQuestionId),
+          (filter.openQuestionId === undefined ||
+            action.open_question_id === filter.openQuestionId),
       )
       .slice(0, filter.limit ?? records.length);
 }
@@ -380,10 +381,7 @@ function goalList(records: readonly GoalRecord[]) {
           }
         }
 
-        if (
-          options.ownerEntityId !== undefined &&
-          goal.owner_entity_id !== options.ownerEntityId
-        ) {
+        if (options.ownerEntityId !== undefined && goal.owner_entity_id !== options.ownerEntityId) {
           return false;
         }
 
@@ -891,10 +889,7 @@ describe("EvidenceLedgerBuilder", () => {
 
     const ledger = await attributionBuilder({
       tempDir,
-      entities: [
-        makeEntity(channel, "Engineering Channel", "group"),
-        makeEntity(alice, "Alice"),
-      ],
+      entities: [makeEntity(channel, "Engineering Channel", "group"), makeEntity(alice, "Alice")],
     }).build({
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-single-human-plus-group",
@@ -2670,7 +2665,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(userEntry.kind).toBe("user_msg");
   });
 
-  it("surfaces correcting current-session evidence ahead of stale semantic planning state", async () => {
+  it("surfaces correcting current-session evidence ahead of stale semantic shared state", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({

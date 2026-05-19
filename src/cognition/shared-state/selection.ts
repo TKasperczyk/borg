@@ -1,36 +1,36 @@
 import {
-  DECISION_ARTIFACT_ENTRY_KINDS,
-  type DecisionArtifact,
-  type DecisionArtifactEntry,
-  type DecisionArtifactEntryKind,
+  SHARED_STATE_ENTRY_KINDS,
+  type SharedStateArtifact,
+  type SharedStateEntry,
+  type SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
 
-export const DECISION_ARTIFACT_RESERVED_KINDS = [
+export const SHARED_STATE_RESERVED_KINDS = [
   "live",
   "invalidated",
   "pending",
-] as const satisfies readonly DecisionArtifactEntryKind[];
+] as const satisfies readonly SharedStateEntryKind[];
 
-export const DECISION_ARTIFACT_RENDER_FILL_ORDER = [
+export const SHARED_STATE_RENDER_FILL_ORDER = [
   "live",
   "pending",
   "invalidated",
   "locked",
   "tentative",
-] as const satisfies readonly DecisionArtifactEntryKind[];
+] as const satisfies readonly SharedStateEntryKind[];
 
-export type DecisionArtifactKindCounts = Record<DecisionArtifactEntryKind, number>;
+export type SharedStateKindCounts = Record<SharedStateEntryKind, number>;
 
-export function emptyDecisionArtifactKindCounts(): DecisionArtifactKindCounts {
+export function emptySharedStateKindCounts(): SharedStateKindCounts {
   return Object.fromEntries(
-    DECISION_ARTIFACT_ENTRY_KINDS.map((kind) => [kind, 0]),
-  ) as DecisionArtifactKindCounts;
+    SHARED_STATE_ENTRY_KINDS.map((kind) => [kind, 0]),
+  ) as SharedStateKindCounts;
 }
 
-export function countDecisionArtifactEntriesByKind(
-  entries: readonly DecisionArtifactEntry[],
-): DecisionArtifactKindCounts {
-  const counts = emptyDecisionArtifactKindCounts();
+export function countSharedStateArtifactEntriesByKind(
+  entries: readonly SharedStateEntry[],
+): SharedStateKindCounts {
+  const counts = emptySharedStateKindCounts();
 
   for (const entry of entries) {
     counts[entry.kind] += 1;
@@ -39,28 +39,28 @@ export function countDecisionArtifactEntriesByKind(
   return counts;
 }
 
-export function subtractDecisionArtifactKindCounts(
-  left: DecisionArtifactKindCounts,
-  right: DecisionArtifactKindCounts,
-): DecisionArtifactKindCounts {
-  const counts = emptyDecisionArtifactKindCounts();
+export function subtractSharedStateKindCounts(
+  left: SharedStateKindCounts,
+  right: SharedStateKindCounts,
+): SharedStateKindCounts {
+  const counts = emptySharedStateKindCounts();
 
-  for (const kind of DECISION_ARTIFACT_ENTRY_KINDS) {
+  for (const kind of SHARED_STATE_ENTRY_KINDS) {
     counts[kind] = Math.max(0, left[kind] - right[kind]);
   }
 
   return counts;
 }
 
-export function activeDecisionArtifactEntries(
-  artifact: DecisionArtifact | null | undefined,
-): DecisionArtifactEntry[] {
+export function activeSharedStateArtifactEntries(
+  artifact: SharedStateArtifact | null | undefined,
+): SharedStateEntry[] {
   return (artifact?.entries ?? []).filter((entry) => entry.superseded_by_id === null);
 }
 
-export function compareDecisionArtifactEntriesByRecency(
-  left: DecisionArtifactEntry,
-  right: DecisionArtifactEntry,
+export function compareSharedStateArtifactEntriesByRecency(
+  left: SharedStateEntry,
+  right: SharedStateEntry,
 ): number {
   return (
     right.last_updated_at - left.last_updated_at ||
@@ -70,28 +70,28 @@ export function compareDecisionArtifactEntriesByRecency(
   );
 }
 
-export function selectDecisionArtifactEntriesForRender(input: {
-  entries: readonly DecisionArtifactEntry[];
+export function selectSharedStateArtifactEntriesForRender(input: {
+  entries: readonly SharedStateEntry[];
   maxEntries: number;
-  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+  reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
-}): DecisionArtifactEntry[] {
-  const byKind = new Map<DecisionArtifactEntryKind, DecisionArtifactEntry[]>();
+}): SharedStateEntry[] {
+  const byKind = new Map<SharedStateEntryKind, SharedStateEntry[]>();
 
-  for (const kind of DECISION_ARTIFACT_ENTRY_KINDS) {
+  for (const kind of SHARED_STATE_ENTRY_KINDS) {
     byKind.set(
       kind,
       input.entries
         .filter((entry) => entry.kind === kind)
-        .sort(compareDecisionArtifactEntriesByRecency),
+        .sort(compareSharedStateArtifactEntriesByRecency),
     );
   }
 
-  const selected: DecisionArtifactEntry[] = [];
-  const selectedIds = new Set<DecisionArtifactEntry["id"]>();
-  const selectedByKind = emptyDecisionArtifactKindCounts();
+  const selected: SharedStateEntry[] = [];
+  const selectedIds = new Set<SharedStateEntry["id"]>();
+  const selectedByKind = emptySharedStateKindCounts();
 
-  const takeFromKind = (kind: DecisionArtifactEntryKind, limit: number): void => {
+  const takeFromKind = (kind: SharedStateEntryKind, limit: number): void => {
     if (limit <= 0 || selected.length >= input.maxEntries) {
       return;
     }
@@ -117,30 +117,28 @@ export function selectDecisionArtifactEntriesForRender(input: {
     }
   };
 
-  for (const kind of DECISION_ARTIFACT_RESERVED_KINDS) {
+  for (const kind of SHARED_STATE_RESERVED_KINDS) {
     takeFromKind(kind, input.reservedSlots[kind] ?? 0);
   }
 
-  for (const kind of DECISION_ARTIFACT_RENDER_FILL_ORDER) {
+  for (const kind of SHARED_STATE_RENDER_FILL_ORDER) {
     const categoryLimit = kind === "locked" ? input.lockedMaxEntries : Number.POSITIVE_INFINITY;
     takeFromKind(kind, categoryLimit);
   }
 
-  const orderByKind = new Map(
-    DECISION_ARTIFACT_RENDER_FILL_ORDER.map((kind, index) => [kind, index]),
-  );
+  const orderByKind = new Map(SHARED_STATE_RENDER_FILL_ORDER.map((kind, index) => [kind, index]));
 
   return selected.sort(
     (left, right) =>
       (orderByKind.get(left.kind) ?? Number.MAX_SAFE_INTEGER) -
         (orderByKind.get(right.kind) ?? Number.MAX_SAFE_INTEGER) ||
-      compareDecisionArtifactEntriesByRecency(left, right),
+      compareSharedStateArtifactEntriesByRecency(left, right),
   );
 }
 
 export function onePerKindTokenDropFloor(
-  kind: DecisionArtifactEntryKind,
-  activeCounts: DecisionArtifactKindCounts,
+  kind: SharedStateEntryKind,
+  activeCounts: SharedStateKindCounts,
 ): number {
   if (activeCounts[kind] <= 0) {
     return 0;
@@ -154,9 +152,9 @@ export function onePerKindTokenDropFloor(
 }
 
 export function reservedTokenDropMinimum(input: {
-  kind: DecisionArtifactEntryKind;
-  activeCounts: DecisionArtifactKindCounts;
-  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+  kind: SharedStateEntryKind;
+  activeCounts: SharedStateKindCounts;
+  reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
 }): number {
   const floor = onePerKindTokenDropFloor(input.kind, input.activeCounts);
   const reserved = input.reservedSlots[input.kind] ?? 0;
@@ -168,9 +166,9 @@ export function reservedTokenDropMinimum(input: {
   return Math.max(floor, Math.min(input.activeCounts[input.kind], Math.floor(reserved)));
 }
 
-export function latestDecisionArtifactDropIndex(
-  entries: readonly DecisionArtifactEntry[],
-  kind: DecisionArtifactEntryKind,
+export function latestSharedStateArtifactDropIndex(
+  entries: readonly SharedStateEntry[],
+  kind: SharedStateEntryKind,
 ): number | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     if (entries[index]?.kind === kind) {
@@ -182,12 +180,12 @@ export function latestDecisionArtifactDropIndex(
 }
 
 export function tokenDropIndexForKinds(input: {
-  entries: readonly DecisionArtifactEntry[];
-  kinds: readonly DecisionArtifactEntryKind[];
-  minimumForKind: (kind: DecisionArtifactEntryKind) => number;
+  entries: readonly SharedStateEntry[];
+  kinds: readonly SharedStateEntryKind[];
+  minimumForKind: (kind: SharedStateEntryKind) => number;
 }): number | null {
-  const renderedCounts = countDecisionArtifactEntriesByKind(input.entries);
-  let selectedKind: DecisionArtifactEntryKind | null = null;
+  const renderedCounts = countSharedStateArtifactEntriesByKind(input.entries);
+  let selectedKind: SharedStateEntryKind | null = null;
   let selectedSurplus = 0;
 
   for (const kind of input.kinds) {
@@ -201,13 +199,13 @@ export function tokenDropIndexForKinds(input: {
 
   return selectedKind === null
     ? null
-    : latestDecisionArtifactDropIndex(input.entries, selectedKind);
+    : latestSharedStateArtifactDropIndex(input.entries, selectedKind);
 }
 
 export function tokenDropIndex(input: {
-  entries: readonly DecisionArtifactEntry[];
-  activeCounts: DecisionArtifactKindCounts;
-  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+  entries: readonly SharedStateEntry[];
+  activeCounts: SharedStateKindCounts;
+  reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
 }): number {
   const dropTentative = tokenDropIndexForKinds({
@@ -232,7 +230,7 @@ export function tokenDropIndex(input: {
 
   const dropReservedAboveMinimum = tokenDropIndexForKinds({
     entries: input.entries,
-    kinds: DECISION_ARTIFACT_RESERVED_KINDS,
+    kinds: SHARED_STATE_RESERVED_KINDS,
     minimumForKind: (kind) =>
       reservedTokenDropMinimum({
         kind,
@@ -257,7 +255,7 @@ export function tokenDropIndex(input: {
 
   const dropReservedAboveFloor = tokenDropIndexForKinds({
     entries: input.entries,
-    kinds: DECISION_ARTIFACT_RESERVED_KINDS,
+    kinds: SHARED_STATE_RESERVED_KINDS,
     minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
   });
 
@@ -268,7 +266,7 @@ export function tokenDropIndex(input: {
   return (
     tokenDropIndexForKinds({
       entries: input.entries,
-      kinds: DECISION_ARTIFACT_ENTRY_KINDS,
+      kinds: SHARED_STATE_ENTRY_KINDS,
       minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
     }) ?? Math.max(0, input.entries.length - 1)
   );

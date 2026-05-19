@@ -11,14 +11,14 @@ import {
   EntityRepository,
   commitmentMigrations,
 } from "../../memory/commitments/index.js";
-import type { DecisionArtifact } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEntityId,
   createStreamEntryId,
 } from "../../util/ids.js";
@@ -397,7 +397,7 @@ function makeGranadaConstraintConflictLedger(): EvidenceLedger {
   const audience = createEntityId();
   const tuesdayStreamId = createStreamEntryId();
   const fridayStreamId = createStreamEntryId();
-  const artifact: DecisionArtifact = {
+  const artifact: SharedStateArtifact = {
     audience_entity_id: audience,
     record_version: 1,
     created_at: 1_000,
@@ -406,7 +406,7 @@ function makeGranadaConstraintConflictLedger(): EvidenceLedger {
     last_compiled_stream_entry_id: tuesdayStreamId,
     entries: [
       {
-        id: createDecisionArtifactEntryId(),
+        id: createSharedStateEntryId(),
         audience_entity_id: audience,
         kind: "locked",
         text: GRANADA_TUESDAY_CONSTRAINT,
@@ -428,7 +428,7 @@ function makeGranadaConstraintConflictLedger(): EvidenceLedger {
   };
 
   return {
-    decisionArtifact: artifact,
+    sharedState: artifact,
     sections: [
       {
         id: "current_user_message",
@@ -1543,13 +1543,13 @@ describe("deliberator", () => {
     const finalizerSystem = requestSystemText(finalizerRequest?.system);
 
     expect(plannerSystem).toContain("<borg_compact_planner_ledger>");
-    expect(plannerSystem).toContain("## 0. Canonical Decision State");
+    expect(plannerSystem).toContain("## 0. Shared Audience State");
     expect(plannerSystem).toContain(GRANADA_TUESDAY_CONSTRAINT);
     expect(plannerSystem).toContain(GRANADA_FRIDAY_CONSTRAINT);
     expect(plannerSystem.indexOf(GRANADA_TUESDAY_CONSTRAINT)).not.toBe(
       plannerSystem.indexOf(GRANADA_FRIDAY_CONSTRAINT),
     );
-    expect(finalizerSystem).toContain("## 0. Canonical Decision State");
+    expect(finalizerSystem).toContain("## 0. Shared Audience State");
     expect(finalizerSystem).toContain("## 2. Current-Session Transcript");
     expect(finalizerSystem).toContain(GRANADA_TUESDAY_CONSTRAINT);
     expect(finalizerSystem).toContain(GRANADA_FRIDAY_CONSTRAINT);

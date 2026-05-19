@@ -2,14 +2,14 @@ import { z } from "zod";
 
 import {
   entityIdHelpers,
-  decisionArtifactEntryIdHelpers,
+  sharedStateEntryIdHelpers,
   episodeIdHelpers,
   goalIdHelpers,
   streamEntryIdHelpers,
   traitIdHelpers,
   valueIdHelpers,
   type EntityId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type EpisodeId,
   type GoalId,
   type StreamEntryId,
@@ -58,10 +58,10 @@ export const goalSourceStreamEntryIdSchema = z
 
 export const goalCanonicalizedByArtifactEntryIdSchema = z
   .string()
-  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
-    message: "Invalid goal canonicalized decision artifact entry id",
+  .refine((value) => sharedStateEntryIdHelpers.is(value), {
+    message: "Invalid goal canonicalized shared state entry id",
   })
-  .transform((value) => value as DecisionArtifactEntryId);
+  .transform((value) => value as SharedStateEntryId);
 
 export const traitIdSchema = z
   .string()

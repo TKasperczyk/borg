@@ -20,13 +20,13 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
   createOpenQuestionId,
-  decisionArtifactEntryIdHelpers,
+  sharedStateEntryIdHelpers,
   entityIdHelpers,
   openQuestionIdHelpers,
   parseOpenQuestionId,
   streamEntryIdHelpers,
   type EntityId,
-  type DecisionArtifactEntryId,
+  type SharedStateEntryId,
   type GoalId,
   type OpenQuestionId,
   type StreamEntryId,
@@ -83,10 +83,10 @@ export const openQuestionResolutionStreamEntryIdSchema = z
 
 export const openQuestionResolvedByArtifactEntryIdSchema = z
   .string()
-  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
-    message: "Invalid open question resolved decision artifact entry id",
+  .refine((value) => sharedStateEntryIdHelpers.is(value), {
+    message: "Invalid open question resolved shared state entry id",
   })
-  .transform((value) => value as DecisionArtifactEntryId);
+  .transform((value) => value as SharedStateEntryId);
 
 export const openQuestionSchema = z
   .object({
@@ -183,7 +183,7 @@ export type OpenQuestionEmbeddingFailureDetails = {
 };
 
 export type OpenQuestionResolveOptions = IdentityCasOptions & {
-  resolvedByArtifactEntryId?: DecisionArtifactEntryId | null;
+  resolvedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
 export type OpenQuestionHandleLookupOptions = {

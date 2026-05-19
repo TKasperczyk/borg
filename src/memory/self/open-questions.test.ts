@@ -11,7 +11,7 @@ import { FixedClock } from "../../util/clock.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 import {
   createEntityId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEpisodeId,
   createSemanticNodeId,
   createStreamEntryId,
@@ -221,7 +221,7 @@ describe("OpenQuestionsRepository", () => {
     });
 
     try {
-      const artifactEntryId = createDecisionArtifactEntryId();
+      const artifactEntryId = createSharedStateEntryId();
       const streamEntryId = createStreamEntryId();
       const question = repository.add({
         question: "Is Granada locked?",

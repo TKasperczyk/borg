@@ -1,7 +1,7 @@
 import type { Migration } from "../../storage/sqlite/index.js";
 import { tableHasColumn, tableExists } from "../../storage/sqlite/migrations-utils.js";
 
-export const decisionArtifactMigrations = [
+export const sharedStateMigrations = [
   {
     id: 1,
     name: "decision_artifacts_initial_schema",

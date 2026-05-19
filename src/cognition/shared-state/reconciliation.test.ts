@@ -12,8 +12,8 @@ import {
   type CommitmentType,
 } from "../../memory/commitments/index.js";
 import type {
-  DecisionArtifact,
-  DecisionArtifactEntry,
+  SharedStateArtifact,
+  SharedStateEntry,
 } from "../../memory/decision-artifacts/index.js";
 import type {
   SemanticNodeCorrectionRef,
@@ -32,7 +32,7 @@ import { FixedClock, ManualClock } from "../../util/clock.js";
 import {
   createActionId,
   createCommitmentId,
-  createDecisionArtifactEntryId,
+  createSharedStateEntryId,
   createEntityId,
   createEpisodeId,
   createGoalId,
@@ -44,15 +44,15 @@ import {
 } from "../../util/ids.js";
 import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
 import {
-  findUnsettledDecisionArtifactReconciliation,
-  reconcileDecisionArtifactCanonicalizations,
+  findUnsettledSharedStateReconciliation,
+  reconcileSharedStateCanonicalizations,
   reconcileSemanticBeliefRevision,
   SemanticRevisionVerdictCache,
 } from "./reconciliation.js";
-import { DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
+import { SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 
-const CANONICALIZABLE_COMMITMENT_TYPES = DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES;
+const CANONICALIZABLE_COMMITMENT_TYPES = SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES;
 const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
   "preference",
   "boundary",
@@ -60,11 +60,11 @@ const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
 const PROMISE_COMMITMENT_TYPE = CANONICALIZABLE_COMMITMENT_TYPES[0];
 const PREFERENCE_COMMITMENT_TYPE = NON_CANONICALIZABLE_COMMITMENT_TYPES[0];
 
-function lockedEntry(overrides: Partial<DecisionArtifactEntry> = {}): DecisionArtifactEntry {
+function lockedEntry(overrides: Partial<SharedStateEntry> = {}): SharedStateEntry {
   const streamEntryId = createStreamEntryId();
 
   return {
-    id: overrides.id ?? createDecisionArtifactEntryId(),
+    id: overrides.id ?? createSharedStateEntryId(),
     audience_entity_id: overrides.audience_entity_id ?? createEntityId(),
     kind: overrides.kind ?? "locked",
     text: overrides.text ?? "Release freeze is locked for the workstream",
@@ -84,7 +84,7 @@ function lockedEntry(overrides: Partial<DecisionArtifactEntry> = {}): DecisionAr
   };
 }
 
-function decisionArtifact(entries: readonly DecisionArtifactEntry[]): DecisionArtifact {
+function sharedStateArtifact(entries: readonly SharedStateEntry[]): SharedStateArtifact {
   const audienceEntityId = entries[0]?.audience_entity_id ?? createEntityId();
 
   return {
@@ -158,7 +158,7 @@ function semanticRevisionResponse(input: {
   };
 }
 
-function semanticRevisionOperation(entry: DecisionArtifactEntry) {
+function semanticRevisionOperation(entry: SharedStateEntry) {
   return {
     type: "add" as const,
     id: entry.id,
@@ -297,7 +297,7 @@ function semanticStatusTransition(input: {
   };
 }
 
-describe("findUnsettledDecisionArtifactReconciliation", () => {
+describe("findUnsettledSharedStateReconciliation", () => {
   it("does not flag durable commitment canonicalizations as unsettled", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,
@@ -324,8 +324,8 @@ describe("findUnsettledDecisionArtifactReconciliation", () => {
         },
       });
 
-      const unsettledReconciliation = findUnsettledDecisionArtifactReconciliation({
-        previousArtifact: decisionArtifact([entry]),
+      const unsettledReconciliation = findUnsettledSharedStateReconciliation({
+        previousArtifact: sharedStateArtifact([entry]),
         repositories: {
           commitmentRepository,
         },
@@ -350,7 +350,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -412,7 +412,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const secondTrace = createTraceRecorder();
 
     await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -422,7 +422,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 3_000,
@@ -444,9 +444,9 @@ describe("reconcileSemanticBeliefRevision", () => {
         }),
       }),
     );
-    expect(
-      secondTrace.events.filter((event) => event.event === "llm_call_started"),
-    ).toHaveLength(0);
+    expect(secondTrace.events.filter((event) => event.event === "llm_call_started")).toHaveLength(
+      0,
+    );
     expect(secondTrace.events).toContainEqual(
       expect.objectContaining({
         event: "decision_artifact_semantic_revision_completed",
@@ -474,7 +474,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -483,7 +483,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([updatedEntry]),
+      artifact: sharedStateArtifact([updatedEntry]),
       operations: [semanticRevisionOperation(updatedEntry)],
       dependencies: deps.dependencies,
       nowMs: 3_000,
@@ -578,7 +578,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       };
 
       await reconcileSemanticBeliefRevision({
-        artifact: decisionArtifact([entry]),
+        artifact: sharedStateArtifact([entry]),
         operations: [semanticRevisionOperation(entry)],
         dependencies,
         nowMs: 2_000,
@@ -595,7 +595,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect(updatedNode?.updated_at).toBe(3_000);
 
       await reconcileSemanticBeliefRevision({
-        artifact: decisionArtifact([entry]),
+        artifact: sharedStateArtifact([entry]),
         operations: [semanticRevisionOperation(entry)],
         dependencies,
         nowMs: 3_000,
@@ -680,7 +680,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     };
 
     await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies,
       nowMs: 2_000,
@@ -691,7 +691,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     currentNode = supersededNode;
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies,
       nowMs: 3_000,
@@ -763,7 +763,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -795,7 +795,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -827,7 +827,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -861,7 +861,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
@@ -921,9 +921,8 @@ describe("reconcileSemanticBeliefRevision", () => {
       node,
       similarity: 0.99 - index * 0.01,
     }));
-    const searchByVector = vi.fn(
-      async (_embedding: Float32Array, options: { limit?: number }) =>
-        candidates.slice(0, options.limit ?? candidates.length),
+    const searchByVector = vi.fn(async (_embedding: Float32Array, options: { limit?: number }) =>
+      candidates.slice(0, options.limit ?? candidates.length),
     );
     const markSuperseded = vi.fn(
       async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
@@ -947,7 +946,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
@@ -1032,7 +1031,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
@@ -1115,7 +1114,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact([entry]),
+      artifact: sharedStateArtifact([entry]),
       operations: [semanticRevisionOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
@@ -1188,7 +1187,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const trace = createTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: decisionArtifact(entries),
+      artifact: sharedStateArtifact(entries),
       operations: entries.map((entry) => semanticRevisionOperation(entry)),
       dependencies: {
         semanticNodeRepository: {
@@ -1256,7 +1255,7 @@ describe("reconcileSemanticBeliefRevision", () => {
   });
 });
 
-describe("reconcileDecisionArtifactCanonicalizations", () => {
+describe("reconcileSharedStateCanonicalizations", () => {
   it("skips contaminated locked entries and traces the skipped canonicalization", () => {
     const quarantinedSource = createStreamEntryId();
     const goalId = createGoalId();
@@ -1290,7 +1289,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
     };
     const trace = createTraceRecorder();
 
-    const result = reconcileDecisionArtifactCanonicalizations({
+    const result = reconcileSharedStateCanonicalizations({
       entries: [entry],
       repositories: {
         goalsRepository,
@@ -1387,7 +1386,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       resolve: vi.fn(),
     };
 
-    const result = reconcileDecisionArtifactCanonicalizations({
+    const result = reconcileSharedStateCanonicalizations({
       entries: [entry],
       repositories: {
         goalsRepository,
@@ -1515,7 +1514,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
         },
       });
 
-      const result = reconcileDecisionArtifactCanonicalizations({
+      const result = reconcileSharedStateCanonicalizations({
         entries: [entry],
         repositories: {
           actionRepository,
@@ -1554,7 +1553,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       revoke: vi.fn(() => null),
     };
 
-    const result = reconcileDecisionArtifactCanonicalizations({
+    const result = reconcileSharedStateCanonicalizations({
       entries: [entry],
       repositories: {
         commitmentRepository,
@@ -1587,7 +1586,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       update: vi.fn(),
     };
 
-    const result = reconcileDecisionArtifactCanonicalizations({
+    const result = reconcileSharedStateCanonicalizations({
       entries: [entry],
       repositories: {
         actionRepository,
@@ -1634,7 +1633,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
         },
       });
 
-      const result = reconcileDecisionArtifactCanonicalizations({
+      const result = reconcileSharedStateCanonicalizations({
         entries: [entry],
         repositories: {
           commitmentRepository,
@@ -1688,7 +1687,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
           },
         });
 
-        const result = reconcileDecisionArtifactCanonicalizations({
+        const result = reconcileSharedStateCanonicalizations({
           entries: [entry],
           repositories: {
             commitmentRepository,
@@ -1752,7 +1751,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
           },
         });
 
-        const result = reconcileDecisionArtifactCanonicalizations({
+        const result = reconcileSharedStateCanonicalizations({
           entries: [entry],
           repositories: {
             commitmentRepository,
@@ -1796,7 +1795,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       updateStatus: vi.fn(),
     };
 
-    const result = reconcileDecisionArtifactCanonicalizations({
+    const result = reconcileSharedStateCanonicalizations({
       entries: [
         lockedEntry({
           kind: "live",

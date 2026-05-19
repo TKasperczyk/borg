@@ -1,24 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  DecisionArtifact,
-  DecisionArtifactEntry,
-  DecisionArtifactEntryKind,
+  SharedStateArtifact,
+  SharedStateEntry,
+  SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
-import {
-  createDecisionArtifactEntryId,
-  createEntityId,
-  createStreamEntryId,
-} from "../../util/ids.js";
+import { createSharedStateEntryId, createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
-  buildDecisionArtifactPromptSummary,
+  buildSharedStateArtifactPromptSummary,
   buildCompactPlannerLedgerPrompt,
   compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
   renderCompactPlannerLedger,
-  renderDecisionStateArtifact,
+  renderSharedStateArtifact,
   renderEvidenceLedger,
 } from "./renderer.js";
 
@@ -82,15 +78,15 @@ function syntheticEntry(input: {
   };
 }
 
-function decisionArtifactEntry(input: {
-  audience: DecisionArtifact["audience_entity_id"];
-  kind: DecisionArtifactEntryKind;
+function sharedStateEntry(input: {
+  audience: SharedStateArtifact["audience_entity_id"];
+  kind: SharedStateEntryKind;
   index: number;
-  source: DecisionArtifactEntry["provenance_stream_entry_ids"][number];
+  source: SharedStateEntry["provenance_stream_entry_ids"][number];
   text?: string;
-}): DecisionArtifactEntry {
+}): SharedStateEntry {
   return {
-    id: createDecisionArtifactEntryId(),
+    id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
     kind: input.kind,
     text: input.text ?? `${input.kind} decision ${input.index}`,
@@ -110,10 +106,10 @@ function decisionArtifactEntry(input: {
   };
 }
 
-function decisionArtifactWithEntries(
-  entries: readonly DecisionArtifactEntry[],
-  source: DecisionArtifactEntry["provenance_stream_entry_ids"][number],
-): DecisionArtifact {
+function sharedStateWithEntries(
+  entries: readonly SharedStateEntry[],
+  source: SharedStateEntry["provenance_stream_entry_ids"][number],
+): SharedStateArtifact {
   const audience = entries[0]?.audience_entity_id ?? createEntityId();
 
   return {
@@ -176,20 +172,20 @@ describe("renderEvidenceLedger", () => {
     );
   });
 
-  it("estimates tokens with configured decision artifact render options", () => {
+  it("estimates tokens with configured shared state render options", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
     const ledger = makeLedger();
     const entries = [
       ...Array.from({ length: 4 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "live", index }),
+        sharedStateEntry({ audience, source, kind: "live", index }),
       ),
       ...Array.from({ length: 20 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "locked", index: 100 + index }),
+        sharedStateEntry({ audience, source, kind: "locked", index: 100 + index }),
       ),
     ];
     const options = {
-      decisionArtifact: {
+      sharedState: {
         maxEntries: 5,
         reservedSlots: {
           live: 4,
@@ -198,7 +194,7 @@ describe("renderEvidenceLedger", () => {
       },
     };
 
-    ledger.decisionArtifact = decisionArtifactWithEntries(entries, source);
+    ledger.sharedState = sharedStateWithEntries(entries, source);
     const rendered = renderEvidenceLedger(ledger, options) ?? "";
 
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(4);
@@ -209,12 +205,12 @@ describe("renderEvidenceLedger", () => {
   });
 });
 
-describe("renderDecisionStateArtifact", () => {
+describe("renderSharedStateArtifact", () => {
   it("caps a single oversized locked entry", () => {
     const now = 1_000;
     const audience = createEntityId();
     const source = createStreamEntryId();
-    const artifact: DecisionArtifact = {
+    const artifact: SharedStateArtifact = {
       audience_entity_id: audience,
       record_version: 1,
       created_at: now,
@@ -223,7 +219,7 @@ describe("renderDecisionStateArtifact", () => {
       last_compiled_stream_entry_id: source,
       entries: [
         {
-          id: createDecisionArtifactEntryId(),
+          id: createSharedStateEntryId(),
           audience_entity_id: audience,
           kind: "locked",
           text: "oversized decision ".repeat(10_000),
@@ -243,7 +239,7 @@ describe("renderDecisionStateArtifact", () => {
         },
       ],
     };
-    const rendered = renderDecisionStateArtifact(artifact) ?? "";
+    const rendered = renderSharedStateArtifact(artifact) ?? "";
 
     expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(3_000);
     expect(rendered).toContain(" ... [text truncated]");
@@ -254,18 +250,17 @@ describe("renderDecisionStateArtifact", () => {
     const source = createStreamEntryId();
     const entries = [
       ...Array.from({ length: 20 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+        sharedStateEntry({ audience, source, kind: "locked", index }),
       ),
       ...Array.from({ length: 10 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "live", index: 100 + index }),
+        sharedStateEntry({ audience, source, kind: "live", index: 100 + index }),
       ),
     ];
-    const rendered =
-      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source)) ?? "";
+    const rendered = renderSharedStateArtifact(sharedStateWithEntries(entries, source)) ?? "";
 
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(10);
     expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(14);
-    expect(rendered).toContain("DecisionStateArtifact omitted:");
+    expect(rendered).toContain("SharedStateArtifact omitted:");
     expect(rendered).toContain("6 locked");
   });
 
@@ -274,20 +269,19 @@ describe("renderDecisionStateArtifact", () => {
     const source = createStreamEntryId();
     const entries = [
       ...Array.from({ length: 5 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "live", index }),
+        sharedStateEntry({ audience, source, kind: "live", index }),
       ),
       ...Array.from({ length: 5 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "invalidated", index: 100 + index }),
+        sharedStateEntry({ audience, source, kind: "invalidated", index: 100 + index }),
       ),
       ...Array.from({ length: 5 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "pending", index: 200 + index }),
+        sharedStateEntry({ audience, source, kind: "pending", index: 200 + index }),
       ),
       ...Array.from({ length: 25 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "locked", index: 300 + index }),
+        sharedStateEntry({ audience, source, kind: "locked", index: 300 + index }),
       ),
     ];
-    const rendered =
-      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source)) ?? "";
+    const rendered = renderSharedStateArtifact(sharedStateWithEntries(entries, source)) ?? "";
 
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(5);
     expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(5);
@@ -303,7 +297,7 @@ describe("renderDecisionStateArtifact", () => {
     const entries = (["live", "invalidated", "pending", "locked"] as const).flatMap(
       (kind, kindIndex) =>
         Array.from({ length: 3 }, (_, index) =>
-          decisionArtifactEntry({
+          sharedStateEntry({
             audience,
             source,
             kind,
@@ -313,7 +307,7 @@ describe("renderDecisionStateArtifact", () => {
         ),
     );
     const rendered =
-      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source), {
+      renderSharedStateArtifact(sharedStateWithEntries(entries, source), {
         maxEntries: 12,
         maxTokens: 1_800,
       }) ?? "";
@@ -322,7 +316,7 @@ describe("renderDecisionStateArtifact", () => {
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
     expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
     expect(rendered.match(/kind=pending/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(rendered).toContain("DecisionStateArtifact omitted:");
+    expect(rendered).toContain("SharedStateArtifact omitted:");
   });
 
   it("drops locked entries before collapsing the configured live reservation under token pressure", () => {
@@ -331,7 +325,7 @@ describe("renderDecisionStateArtifact", () => {
     const pressureText = "locked token pressure ".repeat(40);
     const entries = [
       ...Array.from({ length: 20 }, (_, index) =>
-        decisionArtifactEntry({
+        sharedStateEntry({
           audience,
           source,
           kind: "locked",
@@ -340,7 +334,7 @@ describe("renderDecisionStateArtifact", () => {
         }),
       ),
       ...Array.from({ length: 8 }, (_, index) =>
-        decisionArtifactEntry({
+        sharedStateEntry({
           audience,
           source,
           kind: "live",
@@ -350,7 +344,7 @@ describe("renderDecisionStateArtifact", () => {
       ),
     ];
     const rendered =
-      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source), {
+      renderSharedStateArtifact(sharedStateWithEntries(entries, source), {
         maxEntries: 22,
         maxTokens: 1_800,
         reservedSlots: {
@@ -367,31 +361,28 @@ describe("renderDecisionStateArtifact", () => {
   });
 });
 
-describe("buildDecisionArtifactPromptSummary", () => {
+describe("buildSharedStateArtifactPromptSummary", () => {
   it("caps active entries by kind while preserving the newest entries", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
     const entries = [
       ...Array.from({ length: 200 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+        sharedStateEntry({ audience, source, kind: "locked", index }),
       ),
       ...Array.from({ length: 50 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "live", index: 1_000 + index }),
+        sharedStateEntry({ audience, source, kind: "live", index: 1_000 + index }),
       ),
     ];
-    const summary = buildDecisionArtifactPromptSummary(
-      decisionArtifactWithEntries(entries, source),
-      {
-        maxEntries: {
-          locked: 12,
-          live: 6,
-          pending: 0,
-          invalidated: 0,
-          tentative: 0,
-        },
-        summaryTokenBudget: 6_000,
+    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries(entries, source), {
+      maxEntries: {
+        locked: 12,
+        live: 6,
+        pending: 0,
+        invalidated: 0,
+        tentative: 0,
       },
-    );
+      summaryTokenBudget: 6_000,
+    });
 
     expect(summary).not.toBeNull();
     expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(6_000);
@@ -421,25 +412,22 @@ describe("buildDecisionArtifactPromptSummary", () => {
     const source = createStreamEntryId();
     const entries = [
       ...Array.from({ length: 200 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+        sharedStateEntry({ audience, source, kind: "locked", index }),
       ),
       ...Array.from({ length: 3 }, (_, index) =>
-        decisionArtifactEntry({ audience, source, kind: "live", index: 1_000 + index }),
+        sharedStateEntry({ audience, source, kind: "live", index: 1_000 + index }),
       ),
     ];
-    const summary = buildDecisionArtifactPromptSummary(
-      decisionArtifactWithEntries(entries, source),
-      {
-        maxEntries: {
-          locked: 100,
-          live: 3,
-          pending: 0,
-          invalidated: 0,
-          tentative: 0,
-        },
-        summaryTokenBudget: 2_000,
+    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries(entries, source), {
+      maxEntries: {
+        locked: 100,
+        live: 3,
+        pending: 0,
+        invalidated: 0,
+        tentative: 0,
       },
-    );
+      summaryTokenBudget: 2_000,
+    });
 
     expect(summary).not.toBeNull();
     expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(2_000);
@@ -451,7 +439,7 @@ describe("buildDecisionArtifactPromptSummary", () => {
   it("trims recent superseded context before dropping a small live state", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
-    const live = decisionArtifactEntry({
+    const live = sharedStateEntry({
       audience,
       source,
       kind: "live",
@@ -459,7 +447,7 @@ describe("buildDecisionArtifactPromptSummary", () => {
       text: "Discussing whether Granada should stay at three nights.",
     });
     const superseded = {
-      ...decisionArtifactEntry({
+      ...sharedStateEntry({
         audience,
         source,
         kind: "locked",
@@ -468,8 +456,8 @@ describe("buildDecisionArtifactPromptSummary", () => {
       }),
       superseded_by_id: live.id,
     };
-    const summary = buildDecisionArtifactPromptSummary(
-      decisionArtifactWithEntries([superseded, live], source),
+    const summary = buildSharedStateArtifactPromptSummary(
+      sharedStateWithEntries([superseded, live], source),
       {
         maxEntries: {
           locked: 1,
@@ -492,27 +480,24 @@ describe("buildDecisionArtifactPromptSummary", () => {
   it("truncates a single oversized active entry instead of dropping it", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
-    const entry = decisionArtifactEntry({
+    const entry = sharedStateEntry({
       audience,
       source,
       kind: "locked",
       index: 0,
       text: "oversized locked decision ".repeat(2_000),
     });
-    const summary = buildDecisionArtifactPromptSummary(
-      decisionArtifactWithEntries([entry], source),
-      {
-        maxEntries: {
-          locked: 1,
-          live: 0,
-          pending: 0,
-          invalidated: 0,
-          tentative: 0,
-        },
-        summaryTokenBudget: 700,
-        maxEntryTextTokens: 80,
+    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries([entry], source), {
+      maxEntries: {
+        locked: 1,
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+        tentative: 0,
       },
-    );
+      summaryTokenBudget: 700,
+      maxEntryTextTokens: 80,
+    });
 
     expect(summary?.active_entries.locked).toHaveLength(1);
     expect(summary?.active_entries.locked[0]?.text).toContain(" ... [text truncated]");

@@ -1,19 +1,19 @@
 export {
-  renderDecisionStateArtifact,
-  summarizeDecisionStateArtifactRender,
-} from "../decision-artifact/render.js";
+  renderSharedStateArtifact,
+  summarizeSharedStateArtifactRender,
+} from "../shared-state/render.js";
 export type {
-  DecisionArtifactRenderOptions,
-  DecisionStateArtifactRenderSummary,
-} from "../decision-artifact/render.js";
-export type { DecisionArtifactKindCounts } from "../decision-artifact/selection.js";
-export { buildDecisionArtifactPromptSummary } from "../decision-artifact/summary.js";
+  SharedStateRenderOptions,
+  SharedStateArtifactRenderSummary,
+} from "../shared-state/render.js";
+export type { SharedStateKindCounts } from "../shared-state/selection.js";
+export { buildSharedStateArtifactPromptSummary } from "../shared-state/summary.js";
 export type {
-  DecisionArtifactPromptSummary,
-  DecisionArtifactPromptSummaryEntry,
-  DecisionArtifactPromptSummaryOptions,
-  DecisionArtifactPromptSummarySupersededEntry,
-} from "../decision-artifact/summary.js";
+  SharedStatePromptSummary,
+  SharedStatePromptSummaryEntry,
+  SharedStatePromptSummaryOptions,
+  SharedStatePromptSummarySupersededEntry,
+} from "../shared-state/summary.js";
 export {
   buildCompactPlannerLedgerPrompt,
   renderCompactPlannerLedger,
@@ -30,7 +30,4 @@ export type {
   EvidenceLedgerCompactionOptions,
   EvidenceLedgerCompactionTraceSummary,
 } from "./compaction.js";
-export {
-  estimateEvidenceLedgerPromptTokens,
-  renderEvidenceLedger,
-} from "./finalizer-ledger.js";
+export { estimateEvidenceLedgerPromptTokens, renderEvidenceLedger } from "./finalizer-ledger.js";
