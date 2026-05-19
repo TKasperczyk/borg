@@ -21,6 +21,7 @@ import {
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
   LOOP_BREAKING_POSTURE_SECTION,
+  PARTICIPATION_POSTURE_SECTION,
   TRUSTED_GUIDANCE_PREAMBLE,
   UNTRUSTED_DATA_PREAMBLE,
   VOICE_AND_POSTURE_SECTION,
@@ -579,6 +580,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(first.staticPrefix).toBe(second.staticPrefix);
     expect(first.staticPrefix).toContain(TRUSTED_GUIDANCE_PREAMBLE);
+    expect(first.staticPrefix).toContain(PARTICIPATION_POSTURE_SECTION);
     expect(first.staticPrefix.indexOf(TRUSTED_GUIDANCE_PREAMBLE)).toBeLessThan(
       first.staticPrefix.indexOf("<borg_host_capabilities>"),
     );
@@ -1100,20 +1102,37 @@ describe("buildBaseSystemPrompt", () => {
     expect(undefinedPrompt).not.toContain("<borg_affective_trajectory>");
   });
 
-  it("renders posture sections in fixed order: voice, epistemic, identity, loop-breaking, untrusted block", () => {
+  it("renders posture sections in fixed order: voice, epistemic, identity, participation, loop-breaking, untrusted block", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
     const voiceIdx = prompt.indexOf(VOICE_AND_POSTURE_SECTION);
     const epistemicIdx = prompt.indexOf(EPISTEMIC_POSTURE_SECTION);
     const identityIdx = prompt.indexOf(IDENTITY_POSTURE_SECTION);
+    const participationIdx = prompt.indexOf(PARTICIPATION_POSTURE_SECTION);
     const loopBreakingIdx = prompt.indexOf(LOOP_BREAKING_POSTURE_SECTION);
     const untrustedIdx = prompt.indexOf(UNTRUSTED_DATA_PREAMBLE);
 
     expect(voiceIdx).toBeGreaterThanOrEqual(0);
     expect(epistemicIdx).toBeGreaterThan(voiceIdx);
     expect(identityIdx).toBeGreaterThan(epistemicIdx);
-    expect(loopBreakingIdx).toBeGreaterThan(identityIdx);
+    expect(participationIdx).toBeGreaterThan(identityIdx);
+    expect(loopBreakingIdx).toBeGreaterThan(participationIdx);
     expect(untrustedIdx).toBeGreaterThan(loopBreakingIdx);
+  });
+
+  it("renders the participation-posture clause verbatim", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(makeContext(), PROMPT_OPTIONS);
+    const clause = [
+      "You participate as a conversational partner and memory keeper. You do not",
+      "have a body, attend physical events, occupy lodging, pay for things, or",
+      "appear in real-world headcounts. When users plan logistics or count",
+      "participants, you are not among them unless they have explicitly",
+      "established a fictional or game frame where you play a character.",
+    ].join("\n");
+
+    expect(prompt).toContain(`Participation posture:\n${clause}`);
+    expect(cacheable.staticPrefix).toContain(`Participation posture:\n${clause}`);
   });
 
   it("renders the identity-posture clauses verbatim", () => {
