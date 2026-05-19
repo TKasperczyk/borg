@@ -23,6 +23,7 @@ import {
   DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
 } from "../src/cognition/evidence-ledger/action-threads.js";
+import { decisionArtifactSemanticRevisionVerdictCacheSize } from "../src/cognition/decision-artifact/reconciliation.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
@@ -89,6 +90,7 @@ type MemoryBandMetricCounts = Pick<
 
 export type MetricsCaptureOptions = {
   tracePath?: string;
+  semanticRevisionVerdictCacheSize?: () => number;
 };
 
 export type MetricsCaptureContext = {
@@ -128,6 +130,7 @@ type DecisionArtifactSemanticRevisionMetricCounts = Pick<
   | "decision_artifact_semantic_revisions_completed_succeeded"
   | "decision_artifact_semantic_nodes_marked_superseded"
   | "decision_artifact_semantic_nodes_marked_contradicted"
+  | "decision_artifact_semantic_revision_cache_hits"
 >;
 
 type ReviewResolverMetricCounts = {
@@ -410,6 +413,9 @@ function decisionArtifactSemanticRevisionMetrics(
   const degraded = traceRecords.filter(
     (record) => record.event === "decision_artifact_semantic_revision_degraded",
   );
+  const cacheHits = traceRecords.filter(
+    (record) => record.event === "decision_artifact_semantic_revision_cache_hit",
+  );
   const attemptedArtifactEntryIds = new Set(
     [...completed, ...degraded].map((record, index) =>
       typeof record.artifact_entry_id === "string"
@@ -429,6 +435,7 @@ function decisionArtifactSemanticRevisionMetrics(
       (sum, record) => sum + traceNumber(record, "contradicted_count"),
       0,
     ),
+    decision_artifact_semantic_revision_cache_hits: cacheHits.length,
   };
 }
 
@@ -669,6 +676,7 @@ function identityValueStatus(value: unknown): unknown {
 export class MetricsCapture {
   private readonly filepath: string;
   private readonly tracePath?: string;
+  private readonly semanticRevisionVerdictCacheSize: () => number;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
   private previousTraceRecordCount = 0;
@@ -682,6 +690,8 @@ export class MetricsCapture {
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
     this.tracePath = options.tracePath;
+    this.semanticRevisionVerdictCacheSize =
+      options.semanticRevisionVerdictCacheSize ?? decisionArtifactSemanticRevisionVerdictCacheSize;
   }
 
   listHealthWarnings(): SimulatorHealthWarning[] {
@@ -1007,6 +1017,9 @@ export class MetricsCapture {
         decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
       decision_artifact_semantic_nodes_marked_contradicted:
         decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
+      decision_artifact_semantic_revision_cache_hits:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
+      decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
@@ -1146,6 +1159,9 @@ export class MetricsCapture {
         decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
       decision_artifact_semantic_nodes_marked_contradicted:
         decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
+      decision_artifact_semantic_revision_cache_hits:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
+      decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 

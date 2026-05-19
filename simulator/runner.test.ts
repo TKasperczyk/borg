@@ -419,6 +419,8 @@ function metricsRow(turnCounter: number): MetricsRow {
     decision_artifact_semantic_revisions_completed_succeeded: 0,
     decision_artifact_semantic_nodes_marked_superseded: 0,
     decision_artifact_semantic_nodes_marked_contradicted: 0,
+    decision_artifact_semantic_revision_cache_hits: 0,
+    decision_artifact_semantic_revision_cache_size: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }

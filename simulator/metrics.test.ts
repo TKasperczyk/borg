@@ -125,6 +125,8 @@ const TURN_METRICS_KEY_ORDER = [
   "decision_artifact_semantic_revisions_completed_succeeded",
   "decision_artifact_semantic_nodes_marked_superseded",
   "decision_artifact_semantic_nodes_marked_contradicted",
+  "decision_artifact_semantic_revision_cache_hits",
+  "decision_artifact_semantic_revision_cache_size",
   "overseer_due_on_suppressed_turn",
 ] as const;
 
@@ -367,6 +369,15 @@ describe("MetricsCapture", () => {
           artifact_entry_id: "dart_metrics_completed",
           reason: "mark failed after partial apply",
         },
+        {
+          ts: 194,
+          turnId: "turn-1",
+          event: "decision_artifact_semantic_revision_cache_hit",
+          artifact_entry_id: "dart_metrics_completed",
+          candidate_node_id: "node_metrics_cached",
+          cached_verdict: "keep",
+          age_turns: 1,
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join("\n"),
@@ -378,7 +389,10 @@ describe("MetricsCapture", () => {
       moodSessions: [],
       tailSessions: [],
     };
-    const capture = new MetricsCapture(metricsPath, { tracePath });
+    const capture = new MetricsCapture(metricsPath, {
+      tracePath,
+      semanticRevisionVerdictCacheSize: () => 17,
+    });
     const row = await capture.capture(
       fakeBorg({ suppressedSessions: [otherSessionId] }, observed),
       "turn-1",
@@ -416,6 +430,8 @@ describe("MetricsCapture", () => {
     expect(row.decision_artifact_semantic_revisions_completed_succeeded).toBe(1);
     expect(row.decision_artifact_semantic_nodes_marked_superseded).toBe(2);
     expect(row.decision_artifact_semantic_nodes_marked_contradicted).toBe(1);
+    expect(row.decision_artifact_semantic_revision_cache_hits).toBe(1);
+    expect(row.decision_artifact_semantic_revision_cache_size).toBe(17);
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);

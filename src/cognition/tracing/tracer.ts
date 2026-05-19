@@ -27,6 +27,7 @@ export type TurnTraceEventName =
   | "decision_artifact_reconciliation_completed"
   | "decision_artifact_reconciliation_skipped_contaminated_entry"
   | "decision_artifact_semantic_revision_completed"
+  | "decision_artifact_semantic_revision_cache_hit"
   | "decision_artifact_semantic_revision_degraded"
   | "planner_compact_ledger_built"
   | "contradiction_routing_classified"

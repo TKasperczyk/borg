@@ -2619,6 +2619,7 @@ export class TurnPhaseCoordinator {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.input.turnId,
+      turnCounter: input.input.workingMemory?.turn_counter,
       lifecycle: {
         maxActiveEntries: decisionArtifactConfig.maxActiveEntries,
         kindSoftCaps: decisionArtifactConfig.kindSoftCaps,

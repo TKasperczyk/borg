@@ -106,6 +106,8 @@ export type MetricsRow = {
   decision_artifact_semantic_revisions_completed_succeeded: number;
   decision_artifact_semantic_nodes_marked_superseded: number;
   decision_artifact_semantic_nodes_marked_contradicted: number;
+  decision_artifact_semantic_revision_cache_hits: number;
+  decision_artifact_semantic_revision_cache_size: number;
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;

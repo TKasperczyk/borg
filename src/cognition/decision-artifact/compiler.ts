@@ -286,6 +286,7 @@ export type CompileDecisionArtifactInput = {
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
+  turnCounter?: number;
   lifecycle?: DecisionArtifactLifecycleOptions;
   renderOptions?: DecisionArtifactRenderOptions;
   previousArtifactSummaryOptions?: DecisionArtifactPromptSummaryOptions;
@@ -2237,6 +2238,7 @@ export async function compileDecisionArtifact(
       sourceTrustValidator: input.sourceTrustValidator,
       tracer: input.tracer,
       turnId: input.turnId,
+      turnCounter: input.turnCounter,
     });
     mergeSemanticBeliefRevisionResult(reconciliationResult, semanticReconciliationResult);
 
@@ -2298,6 +2300,7 @@ export async function compileDecisionArtifact(
       sourceTrustValidator: input.sourceTrustValidator,
       tracer: input.tracer,
       turnId: input.turnId,
+      turnCounter: input.turnCounter,
     });
     mergeSemanticBeliefRevisionResult(reconciliationResult, semanticReconciliationResult);
 
