@@ -364,6 +364,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     action_record_count_committed_to_do: 0,
     action_record_count_canonicalized: 0,
     action_record_count_active: 0,
+    borg_owned_active_actions: 0,
+    participant_owned_active_actions: 0,
+    group_owned_active_actions: 0,
     action_record_creation_source_per_turn: {
       extractor: 0,
       reflector: 0,
@@ -378,6 +381,10 @@ function metricsRow(turnCounter: number): MetricsRow {
     action_candidate_rejected_classification: 0,
     action_persistence_dedup_skipped_embedding: 0,
     action_persistence_dedup_degraded: 0,
+    actions_closed_by_terminal_emission: 0,
+    actions_rejected_capability: 0,
+    actions_canonicalized: 0,
+    actions_completed_via_canonicalization: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
     commitment_count_superseded: 0,
@@ -415,6 +422,7 @@ function metricsRow(turnCounter: number): MetricsRow {
       durable_borg_goal: 0,
       one_off: 0,
       not_borg_responsibility: 0,
+      impossible_for_borg_without_capability: 0,
       already_represented: 0,
       none: 0,
       invalid_classification: 0,
@@ -2095,6 +2103,54 @@ describe("SimulatorRunner", () => {
       endReason: "run_complete",
     });
     expect(report.suppressionEvents).toEqual([]);
+  });
+
+  it("ends simulator sessions before starting the next session", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const persona = fakePersonaSession(["first persona turn", "second persona turn"]);
+    const chatSessionIds: SessionId[] = [];
+    const endSession = vi.fn();
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue({
+      ...fakeSimulatorBorg(),
+      endSession,
+    } as unknown as Borg);
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      const sessionId = options.sessionId as SessionId;
+      chatSessionIds.push(sessionId);
+      const emitted = chatSessionIds.length > 1;
+
+      return chatResult({
+        response: emitted ? "Borg replied." : "",
+        emitted,
+        turnId: `turn-end-session-${chatSessionIds.length}`,
+        sessionId,
+        suppressionReason: "finalizer_no_output",
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-end-session-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 2,
+      checkEvery: 999,
+      maxSessions: 3,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(report.sessions).toHaveLength(2);
+    expect(endSession).toHaveBeenCalledTimes(2);
+    expect(endSession).toHaveBeenNthCalledWith(1, chatSessionIds[0]);
+    expect(endSession).toHaveBeenNthCalledWith(2, chatSessionIds[1]);
+    expect(persona.startNewSession).toHaveBeenCalledTimes(1);
+    expect(endSession.mock.invocationCallOrder[0]).toBeLessThan(
+      persona.startNewSession.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
   });
 
   it("rotates sessions when Borg suppresses a turn and stops at maxSessions", async () => {

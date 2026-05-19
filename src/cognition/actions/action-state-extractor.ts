@@ -13,6 +13,7 @@ import {
   actionEntityIdSchema,
   actionActorSchema,
   type ActionRecord,
+  type ActionRecordPatch,
   type ActionRepository,
   type ActionState,
 } from "../../memory/actions/index.js";
@@ -39,6 +40,7 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "considering",
   "committed_to_do",
   "scheduled",
+  "unknown",
 ];
 
 export const ACTION_CANDIDATE_CLASSIFICATIONS = [
@@ -178,6 +180,7 @@ type ActionStateParseResult = {
 type EmbeddedActionVector = {
   actionId: ActionId;
   vector: Float32Array;
+  record: ActionRecord;
 };
 type ActionEmbeddingDedupState = {
   activeVectors: EmbeddedActionVector[];
@@ -197,7 +200,8 @@ export type ActionStateExtractorDegradedReason =
 export type ActionStateExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
-  actionRepository?: Pick<ActionRepository, "add"> & Partial<Pick<ActionRepository, "list">>;
+  actionRepository?: Pick<ActionRepository, "add"> &
+    Partial<Pick<ActionRepository, "list" | "update">>;
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -530,6 +534,18 @@ function zeroActionStateCounts(): Record<ActionState, number> {
   >;
 }
 
+function isTerminalEmissionState(state: ActionState): state is "completed" | "not_done" {
+  return state === "completed" || state === "not_done";
+}
+
+function isActiveTerminalTransitionTarget(state: ActionState): boolean {
+  return (ACTIVE_ACTION_STATES as readonly ActionState[]).includes(state);
+}
+
+function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[]): T[] {
+  return [...new Set([...left, ...right])];
+}
+
 function traceExtractorCompleted(options: {
   tracer?: TurnTracer;
   turnId?: string;
@@ -542,6 +558,7 @@ function traceExtractorCompleted(options: {
   rejectedCandidates?: readonly ActionCandidateRejected[];
   dedupSkippedEmbedding?: number;
   dedupDegraded?: number;
+  terminalEmissionClosures?: number;
   degraded: boolean;
   fatalReason?: ActionStateExtractorDegradedReason;
 }): void {
@@ -590,6 +607,7 @@ function traceExtractorCompleted(options: {
     rejected_invalid_enum: classificationCounts.invalid_classification,
     action_persistence_dedup_skipped_embedding: options.dedupSkippedEmbedding ?? 0,
     action_persistence_dedup_degraded: options.dedupDegraded ?? 0,
+    actions_closed_by_terminal_emission: options.terminalEmissionClosures ?? 0,
     degraded: options.degraded,
     ...(options.fatalReason === undefined ? {} : { fatal_reason: options.fatalReason }),
   });
@@ -808,6 +826,7 @@ export class ActionStateExtractor {
     let degraded = false;
     let dedupSkippedEmbedding = 0;
     let dedupDegraded = 0;
+    let terminalEmissionClosures = 0;
     const nowMs = this.clock.now();
     const dedupStates = new Map<string, ActionEmbeddingDedupState | null>();
 
@@ -844,7 +863,7 @@ export class ActionStateExtractor {
         const state = {
           activeVectors: activeActions.flatMap((action, index) => {
             const vector = embeddings[index];
-            return vector === undefined ? [] : [{ actionId: action.id, vector }];
+            return vector === undefined ? [] : [{ actionId: action.id, vector, record: action }];
           }),
           acceptedVectors: [],
         } satisfies ActionEmbeddingDedupState;
@@ -905,7 +924,8 @@ export class ActionStateExtractor {
         }
 
         if (candidateVector !== null) {
-          let bestMatch: { actionId: ActionId; similarity: number } | null = null;
+          let bestMatch: { actionId: ActionId; similarity: number; record: ActionRecord } | null =
+            null;
 
           for (const existing of [...dedupState.activeVectors, ...dedupState.acceptedVectors]) {
             const similarity = cosineSimilarity(candidateVector, existing.vector);
@@ -917,34 +937,90 @@ export class ActionStateExtractor {
               bestMatch = {
                 actionId: existing.actionId,
                 similarity,
+                record: existing.record,
               };
             }
           }
 
           if (bestMatch !== null) {
-            const rejection = rejectedCandidate({
-              candidateIndex: parsedCandidate.candidateIndex,
-              classification: "concrete_action",
-              description: record.description,
-              reason: "embedding_dedup",
-            });
+            let persistTerminalWithoutUpdate = false;
+            if (
+              isTerminalEmissionState(record.state) &&
+              isActiveTerminalTransitionTarget(bestMatch.record.state)
+            ) {
+              if (this.options.actionRepository.update === undefined) {
+                // Repository fakes that only support add/list cannot retire the predecessor;
+                // fall through so the terminal evidence is still persisted.
+                persistTerminalWithoutUpdate = true;
+              } else {
+                const patch = {
+                  state: record.state,
+                  confidence: Math.max(bestMatch.record.confidence, record.confidence),
+                  provenance_episode_ids: mergeUniqueIds(
+                    bestMatch.record.provenance_episode_ids,
+                    record.provenance_episode_ids,
+                  ),
+                  provenance_stream_entry_ids: mergeUniqueIds(
+                    bestMatch.record.provenance_stream_entry_ids,
+                    record.provenance_stream_entry_ids,
+                  ),
+                  updated_at: nowMs,
+                  ...stateTimestampPatch(record.state, nowMs),
+                } satisfies ActionRecordPatch;
 
-            dedupSkippedEmbedding += 1;
-            incrementSkippedReason(skippedReasons, "embedding_dedup");
-            incrementSkippedCandidate(
-              skippedCandidates,
-              parsedCandidate.candidateIndex,
-              "embedding_dedup",
-            );
-            rejectedCandidates.push(rejection);
-            traceDedupSkippedEmbedding({
-              tracer: this.options.tracer,
-              turnId: this.options.turnId,
-              candidate: rejection,
-              matchedActionId: bestMatch.actionId,
-              similarity: bestMatch.similarity,
-            });
-            continue;
+                try {
+                  this.options.actionRepository.update(bestMatch.actionId, patch);
+                  Object.assign(bestMatch.record, patch);
+                  terminalEmissionClosures += 1;
+                  traceTerminalEmissionClosure({
+                    tracer: this.options.tracer,
+                    turnId: this.options.turnId,
+                    candidateIndex: parsedCandidate.candidateIndex,
+                    matchedActionId: bestMatch.actionId,
+                    terminalState: record.state,
+                    description: record.description,
+                    similarity: bestMatch.similarity,
+                  });
+                  continue;
+                } catch (error) {
+                  degraded = true;
+                  incrementSkippedReason(skippedReasons, "repository_failed");
+                  incrementSkippedCandidate(
+                    skippedCandidates,
+                    parsedCandidate.candidateIndex,
+                    "repository_failed",
+                  );
+                  await this.degraded("repository_failed", error);
+                  continue;
+                }
+              }
+            }
+
+            if (!persistTerminalWithoutUpdate && bestMatch.record.state !== "unknown") {
+              const rejection = rejectedCandidate({
+                candidateIndex: parsedCandidate.candidateIndex,
+                classification: "concrete_action",
+                description: record.description,
+                reason: "embedding_dedup",
+              });
+
+              dedupSkippedEmbedding += 1;
+              incrementSkippedReason(skippedReasons, "embedding_dedup");
+              incrementSkippedCandidate(
+                skippedCandidates,
+                parsedCandidate.candidateIndex,
+                "embedding_dedup",
+              );
+              rejectedCandidates.push(rejection);
+              traceDedupSkippedEmbedding({
+                tracer: this.options.tracer,
+                turnId: this.options.turnId,
+                candidate: rejection,
+                matchedActionId: bestMatch.actionId,
+                similarity: bestMatch.similarity,
+              });
+              continue;
+            }
           }
         }
       }
@@ -956,6 +1032,7 @@ export class ActionStateExtractor {
           dedupState.acceptedVectors.push({
             actionId: record.id,
             vector: candidateVector,
+            record,
           });
         }
       } catch (error) {
@@ -982,11 +1059,35 @@ export class ActionStateExtractor {
       rejectedCandidates,
       dedupSkippedEmbedding,
       dedupDegraded,
+      terminalEmissionClosures,
       degraded,
     });
 
     return persisted;
   }
+}
+
+function traceTerminalEmissionClosure(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  candidateIndex: number;
+  matchedActionId: ActionId;
+  terminalState: "completed" | "not_done";
+  description: string;
+  similarity: number;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("action_closed_by_terminal_emission", {
+    turnId: options.turnId,
+    action_id: options.matchedActionId,
+    candidate_index: options.candidateIndex,
+    terminal_state: options.terminalState,
+    description_excerpt: descriptionExcerpt(options.description),
+    similarity: options.similarity,
+  });
 }
 
 export { ACTION_STATE_TOOL_NAME };

@@ -54,6 +54,7 @@ export type TurnTraceEventName =
   | "action_candidate_classification_rejected"
   | "action_persistence_dedup_skipped_embedding"
   | "action_persistence_dedup_degraded"
+  | "action_closed_by_terminal_emission"
   | "action_state_extractor_completed"
   | "action_state_extractor_degraded"
   | "action_duplicate_pressure_observed"
@@ -94,6 +95,7 @@ export type TurnTraceEventName =
   | "internal_identifier_guard"
   | "closure_pressure_audit_inconsistent"
   | "reflection_emitted"
+  | "session_ended"
   | "turn_aborted";
 
 export type TurnTraceData = {

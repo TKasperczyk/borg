@@ -81,12 +81,19 @@ const TURN_METRICS_KEY_ORDER = [
   "action_record_count_committed_to_do",
   "action_record_count_canonicalized",
   "action_record_count_active",
+  "borg_owned_active_actions",
+  "participant_owned_active_actions",
+  "group_owned_active_actions",
   "action_record_creation_source_per_turn",
   "action_record_creation_count_this_turn",
   "action_candidate_classifications_per_turn",
   "action_candidate_rejected_classification",
   "action_persistence_dedup_skipped_embedding",
   "action_persistence_dedup_degraded",
+  "actions_closed_by_terminal_emission",
+  "actions_rejected_capability",
+  "actions_canonicalized",
+  "actions_completed_via_canonicalization",
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_superseded",
@@ -235,6 +242,7 @@ function fakeBorg(
       countCompletedSince: () => 0,
       latestCompletedAt: () => null,
       listCompletedIds: () => [],
+      list: () => [],
     },
     self: {
       openQuestions: {
@@ -471,6 +479,7 @@ describe("MetricsCapture", () => {
             conversational_acknowledgment: 1,
             decision_or_preference: 0,
             already_represented: 0,
+            outside_borg_capability: 3,
             none: 0,
             invalid_classification: 1,
           },
@@ -502,6 +511,12 @@ describe("MetricsCapture", () => {
           reason: "candidate_embedding_failed",
         },
         {
+          ts: 105,
+          turnId: "turn-action",
+          event: "action_closed_by_terminal_emission",
+          action_id: "act_terminal_close",
+        },
+        {
           ts: 200,
           turnId: "other-turn",
           event: "action_persistence_dedup_skipped_embedding",
@@ -528,12 +543,146 @@ describe("MetricsCapture", () => {
         ...zeroCounts(ACTION_CANDIDATE_CLASSIFICATIONS),
         concrete_action: 2,
         conversational_acknowledgment: 1,
+        outside_borg_capability: 3,
         invalid_classification: 1,
       },
       action_candidate_rejected_classification: 1,
       action_persistence_dedup_skipped_embedding: 1,
       action_persistence_dedup_degraded: 1,
+      actions_closed_by_terminal_emission: 1,
+      actions_rejected_capability: 3,
     });
+  });
+
+  it("counts shared-state action canonicalization lifecycle traces", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-shared-actions",
+          event: "decision_artifact_reconciliation_completed",
+          actions_retired: 2,
+          actions_completed_succeeded: 2,
+        },
+        {
+          ts: 101,
+          turnId: "turn-shared-actions",
+          event: "decision_artifact_retry_only_reconciliation",
+          outcome_counts: {
+            actions_retired: 1,
+            actions_completed_succeeded: 1,
+          },
+        },
+        {
+          ts: 200,
+          turnId: "other-turn",
+          event: "decision_artifact_reconciliation_completed",
+          actions_retired: 4,
+          actions_completed_succeeded: 4,
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-shared-actions",
+      1,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.actions_canonicalized).toBe(3);
+    expect(row.actions_completed_via_canonicalization).toBe(3);
+  });
+
+  it("splits active actions by Borg, participant, and group actor ownership", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const audience = createEntityId();
+    const participant = createEntityId();
+    const actions = [
+      makeAction({
+        actor: "borg",
+        audience_entity_id: audience,
+        state: "committed_to_do",
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "considering",
+      }),
+      makeAction({
+        actor: participant,
+        audience_entity_id: audience,
+        state: "scheduled",
+      }),
+      makeAction({
+        actor: audience,
+        audience_entity_id: audience,
+        state: "committed_to_do",
+      }),
+      makeAction({
+        actor: "borg",
+        audience_entity_id: audience,
+        state: "completed",
+        completed_at: 1_000,
+      }),
+    ];
+    const activeStates = new Set(["considering", "committed_to_do", "scheduled", "unknown"]);
+    const countByState = () => {
+      const counts = zeroCounts(ACTION_STATES);
+
+      for (const action of actions) {
+        counts[action.state] += 1;
+      }
+
+      return counts;
+    };
+    const borg = {
+      ...fakeBorg(),
+      actions: {
+        count: () => actions.length,
+        countByState,
+        countCanonicalized: () => 0,
+        countActive: () => actions.filter((action) => activeStates.has(action.state)).length,
+        getCreationCountsBySource: () => ({
+          extractor: 0,
+          reflector: 0,
+          api: 0,
+          unknown: 0,
+        }),
+        countCompletedSince: () => 0,
+        latestCompletedAt: () => null,
+        listCompletedIds: () => [],
+        list: (filter: { states?: readonly ActionRecord["state"][] } = {}) =>
+          actions.filter(
+            (action) => filter.states === undefined || filter.states.includes(action.state),
+          ),
+      },
+    } as unknown as Borg;
+
+    const row = await new MetricsCapture(metricsPath).capture(borg, "turn-actor-split", 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(row.action_record_count_active).toBe(4);
+    expect(row.borg_owned_active_actions).toBe(1);
+    expect(row.participant_owned_active_actions).toBe(2);
+    expect(row.group_owned_active_actions).toBe(1);
   });
 
   it("counts goal-promotion salvage and initial-step downgrade traces", async () => {
@@ -555,6 +704,7 @@ describe("MetricsCapture", () => {
             durable_borg_goal: 2,
             one_off: 1,
             not_borg_responsibility: 0,
+            impossible_for_borg_without_capability: 0,
             already_represented: 0,
             none: 0,
             invalid_classification: 1,
@@ -608,6 +758,7 @@ describe("MetricsCapture", () => {
             durable_borg_goal: 1,
             one_off: 0,
             not_borg_responsibility: 0,
+            impossible_for_borg_without_capability: 0,
             already_represented: 0,
             none: 0,
             invalid_classification: 0,
@@ -640,6 +791,7 @@ describe("MetricsCapture", () => {
         durable_borg_goal: 2,
         one_off: 1,
         not_borg_responsibility: 0,
+        impossible_for_borg_without_capability: 0,
         already_represented: 0,
         none: 0,
         invalid_classification: 1,
@@ -1286,6 +1438,9 @@ describe("MetricsCapture", () => {
       expect(row.action_record_count_committed_to_do).toBe(0);
       expect(row.action_record_count_canonicalized).toBe(1);
       expect(row.action_record_count_active).toBe(1);
+      expect(row.borg_owned_active_actions).toBe(1);
+      expect(row.participant_owned_active_actions).toBe(0);
+      expect(row.group_owned_active_actions).toBe(0);
       expect(row.action_record_creation_source_per_turn).toEqual({
         extractor: 0,
         reflector: 0,

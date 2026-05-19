@@ -226,6 +226,7 @@ export async function openBorgDependencies(
       offlineProcesses: offline.offlineProcesses,
       llmFactory,
       embeddingClient,
+      tracer,
       clock,
     };
   } catch (error) {

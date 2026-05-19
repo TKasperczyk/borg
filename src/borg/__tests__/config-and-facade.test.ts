@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,6 +9,7 @@ import {
   SqliteDatabase,
   ManualClock,
   createEpisodeId,
+  createSessionId,
   createTestConfig,
   resolveBorgConfig,
   Borg,
@@ -178,6 +181,42 @@ describe("Borg", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("emits a session-ended trace event from the Borg facade", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const sessionId = createSessionId();
+    const clock = new ManualClock(12_345);
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      tracerPath: tracePath,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      borg.endSession(sessionId);
+    } finally {
+      await borg.close();
+    }
+
+    const events = readFileSync(tracePath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        ts: 12_345,
+        turnId: `session_end:${sessionId}`,
+        event: "session_ended",
+        session_id: sessionId,
+      }),
+    );
   });
 
   it("preserves omitted and null commitment list filters through the facade", async () => {

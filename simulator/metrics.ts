@@ -9,6 +9,7 @@ import {
   REVIEW_KINDS,
   SEMANTIC_NODE_STATUSES,
   type ActionCandidateClassification,
+  type ActionRecord,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
@@ -73,6 +74,9 @@ type MemoryBandMetricCounts = Pick<
   | "action_record_count_committed_to_do"
   | "action_record_count_canonicalized"
   | "action_record_count_active"
+  | "borg_owned_active_actions"
+  | "participant_owned_active_actions"
+  | "group_owned_active_actions"
   | "action_record_creation_source_per_turn"
   | "action_record_creation_count_this_turn"
   | "recent_completed_action_count"
@@ -151,6 +155,13 @@ type ActionCandidateMetricCounts = Pick<
   | "action_candidate_rejected_classification"
   | "action_persistence_dedup_skipped_embedding"
   | "action_persistence_dedup_degraded"
+  | "actions_closed_by_terminal_emission"
+  | "actions_rejected_capability"
+>;
+
+type SharedStateActionLifecycleMetricCounts = Pick<
+  MetricsRow,
+  "actions_canonicalized" | "actions_completed_via_canonicalization"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -260,6 +271,18 @@ function traceNumber(record: TraceRecord, key: string): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function traceObjectNumber(record: TraceRecord, objectKey: string, numberKey: string): number {
+  const value = record[objectKey];
+
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return 0;
+  }
+
+  const nested = (value as Record<string, unknown>)[numberKey];
+
+  return typeof nested === "number" && Number.isFinite(nested) ? nested : 0;
+}
+
 function streamContentEvent(content: unknown): string | null {
   if (content === null || typeof content !== "object" || Array.isArray(content)) {
     return null;
@@ -355,6 +378,39 @@ function actionCandidateMetrics(traceRecords: readonly TraceRecord[]): ActionCan
     action_persistence_dedup_degraded: traceRecords.filter(
       (record) => record.event === "action_persistence_dedup_degraded",
     ).length,
+    actions_closed_by_terminal_emission: traceRecords.filter(
+      (record) => record.event === "action_closed_by_terminal_emission",
+    ).length,
+    actions_rejected_capability: classificationsPerTurn.outside_borg_capability,
+  };
+}
+
+function sharedStateActionLifecycleMetrics(
+  traceRecords: readonly TraceRecord[],
+): SharedStateActionLifecycleMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "decision_artifact_reconciliation_completed",
+  );
+  const retryOnly = traceRecords.filter(
+    (record) => record.event === "decision_artifact_retry_only_reconciliation",
+  );
+  const actionsCanonicalized =
+    completed.reduce((sum, record) => sum + traceNumber(record, "actions_retired"), 0) +
+    retryOnly.reduce(
+      (sum, record) => sum + traceObjectNumber(record, "outcome_counts", "actions_retired"),
+      0,
+    );
+  const actionsCompletedViaCanonicalization =
+    completed.reduce((sum, record) => sum + traceNumber(record, "actions_completed_succeeded"), 0) +
+    retryOnly.reduce(
+      (sum, record) =>
+        sum + traceObjectNumber(record, "outcome_counts", "actions_completed_succeeded"),
+      0,
+    );
+
+  return {
+    actions_canonicalized: actionsCanonicalized,
+    actions_completed_via_canonicalization: actionsCompletedViaCanonicalization,
   };
 }
 
@@ -626,6 +682,37 @@ function activeActionCountFromStateCounts(counts: Record<ActionState, number>): 
   return ACTIVE_ACTION_STATES.reduce((sum, state) => sum + (counts[state] ?? 0), 0);
 }
 
+function activeActionActorSplit(
+  actions: readonly Pick<ActionRecord, "actor" | "audience_entity_id">[],
+): Pick<
+  MetricsRow,
+  "borg_owned_active_actions" | "participant_owned_active_actions" | "group_owned_active_actions"
+> {
+  let borgOwned = 0;
+  let participantOwned = 0;
+  let groupOwned = 0;
+
+  for (const action of actions) {
+    if (action.actor === "borg") {
+      borgOwned += 1;
+      continue;
+    }
+
+    if (action.actor !== "user" && action.actor === action.audience_entity_id) {
+      groupOwned += 1;
+      continue;
+    }
+
+    participantOwned += 1;
+  }
+
+  return {
+    borg_owned_active_actions: borgOwned,
+    participant_owned_active_actions: participantOwned,
+    group_owned_active_actions: groupOwned,
+  };
+}
+
 function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
   const counts = zeroCounts(REVIEW_KINDS);
 
@@ -759,6 +846,11 @@ export class MetricsCapture {
 
   private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
     const actionRecordCountByState = borg.actions.countByState();
+    const activeActions = borg.actions.list({
+      states: ACTIVE_ACTION_STATES,
+      limit: LARGE_COUNT_LIMIT,
+    });
+    const activeActorSplit = activeActionActorSplit(activeActions);
     const currentActionCreationCounts = actionCreationCountsFromRepository(borg);
     const actionCreationSourcePerTurn = diffActionCreationCounts({
       previous: this.previousActionCreationCountsBySource,
@@ -785,6 +877,9 @@ export class MetricsCapture {
       action_record_count_active:
         actionCountFromRepository(borg, "countActive") ??
         activeActionCountFromStateCounts(actionRecordCountByState),
+      borg_owned_active_actions: activeActorSplit.borg_owned_active_actions,
+      participant_owned_active_actions: activeActorSplit.participant_owned_active_actions,
+      group_owned_active_actions: activeActorSplit.group_owned_active_actions,
       action_record_creation_source_per_turn: actionCreationSourcePerTurn,
       action_record_creation_count_this_turn: actionCreationCountTotal(actionCreationSourcePerTurn),
       recent_completed_action_count: recentCompletedActionCount,
@@ -918,6 +1013,7 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics(traceRecords);
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
+    const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics(traceRecords);
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
@@ -961,6 +1057,9 @@ export class MetricsCapture {
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
       action_record_count_canonicalized: memoryBandMetrics.action_record_count_canonicalized,
       action_record_count_active: memoryBandMetrics.action_record_count_active,
+      borg_owned_active_actions: memoryBandMetrics.borg_owned_active_actions,
+      participant_owned_active_actions: memoryBandMetrics.participant_owned_active_actions,
+      group_owned_active_actions: memoryBandMetrics.group_owned_active_actions,
       action_record_creation_source_per_turn:
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
@@ -973,6 +1072,12 @@ export class MetricsCapture {
         actionCandidateMetricCounts.action_persistence_dedup_skipped_embedding,
       action_persistence_dedup_degraded:
         actionCandidateMetricCounts.action_persistence_dedup_degraded,
+      actions_closed_by_terminal_emission:
+        actionCandidateMetricCounts.actions_closed_by_terminal_emission,
+      actions_rejected_capability: actionCandidateMetricCounts.actions_rejected_capability,
+      actions_canonicalized: sharedStateActionLifecycleMetricCounts.actions_canonicalized,
+      actions_completed_via_canonicalization:
+        sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
@@ -1071,6 +1176,7 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics([]);
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
+    const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const row: MetricsRow = {
@@ -1101,6 +1207,9 @@ export class MetricsCapture {
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
       action_record_count_canonicalized: memoryBandMetrics.action_record_count_canonicalized,
       action_record_count_active: memoryBandMetrics.action_record_count_active,
+      borg_owned_active_actions: memoryBandMetrics.borg_owned_active_actions,
+      participant_owned_active_actions: memoryBandMetrics.participant_owned_active_actions,
+      group_owned_active_actions: memoryBandMetrics.group_owned_active_actions,
       action_record_creation_source_per_turn:
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
@@ -1113,6 +1222,12 @@ export class MetricsCapture {
         actionCandidateMetricCounts.action_persistence_dedup_skipped_embedding,
       action_persistence_dedup_degraded:
         actionCandidateMetricCounts.action_persistence_dedup_degraded,
+      actions_closed_by_terminal_emission:
+        actionCandidateMetricCounts.actions_closed_by_terminal_emission,
+      actions_rejected_capability: actionCandidateMetricCounts.actions_rejected_capability,
+      actions_canonicalized: sharedStateActionLifecycleMetricCounts.actions_canonicalized,
+      actions_completed_via_canonicalization:
+        sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,

@@ -564,6 +564,7 @@ async function main(): Promise<void> {
     shuttingDown = (async () => {
       try {
         saveCurrentSession();
+        borg.endSession(state.session.id);
         await awaitExtractionForSession(state.session);
       } finally {
         await borg.close();
@@ -656,6 +657,7 @@ async function main(): Promise<void> {
       }
 
       saveCurrentSession();
+      borg.endSession(state.session.id);
       state.session = resolveSessionTarget(value);
       borg.workmem.load(state.session.id);
       writeLine(`session=${state.session.label}`);

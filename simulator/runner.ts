@@ -537,6 +537,10 @@ async function runMaintenanceTick(
   }
 }
 
+function endSimulatorSession(transport: BorgTransport, sessionId: SessionId): void {
+  (transport.getBorg() as { endSession?: (sessionId: SessionId) => void }).endSession?.(sessionId);
+}
+
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
   private turnFailures: Array<{ turn: number; error: string; attempts: number }> = [];
@@ -929,6 +933,7 @@ export class SimulatorRunner {
             endReason: "suppression",
             ...(suppressionReason === undefined ? {} : { suppressionReason }),
           });
+          endSimulatorSession(transport, currentSessionId);
 
           if (sessions.length >= maxSessions) {
             resultState = "max_sessions_reached";
@@ -970,6 +975,7 @@ export class SimulatorRunner {
           endedAtTurn: finalMetrics.turn_counter,
           endReason: "run_complete",
         });
+        endSimulatorSession(transport, currentSessionId);
       }
 
       const postHocHealthWarnings = simulatorHealthWarningsForRows(metrics.listRows(), {
@@ -1132,6 +1138,8 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Semantic added since previous check: ${report.finalMetrics.semantic_nodes_added_since_last_check} nodes, ${report.finalMetrics.semantic_edges_added_since_last_check} edges`,
     `- Open questions: ${report.finalMetrics.open_question_count}`,
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
+    `- Active actions: ${report.finalMetrics.action_record_count_active} (Borg ${report.finalMetrics.borg_owned_active_actions}, participants ${report.finalMetrics.participant_owned_active_actions}, group ${report.finalMetrics.group_owned_active_actions})`,
+    `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
     "## Health Warnings",

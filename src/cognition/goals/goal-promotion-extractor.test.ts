@@ -137,12 +137,13 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
   });
 
-  it("renders capability-aware not_borg_responsibility guidance without adding taxonomy values", async () => {
+  it("rejects impossible-for-Borg capability classifications distinctly", async () => {
+    const { emit, tracer } = tracingHarness();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
           {
-            classification: "not_borg_responsibility",
+            classification: "impossible_for_borg_without_capability",
             description: "Borg will monitor p95 and send the incident note later",
             reason: "The candidate asks Borg to perform external monitoring and later messaging.",
             confidence: 0.96,
@@ -153,6 +154,8 @@ describe("GoalPromotionExtractor", () => {
     const extractor = new GoalPromotionExtractor({
       llmClient: llm,
       model: "haiku",
+      tracer,
+      turnId: "turn-goal-impossible-capability",
     });
 
     await expect(
@@ -167,11 +170,35 @@ describe("GoalPromotionExtractor", () => {
       "durable_borg_goal",
       "one_off",
       "not_borg_responsibility",
+      "impossible_for_borg_without_capability",
       "already_represented",
       "none",
     ]);
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_classification_rejected",
+      expect.objectContaining({
+        turnId: "turn-goal-impossible-capability",
+        classification: "impossible_for_borg_without_capability",
+        reason: "non_durable_classification",
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        classification_counts: expect.objectContaining({
+          impossible_for_borg_without_capability: 1,
+        }),
+        rejected_by_classification: expect.objectContaining({
+          impossible_for_borg_without_capability: 1,
+        }),
+      }),
+    );
     expect(llm.requests[0]?.system).toContain("monitoring p95");
     expect(llm.requests[0]?.system).toContain("scheduled document edits");
+    expect(llm.requests[0]?.system).toContain("user will deploy -> not_borg_responsibility");
+    expect(llm.requests[0]?.system).toContain(
+      "Borg will monitor p95 -> impossible_for_borg_without_capability",
+    );
     expect(llm.requests[0]?.system).toContain("Borg host capability boundary");
   });
 

@@ -6,6 +6,7 @@ import type { BorgFacades } from "./borg/facade-types.js";
 import { closeBorgDependencies } from "./borg/lifecycle.js";
 import { openBorgDependencies } from "./borg/open.js";
 import type { BorgDependencies, BorgOpenOptions } from "./borg/types.js";
+import { DEFAULT_SESSION_ID, type SessionId } from "./util/ids.js";
 
 export type {
   BorgDreamOptions,
@@ -62,6 +63,15 @@ export class Borg {
 
   turn(input: TurnInput): Promise<TurnResult> {
     return this.deps.turnOrchestrator.run(input);
+  }
+
+  endSession(sessionId: SessionId = DEFAULT_SESSION_ID): void {
+    if (this.deps.tracer.enabled) {
+      this.deps.tracer.emit("session_ended", {
+        turnId: `session_end:${sessionId}`,
+        session_id: sessionId,
+      });
+    }
   }
 
   static async open(options: BorgOpenOptions = {}): Promise<Borg> {

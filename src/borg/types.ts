@@ -3,6 +3,7 @@
 import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { Config } from "../config/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -106,6 +107,7 @@ export type BorgDependencies = {
   offlineProcesses: Record<OfflineProcessName, OfflineProcess>;
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
+  tracer: TurnTracer;
   clock: Clock;
 };
 
