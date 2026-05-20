@@ -8,6 +8,7 @@ import type {
   ReviewKind,
   SemanticNodeStatus,
   SessionId,
+  CommitmentKind,
 } from "../src/index.js";
 
 export type GoalPromotionClassificationMetricKey =
@@ -75,6 +76,7 @@ export type MetricsRow = {
   actions_completed_via_canonicalization: number;
   recent_completed_action_count: number;
   commitment_count_active: number;
+  commitment_count_active_by_kind: Record<CommitmentKind, number>;
   commitment_count_superseded: number;
   // These lifecycle counts are not mutually exclusive: commitments canonicalized
   // through the shared state are revoked by design.

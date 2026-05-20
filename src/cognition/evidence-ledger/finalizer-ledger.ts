@@ -3,7 +3,7 @@ import {
   renderSharedStateArtifact,
   type SharedStateRenderOptions,
 } from "../shared-state/render.js";
-import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
+import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { renderSection } from "./section-rendering.js";
 import type { EvidenceLedger } from "./types.js";

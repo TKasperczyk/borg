@@ -178,7 +178,7 @@ function emitSemanticInsertSkipped(
     return;
   }
 
-  ctx.tracer.emit("semantic_insert_skipped", {
+  ctx.tracer.emit("semantic_insert.skipped", {
     turnId: ctx.runId,
     kind: input.kind,
     reason: input.reason,

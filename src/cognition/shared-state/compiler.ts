@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { SystemClock } from "../../util/clock.js";
+import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import {
   mergeSemanticBeliefRevisionResult,
   reconcileSharedStateCanonicalizations,
@@ -9,7 +10,6 @@ import {
   type SharedStateSemanticBeliefRevisionDependencies,
 } from "./reconciliation.js";
 import {
-  SHARED_STATE_SYSTEM_PROMPT,
   buildSharedStateArtifactMessages,
   estimateSharedStateArtifactPromptBudget,
 } from "./compiler-prompt.js";
@@ -260,7 +260,7 @@ export async function compileSharedStateArtifact(
     nowMs,
   });
   if (lifecycle.overCapDelta > 0 && input.tracer?.enabled === true && input.turnId !== undefined) {
-    input.tracer.emit("decision_artifact_lifecycle_unable_to_cap", {
+    input.tracer.emit("shared_state.lifecycle.degraded", {
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
       maxActiveEntries: lifecycle.maxActiveEntries,

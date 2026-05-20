@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
+import { TRACE_TAXONOMY_PHASES_WITH_OTHER } from "../src/cognition/tracing/taxonomy.js";
 
 import type { ChatWithBorgResult } from "./borg-transport.js";
 import type {
@@ -49,16 +50,12 @@ const chatInputSchema = z.object({
 const readTraceInputSchema = z.object({
   turnId: z.string().min(1),
   phase: z
-    .enum([
-      "perception",
-      "executive_focus",
-      "retrieval",
-      "deliberation",
-      "action",
-      "reflection",
-      "ingestion",
-      "other",
-    ])
+    .custom<TracePhase>(
+      (value) =>
+        typeof value === "string" &&
+        TRACE_TAXONOMY_PHASES_WITH_OTHER.includes(value as TracePhase),
+      "Invalid trace phase",
+    )
     .optional(),
 });
 
@@ -136,16 +133,7 @@ const ASSESSOR_TOOLS: Tool[] = [
         },
         phase: {
           type: "string",
-          enum: [
-            "perception",
-            "executive_focus",
-            "retrieval",
-            "deliberation",
-            "action",
-            "reflection",
-            "ingestion",
-            "other",
-          ],
+          enum: [...TRACE_TAXONOMY_PHASES_WITH_OTHER],
         },
       },
       required: ["turnId"],

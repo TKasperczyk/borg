@@ -67,7 +67,7 @@ export class Borg {
 
   endSession(sessionId: SessionId = DEFAULT_SESSION_ID): void {
     if (this.deps.tracer.enabled) {
-      this.deps.tracer.emit("session_ended", {
+      this.deps.tracer.emit("session.completed", {
         turnId: `session_end:${sessionId}`,
         session_id: sessionId,
       });

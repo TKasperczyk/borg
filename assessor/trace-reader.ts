@@ -1,17 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 
+import {
+  TRACE_TAXONOMY_PHASES_WITH_OTHER,
+  phaseForTraceEventName,
+} from "../src/cognition/tracing/taxonomy.js";
 import type { TracePhase, TraceRecord } from "./types.js";
 
-export const TRACE_PHASES: readonly TracePhase[] = [
-  "perception",
-  "executive_focus",
-  "retrieval",
-  "deliberation",
-  "action",
-  "reflection",
-  "ingestion",
-  "other",
-] as const;
+export const TRACE_PHASES: readonly TracePhase[] = TRACE_TAXONOMY_PHASES_WITH_OTHER;
 
 const COLLAPSED_KEYS = new Set(["prompt", "response"]);
 const MAX_VALUE_CHARS = 360;
@@ -117,40 +112,7 @@ export function readTraceEvents(path: string, options: TraceReadOptions = {}): T
 }
 
 export function phaseForTraceEvent(event: string): TracePhase {
-  if (event === "recency_compiled" || event.startsWith("perception_")) {
-    return "perception";
-  }
-
-  if (event.startsWith("executive_")) {
-    return "executive_focus";
-  }
-
-  if (event.startsWith("retrieval_") || event === "citation_unresolved") {
-    return "retrieval";
-  }
-
-  if (
-    event.startsWith("llm_call_") ||
-    event.startsWith("plan_") ||
-    event === "s2_planner_exhausted" ||
-    event === "path_selected"
-  ) {
-    return "deliberation";
-  }
-
-  if (event.startsWith("tool_call_") || event === "commitment_check") {
-    return "action";
-  }
-
-  if (event === "reflection_emitted") {
-    return "reflection";
-  }
-
-  if (event.startsWith("ingestion_") || event.startsWith("stream_ingestion_")) {
-    return "ingestion";
-  }
-
-  return "other";
+  return phaseForTraceEventName(event);
 }
 
 export function groupTraceByTurn(records: readonly TraceRecord[]): Map<string, TraceRecord[]> {

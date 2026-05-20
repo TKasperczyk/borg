@@ -330,7 +330,7 @@ describe("ActionStateExtractor", () => {
     expect(add).toHaveBeenCalledOnce();
     expect(records.map((record) => record.description)).toEqual(["reviewed the API patch"]);
     expect(events).toContainEqual({
-      event: "action_state_extractor_completed",
+      event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_action_trace",
         candidates_emitted: 2,
@@ -411,7 +411,7 @@ describe("ActionStateExtractor", () => {
       expect(records).toEqual([]);
       expect(add).not.toHaveBeenCalled();
       expect(events).toContainEqual({
-        event: "action_candidate_classification_rejected",
+        event: "extraction.actions.rejected",
         data: {
           turnId: "turn_action_classification",
           classification,
@@ -420,7 +420,7 @@ describe("ActionStateExtractor", () => {
         },
       });
       expect(events).toContainEqual({
-        event: "action_state_extractor_completed",
+        event: "extraction.actions.completed",
         data: expect.objectContaining({
           turnId: "turn_action_classification",
           candidates_emitted: 1,
@@ -480,7 +480,7 @@ describe("ActionStateExtractor", () => {
     expect(llm.requests[0]?.system).toContain("outside_borg_capability");
     expect(llm.requests[0]?.system).toContain("external_document_editing");
     expect(events).toContainEqual({
-      event: "action_candidate_classification_rejected",
+      event: "extraction.actions.rejected",
       data: {
         turnId: "turn_action_capability_boundary",
         classification: "outside_borg_capability",
@@ -526,7 +526,7 @@ describe("ActionStateExtractor", () => {
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
     expect(events).toContainEqual({
-      event: "action_state_extractor_completed",
+      event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_missing_classification",
         candidates_emitted: 1,
@@ -578,7 +578,7 @@ describe("ActionStateExtractor", () => {
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
     expect(events).toContainEqual({
-      event: "action_state_extractor_completed",
+      event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_invalid_classification",
         candidates_emitted: 1,
@@ -654,7 +654,7 @@ describe("ActionStateExtractor", () => {
     expect(records).toEqual([]);
     expect(repository.add).not.toHaveBeenCalled();
     expect(events).toContainEqual({
-      event: "action_persistence_dedup_skipped_embedding",
+      event: "action_persistence.dedup.skipped",
       data: expect.objectContaining({
         turnId: "turn_action_dedup",
         classification: "concrete_action",
@@ -664,7 +664,7 @@ describe("ActionStateExtractor", () => {
       }),
     });
     expect(events).toContainEqual({
-      event: "action_candidate_classification_rejected",
+      event: "extraction.actions.rejected",
       data: {
         turnId: "turn_action_dedup",
         classification: "concrete_action",
@@ -748,7 +748,7 @@ describe("ActionStateExtractor", () => {
       completed_at: 2_000,
     });
     expect(events).toContainEqual({
-      event: "action_closed_by_terminal_emission",
+      event: "action_state.transitioned",
       data: expect.objectContaining({
         turnId: "turn_action_terminal_close",
         action_id: existingAction.id,
@@ -759,7 +759,7 @@ describe("ActionStateExtractor", () => {
       }),
     });
     expect(events).toContainEqual({
-      event: "action_state_extractor_completed",
+      event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_action_terminal_close",
         persisted_count: 0,
@@ -1103,7 +1103,7 @@ describe("ActionStateExtractor", () => {
     expect(records.map((record) => record.description)).toEqual([description]);
     expect(repository.add).toHaveBeenCalledOnce();
     expect(events).toContainEqual({
-      event: "action_persistence_dedup_degraded",
+      event: "action_persistence.dedup.degraded",
       data: expect.objectContaining({
         turnId: "turn_action_dedup_degraded",
         reason: "active_action_embedding_failed",

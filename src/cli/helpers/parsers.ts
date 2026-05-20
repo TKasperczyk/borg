@@ -1,5 +1,5 @@
 // Argument parsers and validators shared by CLI command handlers.
-import { commitmentTypeSchema } from "../../memory/commitments/index.js";
+import { commitmentKindSchema, commitmentTypeSchema } from "../../memory/commitments/index.js";
 import { identityRecordTypeSchema } from "../../memory/identity/index.js";
 import {
   goalStatusSchema,
@@ -182,6 +182,18 @@ export function parseCommitmentType(value: unknown) {
 
   if (!parsed.success) {
     throw new CliError("--type must be one of: promise, boundary, rule, preference", {
+      cause: parsed.error,
+    });
+  }
+
+  return parsed.data;
+}
+
+export function parseCommitmentKind(value: unknown, fallback = "assistant_commitment") {
+  const parsed = commitmentKindSchema.safeParse(value ?? fallback);
+
+  if (!parsed.success) {
+    throw new CliError(`--kind must be one of: ${commitmentKindSchema.options.join(", ")}`, {
       cause: parsed.error,
     });
   }

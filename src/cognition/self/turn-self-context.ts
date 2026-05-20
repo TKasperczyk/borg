@@ -231,7 +231,7 @@ export class TurnSelfContextBuilder {
       });
     } catch (error) {
       if (this.options.tracer.enabled) {
-        this.options.tracer.emit("retrieval_degraded", {
+        this.options.tracer.emit("retrieval.degraded", {
           turnId: input.turnId,
           subsystem: "scoring_features",
           reason: error instanceof Error ? error.message : String(error),
@@ -247,7 +247,7 @@ export class TurnSelfContextBuilder {
       });
     } catch (error) {
       if (this.options.tracer.enabled) {
-        this.options.tracer.emit("retrieval_degraded", {
+        this.options.tracer.emit("retrieval.degraded", {
           turnId: input.turnId,
           subsystem: "executive_context_fit",
           reason: error instanceof Error ? error.message : String(error),

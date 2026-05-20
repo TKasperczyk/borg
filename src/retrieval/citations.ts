@@ -211,7 +211,7 @@ export class CitationResolver {
     });
 
     if (missingIds.length > 0 && this.tracer.enabled && traceTurnId !== undefined) {
-      this.tracer.emit("citation_unresolved", {
+      this.tracer.emit("citation_resolution.degraded", {
         turnId: traceTurnId,
         missingIds,
         resolvedCount: chain.length - missingIds.length,

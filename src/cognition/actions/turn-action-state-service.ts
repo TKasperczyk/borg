@@ -56,7 +56,7 @@ export class TurnActionStateService {
           return;
         }
 
-        this.options.tracer.emit("action_state_extractor_degraded", {
+        this.options.tracer.emit("extraction.actions.degraded", {
           turnId: input.turnId,
           reason,
           ...(this.options.tracer.includePayloads && error !== undefined

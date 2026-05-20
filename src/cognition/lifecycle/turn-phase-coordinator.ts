@@ -196,8 +196,9 @@ export class TurnPhaseCoordinator {
       participantScan.foundUniqueParticipants < activeParticipantLimit &&
       this.options.tracer.enabled
     ) {
-      this.options.tracer.emit("participant_scan_cap_reached", {
+      this.options.tracer.emit("participant_scan.skipped", {
         turnId,
+        reason: "cap_reached",
         cap: participantScan.capReached,
         scanned_entries: participantScan.scannedEntries,
         scanned_bytes: participantScan.scannedBytes,

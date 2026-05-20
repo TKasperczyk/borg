@@ -696,7 +696,9 @@ describe("Borg", () => {
       const sonnetRequest = llm.requests.find(
         (request) =>
           request.model === "sonnet" &&
-          requestSystemText(request).includes("Commitments you made to this person"),
+          requestSystemText(request).includes(
+            "Active commitment / rule / preference / boundary records",
+          ),
       );
       const sonnetSystem = requestSystemText(sonnetRequest);
 
@@ -1599,7 +1601,7 @@ describe("Borg", () => {
       expect(internal.deps.sharedStateRepository.get(audience)).toBeNull();
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "decision_artifact_compile_completed",
+          event: "shared_state.compile.completed",
           rejectedCount: 1,
           rejectionReasons: ["disallowed_source_stream_entry_id"],
           applied: false,

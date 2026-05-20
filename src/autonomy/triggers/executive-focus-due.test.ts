@@ -261,7 +261,7 @@ describe("executive focus due trigger", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]?.payload.selected_score.components.context_fit).toBe(0);
-    expect(emit).toHaveBeenCalledWith("retrieval_degraded", {
+    expect(emit).toHaveBeenCalledWith("retrieval.degraded", {
       turnId: "autonomy:executive_focus_due",
       subsystem: "scoring_features",
       reason: "embedding unavailable",

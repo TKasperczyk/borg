@@ -218,7 +218,7 @@ export class TurnRetrievalCoordinator {
               model: input.proceduralContextModel,
               onDegraded: (reason) => {
                 if (this.tracer.enabled) {
-                  this.tracer.emit("perception_classifier_degraded", {
+                  this.tracer.emit("perception.classifier.degraded", {
                     turnId: input.turnId,
                     classifier: "procedural_context",
                     reason,

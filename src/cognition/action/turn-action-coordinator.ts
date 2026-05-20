@@ -92,7 +92,7 @@ export class TurnActionCoordinator {
         return;
       }
 
-      this.options.tracer.emit("working_memory_degraded", {
+      this.options.tracer.emit("working_memory.degraded", {
         turnId: input.turnId,
         subsystem: "pending_actions",
         reason: event.reason,

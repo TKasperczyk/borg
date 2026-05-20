@@ -21,14 +21,14 @@ export const multiSessionContinuityScenario: Scenario = {
       // Same shape as the recall scenario: Borg's standard pipeline runs
       // retrieval implicitly, so the model often answers without an
       // explicit tool.episodic.search call. Accept either the pipeline's
-      // retrieval_completed event or a model-invoked tool call.
+      // retrieval.completed event or a model-invoked tool call.
       type: "any_of",
       description: "Second session recall was grounded in episodic memory.",
       assertions: [
         {
           type: "event_seen",
           description: "Standard pipeline retrieval completed in session two.",
-          eventIncludes: "retrieval_completed",
+          event: "retrieval.completed",
           turn: "last",
         },
         {

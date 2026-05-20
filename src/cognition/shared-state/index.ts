@@ -1,5 +1,5 @@
 export { compileSharedStateArtifact } from "./compiler.js";
-export { SHARED_STATE_SYSTEM_PROMPT } from "./compiler-prompt.js";
+export { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 export {
   SHARED_STATE_TOOL_NAME,
   MAX_PATCH_OUTPUT_TOKENS,

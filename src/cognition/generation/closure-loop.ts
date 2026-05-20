@@ -9,6 +9,7 @@ import {
 } from "../../llm/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   buildUsageTraceBlock,
@@ -87,34 +88,6 @@ const CLOSURE_LOOP_CLASSIFIER_TOOL = {
     "Classify recent user/assistant messages into dialogue acts and independent closure/content/state axes.",
   inputSchema: toToolInputSchema(closureLoopClassificationSchema),
 } satisfies LLMToolDefinition;
-
-const CLOSURE_LOOP_SYSTEM_PROMPT = [
-  "Classify each supplied dialogue message by discourse function and independent boolean axes.",
-  "Use exactly one act from the schema for each message_ref.",
-  "substantive: asks, answers, introduces information, changes topic, makes a real request, or otherwise advances content.",
-  "signoff: user-side goodbye, leaving, phone-down, sleep, or closure intent.",
-  "user_requests_closure: user explicitly asks the assistant to produce closure now, such as asking for goodnight, farewell, sign-off, or a closing line.",
-  "reopening_after_signoff: user resumes with real content after a prior goodbye.",
-  "assistant_imperative_closer: assistant-side command or push that functions as a closer.",
-  "assistant_valediction: assistant-side goodbye, send-off, farewell, or closure token.",
-  "minimal_acknowledgment: short assistant-side acknowledgment that does not add content.",
-  "meta_objection_to_closure: names, objects to, or analyzes the closure loop itself.",
-  "",
-  "Boolean axes are independent from act:",
-  "- is_closure_shaped: true when the message has discourse-closure shape such as leaving, signoff, goodnight, EOD, talk-tomorrow, or similar closure intent.",
-  "- has_substantive_content: true when the message contains substantive content beyond pure acknowledgment or closure. A question, request, answer, decision, assignment, boundary, correction, or topic advance counts.",
-  "- has_substantive_state_delta: true only when the message contains a durable state change, such as a decision lock, supersession of prior state, assignment, boundary, correction, or completed/action state update. This is narrower than substantive content.",
-  "",
-  "Examples:",
-  '- "Decision: rollback to v1.2.3. EOD." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
-  '- "Ben owns the writeup now. Talk tomorrow." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
-  '- "I need space this week. Talk Saturday." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
-  '- "Thanks, goodnight." -> is_closure_shaped=true, has_substantive_content=false, has_substantive_state_delta=false.',
-  '- "What\'s the timeline?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
-  '- "Could you check X?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
-  "Judge semantic function across languages. Do not rely on exact words, punctuation, capitalization, or phrase shape.",
-  "Return classifications only for supplied message_ref values. Use the tool exactly once.",
-].join("\n");
 
 export type ClosureLoopClassifiedMessage = z.infer<typeof closureLoopClassifiedMessageSchema>;
 
@@ -623,7 +596,7 @@ function traceClosureLoopPayloadNormalized(options: {
     return;
   }
 
-  options.tracer.emit("closure_loop_classifier_payload_normalized", {
+  options.tracer.emit("closure_loop.transitioned", {
     turnId: options.turnId,
     normalizations: options.normalizations.map((normalization) => ({ ...normalization })),
     rawToolInputShape: summarizeTraceValueShape(options.rawToolInput),
@@ -701,7 +674,7 @@ function traceLlmCallStarted(options: {
   messages: readonly LLMMessage[];
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "closure_loop_classifier",
       model: options.model,
@@ -716,7 +689,7 @@ function traceLlmCallResponse(options: {
   response: LLMCompleteResult;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "closure_loop_classifier",
       responseShape: summarizeClosureLoopResponseShape(options.response),
@@ -732,7 +705,7 @@ function traceLlmCallError(options: {
   error: unknown;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "closure_loop_classifier",
       responseShape: {

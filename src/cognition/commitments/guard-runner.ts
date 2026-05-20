@@ -67,7 +67,7 @@ export class CommitmentGuardRunner {
       }
 
       if (this.options.tracer.enabled) {
-        this.options.tracer.emit("commitment_check", {
+        this.options.tracer.emit("commitment_check.completed", {
           turnId: input.turnId,
           mode,
           verdict: "passed",
@@ -114,7 +114,7 @@ export class CommitmentGuardRunner {
           : "passed";
 
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("commitment_check", {
+      this.options.tracer.emit("commitment_check.completed", {
         turnId: input.turnId,
         mode,
         verdict: actualVerdict,

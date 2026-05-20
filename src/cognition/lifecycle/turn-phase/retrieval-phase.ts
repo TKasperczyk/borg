@@ -299,7 +299,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     input.input.turnId !== undefined &&
     evidenceLedgerCompactionChanged(compacted.traceSummary)
   ) {
-    input.options.tracer.emit("evidence_ledger_compacted", {
+    input.options.tracer.emit("evidence_ledger.compaction.completed", {
       turnId: input.input.turnId,
       pre_dedupe_tokens: compacted.traceSummary.preDedupeTokens,
       post_dedupe_tokens: compacted.traceSummary.postDedupeTokens,
@@ -315,7 +315,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   }
 
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {
-    input.options.tracer.emit("evidence_ledger_built", {
+    input.options.tracer.emit("evidence_ledger.completed", {
       turnId: input.input.turnId,
       entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
       transcript_included: traceSummary.transcriptIncluded,
@@ -431,7 +431,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     }
 
     if (input.options.tracer.enabled && input.input.turnId !== undefined) {
-      input.options.tracer.emit("decision_artifact_compile_skipped", {
+      input.options.tracer.emit("shared_state.compile.skipped", {
         turnId: input.input.turnId,
         reason: skip.reason,
         previous_active_entry_count: skip.previousActiveEntryCount,
@@ -454,9 +454,10 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     input.options.tracer.enabled &&
     input.input.turnId !== undefined
   ) {
-    input.options.tracer.emit("decision_artifact_compile_unblocked", {
+    input.options.tracer.emit("shared_state.compile.transitioned", {
       turnId: input.input.turnId,
-      decision_artifact_compile_unblocked_reason: "unsettled_reconciliation",
+      transition: "unblocked",
+      shared_state_compile_transition_reason: "unsettled_reconciliation",
       ...unsettledReconciliation.summary,
     });
   }
@@ -497,6 +498,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
       .map((commitment) => ({
         id: commitment.id,
         text: compactSharedStateArtifactCandidateText(commitment.directive),
+        kind: commitment.kind,
         type: commitment.type,
         directive_family: commitment.directive_family,
       })),
@@ -514,7 +516,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
   };
 
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {
-    input.options.tracer.emit("decision_artifact_canonicalization_candidates", {
+    input.options.tracer.emit("shared_state.canonicalization.completed", {
       turnId: input.input.turnId,
       candidate_count_by_scope: actionCanonicalizationCandidates.countByScope,
       candidate_count_total: (actionCanonicalizationCandidates.candidates ?? []).length,

@@ -492,7 +492,7 @@ describe("FrameAnomalyClassifier", () => {
       userMessage: "Closing the laptop. Talk tomorrow.",
       recentHistory: [],
     });
-    const classified = tracer.records.find((record) => record.event === "frame_anomaly_classified");
+    const classified = tracer.records.find((record) => record.event === "frame_anomaly.completed");
 
     expect(result).toMatchObject({
       status: "ok",
@@ -542,7 +542,7 @@ describe("FrameAnomalyClassifier", () => {
       userMessage: "Closing the laptop. Talk tomorrow.",
       recentHistory: [],
     });
-    const classified = tracer.records.find((record) => record.event === "frame_anomaly_classified");
+    const classified = tracer.records.find((record) => record.event === "frame_anomaly.completed");
 
     expect(classified?.rawToolInput).toBeUndefined();
     expect(classified?.rawToolInputShape).toMatchObject({

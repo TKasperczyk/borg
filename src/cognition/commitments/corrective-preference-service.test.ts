@@ -31,6 +31,7 @@ function correctivePreferenceResponse(
         input: {
           classification: "corrective_preference",
           type: "preference",
+          kind: "participant_preference",
           directive: "Keep Alice's trip tasks separate from the group channel.",
           directive_family: "separate_trip_tasks",
           closure_pressure_relevance: "neutral",
@@ -48,6 +49,7 @@ function correctivePreferenceResponse(
 function persistedCommitmentFromInput(input: AddCommitmentInput): CommitmentRecord {
   return commitmentFixture({
     id: input.id ?? createCommitmentId(),
+    kind: input.kind ?? "participant_preference",
     directive: input.directive,
     directive_family: input.directiveFamily,
     priority: input.priority,
@@ -64,6 +66,7 @@ function commitmentFixture(
     id: overrides.id,
     record_version: overrides.record_version ?? 1,
     type: overrides.type ?? "preference",
+    kind: overrides.kind ?? "participant_preference",
     directive_family: overrides.directive_family ?? "separate_trip_tasks",
     closure_pressure_relevance: overrides.closure_pressure_relevance ?? "neutral",
     directive: overrides.directive ?? "Keep Alice's trip tasks separate.",
@@ -213,7 +216,7 @@ describe("CorrectivePreferenceTurnService", () => {
         skipDirectiveFamilyMerge: true,
       }),
     );
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_superseded_via_extractor", {
+    expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.transitioned", {
       turnId: "turn-valid-supersession",
       supersededId,
       newId: addCommitment.mock.results[0]?.value.id,
@@ -270,7 +273,7 @@ describe("CorrectivePreferenceTurnService", () => {
 
     expect(supersede).not.toHaveBeenCalled();
     expect(addCommitment.mock.calls[0]?.[0]).not.toHaveProperty("skipDirectiveFamilyMerge");
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_supersession_rejected", {
+    expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
       turnId: "turn-invalid-supersession",
       supersededId,
       validationStatus: "rejected",
@@ -334,7 +337,7 @@ describe("CorrectivePreferenceTurnService", () => {
 
     expect(supersede).not.toHaveBeenCalled();
     expect(addCommitment.mock.calls[0]?.[0]).not.toHaveProperty("skipDirectiveFamilyMerge");
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_supersession_rejected", {
+    expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
       turnId: "turn-revoked-supersession",
       supersededId,
       validationStatus: "rejected",

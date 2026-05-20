@@ -154,6 +154,13 @@ function metricsRow(turn: number): MetricsRow {
     actions_completed_via_canonicalization: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
+    commitment_count_active_by_kind: {
+      assistant_commitment: 0,
+      audience_rule: 0,
+      participant_preference: 0,
+      boundary: 0,
+      process_norm: 0,
+    },
     commitment_count_superseded: 0,
     commitment_count_revoked: 0,
     commitment_count_expired: 0,
@@ -1657,7 +1664,7 @@ describe("simulator overseer", () => {
 
       const trace = readFileSync(tracePath, "utf8");
 
-      expect(trace).toContain("overseer_finding_rejected");
+      expect(trace).toContain("overseer.finding.rejected");
       expect(trace).toContain("quoted_emitted_span");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1714,7 +1721,7 @@ describe("simulator overseer", () => {
 
       const trace = readFileSync(tracePath, "utf8");
 
-      expect(trace).toContain("overseer_finding_carryover_demoted");
+      expect(trace).toContain("overseer.finding.transitioned");
       expect(trace).toContain('"cached_at_turn":40');
     } finally {
       rmSync(dir, { recursive: true, force: true });

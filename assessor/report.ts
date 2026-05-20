@@ -101,12 +101,20 @@ function coverageSection(results: readonly ScenarioResult[]): string {
   const coverage = collectCoverage(results);
   const labelByPhase: Record<TracePhase, string> = {
     perception: "perception",
+    working_memory: "working memory",
     executive_focus: "executive_focus",
     retrieval: "retrieval",
     deliberation: "deliberation S1/S2",
-    action: "action/tool use",
+    tools: "tool use",
+    commitments: "commitments",
+    extraction: "extraction",
+    discourse: "discourse",
     reflection: "reflection",
+    review: "review",
     ingestion: "ingestion",
+    offline: "offline",
+    maintenance: "maintenance",
+    session: "session",
     other: "other",
   };
   const lines = ["## Coverage", "Subsystems exercised across all scenarios:"];

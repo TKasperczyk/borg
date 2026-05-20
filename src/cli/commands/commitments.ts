@@ -7,6 +7,7 @@ import { CliError } from "../helpers/errors.js";
 import { writeLine } from "../helpers/formatters.js";
 import { resolveCommitmentId } from "../helpers/id-resolvers.js";
 import {
+  parseCommitmentKind,
   parseCommitmentType,
   parseIdList,
   parsePriority,
@@ -20,6 +21,10 @@ export function registerCommitmentCommands(cli: CAC, deps: CliCommandDeps): void
   cli
     .command("commitment <action> [arg]", "Manage commitments")
     .option("--type <type>", "Commitment type")
+    .option(
+      "--kind <kind>",
+      "Commitment kind: assistant_commitment, audience_rule, participant_preference, boundary, process_norm",
+    )
     .option("--directive-family <slug>", "Directive-family slug")
     .option("--directive <text>", "Commitment directive")
     .option("--priority <priority>", "Priority", {
@@ -35,6 +40,7 @@ export function registerCommitmentCommands(cli: CAC, deps: CliCommandDeps): void
         const commitment = await withBorg(options, async (borg) =>
           borg.commitments.add({
             type: parseCommitmentType(commandOptions.type),
+            kind: parseCommitmentKind(commandOptions.kind),
             directiveFamily: parseRequiredText(
               commandOptions.directiveFamily ?? commandOptions["directive-family"],
               "--directive-family",

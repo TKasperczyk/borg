@@ -32,19 +32,19 @@ describe("trace-reader", () => {
         JSON.stringify({
           ts: 1,
           turnId: "turn-a",
-          event: "perception_started",
+          event: "perception.started",
           prompt: "large prompt",
         }),
         JSON.stringify({
           ts: 2,
           turnId: "turn-a",
-          event: "tool_call_dispatched",
+          event: "tool_call.started",
           toolName: "tool.episodic.search",
         }),
         JSON.stringify({
           ts: 3,
           turnId: "turn-b",
-          event: "retrieval_completed",
+          event: "retrieval.completed",
           episodeCount: 2,
         }),
         "",
@@ -55,8 +55,8 @@ describe("trace-reader", () => {
 
     expect(records).toHaveLength(3);
     expect(groupTraceByTurn(records).get("turn-a")).toHaveLength(2);
-    expect(groupTraceByPhase(records).get("action")?.[0]?.event).toBe("tool_call_dispatched");
-    expect(phaseForTraceEvent("retrieval_completed")).toBe("retrieval");
+    expect(groupTraceByPhase(records).get("tools")?.[0]?.event).toBe("tool_call.started");
+    expect(phaseForTraceEvent("retrieval.completed")).toBe("retrieval");
     expect(summarizeTraceFile(tracePath, "turn-a")).toContain("tool.episodic.search");
     expect(summarizeTraceFile(tracePath, "turn-a")).toContain("prompt=[collapsed]");
   });
@@ -72,7 +72,7 @@ describe("trace-reader", () => {
         JSON.stringify({
           ts: 1,
           turnId: "turn-a",
-          event: "perception_started",
+          event: "perception.started",
         }),
         '{"ts":2,"turnId":',
         "",
@@ -82,5 +82,16 @@ describe("trace-reader", () => {
     expect(readTraceEvents(tracePath)).toHaveLength(1);
     expect(summarizeTraceFile(tracePath, "turn-a")).toContain("trace warnings: 1");
     expect(() => readTraceEvents(tracePath, { strict: true })).toThrow("Invalid JSON");
+  });
+
+  it("routes normalized trace events through the shared taxonomy", () => {
+    expect(phaseForTraceEvent("extraction.actions.completed")).toBe("extraction");
+    expect(phaseForTraceEvent("extraction.commitments.transitioned")).toBe("extraction");
+    expect(phaseForTraceEvent("review_resolver.completed")).toBe("review");
+    expect(phaseForTraceEvent("turn.rejected")).toBe("session");
+    expect(phaseForTraceEvent("frame_anomaly.completed")).toBe("perception");
+    expect(phaseForTraceEvent("semantic_revision.completed")).toBe("retrieval");
+    expect(phaseForTraceEvent("shared_state.compile.completed")).toBe("retrieval");
+    expect(phaseForTraceEvent("shared_state.reconcile.completed")).toBe("retrieval");
   });
 });

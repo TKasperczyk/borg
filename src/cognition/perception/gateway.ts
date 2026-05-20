@@ -114,7 +114,7 @@ export class PerceptionGateway {
       },
     );
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("recency_compiled", {
+      this.options.tracer.emit("recency.completed", {
         turnId,
         messageCount: recencyWindow.messages.length,
         sourceEntryIds: recencyWindow.messages.map((message) => message.stream_entry_id),

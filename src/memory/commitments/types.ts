@@ -13,6 +13,13 @@ import {
 } from "../../util/ids.js";
 
 export const COMMITMENT_TYPES = ["promise", "boundary", "rule", "preference"] as const;
+export const COMMITMENT_KINDS = [
+  "assistant_commitment",
+  "audience_rule",
+  "participant_preference",
+  "boundary",
+  "process_norm",
+] as const;
 export const CLOSURE_PRESSURE_RELEVANCE = ["no_closure", "neutral", "closure_seeking"] as const;
 export const ENTITY_KINDS = ["person", "group", "self", "abstract"] as const;
 export const NAME_PROVENANCES = [
@@ -82,6 +89,7 @@ export const commitmentCanonicalizedByArtifactEntryIdSchema = z
   .transform((value) => value as SharedStateEntryId);
 
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
+export const commitmentKindSchema = z.enum(COMMITMENT_KINDS);
 export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
 export const entityKindSchema = z.enum(ENTITY_KINDS);
 export const nameProvenanceSchema = z.enum(NAME_PROVENANCES);
@@ -105,6 +113,7 @@ export const commitmentSchema = z.object({
   id: commitmentIdSchema,
   record_version: z.number().int().positive().optional(),
   type: commitmentTypeSchema,
+  kind: commitmentKindSchema,
   directive_family: directiveFamilySchema,
   closure_pressure_relevance: closurePressureRelevanceSchema.default("neutral"),
   directive: z.string().min(1),
@@ -141,6 +150,7 @@ export type EntityRecord = z.infer<typeof entityRecordSchema>;
 export type CommitmentRecord = z.infer<typeof commitmentSchema>;
 export type CommitmentPatch = z.infer<typeof commitmentPatchSchema>;
 export type CommitmentType = z.infer<typeof commitmentTypeSchema>;
+export type CommitmentKind = z.infer<typeof commitmentKindSchema>;
 export type ClosurePressureRelevance = z.infer<typeof closurePressureRelevanceSchema>;
 export type EntityKind = z.infer<typeof entityKindSchema>;
 export type NameProvenance = z.infer<typeof nameProvenanceSchema>;

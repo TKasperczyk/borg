@@ -676,6 +676,7 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
         input: {
           classification: "none",
           type: null,
+          kind: null,
           directive: null,
           directive_family: null,
           closure_pressure_relevance: null,

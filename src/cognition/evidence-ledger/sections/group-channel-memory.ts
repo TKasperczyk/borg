@@ -121,6 +121,10 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
         text: commitment.directive,
         value: commitment.directive_family,
         state: "active",
+        state_metadata: {
+          commitment_kind: commitment.kind,
+          commitment_type: commitment.type,
+        },
         taint: "none",
         ...persistenceClassFromProvenance(
           { streamEntryIds: commitment.source_stream_entry_ids ?? [] },

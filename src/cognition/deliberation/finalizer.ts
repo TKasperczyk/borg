@@ -303,7 +303,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
     return;
   }
 
-  options.tracer.emit("finalizer_emitted", {
+  options.tracer.emit("finalizer.completed", {
     turnId: options.turnId,
     path: options.path,
     mode: "emission_tools",

@@ -142,6 +142,8 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
           state_metadata: {
             subject_display_name: participant.displayName ?? "participant",
             subject_role: participant.role,
+            commitment_kind: commitment.kind,
+            commitment_type: commitment.type,
           },
           taint: "none",
           ...persistenceClassFromProvenance(

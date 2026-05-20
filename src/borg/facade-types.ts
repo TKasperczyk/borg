@@ -273,6 +273,7 @@ export type BorgSemanticFacade = {
 export type BorgCommitmentsFacade = {
   add: (input: {
     type: Parameters<CommitmentRepository["add"]>[0]["type"];
+    kind?: Parameters<CommitmentRepository["add"]>[0]["kind"];
     directiveFamily: string;
     directive: string;
     priority: number;
@@ -291,6 +292,7 @@ export type BorgCommitmentsFacade = {
     aboutEntity?: string | null;
   }) => ReturnType<CommitmentRepository["list"]>;
   countActive: () => ReturnType<CommitmentRepository["countActive"]>;
+  countActiveByKind: () => ReturnType<CommitmentRepository["countActiveByKind"]>;
   countSuperseded: () => ReturnType<CommitmentRepository["countSuperseded"]>;
   countRevoked: () => ReturnType<CommitmentRepository["countRevoked"]>;
   countExpired: () => ReturnType<CommitmentRepository["countExpired"]>;

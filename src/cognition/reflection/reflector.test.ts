@@ -1650,7 +1650,7 @@ describe("reflector", () => {
       }),
     ]);
     expect(tracer.events).toContainEqual({
-      event: "reflector_intent_updates_persisted",
+      event: "reflector.intent_update.completed",
       data: {
         turnId: "turn_intent_updates",
         created_durable_actions_count: 2,
@@ -1856,7 +1856,7 @@ describe("reflector", () => {
       }),
     );
     expect(tracer.events).toContainEqual({
-      event: "reflector_intent_update_suppressed",
+      event: "reflector.intent_update.rejected",
       data: {
         turnId: "turn-frame-anomaly",
         reason: "frame_anomaly",
@@ -2640,7 +2640,7 @@ describe("reflector", () => {
       expect(tracer.events).toEqual(
         expect.arrayContaining([
           {
-            event: "open_question_resolution_degraded",
+            event: "open_question_resolution.degraded",
             data: expect.objectContaining({
               turnId: "turn_resolution_validation",
               reason,
@@ -2719,7 +2719,7 @@ describe("reflector", () => {
     expect(tracer.events).toEqual(
       expect.arrayContaining([
         {
-          event: "open_question_resolution_degraded",
+          event: "open_question_resolution.degraded",
           data: expect.objectContaining({
             reason: "unknown_question",
             question_id: privateQuestion.id,
@@ -2799,7 +2799,7 @@ describe("reflector", () => {
     expect(tracer.events).toEqual(
       expect.arrayContaining([
         {
-          event: "open_question_resolution_degraded",
+          event: "open_question_resolution.degraded",
           data: expect.objectContaining({
             reason: "not_open",
             question_id: question.id,

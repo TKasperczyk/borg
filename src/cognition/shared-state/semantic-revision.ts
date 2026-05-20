@@ -106,7 +106,7 @@ function traceSemanticRevisionCompleted(input: {
     return;
   }
 
-  input.tracer.emit("decision_artifact_semantic_revision_completed", {
+  input.tracer.emit("semantic_revision.completed", {
     turnId: input.turnId,
     artifact_entry_id: input.artifactEntryId,
     candidates_enumerated: input.candidatesEnumerated,
@@ -131,7 +131,7 @@ function traceSemanticRevisionDegraded(input: {
     return;
   }
 
-  input.tracer.emit("decision_artifact_semantic_revision_degraded", {
+  input.tracer.emit("semantic_revision.degraded", {
     turnId: input.turnId,
     artifact_entry_id: input.artifactEntryId,
     reason: input.reason,
@@ -152,7 +152,7 @@ function traceSemanticRevisionCacheHit(input: {
     return;
   }
 
-  input.tracer.emit("decision_artifact_semantic_revision_cache_hit", {
+  input.tracer.emit("semantic_revision.cache.completed", {
     turnId: input.turnId,
     artifact_entry_id: input.artifactEntryId,
     candidate_node_id: input.candidateNodeId,
@@ -170,7 +170,7 @@ function traceSemanticStatusTransition(input: {
     return;
   }
 
-  input.tracer.emit("semantic_node_status_transitioned", {
+  input.tracer.emit("semantic_node.status.transitioned", {
     turnId: input.turnId,
     nodeId: input.transition.id,
     fromStatus: input.transition.fromStatus,
@@ -399,7 +399,7 @@ function traceSemanticRevisionLlmCallStarted(options: {
   tools: readonly LLMToolDefinition[];
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
       model: options.model,
@@ -415,7 +415,7 @@ function traceSemanticRevisionLlmCallResponse(options: {
   response: LLMCompleteResult;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
       responseShape: summarizeSemanticRevisionResponseShape(options.response),
@@ -431,7 +431,7 @@ function traceSemanticRevisionLlmCallError(options: {
   error: unknown;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
       responseShape: {

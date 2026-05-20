@@ -83,7 +83,7 @@ export async function expandRecall(
   const tools = [RECALL_EXPANSION_TOOL];
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "recall_expansion",
       model: options.model,
@@ -106,7 +106,7 @@ export async function expandRecall(
     });
   } catch (error) {
     if (options.tracer?.enabled === true && options.turnId !== undefined) {
-      options.tracer.emit("llm_call_response", {
+      options.tracer.emit("llm_call.completed", {
         turnId: options.turnId,
         label: "recall_expansion",
         responseShape: {
@@ -121,7 +121,7 @@ export async function expandRecall(
   }
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "recall_expansion",
       responseShape: summarizeRecallExpansionResponseShape(response),
@@ -149,8 +149,9 @@ export async function expandRecall(
   const droppedFacets = orderedFacets.slice(MAX_RECALL_EXPANSION_FACETS);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("recall_expansion_clipped", {
+    options.tracer.emit("recall_expansion.completed", {
       turnId: options.turnId,
+      clipped: true,
       original_count: parsed.facets.length,
       retained_count: MAX_RECALL_EXPANSION_FACETS,
       ...(options.tracer.includePayloads === true

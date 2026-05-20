@@ -213,7 +213,7 @@ describe("Borg", () => {
       expect.objectContaining({
         ts: 12_345,
         turnId: `session_end:${sessionId}`,
-        event: "session_ended",
+        event: "session.completed",
         session_id: sessionId,
       }),
     );

@@ -1,4 +1,6 @@
 import type { Config } from "../src/index.js";
+import type { TracePhaseWithOther } from "../src/cognition/tracing/taxonomy.js";
+import type { TurnTraceEventName } from "../src/cognition/tracing/tracer.js";
 import type { StreamEntry } from "../src/stream/index.js";
 
 export type DeepPartial<T> = {
@@ -19,15 +21,7 @@ export type AssessorVerdict = {
   evidence: string[];
 };
 
-export type TracePhase =
-  | "perception"
-  | "executive_focus"
-  | "retrieval"
-  | "deliberation"
-  | "action"
-  | "reflection"
-  | "ingestion"
-  | "other";
+export type TracePhase = TracePhaseWithOther;
 
 export type TraceRecord = {
   ts: number;
@@ -46,7 +40,7 @@ export type TraceAssertion =
   | {
       type: "event_seen";
       description: string;
-      eventIncludes: string;
+      event: TurnTraceEventName;
       turn?: "any" | "last";
     }
   | {

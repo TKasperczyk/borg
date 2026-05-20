@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
-import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/deliberation/constants.js";
+import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capabilities.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerSectionId,

@@ -185,7 +185,7 @@ function applyInternalIdentifierGuard(input: {
   }
 
   if (input.tracer.enabled) {
-    input.tracer.emit("internal_identifier_guard", {
+    input.tracer.emit("internal_identifier_guard.completed", {
       turnId: input.turnId,
       verdict: "suppressed",
       leaked_identifiers: leakedIdentifiers,

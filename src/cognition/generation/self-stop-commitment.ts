@@ -7,6 +7,7 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import { normalizeDirectiveFamily } from "../../memory/commitments/index.js";
+import { STOP_COMMITMENT_SYSTEM_PROMPT } from "../prompts/commitment-extraction.js";
 
 const stopCommitmentSchema = z.object({
   classification: z.enum(["stop_until_substantive_content", "none"]),
@@ -107,12 +108,7 @@ export class StopCommitmentExtractor {
       return parseResponse(
         await this.options.llmClient.complete({
           model: this.options.model,
-          system: [
-            "Classify whether the assistant response is an operational commitment to stop emitting assistant messages until the user provides substantive new content.",
-            "Return stop_until_substantive_content only for direct, future-facing commitments to emit no assistant messages until substantive user content appears.",
-            "Return none for local style, topic, or explanation-boundary commitments that do not imply future no-output behavior.",
-            "When classification is stop_until_substantive_content, emit directive_family as stop_until_substantive_content.",
-          ].join("\n"),
+          system: STOP_COMMITMENT_SYSTEM_PROMPT,
           messages: [
             {
               role: "user",

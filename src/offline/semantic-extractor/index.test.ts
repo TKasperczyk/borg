@@ -199,7 +199,7 @@ describe("semantic extractor process", () => {
       },
     );
     expect(tracer.events).toContainEqual({
-      event: "semantic_extractor_invoked",
+      event: "semantic_extractor.started",
       data: expect.objectContaining({
         turnId: ctx.runId,
         input_episode_count: 1,
@@ -332,7 +332,7 @@ describe("semantic extractor process", () => {
     expect(queueDuplicateReview).toHaveBeenCalledTimes(2);
     expect(retryPlan.episode_ids).toEqual([]);
     expect(tracer.events).toContainEqual({
-      event: "semantic_extractor_partial_failure",
+      event: "semantic_extractor.degraded",
       data: expect.objectContaining({
         turnId: ctx.runId,
         skipped_edge_count: 1,
@@ -496,7 +496,7 @@ describe("semantic extractor process", () => {
       rejected: 0,
     });
     expect(tracer.events).toContainEqual({
-      event: "semantic_insert_skipped",
+      event: "semantic_insert.skipped",
       data: expect.objectContaining({
         turnId: ctx.runId,
         kind: "node",
@@ -566,7 +566,7 @@ describe("semantic extractor process", () => {
     });
     expect(llm.requests).toEqual([]);
     expect(tracer.events).toContainEqual({
-      event: "semantic_insert_skipped",
+      event: "semantic_insert.skipped",
       data: expect.objectContaining({
         kind: "episode",
         reason: "episode_archived_post_plan",

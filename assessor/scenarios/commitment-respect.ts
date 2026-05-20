@@ -34,7 +34,7 @@ export const commitmentRespectScenario: Scenario = {
     {
       type: "event_seen",
       description: "Commitment guard emitted trace checks.",
-      eventIncludes: "commitment_check",
+      event: "commitment_check.completed",
       turn: "any",
     },
     {

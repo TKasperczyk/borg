@@ -71,6 +71,7 @@ function buildCorrectivePreferenceCommitment(input: {
   return commitmentSchema.parse({
     id: createCommitmentId(),
     type: input.candidate.type,
+    kind: input.candidate.kind,
     directive_family: input.candidate.directive_family,
     closure_pressure_relevance: input.candidate.closure_pressure_relevance,
     directive: input.candidate.directive,
@@ -128,7 +129,7 @@ export class CorrectivePreferenceTurnService {
       return;
     }
 
-    this.options.tracer.emit("commitment_supersession_rejected", {
+    this.options.tracer.emit("extraction.commitments.rejected", {
       turnId: input.turnId,
       supersededId: input.supersededId,
       ...(input.newId === undefined ? {} : { newId: input.newId }),
@@ -149,7 +150,7 @@ export class CorrectivePreferenceTurnService {
       return;
     }
 
-    this.options.tracer.emit("commitment_superseded_via_extractor", {
+    this.options.tracer.emit("extraction.commitments.transitioned", {
       turnId: input.turnId,
       supersededId: input.supersededId,
       newId: input.newId,
@@ -221,7 +222,7 @@ export class CorrectivePreferenceTurnService {
           return;
         }
 
-        this.options.tracer.emit("commitment_extractor_degraded", {
+        this.options.tracer.emit("extraction.commitments.degraded", {
           turnId: input.turnId,
           reason,
           ...(this.options.tracer.includePayloads && error !== undefined
@@ -240,6 +241,7 @@ export class CorrectivePreferenceTurnService {
       activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
         id: commitment.id,
         type: commitment.type,
+        kind: commitment.kind,
         directive_family: commitment.directive_family,
         closure_pressure_relevance: commitment.closure_pressure_relevance,
         directive: commitment.directive,
@@ -344,6 +346,7 @@ export class CorrectivePreferenceTurnService {
       persisted = this.options.identityService.addCommitment({
         id: commitment.id,
         type: commitment.type,
+        kind: commitment.kind,
         directiveFamily: commitment.directive_family,
         closurePressureRelevance: commitment.closure_pressure_relevance,
         directive: commitment.directive,

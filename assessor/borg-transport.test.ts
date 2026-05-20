@@ -34,7 +34,7 @@ describe("BorgTransport", () => {
 
       expect(result.response).toContain("Otto");
       expect(result.turnId).toHaveLength(36);
-      expect(summary).toContain("retrieval_completed");
+      expect(summary).toContain("retrieval.completed");
       expect(transport.readTraceEvents().some((record) => record.turnId === result.turnId)).toBe(
         true,
       );

@@ -1,5 +1,5 @@
 // Renders S2 turn plans back into tagged, escaped finalizer prompt context.
-import { UNTRUSTED_DATA_PREAMBLE } from "../constants.js";
+import { UNTRUSTED_DATA_PREAMBLE } from "../../prompts/base-identity.js";
 import type { TurnPlan } from "../s2-planner.js";
 import { renderTaggedPromptBlock } from "./sections.js";
 

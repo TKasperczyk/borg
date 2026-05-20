@@ -10,6 +10,7 @@ import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor
 function correctivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
+  kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
   directive?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
@@ -30,6 +31,11 @@ function correctivePreferenceResponse(input: {
         input: {
           classification: input.classification,
           type: input.type ?? null,
+          kind:
+            input.kind ??
+            (input.classification === "corrective_preference"
+              ? "participant_preference"
+              : null),
           directive: input.directive ?? null,
           directive_family: input.directive_family ?? null,
           closure_pressure_relevance:
@@ -76,6 +82,7 @@ describe("CorrectivePreferenceExtractor", () => {
 
     expect(result).toMatchObject({
       type: "preference",
+      kind: "participant_preference",
       directive: "Do not add ritual closing lines when the conversation is still open.",
       directive_family: "no_terminal_valediction",
       closure_pressure_relevance: "no_closure",
@@ -127,19 +134,20 @@ describe("CorrectivePreferenceExtractor", () => {
       }),
     ).resolves.toMatchObject({
       type: "preference",
+      kind: "participant_preference",
       directive: "Do not add ritual closing lines when the conversation is still open.",
       directive_family: "no_terminal_valediction",
       closure_pressure_relevance: "no_closure",
     });
 
-    expect(emit).toHaveBeenCalledWith("llm_call_started", {
+    expect(emit).toHaveBeenCalledWith("llm_call.started", {
       turnId: "turn-corrective-preference",
       label: "corrective_preference_extractor",
       model: "haiku",
       promptCharCount: expect.any(Number),
       toolSchemas: expect.any(Array),
     });
-    expect(emit).toHaveBeenCalledWith("llm_call_response", {
+    expect(emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-corrective-preference",
       label: "corrective_preference_extractor",
       responseShape: {

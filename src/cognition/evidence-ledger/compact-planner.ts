@@ -6,7 +6,7 @@ import {
   type SharedStateRenderOptions,
 } from "../shared-state/render.js";
 import type { SharedStateKindCounts } from "../shared-state/selection.js";
-import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
+import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
 import { renderSection } from "./section-rendering.js";

@@ -1,0 +1,129 @@
+import type { TurnTraceEventName } from "./tracer.js";
+
+export const TRACE_EVENT_TAXONOMY = {
+  perception: [
+    "perception.started",
+    "perception.completed",
+    "perception.classifier.degraded",
+    "recency.completed",
+    "participant_scan.skipped",
+    "frame_anomaly.degraded",
+    "frame_anomaly.completed",
+    "frame_anomaly.transitioned",
+    "frame_anomaly.fallback.completed",
+    "closure_loop.degraded",
+    "closure_loop.transitioned",
+  ],
+  working_memory: ["working_memory.degraded"],
+  executive_focus: [],
+  retrieval: [
+    "retrieval.started",
+    "retrieval.completed",
+    "retrieval.degraded",
+    "recall_expansion.completed",
+    "citation_resolution.degraded",
+    "evidence_ledger.completed",
+    "evidence_ledger.compaction.completed",
+    "shared_state.compile.skipped",
+    "shared_state.compile.transitioned",
+    "shared_state.compile.completed",
+    "shared_state.compile.degraded",
+    "shared_state.lifecycle.degraded",
+    "shared_state.reconcile.completed",
+    "shared_state.reconcile.skipped",
+    "shared_state.canonicalization.completed",
+    "semantic_revision.completed",
+    "semantic_revision.cache.completed",
+    "semantic_revision.degraded",
+  ],
+  deliberation: [
+    "llm_call.started",
+    "llm_call.completed",
+    "deliberation.planner_ledger.completed",
+    "deliberation.contradiction_routing.completed",
+    "deliberation.contradiction_routing.transitioned",
+    "deliberation.path.completed",
+    "deliberation.path.transitioned",
+    "deliberation.plan.completed",
+    "deliberation.planner.degraded",
+    "deliberation.plan_persistence.completed",
+    "deliberation.plan_persistence.skipped",
+    "finalizer.completed",
+  ],
+  tools: ["tool_call.started", "tool_call.completed"],
+  commitments: [
+    "commitment_check.completed",
+    "closure_response_guard.completed",
+    "closure_pressure_audit.degraded",
+    "internal_identifier_guard.completed",
+    "post_generation.rejected",
+  ],
+  extraction: [
+    "extraction.commitments.degraded",
+    "extraction.commitments.rejected",
+    "extraction.commitments.transitioned",
+    "extraction.actions.rejected",
+    "extraction.actions.completed",
+    "extraction.actions.degraded",
+    "action_persistence.dedup.skipped",
+    "action_persistence.dedup.degraded",
+    "action_state.transitioned",
+    "action_duplicate_pressure.completed",
+    "extraction.goals.degraded",
+    "extraction.goals.completed",
+    "extraction.goals.rejected",
+    "extraction.goals.transitioned",
+    "extraction.goals.skipped",
+    "extraction.goals.dedup.degraded",
+  ],
+  discourse: ["discourse_state.transitioned", "discourse_state.rejected"],
+  reflection: [
+    "reflection.completed",
+    "open_question_resolution.started",
+    "open_question_resolution.degraded",
+    "open_question_resolution.transitioned",
+    "open_question_resolution.rejected",
+    "reflector.intent_update.completed",
+    "reflector.intent_update.rejected",
+    "reflector.candidate.completed",
+  ],
+  review: [
+    "review_resolver.started",
+    "review_resolver.decision.completed",
+    "review_resolver.completed",
+    "review_resolver.degraded",
+    "review_queue.completed",
+  ],
+  ingestion: [
+    "semantic_extractor.started",
+    "semantic_extractor.degraded",
+    "semantic_insert.skipped",
+    "semantic_node.status.transitioned",
+  ],
+  offline: ["offline_process.completed"],
+  maintenance: ["maintenance_snapshot.completed"],
+  session: ["session.completed", "turn.rejected"],
+} as const satisfies Record<string, readonly TurnTraceEventName[]>;
+
+export type TraceTaxonomyPhase = keyof typeof TRACE_EVENT_TAXONOMY;
+export type TracePhaseWithOther = TraceTaxonomyPhase | "other";
+
+export const TRACE_TAXONOMY_PHASES = Object.keys(
+  TRACE_EVENT_TAXONOMY,
+) as TraceTaxonomyPhase[];
+export const TRACE_TAXONOMY_PHASES_WITH_OTHER: readonly TracePhaseWithOther[] = [
+  ...TRACE_TAXONOMY_PHASES,
+  "other",
+];
+
+const TRACE_EVENT_PHASES = new Map<string, TraceTaxonomyPhase>();
+
+for (const phase of TRACE_TAXONOMY_PHASES) {
+  for (const event of TRACE_EVENT_TAXONOMY[phase]) {
+    TRACE_EVENT_PHASES.set(event, phase);
+  }
+}
+
+export function phaseForTraceEventName(event: string): TracePhaseWithOther {
+  return TRACE_EVENT_PHASES.get(event) ?? "other";
+}

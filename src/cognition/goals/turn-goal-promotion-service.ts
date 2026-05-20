@@ -411,7 +411,7 @@ export class TurnGoalPromotionService {
       return;
     }
 
-    this.options.tracer.emit("goal_promotion_initial_step_downgraded", {
+    this.options.tracer.emit("extraction.goals.transitioned", {
       turnId: input.turnId,
       reason: "wait_without_due_at",
       goalId: input.goalId,
@@ -431,7 +431,7 @@ export class TurnGoalPromotionService {
       return;
     }
 
-    this.options.tracer.emit("goal_promotion_skipped_as_duplicate", {
+    this.options.tracer.emit("extraction.goals.skipped", {
       turnId: input.turnId,
       candidate_description: input.candidateDescription,
       reason: input.reason,
@@ -455,7 +455,7 @@ export class TurnGoalPromotionService {
       return;
     }
 
-    this.options.tracer.emit("goal_promotion_dedup_degraded", {
+    this.options.tracer.emit("extraction.goals.dedup.degraded", {
       turnId: input.turnId,
       reason: input.reason,
       error: input.error instanceof Error ? input.error.message : String(input.error),
@@ -475,7 +475,7 @@ export class TurnGoalPromotionService {
       return;
     }
 
-    this.options.tracer.emit("goal_promotion_extractor_degraded", {
+    this.options.tracer.emit("extraction.goals.degraded", {
       turnId: input.turnId,
       reason: input.reason,
       ...(input.details ?? {}),

@@ -338,7 +338,7 @@ export async function suppressFromClosureLoopPhase(input: {
   });
 
   if (input.options.tracer.enabled) {
-    input.options.tracer.emit("generation_suppressed", {
+    input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
       reason: "finalizer_no_output",
       streamEntryId: suppressionMarker.id,
@@ -435,7 +435,7 @@ export async function suppressFromGenerationGatePhase(input: {
   });
 
   if (input.options.tracer.enabled) {
-    input.options.tracer.emit("generation_suppressed", {
+    input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
       reason: suppressionReason,
       streamEntryId: suppressionMarker.id,
@@ -510,7 +510,7 @@ async function suppressFromActionPhase(input: {
   }
 
   if (input.options.tracer.enabled) {
-    input.options.tracer.emit("generation_suppressed", {
+    input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
       reason: input.actionEmission.reason,
       streamEntryId: input.persistedAgentEntry.id,

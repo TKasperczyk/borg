@@ -324,7 +324,7 @@ function identityEventRow(record: RecordLike): string {
 }
 
 function commitmentRow(record: RecordLike): string {
-  return `- id=${scalar(record.id)} type=${scalar(record.type)} family=${scalar(record.directive_family)} priority=${scalar(record.priority)} made_to=${scalar(record.made_to_entity)} audience=${scalar(record.restricted_audience)} about=${scalar(record.about_entity)} revoked=${ts(record.revoked_at)} superseded_by=${scalar(record.superseded_by)} sources=${ids(record.source_stream_entry_ids)} directive="${oneLine(record.directive)}"`;
+  return `- id=${scalar(record.id)} kind=${scalar(record.kind)} type=${scalar(record.type)} family=${scalar(record.directive_family)} priority=${scalar(record.priority)} made_to=${scalar(record.made_to_entity)} audience=${scalar(record.restricted_audience)} about=${scalar(record.about_entity)} revoked=${ts(record.revoked_at)} superseded_by=${scalar(record.superseded_by)} sources=${ids(record.source_stream_entry_ids)} directive="${oneLine(record.directive)}"`;
 }
 
 function commitmentExpired(record: RecordLike, nowMs: number): boolean {

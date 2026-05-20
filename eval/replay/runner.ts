@@ -185,7 +185,7 @@ function objectArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 function eventGuardCategories(event: TraceEvent): string[] {
-  if (event.event === "closure_response_guard") {
+  if (event.event === "closure_response_guard.completed") {
     const spanKinds = objectArray(event.spans)
       .map((span) => stringValue(span.kind))
       .filter((kind): kind is string => kind !== null);
@@ -193,7 +193,7 @@ function eventGuardCategories(event: TraceEvent): string[] {
     return ["closure_pressure", ...spanKinds];
   }
 
-  if (event.event === "commitment_check") {
+  if (event.event === "commitment_check.completed") {
     return ["commitment"];
   }
 
@@ -202,7 +202,7 @@ function eventGuardCategories(event: TraceEvent): string[] {
 
 function eventShadowGuardCategories(event: TraceEvent): string[] {
   if (
-    (event.event === "closure_response_guard" || event.event === "commitment_check") &&
+    (event.event === "closure_response_guard.completed" || event.event === "commitment_check.completed") &&
     stringValue(event.mode) === "shadow"
   ) {
     return eventGuardCategories(event);
@@ -223,7 +223,7 @@ function intersects(left: readonly string[], right: readonly string[]): boolean 
 
 function guardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): boolean {
   return events.some((event) => {
-    if (event.event !== "closure_response_guard" && event.event !== "commitment_check") {
+    if (event.event !== "closure_response_guard.completed" && event.event !== "commitment_check.completed") {
       return false;
     }
 
@@ -235,7 +235,7 @@ function guardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): b
 
 function shadowGuardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): boolean {
   return events.some((event) => {
-    if (event.event !== "closure_response_guard" && event.event !== "commitment_check") {
+    if (event.event !== "closure_response_guard.completed" && event.event !== "commitment_check.completed") {
       return false;
     }
 

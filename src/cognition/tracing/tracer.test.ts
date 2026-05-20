@@ -28,7 +28,7 @@ function readTraceEvents(path: string): TraceEvent[] {
 
 function emitContractEvent(tracer: TurnTracer): void {
   if (!tracer.enabled) {
-    tracer.emit("recency_compiled", {
+    tracer.emit("recency.completed", {
       turnId: "turn_contract",
       messageCount: 0,
       sourceEntryIds: [],
@@ -36,7 +36,7 @@ function emitContractEvent(tracer: TurnTracer): void {
     return;
   }
 
-  tracer.emit("recency_compiled", {
+  tracer.emit("recency.completed", {
     turnId: "turn_contract",
     messageCount: 0,
     sourceEntryIds: [],
@@ -74,7 +74,7 @@ describe("TurnTracer", () => {
     expect(events[0]).toMatchObject({
       ts: 42,
       turnId: "turn_contract",
-      event: "recency_compiled",
+      event: "recency.completed",
       messageCount: 0,
       sourceEntryIds: [],
     });
@@ -89,14 +89,14 @@ describe("TurnTracer", () => {
       clock: new FixedClock(123),
     });
 
-    tracer.emit("retrieval_started", {
+    tracer.emit("retrieval.started", {
       turnId: "turn_1",
       query: "pgvector drift",
       options: {
         limit: 3,
       },
     });
-    tracer.emit("retrieval_completed", {
+    tracer.emit("retrieval.completed", {
       turnId: "turn_1",
       episodeCount: 0,
       semanticHits: 0,
@@ -111,8 +111,8 @@ describe("TurnTracer", () => {
     expect(events.every((event) => event.ts === 123)).toBe(true);
     expect(new Set(events.map((event) => event.turnId))).toEqual(new Set(["turn_1"]));
     expect(events.map((event) => event.event)).toEqual([
-      "retrieval_started",
-      "retrieval_completed",
+      "retrieval.started",
+      "retrieval.completed",
     ]);
   });
 
@@ -124,26 +124,26 @@ describe("TurnTracer", () => {
       clock: new FixedClock(321),
     });
 
-    tracer.emit("perception_classifier_degraded", {
+    tracer.emit("perception.classifier.degraded", {
       turnId: "turn_degraded",
       classifier: "affective_signal",
       reason: "llm_unavailable",
     });
-    tracer.emit("retrieval_degraded", {
+    tracer.emit("retrieval.degraded", {
       turnId: "turn_degraded",
       subsystem: "open_questions",
       reason: "embedding_unavailable",
     });
-    tracer.emit("working_memory_degraded", {
+    tracer.emit("working_memory.degraded", {
       turnId: "turn_degraded",
       subsystem: "pending_actions",
       reason: "non_action",
     });
 
     expect(readTraceEvents(tracePath).map((event) => event.event)).toEqual([
-      "perception_classifier_degraded",
-      "retrieval_degraded",
-      "working_memory_degraded",
+      "perception.classifier.degraded",
+      "retrieval.degraded",
+      "working_memory.degraded",
     ]);
   });
 
@@ -155,7 +155,7 @@ describe("TurnTracer", () => {
     expect(tracer.enabled).toBe(false);
     expect(tracer.includePayloads).toBe(false);
     expect(
-      tracer.emit("llm_call_started", {
+      tracer.emit("llm_call.started", {
         turnId: "turn_noop",
         label: "noop",
         model: "none",
@@ -179,7 +179,7 @@ describe("TurnTracer", () => {
 
     expect(tracer.enabled).toBe(true);
     expect(tracer.includePayloads).toBe(true);
-    tracer.emit("plan_extraction", {
+    tracer.emit("deliberation.plan.completed", {
       turnId: "turn_env",
       success: true,
     });
@@ -188,7 +188,7 @@ describe("TurnTracer", () => {
     expect(event).toMatchObject({
       ts: 500,
       turnId: "turn_env",
-      event: "plan_extraction",
+      event: "deliberation.plan.completed",
       success: true,
     });
     expect(typeof event?.wallMs).toBe("number");
@@ -322,48 +322,48 @@ describe("TurnTracer", () => {
 
     expect(new Set(events.map((event) => event.turnId)).size).toBe(1);
     expect(events.map((event) => event.event)).toEqual([
-      "recency_compiled",
-      "perception_started",
-      "perception_classifier_degraded",
-      "perception_completed",
-      "llm_call_started",
-      "llm_call_response",
-      "frame_anomaly_classified",
-      "llm_call_started",
-      "llm_call_started",
-      "llm_call_started",
-      "llm_call_response",
-      "llm_call_response",
-      "action_state_extractor_completed",
-      "llm_call_response",
-      "goal_promotion_extractor_completed",
-      "retrieval_started",
-      "llm_call_started",
-      "llm_call_response",
-      "retrieval_degraded",
-      "retrieval_completed",
-      "contradiction_routing_classified",
-      "path_selected",
-      "llm_call_started",
-      "llm_call_response",
-      "plan_extraction",
-      "plan_persisted",
-      "llm_call_started",
-      "llm_call_response",
-      "finalizer_emitted",
-      "commitment_check",
-      "closure_response_guard",
-      "reflection_emitted",
+      "recency.completed",
+      "perception.started",
+      "perception.classifier.degraded",
+      "perception.completed",
+      "llm_call.started",
+      "llm_call.completed",
+      "frame_anomaly.completed",
+      "llm_call.started",
+      "llm_call.started",
+      "llm_call.started",
+      "llm_call.completed",
+      "llm_call.completed",
+      "extraction.actions.completed",
+      "llm_call.completed",
+      "extraction.goals.completed",
+      "retrieval.started",
+      "llm_call.started",
+      "llm_call.completed",
+      "retrieval.degraded",
+      "retrieval.completed",
+      "deliberation.contradiction_routing.completed",
+      "deliberation.path.completed",
+      "llm_call.started",
+      "llm_call.completed",
+      "deliberation.plan.completed",
+      "deliberation.plan_persistence.completed",
+      "llm_call.started",
+      "llm_call.completed",
+      "finalizer.completed",
+      "commitment_check.completed",
+      "closure_response_guard.completed",
+      "reflection.completed",
     ]);
-    expect(events.find((event) => event.event === "plan_persisted")).toMatchObject({
+    expect(events.find((event) => event.event === "deliberation.plan_persistence.completed")).toMatchObject({
       streamEntryId: expect.stringMatching(/^strm_/),
     });
     expect(
       events
-        .filter((event) => event.event === "perception_classifier_degraded")
+        .filter((event) => event.event === "perception.classifier.degraded")
         .map((event) => event.classifier),
     ).toEqual(["affective_signal"]);
-    expect(events.find((event) => event.event === "finalizer_emitted")).toMatchObject({
+    expect(events.find((event) => event.event === "finalizer.completed")).toMatchObject({
       path: "system_2",
       decision: "answer",
     });

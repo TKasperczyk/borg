@@ -258,7 +258,9 @@ export {
   type SocialSentimentPoint,
 } from "./memory/social/index.js";
 export {
+  COMMITMENT_KINDS,
   type CommitmentRecord,
+  type CommitmentKind,
   type CommitmentType,
   type EntityRecord,
 } from "./memory/commitments/index.js";

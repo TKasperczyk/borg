@@ -31,6 +31,7 @@ function makeCommitment(id: string, priority: number, createdAt: number): Commit
   return {
     id: id as CommitmentId,
     type: "promise",
+    kind: "assistant_commitment",
     directive_family: `directive_${id}`,
     closure_pressure_relevance: "neutral",
     directive: `directive ${id}`,

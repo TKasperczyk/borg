@@ -52,6 +52,7 @@ function makeCommitment(): CommitmentRecord {
   return {
     id: createCommitmentId(),
     type: "boundary",
+    kind: "boundary",
     directive_family: "launch_date_boundary",
     closure_pressure_relevance: "no_closure",
     directive: "Do not discuss launch dates, and do not convert open pauses into closure.",
@@ -190,7 +191,7 @@ describe("post-generation guard shadow chain", () => {
     expect(emit.mock.calls).toEqual(
       expect.arrayContaining([
         [
-          "commitment_check",
+          "commitment_check.completed",
           expect.objectContaining({
             mode: "shadow",
             verdict: "passed",
@@ -198,7 +199,7 @@ describe("post-generation guard shadow chain", () => {
           }),
         ],
         [
-          "closure_response_guard",
+          "closure_response_guard.completed",
           expect.objectContaining({
             mode: "shadow",
             verdict: "passed",
@@ -268,8 +269,8 @@ describe("post-generation guard shadow chain", () => {
       reason: "internal_identifier_leak",
     });
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
-    expect(emit).toHaveBeenCalledWith("closure_response_guard", expect.any(Object));
-    expect(emit).toHaveBeenCalledWith("internal_identifier_guard", {
+    expect(emit).toHaveBeenCalledWith("closure_response_guard.completed", expect.any(Object));
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
       turnId: "turn-internal-id-leak",
       verdict: "suppressed",
       leaked_identifiers: [userEntryId],
@@ -324,7 +325,7 @@ describe("post-generation guard shadow chain", () => {
       kind: "message",
       content: response,
     });
-    expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard", expect.any(Object));
+    expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard.completed", expect.any(Object));
   });
 
   it("suppresses prompt-visible discourse-state UUID turn IDs after closure guard passes", async () => {
@@ -381,7 +382,7 @@ describe("post-generation guard shadow chain", () => {
       kind: "suppressed",
       reason: "internal_identifier_leak",
     });
-    expect(emit).toHaveBeenCalledWith("internal_identifier_guard", {
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
       turnId: "turn-discourse-uuid-leak",
       verdict: "suppressed",
       leaked_identifiers: [discourseTurnId],

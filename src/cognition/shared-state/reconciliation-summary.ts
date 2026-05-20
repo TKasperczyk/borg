@@ -248,7 +248,7 @@ export function traceContaminatedSharedStateEntrySkip(input: {
     (source) => source.reason !== "quarantined",
   ).length;
 
-  input.tracer.emit("decision_artifact_reconciliation_skipped_contaminated_entry", {
+  input.tracer.emit("shared_state.reconcile.skipped", {
     turnId: input.turnId,
     artifact_entry_id: input.entry.id,
     kind: input.entry.kind,

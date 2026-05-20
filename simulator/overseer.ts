@@ -15,7 +15,7 @@ import { z } from "zod";
 
 import { BorgTransport, type AuditTranscriptEntry } from "../assessor/borg-transport.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
-import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../src/cognition/host-capabilities.js";
+import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../src/cognition/prompts/host-capabilities.js";
 import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
 import type { StreamEntry } from "../src/stream/index.js";
 
@@ -1011,7 +1011,7 @@ function emitRejectedFindingTrace(
       ts: Date.now(),
       wallMs: performance.now(),
       turnId: `simulator_overseer_${options.turnCounter}`,
-      event: "overseer_finding_rejected",
+      event: "overseer.finding.rejected",
       artifact: "simulator",
       turn_counter: options.turnCounter,
       category: finding.category,
@@ -1039,7 +1039,7 @@ function emitCarryoverDemotionTrace(options: RunOverseerOptions, finding: Valida
       ts: Date.now(),
       wallMs: performance.now(),
       turnId: `simulator_overseer_${options.turnCounter}`,
-      event: "overseer_finding_carryover_demoted",
+      event: "overseer.finding.transitioned",
       artifact: "simulator",
       turn_counter: options.turnCounter,
       category: finding.category,

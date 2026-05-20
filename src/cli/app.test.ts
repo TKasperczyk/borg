@@ -143,17 +143,27 @@ describe("cli", () => {
         JSON.stringify({
           ts: 1_000,
           turnId: "turn_a",
-          event: "perception_started",
+          event: "perception.started",
           inputCharCount: 12,
         }),
         JSON.stringify({
           ts: 1_001,
           turnId: "turn_a",
-          event: "llm_call_started",
+          event: "llm_call.started",
           label: "s2_planner",
           prompt: {
             system: "large prompt",
           },
+        }),
+        JSON.stringify({
+          ts: 1_002,
+          turnId: "turn_a",
+          event: "extraction.actions.completed",
+        }),
+        JSON.stringify({
+          ts: 1_003,
+          turnId: "turn_a",
+          event: "review_resolver.completed",
         }),
         "",
       ].join("\n"),
@@ -168,8 +178,10 @@ describe("cli", () => {
 
     expect(exitCode).toBe(0);
     expect(stdout.read()).toContain("turn turn_a");
-    expect(stdout.read()).toContain("perception_started");
-    expect(stdout.read()).toContain("llm_call_started");
+    expect(stdout.read()).toContain("perception.started");
+    expect(stdout.read()).toContain("llm_call.started");
+    expect(stdout.read()).toContain("extraction.actions.completed");
+    expect(stdout.read()).toContain("review_resolver.completed");
     expect(stdout.read()).toContain("[collapsed; use --full]");
     expect(stderr.read()).toBe("");
   });
@@ -1657,6 +1669,8 @@ describe("cli", () => {
           "add",
           "--type",
           "boundary",
+          "--kind",
+          "boundary",
           "--directive-family",
           "atlas_sam_boundary",
           "--directive",
@@ -1677,7 +1691,9 @@ describe("cli", () => {
     ).toBe(0);
     const commitment = JSON.parse(addCommitmentOut.read()) as {
       id: string;
+      kind: string;
     };
+    expect(commitment.kind).toBe("boundary");
 
     const listCommitmentsOut = createOutputBuffer();
     expect(

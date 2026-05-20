@@ -88,9 +88,10 @@ export class TurnDiscourseStateService {
     });
 
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_set", {
+      this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
         state: DISCOURSE_STATE_NAME,
+        transition: "set",
         provenance: input.provenance,
         reason: input.reason,
         ...(input.sourceStreamEntryId === undefined
@@ -111,9 +112,10 @@ export class TurnDiscourseStateService {
     const next = clearStopUntilSubstantiveContent(input.workingMemory);
 
     if (active !== null && this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_cleared", {
+      this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
         state: DISCOURSE_STATE_NAME,
+        transition: "cleared",
         provenance: active.provenance,
         reason: input.reason,
       });
@@ -140,9 +142,10 @@ export class TurnDiscourseStateService {
     });
 
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_set", {
+      this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
         state: CLOSURE_LOOP_STATE_NAME,
+        transition: "detected",
         provenance: "closure_loop_classifier",
         reason: input.reason,
         sourceStreamEntryIds: [...input.sourceStreamEntryIds],
@@ -177,9 +180,10 @@ export class TurnDiscourseStateService {
     });
 
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_set", {
+      this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
         state: CLOSURE_LOOP_STATE_NAME,
+        transition: "named",
         provenance: "closure_loop_named",
         reason: input.reason,
         ...(input.sourceStreamEntryId === undefined
@@ -200,9 +204,10 @@ export class TurnDiscourseStateService {
     const next = clearClosureLoop(input.workingMemory);
 
     if (active !== null && this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_cleared", {
+      this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
         state: CLOSURE_LOOP_STATE_NAME,
+        transition: "cleared",
         provenance: "closure_loop_classifier",
         reason: input.reason,
       });
@@ -219,7 +224,7 @@ export class TurnDiscourseStateService {
     stateReason: string;
   }): Promise<void> {
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("discourse_state_hard_cap", {
+      this.options.tracer.emit("discourse_state.rejected", {
         turnId: input.turnId,
         state: DISCOURSE_STATE_NAME,
         activeTurns: input.activeTurns,
@@ -231,7 +236,7 @@ export class TurnDiscourseStateService {
       await input.streamWriter.append({
         kind: "internal_event",
         content: {
-          hook: "discourse_state_hard_cap",
+          hook: "discourse_state.rejected",
           turn_id: input.turnId,
           active_turns: input.activeTurns,
           hard_cap_turns: input.hardCapTurns,

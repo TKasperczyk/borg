@@ -191,7 +191,7 @@ export class TurnReflectionCoordinator {
     });
 
     if (this.options.tracer.enabled) {
-      this.options.tracer.emit("reflection_emitted", {
+      this.options.tracer.emit("reflection.completed", {
         turnId: input.turnId,
         attributions: {
           pending_social: nextPendingSocialAttribution !== null,

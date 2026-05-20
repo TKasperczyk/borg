@@ -17,15 +17,17 @@ import {
   createStreamEntryId,
 } from "../../../util/ids.js";
 import {
-  DEFAULT_HOST_CAPABILITIES_SECTION,
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
-  LOOP_BREAKING_POSTURE_SECTION,
-  PARTICIPATION_POSTURE_SECTION,
   TRUSTED_GUIDANCE_PREAMBLE,
   UNTRUSTED_DATA_PREAMBLE,
   VOICE_AND_POSTURE_SECTION,
-} from "../constants.js";
+} from "../../prompts/base-identity.js";
+import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../../prompts/host-capabilities.js";
+import {
+  LOOP_BREAKING_POSTURE_SECTION,
+  PARTICIPATION_POSTURE_SECTION,
+} from "../../prompts/participation.js";
 import type { DeliberationContext } from "../types.js";
 
 import { buildBaseSystemPrompt, buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
@@ -405,6 +407,41 @@ describe("buildBaseSystemPrompt", () => {
     expect(completedBlock).toContain("distinct from pending follow-ups");
     expect(completedBlock).toContain(completed);
     expect(completedBlock).not.toContain(pending);
+  });
+
+  it("omits legacy completed actions when the evidence ledger is active", () => {
+    const completed = "Reviewed the Atlas rollback result";
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        evidenceLedgerPromptSection: "<borg_evidence_ledger>ledger</borg_evidence_ledger>",
+        recentCompletedActions: [
+          {
+            id: createActionId(),
+            description: completed,
+            actor: "borg",
+            audience_entity_id: null,
+            goal_id: null,
+            open_question_id: null,
+            state: "completed",
+            confidence: 0.9,
+            provenance_episode_ids: [],
+            provenance_stream_entry_ids: [createStreamEntryId()],
+            created_at: NOW_MS - 1_000,
+            updated_at: NOW_MS,
+            considering_at: null,
+            committed_at: null,
+            scheduled_at: null,
+            completed_at: NOW_MS,
+            not_done_at: null,
+            unknown_at: null,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<borg_recent_completed_actions>");
+    expect(prompt).not.toContain(completed);
   });
 
   it("renders pending procedural attempts in working state so cognition can see them", () => {

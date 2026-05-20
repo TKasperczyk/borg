@@ -526,7 +526,7 @@ describe("perception", () => {
     const perceived = await perceiver.perceive("Jane said yesterday was rough");
 
     expect(perceived.temporalCue).toBeNull();
-    expect(tracer.emit).toHaveBeenCalledWith("perception_classifier_degraded", {
+    expect(tracer.emit).toHaveBeenCalledWith("perception.classifier.degraded", {
       turnId: "turn-1",
       classifier: "temporal_cue",
       reason: "llm_failed",

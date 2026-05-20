@@ -51,7 +51,7 @@ export async function classifyFrameAnomalyPhase(input: {
         return;
       }
 
-      input.options.tracer.emit("frame_anomaly_classifier_degraded", {
+      input.options.tracer.emit("frame_anomaly.degraded", {
         turnId: input.turnId,
         reason,
         ...(input.options.tracer.includePayloads && error !== undefined
@@ -73,8 +73,9 @@ export async function classifyFrameAnomalyPhase(input: {
 
     if (fallback.matched) {
       if (input.options.tracer.enabled) {
-        input.options.tracer.emit("frame_anomaly_degraded_fallback_match", {
+        input.options.tracer.emit("frame_anomaly.fallback.completed", {
           turnId: input.turnId,
+          matched: true,
           pattern: fallback.pattern,
           kind: fallback.kind,
         });
@@ -82,8 +83,9 @@ export async function classifyFrameAnomalyPhase(input: {
 
       classification = fallback.classification;
     } else if (input.options.tracer.enabled) {
-      input.options.tracer.emit("frame_anomaly_degraded_fallback_normal", {
+      input.options.tracer.emit("frame_anomaly.fallback.completed", {
         turnId: input.turnId,
+        matched: false,
       });
     }
   }
@@ -150,7 +152,7 @@ export async function classifyClosureLoopPhase(input: {
         return;
       }
 
-      input.options.tracer.emit("closure_loop_classifier_degraded", {
+      input.options.tracer.emit("closure_loop.degraded", {
         turnId: input.turnId,
         reason,
         ...(input.options.tracer.includePayloads && error !== undefined
@@ -227,7 +229,7 @@ async function appendFrameAnomalyEvents(input: {
     ]);
 
     if (input.options.tracer.enabled) {
-      input.options.tracer.emit("frame_anomaly_quarantine_appended", {
+      input.options.tracer.emit("frame_anomaly.transitioned", {
         turnId: input.turnId,
         kind: input.classification.kind,
         sourceStreamEntryId: input.persistedUserEntryId,

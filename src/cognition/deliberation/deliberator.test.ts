@@ -722,7 +722,7 @@ describe("deliberator", () => {
     );
     expect(system).toContain("<borg_evidence_ledger>");
     expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
-    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer_emitted");
+    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
     expect(emittedEvent?.data).toMatchObject({
       turnId: "turn-emission",
       mode: "emission_tools",
@@ -816,7 +816,7 @@ describe("deliberator", () => {
     expect(plannerSystem).toContain(contradictionQuestion);
     expect(tracer.events).toContainEqual(
       expect.objectContaining({
-        event: "s2_routing_forced_by_contradiction",
+        event: "deliberation.path.transitioned",
         data: expect.objectContaining({
           turnId: "turn-forced-contradiction",
           basePath: "system_1",
@@ -874,14 +874,14 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_1");
     expect(
-      tracer.events.some((event) => event.event === "s2_routing_forced_by_contradiction"),
+      tracer.events.some((event) => event.event === "deliberation.path.transitioned"),
     ).toBe(false);
-    expect(tracer.events.some((event) => event.event === "contradiction_routing_classified")).toBe(
+    expect(tracer.events.some((event) => event.event === "deliberation.contradiction_routing.completed")).toBe(
       false,
     );
     expect(tracer.events).toContainEqual(
       expect.objectContaining({
-        event: "path_selected",
+        event: "deliberation.path.completed",
         data: expect.objectContaining({
           turnId: "turn-disabled-contradiction-routing",
           path: "system_1",
@@ -935,7 +935,7 @@ describe("deliberator", () => {
     expect(finalizerSystem).not.toContain("edg_aaaaaaaaaaaaaaaa");
     expect(tracer.events).toContainEqual(
       expect.objectContaining({
-        event: "path_selected",
+        event: "deliberation.path.completed",
         data: expect.objectContaining({
           turnId: "turn-annotation-contradiction",
           path: "system_1",
@@ -1124,7 +1124,7 @@ describe("deliberator", () => {
       kind: "suppressed",
       reason: "finalizer_no_output",
     });
-    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer_emitted");
+    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
     expect(emittedEvent?.data).toMatchObject({
       turnId: "turn-emission-no-output",
       mode: "emission_tools",
@@ -1475,7 +1475,7 @@ describe("deliberator", () => {
     );
 
     const compactLedgerEvent = tracer.events.find(
-      (entry) => entry.event === "planner_compact_ledger_built",
+      (entry) => entry.event === "deliberation.planner_ledger.completed",
     );
     expect(compactLedgerEvent?.data).toMatchObject({
       turnId: "turn-phantom-route",
@@ -1659,8 +1659,8 @@ describe("deliberator", () => {
       const finalizerSystemBlocks = llm.requests[1]?.system as readonly { text: string }[];
       const finalizerSystem = finalizerSystemBlocks.map((block) => block.text).join("\n\n");
       expect(finalizerSystem).toContain("Emission recommendation: no assistant message");
-      expect(tracer.events.some((entry) => entry.event === "plan_extraction")).toBe(true);
-      expect(tracer.events.some((entry) => entry.event === "finalizer_emitted")).toBe(true);
+      expect(tracer.events.some((entry) => entry.event === "deliberation.plan.completed")).toBe(true);
+      expect(tracer.events.some((entry) => entry.event === "finalizer.completed")).toBe(true);
     } finally {
       writer.close();
     }
@@ -2594,7 +2594,7 @@ describe("deliberator", () => {
     expect(system).not.toContain("Retrieved context:");
     expect(system).not.toContain("Related semantic context:");
     expect(system).not.toContain("Open questions you're carrying:");
-    expect(system).not.toContain("Commitments you made to this person:");
+    expect(system).not.toContain("Active commitment / rule / preference / boundary records:");
     expect(system).not.toContain("values none; goals none; traits none");
   });
 
@@ -3118,6 +3118,7 @@ describe("deliberator", () => {
     const atlas = entities.resolve("Atlas");
     const commitment = commitments.add({
       type: "boundary",
+      kind: "boundary",
       directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 9,
@@ -3299,7 +3300,7 @@ describe("deliberator", () => {
         "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection) (from ep_aaaaaaaaaaaaaaaa)",
       );
       expect(system).toContain(
-        "- [boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+        "- [boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
       );
     } finally {
       db.close();
@@ -3464,6 +3465,7 @@ describe("deliberator", () => {
     const atlas = entities.resolve("Atlas");
     const commitment = commitments.add({
       type: "boundary",
+      kind: "boundary",
       directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 9,
@@ -3530,10 +3532,10 @@ describe("deliberator", () => {
 
       expect(system).toContain(TRUSTED_GUIDANCE_PREAMBLE);
       expect(system).toContain("<borg_commitment_records>");
-      expect(system).toContain("Commitments you made to this person:");
+      expect(system).toContain("Active commitment / rule / preference / boundary records:");
       expect(system).toContain("Do not discuss Atlas with Sam");
       expect(system).toContain(
-        "- [boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+        "- [boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
       );
       expect(system).toContain("</borg_commitment_records>");
       expect(requestSystemText(llm.requests[0]?.system)).toContain("audience=Sam");

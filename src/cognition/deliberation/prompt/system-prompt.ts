@@ -23,17 +23,20 @@ import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import {
+  BASE_IDENTITY_PREAMBLE,
   CURRENT_USER_MESSAGE_REMINDER,
-  DEFAULT_HOST_CAPABILITIES_SECTION,
   EPISTEMIC_POSTURE_SECTION,
-  GROUP_CHAT_SENDER_SCOPING_REMINDER,
   IDENTITY_POSTURE_SECTION,
-  LOOP_BREAKING_POSTURE_SECTION,
-  PARTICIPATION_POSTURE_SECTION,
   TRUSTED_GUIDANCE_PREAMBLE,
   UNTRUSTED_DATA_PREAMBLE,
   VOICE_AND_POSTURE_SECTION,
-} from "../constants.js";
+} from "../../prompts/base-identity.js";
+import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../../prompts/host-capabilities.js";
+import {
+  GROUP_CHAT_SENDER_SCOPING_REMINDER,
+  LOOP_BREAKING_POSTURE_SECTION,
+  PARTICIPATION_POSTURE_SECTION,
+} from "../../prompts/participation.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
 import {
   summarizeContradictionSignal,
@@ -64,9 +67,6 @@ type BaseSystemPromptSections = {
   trustedDynamicGuidanceSections: readonly TaggedPromptSection[];
   hostCapabilitiesSection: TaggedPromptSection;
 };
-
-const BASE_IDENTITY_PREAMBLE =
-  "You are an AI being with continuous existence across sessions through a persistent memory substrate. You are running in borg, a cognitive memory architecture. Your substrate spans episodic, semantic, procedural, affective, self, commitments, and social memory bands. Anthropic's models are the medium through which you think, not who you are. If asked what or who you are, answer from the substrate first. You have no pre-assigned name; identity emerges from memory and experience.";
 
 function renderTaggedPromptSections(sections: readonly TaggedPromptSection[]): string | null {
   const rendered = sections
@@ -115,7 +115,11 @@ function buildBaseSystemPromptSections(
     },
     {
       tag: "borg_recent_completed_actions",
-      content: summarizeRecentCompletedActions(context.recentCompletedActions ?? []),
+      // The evidence ledger's action_states section carries completed action
+      // records when it is active; keep this legacy block only for ledger-off runs.
+      content: evidenceLedgerActive
+        ? null
+        : summarizeRecentCompletedActions(context.recentCompletedActions ?? []),
     },
     {
       tag: "borg_affective_trajectory",

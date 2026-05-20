@@ -230,7 +230,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
 
   while (true) {
     if (traceEnabled && options.turnId !== undefined) {
-      options.tracer?.emit("llm_call_started", {
+      options.tracer?.emit("llm_call.started", {
         turnId: options.turnId,
         label: traceLabel,
         iteration: iterations + 1,
@@ -272,7 +272,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     );
 
     if (traceEnabled && options.turnId !== undefined) {
-      options.tracer?.emit("llm_call_response", {
+      options.tracer?.emit("llm_call.completed", {
         turnId: options.turnId,
         label: traceLabel,
         iteration: iterations + 1,
@@ -322,7 +322,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
 
     for (const block of runnableBlocks) {
       if (traceEnabled && options.turnId !== undefined) {
-        options.tracer?.emit("tool_call_dispatched", {
+        options.tracer?.emit("tool_call.started", {
           turnId: options.turnId,
           callId: block.id,
           toolName: block.name,
@@ -343,7 +343,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         toolCallsMade.push(toCallRecord(block, skippedResult));
         toolResultBlocks.push(buildUnavailableToolResultBlock(block));
         if (traceEnabled && options.turnId !== undefined) {
-          options.tracer?.emit("tool_call_completed", {
+          options.tracer?.emit("tool_call.completed", {
             turnId: options.turnId,
             callId: skippedResult.callId,
             toolName: skippedResult.toolName,
@@ -368,7 +368,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       toolCallsMade.push(toCallRecord(block, dispatchResult));
       toolResultBlocks.push(buildToolResultBlock(dispatchResult));
       if (traceEnabled && options.turnId !== undefined) {
-        options.tracer?.emit("tool_call_completed", {
+        options.tracer?.emit("tool_call.completed", {
           turnId: options.turnId,
           callId: dispatchResult.callId,
           toolName: dispatchResult.toolName,
@@ -380,7 +380,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
 
     for (const block of droppedBlocks) {
       if (traceEnabled && options.turnId !== undefined) {
-        options.tracer?.emit("tool_call_dispatched", {
+        options.tracer?.emit("tool_call.started", {
           turnId: options.turnId,
           callId: block.id,
           toolName: block.name,
@@ -402,7 +402,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       toolCallsMade.push(toCallRecord(block, skippedResult));
       toolResultBlocks.push(buildDroppedToolResultBlock(block, maxToolCallsPerIteration));
       if (traceEnabled && options.turnId !== undefined) {
-        options.tracer?.emit("tool_call_completed", {
+        options.tracer?.emit("tool_call.completed", {
           turnId: options.turnId,
           callId: skippedResult.callId,
           toolName: skippedResult.toolName,

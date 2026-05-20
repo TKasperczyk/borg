@@ -25,7 +25,7 @@ describe("ScenarioRunner", () => {
     expect(result.verdict.status).toBe("pass");
     expect(result.turns.length).toBeGreaterThan(0);
     expect(result.traceAssertions.some((assertion) => assertion.passed)).toBe(true);
-    expect(result.coveredPhases).toContain("action");
+    expect(result.coveredPhases).toContain("retrieval");
   });
 
   it("formats a non-empty mock report", async () => {

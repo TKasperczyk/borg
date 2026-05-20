@@ -55,8 +55,9 @@ export function runSharedStateArtifactRetryOnlyReconciliation(input: {
   });
 
   if (input.tracer.enabled && input.turnId !== undefined) {
-    input.tracer.emit("decision_artifact_retry_only_reconciliation", {
+    input.tracer.emit("shared_state.reconcile.completed", {
       turnId: input.turnId,
+      mode: "retry_only",
       unsettled_entry_count: input.unsettledReconciliation.entries.length,
       outcome_counts: toTraceJsonValue(sharedStateReconciliationOutcomeCounts(result)),
     });

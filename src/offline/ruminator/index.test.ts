@@ -543,7 +543,7 @@ describe("RuminatorProcess", () => {
       });
       expect(harness.openQuestionsRepository.get(active.id)?.status).toBe("open");
       expect(tracer.events).toContainEqual({
-        event: "open_question_stale_dismissed",
+        event: "open_question_resolution.rejected",
         data: expect.objectContaining({
           turnId: ctx.runId,
           question_id: stale.id,
@@ -732,7 +732,7 @@ describe("RuminatorProcess", () => {
         resolution_evidence_stream_entry_ids: [duplicateStreamId],
       });
       expect(tracer.events).toContainEqual({
-        event: "open_question_merged",
+        event: "open_question_resolution.transitioned",
         data: expect.objectContaining({
           kept_oq_id: older.id,
           deleted_oq_id: newer.id,

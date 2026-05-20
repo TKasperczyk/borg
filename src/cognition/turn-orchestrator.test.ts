@@ -573,6 +573,7 @@ function createMixedClosureResponseAuditResponse(spanText: string) {
 function createCorrectivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
+  kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
   directive?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
@@ -594,6 +595,11 @@ function createCorrectivePreferenceResponse(input: {
         input: {
           classification: input.classification,
           type: input.type ?? null,
+          kind:
+            input.kind ??
+            (input.classification === "corrective_preference"
+              ? "participant_preference"
+              : null),
           directive: input.directive ?? null,
           directive_family:
             input.directive_family ??
@@ -898,9 +904,9 @@ describe("TurnOrchestrator evidence ledger", () => {
       const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
       const traceEvents = readTraceEvents(tracePath);
       const compactTraceEvent = traceEvents.find(
-        (event) => event.event === "evidence_ledger_compacted",
+        (event) => event.event === "evidence_ledger.compaction.completed",
       );
-      const traceEvent = traceEvents.find((event) => event.event === "evidence_ledger_built");
+      const traceEvent = traceEvents.find((event) => event.event === "evidence_ledger.completed");
 
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain(
@@ -910,7 +916,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(finalizerSystem).not.toContain("<borg_retrieved_evidence>");
       expect(compactTraceEvent).toBeUndefined();
       expect(traceEvent).toMatchObject({
-        event: "evidence_ledger_built",
+        event: "evidence_ledger.completed",
         transcript_included: true,
         transcript_compacted: false,
         transcript_omitted_reason: null,
@@ -978,8 +984,8 @@ describe("TurnOrchestrator evidence ledger", () => {
       const finalizerRequest = firstFinalizerRequest(llm.requests);
       const finalizerSystem = systemText(finalizerRequest);
       const traceEvents = readTraceEvents(tracePath);
-      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer_emitted");
-      const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger_built");
+      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer.completed");
+      const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger.completed");
       const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
 
       expect(result.response).toBe(finalText);
@@ -1002,10 +1008,10 @@ describe("TurnOrchestrator evidence ledger", () => {
         true,
       );
       expect(ledgerEvent).toMatchObject({
-        event: "evidence_ledger_built",
+        event: "evidence_ledger.completed",
       });
       expect(finalizerEvent).toMatchObject({
-        event: "finalizer_emitted",
+        event: "finalizer.completed",
         decision: "answer",
         text_length: finalText.length,
         mode: "emission_tools",
@@ -1414,7 +1420,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       });
 
       const traceEvents = readTraceEvents(tracePath);
-      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer_emitted");
+      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer.completed");
       const suppressedEntry = borg.stream
         .tail(20)
         .find((entry) => entry.kind === "agent_suppressed");
@@ -1429,7 +1435,7 @@ describe("TurnOrchestrator evidence ledger", () => {
         reason: "finalizer_no_output",
       });
       expect(finalizerEvent).toMatchObject({
-        event: "finalizer_emitted",
+        event: "finalizer.completed",
         decision: "no_output",
         reason: "natural_close",
       });
@@ -1798,7 +1804,7 @@ describe("TurnOrchestrator participant social profiles", () => {
 
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "participant_scan_cap_reached",
+          event: "participant_scan.skipped",
           turnId: expect.any(String),
           cap: "entries",
           scanned_entries: 500,
@@ -1807,7 +1813,7 @@ describe("TurnOrchestrator participant social profiles", () => {
         }),
       );
       expect(
-        traceEvents.find((event) => event.event === "participant_scan_cap_reached")?.scanned_bytes,
+        traceEvents.find((event) => event.event === "participant_scan.skipped")?.scanned_bytes,
       ).toEqual(expect.any(Number));
     } finally {
       writer.close();
@@ -2763,7 +2769,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(
         readTraceEvents(tracePath).filter(
-          (event) => event.event === "open_question_resolution_degraded",
+          (event) => event.event === "open_question_resolution.degraded",
         ),
       ).toEqual([]);
       expect(borg.self.openQuestions.list({ status: "open" }).map((item) => item.id)).not.toContain(
@@ -3042,6 +3048,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(addInput).toMatchObject({
         type: "preference",
+        kind: "participant_preference",
         directive: "Do not add ritual closing lines when the conversation is open.",
         closurePressureRelevance: "no_closure",
         priority: 8,
@@ -3051,6 +3058,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(commitments).toEqual([
         expect.objectContaining({
           restricted_audience: samEntityId,
+          kind: "participant_preference",
           closure_pressure_relevance: "no_closure",
           source_stream_entry_ids: [userEntry?.id],
         }),
@@ -3985,20 +3993,20 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly_classifier_degraded",
+          event: "frame_anomaly.degraded",
           reason: "llm_failed",
         }),
       );
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly_degraded_fallback_match",
+          event: "frame_anomaly.fallback.completed",
           pattern: "i'm claude",
           kind: "assistant_self_claim_in_user_role",
         }),
       );
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly_quarantine_appended",
+          event: "frame_anomaly.transitioned",
           kind: "assistant_self_claim_in_user_role",
         }),
       );
@@ -4077,7 +4085,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(quarantineEvent).toBeUndefined();
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly_degraded_fallback_normal",
+          event: "frame_anomaly.fallback.completed",
         }),
       );
       expect(borg.actions.list({ state: "completed" })).toEqual([
@@ -4249,11 +4257,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
 
     const degradedEvent = readTraceEvents(tracePath).find(
-      (event) => event.event === "goal_promotion_extractor_degraded",
+      (event) => event.event === "extraction.goals.degraded",
     );
 
     expect(degradedEvent).toMatchObject({
-      event: "goal_promotion_extractor_degraded",
+      event: "extraction.goals.degraded",
       reason: "llm_failed",
       error: "goal promotion transport failed",
     });

@@ -31,6 +31,7 @@ function makeCommitment(directiveFamily = "honor_pause_not_closure"): Commitment
   return {
     id: createCommitmentId(),
     type: "preference",
+    kind: "participant_preference",
     directive_family: directiveFamily,
     closure_pressure_relevance: "no_closure",
     directive: "Do not convert open pauses into closure.",
@@ -154,7 +155,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.removed_spans).toEqual(["Go read."]);
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_response_guard",
+      "closure_response_guard.completed",
       expect.objectContaining({
         verdict: "rewritten",
         removed_spans: ["Go read."],
@@ -246,7 +247,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.removed_spans).toEqual(["Go read."]);
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_response_guard",
+      "closure_response_guard.completed",
       expect.objectContaining({
         mode: "shadow",
         verdict: "passed",
@@ -459,7 +460,7 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("suppressed");
     expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_response_guard",
+      "closure_response_guard.completed",
       expect.objectContaining({
         verdict: "suppressed",
         reason: "closure_response_audit_failed_closed",
@@ -548,9 +549,9 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("rewritten");
     expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_pressure_audit_inconsistent",
+      "closure_pressure_audit.degraded",
       expect.objectContaining({
-        reason: "closure_pressure_audit_inconsistent_with_spans",
+        reason: "closure_pressure_audit.degraded_with_spans",
       }),
     );
   });
@@ -590,9 +591,9 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("passed");
     expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_pressure_audit_inconsistent",
+      "closure_pressure_audit.degraded",
       expect.objectContaining({
-        reason: "closure_pressure_audit_inconsistent_no_spans",
+        reason: "closure_pressure_audit.degraded_no_spans",
       }),
     );
   });

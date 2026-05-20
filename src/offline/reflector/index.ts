@@ -6,6 +6,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { OFFLINE_REFLECTOR_PROMPT_PREAMBLE } from "../../cognition/prompts/reflector.js";
 import {
   episodeAccessScopeKey,
   episodeIdSchema,
@@ -184,10 +185,7 @@ function semanticNodeSnapshotMatches(
 
 function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly string[]): string {
   return [
-    "Infer one modest semantic proposition from the supporting episodes.",
-    `Emit your result by calling the ${REFLECTOR_TOOL_NAME} tool exactly once.`,
-    "Use only source_episode_ids from the provided episodes.",
-    "Keep confidence conservative.",
+    OFFLINE_REFLECTOR_PROMPT_PREAMBLE,
     `Cluster key: ${cluster.key}`,
     `Active goals: ${goalDescriptions.join(" | ") || "none"}`,
     "Episodes:",
@@ -681,7 +679,7 @@ export class ReflectorProcess implements OfflineProcess {
               },
             });
             if (ctx.tracer?.enabled === true) {
-              ctx.tracer.emit("reflector_candidate_emitted", {
+              ctx.tracer.emit("reflector.candidate.completed", {
                 turnId: ctx.runId,
                 kind: "new_insight",
                 dedupe_decision: dedupeDecision,

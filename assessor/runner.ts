@@ -16,6 +16,8 @@ import type {
   TraceRecord,
 } from "./types.js";
 
+const TOOL_CALL_TRACE_EVENTS = new Set<string>(["tool_call.started", "tool_call.completed"]);
+
 function coveredPhases(records: readonly TraceRecord[]) {
   return [...new Set(records.map((record) => phaseForTraceEvent(record.event)))];
 }
@@ -80,7 +82,7 @@ async function evaluateAssertion(
       const toolName = typeof record.toolName === "string" ? record.toolName : "";
 
       return (
-        record.event.startsWith("tool_call_") &&
+        TOOL_CALL_TRACE_EVENTS.has(record.event) &&
         toolName.toLowerCase().includes(assertion.toolNameIncludes.toLowerCase())
       );
     });
@@ -97,15 +99,12 @@ async function evaluateAssertion(
 
   if (assertion.type === "event_seen") {
     const records = recordsForTurn(context.records, context.turns, assertion.turn);
-    const match = records.find((record) =>
-      record.event.toLowerCase().includes(assertion.eventIncludes.toLowerCase()),
-    );
+    const match = records.find((record) => record.event === assertion.event);
 
     return {
       description: assertion.description,
       passed: match !== undefined,
-      evidence:
-        match === undefined ? `No matching event for ${assertion.eventIncludes}` : match.event,
+      evidence: match === undefined ? `No matching event for ${assertion.event}` : match.event,
     };
   }
 

@@ -229,7 +229,7 @@ describe("review resolver process", () => {
       description: "Alice wrote the deployment script.",
     });
     expect(
-      tracer.events.find((event) => event.event === "review_resolver_decision"),
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
     ).toMatchObject({
       review_id: item.id,
       kind: "misattribution",
@@ -404,7 +404,7 @@ describe("review resolver process", () => {
     expect(open?.resolved_at).toBeNull();
     expect(result.errors).toHaveLength(1);
     expect(
-      tracer.events.find((event) => event.event === "review_resolver_degraded"),
+      tracer.events.find((event) => event.event === "review_resolver.degraded"),
     ).toMatchObject({
       review_id: item.id,
     });
@@ -437,7 +437,7 @@ describe("review resolver process", () => {
     expect(open?.resolved_at).toBeNull();
     expect(result.errors).toHaveLength(1);
     expect(
-      tracer.events.find((event) => event.event === "review_resolver_degraded"),
+      tracer.events.find((event) => event.event === "review_resolver.degraded"),
     ).toMatchObject({
       review_id: item.id,
       reason: "repair handler failed",
@@ -598,7 +598,7 @@ describe("review resolver process", () => {
       reason: "identity_inconsistency_auto_resolution_not_yet_supported",
     });
     expect(
-      tracer.events.find((event) => event.event === "review_resolver_decision"),
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
     ).toMatchObject({
       verdict: "needs_manual",
       reason: "identity_kind_not_yet_supported",

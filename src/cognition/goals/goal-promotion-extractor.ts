@@ -11,7 +11,7 @@ import {
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
-import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../host-capabilities.js";
+import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -130,34 +130,6 @@ const GOAL_PROMOTION_TOOL = {
     "Classify goal-like candidates by memory kind and emit durable Borg goals only when warranted.",
   inputSchema: toToolInputSchema(goalPromotionOutputSchema),
 } satisfies LLMToolDefinition;
-
-const GOAL_PROMOTION_SYSTEM_PROMPT = [
-  "Classify goal-like candidates from the current user turn by memory kind.",
-  "Only durable_borg_goal becomes active goal self-memory; other labels are rejected from goal storage but explain why.",
-  "Set durable_goal_batch=explicit_multiple only when the current turn explicitly asks Borg to track multiple separate ongoing responsibilities; otherwise use single.",
-  "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
-  "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
-  "If a supplied active goal already covers the request, classify as already_represented and set duplicate_of_goal_id.",
-  "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
-  "Borg-owned durable goals must stay inside the host capability boundary below.",
-  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
-  "",
-  "Classifications:",
-  "- durable_borg_goal: Borg tracks conversation-state and memory-state across turns, maintains remembered decision-log context, or revisits an unresolved conversation responsibility. Tracking or monitoring means memory/conversation-state tracking unless the host explicitly provides external monitoring capability.",
-  "- one_off: finite event, task, reply, or fact; no ongoing tracking.",
-  '- not_borg_responsibility: responsibility belongs to a participant or external system, such as "user will deploy", "friend will respond", or "Ben will pull flight numbers".',
-  "- impossible_for_borg_without_capability: the candidate asks Borg to do work Borg cannot do without host capabilities, such as monitoring p95, sending something later, scheduled document edits, physical attendance, payments, proactive notifications, external tool execution, or production/dashboard monitoring.",
-  "- already_represented: a supplied active goal already covers the candidate.",
-  "- none: not memory-worthy at all.",
-  "",
-  "Prefer one durable_borg_goal at most. When uncertain, emit no promotions. Return only the required tool call.",
-  "",
-  "Examples:",
-  "- Coding: track refactor decisions across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility; Borg will monitor p95 -> impossible_for_borg_without_capability.",
-  "- Relationships: support through job search -> durable_borg_goal; send one message -> one_off; friend will respond -> not_borg_responsibility.",
-  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility; Borg will attend in person or make payments -> impossible_for_borg_without_capability.",
-  "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg memory/conversation responsibilities, not external monitoring.",
-].join("\n");
 
 type ParsedGoalPromotion = z.infer<typeof goalPromotionSchema>;
 type GoalPromotionEnvelopeInput = z.infer<typeof goalPromotionEnvelopeSchema>;
@@ -572,7 +544,7 @@ function traceLlmCallStarted(options: {
   tools: readonly LLMToolDefinition[];
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "goal_promotion_extractor",
       model: options.model,
@@ -588,7 +560,7 @@ function traceLlmCallResponse(options: {
   response: LLMCompleteResult;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "goal_promotion_extractor",
       responseShape: summarizeGoalPromotionResponseShape(options.response),
@@ -604,7 +576,7 @@ function traceLlmCallError(options: {
   error: unknown;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "goal_promotion_extractor",
       responseShape: {
@@ -652,7 +624,7 @@ function traceExtractorCompleted(options: {
       incrementClassificationCount(rejectedByClassification, rejection.classification);
     }
 
-    options.tracer.emit("goal_promotion_classification_rejected", {
+    options.tracer.emit("extraction.goals.rejected", {
       turnId: options.turnId,
       classification: rejection.classification,
       description_excerpt: rejection.description_excerpt,
@@ -660,7 +632,7 @@ function traceExtractorCompleted(options: {
     });
   }
 
-  options.tracer.emit("goal_promotion_extractor_completed", {
+  options.tracer.emit("extraction.goals.completed", {
     turnId: options.turnId,
     candidates_emitted: options.parseResult?.candidates.length ?? 0,
     valid_promotion_count: validPromotionCount,

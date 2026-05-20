@@ -268,6 +268,7 @@ describe("compileSharedStateArtifact", () => {
           {
             id: commitmentId,
             text: "Keep the release window locked.",
+            kind: "assistant_commitment",
             type: "promise",
             directive_family: "release_window",
           },
@@ -333,7 +334,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_completed",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           goals_retired: 0,
           unknown_ids: [
@@ -399,7 +400,7 @@ describe("compileSharedStateArtifact", () => {
     expect(entries[1]?.canonicalizes.goal_ids).toEqual([]);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_completed",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           canonicalization_duplicates_dropped: [
             expect.objectContaining({
@@ -487,7 +488,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_completed",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           canonicalization_duplicates_dropped: [],
         }),
@@ -740,7 +741,7 @@ describe("compileSharedStateArtifact", () => {
         });
         expect(trace.events).toContainEqual(
           expect.objectContaining({
-            event: "decision_artifact_semantic_revision_degraded",
+            event: "semantic_revision.degraded",
           }),
         );
       } finally {
@@ -806,7 +807,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_completed",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           goals_retired: 1,
           current_operation_canonicalization_count: 0,
@@ -906,7 +907,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_completed",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           goals_retired: 2,
           current_operation_canonicalization_count: 1,
@@ -977,7 +978,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_completed",
+        event: "shared_state.compile.completed",
         data: expect.objectContaining({
           canonicalizes_rejected_non_locked: [
             {
@@ -1022,7 +1023,7 @@ describe("compileSharedStateArtifact", () => {
     expect(repository.get(audience)).toBeNull();
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_completed",
+        event: "shared_state.compile.completed",
         data: expect.objectContaining({
           rejectedCount: 1,
           rejectionReasons: ["invalid_owner_entity_id"] satisfies JsonValue,
@@ -1267,7 +1268,7 @@ describe("compileSharedStateArtifact", () => {
     expect(repository.get(audience)?.entries).toHaveLength(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_completed",
+        event: "shared_state.compile.completed",
         data: expect.objectContaining({
           rejectedCount: 1,
           rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
@@ -1348,7 +1349,7 @@ describe("compileSharedStateArtifact", () => {
       source_trust?: unknown;
     };
     const completed = trace.events.find(
-      (event) => event.event === "decision_artifact_compile_completed",
+      (event) => event.event === "shared_state.compile.completed",
     );
 
     expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
@@ -1474,10 +1475,10 @@ describe("compileSharedStateArtifact", () => {
     });
 
     const warning = trace.events.find(
-      (event) => event.event === "decision_artifact_compile_over_budget",
+      (event) => event.event === "shared_state.compile.degraded",
     );
     const completed = trace.events.find(
-      (event) => event.event === "decision_artifact_compile_completed",
+      (event) => event.event === "shared_state.compile.completed",
     );
 
     expect(warning).toBeDefined();
@@ -1530,7 +1531,7 @@ describe("compileSharedStateArtifact", () => {
     expect(patch.operations.filter((operation) => operation.type === "prune")).toHaveLength(10);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_completed",
+        event: "shared_state.compile.completed",
         data: expect.objectContaining({
           artifact_total_entry_count: 40,
           artifact_active_entry_count: 40,
@@ -1602,7 +1603,7 @@ describe("compileSharedStateArtifact", () => {
       const rendered = renderSharedStateArtifact(artifact) ?? "";
       const renderedLiveEntryCount = rendered.match(/kind=live/g)?.length ?? 0;
       const completed = trace.events
-        .filter((event) => event.event === "decision_artifact_compile_completed")
+        .filter((event) => event.event === "shared_state.compile.completed")
         .at(-1);
       const artifactTotalEntryCount = completed?.data.artifact_total_entry_count;
       const artifactActiveEntryCount = completed?.data.artifact_active_entry_count;
@@ -1800,7 +1801,7 @@ describe("compileSharedStateArtifact", () => {
       expect(pruneIds.indexOf(originalId!)).toBeLessThan(pruneIds.indexOf(replacementId));
     }
     expect(
-      trace.events.find((event) => event.event === "decision_artifact_lifecycle_unable_to_cap"),
+      trace.events.find((event) => event.event === "shared_state.lifecycle.degraded"),
     ).toBeUndefined();
   });
 
@@ -1903,7 +1904,7 @@ describe("compileSharedStateArtifact", () => {
     ).toEqual([...kinds].sort());
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_completed",
+        event: "shared_state.compile.completed",
         data: expect.objectContaining({
           rejectedCount: 0,
           rejectionReasons: [],

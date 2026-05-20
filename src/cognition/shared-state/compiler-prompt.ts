@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMToolDefinition } from "../../llm/index.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import type { SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactParticipantContext,
@@ -8,57 +9,6 @@ import type {
   SharedStateCanonicalizationCandidates,
   SharedStateCommitmentCanonicalizationCandidate,
 } from "./schema.js";
-
-export const SHARED_STATE_SYSTEM_PROMPT = [
-  "Compile canonical shared audience state from the previous shared-state artifact, the current user turn, and the prompt-visible ledger.",
-  "Return only the required tool call.",
-  "",
-  "Scope:",
-  "- This is a structure compiler. It does not decide whether Borg's answer is correct.",
-  "- It does not rewrite, suppress, approve, or police user-facing text.",
-  "- It must not invent facts, owners, or commitments.",
-  "- Prefer no operations when uncertain.",
-  "",
-  "The shared audience state artifact is the shared-state surface for this audience.",
-  "It captures durable decisions and constraints for this audience, not tasks, commitments, observations, or social facts.",
-  "",
-  "What belongs:",
-  '- locked: group-agreed durable decisions or constraints, such as "PR merge order: backend first, then frontend", "The party spared the duke", "No surprise visits this week", or "Granada is four nights".',
-  "- live: currently-under-discussion shared-state decisions or constraints the audience is actively working on.",
-  "- pending: items awaiting verification or external information before they can become durable shared state.",
-  "- invalidated: assumptions explicitly overturned by later evidence; kept for context.",
-  "- tentative: weak proposals not yet endorsed.",
-  "",
-  "What does not belong:",
-  '- Participant tasks, such as "Alice will write the chapter 3 summary"; those stay as action records.',
-  '- Assistant commitments, such as "Borg will send the status note tomorrow"; those stay as commitment records.',
-  "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
-  "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
-  "",
-  "Canonicalization handles:",
-  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists; active_commitments also include type and directive_family.",
-  "- When a locked add, update, or supersede replacement makes listed active state redundant, set canonicalizes with only those exact ids.",
-  "- For commitments, canonicalize only supplied active promises or rules that the locked shared-state entry fully subsumes; never create an artifact entry merely to restate a commitment.",
-  "- Never canonicalize preference or boundary commitments.",
-  "- Do not canonicalize ids for live, pending, tentative, or invalidated entries.",
-  "- Do not infer ids that are not supplied.",
-  "",
-  "Identity and ownership:",
-  "- Cite stream ids for every add, update, and supersede replacement.",
-  "- Preserve stable entry ids when updating or superseding existing entries.",
-  "- Use only supplied entity ids. Use null when no owner is explicitly supplied.",
-  "- The audience entity for a group chat is the audience itself.",
-  "- The speaker entity is the sender of the current turn.",
-  "- Borg is the self entity.",
-  "",
-  "Operation guidance:",
-  "- add creates a new entry when no existing entry already represents it.",
-  "- update modifies an existing entry while preserving its id.",
-  "- supersede replaces an existing entry when the conversation changes or narrows it.",
-  "- prune removes stale shared-state clutter only when the supplied context makes it clearly obsolete.",
-  "- If a similar entry already exists, prefer update or supersede instead of adding a new one.",
-  "- Prefer update, supersede, and prune over add whenever the existing shared-state artifact already carries the relevant shared state.",
-].join("\n");
 
 export function buildCanonicalizationCandidatePromptPayload(
   candidates: SharedStateCanonicalizationCandidates,

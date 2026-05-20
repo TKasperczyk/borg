@@ -51,6 +51,7 @@ import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
 import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
@@ -1025,7 +1026,7 @@ export class Reflector {
       return;
     }
 
-    tracer.emit("reflector_intent_updates_persisted", {
+    tracer.emit("reflector.intent_update.completed", {
       turnId: context.turnId,
       created_durable_actions_count: input.createdDurableActionsCount,
       by_state: input.byState,
@@ -1040,7 +1041,7 @@ export class Reflector {
       return;
     }
 
-    tracer.emit("reflector_intent_update_suppressed", {
+    tracer.emit("reflector.intent_update.rejected", {
       turnId: context.turnId,
       reason: "missing_group_sender_entity_id",
       description,
@@ -1244,7 +1245,7 @@ export class Reflector {
     }
 
     if (typeof details.question_id === "string") {
-      tracer.emit("open_question_resolution_attempt", {
+      tracer.emit("open_question_resolution.started", {
         turnId: context.turnId,
         oq_id: details.question_id,
         source_path: "online_reflection",
@@ -1253,7 +1254,7 @@ export class Reflector {
       });
     }
 
-    tracer.emit("open_question_resolution_degraded", {
+    tracer.emit("open_question_resolution.degraded", {
       turnId: context.turnId,
       ...details,
     });
@@ -1273,7 +1274,7 @@ export class Reflector {
       return;
     }
 
-    tracer.emit("open_question_resolution_attempt", {
+    tracer.emit("open_question_resolution.started", {
       turnId: context.turnId,
       oq_id: input.oqId,
       source_path: "online_reflection",
@@ -1289,7 +1290,7 @@ export class Reflector {
       return;
     }
 
-    tracer.emit("reflector_intent_update_suppressed", {
+    tracer.emit("reflector.intent_update.rejected", {
       turnId: context.turnId,
       reason: "frame_anomaly",
       kind: isFrameAnomaly(context.frameAnomaly) ? context.frameAnomaly.kind : "unknown",
@@ -1556,25 +1557,7 @@ export class Reflector {
 
     const response = await this.llmClient.complete({
       model: this.model,
-      system: [
-        "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
-        "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
-        "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
-        "For step_outcomes, update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",
-        "For autonomous turns, never mark an executive step done; autonomous turns may only start, block, or abandon a step.",
-        "If executive_focus has a selected goal and next_step is null, proposed_steps may include a small concrete next step only when the completed turn revealed one for that selected goal. Otherwise omit proposed_steps.",
-        "If pending_procedural_attempts has any entries, emit a procedural_outcome per attempt the current turn provides evidence about. Identify each by its attempt_turn_counter and classify success, failure, or unclear.",
-        "Omit attempts the current turn says nothing about -- they will stay pending and may be graded on a later turn.",
-        "For every procedural_outcome, set grounded=false when the evidence is assistant self-narration rather than an actual user signal.",
-        "For every procedural_outcome, set skill_actually_applied=true only if the prior assistant response visibly executed the attempt's approach_summary. If the response ignored or substituted a different approach, set it false so the skill posterior is not credited or blamed for an outcome it didn't earn.",
-        "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
-        "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
-        "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
-        "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Set actor=user when the action was for the user to do, and actor=borg when it was for Borg to do. Otherwise omit them.",
-        "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
-        "Open questions should be answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
-        "For resolved_open_questions, resolve only active open questions that the just-completed turn clearly answered. Do not speculate. Cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. Use question_id only from active_open_questions, and include at least one evidence id.",
-      ].join("\n"),
+      system: TURN_REFLECTION_SYSTEM_PROMPT,
       messages: [
         {
           role: "user",

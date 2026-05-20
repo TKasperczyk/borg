@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_KINDS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   ManualClock,
@@ -96,6 +97,7 @@ const TURN_METRICS_KEY_ORDER = [
   "actions_completed_via_canonicalization",
   "recent_completed_action_count",
   "commitment_count_active",
+  "commitment_count_active_by_kind",
   "commitment_count_superseded",
   "commitment_count_revoked",
   "commitment_count_expired",
@@ -259,6 +261,7 @@ function fakeBorg(
     commitments: {
       list: () => [],
       countActive: () => 0,
+      countActiveByKind: () => zeroCounts(COMMITMENT_KINDS),
       countSuperseded: () => 0,
       countRevoked: () => 0,
       countExpired: () => 0,
@@ -346,19 +349,19 @@ describe("MetricsCapture", () => {
     writeFileSync(
       tracePath,
       [
-        { ts: 100, turnId: "turn-1", event: "retrieval_started" },
-        { ts: 125, turnId: "turn-1", event: "retrieval_completed" },
-        { ts: 130, turnId: "turn-1", event: "llm_call_started" },
+        { ts: 100, turnId: "turn-1", event: "retrieval.started" },
+        { ts: 125, turnId: "turn-1", event: "retrieval.completed" },
+        { ts: 130, turnId: "turn-1", event: "llm_call.started" },
         {
           ts: 190,
           turnId: "turn-1",
-          event: "llm_call_response",
+          event: "llm_call.completed",
           usage: { inputTokens: 11, outputTokens: 7 },
         },
         {
           ts: 191,
           turnId: "turn-1",
-          event: "decision_artifact_semantic_revision_completed",
+          event: "semantic_revision.completed",
           artifact_entry_id: "dart_metrics_completed",
           superseded_count: 2,
           contradicted_count: 1,
@@ -366,21 +369,21 @@ describe("MetricsCapture", () => {
         {
           ts: 192,
           turnId: "turn-1",
-          event: "decision_artifact_semantic_revision_degraded",
+          event: "semantic_revision.degraded",
           artifact_entry_id: "dart_metrics_degraded",
           reason: "judge unavailable",
         },
         {
           ts: 193,
           turnId: "turn-1",
-          event: "decision_artifact_semantic_revision_degraded",
+          event: "semantic_revision.degraded",
           artifact_entry_id: "dart_metrics_completed",
           reason: "mark failed after partial apply",
         },
         {
           ts: 194,
           turnId: "turn-1",
-          event: "decision_artifact_semantic_revision_cache_hit",
+          event: "semantic_revision.cache.completed",
           artifact_entry_id: "dart_metrics_completed",
           candidate_node_id: "node_metrics_cached",
           cached_verdict: "keep",
@@ -473,7 +476,7 @@ describe("MetricsCapture", () => {
         {
           ts: 100,
           turnId: "turn-action",
-          event: "action_state_extractor_completed",
+          event: "extraction.actions.completed",
           classification_counts: {
             concrete_action: 2,
             conversational_acknowledgment: 1,
@@ -487,39 +490,39 @@ describe("MetricsCapture", () => {
         {
           ts: 101,
           turnId: "turn-action",
-          event: "action_candidate_classification_rejected",
+          event: "extraction.actions.rejected",
           classification: "conversational_acknowledgment",
           reason: "non_concrete_classification",
         },
         {
           ts: 102,
           turnId: "turn-action",
-          event: "action_candidate_classification_rejected",
+          event: "extraction.actions.rejected",
           classification: "concrete_action",
           reason: "embedding_dedup",
         },
         {
           ts: 103,
           turnId: "turn-action",
-          event: "action_persistence_dedup_skipped_embedding",
+          event: "action_persistence.dedup.skipped",
           reason: "embedding_dedup",
         },
         {
           ts: 104,
           turnId: "turn-action",
-          event: "action_persistence_dedup_degraded",
+          event: "action_persistence.dedup.degraded",
           reason: "candidate_embedding_failed",
         },
         {
           ts: 105,
           turnId: "turn-action",
-          event: "action_closed_by_terminal_emission",
+          event: "action_state.transitioned",
           action_id: "act_terminal_close",
         },
         {
           ts: 200,
           turnId: "other-turn",
-          event: "action_persistence_dedup_skipped_embedding",
+          event: "action_persistence.dedup.skipped",
           reason: "embedding_dedup",
         },
       ]
@@ -566,14 +569,16 @@ describe("MetricsCapture", () => {
         {
           ts: 100,
           turnId: "turn-shared-actions",
-          event: "decision_artifact_reconciliation_completed",
+          event: "shared_state.reconcile.completed",
+          mode: "primary",
           actions_retired: 2,
           actions_completed_succeeded: 2,
         },
         {
           ts: 101,
           turnId: "turn-shared-actions",
-          event: "decision_artifact_retry_only_reconciliation",
+          event: "shared_state.reconcile.completed",
+          mode: "retry_only",
           outcome_counts: {
             actions_retired: 1,
             actions_completed_succeeded: 1,
@@ -582,7 +587,7 @@ describe("MetricsCapture", () => {
         {
           ts: 200,
           turnId: "other-turn",
-          event: "decision_artifact_reconciliation_completed",
+          event: "shared_state.reconcile.completed",
           actions_retired: 4,
           actions_completed_succeeded: 4,
         },
@@ -697,7 +702,7 @@ describe("MetricsCapture", () => {
         {
           ts: 100,
           turnId: "turn-goal",
-          event: "goal_promotion_extractor_completed",
+          event: "extraction.goals.completed",
           salvaged_promotion_count: 2,
           skipped_promotion_count: 1,
           classification_counts: {
@@ -713,45 +718,45 @@ describe("MetricsCapture", () => {
         {
           ts: 100.5,
           turnId: "turn-goal",
-          event: "goal_promotion_classification_rejected",
+          event: "extraction.goals.rejected",
           classification: "one_off",
           reason: "non_durable_classification",
         },
         {
           ts: 100.6,
           turnId: "turn-goal",
-          event: "goal_promotion_classification_rejected",
+          event: "extraction.goals.rejected",
           classification: "durable_borg_goal",
           reason: "cap_exceeded",
         },
         {
           ts: 101,
           turnId: "turn-goal",
-          event: "goal_promotion_initial_step_downgraded",
+          event: "extraction.goals.transitioned",
           reason: "wait_without_due_at",
         },
         {
           ts: 102,
           turnId: "turn-goal",
-          event: "goal_promotion_skipped_as_duplicate",
+          event: "extraction.goals.skipped",
           reason: "extractor_signal",
         },
         {
           ts: 103,
           turnId: "turn-goal",
-          event: "goal_promotion_skipped_as_duplicate",
+          event: "extraction.goals.skipped",
           reason: "embedding",
         },
         {
           ts: 104,
           turnId: "turn-goal",
-          event: "goal_promotion_dedup_degraded",
+          event: "extraction.goals.dedup.degraded",
           reason: "candidate_embedding_failed",
         },
         {
           ts: 200,
           turnId: "other-turn",
-          event: "goal_promotion_extractor_completed",
+          event: "extraction.goals.completed",
           salvaged_promotion_count: 1,
           skipped_promotion_count: 1,
           classification_counts: {
@@ -825,7 +830,7 @@ describe("MetricsCapture", () => {
     expect(row.active_goal_count).toBe(26);
     expect(trace).toContainEqual(
       expect.objectContaining({
-        event: "simulator_health_warning",
+        event: "simulator_health.degraded",
         warning_kind: "active_goals_high",
         turn_counter: 5,
         threshold: 25,
@@ -868,7 +873,7 @@ describe("MetricsCapture", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter(
         (record) =>
-          record.event === "simulator_health_warning" &&
+          record.event === "simulator_health.degraded" &&
           record.warning_kind === "active_goals_high",
       );
 
@@ -910,7 +915,7 @@ describe("MetricsCapture", () => {
 
     expect(trace).toContainEqual(
       expect.objectContaining({
-        event: "simulator_health_warning",
+        event: "simulator_health.degraded",
         warning_kind: "active_goals_growth_high",
         turn_counter: 30,
         threshold: 0.5,
@@ -960,46 +965,47 @@ describe("MetricsCapture", () => {
         {
           ts: 100,
           turnId: anomalyTurnId,
-          event: "llm_call_started",
+          event: "llm_call.started",
           label: "frame_anomaly_classifier",
         },
         {
           ts: 101,
           turnId: anomalyTurnId,
-          event: "frame_anomaly_classified",
+          event: "frame_anomaly.completed",
           status: "ok",
           kind: "frame_assignment_claim",
         },
         {
           ts: 200,
           turnId: degradedTurnId,
-          event: "llm_call_started",
+          event: "llm_call.started",
           label: "frame_anomaly_classifier",
         },
         {
           ts: 201,
           turnId: degradedTurnId,
-          event: "frame_anomaly_classified",
+          event: "frame_anomaly.completed",
           status: "degraded",
           reason: "invalid_payload",
         },
         {
           ts: 202,
           turnId: degradedTurnId,
-          event: "frame_anomaly_degraded_fallback_match",
+          event: "frame_anomaly.fallback.completed",
           pattern: "i'm claude",
           kind: "assistant_self_claim_in_user_role",
+          matched: true,
         },
         {
           ts: 300,
           turnId: normalTurnId,
-          event: "llm_call_started",
+          event: "llm_call.started",
           label: "frame_anomaly_classifier",
         },
         {
           ts: 301,
           turnId: normalTurnId,
-          event: "frame_anomaly_classified",
+          event: "frame_anomaly.completed",
           status: "ok",
           kind: "normal",
         },
@@ -1253,6 +1259,7 @@ describe("MetricsCapture", () => {
       });
       commitments.add({
         type: "rule",
+        kind: "audience_rule",
         directiveFamily: "metrics active two",
         directive: "Prefer count-only reads.",
         priority: 4,
@@ -1403,6 +1410,7 @@ describe("MetricsCapture", () => {
         commitments: {
           list: (options = {}) => commitments.list(options),
           countActive: () => commitments.countActive(),
+          countActiveByKind: () => commitments.countActiveByKind(),
           countSuperseded: () => commitments.countSuperseded(),
           countRevoked: () => commitments.countRevoked(),
           countExpired: () => commitments.countExpired(),
@@ -1450,6 +1458,11 @@ describe("MetricsCapture", () => {
       expect(row.action_record_creation_count_this_turn).toBe(3);
       expect(row.recent_completed_action_count).toBe(2);
       expect(row.commitment_count_active).toBe(2);
+      expect(row.commitment_count_active_by_kind).toEqual({
+        ...zeroCounts(COMMITMENT_KINDS),
+        assistant_commitment: 1,
+        audience_rule: 1,
+      });
       expect(row.commitment_count_superseded).toBe(1);
       expect(row.commitment_count_revoked).toBe(2);
       expect(row.commitment_count_expired).toBe(1);
@@ -1539,7 +1552,7 @@ describe("MetricsCapture", () => {
     expect(records).toHaveLength(3);
     expect(trace).toContainEqual(
       expect.objectContaining({
-        event: "action_duplicate_pressure_observed",
+        event: "action_duplicate_pressure.completed",
         turnId: "turn-duplicate",
         cluster_count: 1,
         max_cluster_size: 2,

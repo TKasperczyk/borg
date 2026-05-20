@@ -346,7 +346,7 @@ export class TurnOrchestrator {
     }
 
     if (this.tracer.enabled) {
-      this.tracer.emit("turn_aborted", {
+      this.tracer.emit("turn.rejected", {
         turnId,
         reason: message,
         sessionId,

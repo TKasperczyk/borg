@@ -268,7 +268,7 @@ export class RetrievalPipeline {
         onDegraded:
           this.tracer.enabled && options.traceTurnId !== undefined
             ? (reason, error) => {
-                this.tracer.emit("retrieval_degraded", {
+                this.tracer.emit("retrieval.degraded", {
                   turnId: options.traceTurnId!,
                   subsystem: "open_questions",
                   reason: error instanceof Error ? `${reason}: ${error.message}` : reason,
@@ -284,7 +284,7 @@ export class RetrievalPipeline {
     options: RetrievalSearchOptions = {},
   ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
-      this.tracer.emit("retrieval_started", {
+      this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
         query,
         options: summarizeRetrievalOptions(options),
@@ -310,7 +310,7 @@ export class RetrievalPipeline {
         });
       } catch (error) {
         if (this.tracer.enabled && options.traceTurnId !== undefined) {
-          this.tracer.emit("retrieval_degraded", {
+          this.tracer.emit("retrieval.degraded", {
             turnId: options.traceTurnId,
             subsystem: "scoring_features",
             reason: error instanceof Error ? error.message : String(error),
@@ -424,7 +424,7 @@ export class RetrievalPipeline {
     }
 
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
-      this.tracer.emit("retrieval_completed", {
+      this.tracer.emit("retrieval.completed", {
         turnId: options.traceTurnId,
         episodeCount: context.episodes.length,
         semanticHits: countSemanticHits(context.semantic),
@@ -1049,7 +1049,7 @@ export class RetrievalPipeline {
       };
     } catch (error) {
       if (this.tracer.enabled && options.traceTurnId !== undefined) {
-        this.tracer.emit("retrieval_degraded", {
+        this.tracer.emit("retrieval.degraded", {
           turnId: options.traceTurnId,
           subsystem: "recall_expansion",
           reason: error instanceof Error ? error.message : String(error),
@@ -1315,7 +1315,7 @@ export class RetrievalPipeline {
     error: unknown,
   ): void {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
-      this.tracer.emit("retrieval_degraded", {
+      this.tracer.emit("retrieval.degraded", {
         turnId: options.traceTurnId,
         subsystem,
         reason: error instanceof Error ? error.message : String(error),

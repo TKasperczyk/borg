@@ -197,4 +197,37 @@ export const commitmentMigrations = [
       }
     },
   },
+  {
+    id: 10,
+    name: "commitment_kind",
+    up: (db) => {
+      if (!tableExists(db, "commitments")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "commitments", "kind")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'assistant_commitment' CHECK (
+              kind IN (
+                'assistant_commitment',
+                'audience_rule',
+                'participant_preference',
+                'boundary',
+                'process_norm'
+              )
+            );
+        `);
+      }
+
+      db.exec(`
+        UPDATE commitments
+        SET kind = 'assistant_commitment'
+        WHERE kind IS NULL;
+
+        CREATE INDEX IF NOT EXISTS commitments_kind_idx
+          ON commitments(kind);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

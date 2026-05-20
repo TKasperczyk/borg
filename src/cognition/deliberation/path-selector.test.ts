@@ -276,7 +276,7 @@ describe("chooseDeliberationPath", () => {
       forced_by: "open_question_contradiction",
       contradiction_tier: "s2_forced",
     });
-    expect(emit).toHaveBeenCalledWith("s2_routing_forced_by_contradiction", {
+    expect(emit).toHaveBeenCalledWith("deliberation.path.transitioned", {
       turnId: "turn-forced",
       perceptionMode: "problem_solving",
       isOperational: true,
@@ -291,7 +291,7 @@ describe("chooseDeliberationPath", () => {
       baseReason: "Retrieval confidence is strong enough for a direct response.",
       forcedPath: "system_2",
     });
-    expect(emit).toHaveBeenCalledWith("path_selected", {
+    expect(emit).toHaveBeenCalledWith("deliberation.path.completed", {
       turnId: "turn-forced",
       path: "system_2",
       reason: "open_question_contradiction",
@@ -409,7 +409,7 @@ describe("chooseDeliberationPath", () => {
       contradiction_tier: "s2_recommended",
       contradiction_cooldown_demoted: true,
     });
-    expect(emit).toHaveBeenCalledWith("contradiction_routing_cooldown_demoted", {
+    expect(emit).toHaveBeenCalledWith("deliberation.contradiction_routing.transitioned", {
       turnId: "turn-second",
       fingerprint: OPEN_QUESTION_FINGERPRINT,
       last_forced_turn: 10,
@@ -463,7 +463,7 @@ describe("chooseDeliberationPath", () => {
       contradiction_tier: "s2_forced",
     });
     expect(emit).toHaveBeenCalledWith(
-      "path_selected",
+      "deliberation.path.completed",
       expect.objectContaining({
         turnId: "turn-natural-s2",
         path: "system_2",
@@ -473,7 +473,7 @@ describe("chooseDeliberationPath", () => {
       }),
     );
     expect(emit).toHaveBeenCalledWith(
-      "s2_routing_forced_by_contradiction",
+      "deliberation.path.transitioned",
       expect.objectContaining({
         turnId: "turn-natural-s2",
         basePath: "system_2",

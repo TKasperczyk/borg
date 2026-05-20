@@ -107,7 +107,7 @@ describe("PerceptionGateway", () => {
         useLlmFallback: false,
       }),
     );
-    expect(tracer.emit).toHaveBeenCalledWith("recency_compiled", {
+    expect(tracer.emit).toHaveBeenCalledWith("recency.completed", {
       turnId: "turn-1",
       messageCount: 2,
       sourceEntryIds: ["strm_abcdefghijklmnop", "strm_bcdefghijklmnopa"],

@@ -257,7 +257,7 @@ describe("retrieval pipeline", () => {
     ]);
     expect(rendered).toContain("planning kickoff");
     expect(rendered).toContain(`[citation unresolved: ${missingId}]`);
-    expect(tracer.emit).toHaveBeenCalledWith("citation_unresolved", {
+    expect(tracer.emit).toHaveBeenCalledWith("citation_resolution.degraded", {
       turnId: "turn-citations",
       missingIds: [missingId],
       resolvedCount: 1,

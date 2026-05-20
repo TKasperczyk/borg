@@ -81,14 +81,14 @@ export function chooseDeliberationPath(
   ): DeliberationPathDecision => {
     if (trace?.tracer.enabled === true) {
       if (contradictionRoutingEnabled) {
-        trace.tracer.emit("contradiction_routing_classified", {
+        trace.tracer.emit("deliberation.contradiction_routing.completed", {
           turnId: trace.turnId,
           fingerprints: selectedFingerprints,
           tier: classification.tier,
           reason: classification.reason,
         });
       }
-      trace.tracer.emit("path_selected", {
+      trace.tracer.emit("deliberation.path.completed", {
         turnId: trace.turnId,
         path,
         reason,
@@ -180,7 +180,7 @@ export function chooseDeliberationPath(
     );
 
     if (trace?.tracer.enabled === true) {
-      trace.tracer.emit("s2_routing_forced_by_contradiction", {
+      trace.tracer.emit("deliberation.path.transitioned", {
         turnId: trace.turnId,
         perceptionMode: mode,
         isOperational: effectiveRoutingOverride.isOperational === true,
@@ -201,7 +201,7 @@ export function chooseDeliberationPath(
 
     if (cooldownDemoted && trace?.tracer.enabled === true) {
       for (const hit of cooldownHits) {
-        trace.tracer.emit("contradiction_routing_cooldown_demoted", {
+        trace.tracer.emit("deliberation.contradiction_routing.transitioned", {
           turnId: trace.turnId,
           fingerprint: hit.fingerprint,
           last_forced_turn: hit.lastForcedTurn,

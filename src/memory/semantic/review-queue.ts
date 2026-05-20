@@ -440,7 +440,7 @@ export class ReviewQueueRepository {
       return;
     }
 
-    this.tracer.emit("review_queue_decision", {
+    this.tracer.emit("review_queue.completed", {
       turnId: input.traceTurnId ?? "review_queue",
       item_id: input.item.id,
       item_kind: input.item.kind,

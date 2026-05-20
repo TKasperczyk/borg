@@ -92,7 +92,8 @@ export type PersonaScheduler = {
 
 const DEFAULT_MAINTENANCE_EVERY = 10;
 const MAX_PERSONAS = 4;
-const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
+const PERSONA_ROLE_BLEED_RETRY = "persona_role_bleed";
+const PERSONA_ROLE_BLEED_EVENT = "persona.role_bleed.rejected";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
 const PERSONA_CHANNEL_TRANSCRIPT_LIMIT = 10;
@@ -255,7 +256,7 @@ function normalizeSpeakerIndex(index: number, personas: readonly Persona[]): num
 }
 
 function priorBorgTurnRetry(priorTurn: PriorBorgTurn): PriorBorgTurn {
-  return { ...priorTurn, retry: PERSONA_ROLE_BLEED_EVENT };
+  return { ...priorTurn, retry: PERSONA_ROLE_BLEED_RETRY };
 }
 
 function appendChannelTranscriptEntry(
@@ -503,8 +504,9 @@ async function runMaintenanceTick(
         ts: Date.now(),
         wallMs: performance.now(),
         turnId: `simulator_maintenance_${turn}_${cadence}`,
-        event: "maintenance_snapshot",
+        event: "maintenance_snapshot.completed",
         artifact: "simulator",
+        final: false,
         turn_counter: turn,
         cadence,
         before,
@@ -524,7 +526,8 @@ async function runMaintenanceTick(
           transport.tracePath,
           `${JSON.stringify({
             ...snapshot,
-            event: "maintenance_snapshot_finalized",
+            event: "maintenance_snapshot.completed",
+            final: true,
           })}\n`,
         );
       }
@@ -755,7 +758,7 @@ export class SimulatorRunner {
           personaSession.rollback(draft);
 
           if (finalBleedAttempt) {
-            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${
+            const detail = `${PERSONA_ROLE_BLEED_RETRY}: ${
               bleedDetection.matched.length > 0
                 ? bleedDetection.matched.join(", ")
                 : bleedDetection.category
@@ -766,7 +769,7 @@ export class SimulatorRunner {
               sessionIds,
               transportChatAttempts: 0,
               failureReason: detail,
-              turnId: `${PERSONA_ROLE_BLEED_EVENT}_${turn}`,
+              turnId: `${PERSONA_ROLE_BLEED_RETRY}_${turn}`,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console

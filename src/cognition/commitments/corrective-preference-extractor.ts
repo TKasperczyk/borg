@@ -10,6 +10,7 @@ import {
 import {
   closurePressureRelevanceSchema,
   commitmentIdSchema,
+  commitmentKindSchema,
   commitmentTypeSchema,
   normalizeDirectiveFamily,
 } from "../../memory/commitments/index.js";
@@ -21,6 +22,7 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -63,6 +65,12 @@ const correctivePreferenceSchema = z
       .nullable()
       .describe(
         "Classify the durable response-behavior change as preference, rule, or boundary. Use null when classification is none.",
+      ),
+    kind: commitmentKindSchema
+      .exclude(["assistant_commitment"])
+      .nullable()
+      .describe(
+        "Classify the durable correction as audience_rule, participant_preference, boundary, or process_norm. Use null when classification is none.",
       ),
     directive: z
       .string()
@@ -121,25 +129,13 @@ const CORRECTIVE_PREFERENCE_TOOL = {
   inputSchema: toToolInputSchema(correctivePreferenceSchema),
 } satisfies LLMToolDefinition;
 
-const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
-  "Classify whether the user is making a durable correction to Borg's future response behavior.",
-  "Return corrective_preference only when the user is directing Borg to change how it should answer in future turns, such as a recurring style, boundary, interaction rule, or response pattern.",
-  "Return none for ordinary task requests, emotional disclosure, venting, disagreement, one-turn instructions, or discussion about a behavior without asking Borg to adopt a lasting change.",
-  "Separately, fill slot_negations when the user rejects a supplied relational slot value, even if classification is none.",
-  "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
-  "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
-  "When speaker_entity_id is supplied and the current speaker gives a durable first-person correction, treat that speaker as the committer. In group chat, first-person user commitments/preferences belong to the current sender, not the group, unless the message explicitly says the group is acting.",
-  "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
-  'Emit closure_pressure_relevance as "no_closure" for durable no-wrap-up/no-signoff/no-closure corrections, "closure_seeking" for durable requests to add closure, and "neutral" otherwise.',
-  "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
-].join("\n");
-
 type CorrectivePreferenceToolInput = z.infer<typeof correctivePreferenceSchema>;
 
 class MissingCorrectivePreferenceToolCallError extends Error {}
 
 export type CorrectivePreferenceCandidate = {
   type: Exclude<z.infer<typeof commitmentTypeSchema>, "promise">;
+  kind: Exclude<z.infer<typeof commitmentKindSchema>, "assistant_commitment">;
   directive: string;
   directive_family: string;
   closure_pressure_relevance: z.infer<typeof closurePressureRelevanceSchema>;
@@ -189,6 +185,7 @@ export type ExtractCorrectivePreferenceInput = {
   activeCommitments: readonly {
     id: CommitmentId;
     type: string;
+    kind?: string | null;
     directive: string;
     directive_family?: string | null;
     closure_pressure_relevance?: z.infer<typeof closurePressureRelevanceSchema> | null;
@@ -210,6 +207,7 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
 
   if (
     input.type === null ||
+    input.kind === null ||
     input.directive === null ||
     input.directive_family === null ||
     input.closure_pressure_relevance === null ||
@@ -228,6 +226,7 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
 
   return {
     type: input.type,
+    kind: input.kind,
     directive,
     directive_family: directiveFamily,
     closure_pressure_relevance: input.closure_pressure_relevance,
@@ -306,6 +305,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
         active_commitments: input.activeCommitments.map((commitment) => ({
           id: commitment.id,
           type: commitment.type,
+          kind: commitment.kind ?? null,
           directive_family: commitment.directive_family ?? null,
           closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
           directive: commitment.directive,
@@ -361,7 +361,7 @@ function traceLlmCallStarted(options: {
   tools: readonly LLMToolDefinition[];
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "corrective_preference_extractor",
       model: options.model,
@@ -380,7 +380,7 @@ function traceLlmCallResponse(options: {
   response: LLMCompleteResult;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "corrective_preference_extractor",
       responseShape: summarizeCorrectivePreferenceResponseShape(options.response),
@@ -396,7 +396,7 @@ function traceLlmCallError(options: {
   error: unknown;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "corrective_preference_extractor",
       responseShape: {

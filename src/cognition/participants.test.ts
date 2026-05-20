@@ -275,7 +275,7 @@ describe("resolveActiveParticipants", () => {
       entity(abortedByMarkerId, "Aborted Marker", "person"),
       entity(quarantinedId, "Quarantined", "person"),
     ]);
-    const abortedTurnId = "turn_aborted_marker";
+    const abortedTurnId = "turn.rejected_marker";
     const abortedByStatus = {
       ...userEntry(abortedByStatusId, 1),
       turn_status: "aborted" as const,

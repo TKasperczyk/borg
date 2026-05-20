@@ -163,7 +163,7 @@ describe("maintenance orchestrator", () => {
     });
   });
 
-  it("traces process error details on offline_process_completed", async () => {
+  it("traces process error details on offline_process.completed", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({ tracer });
     cleanup.push(harness.cleanup);
@@ -212,7 +212,7 @@ describe("maintenance orchestrator", () => {
     });
 
     expect(tracer.events).toContainEqual({
-      event: "offline_process_completed",
+      event: "offline_process.completed",
       data: expect.objectContaining({
         process_name: "overseer",
         errors: 1,
@@ -303,7 +303,7 @@ describe("maintenance orchestrator", () => {
     });
 
     expect(tracer.events).toContainEqual({
-      event: "offline_process_completed",
+      event: "offline_process.completed",
       data: expect.objectContaining({
         process_name: "overseer",
         candidates_proposed: 3,
@@ -313,7 +313,7 @@ describe("maintenance orchestrator", () => {
       }),
     });
     expect(tracer.events).toContainEqual({
-      event: "offline_process_completed",
+      event: "offline_process.completed",
       data: expect.objectContaining({
         process_name: "curator",
         candidates_proposed: 1,

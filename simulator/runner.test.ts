@@ -8,6 +8,7 @@ import {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
   Borg,
+  COMMITMENT_KINDS,
   RELATIONAL_SLOT_STATES,
   type EntityId,
   type GenerationSuppressionReason,
@@ -120,6 +121,7 @@ function fakeSimulatorBorg(): Borg {
     commitments: {
       list: () => [],
       countActive: () => 0,
+      countActiveByKind: () => zeroCounts(COMMITMENT_KINDS),
       countSuperseded: () => 0,
       countRevoked: () => 0,
       countExpired: () => 0,
@@ -387,6 +389,13 @@ function metricsRow(turnCounter: number): MetricsRow {
     actions_completed_via_canonicalization: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
+    commitment_count_active_by_kind: {
+      assistant_commitment: 0,
+      audience_rule: 0,
+      participant_preference: 0,
+      boundary: 0,
+      process_norm: 0,
+    },
     commitment_count_superseded: 0,
     commitment_count_revoked: 0,
     commitment_count_expired: 0,
@@ -958,7 +967,7 @@ describe("SimulatorRunner", () => {
           `${JSON.stringify({
             ts: attempts,
             turnId: `turn-aborted-${attempts}`,
-            event: "turn_aborted",
+            event: "turn.rejected",
           })}\n`,
         );
         throw new Error(failureMessage);
@@ -1928,7 +1937,7 @@ describe("SimulatorRunner", () => {
       mock: true,
     });
     const roleBleedEvents = readTraceEvents(tracePath).filter(
-      (event) => event.event === "persona_role_bleed",
+      (event) => event.event === "persona.role_bleed.rejected",
     );
 
     expect(seenMessages).toEqual([
@@ -1941,7 +1950,7 @@ describe("SimulatorRunner", () => {
     ]);
     expect(roleBleedEvents).toMatchObject([
       {
-        event: "persona_role_bleed",
+        event: "persona.role_bleed.rejected",
         artifact: "simulator",
         prior_kind: "new_session",
         matched_patterns: ["i'm claude", "i was playing tom", "inside the fiction"],
@@ -2003,7 +2012,7 @@ describe("SimulatorRunner", () => {
       mock: true,
     });
     const roleBleedEvents = readTraceEvents(tracePath).filter(
-      (event) => event.event === "persona_role_bleed",
+      (event) => event.event === "persona.role_bleed.rejected",
     );
 
     expect(seenMessages).toEqual([cleanDraft]);
@@ -2022,14 +2031,14 @@ describe("SimulatorRunner", () => {
     ]);
     expect(roleBleedEvents).toMatchObject([
       {
-        event: "persona_role_bleed",
+        event: "persona.role_bleed.rejected",
         matched_patterns: ["i'm claude"],
         rejected_preview: firstBleedDraft.slice(0, 500),
         attempt: 1,
         action: "regenerated",
       },
       {
-        event: "persona_role_bleed",
+        event: "persona.role_bleed.rejected",
         matched_patterns: ["i have been playing tom"],
         rejected_preview: secondBleedDraft,
         attempt: 2,

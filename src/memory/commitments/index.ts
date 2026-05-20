@@ -18,11 +18,13 @@ export {
 } from "./repository.js";
 export {
   CLOSURE_PRESSURE_RELEVANCE,
+  COMMITMENT_KINDS,
   COMMITMENT_TYPES,
   ENTITY_KINDS,
   NAME_PROVENANCES,
   closurePressureRelevanceSchema,
   commitmentIdSchema,
+  commitmentKindSchema,
   commitmentPatchSchema,
   commitmentSchema,
   commitmentTypeSchema,
@@ -34,6 +36,7 @@ export {
   normalizeDirectiveFamily,
   streamEntryIdSchema,
   type CommitmentApplicableOptions,
+  type CommitmentKind,
   type CommitmentListOptions,
   type CommitmentPatch,
   type CommitmentRecord,

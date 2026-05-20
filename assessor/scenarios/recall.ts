@@ -33,7 +33,7 @@ export const recallScenario: Scenario = {
         {
           type: "event_seen",
           description: "Standard pipeline retrieval completed.",
-          eventIncludes: "retrieval_completed",
+          event: "retrieval.completed",
           turn: "last",
         },
         {

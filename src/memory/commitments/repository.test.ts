@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
+import { createCommitmentId, createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -122,6 +122,56 @@ describe("commitment repository", () => {
       expect(commitments.countActive()).toBe(0);
       expect(commitmentRows()).toEqual(beforeCommitments);
       expect(identityEventRows()).toEqual(beforeEvents);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stores and counts active commitments by kind", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const boundary = commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "do_not_discuss_atlas",
+        directive: "Do not discuss Atlas.",
+        priority: 9,
+        provenance: manualProvenance,
+      });
+      commitments.add({
+        type: "preference",
+        kind: "participant_preference",
+        directiveFamily: "morning_meetings",
+        directive: "Prefer morning meetings.",
+        priority: 4,
+        provenance: manualProvenance,
+      });
+      commitments.add({
+        type: "rule",
+        kind: "process_norm",
+        directiveFamily: "expired_process",
+        directive: "Use the expired process.",
+        priority: 3,
+        provenance: manualProvenance,
+        createdAt: 100,
+        expiresAt: 500,
+      });
+
+      expect(commitments.get(boundary.id)?.kind).toBe("boundary");
+      expect(commitments.countActiveByKind(1_000)).toEqual({
+        assistant_commitment: 0,
+        audience_rule: 0,
+        participant_preference: 1,
+        boundary: 1,
+        process_norm: 0,
+      });
     } finally {
       db.close();
     }
@@ -591,6 +641,56 @@ describe("commitment repository", () => {
     }
   });
 
+  it("migrates legacy commitments to assistant commitment kind", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitments-"));
+    const dbPath = join(tempDir, "borg.db");
+    const commitmentId = createCommitmentId();
+
+    try {
+      const legacyDb = openDatabase(dbPath, {
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 9),
+      });
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO commitments (
+              id, type, directive, priority, source_episode_ids, created_at,
+              directive_family, last_reinforced_at, provenance_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          commitmentId,
+          "rule",
+          "Keep the legacy rule.",
+          5,
+          "[]",
+          1,
+          "legacy_rule",
+          1,
+          "manual",
+        );
+      legacyDb.close();
+
+      const db = openDatabase(dbPath, {
+        migrations: commitmentMigrations,
+      });
+      const commitments = new CommitmentRepository({
+        db,
+        clock: new FixedClock(1_000),
+      });
+
+      try {
+        expect(commitments.get(commitmentId)?.kind).toBe("assistant_commitment");
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("defaults new entities to person and lists by kind", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,
@@ -685,6 +785,7 @@ describe("commitment repository", () => {
       const secondEntryId = createStreamEntryId();
       const first = commitments.add({
         type: "preference",
+        kind: "participant_preference",
         directiveFamily: "no_terminal_valediction",
         directive: "Do not add terminal valedictions.",
         priority: 7,
@@ -696,6 +797,7 @@ describe("commitment repository", () => {
 
       const second = commitments.add({
         type: "preference",
+        kind: "participant_preference",
         directiveFamily: "No Terminal Valediction",
         directive: "Do not close with ritual farewell lines.",
         priority: 9,
@@ -713,6 +815,48 @@ describe("commitment repository", () => {
         last_reinforced_at: 2_000,
         source_stream_entry_ids: [firstEntryId, secondEntryId],
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not merge commitments with the same directive family and scope but different kind or type", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const assistantCommitment = commitments.add({
+        type: "promise",
+        kind: "assistant_commitment",
+        directiveFamily: "release_window",
+        directive: "Keep the release window locked.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const boundary = commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "release_window",
+        directive: "Do not disclose the release window externally.",
+        priority: 9,
+        provenance: manualProvenance,
+      });
+      const active = commitments.list({ activeOnly: true });
+
+      expect(boundary.id).not.toBe(assistantCommitment.id);
+      expect(active.map((commitment) => commitment.id)).toEqual([
+        boundary.id,
+        assistantCommitment.id,
+      ]);
+      expect(active.map((commitment) => commitment.kind)).toEqual([
+        "boundary",
+        "assistant_commitment",
+      ]);
     } finally {
       db.close();
     }

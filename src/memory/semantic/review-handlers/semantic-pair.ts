@@ -108,7 +108,7 @@ function traceStatusTransition(input: {
     return;
   }
 
-  input.ctx.tracer.emit("semantic_node_status_transitioned", {
+  input.ctx.tracer.emit("semantic_node.status.transitioned", {
     turnId: "review_queue",
     nodeId: input.transition.id,
     fromStatus: input.transition.fromStatus,

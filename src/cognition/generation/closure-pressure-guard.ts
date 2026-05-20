@@ -227,7 +227,7 @@ function traceClosureGuard(input: {
     payload.rewritten_response = input.rewrittenResponse;
   }
 
-  input.tracer.emit("closure_response_guard", payload);
+  input.tracer.emit("closure_response_guard.completed", payload);
 }
 
 function traceClosureAuditInconsistent(input: {
@@ -240,7 +240,7 @@ function traceClosureAuditInconsistent(input: {
     return;
   }
 
-  input.tracer.emit("closure_pressure_audit_inconsistent", {
+  input.tracer.emit("closure_pressure_audit.degraded", {
     turnId: input.turnId,
     reason: input.reason,
     spans_detected: input.audit.spans.length,
@@ -402,7 +402,7 @@ export class ClosurePressureGuard {
     }
 
     if (audit.spans.length === 0) {
-      const reason = "closure_pressure_audit_inconsistent_no_spans";
+      const reason = "closure_pressure_audit.degraded_no_spans";
 
       traceClosureAuditInconsistent({
         tracer: this.options.tracer,
@@ -439,7 +439,7 @@ export class ClosurePressureGuard {
       traceClosureAuditInconsistent({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        reason: "closure_pressure_audit_inconsistent_with_spans",
+        reason: "closure_pressure_audit.degraded_with_spans",
         audit,
       });
     }

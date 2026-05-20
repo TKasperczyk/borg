@@ -156,6 +156,7 @@ export type SharedStateCanonicalizationCandidate = {
 
 export type SharedStateCommitmentCanonicalizationCandidate =
   SharedStateCanonicalizationCandidate & {
+    kind: string;
     type: SharedStateCommitmentCanonicalizationType;
     directive_family: string;
   };

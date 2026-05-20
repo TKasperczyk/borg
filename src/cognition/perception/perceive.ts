@@ -133,7 +133,7 @@ export class Perceiver {
       degraded = true;
 
       if (this.tracer.enabled && this.turnId !== undefined) {
-        this.tracer.emit("perception_classifier_degraded", {
+        this.tracer.emit("perception.classifier.degraded", {
           turnId: this.turnId,
           classifier: "affective_signal",
           reason,
@@ -167,7 +167,7 @@ export class Perceiver {
 
   async perceive(text: string, recentHistory: readonly string[] = []): Promise<PerceptionResult> {
     if (this.tracer.enabled && this.turnId !== undefined) {
-      this.tracer.emit("perception_started", {
+      this.tracer.emit("perception.started", {
         turnId: this.turnId,
         inputCharCount: text.length,
         recentHistoryCount: recentHistory.length,
@@ -209,7 +209,7 @@ export class Perceiver {
         model: this.temporalCueUseLlmFallback ? this.fastModel : undefined,
         onDegraded: async (reason, error) => {
           if (this.tracer.enabled && this.turnId !== undefined) {
-            this.tracer.emit("perception_classifier_degraded", {
+            this.tracer.emit("perception.classifier.degraded", {
               turnId: this.turnId,
               classifier: "temporal_cue",
               reason,
@@ -242,7 +242,7 @@ export class Perceiver {
     });
 
     if (this.tracer.enabled && this.turnId !== undefined) {
-      this.tracer.emit("perception_completed", {
+      this.tracer.emit("perception.completed", {
         turnId: this.turnId,
         mode: perception.mode,
         isOperational: perception.isOperational === true,

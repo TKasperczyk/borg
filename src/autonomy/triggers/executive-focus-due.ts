@@ -271,7 +271,7 @@ export function createExecutiveFocusDueTrigger(
       });
     } catch (error) {
       if (options.tracer?.enabled === true) {
-        options.tracer.emit("retrieval_degraded", {
+        options.tracer.emit("retrieval.degraded", {
           turnId: "autonomy:executive_focus_due",
           subsystem: "executive_context_fit",
           reason: error instanceof Error ? error.message : String(error),
@@ -318,7 +318,7 @@ export function createExecutiveFocusDueTrigger(
         ];
       } catch (error) {
         if (options.tracer?.enabled === true) {
-          options.tracer.emit("retrieval_degraded", {
+          options.tracer.emit("retrieval.degraded", {
             turnId: "autonomy:executive_focus_due",
             subsystem: "scoring_features",
             reason: error instanceof Error ? error.message : String(error),

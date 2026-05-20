@@ -7,6 +7,11 @@ import { createAnsi } from "../helpers/ansi.js";
 import { CliError } from "../helpers/errors.js";
 import { writeLine } from "../helpers/formatters.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
+import {
+  TRACE_TAXONOMY_PHASES_WITH_OTHER,
+  phaseForTraceEventName,
+  type TracePhaseWithOther,
+} from "../../cognition/tracing/taxonomy.js";
 
 type TraceRecord = {
   ts: number;
@@ -15,17 +20,9 @@ type TraceRecord = {
   [key: string]: unknown;
 };
 
-const PHASES = [
-  "perception",
-  "retrieval",
-  "deliberation",
-  "tools",
-  "commitments",
-  "reflection",
-  "other",
-] as const;
+const PHASES = TRACE_TAXONOMY_PHASES_WITH_OTHER;
 
-type Phase = (typeof PHASES)[number];
+type Phase = TracePhaseWithOther;
 
 const COLLAPSED_KEYS = new Set(["prompt", "response"]);
 
@@ -73,37 +70,7 @@ function readTrace(path: string): TraceRecord[] {
 }
 
 function phaseFor(event: string): Phase {
-  if (event === "recency_compiled" || event.startsWith("perception_")) {
-    return "perception";
-  }
-
-  if (event.startsWith("retrieval_") || event === "citation_unresolved") {
-    return "retrieval";
-  }
-
-  if (
-    event.startsWith("llm_call_") ||
-    event.startsWith("plan_") ||
-    event === "s2_planner_exhausted" ||
-    event === "path_selected" ||
-    event === "s2_routing_forced_by_contradiction"
-  ) {
-    return "deliberation";
-  }
-
-  if (event.startsWith("tool_call_")) {
-    return "tools";
-  }
-
-  if (event === "commitment_check") {
-    return "commitments";
-  }
-
-  if (event === "reflection_emitted") {
-    return "reflection";
-  }
-
-  return "other";
+  return phaseForTraceEventName(event);
 }
 
 function stringifyCompact(value: unknown): string {

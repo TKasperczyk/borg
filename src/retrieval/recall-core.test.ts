@@ -262,14 +262,14 @@ describe("Recall Core", () => {
       traceTurnId: "turn-recall-expansion",
     });
 
-    expect(tracer.emit).toHaveBeenCalledWith("llm_call_started", {
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call.started", {
       turnId: "turn-recall-expansion",
       label: "recall_expansion",
       model: harness.config.anthropic.models.recallExpansion,
       promptCharCount: expect.any(Number),
       toolSchemas: expect.any(Array),
     });
-    expect(tracer.emit).toHaveBeenCalledWith("llm_call_response", {
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-recall-expansion",
       label: "recall_expansion",
       responseShape: {
@@ -312,7 +312,7 @@ describe("Recall Core", () => {
     });
 
     expect(tracer.emit).toHaveBeenCalledWith(
-      "llm_call_response",
+      "llm_call.completed",
       expect.objectContaining({
         turnId: "turn-recall-expansion-parse-failure",
         label: "recall_expansion",
@@ -324,7 +324,7 @@ describe("Recall Core", () => {
       }),
     );
     expect(tracer.emit).toHaveBeenCalledWith(
-      "retrieval_degraded",
+      "retrieval.degraded",
       expect.objectContaining({
         turnId: "turn-recall-expansion-parse-failure",
         subsystem: "recall_expansion",
@@ -368,8 +368,9 @@ describe("Recall Core", () => {
       "Atlas commitment",
       "Atlas topic",
     ]);
-    expect(tracer.emit).toHaveBeenCalledWith("recall_expansion_clipped", {
+    expect(tracer.emit).toHaveBeenCalledWith("recall_expansion.completed", {
       turnId: "turn-recall-expansion-clipped",
+      clipped: true,
       original_count: 5,
       retained_count: 4,
       dropped_facets: [{ priority: 0.1, query: "Atlas low-priority" }],
@@ -391,7 +392,7 @@ describe("Recall Core", () => {
       traceTurnId: "turn-recall-expansion-transport-failure",
     });
 
-    expect(tracer.emit).toHaveBeenCalledWith("llm_call_response", {
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-recall-expansion-transport-failure",
       label: "recall_expansion",
       responseShape: {

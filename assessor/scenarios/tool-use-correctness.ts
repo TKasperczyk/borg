@@ -33,7 +33,7 @@ export const toolUseCorrectnessScenario: Scenario = {
     {
       type: "event_seen",
       description: "Relationship turn engaged the retrieval pipeline.",
-      eventIncludes: "retrieval_completed",
+      event: "retrieval.completed",
       turn: "last",
     },
   ],

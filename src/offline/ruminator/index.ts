@@ -541,7 +541,7 @@ function emitOpenQuestionResolutionAttempt(
     return;
   }
 
-  ctx.tracer.emit("open_question_resolution_attempt", {
+  ctx.tracer.emit("open_question_resolution.started", {
     turnId: ctx.runId,
     oq_id: input.oqId,
     source_path: input.sourcePath,
@@ -1052,7 +1052,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         }
 
         if (item.reason === "stale_no_traction" && ctx.tracer?.enabled === true) {
-          ctx.tracer.emit("open_question_stale_dismissed", {
+          ctx.tracer.emit("open_question_resolution.rejected", {
             turnId: ctx.runId,
             question_id: item.question_id,
             reason: item.reason,
@@ -1130,7 +1130,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           });
 
           if (ctx.tracer?.enabled === true) {
-            ctx.tracer.emit("open_question_merged", {
+            ctx.tracer.emit("open_question_resolution.transitioned", {
               turnId: ctx.runId,
               kept_oq_id: primary.id,
               deleted_oq_id: duplicate.id,

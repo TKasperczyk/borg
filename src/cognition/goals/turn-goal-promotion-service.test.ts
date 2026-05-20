@@ -244,7 +244,7 @@ describe("TurnGoalPromotionService", () => {
     expect(addStep).not.toHaveBeenCalled();
     expect(onHookFailure).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_initial_step_downgraded",
+      "extraction.goals.transitioned",
       expect.objectContaining({
         turnId: "turn-goal-wait-step",
         reason: "wait_without_due_at",
@@ -304,7 +304,7 @@ describe("TurnGoalPromotionService", () => {
     expect(addGoal).not.toHaveBeenCalled();
     expect(embeddingClient.embeddedTexts).toEqual([]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         turnId: "turn-goal-extractor-duplicate",
         candidate_description: "Track the deployment checklist review",
@@ -428,7 +428,7 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([persistedGoalId]);
     expect(addGoal).toHaveBeenCalledOnce();
     expect(emit).not.toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         candidate_description: description,
       }),
@@ -496,7 +496,7 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([persistedGoalId]);
     expect(addGoal).toHaveBeenCalledOnce();
     expect(emit).not.toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         candidate_description: description,
       }),
@@ -564,7 +564,7 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([persistedGoalId]);
     expect(addGoal).toHaveBeenCalledOnce();
     expect(emit).not.toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         candidate_description: description,
       }),
@@ -628,7 +628,7 @@ describe("TurnGoalPromotionService", () => {
     expect(addGoal).not.toHaveBeenCalled();
     expect(embeddingClient.embeddedBatchTexts).toEqual([[activeDescription]]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         turnId: "turn-goal-existing-embedding-duplicate",
         candidate_description: candidateDescription,
@@ -699,7 +699,7 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([firstGoalId]);
     expect(addGoal).toHaveBeenCalledOnce();
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_skipped_as_duplicate",
+      "extraction.goals.skipped",
       expect.objectContaining({
         turnId: "turn-goal-batch-embedding-duplicate",
         candidate_description: secondDescription,
@@ -828,7 +828,7 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([persistedGoalId]);
     expect(addGoal).toHaveBeenCalledOnce();
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_dedup_degraded",
+      "extraction.goals.dedup.degraded",
       expect.objectContaining({
         turnId: "turn-goal-embedding-outage",
         reason: "candidate_embedding_failed",

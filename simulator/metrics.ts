@@ -4,6 +4,7 @@ import {
   QUARANTINED_USER_ENTRY_EVENT,
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_KINDS,
   GOAL_PROMOTION_CLASSIFICATIONS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
@@ -81,6 +82,7 @@ type MemoryBandMetricCounts = Pick<
   | "action_record_creation_count_this_turn"
   | "recent_completed_action_count"
   | "commitment_count_active"
+  | "commitment_count_active_by_kind"
   | "commitment_count_superseded"
   | "commitment_count_revoked"
   | "commitment_count_expired"
@@ -221,7 +223,7 @@ function usageForTurn(records: readonly TraceRecord[]): {
   let outputTokens = 0;
 
   for (const record of records) {
-    if (record.event !== "llm_call_response") {
+    if (record.event !== "llm_call.completed") {
       continue;
     }
 
@@ -323,19 +325,19 @@ function frameAnomalyMetrics(input: {
   turnId: string;
 }): FrameAnomalyMetricCounts {
   const frameClassified = input.traceRecords.filter(
-    (record) => record.event === "frame_anomaly_classified",
+    (record) => record.event === "frame_anomaly.completed",
   );
   const actualAnomalyCount = frameClassified.filter(
     (record) => traceStatus(record) === "ok" && traceKind(record) !== "normal",
   ).length;
   const fallbackMatchCount = input.traceRecords.filter(
-    (record) => record.event === "frame_anomaly_degraded_fallback_match",
+    (record) => record.event === "frame_anomaly.fallback.completed" && record.matched === true,
   ).length;
 
   return {
     frame_anomaly_classifier_calls: input.traceRecords.filter(
       (record) =>
-        record.event === "llm_call_started" && traceLabel(record) === "frame_anomaly_classifier",
+        record.event === "llm_call.started" && traceLabel(record) === "frame_anomaly_classifier",
     ).length,
     frame_anomaly_classified_normal_count: frameClassified.filter(
       (record) => traceStatus(record) === "ok" && traceKind(record) === "normal",
@@ -356,10 +358,10 @@ function frameAnomalyMetrics(input: {
 
 function actionCandidateMetrics(traceRecords: readonly TraceRecord[]): ActionCandidateMetricCounts {
   const completed = traceRecords.filter(
-    (record) => record.event === "action_state_extractor_completed",
+    (record) => record.event === "extraction.actions.completed",
   );
   const classificationRejected = traceRecords.filter(
-    (record) => record.event === "action_candidate_classification_rejected",
+    (record) => record.event === "extraction.actions.rejected",
   );
   const classificationsPerTurn = zeroActionCandidateClassificationCounts();
 
@@ -373,13 +375,13 @@ function actionCandidateMetrics(traceRecords: readonly TraceRecord[]): ActionCan
       (record) => traceReason(record) === "non_concrete_classification",
     ).length,
     action_persistence_dedup_skipped_embedding: traceRecords.filter(
-      (record) => record.event === "action_persistence_dedup_skipped_embedding",
+      (record) => record.event === "action_persistence.dedup.skipped",
     ).length,
     action_persistence_dedup_degraded: traceRecords.filter(
-      (record) => record.event === "action_persistence_dedup_degraded",
+      (record) => record.event === "action_persistence.dedup.degraded",
     ).length,
     actions_closed_by_terminal_emission: traceRecords.filter(
-      (record) => record.event === "action_closed_by_terminal_emission",
+      (record) => record.event === "action_state.transitioned",
     ).length,
     actions_rejected_capability: classificationsPerTurn.outside_borg_capability,
   };
@@ -389,10 +391,12 @@ function sharedStateActionLifecycleMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateActionLifecycleMetricCounts {
   const completed = traceRecords.filter(
-    (record) => record.event === "decision_artifact_reconciliation_completed",
+    (record) =>
+      record.event === "shared_state.reconcile.completed" && record.mode !== "retry_only",
   );
   const retryOnly = traceRecords.filter(
-    (record) => record.event === "decision_artifact_retry_only_reconciliation",
+    (record) =>
+      record.event === "shared_state.reconcile.completed" && record.mode === "retry_only",
   );
   const actionsCanonicalized =
     completed.reduce((sum, record) => sum + traceNumber(record, "actions_retired"), 0) +
@@ -416,13 +420,13 @@ function sharedStateActionLifecycleMetrics(
 
 function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromotionMetricCounts {
   const completed = traceRecords.filter(
-    (record) => record.event === "goal_promotion_extractor_completed",
+    (record) => record.event === "extraction.goals.completed",
   );
   const skippedAsDuplicate = traceRecords.filter(
-    (record) => record.event === "goal_promotion_skipped_as_duplicate",
+    (record) => record.event === "extraction.goals.skipped",
   );
   const classificationRejected = traceRecords.filter(
-    (record) => record.event === "goal_promotion_classification_rejected",
+    (record) => record.event === "extraction.goals.rejected",
   );
   const classificationsPerTurn = zeroGoalPromotionClassificationCounts();
 
@@ -440,7 +444,7 @@ function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromoti
       0,
     ),
     goal_promotion_initial_step_downgraded: traceRecords.filter(
-      (record) => record.event === "goal_promotion_initial_step_downgraded",
+      (record) => record.event === "extraction.goals.transitioned",
     ).length,
     goal_promotion_dedup_skipped_extractor_signal: skippedAsDuplicate.filter(
       (record) => traceReason(record) === "extractor_signal",
@@ -449,7 +453,7 @@ function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromoti
       (record) => traceReason(record) === "embedding",
     ).length,
     goal_promotion_dedup_degraded: traceRecords.filter(
-      (record) => record.event === "goal_promotion_dedup_degraded",
+      (record) => record.event === "extraction.goals.dedup.degraded",
     ).length,
     goal_promotion_classifications_per_turn: classificationsPerTurn,
     goal_promotion_rejected_classification: classificationRejected.filter(
@@ -465,13 +469,13 @@ function sharedStateSemanticRevisionMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateArtifactSemanticRevisionMetricCounts {
   const completed = traceRecords.filter(
-    (record) => record.event === "decision_artifact_semantic_revision_completed",
+    (record) => record.event === "semantic_revision.completed",
   );
   const degraded = traceRecords.filter(
-    (record) => record.event === "decision_artifact_semantic_revision_degraded",
+    (record) => record.event === "semantic_revision.degraded",
   );
   const cacheHits = traceRecords.filter(
-    (record) => record.event === "decision_artifact_semantic_revision_cache_hit",
+    (record) => record.event === "semantic_revision.cache.completed",
   );
   const attemptedArtifactEntryIds = new Set(
     [...completed, ...degraded].map((record, index) =>
@@ -498,10 +502,10 @@ function sharedStateSemanticRevisionMetrics(
 
 function reviewResolverMetrics(traceRecords: readonly TraceRecord[]): ReviewResolverMetricCounts {
   const completed = traceRecords.filter(
-    (record) => record.event === "review_resolver_pass_completed",
+    (record) => record.event === "review_resolver.completed",
   );
   const reviewQueueDecisions = traceRecords.filter(
-    (record) => record.event === "review_queue_decision",
+    (record) => record.event === "review_queue.completed",
   );
   const enqueued = reviewQueueDecisions.filter((record) => record.decision === "enqueued").length;
   const resolved = reviewQueueDecisions.filter(
@@ -829,7 +833,7 @@ export class MetricsCapture {
           ts: Date.now(),
           wallMs: performance.now(),
           turnId: warning.turnId,
-          event: "simulator_health_warning",
+          event: "simulator_health.degraded",
           artifact: "simulator",
           warning_kind: warning.kind,
           turn_counter: warning.turn_counter,
@@ -884,6 +888,10 @@ export class MetricsCapture {
       action_record_creation_count_this_turn: actionCreationCountTotal(actionCreationSourcePerTurn),
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
+      commitment_count_active_by_kind: {
+        ...zeroCounts(COMMITMENT_KINDS),
+        ...borg.commitments.countActiveByKind(),
+      },
       commitment_count_superseded: borg.commitments.countSuperseded(),
       commitment_count_revoked: borg.commitments.countRevoked(),
       commitment_count_expired: borg.commitments.countExpired(),
@@ -967,7 +975,7 @@ export class MetricsCapture {
         ts: Date.now(),
         wallMs: performance.now(),
         turnId: input.turnId,
-        event: "action_duplicate_pressure_observed",
+        event: "action_duplicate_pressure.completed",
         cluster_count: sizes.length,
         max_cluster_size: sizes.length === 0 ? 0 : Math.max(...sizes),
         total_actions_in_clusters: sizes.reduce((sum, size) => sum + size, 0),
@@ -1041,13 +1049,13 @@ export class MetricsCapture {
       mood_arousal: mood.arousal,
       retrieval_latency_ms: latencyBetween(
         traceRecords,
-        "retrieval_started",
-        "retrieval_completed",
+        "retrieval.started",
+        "retrieval.completed",
       ),
       deliberation_latency_ms: latencyBetween(
         traceRecords,
-        "llm_call_started",
-        "llm_call_response",
+        "llm_call.started",
+        "llm_call.completed",
       ),
       borg_input_tokens: usage.inputTokens,
       borg_output_tokens: usage.outputTokens,
@@ -1080,6 +1088,7 @@ export class MetricsCapture {
         sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
+      commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
@@ -1230,6 +1239,7 @@ export class MetricsCapture {
         sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
+      commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,

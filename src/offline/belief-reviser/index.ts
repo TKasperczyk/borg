@@ -1041,7 +1041,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     );
 
     if (transition !== null && ctx.tracer?.enabled === true) {
-      ctx.tracer.emit("semantic_node_status_transitioned", {
+      ctx.tracer.emit("semantic_node.status.transitioned", {
         turnId: String(ctx.runId),
         nodeId: transition.id,
         fromStatus: transition.fromStatus,

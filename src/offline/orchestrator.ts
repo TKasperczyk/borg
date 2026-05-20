@@ -133,7 +133,7 @@ export class MaintenanceOrchestrator {
       rejected: input.result.errors.length,
     };
 
-    input.context.tracer.emit("offline_process_completed", {
+    input.context.tracer.emit("offline_process.completed", {
       turnId: input.context.runId,
       process_name: input.result.process,
       candidates_proposed: stats.proposed,

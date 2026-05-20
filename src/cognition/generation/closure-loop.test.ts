@@ -277,7 +277,7 @@ describe("ClosureLoopClassifier", () => {
       messages: supplied,
     });
     const normalized = tracer.records.find(
-      (record) => record.event === "closure_loop_classifier_payload_normalized",
+      (record) => record.event === "closure_loop.transitioned",
     );
 
     expect(result.messages).toEqual([
@@ -395,7 +395,7 @@ describe("ClosureLoopClassifier", () => {
       messages: supplied,
     });
     const normalized = tracer.records.find(
-      (record) => record.event === "closure_loop_classifier_payload_normalized",
+      (record) => record.event === "closure_loop.transitioned",
     );
 
     expect(result.messages).toEqual([
@@ -458,7 +458,7 @@ describe("ClosureLoopClassifier", () => {
       currentUserRef: supplied[4]!.message_ref,
     });
     const normalized = tracer.records.find(
-      (record) => record.event === "closure_loop_classifier_payload_normalized",
+      (record) => record.event === "closure_loop.transitioned",
     );
 
     expect(result.messages.map((item) => item.act)).toEqual([
@@ -508,7 +508,7 @@ describe("ClosureLoopClassifier", () => {
       messages: supplied,
     });
     const normalized = tracer.records.find(
-      (record) => record.event === "closure_loop_classifier_payload_normalized",
+      (record) => record.event === "closure_loop.transitioned",
     );
 
     expect(result.messages).toEqual([classified(supplied[0]!, "substantive")]);
@@ -578,7 +578,7 @@ describe("ClosureLoopClassifier", () => {
       messages: supplied,
     });
     const normalized = tracer.records.find(
-      (record) => record.event === "closure_loop_classifier_payload_normalized",
+      (record) => record.event === "closure_loop.transitioned",
     );
 
     expect(normalized?.rawToolInput).toBeUndefined();

@@ -295,7 +295,7 @@ export class SemanticExtractor {
       return;
     }
 
-    this.options.tracer.emit("semantic_insert_skipped", {
+    this.options.tracer.emit("semantic_insert.skipped", {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       kind: input.kind,
       reason: input.reason,
@@ -314,7 +314,7 @@ export class SemanticExtractor {
       return;
     }
 
-    this.options.tracer.emit("semantic_extractor_invoked", {
+    this.options.tracer.emit("semantic_extractor.started", {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       input_episode_count: input.inputEpisodeCount,
       prompt_label: "semantic-extraction",
@@ -341,7 +341,7 @@ export class SemanticExtractor {
       return;
     }
 
-    this.options.tracer.emit("semantic_extractor_partial_failure", {
+    this.options.tracer.emit("semantic_extractor.degraded", {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       input_episode_count: input.inputEpisodeCount,
       parsed_node_count: input.parsedNodeCount,

@@ -40,7 +40,7 @@ describe("AssessorAgent", () => {
           name: "read_trace",
           input: {
             turnId: "turn-1",
-            phase: "action",
+            phase: "tools",
           },
         },
       ]),
@@ -99,7 +99,7 @@ describe("AssessorAgent", () => {
           },
           toolCalls: [],
         }),
-        readTrace: () => "action: tool.episodic.search",
+        readTrace: () => "tools: tool.episodic.search",
       },
     });
 
@@ -114,6 +114,6 @@ describe("AssessorAgent", () => {
     expect(JSON.stringify(calls[1])).toContain("<borg_response");
     expect(JSON.stringify(calls[1])).toContain("Otto is the dog.");
     expect(JSON.stringify(calls[2])).toContain("<trace_summary");
-    expect(JSON.stringify(calls[2])).toContain("action: tool.episodic.search");
+    expect(JSON.stringify(calls[2])).toContain("tools: tool.episodic.search");
   });
 });

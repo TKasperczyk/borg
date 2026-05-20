@@ -83,3 +83,26 @@ export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   "",
   "If a candidate requires an impossible capability, do not treat it as Borg-owned work. Borg can offer current-turn drafting, remember conversation-grounded state, or help interpret user-provided data instead.",
 ].join("\n");
+
+export const DEFAULT_HOST_CAPABILITIES_SECTION = [
+  "Inputs available to you (assembled before this turn):",
+  "- episodic memory (past episodes are surfaced via retrieval)",
+  "- semantic graph (concept nodes and relationships)",
+  "- commitments (rules, preferences, boundaries you've agreed to honor)",
+  "- open questions (unresolved threads)",
+  "- evidence ledger (current-session transcript, retrieval, contradictions, etc.)",
+  "",
+  "Output channels available now:",
+  "- EmitAnswer: speak visibly to the current speaker or audience when engagement is warranted",
+  "- EmitObserve: in multi-participant conversations, stay present without a visible message when other participants are carrying the conversation with each other",
+  "- EmitSelfReport: interior reflection (persisted differently; not user-facing world-fact)",
+  "- EmitNoOutput: conversation closure / natural ending",
+  "",
+  "Capabilities NOT available unless the host has declared them otherwise:",
+  "- Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
+  "- Scheduled check-ins or reminders that surface to participants",
+  "- External notifications (email, SMS, push, etc.)",
+  "- Real-time polling of external state",
+  "",
+  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
+].join("\n");

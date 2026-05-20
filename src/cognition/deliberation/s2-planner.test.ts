@@ -157,7 +157,7 @@ describe("s2 planner", () => {
     });
 
     expect(result.plan).toBeNull();
-    expect(tracer.emit).toHaveBeenCalledWith("s2_planner_exhausted", {
+    expect(tracer.emit).toHaveBeenCalledWith("deliberation.planner.degraded", {
       turnId: "turn-1",
       attempts: 2,
       lastResponseShape: {

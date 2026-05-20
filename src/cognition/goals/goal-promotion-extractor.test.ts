@@ -175,7 +175,7 @@ describe("GoalPromotionExtractor", () => {
       "none",
     ]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_classification_rejected",
+      "extraction.goals.rejected",
       expect.objectContaining({
         turnId: "turn-goal-impossible-capability",
         classification: "impossible_for_borg_without_capability",
@@ -183,7 +183,7 @@ describe("GoalPromotionExtractor", () => {
       }),
     );
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         classification_counts: expect.objectContaining({
           impossible_for_borg_without_capability: 1,
@@ -289,7 +289,7 @@ describe("GoalPromotionExtractor", () => {
     await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
 
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_classification_rejected",
+      "extraction.goals.rejected",
       expect.objectContaining({
         turnId: "turn-goal-taxonomy-reject",
         classification,
@@ -297,7 +297,7 @@ describe("GoalPromotionExtractor", () => {
       }),
     );
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         turnId: "turn-goal-taxonomy-reject",
         candidates_emitted: 0,
@@ -338,7 +338,7 @@ describe("GoalPromotionExtractor", () => {
       ),
     ).resolves.toEqual([]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_classification_rejected",
+      "extraction.goals.rejected",
       expect.objectContaining({
         turnId: "turn-goal-low-confidence",
         classification: "durable_borg_goal",
@@ -346,7 +346,7 @@ describe("GoalPromotionExtractor", () => {
       }),
     );
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         rejected_low_confidence: 1,
         rejected_by_classification: expect.objectContaining({
@@ -425,7 +425,7 @@ describe("GoalPromotionExtractor", () => {
     expect(
       emit.mock.calls.filter(
         ([event, data]) =>
-          event === "goal_promotion_classification_rejected" &&
+          event === "extraction.goals.rejected" &&
           typeof data === "object" &&
           data !== null &&
           "reason" in data &&
@@ -433,7 +433,7 @@ describe("GoalPromotionExtractor", () => {
       ),
     ).toHaveLength(2);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         candidates_emitted: 1,
         rejected_by_cap: 2,
@@ -472,7 +472,7 @@ describe("GoalPromotionExtractor", () => {
       "Track the refactor cleanup",
     ]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         candidates_emitted: 3,
         rejected_by_cap: 2,
@@ -524,7 +524,7 @@ describe("GoalPromotionExtractor", () => {
     expect(result[0]?.description).toBe("Help the user maintain the onboarding checklist");
     expect(onDegraded).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         turnId: "turn-goal-salvage",
         candidates_emitted: 1,
@@ -563,11 +563,11 @@ describe("GoalPromotionExtractor", () => {
 
     await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
     expect(emit).not.toHaveBeenCalledWith(
-      "goal_promotion_classification_rejected",
+      "extraction.goals.rejected",
       expect.anything(),
     );
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         candidates_emitted: 0,
         skipped_promotion_count: 1,
@@ -607,7 +607,7 @@ describe("GoalPromotionExtractor", () => {
 
     await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
     expect(emit).toHaveBeenCalledWith(
-      "goal_promotion_extractor_completed",
+      "extraction.goals.completed",
       expect.objectContaining({
         skipped_promotions: [
           {
@@ -655,14 +655,14 @@ describe("GoalPromotionExtractor", () => {
     await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
 
     expect(emit).toHaveBeenCalledWith(
-      "llm_call_started",
+      "llm_call.started",
       expect.objectContaining({
         turnId: "turn-goal-promotion",
         label: "goal_promotion_extractor",
       }),
     );
     expect(emit).toHaveBeenCalledWith(
-      "llm_call_response",
+      "llm_call.completed",
       expect.objectContaining({
         turnId: "turn-goal-promotion",
         label: "goal_promotion_extractor",

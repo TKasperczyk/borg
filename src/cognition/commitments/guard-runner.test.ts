@@ -13,6 +13,7 @@ function makeCommitment(): CommitmentRecord {
   return {
     id: commitmentId,
     type: "boundary",
+    kind: "boundary",
     directive_family: "launch_date_boundary",
     closure_pressure_relevance: "neutral",
     directive: "Do not discuss launch dates.",
@@ -89,7 +90,7 @@ describe("CommitmentGuardRunner", () => {
       kind: "message",
       content: "No commitments active.",
     });
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-default-mode",
       mode: "enforce",
       verdict: "passed",
@@ -137,7 +138,7 @@ describe("CommitmentGuardRunner", () => {
     expect(llm.requests[0]?.messages[0]?.content).toContain(
       "<borg_untrusted_autonomy_context>\nFormatted autonomy context\n</borg_untrusted_autonomy_context>",
     );
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-1",
       mode: "enforce",
       verdict: "passed",
@@ -188,7 +189,7 @@ describe("CommitmentGuardRunner", () => {
       kind: "suppressed",
       reason: "commitment_revision_failed",
     });
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-2",
       mode: "enforce",
       verdict: "suppressed",
@@ -245,7 +246,7 @@ describe("CommitmentGuardRunner", () => {
       "commitment-judge",
       "commitment-revision",
     ]);
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-shadow",
       mode: "shadow",
       verdict: "passed",
@@ -302,7 +303,7 @@ describe("CommitmentGuardRunner", () => {
       "commitment-judge",
       "commitment-revision",
     ]);
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-shadow-error",
       mode: "shadow",
       verdict: "passed",

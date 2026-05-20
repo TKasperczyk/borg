@@ -8,8 +8,8 @@ import {
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
   DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
   DEFAULT_SEMANTIC_CONTEXT_BUDGET,
-  UNTRUSTED_DATA_PREAMBLE,
 } from "./constants.js";
+import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
 import { runFinalizer, type FinalizerResult } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
@@ -364,7 +364,7 @@ export class Deliberator {
     ];
 
     if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
-      this.tracer.emit("planner_compact_ledger_built", {
+      this.tracer.emit("deliberation.planner_ledger.completed", {
         turnId: context.turnId,
         entry_counts: toTraceJsonValue(compactPlannerLedger.traceSummary.entryCountsBySection),
         omitted_entry_counts: toTraceJsonValue(
@@ -408,12 +408,12 @@ export class Deliberator {
       const persistedEntry = persistedThoughtEntries[0];
 
       if (persistedEntry !== undefined) {
-        this.tracer.emit("plan_persisted", {
+        this.tracer.emit("deliberation.plan_persistence.completed", {
           turnId: context.turnId,
           streamEntryId: persistedEntry.id,
         });
       } else {
-        this.tracer.emit("plan_persistence_skipped", {
+        this.tracer.emit("deliberation.plan_persistence.skipped", {
           turnId: context.turnId,
           reason:
             plan === null

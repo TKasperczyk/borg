@@ -184,6 +184,7 @@ function commitmentRecord(input: {
     id: createCommitmentId(),
     record_version: 1,
     type: input.type,
+    kind: "assistant_commitment",
     directive_family: input.directiveFamily,
     closure_pressure_relevance: "neutral",
     directive: input.directive,
@@ -759,14 +760,14 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     expect(artifact?.entries.map((entry) => entry.id)).toEqual([originalEntry.id]);
     expect(events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_skipped",
+        event: "shared_state.compile.skipped",
         data: expect.objectContaining({
           reason: "quarantined_current_turn",
           advanced_anchor: true,
         }),
       }),
     );
-    expect(events.find((event) => event.event === "decision_artifact_compile_unblocked")).toBe(
+    expect(events.find((event) => event.event === "shared_state.compile.transitioned")).toBe(
       undefined,
     );
   });
@@ -942,7 +943,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     expect(openQuestionResolveCount).toBe(1);
     expect(events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_retry_only_reconciliation",
+        event: "shared_state.reconcile.completed",
         data: expect.objectContaining({
           turnId: "turn_retry_only_quarantine",
           unsettled_entry_count: 1,
@@ -954,7 +955,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         }),
       }),
     );
-    expect(events.find((event) => event.event === "decision_artifact_compile_unblocked")).toBe(
+    expect(events.find((event) => event.event === "shared_state.compile.transitioned")).toBe(
       undefined,
     );
   });
@@ -1167,7 +1168,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       expect((artifact as SharedStateArtifact | null)?.entries ?? []).toHaveLength(0);
       expect(events).toContainEqual(
         expect.objectContaining({
-          event: "decision_artifact_compile_skipped",
+          event: "shared_state.compile.skipped",
           data: expect.objectContaining({
             reason: "quarantined_current_turn",
           }),
@@ -1365,7 +1366,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       expect(llmClient.requests).toHaveLength(0);
       expect(events).toContainEqual(
         expect.objectContaining({
-          event: "decision_artifact_compile_skipped",
+          event: "shared_state.compile.skipped",
           data: expect.objectContaining({
             turnId: "turn_quarantined",
             reason: "quarantined_current_turn",
@@ -1588,14 +1589,14 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     });
 
     expect(llmClient.requests).toHaveLength(1);
-    expect(events.find((event) => event.event === "decision_artifact_compile_skipped")).toBe(
+    expect(events.find((event) => event.event === "shared_state.compile.skipped")).toBe(
       undefined,
     );
     expect(events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_compile_unblocked",
+        event: "shared_state.compile.transitioned",
         data: expect.objectContaining({
-          decision_artifact_compile_unblocked_reason: "unsettled_reconciliation",
+          shared_state_compile_transition_reason: "unsettled_reconciliation",
           unsettled_goal_count: 1,
           unsettled_total_count: 1,
         }),
@@ -1766,18 +1767,20 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       {
         id: promiseCommitment.id,
         text: "Keep the deployment window locked at 16:00 UTC.",
+        kind: "assistant_commitment",
         type: PROMISE_COMMITMENT_TYPE,
         directive_family: DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY,
       },
       {
         id: ruleCommitment.id,
         text: "Treat the release branch freeze as final.",
+        kind: "assistant_commitment",
         type: RULE_COMMITMENT_TYPE,
         directive_family: RELEASE_FREEZE_DIRECTIVE_FAMILY,
       },
     ]);
     expect(events).toContainEqual({
-      event: "decision_artifact_canonicalization_candidates",
+      event: "shared_state.canonicalization.completed",
       data: {
         turnId: "turn_candidate_coverage",
         candidate_count_by_scope: {
@@ -1947,7 +1950,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         };
       };
       const completed = events.find(
-        (event) => event.event === "decision_artifact_compile_completed",
+        (event) => event.event === "shared_state.compile.completed",
       );
 
       expect(upsertCount).toBe(0);

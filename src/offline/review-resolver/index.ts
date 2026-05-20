@@ -709,7 +709,7 @@ function markAcceptedAfterExternalRepair(input: {
   }
 
   if (input.ctx.tracer?.enabled === true) {
-    input.ctx.tracer.emit("review_queue_decision", {
+    input.ctx.tracer.emit("review_queue.completed", {
       turnId: input.ctx.runId,
       item_id: input.item.id,
       item_kind: input.item.kind,
@@ -793,7 +793,7 @@ function markResolvedWithoutHandler(input: {
   }
 
   if (input.ctx.tracer?.enabled === true) {
-    input.ctx.tracer.emit("review_queue_decision", {
+    input.ctx.tracer.emit("review_queue.completed", {
       turnId: input.ctx.runId,
       item_id: input.item.id,
       item_kind: input.item.kind,
@@ -821,7 +821,7 @@ function emitDecision(input: {
     return;
   }
 
-  input.ctx.tracer.emit("review_resolver_decision", {
+  input.ctx.tracer.emit("review_resolver.decision.completed", {
     turnId: input.ctx.runId,
     review_id: input.item.id,
     kind: input.item.kind,
@@ -843,7 +843,7 @@ function emitDegraded(input: {
     return;
   }
 
-  input.ctx.tracer.emit("review_resolver_degraded", {
+  input.ctx.tracer.emit("review_resolver.degraded", {
     turnId: input.ctx.runId,
     review_id: input.item.id,
     reason: input.reason,
@@ -1032,7 +1032,7 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
     let budgetExhausted = plan.budget_exhausted;
 
     if (ctx.tracer?.enabled === true) {
-      ctx.tracer.emit("review_resolver_pass_started", {
+      ctx.tracer.emit("review_resolver.started", {
         turnId: ctx.runId,
         tick_id: ctx.runId,
         max_items: plan.max_items,
@@ -1089,7 +1089,7 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
     }
 
     if (ctx.tracer?.enabled === true) {
-      ctx.tracer.emit("review_resolver_pass_completed", {
+      ctx.tracer.emit("review_resolver.completed", {
         turnId: ctx.runId,
         processed: counters.processed,
         accepted: counters.accepted,

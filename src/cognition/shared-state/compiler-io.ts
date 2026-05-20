@@ -2,16 +2,14 @@ import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm
 import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
 import type {
   SharedStateReconciliationResult,
   SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
-import {
-  SHARED_STATE_SYSTEM_PROMPT,
-  type SharedStateArtifactPromptBudget,
-} from "./compiler-prompt.js";
+import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
 import {
   MissingSharedStateArtifactToolCallError,
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
@@ -78,7 +76,7 @@ export function traceLlmCallStarted(options: {
   tools: readonly LLMToolDefinition[];
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "decision_artifact_compiler",
       model: options.model,
@@ -94,7 +92,7 @@ export function traceLlmCallResponse(options: {
   response: LLMCompleteResult;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "decision_artifact_compiler",
       responseShape: summarizeSharedStateArtifactResponseShape(options.response),
@@ -110,7 +108,7 @@ export function traceLlmCallError(options: {
   error: unknown;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "decision_artifact_compiler",
       responseShape: {
@@ -144,7 +142,7 @@ export function traceCompileCompleted(options: {
   );
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("decision_artifact_compile_completed", {
+    options.tracer.emit("shared_state.compile.completed", {
       turnId: options.turnId,
       audienceEntityId: options.audienceEntityId,
       previousEntryCount: options.previousEntryCount,
@@ -196,7 +194,7 @@ export function traceCompileOverBudget(options: {
     return;
   }
 
-  options.tracer.emit("decision_artifact_compile_over_budget", {
+  options.tracer.emit("shared_state.compile.degraded", {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     ledger_mode: options.ledgerMode,
@@ -216,8 +214,9 @@ export function traceReconciliationCompleted(options: {
   retrySummary?: SharedStateUnsettledReconciliationSummary | null;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("decision_artifact_reconciliation_completed", {
+    options.tracer.emit("shared_state.reconcile.completed", {
       turnId: options.turnId,
+      mode: "primary",
       goals_retired: options.result.goals_retired,
       commitments_retired: options.result.commitments_retired,
       actions_retired: options.result.actions_retired,

@@ -28,6 +28,7 @@ import {
 import { IdentityEventRepository } from "../identity/repository.js";
 import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
+  COMMITMENT_KINDS,
   commitmentPatchSchema,
   commitmentSchema,
   entityKindSchema,
@@ -35,6 +36,7 @@ import {
   nameProvenanceSchema,
   normalizeDirectiveFamily,
   type CommitmentApplicableOptions,
+  type CommitmentKind,
   type CommitmentListOptions,
   type CommitmentPatch,
   type CommitmentRecord,
@@ -102,6 +104,7 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
     id: row.id,
     record_version: Number(row.record_version ?? 1),
     type: row.type,
+    kind: row.kind,
     directive_family: row.directive_family,
     closure_pressure_relevance: row.closure_pressure_relevance,
     directive: row.directive,
@@ -483,6 +486,8 @@ export class CommitmentRepository {
       .map((row) => mapCommitmentRow(row))
       .filter(
         (candidate) =>
+          candidate.kind === record.kind &&
+          candidate.type === record.type &&
           candidate.made_to_entity === record.made_to_entity &&
           candidate.restricted_audience === record.restricted_audience &&
           candidate.about_entity === record.about_entity &&
@@ -595,6 +600,7 @@ export class CommitmentRepository {
   add(input: {
     id?: CommitmentId;
     type: CommitmentType;
+    kind?: CommitmentKind;
     directiveFamily: string;
     directive: string;
     priority: number;
@@ -622,6 +628,7 @@ export class CommitmentRepository {
       id: input.id ?? createCommitmentId(),
       record_version: 1,
       type: input.type,
+      kind: input.kind ?? "assistant_commitment",
       directive_family: normalizeDirectiveFamily(input.directiveFamily),
       closure_pressure_relevance: input.closurePressureRelevance ?? "neutral",
       directive: input.directive,
@@ -659,18 +666,19 @@ export class CommitmentRepository {
         .prepare(
           `
             INSERT INTO commitments (
-              id, type, directive_family, closure_pressure_relevance, directive, priority,
+              id, type, kind, directive_family, closure_pressure_relevance, directive, priority,
               made_to_entity, restricted_audience, about_entity, committed_by_entity_id,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
               superseded_by, canonicalized_by_artifact_entry_id, last_reinforced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
           record.id,
           record.type,
+          record.kind,
           record.directive_family,
           record.closure_pressure_relevance,
           record.directive,
@@ -796,6 +804,32 @@ export class CommitmentRepository {
       .get(nowMs) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
+  }
+
+  countActiveByKind(nowMs = this.clock.now()): Record<CommitmentKind, number> {
+    const counts = Object.fromEntries(COMMITMENT_KINDS.map((kind) => [kind, 0])) as Record<
+      CommitmentKind,
+      number
+    >;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT kind, COUNT(*) AS count
+          FROM commitments
+          WHERE revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+          GROUP BY kind
+        `,
+      )
+      .all(nowMs) as Array<{ kind: CommitmentKind; count: number }>;
+
+    for (const row of rows) {
+      counts[row.kind] = Number(row.count);
+    }
+
+    return counts;
   }
 
   countSuperseded(): number {
@@ -1031,7 +1065,7 @@ export class CommitmentRepository {
         .prepare(
           `
             UPDATE commitments
-            SET type = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?,
+            SET type = ?, kind = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?,
                 priority = ?, made_to_entity = ?, restricted_audience = ?, about_entity = ?,
                 committed_by_entity_id = ?, source_episode_ids = ?, provenance_kind = ?,
                 provenance_episode_ids = ?,
@@ -1044,6 +1078,7 @@ export class CommitmentRepository {
         )
         .run(
           next.type,
+          next.kind,
           next.directive_family,
           next.closure_pressure_relevance,
           next.directive,

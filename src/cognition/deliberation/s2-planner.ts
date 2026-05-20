@@ -134,7 +134,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     options.tracer?.enabled === true &&
     options.turnId !== undefined
   ) {
-    options.tracer.emit("s2_planner_exhausted", {
+    options.tracer.emit("deliberation.planner.degraded", {
       turnId: options.turnId,
       attempts: 2,
       lastResponseShape: summarizePlannerResponseShape(result.planner),
@@ -193,7 +193,7 @@ async function callPlannerAttempt(
   messages: readonly LLMMessage[],
 ): Promise<PlannerAttemptResult> {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_started", {
+    options.tracer.emit("llm_call.started", {
       turnId: options.turnId,
       label: "s2_planner",
       model: options.model,
@@ -224,7 +224,7 @@ async function callPlannerAttempt(
   const extraction = extractTurnPlan(planner.tool_calls);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call_response", {
+    options.tracer.emit("llm_call.completed", {
       turnId: options.turnId,
       label: "s2_planner",
       responseShape: summarizePlannerResponseShape(planner),
@@ -239,7 +239,7 @@ async function callPlannerAttempt(
           }
         : {}),
     });
-    options.tracer.emit("plan_extraction", {
+    options.tracer.emit("deliberation.plan.completed", {
       turnId: options.turnId,
       success: extraction.plan !== null,
       ...(extraction.reason === null ? {} : { reason: extraction.reason }),

@@ -369,7 +369,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidates_enumerated: 1,
@@ -379,7 +379,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     );
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "llm_call_started",
+        event: "llm_call.started",
         data: expect.objectContaining({
           label: "decision_artifact_semantic_revision",
         }),
@@ -387,7 +387,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     );
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "llm_call_response",
+        event: "llm_call.completed",
         data: expect.objectContaining({
           label: "decision_artifact_semantic_revision",
           usage: {
@@ -435,7 +435,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_reviewed_attempted).toBe(1);
     expect(secondTrace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_cache_hit",
+        event: "semantic_revision.cache.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidate_node_id: deps.node.id,
@@ -444,12 +444,12 @@ describe("reconcileSemanticBeliefRevision", () => {
         }),
       }),
     );
-    expect(secondTrace.events.filter((event) => event.event === "llm_call_started")).toHaveLength(
+    expect(secondTrace.events.filter((event) => event.event === "llm_call.started")).toHaveLength(
       0,
     );
     expect(secondTrace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidates_enumerated: 1,
@@ -607,7 +607,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect(complete).toHaveBeenCalledTimes(2);
       expect(
         trace.events.filter(
-          (event) => event.event === "decision_artifact_semantic_revision_cache_hit",
+          (event) => event.event === "semantic_revision.cache.completed",
         ),
       ).toHaveLength(0);
     } finally {
@@ -704,12 +704,12 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
     expect(
       trace.events.filter(
-        (event) => event.event === "decision_artifact_semantic_revision_cache_hit",
+        (event) => event.event === "semantic_revision.cache.completed",
       ),
     ).toHaveLength(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidates_enumerated: 0,
@@ -776,7 +776,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidates_enumerated: 0,
@@ -808,7 +808,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_marked_superseded).toBe(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_degraded",
+        event: "semantic_revision.degraded",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           reason: "vector index unavailable",
@@ -840,7 +840,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_marked_superseded).toBe(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_degraded",
+        event: "semantic_revision.degraded",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           reason: "judge unavailable",
@@ -1069,7 +1069,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_marked_superseded).toBe(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           candidates_enumerated: 0,
@@ -1152,7 +1152,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_skipped).toBe(1);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_degraded",
+        event: "semantic_revision.degraded",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           node_id: nodes[0]?.id,
@@ -1163,7 +1163,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     );
     expect(trace.events).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_semantic_revision_completed",
+        event: "semantic_revision.completed",
         data: expect.objectContaining({
           artifact_entry_id: entry.id,
           superseded_count: 2,
@@ -1217,13 +1217,13 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
     expect(
       trace.events.filter(
-        (event) => event.event === "decision_artifact_semantic_revision_completed",
+        (event) => event.event === "semantic_revision.completed",
       ),
     ).toHaveLength(3);
     expect(
       trace.events.filter(
         (event) =>
-          event.event === "decision_artifact_semantic_revision_degraded" &&
+          event.event === "semantic_revision.degraded" &&
           event.data.reason === "skipped_over_cap",
       ),
     ).toEqual([
@@ -1305,7 +1305,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
       turnId: "turn_reconcile_trust",
     });
     const skipEvents = trace.events.filter(
-      (event) => event.event === "decision_artifact_reconciliation_skipped_contaminated_entry",
+      (event) => event.event === "shared_state.reconcile.skipped",
     );
 
     expect(goalsRepository.updateStatus).not.toHaveBeenCalled();
@@ -1337,7 +1337,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
     expect(skipEvents).toHaveLength(1);
     expect(skipEvents).toContainEqual(
       expect.objectContaining({
-        event: "decision_artifact_reconciliation_skipped_contaminated_entry",
+        event: "shared_state.reconcile.skipped",
         data: expect.objectContaining({
           turnId: "turn_reconcile_trust",
           artifact_entry_id: entry.id,
