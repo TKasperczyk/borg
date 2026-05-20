@@ -18,6 +18,7 @@ import {
   type ReviewResolution,
   type SemanticNodeCorrectionRef,
 } from "../../memory/semantic/index.js";
+import { markSemanticSuperseded } from "../../memory/lifecycle-ops/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
@@ -655,13 +656,17 @@ async function markSemanticNodeSuperseded(input: {
     });
   }
 
-  const transition = await input.ctx.semanticNodeRepository.markSuperseded(
-    parsed.target_id,
-    input.correctedBy,
-    input.ctx.clock.now(),
-  );
+  const result = await markSemanticSuperseded({
+    nodeId: parsed.target_id,
+    correctedBy: input.correctedBy,
+    supersededAt: input.ctx.clock.now(),
+    repository: input.ctx.semanticNodeRepository,
+    tracer: input.ctx.tracer,
+    turnId: String(input.ctx.runId),
+    traceSource: "review_resolver",
+  });
 
-  if (transition === null) {
+  if (result.status !== "success") {
     throw new SemanticError(`Unknown semantic node id for supersede repair: ${parsed.target_id}`, {
       code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
     });

@@ -2,6 +2,13 @@ import type {
   SharedStateArtifact,
   SharedStateEntry,
 } from "../../memory/decision-artifacts/index.js";
+import {
+  isSharedStateArtifactCanonicalizableCommitmentType,
+  isTerminalActionState,
+  isTerminalCommitment,
+  isTerminalGoalStatus,
+  isTerminalOpenQuestionStatus,
+} from "../../memory/lifecycle-ops/index.js";
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
 import {
   activeLockedEntries,
@@ -16,17 +23,10 @@ import {
   type SharedStateReconciliationResult,
   type SharedStateUnsettledReconciliation,
 } from "./reconciliation-summary.js";
-import { isTerminalActionState, reconcileActionCanonicalizations } from "./reconcile-actions.js";
-import {
-  isSharedStateArtifactCanonicalizableCommitmentType,
-  isTerminalCommitment,
-  reconcileCommitmentCanonicalizations,
-} from "./reconcile-commitments.js";
-import { isTerminalGoalStatus, reconcileGoalCanonicalizations } from "./reconcile-goals.js";
-import {
-  isTerminalOpenQuestionStatus,
-  reconcileOpenQuestionCanonicalizations,
-} from "./reconcile-open-questions.js";
+import { reconcileActionCanonicalizations } from "./reconcile-actions.js";
+import { reconcileCommitmentCanonicalizations } from "./reconcile-commitments.js";
+import { reconcileGoalCanonicalizations } from "./reconcile-goals.js";
+import { reconcileOpenQuestionCanonicalizations } from "./reconcile-open-questions.js";
 export { reconcileSemanticBeliefRevision } from "./semantic-revision.js";
 export { mergeSemanticBeliefRevisionResult } from "./reconciliation-summary.js";
 export {
@@ -228,6 +228,8 @@ export function reconcileSharedStateCanonicalizations(
       repository: goalsRepository,
       retiredGoals,
       result,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
 
     reconcileCommitmentCanonicalizations({
@@ -237,6 +239,8 @@ export function reconcileSharedStateCanonicalizations(
       retiredCommitments,
       result,
       nowMs,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
 
     reconcileActionCanonicalizations({
@@ -245,6 +249,8 @@ export function reconcileSharedStateCanonicalizations(
       repository: actionRepository,
       retiredActions,
       result,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
 
     reconcileOpenQuestionCanonicalizations({
@@ -253,6 +259,8 @@ export function reconcileSharedStateCanonicalizations(
       repository: openQuestionsRepository,
       retiredOpenQuestions,
       result,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
   }
 

@@ -23,6 +23,7 @@ import {
   type OpenQuestionsRepository,
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
+import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
@@ -1404,25 +1405,32 @@ export class Reflector {
       }
 
       try {
-        const result = identityService.resolveOpenQuestion(
-          activeQuestion.id,
-          {
+        const result = resolveOpenQuestionThroughIdentityService({
+          openQuestionId: activeQuestion.id,
+          identityService,
+          resolution: {
             resolution_evidence_episode_ids: evidenceEpisodeIds,
             resolution_evidence_stream_entry_ids: evidenceStreamEntryIds,
             resolution_note: resolution.resolution_note.trim(),
           },
-          {
+          provenance: {
             kind: "online_reflector",
             evidence_episode_ids: evidenceEpisodeIds,
             evidence_stream_entry_ids: evidenceStreamEntryIds,
           },
-        );
+          tracer: this.options.tracer,
+          turnId: context.turnId,
+          traceSourcePath: "online_reflection",
+          traceDecisionReason: "evidence_accepted",
+        });
 
-        if (result.status === "requires_review") {
+        if (result.status === "no_op" && result.reason === "requires_review") {
           this.emitOpenQuestionResolutionDegraded(context, {
             reason: "guard_rejected",
             question_id: resolution.question_id,
           });
+        } else if (result.status === "conflict") {
+          throw result.error;
         } else {
           this.emitOpenQuestionResolutionAttempt(context, {
             oqId: resolution.question_id,

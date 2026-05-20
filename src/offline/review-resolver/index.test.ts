@@ -229,6 +229,14 @@ describe("review resolver process", () => {
       description: "Alice wrote the deployment script.",
     });
     expect(
+      tracer.events.find((event) => event.event === "semantic_node.status.transitioned"),
+    ).toMatchObject({
+      nodeId,
+      toStatus: "superseded",
+      correctedBy: sourceEntryId,
+      source: "review_resolver",
+    });
+    expect(
       tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
     ).toMatchObject({
       review_id: item.id,

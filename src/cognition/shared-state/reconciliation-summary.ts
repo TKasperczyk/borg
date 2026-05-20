@@ -18,15 +18,12 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../../memory/self/index.js";
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
-import type { Provenance } from "../../memory/common/provenance.js";
+export {
+  SHARED_STATE_RECONCILIATION_PROVENANCE as RECONCILIATION_PROVENANCE,
+} from "../../memory/lifecycle-ops/index.js";
 import type { DroppedCanonicalizeId } from "./schema.js";
 import type { SemanticRevisionVerdictCache } from "./semantic-revision-cache.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
-
-export const RECONCILIATION_PROVENANCE = {
-  kind: "online",
-  process: "decision_artifact_reconciliation",
-} as const satisfies Provenance;
 
 export type SharedStateReconciliationRepositories = {
   goalsRepository?: Pick<GoalsRepository, "updateStatus"> & Partial<Pick<GoalsRepository, "get">>;

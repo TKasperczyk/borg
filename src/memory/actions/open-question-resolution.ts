@@ -1,4 +1,5 @@
 import type { IdentityService } from "../identity/index.js";
+import { resolveOpenQuestionThroughIdentityService } from "../lifecycle-ops/index.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../self/index.js";
 
 import type { ActionRecord } from "./types.js";
@@ -69,21 +70,26 @@ export function resolveOpenQuestionsForCompletedAction(
   const resolved: OpenQuestion[] = [];
 
   for (const question of questions) {
-    const result = options.identityService.resolveOpenQuestion(
-      question.id,
-      {
+    const result = resolveOpenQuestionThroughIdentityService({
+      openQuestionId: question.id,
+      identityService: options.identityService,
+      resolution: {
         ...resolutionEvidence(action),
         resolution_note: resolutionNote(action),
       },
-      ACTION_OPEN_QUESTION_PROVENANCE,
-      {
+      provenance: ACTION_OPEN_QUESTION_PROVENANCE,
+      options: {
         throughReview: true,
         reason: "completed_action",
       },
-    );
+    });
 
-    if (result.status === "applied") {
-      resolved.push(result.record);
+    if (result.status === "conflict") {
+      throw result.error;
+    }
+
+    if (result.status === "success" && result.value.result.status === "applied") {
+      resolved.push(result.value.result.record);
     }
   }
 

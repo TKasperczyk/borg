@@ -2,14 +2,15 @@ import type { GoalId } from "../../util/ids.js";
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import type { GoalsRepository } from "../../memory/self/index.js";
 import {
-  RECONCILIATION_PROVENANCE,
+  canonicalizeGoalWithSharedStateEntry,
+  type LifecycleTracer,
+} from "../../memory/lifecycle-ops/index.js";
+import {
   errorMessage,
   type SharedStateReconciliationResult,
 } from "./reconciliation-summary.js";
 
-export function isTerminalGoalStatus(status: string): boolean {
-  return status === "done" || status === "abandoned" || status === "superseded";
-}
+export { isTerminalGoalStatus } from "../../memory/lifecycle-ops/index.js";
 
 export function reconcileGoalCanonicalizations(input: {
   entry: SharedStateEntry;
@@ -17,6 +18,8 @@ export function reconcileGoalCanonicalizations(input: {
   repository: ReconcileGoalsRepository | undefined;
   retiredGoals: Set<GoalId>;
   result: SharedStateReconciliationResult;
+  tracer?: LifecycleTracer;
+  turnId?: string;
 }): void {
   for (const goalId of input.goalIds) {
     input.result.goals_canonicalized_attempted += 1;
@@ -32,16 +35,41 @@ export function reconcileGoalCanonicalizations(input: {
     }
 
     try {
-      const goal = input.repository.get?.(goalId) ?? null;
+      const result = canonicalizeGoalWithSharedStateEntry({
+        goalId,
+        entry: input.entry,
+        repository: input.repository,
+        tracer: input.tracer,
+        turnId: input.turnId,
+      });
 
-      if (goal !== null && isTerminalGoalStatus(goal.status)) {
+      if (result.status === "no_op" && result.reason === "missing") {
+        input.result.goals_canonicalized_skipped += 1;
+        input.result.errors.push({
+          channel: "goal",
+          id: goalId,
+          artifactEntryId: input.entry.id,
+          message: `Unknown goal id: ${goalId}`,
+        });
+        continue;
+      }
+
+      if (result.status === "no_op") {
         input.result.goals_canonicalized_skipped += 1;
         continue;
       }
 
-      input.repository.updateStatus(goalId, "done", RECONCILIATION_PROVENANCE, {
-        canonicalizedByArtifactEntryId: input.entry.id,
-      });
+      if (result.status === "conflict") {
+        input.result.goals_canonicalized_skipped += 1;
+        input.result.errors.push({
+          channel: "goal",
+          id: goalId,
+          artifactEntryId: input.entry.id,
+          message: errorMessage(result.error),
+        });
+        continue;
+      }
+
       input.retiredGoals.add(goalId);
       input.result.goals_retired += 1;
       input.result.goals_canonicalized_succeeded += 1;

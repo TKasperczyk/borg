@@ -21,6 +21,7 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
+import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
@@ -964,18 +965,26 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             item.resolution_evidence_stream_entry_ids.length ||
           current.resolution_note !== item.resolution_note
         ) {
-          ctx.identityService.resolveOpenQuestion(
-            item.question_id,
-            {
+          const result = resolveOpenQuestionThroughIdentityService({
+            openQuestionId: item.question_id,
+            identityService: ctx.identityService,
+            resolution: {
               resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
               resolution_evidence_stream_entry_ids: item.resolution_evidence_stream_entry_ids,
               resolution_note: item.resolution_note,
             },
-            processProvenance,
-            {
+            provenance: processProvenance,
+            options: {
               throughReview: true,
             },
-          );
+            tracer: ctx.tracer,
+            turnId: ctx.runId,
+            traceSourcePath: "offline_ruminator",
+            traceDecisionReason: "through_review",
+          });
+          if (result.status === "conflict") {
+            throw result.error;
+          }
           emitOpenQuestionResolutionAttempt(ctx, {
             oqId: item.question_id,
             sourcePath: "offline_ruminator",

@@ -7,8 +7,11 @@ import {
 import type {
   SemanticNode,
   SemanticNodeSearchCandidate,
-  SemanticNodeStatusTransition,
 } from "../../memory/semantic/index.js";
+import {
+  markSemanticContradicted,
+  markSemanticSuperseded,
+} from "../../memory/lifecycle-ops/index.js";
 import {
   type LLMCompleteResult,
   type LLMMessage,
@@ -158,25 +161,6 @@ function traceSemanticRevisionCacheHit(input: {
     candidate_node_id: input.candidateNodeId,
     cached_verdict: input.cachedVerdict,
     age_turns: input.ageTurns,
-  });
-}
-
-function traceSemanticStatusTransition(input: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  transition: SemanticNodeStatusTransition | null;
-}): void {
-  if (input.transition === null || input.tracer?.enabled !== true || input.turnId === undefined) {
-    return;
-  }
-
-  input.tracer.emit("semantic_node.status.transitioned", {
-    turnId: input.turnId,
-    nodeId: input.transition.id,
-    fromStatus: input.transition.fromStatus,
-    toStatus: input.transition.toStatus,
-    correctedBy: input.transition.correctedBy,
-    source: "decision_artifact_semantic_revision",
   });
 }
 
@@ -762,17 +746,16 @@ export async function reconcileSemanticBeliefRevision(
 
       try {
         if (verdict.verdict === "supersede") {
-          const transition = await input.dependencies.semanticNodeRepository.markSuperseded(
-            candidate.node.id,
+          const transitionResult = await markSemanticSuperseded({
+            nodeId: candidate.node.id,
             correctedBy,
-            nowMs,
-          );
-          traceSemanticStatusTransition({
+            supersededAt: nowMs,
+            repository: input.dependencies.semanticNodeRepository,
             tracer: input.tracer,
             turnId: input.turnId,
-            transition,
+            traceSource: "decision_artifact_semantic_revision",
           });
-          if (transition !== null) {
+          if (transitionResult.status === "success") {
             supersededCount += 1;
             result.semantic_nodes_marked_superseded += 1;
           } else {
@@ -789,17 +772,16 @@ export async function reconcileSemanticBeliefRevision(
           continue;
         }
 
-        const transition = await input.dependencies.semanticNodeRepository.markContradicted(
-          candidate.node.id,
+        const transitionResult = await markSemanticContradicted({
+          nodeId: candidate.node.id,
           correctedBy,
-          nowMs,
-        );
-        traceSemanticStatusTransition({
+          supersededAt: nowMs,
+          repository: input.dependencies.semanticNodeRepository,
           tracer: input.tracer,
           turnId: input.turnId,
-          transition,
+          traceSource: "decision_artifact_semantic_revision",
         });
-        if (transition !== null) {
+        if (transitionResult.status === "success") {
           contradictedCount += 1;
           result.semantic_nodes_marked_contradicted += 1;
         } else {

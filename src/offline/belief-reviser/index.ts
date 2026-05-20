@@ -14,6 +14,7 @@ import {
   type SemanticNodeCorrectionRef,
   type SemanticNodeVectorSyncFailure,
 } from "../../memory/semantic/index.js";
+import { markSemanticContradicted } from "../../memory/lifecycle-ops/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
@@ -1034,22 +1035,15 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       return true;
     }
 
-    const transition = await ctx.semanticNodeRepository.markContradicted(
-      sync.targetId,
-      sync.correctedBy,
-      sync.supersededAt,
-    );
-
-    if (transition !== null && ctx.tracer?.enabled === true) {
-      ctx.tracer.emit("semantic_node.status.transitioned", {
-        turnId: String(ctx.runId),
-        nodeId: transition.id,
-        fromStatus: transition.fromStatus,
-        toStatus: transition.toStatus,
-        correctedBy: transition.correctedBy,
-        source: "belief_reviser",
-      });
-    }
+    await markSemanticContradicted({
+      nodeId: sync.targetId,
+      correctedBy: sync.correctedBy,
+      supersededAt: sync.supersededAt,
+      repository: ctx.semanticNodeRepository,
+      tracer: ctx.tracer,
+      turnId: String(ctx.runId),
+      traceSource: "belief_reviser",
+    });
 
     await ctx.semanticNodeRepository.update(sync.targetId, {
       archived: true,

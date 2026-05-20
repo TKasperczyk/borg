@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
-import { createActionId, createStreamEntryId } from "../../util/ids.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
+import { createActionId, createOpenQuestionId, createStreamEntryId } from "../../util/ids.js";
+import type { OpenQuestion } from "../self/index.js";
+import { resolveOpenQuestionsForCompletedAction } from "./open-question-resolution.js";
+import type { ActionRecord } from "./types.js";
 
 describe("completed action open-question resolution", () => {
   it("resolves a directly linked open question when an action completes", async () => {
@@ -102,5 +106,51 @@ describe("completed action open-question resolution", () => {
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("throws CAS conflicts from the identity resolver", () => {
+    const questionId = createOpenQuestionId();
+    const streamEntryId = createStreamEntryId();
+    const error = new IdentityCasMismatchError({
+      recordType: "open_question",
+      recordId: questionId,
+      expectedVersion: 2,
+    });
+    const action = {
+      id: createActionId(),
+      description: "Complete the linked action",
+      actor: "borg",
+      audience_entity_id: null,
+      open_question_id: questionId,
+      goal_id: null,
+      state: "completed",
+      confidence: 1,
+      provenance_episode_ids: [],
+      provenance_stream_entry_ids: [streamEntryId],
+      created_at: 1_000,
+      updated_at: 1_000,
+      considering_at: null,
+      committed_at: null,
+      scheduled_at: null,
+      completed_at: 1_000,
+      not_done_at: null,
+      unknown_at: null,
+      canonicalized_by_artifact_entry_id: null,
+    } as ActionRecord;
+
+    expect(() =>
+      resolveOpenQuestionsForCompletedAction({
+        action,
+        openQuestionsRepository: {
+          get: vi.fn(() => ({ id: questionId, status: "open" }) as OpenQuestion),
+          listByGoal: vi.fn(() => []),
+        },
+        identityService: {
+          resolveOpenQuestion: vi.fn(() => {
+            throw error;
+          }),
+        },
+      }),
+    ).toThrow(error);
   });
 });

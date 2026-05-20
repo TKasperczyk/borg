@@ -1,8 +1,11 @@
 import { z } from "zod";
 
 import { SemanticError } from "../../../util/errors.js";
+import {
+  markSemanticContradicted,
+  markSemanticSuperseded,
+} from "../../lifecycle-ops/index.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticNode } from "../types.js";
-import type { SemanticNodeStatusTransition } from "../repository.js";
 import {
   reviewResolutionSchema,
   type ReviewKind,
@@ -100,24 +103,6 @@ function requireWinner(input: {
   return input.winnerNodeId;
 }
 
-function traceStatusTransition(input: {
-  ctx: ReviewHandlerContext;
-  transition: SemanticNodeStatusTransition | null;
-}): void {
-  if (input.transition === null || input.ctx.tracer?.enabled !== true) {
-    return;
-  }
-
-  input.ctx.tracer.emit("semantic_node.status.transitioned", {
-    turnId: "review_queue",
-    nodeId: input.transition.id,
-    fromStatus: input.transition.fromStatus,
-    toStatus: input.transition.toStatus,
-    correctedBy: input.transition.correctedBy,
-    source: "review_handler",
-  });
-}
-
 export function createSemanticPairReviewQueueHandler(
   kind: SemanticPairReviewKind,
 ): ReviewQueueHandler<SemanticPairReviewKind, SemanticPairReviewRefs, SemanticPairApplyingState> {
@@ -203,24 +188,26 @@ export function createSemanticPairReviewQueueHandler(
       const loser = winner.id === first.id ? second : first;
 
       if (resolution.decision === "supersede") {
-        traceStatusTransition({
-          ctx,
-          transition: await ctx.semanticNodeRepository.markSuperseded(
-            loser.id,
-            winner.id,
-            ctx.clock.now(),
-          ),
+        await markSemanticSuperseded({
+          nodeId: loser.id,
+          correctedBy: winner.id,
+          supersededAt: ctx.clock.now(),
+          repository: ctx.semanticNodeRepository,
+          tracer: ctx.tracer,
+          turnId: "review_queue",
+          traceSource: "review_handler",
         });
         return;
       }
 
-      traceStatusTransition({
-        ctx,
-        transition: await ctx.semanticNodeRepository.markContradicted(
-          loser.id,
-          winner.id,
-          ctx.clock.now(),
-        ),
+      await markSemanticContradicted({
+        nodeId: loser.id,
+        correctedBy: winner.id,
+        supersededAt: ctx.clock.now(),
+        repository: ctx.semanticNodeRepository,
+        tracer: ctx.tracer,
+        turnId: "review_queue",
+        traceSource: "review_handler",
       });
     },
   };

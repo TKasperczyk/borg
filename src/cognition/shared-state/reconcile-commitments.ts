@@ -1,41 +1,16 @@
-import type {
-  CommitmentRecord,
-  CommitmentRepository,
-  CommitmentType,
-} from "../../memory/commitments/index.js";
+import type { CommitmentRepository } from "../../memory/commitments/index.js";
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import {
+  canonicalizeCommitmentWithSharedStateEntry,
+  type LifecycleTracer,
+} from "../../memory/lifecycle-ops/index.js";
 import type { CommitmentId } from "../../util/ids.js";
-import {
-  SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
-  type SharedStateCommitmentCanonicalizationType,
-} from "./commitment-canonicalization.js";
-import {
-  RECONCILIATION_PROVENANCE,
-  errorMessage,
-  type SharedStateReconciliationResult,
-} from "./reconciliation-summary.js";
+import { errorMessage, type SharedStateReconciliationResult } from "./reconciliation-summary.js";
 
-const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType>(
-  SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
-);
-
-export function isTerminalCommitment(
-  commitment: NonNullable<ReturnType<CommitmentRepository["get"]>>,
-  nowMs: number,
-): boolean {
-  return (
-    commitment.revoked_at !== null ||
-    commitment.expired_at !== null ||
-    (commitment.expires_at !== null && commitment.expires_at <= nowMs) ||
-    commitment.superseded_by !== null
-  );
-}
-
-export function isSharedStateArtifactCanonicalizableCommitmentType(
-  type: CommitmentRecord["type"],
-): type is SharedStateCommitmentCanonicalizationType {
-  return SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET.has(type);
-}
+export {
+  isSharedStateArtifactCanonicalizableCommitmentType,
+  isTerminalCommitment,
+} from "../../memory/lifecycle-ops/index.js";
 
 export function reconcileCommitmentCanonicalizations(input: {
   entry: SharedStateEntry;
@@ -44,6 +19,8 @@ export function reconcileCommitmentCanonicalizations(input: {
   retiredCommitments: Set<CommitmentId>;
   result: SharedStateReconciliationResult;
   nowMs: number;
+  tracer?: LifecycleTracer;
+  turnId?: string;
 }): void {
   for (const commitmentId of input.commitmentIds) {
     input.result.commitments_revoked_attempted += 1;
@@ -59,16 +36,20 @@ export function reconcileCommitmentCanonicalizations(input: {
     }
 
     try {
-      const commitment = input.repository.get(commitmentId);
-
-      if (commitment !== null && isTerminalCommitment(commitment, input.nowMs)) {
-        input.result.commitments_revoked_skipped += 1;
-        continue;
-      }
+      const result = canonicalizeCommitmentWithSharedStateEntry({
+        commitmentId,
+        entry: input.entry,
+        repository: input.repository,
+        nowMs: input.nowMs,
+        tracer: input.tracer,
+        turnId: input.turnId,
+      });
 
       if (
-        commitment !== null &&
-        !isSharedStateArtifactCanonicalizableCommitmentType(commitment.type)
+        result.status === "no_op" &&
+        result.reason === "non_canonicalizable_commitment_type" &&
+        result.value?.commitment !== null &&
+        result.value?.commitment !== undefined
       ) {
         input.result.commitments_revoked_skipped += 1;
         input.result.skipped_commitments.push({
@@ -76,28 +57,34 @@ export function reconcileCommitmentCanonicalizations(input: {
           id: commitmentId,
           artifactEntryId: input.entry.id,
           reason: "non_canonicalizable_commitment_type",
-          commitmentType: commitment.type,
+          commitmentType: result.value.commitment.type,
         });
         continue;
       }
 
-      const retired = input.repository.revoke(
-        commitmentId,
-        `canonicalized_by_artifact_entry_id=${input.entry.id}`,
-        RECONCILIATION_PROVENANCE,
-        undefined,
-        {
-          canonicalizedByArtifactEntryId: input.entry.id,
-        },
-      );
-
-      if (retired === null) {
+      if (result.status === "no_op" && result.reason === "missing") {
         input.result.commitments_revoked_skipped += 1;
         input.result.errors.push({
           channel: "commitment",
           id: commitmentId,
           artifactEntryId: input.entry.id,
           message: `Unknown commitment id: ${commitmentId}`,
+        });
+        continue;
+      }
+
+      if (result.status === "no_op") {
+        input.result.commitments_revoked_skipped += 1;
+        continue;
+      }
+
+      if (result.status === "conflict") {
+        input.result.commitments_revoked_skipped += 1;
+        input.result.errors.push({
+          channel: "commitment",
+          id: commitmentId,
+          artifactEntryId: input.entry.id,
+          message: errorMessage(result.error),
         });
         continue;
       }

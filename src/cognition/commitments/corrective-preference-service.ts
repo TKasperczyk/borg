@@ -5,6 +5,7 @@ import {
   type CommitmentRepository,
 } from "../../memory/commitments/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
+import { supersedeCommitment } from "../../memory/lifecycle-ops/index.js";
 import type {
   RelationalSlot,
   RelationalSlotRepository,
@@ -373,17 +374,29 @@ export class CorrectivePreferenceTurnService {
     }
 
     try {
-      const superseded = this.options.commitmentRepository.supersede(
-        supersession.supersededId,
-        persisted.id,
-      );
+      const superseded = supersedeCommitment({
+        commitmentId: supersession.supersededId,
+        replacementCommitmentId: persisted.id,
+        repository: this.options.commitmentRepository,
+      });
 
-      if (superseded === null) {
+      if (superseded.status === "no_op") {
         this.traceSupersessionRejected({
           turnId: input.turnId,
           supersededId: supersession.supersededId,
           newId: persisted.id,
           reason: "unknown_commitment_id",
+        });
+        return;
+      }
+
+      if (superseded.status === "conflict") {
+        this.traceSupersessionRejected({
+          turnId: input.turnId,
+          supersededId: supersession.supersededId,
+          newId: persisted.id,
+          reason: "supersede_failed",
+          error: superseded.error,
         });
         return;
       }
