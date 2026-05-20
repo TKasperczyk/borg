@@ -13,6 +13,7 @@ import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
 import {
   MissingSharedStateArtifactToolCallError,
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
   sharedStatePatchSchema,
   type CanonicalizationDuplicateDrop,
@@ -23,7 +24,8 @@ import {
 } from "./schema.js";
 
 export function parseResponse(result: LLMCompleteResult): EmitSharedStatePatch {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === SHARED_STATE_TOOL_NAME);
+  const acceptedToolNames = new Set<string>(SHARED_STATE_ACCEPTED_TOOL_NAMES);
+  const call = result.tool_calls.find((toolCall) => acceptedToolNames.has(toolCall.name));
 
   if (call === undefined) {
     throw new MissingSharedStateArtifactToolCallError(
@@ -130,6 +132,7 @@ export function traceCompileCompleted(options: {
   applied: boolean;
   artifact: SharedStateArtifact | null;
   renderOptions?: SharedStateRenderOptions;
+  maxActiveEntries?: number;
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
   ledgerMode: SharedStateLedgerMode;
@@ -165,10 +168,12 @@ export function traceCompileCompleted(options: {
       artifactRenderedTokenEstimate: artifactSummary.estimatedTokens,
       artifact_total_entry_count: artifactSummary.totalEntryCount,
       artifact_active_entry_count: artifactSummary.activeEntryCount,
+      artifact_max_active_entries: options.maxActiveEntries ?? null,
       artifact_omitted_entry_count: artifactSummary.omittedEntryCount,
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
+      omitted_by_kind: toTraceJsonValue(artifactSummary.omittedByKind),
       ledger_mode: options.ledgerMode,
       input_token_estimate: options.promptBudget.inputTokenEstimate,
       input_token_breakdown: toTraceJsonValue(options.promptBudget.breakdown),

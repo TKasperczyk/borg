@@ -11,8 +11,10 @@ export const ACTIVE_GOAL_GROWTH_THRESHOLD_PER_TURN = 0.5;
 // state, so only sustained/final accumulation is flagged.
 export const ACTIVE_ACTION_FINAL_HIGH_THRESHOLD = 30;
 export const COMMITTED_TO_DO_ACTION_FINAL_HIGH_THRESHOLD = 18;
-export const ACTIONS_PER_TURN_HIGH_THRESHOLD = 8;
-export const INCIDENT_ACTIONS_PER_TURN_HIGH_THRESHOLD = 12;
+export const ACTIONS_PER_TURN_HIGH_THRESHOLD = 2;
+export const SALIENT_ACTIONS_PER_TURN_HIGH_THRESHOLD = 0.8;
+export const ACTION_RETIREMENT_RATIO_LOW_THRESHOLD = 0.3;
+export const ACTION_RETIREMENT_RATIO_MIN_TOTAL_ACTIONS = 10;
 
 // Canonicalization is expected to remain sparse, but a large action set with
 // almost no canonicalization is a stabilization signal.
@@ -45,6 +47,7 @@ export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 15;
 // Review backlog needs to be large enough to indicate drain trouble, not just
 // a few expected review items.
 export const REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD = 50;
+export const SHARED_STATE_CAP_SATURATION_HIGH_THRESHOLD = 0.5;
 
 export type SimulatorHealthWarningOptions = {
   scenarioKey?: string;
@@ -163,12 +166,6 @@ export function capabilityFindingMetrics(
   return metrics;
 }
 
-function actionsPerTurnThreshold(options: SimulatorHealthWarningOptions): number {
-  return options.scenarioKey === "coding-incident"
-    ? INCIDENT_ACTIONS_PER_TURN_HIGH_THRESHOLD
-    : ACTIONS_PER_TURN_HIGH_THRESHOLD;
-}
-
 function degradedRate(input: { completed: number; degraded: number }): number | null {
   if (input.completed === 0) {
     return input.degraded > 0 ? 1 : null;
@@ -251,16 +248,38 @@ export function simulatorHealthWarningsForRows(
     );
   }
 
-  const maxActionsPerTurn = maxNumberRow(rows, (row) => row.action_record_creation_count_this_turn);
-  const actionTurnThreshold = actionsPerTurnThreshold(options);
-
-  if (maxActionsPerTurn !== null && maxActionsPerTurn.value > actionTurnThreshold) {
+  if (latest.actions_per_turn > ACTIONS_PER_TURN_HIGH_THRESHOLD) {
     warnings.push(
       latestWarning({
-        row: maxActionsPerTurn.row,
+        row: latest,
         kind: "actions_per_turn_high",
-        threshold: actionTurnThreshold,
-        observedValue: maxActionsPerTurn.value,
+        threshold: ACTIONS_PER_TURN_HIGH_THRESHOLD,
+        observedValue: latest.actions_per_turn,
+      }),
+    );
+  }
+
+  if (latest.salient_actions_per_turn > SALIENT_ACTIONS_PER_TURN_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "salient_actions_per_turn_high",
+        threshold: SALIENT_ACTIONS_PER_TURN_HIGH_THRESHOLD,
+        observedValue: latest.salient_actions_per_turn,
+      }),
+    );
+  }
+
+  if (
+    latest.action_record_count_total >= ACTION_RETIREMENT_RATIO_MIN_TOTAL_ACTIONS &&
+    latest.action_retirement_ratio < ACTION_RETIREMENT_RATIO_LOW_THRESHOLD
+  ) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "action_retirement_ratio_low",
+        threshold: ACTION_RETIREMENT_RATIO_LOW_THRESHOLD,
+        observedValue: latest.action_retirement_ratio,
       }),
     );
   }
@@ -472,6 +491,22 @@ export function simulatorHealthWarningsForRows(
         kind: "review_queue_backlog_high",
         threshold: REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD,
         observedValue: reviewQueueBacklog,
+      }),
+    );
+  }
+
+  const sharedStateCapSaturation =
+    latest.shared_state_compile_evaluated_turns <= 0
+      ? 0
+      : latest.shared_state_at_cap_turns / latest.shared_state_compile_evaluated_turns;
+
+  if (sharedStateCapSaturation > SHARED_STATE_CAP_SATURATION_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "shared_state_cap_saturation_high",
+        threshold: SHARED_STATE_CAP_SATURATION_HIGH_THRESHOLD,
+        observedValue: sharedStateCapSaturation,
       }),
     );
   }

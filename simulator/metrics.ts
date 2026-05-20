@@ -24,12 +24,19 @@ import {
 import {
   DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+  actionSalienceClass,
+  buildActionThreads,
+  summarizeActionPromptSalience,
+  type ActionPromptSalienceSummary,
 } from "../src/cognition/evidence-ledger/action-threads.js";
+import type { ActionLedgerRepository } from "../src/cognition/evidence-ledger/builder-types.js";
+import type { ScopeResolver } from "../src/cognition/evidence-ledger/scope-resolver.js";
 import { sharedStateSemanticRevisionVerdictCacheSize } from "../src/cognition/shared-state/reconciliation.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
+import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
 
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
@@ -58,6 +65,14 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "scheduled",
   "unknown",
 ];
+const TERMINAL_ACTION_STATES: readonly ActionState[] = [
+  "completed",
+  "not_done",
+  "expired",
+  "archived",
+];
+const SHARED_STATE_RECENT_RENDER_KINDS = ["live", "pending", "invalidated"] as const;
+const DEFAULT_SHARED_STATE_MAX_ACTIVE_ENTRIES = 40;
 const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
 const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;
 const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
@@ -79,6 +94,16 @@ type MemoryBandMetricCounts = Pick<
   | "borg_owned_active_actions"
   | "participant_owned_active_actions"
   | "group_owned_active_actions"
+  | "prompt_salient_actions_total"
+  | "borg_owned_salient_active_actions"
+  | "participant_owned_salient_active_actions"
+  | "dormant_actions_total"
+  | "stale_actions_omitted_from_prompt"
+  | "actions_per_turn"
+  | "salient_actions_per_turn"
+  | "action_retirement_ratio"
+  | "borg_owned_action_count"
+  | "stale_action_count"
   | "action_record_creation_source_per_turn"
   | "action_record_creation_count_this_turn"
   | "actions_dormant_count"
@@ -108,6 +133,8 @@ export type MetricsCaptureContext = {
   sessionIds: readonly SessionId[];
   transportChatAttempts: number;
   overseerDueOnSuppressedTurn?: boolean;
+  simulatorPersonaFailures?: number;
+  borgAbortedTurns?: number;
 };
 
 type FrameAnomalyMetricCounts = Pick<
@@ -141,6 +168,14 @@ type SharedStateArtifactSemanticRevisionMetricCounts = Pick<
   | "decision_artifact_semantic_nodes_marked_superseded"
   | "decision_artifact_semantic_nodes_marked_contradicted"
   | "decision_artifact_semantic_revision_cache_hits"
+>;
+
+type SharedStateCapPressureMetricCounts = Pick<
+  MetricsRow,
+  | "shared_state_at_cap_turns"
+  | "shared_state_compile_evaluated_turns"
+  | "shared_state_omitted_recent_entries"
+  | "shared_state_live_entry_starvation"
 >;
 
 type ReviewResolverMetricCounts = {
@@ -306,6 +341,20 @@ function traceObjectNumber(record: TraceRecord, objectKey: string, numberKey: st
   const nested = (value as Record<string, unknown>)[numberKey];
 
   return typeof nested === "number" && Number.isFinite(nested) ? nested : 0;
+}
+
+function traceOptionalNumber(record: TraceRecord, key: string): number | null {
+  const value = record[key];
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function canonicalizeTraceRecords(records: readonly TraceRecord[]): TraceRecord[] {
+  return records.map((record) => {
+    const event = canonicalTraceEventName(record.event);
+
+    return event === record.event ? record : { ...record, event };
+  });
 }
 
 function streamContentEvent(content: unknown): string | null {
@@ -525,6 +574,47 @@ function sharedStateSemanticRevisionMetrics(
       0,
     ),
     decision_artifact_semantic_revision_cache_hits: cacheHits.length,
+  };
+}
+
+function sharedStateCapPressureMetrics(
+  traceRecords: readonly TraceRecord[],
+): SharedStateCapPressureMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "shared_state.compile.completed",
+  );
+  const compileEvaluatedTurnIds = new Set(completed.map((record) => record.turnId));
+  const atCapTurnIds = new Set<string>();
+  let omittedRecentEntries = 0;
+  let liveEntryStarvation = false;
+
+  for (const record of completed) {
+    const activeEntryCount = traceOptionalNumber(record, "artifact_active_entry_count");
+    const maxActiveEntries =
+      traceOptionalNumber(record, "artifact_max_active_entries") ??
+      DEFAULT_SHARED_STATE_MAX_ACTIVE_ENTRIES;
+
+    if (activeEntryCount !== null && activeEntryCount >= maxActiveEntries) {
+      atCapTurnIds.add(record.turnId);
+    }
+
+    for (const kind of SHARED_STATE_RECENT_RENDER_KINDS) {
+      omittedRecentEntries += traceObjectNumber(record, "omitted_by_kind", kind);
+    }
+
+    if (
+      traceObjectNumber(record, "omitted_by_kind", "live") > 0 &&
+      traceObjectNumber(record, "rendered_by_kind", "locked") > 0
+    ) {
+      liveEntryStarvation = true;
+    }
+  }
+
+  return {
+    shared_state_at_cap_turns: atCapTurnIds.size,
+    shared_state_compile_evaluated_turns: compileEvaluatedTurnIds.size,
+    shared_state_omitted_recent_entries: omittedRecentEntries,
+    shared_state_live_entry_starvation: liveEntryStarvation,
   };
 }
 
@@ -853,6 +943,21 @@ function activeActionActorSplit(
   };
 }
 
+function actionRecordCountForStates(
+  counts: Record<ActionState, number>,
+  states: readonly ActionState[],
+): number {
+  return states.reduce((sum, state) => sum + (counts[state] ?? 0), 0);
+}
+
+function actionRatio(numerator: number, denominator: number): number {
+  return denominator <= 0 ? 0 : numerator / denominator;
+}
+
+function borgOwnedActionCount(actions: readonly Pick<ActionRecord, "actor">[]): number {
+  return actions.filter((action) => action.actor === "borg").length;
+}
+
 function isParticipantOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entity_id">) {
   return (
     action.actor !== "borg" &&
@@ -875,6 +980,54 @@ function dormantActionCount(
       action.last_referenced_turn_counter !== null &&
       turnCounter - action.last_referenced_turn_counter >= ACTION_DORMANT_AFTER_INACTIVE_TURNS,
   ).length;
+}
+
+function emptyActionPromptSalienceSummary(): ActionPromptSalienceSummary {
+  return {
+    promptSalientActionsTotal: 0,
+    borgOwnedSalientActiveActions: 0,
+    participantOwnedSalientActiveActions: 0,
+    staleActionsOmittedFromPrompt: 0,
+  };
+}
+
+function metricsScopeResolver(sessionId: SessionId): ScopeResolver {
+  return {
+    currentSessionId: sessionId,
+    streamEntriesById: new Map(),
+    streamOrderById: new Map(),
+    episodeScopesById: new Map(),
+    episodeSourceStreamIdsById: new Map(),
+  };
+}
+
+async function actionPromptSalienceSummary(input: {
+  actions: readonly ActionRecord[];
+  borg: Borg;
+  sessionId: SessionId;
+  turnCounter: number;
+}): Promise<ActionPromptSalienceSummary> {
+  if (input.actions.length === 0) {
+    return emptyActionPromptSalienceSummary();
+  }
+
+  const actionRepository = input.borg.actions as unknown as ActionLedgerRepository;
+  const threads = await buildActionThreads({
+    records: input.actions,
+    repository: actionRepository,
+    resolver: metricsScopeResolver(input.sessionId),
+    similarityThreshold: DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
+  });
+  const threadsWithSalience = threads.flatMap((thread) => {
+    const salienceClass = actionSalienceClass({
+      thread,
+      currentTurnCounter: input.turnCounter,
+    });
+
+    return salienceClass === null ? [] : [{ ...thread, salienceClass }];
+  });
+
+  return summarizeActionPromptSalience(threadsWithSalience);
 }
 
 function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
@@ -1009,17 +1162,27 @@ export class MetricsCapture {
     }
   }
 
-  private captureMemoryBandMetrics(
+  private async captureMemoryBandMetrics(
     borg: Borg,
     sessionId: SessionId,
     turnCounter: number,
-  ): MemoryBandMetricCounts {
+  ): Promise<MemoryBandMetricCounts> {
     const actionRecordCountByState = borg.actions.countByState();
+    const allActions = borg.actions.list({ limit: LARGE_COUNT_LIMIT });
+    const promptSourceActions = borg.actions.list({
+      limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+    });
     const activeActions = borg.actions.list({
       states: ACTIVE_ACTION_STATES,
       limit: LARGE_COUNT_LIMIT,
     });
     const activeActorSplit = activeActionActorSplit(activeActions);
+    const promptSalienceSummary = await actionPromptSalienceSummary({
+      actions: promptSourceActions,
+      borg,
+      sessionId,
+      turnCounter,
+    });
     const currentActionCreationCounts = actionCreationCountsFromRepository(borg);
     const actionCreationSourcePerTurn = diffActionCreationCounts({
       previous: this.previousActionCreationCountsBySource,
@@ -1035,8 +1198,15 @@ export class MetricsCapture {
       this.completedActionIdsSeen.add(id);
     }
 
+    const totalActions = borg.actions.count();
+    const dormantActionsTotal = dormantActionCount(activeActions, turnCounter);
+    const terminalActionCount = actionRecordCountForStates(
+      actionRecordCountByState,
+      TERMINAL_ACTION_STATES,
+    );
+
     return {
-      action_record_count_total: borg.actions.count(),
+      action_record_count_total: totalActions,
       action_record_count_by_state: {
         ...zeroCounts<ActionState>(ACTION_STATES),
         ...actionRecordCountByState,
@@ -1049,9 +1219,23 @@ export class MetricsCapture {
       borg_owned_active_actions: activeActorSplit.borg_owned_active_actions,
       participant_owned_active_actions: activeActorSplit.participant_owned_active_actions,
       group_owned_active_actions: activeActorSplit.group_owned_active_actions,
+      prompt_salient_actions_total: promptSalienceSummary.promptSalientActionsTotal,
+      borg_owned_salient_active_actions: promptSalienceSummary.borgOwnedSalientActiveActions,
+      participant_owned_salient_active_actions:
+        promptSalienceSummary.participantOwnedSalientActiveActions,
+      dormant_actions_total: dormantActionsTotal,
+      stale_actions_omitted_from_prompt: promptSalienceSummary.staleActionsOmittedFromPrompt,
+      actions_per_turn: actionRatio(totalActions, turnCounter),
+      salient_actions_per_turn: actionRatio(
+        promptSalienceSummary.promptSalientActionsTotal,
+        turnCounter,
+      ),
+      action_retirement_ratio: actionRatio(terminalActionCount, totalActions),
+      borg_owned_action_count: borgOwnedActionCount(allActions),
+      stale_action_count: dormantActionsTotal + (actionRecordCountByState.expired ?? 0),
       action_record_creation_source_per_turn: actionCreationSourcePerTurn,
       action_record_creation_count_this_turn: actionCreationCountTotal(actionCreationSourcePerTurn),
-      actions_dormant_count: dormantActionCount(activeActions, turnCounter),
+      actions_dormant_count: dormantActionsTotal,
       actions_archived_count: actionRecordCountByState.archived ?? 0,
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
@@ -1157,7 +1341,8 @@ export class MetricsCapture {
     turnCounter: number,
     context: MetricsCaptureContext,
   ): Promise<MetricsRow> {
-    const allTraceRecords = this.tracePath === undefined ? [] : readTraceEvents(this.tracePath);
+    const allTraceRecords =
+      this.tracePath === undefined ? [] : canonicalizeTraceRecords(readTraceEvents(this.tracePath));
     const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);
     const traceRecordsSinceLastCapture = allTraceRecords.slice(this.previousTraceRecordCount);
     const usage = usageForTurn(traceRecords);
@@ -1179,7 +1364,11 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
-    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId, turnCounter);
+    const memoryBandMetrics = await this.captureMemoryBandMetrics(
+      borg,
+      context.sessionId,
+      turnCounter,
+    );
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords,
       borg,
@@ -1194,6 +1383,7 @@ export class MetricsCapture {
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics(traceRecords);
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
+    const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords,
@@ -1242,6 +1432,17 @@ export class MetricsCapture {
       borg_owned_active_actions: memoryBandMetrics.borg_owned_active_actions,
       participant_owned_active_actions: memoryBandMetrics.participant_owned_active_actions,
       group_owned_active_actions: memoryBandMetrics.group_owned_active_actions,
+      prompt_salient_actions_total: memoryBandMetrics.prompt_salient_actions_total,
+      borg_owned_salient_active_actions: memoryBandMetrics.borg_owned_salient_active_actions,
+      participant_owned_salient_active_actions:
+        memoryBandMetrics.participant_owned_salient_active_actions,
+      dormant_actions_total: memoryBandMetrics.dormant_actions_total,
+      stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
+      actions_per_turn: memoryBandMetrics.actions_per_turn,
+      salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
+      action_retirement_ratio: memoryBandMetrics.action_retirement_ratio,
+      borg_owned_action_count: memoryBandMetrics.borg_owned_action_count,
+      stale_action_count: memoryBandMetrics.stale_action_count,
       action_record_creation_source_per_turn:
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
@@ -1338,6 +1539,15 @@ export class MetricsCapture {
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
+      shared_state_at_cap_turns: sharedStateCapPressureMetricCounts.shared_state_at_cap_turns,
+      shared_state_compile_evaluated_turns:
+        sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
+      shared_state_omitted_recent_entries:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
+      shared_state_live_entry_starvation:
+        sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
+      simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
+      borg_aborted_turns: context.borgAbortedTurns ?? 0,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -1359,7 +1569,8 @@ export class MetricsCapture {
     },
   ): Promise<MetricsRow> {
     const event = context.event ?? ABORTED_TURN_EVENT;
-    const allTraceRecords = this.tracePath === undefined ? [] : readTraceEvents(this.tracePath);
+    const allTraceRecords =
+      this.tracePath === undefined ? [] : canonicalizeTraceRecords(readTraceEvents(this.tracePath));
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
@@ -1370,7 +1581,11 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
-    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId, turnCounter);
+    const memoryBandMetrics = await this.captureMemoryBandMetrics(
+      borg,
+      context.sessionId,
+      turnCounter,
+    );
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords: [],
@@ -1383,6 +1598,7 @@ export class MetricsCapture {
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
+    const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords: [],
@@ -1419,6 +1635,17 @@ export class MetricsCapture {
       borg_owned_active_actions: memoryBandMetrics.borg_owned_active_actions,
       participant_owned_active_actions: memoryBandMetrics.participant_owned_active_actions,
       group_owned_active_actions: memoryBandMetrics.group_owned_active_actions,
+      prompt_salient_actions_total: memoryBandMetrics.prompt_salient_actions_total,
+      borg_owned_salient_active_actions: memoryBandMetrics.borg_owned_salient_active_actions,
+      participant_owned_salient_active_actions:
+        memoryBandMetrics.participant_owned_salient_active_actions,
+      dormant_actions_total: memoryBandMetrics.dormant_actions_total,
+      stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
+      actions_per_turn: memoryBandMetrics.actions_per_turn,
+      salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
+      action_retirement_ratio: memoryBandMetrics.action_retirement_ratio,
+      borg_owned_action_count: memoryBandMetrics.borg_owned_action_count,
+      stale_action_count: memoryBandMetrics.stale_action_count,
       action_record_creation_source_per_turn:
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
@@ -1515,6 +1742,15 @@ export class MetricsCapture {
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
+      shared_state_at_cap_turns: sharedStateCapPressureMetricCounts.shared_state_at_cap_turns,
+      shared_state_compile_evaluated_turns:
+        sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
+      shared_state_omitted_recent_entries:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
+      shared_state_live_entry_starvation:
+        sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
+      simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
+      borg_aborted_turns: context.borgAbortedTurns ?? 0,
     };
 
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);

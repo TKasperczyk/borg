@@ -2,6 +2,10 @@ export { compileSharedStateArtifact } from "./compiler.js";
 export { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 export {
   SHARED_STATE_TOOL_NAME,
+  DECISION_ARTIFACT_TOOL_NAME,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
+  SHARED_STATE_TOOLS,
+  SHARED_STATE_TOOL_NAME_ALIASES,
   MAX_PATCH_OUTPUT_TOKENS,
   type CompileSharedStateArtifactInput,
   type SharedStateActionCanonicalizationCandidate,
@@ -13,6 +17,7 @@ export {
   type SharedStateLifecycleOptions,
   type SharedStateArtifactParticipantContext,
   type DroppedCanonicalizeId,
+  type EmitDecisionArtifactPatch,
   type EmitSharedStatePatch,
 } from "./schema.js";
 export {

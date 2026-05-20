@@ -49,6 +49,7 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
+import { isPromptSalientActionSalienceClass } from "./action-threads.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
   compactEvidenceLedger,
@@ -2089,6 +2090,14 @@ describe("EvidenceLedgerBuilder", () => {
       scheduled_at: null,
       last_referenced_turn_counter: 4,
     });
+    const completedRecent = makeAction(userEntry.id, {
+      description: "Closed the prior clinic email action",
+      actor: "user",
+      state: "completed",
+      completed_at: NOW_MS - 5,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+    });
     const stale = Array.from({ length: 7 }, (_, index) =>
       makeAction(userEntry.id, {
         description: `Stale participant action ${index}`,
@@ -2104,7 +2113,7 @@ describe("EvidenceLedgerBuilder", () => {
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
       relationalSlotRepository: { list: () => [] },
       actionRepository: {
-        list: () => [participantRecent, ...stale, borgCurrent],
+        list: () => [participantRecent, completedRecent, ...stale, borgCurrent],
         findSimilarDescriptionPairs: async () => [],
       },
       currentSessionTranscriptTokenBudget: 50_000,
@@ -2130,6 +2139,14 @@ describe("EvidenceLedgerBuilder", () => {
 
     expect(actionEntries[0]?.salience_class).toBe("borg_current_turn_action");
     expect(actionEntries[1]?.salience_class).toBe("participant_pending_recent");
+    expect(
+      actionEntries.filter(
+        (entry) =>
+          entry.salience_class !== undefined &&
+          isPromptSalientActionSalienceClass(entry.salience_class),
+      ),
+    ).toHaveLength(2);
+    expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(true);
     expect(
       actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
     ).toHaveLength(6);

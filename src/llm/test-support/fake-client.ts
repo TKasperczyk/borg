@@ -493,17 +493,19 @@ function isActionStateResponse(response: FakeLLMResponse | undefined): boolean {
 }
 
 function isSharedStateArtifactResponse(response: FakeLLMResponse | undefined): boolean {
+  const sharedStateToolNames = new Set(["EmitSharedStatePatch", "EmitDecisionArtifactPatch"]);
+
   if (response === undefined || typeof response === "function" || typeof response !== "object") {
     return false;
   }
 
   if ("tool_calls" in response) {
-    return response.tool_calls.some((toolCall) => toolCall.name === "EmitDecisionArtifactPatch");
+    return response.tool_calls.some((toolCall) => sharedStateToolNames.has(toolCall.name));
   }
 
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
-      (block) => block.type === "tool_use" && block.name === "EmitDecisionArtifactPatch",
+      (block) => block.type === "tool_use" && sharedStateToolNames.has(block.name),
     );
   }
 
@@ -736,7 +738,7 @@ function defaultSharedStateArtifactResponse(): LLMCompleteResult {
     tool_calls: [
       {
         id: "toolu_default_decision_artifact",
-        name: "EmitDecisionArtifactPatch",
+        name: "EmitSharedStatePatch",
         input: {
           operations: [],
         },

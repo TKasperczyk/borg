@@ -17,8 +17,8 @@ import {
 import {
   MAX_PATCH_OUTPUT_TOKENS,
   MissingSharedStateArtifactToolCallError,
-  SHARED_STATE_TOOL,
   SHARED_STATE_TOOL_NAME,
+  SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
   type EmitSharedStatePatch,
   type SharedStateCompileDegradedReason,
@@ -181,7 +181,7 @@ export async function compileSharedStateArtifact(
     allowedSourceStreamEntryIds: allowedSourceStreamEntryIdsForPrompt,
     offLimitsSourceStreamEntryIds: offLimitsSourceStreamEntryIdsForPrompt,
   });
-  const tools = [SHARED_STATE_TOOL];
+  const tools = SHARED_STATE_TOOLS;
   const ledgerMode = input.ledgerMode ?? "full_fallback";
   const promptBudget = estimateSharedStateArtifactPromptBudget({
     messages,
@@ -328,6 +328,10 @@ export async function compileSharedStateArtifact(
       overCapDelta: lifecycle.overCapDelta,
     });
   }
+  const compileCompletedTraceWithLifecycle = {
+    ...compileCompletedTraceBase,
+    maxActiveEntries: lifecycle.maxActiveEntries,
+  };
   const expandedOperations = expandPruneDependencies({
     previousArtifact,
     operations: lifecycle.operations,
@@ -355,7 +359,7 @@ export async function compileSharedStateArtifact(
       });
     } catch (error) {
       traceCompileCompleted({
-        ...compileCompletedTraceBase,
+        ...compileCompletedTraceWithLifecycle,
         operationCount: 0,
         rejected: normalized.rejected,
         applied: false,
@@ -409,7 +413,7 @@ export async function compileSharedStateArtifact(
     });
 
     traceCompileCompleted({
-      ...compileCompletedTraceBase,
+      ...compileCompletedTraceWithLifecycle,
       operationCount: 0,
       rejected: normalized.rejected,
       applied: false,
@@ -472,7 +476,7 @@ export async function compileSharedStateArtifact(
     });
 
     traceCompileCompleted({
-      ...compileCompletedTraceBase,
+      ...compileCompletedTraceWithLifecycle,
       operationCount: operations.length,
       rejected: normalized.rejected,
       applied: true,
@@ -483,7 +487,7 @@ export async function compileSharedStateArtifact(
     });
   } catch (error) {
     traceCompileCompleted({
-      ...compileCompletedTraceBase,
+      ...compileCompletedTraceWithLifecycle,
       operationCount: operations.length,
       rejected: normalized.rejected,
       applied: false,
@@ -547,10 +551,18 @@ export async function compileSharedStateArtifact(
   };
 }
 
-export { SHARED_STATE_TOOL_NAME, SHARED_STATE_SYSTEM_PROMPT, MAX_PATCH_OUTPUT_TOKENS };
+export {
+  DECISION_ARTIFACT_TOOL_NAME,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
+  SHARED_STATE_TOOL_NAME,
+  SHARED_STATE_TOOL_NAME_ALIASES,
+  MAX_PATCH_OUTPUT_TOKENS,
+} from "./schema.js";
+export { SHARED_STATE_SYSTEM_PROMPT };
 export type {
   CompileSharedStateArtifactInput,
   DroppedCanonicalizeId,
+  EmitDecisionArtifactPatch,
   EmitSharedStatePatch,
   SharedStateArtifactParticipantContext,
   SharedStateActionCanonicalizationCandidate,

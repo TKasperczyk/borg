@@ -109,11 +109,14 @@ entry shape over bespoke prompt text.
 ## Shared-State Artifact
 
 The shared-state artifact is an audience-scoped compact state record stored by
-`src/memory/decision-artifacts/`. The directory name is historical; the current
-architecture treats it as shared audience state, not as an old "decision
-artifact" ledger. The compiler is `src/cognition/shared-state/compiler.ts`;
-its LLM emits `EmitDecisionArtifactPatch` operations to add, update, supersede,
-or prune entries.
+`src/memory/decision-artifacts/`. The directory name, SQLite tables, and
+storage record type are historical compatibility names; do not migrate them
+just to rename the concept. The current architecture treats the record as
+shared audience state, not as an old "decision artifact" ledger. The compiler
+is `src/cognition/shared-state/compiler.ts`; its LLM emits
+`EmitSharedStatePatch` operations to add, update, supersede, or prune entries.
+`EmitDecisionArtifactPatch` remains accepted as a deprecated tool alias for
+old test fixtures and trace replay compatibility.
 
 Entries are `locked`, `live`, `tentative`, `invalidated`, or `pending`.
 `locked` entries can canonicalize existing goals, commitments, actions, and

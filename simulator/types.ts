@@ -64,6 +64,16 @@ export type MetricsRow = {
   borg_owned_active_actions: number;
   participant_owned_active_actions: number;
   group_owned_active_actions: number;
+  prompt_salient_actions_total: number;
+  borg_owned_salient_active_actions: number;
+  participant_owned_salient_active_actions: number;
+  dormant_actions_total: number;
+  stale_actions_omitted_from_prompt: number;
+  actions_per_turn: number;
+  salient_actions_per_turn: number;
+  action_retirement_ratio: number;
+  borg_owned_action_count: number;
+  stale_action_count: number;
   action_record_creation_source_per_turn: Record<ActionRecordCreationSource, number>;
   action_record_creation_count_this_turn: number;
   action_candidate_classifications_per_turn: Record<ActionCandidateClassificationMetricKey, number>;
@@ -134,6 +144,12 @@ export type MetricsRow = {
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
   capability_boundary_refusal_count: number;
+  shared_state_at_cap_turns: number;
+  shared_state_compile_evaluated_turns: number;
+  shared_state_omitted_recent_entries: number;
+  shared_state_live_entry_starvation: boolean;
+  simulator_persona_failures: number;
+  borg_aborted_turns: number;
 };
 
 export type SimulatorHealthWarningKind =
@@ -142,7 +158,10 @@ export type SimulatorHealthWarningKind =
   | "active_actions_final_high"
   | "committed_to_do_actions_final_high"
   | "actions_per_turn_high"
+  | "salient_actions_per_turn_high"
+  | "action_retirement_ratio_low"
   | "action_canonicalization_rate_low"
+  | "shared_state_cap_saturation_high"
   | "retrieval_latency_max_high"
   | "deliberation_latency_max_high"
   | "semantic_revision_llm_calls_high"
@@ -253,6 +272,20 @@ export type SimulatorSuppressionRecord = {
   reason: GenerationSuppressionReason;
 };
 
+export type SimulatorPersonaFailureRecord = {
+  turn: number;
+  error: string;
+  attempts: number;
+};
+
+export type SimulatorBorgBehavioralSuppressionRecord = {
+  sessionIndex: number;
+  sessionId: SessionId;
+  turn: number;
+  reason: GenerationSuppressionReason;
+  sessionContinued: boolean;
+};
+
 export type SimulatorRunReport = {
   runId: string;
   persona: string;
@@ -265,6 +298,8 @@ export type SimulatorRunReport = {
   overseerCheckpoints: OverseerVerdict[];
   healthWarnings?: SimulatorHealthWarning[];
   turnFailures: Array<{ turn: number; error: string; attempts: number }>;
+  simulatorPersonaFailures?: SimulatorPersonaFailureRecord[];
+  borgBehavioralSuppressions?: SimulatorBorgBehavioralSuppressionRecord[];
   finalMetrics: MetricsRow;
   durationMs: number;
 };

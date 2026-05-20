@@ -14,7 +14,7 @@ import {
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
-import { createEntityId } from "../src/util/ids.js";
+import { createEntityId, createSessionId } from "../src/util/ids.js";
 import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import {
   MaintenanceScheduler,
@@ -369,6 +369,16 @@ function metricsRow(turnCounter: number): MetricsRow {
     borg_owned_active_actions: 0,
     participant_owned_active_actions: 0,
     group_owned_active_actions: 0,
+    prompt_salient_actions_total: 0,
+    borg_owned_salient_active_actions: 0,
+    participant_owned_salient_active_actions: 0,
+    dormant_actions_total: 0,
+    stale_actions_omitted_from_prompt: 0,
+    actions_per_turn: 0,
+    salient_actions_per_turn: 0,
+    action_retirement_ratio: 0,
+    borg_owned_action_count: 0,
+    stale_action_count: 0,
     action_record_creation_source_per_turn: {
       extractor: 0,
       reflector: 0,
@@ -459,6 +469,12 @@ function metricsRow(turnCounter: number): MetricsRow {
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
+    shared_state_at_cap_turns: 0,
+    shared_state_compile_evaluated_turns: 0,
+    shared_state_omitted_recent_entries: 0,
+    shared_state_live_entry_starvation: false,
+    simulator_persona_failures: 0,
+    borg_aborted_turns: 0,
   };
 }
 
@@ -548,6 +564,52 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("active_goals_growth_high");
     expect(report).toContain("observed=0.75");
     expect(report).toContain("threshold=0.5");
+  });
+
+  it("formats simulator persona failures separately from Borg suppressions", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-failure-separation-report-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 3,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [],
+      healthWarnings: [],
+      turnFailures: [],
+      simulatorPersonaFailures: [
+        {
+          turn: 1,
+          error: "persona_role_bleed: assistant_self_claim",
+          attempts: 0,
+        },
+      ],
+      borgBehavioralSuppressions: [
+        {
+          sessionIndex: 0,
+          sessionId: createSessionId(),
+          turn: 2,
+          reason: "finalizer_no_output",
+          sessionContinued: false,
+        },
+      ],
+      finalMetrics: {
+        ...metricsRow(3),
+        simulator_persona_failures: 1,
+        borg_aborted_turns: 1,
+      },
+      durationMs: 1,
+    });
+
+    expect(report).toContain("Run result: partial");
+    expect(report).toContain("Simulator aborts: persona failures 1, Borg aborted turns 1");
+    expect(report).toContain("## Simulator Persona Failures");
+    expect(report).toContain("persona_role_bleed: assistant_self_claim");
+    expect(report).toContain("## Borg Behavioral Suppressions");
+    expect(report).toContain("finalizer_no_output; session ended");
+    expect(report).not.toContain("## Borg Turn Failures");
   });
 
   it("formats capability and extractor health counters in final metrics", () => {
@@ -651,11 +713,79 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("- Turn 10:");
     expect(report).toContain("Raw status: healthy");
     expect(report).toContain("Recommendation: Healthy with one concerning note.");
-    expect(report).toContain("Behavioral status: concerning");
+    expect(report).toContain("Run worst behavioral status: healthy");
+    expect(report).toContain("Run worst capability status: concerning");
+    expect(report).toContain("Final checkpoint status: concerning");
+    expect(report).toContain("Unresolved validated concerns: 1");
+    expect(report).toContain("Behavioral status: healthy");
     expect(report).toContain("Substrate status: healthy");
+    expect(report).toContain("Capability status: concerning");
     expect(report).toContain("Worst status: concerning");
     expect(report).toContain("Open concerns:");
     expect(report).not.toContain("Turn 10: concerning --");
+  });
+
+  it("summarizes worst run status across checkpoints above final checkpoint status", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-worst-status-summary-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 20,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [
+        {
+          ts: Date.now(),
+          turn_counter: 10,
+          status: "concerning",
+          observations: ["A behavioral concern appeared."],
+          recommendation: "Inspect.",
+          findings: [
+            {
+              category: "H",
+              claim_status: "unsupported",
+              source_kind: "emitted_output",
+              status_impact: "concerning",
+              evidence_summary: "Borg made an unsupported memory claim mid-run.",
+            },
+          ],
+          rejected_findings: [],
+          raw_verdict: {
+            status: "concerning",
+            observations: ["A behavioral concern appeared."],
+            recommendation: "Inspect.",
+            findings: [],
+          },
+        },
+        {
+          ts: Date.now(),
+          turn_counter: 20,
+          status: "healthy",
+          observations: ["Final window was healthy."],
+          recommendation: "No action.",
+          findings: [],
+          rejected_findings: [],
+          raw_verdict: {
+            status: "healthy",
+            observations: ["Final window was healthy."],
+            recommendation: "No action.",
+            findings: [],
+          },
+        },
+      ],
+      healthWarnings: [],
+      turnFailures: [],
+      finalMetrics: metricsRow(20),
+      durationMs: 1,
+    });
+
+    expect(report).toContain("Run worst behavioral status: concerning");
+    expect(report).toContain("Run worst substrate status: healthy");
+    expect(report).toContain("Run worst capability status: healthy");
+    expect(report).toContain("Final checkpoint status: healthy");
+    expect(report).toContain("Unresolved validated concerns: 0");
   });
 
   it("detects expanded simulator health warnings with conservative thresholds", () => {
@@ -718,20 +848,45 @@ describe("SimulatorRunner", () => {
       },
       {
         name: "actions per turn high fires",
-        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 9 }],
+        rows: [{ ...metricsRow(12), actions_per_turn: 2.01 }],
         expectedKinds: ["actions_per_turn_high"],
       },
       {
-        name: "incident action density threshold is relaxed",
-        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 9 }],
-        scenarioKey: "coding-incident",
+        name: "actions per turn at threshold does not fire",
+        rows: [{ ...metricsRow(12), actions_per_turn: 2 }],
         expectedKinds: [],
       },
       {
-        name: "incident action density still fires above relaxed threshold",
-        rows: [{ ...metricsRow(12), action_record_creation_count_this_turn: 13 }],
-        scenarioKey: "coding-incident",
-        expectedKinds: ["actions_per_turn_high"],
+        name: "salient actions per turn high fires",
+        rows: [{ ...metricsRow(12), salient_actions_per_turn: 0.81 }],
+        expectedKinds: ["salient_actions_per_turn_high"],
+      },
+      {
+        name: "salient actions per turn at threshold does not fire",
+        rows: [{ ...metricsRow(12), salient_actions_per_turn: 0.8 }],
+        expectedKinds: [],
+      },
+      {
+        name: "low action retirement ratio fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            action_record_count_total: 10,
+            action_retirement_ratio: 0.29,
+          },
+        ],
+        expectedKinds: ["action_retirement_ratio_low"],
+      },
+      {
+        name: "low action retirement ratio waits for enough actions",
+        rows: [
+          {
+            ...metricsRow(12),
+            action_record_count_total: 9,
+            action_retirement_ratio: 0,
+          },
+        ],
+        expectedKinds: [],
       },
       {
         name: "low action canonicalization rate fires",
@@ -740,6 +895,7 @@ describe("SimulatorRunner", () => {
             ...metricsRow(12),
             action_record_count_total: 30,
             action_record_count_canonicalized: 0,
+            action_retirement_ratio: 0.3,
           },
         ],
         expectedKinds: ["action_canonicalization_rate_low"],
@@ -999,6 +1155,39 @@ describe("SimulatorRunner", () => {
               ...metricsRow(12).review_queue_open_count_by_type,
               contradiction: 50,
             },
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "shared-state cap saturation high fires against evaluated compiles",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_at_cap_turns: 40,
+            shared_state_compile_evaluated_turns: 50,
+          },
+        ],
+        expectedKinds: ["shared_state_cap_saturation_high"],
+      },
+      {
+        name: "shared-state cap saturation ignores skipped compile turns",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_at_cap_turns: 10,
+            shared_state_compile_evaluated_turns: 50,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "shared-state cap saturation at evaluated threshold does not fire",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_at_cap_turns: 25,
+            shared_state_compile_evaluated_turns: 50,
           },
         ],
         expectedKinds: [],
@@ -1354,6 +1543,7 @@ describe("SimulatorRunner", () => {
             event: string;
             transport_chat_attempts: number;
             failure_reason?: string;
+            borg_aborted_turns?: number;
           },
       );
 
@@ -1377,10 +1567,12 @@ describe("SimulatorRunner", () => {
         event: "aborted_turn",
         transport_chat_attempts: 3,
         failure_reason: failureMessage,
+        borg_aborted_turns: 1,
       },
       {
         event: "turn_metrics",
         transport_chat_attempts: 1,
+        borg_aborted_turns: 1,
       },
     ]);
   });
@@ -2249,6 +2441,17 @@ describe("SimulatorRunner", () => {
         reason: "commitment_revision_failed",
       },
     ]);
+    expect(report.borgBehavioralSuppressions).toEqual([
+      {
+        sessionIndex: 0,
+        sessionId: chatSessionIds[0],
+        turn: 1,
+        reason: "commitment_revision_failed",
+        sessionContinued: true,
+      },
+    ]);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(1);
+    expect(report.finalMetrics.simulator_persona_failures).toBe(0);
   });
 
   it("rejects a persona role-bleed draft, regenerates, and records a trace artifact", async () => {
@@ -2306,6 +2509,71 @@ describe("SimulatorRunner", () => {
         action: "regenerated",
       },
     ]);
+  });
+
+  it("reports persona draft failures before Borg runs as simulator persona failures", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    let calls = 0;
+    const prepareNextTurn = vi.fn(async () => {
+      calls += 1;
+
+      if (calls === 1) {
+        throw new Error("Persona LLM produced malformed content");
+      }
+
+      return {
+        kind: "mock",
+        message: "Can we return to the design doc?",
+        history: null,
+        mockIndex: null,
+      };
+    });
+    const commit = vi.fn();
+    const rollback = vi.fn();
+    const startNewSession = vi.fn();
+    const seenMessages: string[] = [];
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (message, options = {}) => {
+      seenMessages.push(message);
+
+      return chatResult({
+        response: "Borg replied.",
+        emitted: true,
+        turnId: "turn-after-persona-failure",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-persona-malformed-failure-test",
+      persona: tomPersona,
+      personaSession: {
+        prepareNextTurn,
+        commit,
+        rollback,
+        startNewSession,
+      } as unknown as PersonaSession,
+      totalTurns: 2,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+
+    expect(seenMessages).toEqual(["Can we return to the design doc?"]);
+    expect(report.turnFailures).toEqual([]);
+    expect(report.simulatorPersonaFailures).toEqual([
+      {
+        turn: 1,
+        error: "persona_malformed: Persona LLM produced malformed content",
+        attempts: 0,
+      },
+    ]);
+    expect(report.finalMetrics.simulator_persona_failures).toBe(1);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(0);
   });
 
   it("aborts a turn when the role-bleed retry also bleeds", async () => {
@@ -2370,13 +2638,16 @@ describe("SimulatorRunner", () => {
       { kind: "new_session", retry: "persona_role_bleed" },
       { kind: "new_session" },
     ]);
-    expect(report.turnFailures).toEqual([
+    expect(report.turnFailures).toEqual([]);
+    expect(report.simulatorPersonaFailures).toEqual([
       {
         turn: 1,
         error: "persona_role_bleed: i have been playing tom",
         attempts: 0,
       },
     ]);
+    expect(report.finalMetrics.simulator_persona_failures).toBe(1);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(0);
     expect(roleBleedEvents).toMatchObject([
       {
         event: "persona.role_bleed.rejected",
@@ -2460,6 +2731,16 @@ describe("SimulatorRunner", () => {
       endReason: "run_complete",
     });
     expect(report.suppressionEvents).toEqual([]);
+    expect(report.borgBehavioralSuppressions).toEqual([
+      {
+        sessionIndex: 0,
+        sessionId: chatSessionIds[0],
+        turn: 1,
+        reason: "finalizer_no_output",
+        sessionContinued: false,
+      },
+    ]);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(1);
   });
 
   it("ends simulator sessions before starting the next session", async () => {

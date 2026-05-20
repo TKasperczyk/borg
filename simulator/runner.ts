@@ -36,9 +36,12 @@ import type {
   OverseerVerdict,
   Persona,
   SimulatorHealthWarning,
+  SimulatorHealthWarningKind,
+  SimulatorPersonaFailureRecord,
   SimulatorRunReport,
   SimulatorSessionRecord,
   SimulatorSuppressionRecord,
+  SimulatorBorgBehavioralSuppressionRecord,
 } from "./types.js";
 
 const SESSION_GAP_DESCRIPTIONS: readonly string[] = [
@@ -388,6 +391,14 @@ function formatErrorChain(error: unknown): string {
   return parts.length === 0 ? String(error) : parts.join(" -> ");
 }
 
+function simulatorPersonaFailureReason(error: unknown): string {
+  const detail = formatErrorChain(error);
+  const normalized = detail.toLowerCase();
+  const prefix = normalized.includes("refus") ? "persona_refused" : "persona_malformed";
+
+  return `${prefix}: ${detail}`;
+}
+
 async function autoAcceptNewInsightReviews(transport: BorgTransport, turn: number): Promise<void> {
   const borg = transport.getBorg();
   let reviews: ReviewQueueItem[];
@@ -555,6 +566,7 @@ function endSimulatorSession(
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
   private turnFailures: Array<{ turn: number; error: string; attempts: number }> = [];
+  private simulatorPersonaFailures: SimulatorPersonaFailureRecord[] = [];
 
   constructor(options: SimulatorRunnerOptions) {
     this.options = options;
@@ -655,6 +667,10 @@ export class SimulatorRunner {
       const TRANSIENT_RETRY_DELAY_MS = 2_000;
       let consecutiveFailures = 0;
       const turnFailures: Array<{ turn: number; error: string; attempts: number }> = [];
+      const simulatorPersonaFailures: SimulatorPersonaFailureRecord[] = [];
+      const borgBehavioralSuppressions: SimulatorBorgBehavioralSuppressionRecord[] = [];
+      let simulatorPersonaFailureCount = 0;
+      let borgAbortedTurnCount = 0;
 
       const attemptTurn = async (
         draft: PersonaTurnDraft,
@@ -734,7 +750,33 @@ export class SimulatorRunner {
           speakerIndex,
           personas,
         });
-        let draft = await personaSession.prepareNextTurn(speakerPriorTurn);
+        let draft: PersonaTurnDraft;
+        try {
+          draft = await personaSession.prepareNextTurn(speakerPriorTurn);
+        } catch (error) {
+          const detail = simulatorPersonaFailureReason(error);
+          simulatorPersonaFailures.push({ turn, error: detail, attempts: 0 });
+          simulatorPersonaFailureCount += 1;
+          await metrics.captureAborted(transport.getBorg(), turn, {
+            sessionId: currentSessionId,
+            sessionIds,
+            transportChatAttempts: 0,
+            failureReason: detail,
+            turnId: `simulator_persona_failure_${turn}`,
+            simulatorPersonaFailures: simulatorPersonaFailureCount,
+            borgAbortedTurns: borgAbortedTurnCount,
+          });
+          consecutiveFailures += 1;
+          // eslint-disable-next-line no-console
+          console.warn(`[simulator] turn ${turn} failed before Borg chat: ${detail}`);
+
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            throw new Error(
+              `Simulator aborting: ${consecutiveFailures} consecutive turn failures (last: ${detail})`,
+            );
+          }
+          continue;
+        }
         let roleBleedAborted = false;
 
         for (
@@ -772,13 +814,16 @@ export class SimulatorRunner {
                 ? bleedDetection.matched.join(", ")
                 : bleedDetection.category
             }`;
-            turnFailures.push({ turn, error: detail, attempts: 0 });
+            simulatorPersonaFailures.push({ turn, error: detail, attempts: 0 });
+            simulatorPersonaFailureCount += 1;
             await metrics.captureAborted(transport.getBorg(), turn, {
               sessionId: currentSessionId,
               sessionIds,
               transportChatAttempts: 0,
               failureReason: detail,
               turnId: `${PERSONA_ROLE_BLEED_RETRY}_${turn}`,
+              simulatorPersonaFailures: simulatorPersonaFailureCount,
+              borgAbortedTurns: borgAbortedTurnCount,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -793,7 +838,33 @@ export class SimulatorRunner {
             break;
           }
 
-          draft = await personaSession.prepareNextTurn(priorBorgTurnRetry(speakerPriorTurn));
+          try {
+            draft = await personaSession.prepareNextTurn(priorBorgTurnRetry(speakerPriorTurn));
+          } catch (error) {
+            const detail = simulatorPersonaFailureReason(error);
+            simulatorPersonaFailures.push({ turn, error: detail, attempts: 0 });
+            simulatorPersonaFailureCount += 1;
+            await metrics.captureAborted(transport.getBorg(), turn, {
+              sessionId: currentSessionId,
+              sessionIds,
+              transportChatAttempts: 0,
+              failureReason: detail,
+              turnId: `simulator_persona_failure_${turn}`,
+              simulatorPersonaFailures: simulatorPersonaFailureCount,
+              borgAbortedTurns: borgAbortedTurnCount,
+            });
+            consecutiveFailures += 1;
+            // eslint-disable-next-line no-console
+            console.warn(`[simulator] turn ${turn} failed before Borg chat: ${detail}`);
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              throw new Error(
+                `Simulator aborting: ${consecutiveFailures} consecutive turn failures (last: ${detail})`,
+              );
+            }
+            roleBleedAborted = true;
+            break;
+          }
         }
 
         if (roleBleedAborted) {
@@ -825,6 +896,8 @@ export class SimulatorRunner {
                 transportChatAttempts: attemptsMade,
                 failureReason: formatErrorChain(error),
                 turnId: failedTurnId,
+                simulatorPersonaFailures: simulatorPersonaFailureCount,
+                borgAbortedTurns: borgAbortedTurnCount,
               });
             }
 
@@ -840,11 +913,14 @@ export class SimulatorRunner {
           const detail = formatErrorChain(attemptError);
           personaSession.rollback(draft);
           turnFailures.push({ turn, error: detail, attempts: attemptsMade });
+          borgAbortedTurnCount += 1;
           await metrics.captureAborted(transport.getBorg(), turn, {
             sessionId: currentSessionId,
             sessionIds,
             transportChatAttempts: attemptsMade,
             failureReason: detail,
+            simulatorPersonaFailures: simulatorPersonaFailureCount,
+            borgAbortedTurns: borgAbortedTurnCount,
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -882,6 +958,17 @@ export class SimulatorRunner {
           !isObserveTurn &&
           suppressionReason !== undefined &&
           !isSessionEndingSuppression(suppressionReason);
+
+        if (!success.emitted && !isObserveTurn && suppressionReason !== undefined) {
+          borgAbortedTurnCount += 1;
+          borgBehavioralSuppressions.push({
+            sessionIndex: sessions.length,
+            sessionId: currentSessionId,
+            turn,
+            reason: suppressionReason,
+            sessionContinued: continuesSuppressedSession,
+          });
+        }
 
         let heavyMaintenanceRan = false;
 
@@ -936,6 +1023,8 @@ export class SimulatorRunner {
           sessionIds,
           transportChatAttempts: success.transportChatAttempts,
           overseerDueOnSuppressedTurn: !success.emitted && !isObserveTurn && overseerDue,
+          simulatorPersonaFailures: simulatorPersonaFailureCount,
+          borgAbortedTurns: borgAbortedTurnCount,
         });
 
         if (overseerDue) {
@@ -995,6 +1084,7 @@ export class SimulatorRunner {
       }
 
       this.turnFailures = turnFailures;
+      this.simulatorPersonaFailures = simulatorPersonaFailures;
 
       if (finalMetrics === undefined) {
         throw new Error("Simulator completed without metrics");
@@ -1044,6 +1134,8 @@ export class SimulatorRunner {
         overseerCheckpoints,
         healthWarnings: [...metrics.listHealthWarnings(), ...postHocHealthWarnings],
         turnFailures: this.turnFailures,
+        simulatorPersonaFailures: this.simulatorPersonaFailures,
+        borgBehavioralSuppressions,
         finalMetrics,
         durationMs: performance.now() - started,
       };
@@ -1098,6 +1190,10 @@ function isSubstrateFinding(finding: OverseerVerdict["findings"][number]): boole
   return finding.category === "I";
 }
 
+function isCapabilityFinding(finding: OverseerVerdict["findings"][number]): boolean {
+  return finding.category === "K";
+}
+
 function statusFromFindings(
   findings: readonly OverseerVerdict["findings"][number][],
 ): OverseerVerdict["status"] {
@@ -1109,22 +1205,91 @@ function statusFromFindings(
 function checkpointStatusSummary(checkpoint: OverseerVerdict): {
   behavioralStatus: OverseerVerdict["status"];
   substrateStatus: OverseerVerdict["status"];
+  capabilityStatus: OverseerVerdict["status"];
   worstStatus: OverseerVerdict["status"];
 } {
   const activeFindings = checkpoint.findings.filter(
     (finding) => !isCarryoverDemotedFinding(finding),
   );
   const behavioralStatus = statusFromFindings(
-    activeFindings.filter((finding) => !isSubstrateFinding(finding)),
+    activeFindings.filter(
+      (finding) => !isSubstrateFinding(finding) && !isCapabilityFinding(finding),
+    ),
   );
   const substrateStatus = statusFromFindings(activeFindings.filter(isSubstrateFinding));
+  const capabilityStatus = statusFromFindings(activeFindings.filter(isCapabilityFinding));
 
   return {
     behavioralStatus,
     substrateStatus,
+    capabilityStatus,
     worstStatus: statusFromSeverity(
-      Math.max(statusSeverity(behavioralStatus), statusSeverity(substrateStatus)),
+      Math.max(
+        statusSeverity(behavioralStatus),
+        statusSeverity(substrateStatus),
+        statusSeverity(capabilityStatus),
+      ),
     ),
+  };
+}
+
+function runResultForReport(report: SimulatorRunReport): "completed" | "failed" | "partial" {
+  if (report.finalMetrics.event === "aborted_turn") {
+    return "failed";
+  }
+
+  if (
+    report.resultState !== "completed" ||
+    report.turnFailures.length > 0 ||
+    (report.simulatorPersonaFailures ?? []).length > 0
+  ) {
+    return "partial";
+  }
+
+  return "completed";
+}
+
+function maxStatus(
+  left: OverseerVerdict["status"],
+  right: OverseerVerdict["status"],
+): OverseerVerdict["status"] {
+  return statusSeverity(left) >= statusSeverity(right) ? left : right;
+}
+
+function runCheckpointStatusSummary(report: SimulatorRunReport): {
+  behavioralStatus: OverseerVerdict["status"];
+  substrateStatus: OverseerVerdict["status"];
+  capabilityStatus: OverseerVerdict["status"];
+  finalCheckpointStatus: OverseerVerdict["status"] | "n/a";
+  unresolvedValidatedConcerns: number;
+} {
+  let behavioralStatus: OverseerVerdict["status"] = "healthy";
+  let substrateStatus: OverseerVerdict["status"] = "healthy";
+  let capabilityStatus: OverseerVerdict["status"] = "healthy";
+
+  for (const checkpoint of report.overseerCheckpoints) {
+    const summary = checkpointStatusSummary(checkpoint);
+    behavioralStatus = maxStatus(behavioralStatus, summary.behavioralStatus);
+    substrateStatus = maxStatus(substrateStatus, summary.substrateStatus);
+    capabilityStatus = maxStatus(capabilityStatus, summary.capabilityStatus);
+  }
+
+  const finalCheckpoint = report.overseerCheckpoints.at(-1);
+  const finalCheckpointSummary =
+    finalCheckpoint === undefined ? null : checkpointStatusSummary(finalCheckpoint);
+  const unresolvedValidatedConcerns =
+    finalCheckpoint === undefined
+      ? 0
+      : finalCheckpoint.findings.filter(
+          (finding) => !isCarryoverDemotedFinding(finding) && findingImpactSeverity(finding) > 0,
+        ).length;
+
+  return {
+    behavioralStatus,
+    substrateStatus,
+    capabilityStatus,
+    finalCheckpointStatus: finalCheckpointSummary?.worstStatus ?? "n/a",
+    unresolvedValidatedConcerns,
   };
 }
 
@@ -1146,6 +1311,38 @@ function reportCarryoverFindingLine(finding: OverseerVerdict["findings"][number]
     `quote="${reportQuotedSpan(finding.quoted_emitted_span)}"`,
     `evidence=${finding.evidence_summary}`,
   ].join(" ");
+}
+
+const STATE_PRESSURE_WARNING_KINDS = new Set<SimulatorHealthWarningKind>([
+  "active_goals_high",
+  "active_goals_growth_high",
+  "active_actions_final_high",
+  "committed_to_do_actions_final_high",
+  "actions_per_turn_high",
+  "salient_actions_per_turn_high",
+  "action_retirement_ratio_low",
+  "action_canonicalization_rate_low",
+  "shared_state_cap_saturation_high",
+  "review_queue_backlog_high",
+]);
+
+const SEVERE_HEALTH_WARNING_KINDS = new Set<SimulatorHealthWarningKind>([
+  "capability_overclaim_count_high",
+  "capability_ambiguity_count_high",
+]);
+
+function healthWarningBucket(
+  warning: SimulatorHealthWarning,
+): "severe" | "state_pressure" | "operational" {
+  if (SEVERE_HEALTH_WARNING_KINDS.has(warning.kind)) {
+    return "severe";
+  }
+
+  if (STATE_PRESSURE_WARNING_KINDS.has(warning.kind)) {
+    return "state_pressure";
+  }
+
+  return "operational";
 }
 
 function reportHealthWarningLine(warning: SimulatorHealthWarning): string {
@@ -1181,13 +1378,22 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     report.personas.length <= 1
       ? `Persona: ${report.persona}`
       : `Personas: ${report.personas.join(", ")}`;
+  const runSummary = runCheckpointStatusSummary(report);
+  const simulatorPersonaFailures = report.simulatorPersonaFailures ?? [];
+  const borgBehavioralSuppressions = report.borgBehavioralSuppressions ?? [];
   const lines = [
     `# Borg Simulator Run ${report.runId}`,
     "",
     participantLine,
     `Audience: ${report.audience}`,
     `Turns: ${report.totalTurns}`,
-    `Result: ${report.resultState}`,
+    `Run result: ${runResultForReport(report)}`,
+    `Run worst behavioral status: ${runSummary.behavioralStatus}`,
+    `Run worst substrate status: ${runSummary.substrateStatus}`,
+    `Run worst capability status: ${runSummary.capabilityStatus}`,
+    `Final checkpoint status: ${runSummary.finalCheckpointStatus}`,
+    `Unresolved validated concerns: ${runSummary.unresolvedValidatedConcerns}`,
+    `Result state: ${report.resultState}`,
     `Sessions: ${report.sessions.length}`,
     `Duration: ${Math.round(report.durationMs)}ms`,
     "",
@@ -1200,8 +1406,12 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Open questions: ${report.finalMetrics.open_question_count}`,
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Active actions: ${report.finalMetrics.action_record_count_active} (Borg ${report.finalMetrics.borg_owned_active_actions}, participants ${report.finalMetrics.participant_owned_active_actions}, group ${report.finalMetrics.group_owned_active_actions})`,
+    `- Prompt-salient actions: ${report.finalMetrics.prompt_salient_actions_total} (Borg active ${report.finalMetrics.borg_owned_salient_active_actions}, participant active ${report.finalMetrics.participant_owned_salient_active_actions}, stale omitted ${report.finalMetrics.stale_actions_omitted_from_prompt})`,
+    `- Action pressure: actions/turn ${report.finalMetrics.actions_per_turn.toFixed(2)}, salient/turn ${report.finalMetrics.salient_actions_per_turn.toFixed(2)}, retirement ratio ${report.finalMetrics.action_retirement_ratio.toFixed(2)}, dormant ${report.finalMetrics.dormant_actions_total}, stale ${report.finalMetrics.stale_action_count}`,
     `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
     `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
+    `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ${report.finalMetrics.shared_state_live_entry_starvation}`,
+    `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, Borg aborted turns ${report.finalMetrics.borg_aborted_turns}`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
@@ -1219,10 +1429,36 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   if (healthWarnings.length === 0) {
     lines.push("No simulator health warnings.", "");
   } else {
-    for (const warning of healthWarnings) {
-      lines.push(reportHealthWarningLine(warning));
+    const warningGroups = [
+      {
+        title: "Severe Warnings",
+        warnings: healthWarnings.filter((warning) => healthWarningBucket(warning) === "severe"),
+      },
+      {
+        title: "State Pressure Warnings",
+        warnings: healthWarnings.filter(
+          (warning) => healthWarningBucket(warning) === "state_pressure",
+        ),
+      },
+      {
+        title: "Operational Warnings",
+        warnings: healthWarnings.filter(
+          (warning) => healthWarningBucket(warning) === "operational",
+        ),
+      },
+    ];
+
+    for (const group of warningGroups) {
+      if (group.warnings.length === 0) {
+        continue;
+      }
+
+      lines.push(`### ${group.title}`);
+      for (const warning of group.warnings) {
+        lines.push(reportHealthWarningLine(warning));
+      }
+      lines.push("");
     }
-    lines.push("");
   }
 
   if (report.sessions.length > 0) {
@@ -1247,6 +1483,17 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     lines.push("");
   }
 
+  if (borgBehavioralSuppressions.length > 0) {
+    lines.push("## Borg Behavioral Suppressions", "");
+    for (const event of borgBehavioralSuppressions) {
+      const continuation = event.sessionContinued ? "session continued" : "session ended";
+      lines.push(
+        `- Turn ${event.turn} in session ${event.sessionIndex}: ${event.reason}; ${continuation}`,
+      );
+    }
+    lines.push("");
+  }
+
   lines.push("## Overseer Checkpoints", "");
 
   if (report.overseerCheckpoints.length === 0) {
@@ -1264,6 +1511,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
       lines.push(`  - Raw status: ${checkpoint.raw_verdict.status}`);
       lines.push(`  - Behavioral status: ${statusSummary.behavioralStatus}`);
       lines.push(`  - Substrate status: ${statusSummary.substrateStatus}`);
+      lines.push(`  - Capability status: ${statusSummary.capabilityStatus}`);
       lines.push(`  - Worst status: ${statusSummary.worstStatus}`);
       if (openConcerns.length === 0) {
         lines.push("  - Open concerns: none");
@@ -1301,8 +1549,16 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     lines.push("");
   }
 
+  if (simulatorPersonaFailures.length > 0) {
+    lines.push("## Simulator Persona Failures", "");
+    for (const failure of simulatorPersonaFailures) {
+      lines.push(`- Turn ${failure.turn} after ${failure.attempts} attempts: ${failure.error}`);
+    }
+    lines.push("");
+  }
+
   if (report.turnFailures.length > 0) {
-    lines.push("## Turn Failures", "");
+    lines.push("## Borg Turn Failures", "");
     for (const failure of report.turnFailures) {
       lines.push(`- Turn ${failure.turn} after ${failure.attempts} attempts: ${failure.error}`);
     }

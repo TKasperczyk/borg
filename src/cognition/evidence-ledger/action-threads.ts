@@ -34,6 +34,24 @@ export type ActionThreadWithSalience = ActionThread & {
   salienceClass: EvidenceLedgerActionSalienceClass;
 };
 
+export const PROMPT_SALIENT_ACTION_SALIENCE_CLASSES = [
+  "borg_current_turn_action",
+  "borg_memory_tracking_action",
+  "participant_pending_recent",
+  "group_pending",
+] as const satisfies readonly EvidenceLedgerActionSalienceClass[];
+
+const PROMPT_SALIENT_ACTION_SALIENCE_CLASS_SET = new Set<EvidenceLedgerActionSalienceClass>(
+  PROMPT_SALIENT_ACTION_SALIENCE_CLASSES,
+);
+
+export type ActionPromptSalienceSummary = {
+  promptSalientActionsTotal: number;
+  borgOwnedSalientActiveActions: number;
+  participantOwnedSalientActiveActions: number;
+  staleActionsOmittedFromPrompt: number;
+};
+
 export function normalizePositiveInteger(value: number | undefined, fallback: number): number {
   return value === undefined ? fallback : Math.max(1, Math.floor(value));
 }
@@ -394,6 +412,54 @@ export function orderActionThreadsBySalience(
       right.current.updated_at - left.current.updated_at ||
       left.current.id.localeCompare(right.current.id),
   );
+}
+
+export function isPromptSalientActionSalienceClass(
+  salienceClass: EvidenceLedgerActionSalienceClass,
+): boolean {
+  return PROMPT_SALIENT_ACTION_SALIENCE_CLASS_SET.has(salienceClass);
+}
+
+export function summarizeActionPromptSalience(
+  threads: readonly ActionThreadWithSalience[],
+): ActionPromptSalienceSummary {
+  const staleParticipantThreadCount = threads.filter(
+    (thread) => thread.salienceClass === "participant_pending_stale",
+  ).length;
+  let promptSalientActionsTotal = 0;
+  let borgOwnedSalientActiveActions = 0;
+  let participantOwnedSalientActiveActions = 0;
+
+  for (const thread of threads) {
+    if (!isPromptSalientActionSalienceClass(thread.salienceClass)) {
+      continue;
+    }
+
+    promptSalientActionsTotal += 1;
+
+    if (!isActiveActionState(thread.current.state)) {
+      continue;
+    }
+
+    if (thread.current.actor === "borg") {
+      borgOwnedSalientActiveActions += 1;
+      continue;
+    }
+
+    if (!isGroupOwnedAction(thread.current)) {
+      participantOwnedSalientActiveActions += 1;
+    }
+  }
+
+  return {
+    promptSalientActionsTotal,
+    borgOwnedSalientActiveActions,
+    participantOwnedSalientActiveActions,
+    staleActionsOmittedFromPrompt: Math.max(
+      0,
+      staleParticipantThreadCount - STALE_PARTICIPANT_ACTION_RENDER_LIMIT,
+    ),
+  };
 }
 
 function truncateOlderActionThreadSample(text: string): string {

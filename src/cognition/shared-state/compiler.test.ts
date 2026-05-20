@@ -41,12 +41,16 @@ import {
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   compileSharedStateArtifact,
+  DECISION_ARTIFACT_TOOL_NAME,
   SHARED_STATE_SYSTEM_PROMPT,
   SHARED_STATE_TOOL_NAME,
   type EmitSharedStatePatch,
 } from "./compiler.js";
 
-function emitSharedStateArtifactPatchResponse(patch: EmitSharedStatePatch) {
+function emitSharedStateArtifactPatchResponse(
+  patch: EmitSharedStatePatch,
+  toolName = SHARED_STATE_TOOL_NAME,
+) {
   return {
     text: "",
     input_tokens: 12,
@@ -55,7 +59,7 @@ function emitSharedStateArtifactPatchResponse(patch: EmitSharedStatePatch) {
     tool_calls: [
       {
         id: "toolu_decision_patch",
-        name: SHARED_STATE_TOOL_NAME,
+        name: toolName,
         input: patch,
       },
     ],
@@ -198,7 +202,9 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("shared planning decision state");
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Relationship label grounding");
-    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("cite the supporting relational slot or stream entry");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
+      "cite the supporting relational slot or stream entry",
+    );
   });
 
   it("passes relational slots as structured compiler context", async () => {
@@ -315,6 +321,36 @@ describe("compileSharedStateArtifact", () => {
       budget: "decision-artifact-compiler",
       tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
     });
+  });
+
+  it("accepts the legacy decision-artifact patch tool name as an alias", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse(
+          {
+            operations: [
+              {
+                type: "add",
+                kind: "live",
+                text: "Avery is waiting on the clinic callback.",
+                owner_entity_id: audience,
+                source_stream_entry_ids: [currentStreamEntryId],
+              },
+            ],
+          },
+          DECISION_ARTIFACT_TOOL_NAME,
+        ),
+      ],
+    });
+
+    await compileSharedStateArtifact(baseInput(llmClient));
+
+    expect(activeEntries()).toEqual([
+      expect.objectContaining({
+        kind: "live",
+        text: "Avery is waiting on the clinic callback.",
+      }),
+    ]);
   });
 
   it("retains valid canonicalization ids in the normalized patch", async () => {
@@ -1558,9 +1594,7 @@ describe("compileSharedStateArtifact", () => {
       ledgerMode: "delta",
     });
 
-    const warning = trace.events.find(
-      (event) => event.event === "shared_state.compile.degraded",
-    );
+    const warning = trace.events.find((event) => event.event === "shared_state.compile.degraded");
     const completed = trace.events.find(
       (event) => event.event === "shared_state.compile.completed",
     );

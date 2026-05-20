@@ -131,6 +131,16 @@ function metricsRow(turn: number): MetricsRow {
     borg_owned_active_actions: 0,
     participant_owned_active_actions: 0,
     group_owned_active_actions: 0,
+    prompt_salient_actions_total: 0,
+    borg_owned_salient_active_actions: 0,
+    participant_owned_salient_active_actions: 0,
+    dormant_actions_total: 0,
+    stale_actions_omitted_from_prompt: 0,
+    actions_per_turn: 0,
+    salient_actions_per_turn: 0,
+    action_retirement_ratio: 0,
+    borg_owned_action_count: 0,
+    stale_action_count: 0,
     action_record_creation_source_per_turn: {
       extractor: 0,
       reflector: 0,
@@ -231,6 +241,12 @@ function metricsRow(turn: number): MetricsRow {
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
+    shared_state_at_cap_turns: 0,
+    shared_state_compile_evaluated_turns: 0,
+    shared_state_omitted_recent_entries: 0,
+    shared_state_live_entry_starvation: false,
+    simulator_persona_failures: 0,
+    borg_aborted_turns: 0,
   };
 }
 

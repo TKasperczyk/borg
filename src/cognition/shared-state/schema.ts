@@ -30,7 +30,13 @@ import type {
 } from "./reconciliation.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 
-export const SHARED_STATE_TOOL_NAME = "EmitDecisionArtifactPatch";
+export const SHARED_STATE_TOOL_NAME = "EmitSharedStatePatch";
+export const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
+export const SHARED_STATE_TOOL_NAME_ALIASES = [DECISION_ARTIFACT_TOOL_NAME] as const;
+export const SHARED_STATE_ACCEPTED_TOOL_NAMES = [
+  SHARED_STATE_TOOL_NAME,
+  ...SHARED_STATE_TOOL_NAME_ALIASES,
+] as const;
 const MAX_OPERATIONS_PER_COMPILE = 40;
 export const MAX_PATCH_OUTPUT_TOKENS = 1536;
 export const SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD = 35_000;
@@ -136,14 +142,25 @@ export const sharedStatePatchSchema = z
   })
   .strict();
 
-export const SHARED_STATE_TOOL = {
-  name: SHARED_STATE_TOOL_NAME,
-  description:
-    "Compile durable shared state for this audience into additive, updating, superseding, or pruning operations.",
-  inputSchema: toToolInputSchema(sharedStatePatchSchema),
-} satisfies LLMToolDefinition;
+function sharedStateToolDefinition(name: (typeof SHARED_STATE_ACCEPTED_TOOL_NAMES)[number]) {
+  return {
+    name,
+    description:
+      "Compile durable shared state for this audience into additive, updating, superseding, or pruning operations.",
+    inputSchema: toToolInputSchema(sharedStatePatchSchema),
+  } satisfies LLMToolDefinition;
+}
+
+export const SHARED_STATE_TOOL = sharedStateToolDefinition(SHARED_STATE_TOOL_NAME);
+export const DECISION_ARTIFACT_TOOL_ALIAS = sharedStateToolDefinition(DECISION_ARTIFACT_TOOL_NAME);
+export const SHARED_STATE_TOOLS = [
+  SHARED_STATE_TOOL,
+  DECISION_ARTIFACT_TOOL_ALIAS,
+] as const satisfies readonly LLMToolDefinition[];
+export const DECISION_ARTIFACT_TOOL = DECISION_ARTIFACT_TOOL_ALIAS;
 
 export type EmitSharedStatePatch = z.infer<typeof sharedStatePatchSchema>;
+export type EmitDecisionArtifactPatch = EmitSharedStatePatch;
 
 export type SharedStateArtifactParticipantContext = {
   entityId: EntityId;

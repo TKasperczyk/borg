@@ -119,6 +119,18 @@ export const TRACE_TAXONOMY_PHASES_WITH_OTHER: readonly TracePhaseWithOther[] = 
   "other",
 ];
 
+export const TRACE_EVENT_DEPRECATION_ALIASES = {
+  decision_artifact_compile: "shared_state.compile.completed",
+  "decision_artifact_compile.completed": "shared_state.compile.completed",
+  "decision_artifact_compile.degraded": "shared_state.compile.degraded",
+  "decision_artifact_compile.skipped": "shared_state.compile.skipped",
+  "decision_artifact_compile.transitioned": "shared_state.compile.transitioned",
+  "decision_artifact_lifecycle.degraded": "shared_state.lifecycle.degraded",
+  "decision_artifact_reconcile.completed": "shared_state.reconcile.completed",
+  "decision_artifact_reconcile.skipped": "shared_state.reconcile.skipped",
+  "decision_artifact_canonicalization.completed": "shared_state.canonicalization.completed",
+} as const satisfies Partial<Record<string, TurnTraceEventName>>;
+
 const TRACE_EVENT_PHASES = new Map<string, TraceTaxonomyPhase>();
 
 for (const phase of TRACE_TAXONOMY_PHASES) {
@@ -127,6 +139,20 @@ for (const phase of TRACE_TAXONOMY_PHASES) {
   }
 }
 
+for (const [alias, preferred] of Object.entries(TRACE_EVENT_DEPRECATION_ALIASES)) {
+  const phase = TRACE_EVENT_PHASES.get(preferred);
+
+  if (phase !== undefined) {
+    TRACE_EVENT_PHASES.set(alias, phase);
+  }
+}
+
+export function canonicalTraceEventName(event: string): string {
+  const aliases: Partial<Record<string, string>> = TRACE_EVENT_DEPRECATION_ALIASES;
+
+  return aliases[event] ?? event;
+}
+
 export function phaseForTraceEventName(event: string): TracePhaseWithOther {
-  return TRACE_EVENT_PHASES.get(event) ?? "other";
+  return TRACE_EVENT_PHASES.get(canonicalTraceEventName(event)) ?? "other";
 }

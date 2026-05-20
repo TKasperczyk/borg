@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { phaseForTraceEventName } from "./taxonomy.js";
+import { canonicalTraceEventName, phaseForTraceEventName } from "./taxonomy.js";
 
 describe("trace taxonomy", () => {
   it("routes normalized trace events to their shared reporting phase", () => {
@@ -12,5 +12,16 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("semantic_revision.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.reconcile.completed")).toBe("retrieval");
+    expect(phaseForTraceEventName("decision_artifact_compile.completed")).toBe("retrieval");
+    expect(phaseForTraceEventName("decision_artifact_reconcile.completed")).toBe("retrieval");
+    expect(canonicalTraceEventName("decision_artifact_compile.completed")).toBe(
+      "shared_state.compile.completed",
+    );
+    expect(canonicalTraceEventName("decision_artifact_reconcile.completed")).toBe(
+      "shared_state.reconcile.completed",
+    );
+    expect(canonicalTraceEventName("shared_state.compile.completed")).toBe(
+      "shared_state.compile.completed",
+    );
   });
 });
