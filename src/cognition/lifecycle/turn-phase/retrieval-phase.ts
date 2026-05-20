@@ -347,6 +347,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
       decision_artifact_entry_count: sharedStateSummary.renderedEntryCount,
       decision_artifact_rendered_token_estimate: sharedStateSummary.estimatedTokens,
       decision_artifact_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
+      decision_artifact_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
     });
   }
 
@@ -601,6 +602,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,
       kindSoftCaps: sharedStateConfig.kindSoftCaps,
+      newestStateChangeReservedSlots: sharedStateConfig.newestStateChangeReservedSlots,
     },
     renderOptions: sharedStateRenderOptions(input.options.config),
     previousArtifactSummaryOptions: {

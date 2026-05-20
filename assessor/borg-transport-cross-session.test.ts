@@ -316,10 +316,10 @@ describe("cross-session recall_state integration", () => {
       config: createTestConfig({
         dataDir: dir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         anthropic: {
           auth: "api-key",

@@ -74,7 +74,7 @@ describe("correction service", () => {
           dims: 4,
         },
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         anthropic: {
           auth: "api-key",
@@ -147,7 +147,7 @@ describe("correction service", () => {
           dims: 4,
         },
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         anthropic: {
           auth: "api-key",
@@ -509,7 +509,7 @@ describe("correction service", () => {
           dims: 4,
         },
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         anthropic: {
           auth: "api-key",

@@ -507,13 +507,13 @@ export async function selectScriptClients(options: {
       ...loaded.perception,
       // Match the affective pattern: only let the LLM classifier run when a
       // real LLM is wired. With fake LLMs (scripted tests/debug), forcing
-      // LLM fallback would consume scripted responses meant for turns.
-      useLlmFallback: llmMode === "real" ? loaded.perception.useLlmFallback : false,
+      // LLM classification would consume scripted responses meant for turns.
+      llmEnabled: llmMode === "real" ? loaded.perception.llmEnabled : false,
     },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...loaded.affective,
-      useLlmFallback: llmMode === "real" ? loaded.affective.useLlmFallback : false,
+      llmEnabled: llmMode === "real" ? loaded.affective.llmEnabled : false,
     },
     embedding: {
       ...DEFAULT_CONFIG.embedding,

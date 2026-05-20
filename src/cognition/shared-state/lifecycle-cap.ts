@@ -16,6 +16,7 @@ const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {
   pending: 4,
   tentative: 2,
 } as const satisfies Record<SharedStateEntryKind, number>;
+const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
 const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
   "tentative",
   "locked",
@@ -44,6 +45,13 @@ function lifecycleMaxActiveEntries(options: SharedStateLifecycleOptions | undefi
   return Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : DEFAULT_MAX_ACTIVE_SHARED_STATE_ENTRIES;
+}
+
+function newestStateChangeReservedSlots(options: SharedStateLifecycleOptions | undefined): number {
+  const value =
+    options?.newestStateChangeReservedSlots ?? DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS;
+
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 function operationIdsMaterialized(
@@ -187,14 +195,68 @@ function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEnt
   );
 }
 
+function compareLifecycleNewestStateChangePriority(
+  left: LifecycleEntry,
+  right: LifecycleEntry,
+): number {
+  return (
+    right.last_updated_at - left.last_updated_at ||
+    right.created_at - left.created_at ||
+    left.rank - right.rank ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function newestStateChangeReservedIds(
+  entries: readonly LifecycleEntry[],
+  limit: number,
+): Set<SharedStateEntryId> {
+  if (limit <= 0) {
+    return new Set<SharedStateEntryId>();
+  }
+
+  return new Set(
+    activeLifecycleEntries(entries)
+      .filter((entry) => entry.kind === "live" || entry.kind === "pending")
+      .sort(compareLifecycleNewestStateChangePriority)
+      .slice(0, limit)
+      .map((entry) => entry.id),
+  );
+}
+
+function lifecycleKindCountsForIds(
+  entries: readonly LifecycleEntry[],
+  ids: ReadonlySet<SharedStateEntryId>,
+): Record<SharedStateEntryKind, number> {
+  const counts = Object.fromEntries(SHARED_STATE_ENTRY_KINDS.map((kind) => [kind, 0])) as Record<
+    SharedStateEntryKind,
+    number
+  >;
+
+  for (const entry of entries) {
+    if (ids.has(entry.id)) {
+      counts[entry.kind] += 1;
+    }
+  }
+
+  return counts;
+}
+
 function nextLifecyclePruneCandidate(input: {
   entries: readonly LifecycleEntry[];
   kind: SharedStateEntryKind;
   prunedIds: ReadonlySet<SharedStateEntryId>;
+  reservedIds?: ReadonlySet<SharedStateEntryId>;
+  allowReserved?: boolean;
 }): LifecycleEntry | null {
   return (
     activeLifecycleEntries(input.entries)
-      .filter((entry) => entry.kind === input.kind && !input.prunedIds.has(entry.id))
+      .filter(
+        (entry) =>
+          entry.kind === input.kind &&
+          !input.prunedIds.has(entry.id) &&
+          (input.allowReserved === true || input.reservedIds?.has(entry.id) !== true),
+      )
       .sort(compareLifecyclePrunePriority)[0] ?? null
   );
 }
@@ -333,6 +395,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   maxActiveEntries: number;
   postPlanActiveEntryCount: number;
   overCapDelta: number;
+  newestReservedEntryCount: number;
 } {
   const operations = operationIdsMaterialized(input.operations);
   const entries = materializePostPatchLifecycleEntries({
@@ -342,16 +405,23 @@ export function applySharedStateArtifactLifecycleCap(input: {
   });
   const maxActiveEntries = lifecycleMaxActiveEntries(input.options);
   const kindSoftCaps = normalizeLifecycleKindSoftCaps(input.options);
+  const reservedIds = newestStateChangeReservedIds(
+    entries,
+    newestStateChangeReservedSlots(input.options),
+  );
   const prunedIds = new Set<SharedStateEntryId>();
   const pruneOperations: SharedStateOperation[] = [];
   let activeEntries = activeLifecycleEntries(entries);
   let activeCounts = lifecycleKindCounts(activeEntries);
+  let reservedCounts = lifecycleKindCountsForIds(activeEntries, reservedIds);
 
-  const selectFromKind = (kind: SharedStateEntryKind): boolean => {
+  const selectFromKind = (kind: SharedStateEntryKind, allowReserved = false): boolean => {
     const candidate = nextLifecyclePruneCandidate({
       entries,
       kind,
       prunedIds,
+      reservedIds,
+      allowReserved,
     });
 
     if (candidate === null) {
@@ -364,6 +434,9 @@ export function applySharedStateArtifactLifecycleCap(input: {
       id: candidate.id,
     });
     activeCounts[candidate.kind] -= 1;
+    if (reservedIds.has(candidate.id)) {
+      reservedCounts[candidate.kind] -= 1;
+    }
     activeEntries = activeEntries.filter((entry) => entry.id !== candidate.id);
     return true;
   };
@@ -372,7 +445,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
     let pruned = false;
 
     for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
-      if (activeCounts[kind] <= kindSoftCaps[kind]) {
+      if (activeCounts[kind] - reservedCounts[kind] <= kindSoftCaps[kind]) {
         continue;
       }
 
@@ -395,6 +468,18 @@ export function applySharedStateArtifactLifecycleCap(input: {
       }
     }
 
+    if (pruned) {
+      continue;
+    }
+
+    for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
+      pruned = selectFromKind(kind, true);
+
+      if (pruned) {
+        break;
+      }
+    }
+
     if (!pruned) {
       break;
     }
@@ -407,5 +492,6 @@ export function applySharedStateArtifactLifecycleCap(input: {
     maxActiveEntries,
     postPlanActiveEntryCount,
     overCapDelta: Math.max(0, postPlanActiveEntryCount - maxActiveEntries),
+    newestReservedEntryCount: [...reservedIds].filter((id) => !prunedIds.has(id)).length,
   };
 }

@@ -64,7 +64,7 @@ function parseFallbackResponse(result: LLMCompleteResult): AffectiveSignal {
 export type AffectiveExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
-  useLlmFallback?: boolean;
+  llmEnabled?: boolean;
   onDegraded?: (reason: AffectiveExtractorDegradedReason, error?: unknown) => Promise<void> | void;
 };
 
@@ -74,10 +74,10 @@ export type AffectiveExtractorDegradedReason =
   | "llm_failed";
 
 export class AffectiveExtractor {
-  private readonly useLlmFallback: boolean;
+  private readonly llmEnabled: boolean;
 
   constructor(private readonly options: AffectiveExtractorOptions = {}) {
-    this.useLlmFallback = options.useLlmFallback ?? true;
+    this.llmEnabled = options.llmEnabled ?? true;
   }
 
   private async degraded(
@@ -94,7 +94,7 @@ export class AffectiveExtractor {
   }
 
   async analyze(text: string, recentHistory: readonly string[] = []): Promise<AffectiveSignal> {
-    if (!this.useLlmFallback) {
+    if (!this.llmEnabled) {
       return this.degraded("llm_disabled");
     }
 

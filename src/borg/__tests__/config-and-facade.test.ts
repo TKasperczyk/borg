@@ -40,7 +40,7 @@ describe("Borg", () => {
       config: {
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -59,7 +59,7 @@ describe("Borg", () => {
     });
 
     expect(config.dataDir).toBe(tempDir);
-    expect(config.perception.useLlmFallback).toBe(false);
+    expect(config.perception.llmEnabled).toBe(false);
     expect(config.embedding.dims).toBe(4);
     expect(config.anthropic.auth).toBe("api-key");
     expect(config.anthropic.models).toEqual({

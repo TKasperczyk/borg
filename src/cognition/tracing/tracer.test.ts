@@ -288,11 +288,11 @@ describe("TurnTracer", () => {
         dataDir: tempDir,
         perception: {
           ...DEFAULT_CONFIG.perception,
-          useLlmFallback: true,
+          llmEnabled: true,
         },
         affective: {
           ...DEFAULT_CONFIG.affective,
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           ...DEFAULT_CONFIG.embedding,

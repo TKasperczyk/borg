@@ -313,6 +313,19 @@ function observationMetadataAligns(
   return observationMetadataIdentity(left) === observationMetadataIdentity(right);
 }
 
+function uniqueEpisodeIds(ids: readonly Episode["id"][]): Episode["id"][] {
+  return [...new Set(ids)];
+}
+
+function episodeIdOverlap(
+  left: readonly Episode["id"][],
+  right: readonly Episode["id"][],
+): Episode["id"][] {
+  const rightIds = new Set(right);
+
+  return uniqueEpisodeIds(left.filter((id) => rightIds.has(id)));
+}
+
 export class SemanticExtractor {
   private readonly clock: Clock;
   private readonly dedupThreshold: number;
@@ -483,7 +496,8 @@ export class SemanticExtractor {
         }
       }
 
-      const existing = byLabel[0] ?? byVector[0]?.node;
+      const existing = byLabel[0];
+      const vectorOnlyMatch = existing === undefined ? byVector[0] : undefined;
       const nowMs = this.clock.now();
 
       if (existing === undefined) {
@@ -504,6 +518,13 @@ export class SemanticExtractor {
           archived: false,
           superseded_by: null,
         });
+        if (vectorOnlyMatch !== undefined) {
+          this.queueVectorOnlyDuplicateReview({
+            candidate: inserted,
+            matched: vectorOnlyMatch.node,
+            similarity: vectorOnlyMatch.similarity,
+          });
+        }
         this.options.semanticReviewService?.queueDuplicateReview(inserted);
 
         return {
@@ -558,6 +579,40 @@ export class SemanticExtractor {
 
       throw error;
     }
+  }
+
+  private queueVectorOnlyDuplicateReview(input: {
+    candidate: SemanticNode;
+    matched: SemanticNode;
+    similarity: number;
+  }): void {
+    if (this.options.reviewEnqueue === undefined) {
+      return;
+    }
+
+    const overlappingSourceEpisodeIds = episodeIdOverlap(
+      input.candidate.source_episode_ids,
+      input.matched.source_episode_ids,
+    );
+
+    this.options.reviewEnqueue({
+      kind: "duplicate",
+      refs: {
+        node_ids: [input.candidate.id, input.matched.id],
+        node_labels: [input.candidate.label, input.matched.label],
+        duplicate_subtype: "vector_only_merge_candidate",
+        vector_similarity: input.similarity,
+        source_overlap: {
+          candidate_source_episode_ids: uniqueEpisodeIds(input.candidate.source_episode_ids),
+          matched_source_episode_ids: uniqueEpisodeIds(input.matched.source_episode_ids),
+          overlapping_source_episode_ids: overlappingSourceEpisodeIds,
+          overlap_count: overlappingSourceEpisodeIds.length,
+        },
+      },
+      reason: `Vector-only semantic merge candidate with similarity ${input.similarity.toFixed(3)}`,
+      sourceProcess: "semantic-extractor",
+      ...(this.options.traceTurnId === undefined ? {} : { traceTurnId: this.options.traceTurnId }),
+    });
   }
 
   private async edgeNodeMatchesScope(

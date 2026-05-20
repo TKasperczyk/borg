@@ -5,7 +5,7 @@ import type { AffectiveExtractorDegradedReason } from "../../memory/affective/in
 export type DetectAffectiveSignalOptions = {
   llmClient?: LLMClient;
   model?: string;
-  useLlmFallback?: boolean;
+  llmEnabled?: boolean;
   onDegraded?: (reason: AffectiveExtractorDegradedReason, error?: unknown) => Promise<void> | void;
 };
 
@@ -17,7 +17,7 @@ export async function detectAffectiveSignal(
   const extractor = new AffectiveExtractor({
     llmClient: options.llmClient,
     model: options.model,
-    useLlmFallback: options.useLlmFallback,
+    llmEnabled: options.llmEnabled,
     onDegraded: options.onDegraded,
   });
 

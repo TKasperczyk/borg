@@ -10,7 +10,7 @@ import {
   activeSharedStateArtifactEntries,
   countSharedStateArtifactEntriesByKind,
   emptySharedStateKindCounts,
-  selectSharedStateArtifactEntriesForRender,
+  selectSharedStateArtifactEntriesForRenderWithSummary,
   subtractSharedStateKindCounts,
   tokenDropIndex,
   type SharedStateKindCounts,
@@ -24,6 +24,7 @@ const DEFAULT_SHARED_STATE_RESERVED_SLOTS = {
   pending: 3,
 } as const satisfies Partial<Record<SharedStateEntryKind, number>>;
 const DEFAULT_SHARED_STATE_LOCKED_CAP = 14;
+const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
 const SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS = 200;
 const SHARED_STATE_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
 
@@ -33,6 +34,7 @@ export type SharedStateArtifactRenderSummary = {
   renderedEntryCount: number;
   omittedEntryCount: number;
   estimatedTokens: number;
+  newestReservedEntryCount: number;
   renderedByKind: SharedStateKindCounts;
   omittedByKind: SharedStateKindCounts;
 };
@@ -42,6 +44,7 @@ export type SharedStateRenderOptions = {
   maxTokens?: number;
   reservedSlots?: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries?: number;
+  newestStateChangeReservedSlots?: number;
 };
 
 function sharedStateRenderOptions(
@@ -58,6 +61,11 @@ function sharedStateRenderOptions(
       options.lockedMaxEntries === undefined || !Number.isFinite(options.lockedMaxEntries)
         ? DEFAULT_SHARED_STATE_LOCKED_CAP
         : Math.max(0, Math.floor(options.lockedMaxEntries)),
+    newestStateChangeReservedSlots:
+      options.newestStateChangeReservedSlots === undefined ||
+      !Number.isFinite(options.newestStateChangeReservedSlots)
+        ? DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS
+        : Math.max(0, Math.floor(options.newestStateChangeReservedSlots)),
   };
 }
 
@@ -235,6 +243,7 @@ function cappedSharedStateArtifactRender(input: {
         renderedEntryCount: 0,
         omittedEntryCount: 0,
         estimatedTokens: 0,
+        newestReservedEntryCount: 0,
         renderedByKind: emptySharedStateKindCounts(),
         omittedByKind: emptySharedStateKindCounts(),
       },
@@ -242,12 +251,15 @@ function cappedSharedStateArtifactRender(input: {
   }
 
   const activeCounts = countSharedStateArtifactEntriesByKind(activeEntries);
-  let entries = selectSharedStateArtifactEntriesForRender({
+  const selection = selectSharedStateArtifactEntriesForRenderWithSummary({
     entries: activeEntries,
     maxEntries: options.maxEntries,
     reservedSlots: options.reservedSlots,
     lockedMaxEntries: options.lockedMaxEntries,
+    newestStateChangeReservedSlots: options.newestStateChangeReservedSlots,
   });
+  const newestReservedIds = selection.newestReservedIds;
+  let entries = selection.entries;
   let counts = sharedStateRenderedCounts({
     activeEntries,
     renderedEntries: entries,
@@ -303,6 +315,7 @@ function cappedSharedStateArtifactRender(input: {
       renderedEntryCount: entries.length,
       omittedEntryCount: counts.omittedEntryCount,
       estimatedTokens: estimatePromptTokens(content),
+      newestReservedEntryCount: entries.filter((entry) => newestReservedIds.has(entry.id)).length,
       renderedByKind: counts.renderedByKind,
       omittedByKind: counts.omittedByKind,
     },
@@ -334,6 +347,7 @@ export function summarizeSharedStateArtifactRender(
       renderedEntryCount: 0,
       omittedEntryCount: 0,
       estimatedTokens: 0,
+      newestReservedEntryCount: 0,
       renderedByKind: emptySharedStateKindCounts(),
       omittedByKind: emptySharedStateKindCounts(),
     };

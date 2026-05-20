@@ -37,8 +37,6 @@ export type ParsedOptions = {
 
 type RawParsedOptions = ParsedOptions & {
   "--"?: string[];
-  pipelineCDoublePrime?: boolean;
-  "pipelineC-doublePrime"?: boolean;
   payloads?: boolean;
 };
 
@@ -213,7 +211,6 @@ function createSimulatorCli() {
       "--emission-baseline",
       "Run emission baseline config: evidence ledger on; commitment and closure-pressure enforce",
     )
-    .option("--pipeline-c-double-prime", "Deprecated alias for --emission-baseline")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
     .option("--real", "Use real Anthropic persona and overseer calls")
     .option("--mock", "Use deterministic fake persona, overseer, and Borg LLM");
@@ -243,19 +240,11 @@ export function parseSimulatorCliOptions(argv: string[] = process.argv): ParsedO
     rawOptions = parsed.options as RawParsedOptions;
   }
 
-  const {
-    "pipelineC-doublePrime": pipelineCDoublePrimeRaw,
-    pipelineCDoublePrime: deprecatedPipelineCDoublePrime,
-    payloads,
-    ...restOptions
-  } = rawOptions;
+  const { payloads, ...restOptions } = rawOptions;
   const options: ParsedOptions = {
     ...restOptions,
     noPayloads: restOptions.noPayloads === true || payloads === false,
-    emissionBaseline:
-      restOptions.emissionBaseline === true ||
-      deprecatedPipelineCDoublePrime === true ||
-      pipelineCDoublePrimeRaw === true,
+    emissionBaseline: restOptions.emissionBaseline === true,
   };
 
   assertSimulatorFlagCompatibility(options);

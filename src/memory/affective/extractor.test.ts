@@ -32,10 +32,10 @@ describe("AffectiveExtractor", () => {
     expect(onDegraded).toHaveBeenCalledWith("llm_unavailable", undefined);
   });
 
-  it("returns neutral affect when LLM fallback is disabled", async () => {
+  it("returns neutral affect when LLM classification is disabled", async () => {
     const onDegraded = vi.fn();
     const extractor = new AffectiveExtractor({
-      useLlmFallback: false,
+      llmEnabled: false,
       onDegraded,
     });
 
@@ -137,7 +137,7 @@ describe("AffectiveExtractor", () => {
     const extractor = new AffectiveExtractor({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
+      llmEnabled: true,
     });
 
     const signal = await extractor.analyze("The build is blocked by a broken test error.");
@@ -175,7 +175,7 @@ describe("AffectiveExtractor", () => {
     const extractor = new AffectiveExtractor({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
+      llmEnabled: true,
     });
 
     const signal = await extractor.analyze(

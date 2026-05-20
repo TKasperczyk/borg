@@ -80,11 +80,11 @@ async function openTestBorg(
       ...configOverrides,
       dataDir: tempDir,
       perception: {
-        useLlmFallback: false,
+        llmEnabled: false,
         ...configOverrides.perception,
       },
       affective: {
-        useLlmFallback: false,
+        llmEnabled: false,
         ...configOverrides.affective,
       },
       generation: {
@@ -1480,7 +1480,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       tracerPath: tracePath,
       configOverrides: {
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
       },
     });

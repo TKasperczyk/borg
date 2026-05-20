@@ -59,7 +59,7 @@ export type ReplayScenario = {
   seed: (deps: ScenarioDeps) => Promise<void>;
   userMessage: string;
   audience?: string;
-  perceptionUseLlmFallback?: boolean;
+  perceptionLlmEnabled?: boolean;
   unsafeCandidateText: string;
   finalizerEmission?: ReplayFinalizerEmission;
   scriptLLMResponses: (client: FakeLLMClient, context: ScenarioScriptContext) => void;

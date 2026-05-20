@@ -374,6 +374,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           llmClient: deps.llmFactory(),
           model: deps.config.anthropic.models.extraction,
           semanticReviewService: deps.semanticReviewService,
+          reviewEnqueue: (input) => deps.reviewQueueRepository.enqueue(input),
           clock: deps.clock,
         });
 

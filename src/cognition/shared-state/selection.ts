@@ -70,12 +70,47 @@ export function compareSharedStateArtifactEntriesByRecency(
   );
 }
 
-export function selectSharedStateArtifactEntriesForRender(input: {
+function compareSharedStateArtifactEntriesByNewestStateChange(
+  left: SharedStateEntry,
+  right: SharedStateEntry,
+): number {
+  return (
+    right.last_updated_at - left.last_updated_at ||
+    right.created_at - left.created_at ||
+    left.rank - right.rank ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function newestStateChangeReservedIds(input: {
+  entries: readonly SharedStateEntry[];
+  limit: number;
+}): Set<SharedStateEntry["id"]> {
+  if (input.limit <= 0) {
+    return new Set<SharedStateEntry["id"]>();
+  }
+
+  return new Set(
+    input.entries
+      .filter((entry) => entry.kind === "live" || entry.kind === "pending")
+      .sort(compareSharedStateArtifactEntriesByNewestStateChange)
+      .slice(0, input.limit)
+      .map((entry) => entry.id),
+  );
+}
+
+export type SharedStateRenderSelection = {
+  entries: SharedStateEntry[];
+  newestReservedIds: Set<SharedStateEntry["id"]>;
+};
+
+export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
   entries: readonly SharedStateEntry[];
   maxEntries: number;
   reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
-}): SharedStateEntry[] {
+  newestStateChangeReservedSlots?: number;
+}): SharedStateRenderSelection {
   const byKind = new Map<SharedStateEntryKind, SharedStateEntry[]>();
 
   for (const kind of SHARED_STATE_ENTRY_KINDS) {
@@ -90,8 +125,25 @@ export function selectSharedStateArtifactEntriesForRender(input: {
   const selected: SharedStateEntry[] = [];
   const selectedIds = new Set<SharedStateEntry["id"]>();
   const selectedByKind = emptySharedStateKindCounts();
+  const newestReservedIds = newestStateChangeReservedIds({
+    entries: input.entries,
+    limit: input.newestStateChangeReservedSlots ?? 0,
+  });
 
-  const takeFromKind = (kind: SharedStateEntryKind, limit: number): void => {
+  const takeEntry = (entry: SharedStateEntry, options: { countBudget: boolean }): void => {
+    selected.push(entry);
+    selectedIds.add(entry.id);
+
+    if (options.countBudget) {
+      selectedByKind[entry.kind] += 1;
+    }
+  };
+
+  const takeFromKind = (
+    kind: SharedStateEntryKind,
+    limit: number,
+    options: { countBudget?: boolean } = {},
+  ): void => {
     if (limit <= 0 || selected.length >= input.maxEntries) {
       return;
     }
@@ -111,11 +163,21 @@ export function selectSharedStateArtifactEntriesForRender(input: {
         continue;
       }
 
-      selected.push(candidate);
-      selectedIds.add(candidate.id);
-      selectedByKind[kind] += 1;
+      takeEntry(candidate, { countBudget: options.countBudget !== false });
     }
   };
+
+  for (const candidate of input.entries
+    .filter((entry) => newestReservedIds.has(entry.id))
+    .sort(compareSharedStateArtifactEntriesByNewestStateChange)) {
+    if (selected.length >= input.maxEntries) {
+      break;
+    }
+
+    if (!selectedIds.has(candidate.id)) {
+      takeEntry(candidate, { countBudget: false });
+    }
+  }
 
   for (const kind of SHARED_STATE_RESERVED_KINDS) {
     takeFromKind(kind, input.reservedSlots[kind] ?? 0);
@@ -128,12 +190,25 @@ export function selectSharedStateArtifactEntriesForRender(input: {
 
   const orderByKind = new Map(SHARED_STATE_RENDER_FILL_ORDER.map((kind, index) => [kind, index]));
 
-  return selected.sort(
-    (left, right) =>
-      (orderByKind.get(left.kind) ?? Number.MAX_SAFE_INTEGER) -
-        (orderByKind.get(right.kind) ?? Number.MAX_SAFE_INTEGER) ||
-      compareSharedStateArtifactEntriesByRecency(left, right),
-  );
+  return {
+    entries: selected.sort(
+      (left, right) =>
+        (orderByKind.get(left.kind) ?? Number.MAX_SAFE_INTEGER) -
+          (orderByKind.get(right.kind) ?? Number.MAX_SAFE_INTEGER) ||
+        compareSharedStateArtifactEntriesByRecency(left, right),
+    ),
+    newestReservedIds,
+  };
+}
+
+export function selectSharedStateArtifactEntriesForRender(input: {
+  entries: readonly SharedStateEntry[];
+  maxEntries: number;
+  reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
+  lockedMaxEntries: number;
+  newestStateChangeReservedSlots?: number;
+}): SharedStateEntry[] {
+  return selectSharedStateArtifactEntriesForRenderWithSummary(input).entries;
 }
 
 export function onePerKindTokenDropFloor(

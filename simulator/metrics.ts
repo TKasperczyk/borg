@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { readFileSync } from "node:fs";
 
 import {
   QUARANTINED_USER_ENTRY_EVENT,
@@ -9,12 +10,16 @@ import {
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   SEMANTIC_NODE_STATUSES,
+  OPEN_QUESTION_STATUSES,
   type ActionCandidateClassification,
   type ActionRecord,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
   type GoalPromotionClassification,
+  type OpenQuestion,
+  type OpenQuestionSource,
+  type OpenQuestionStatus,
   type RelationalSlotState,
   type ReviewKind,
   type SemanticNode,
@@ -38,6 +43,7 @@ import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
 import { isExtractorMaxTokenLlmLabel } from "../src/cognition/tracing/extractor-labels.js";
+import { writeFileAtomic } from "../src/util/atomic-write.js";
 
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
@@ -190,6 +196,8 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_compile_evaluated_turns"
   | "shared_state_omitted_recent_entries"
   | "shared_state_live_entry_starvation"
+  | "shared_state_newest_entries_reserved"
+  | "shared_state_live_starvation_with_reserved"
 >;
 
 type ReviewResolverMetricCounts = {
@@ -627,6 +635,8 @@ function sharedStateCapPressureMetrics(
   const atCapTurnIds = new Set<string>();
   let omittedRecentEntries = 0;
   let liveEntryStarvation = false;
+  let newestEntriesReserved = 0;
+  let liveStarvationWithReserved = false;
 
   for (const record of completed) {
     const activeEntryCount = traceOptionalNumber(record, "artifact_active_entry_count");
@@ -642,11 +652,18 @@ function sharedStateCapPressureMetrics(
       omittedRecentEntries += traceObjectNumber(record, "omitted_by_kind", kind);
     }
 
-    if (
+    newestEntriesReserved += traceNumber(record, "newest_entries_reserved");
+
+    const liveStarvedThisRecord =
       traceObjectNumber(record, "omitted_by_kind", "live") > 0 &&
-      traceObjectNumber(record, "rendered_by_kind", "locked") > 0
-    ) {
+      traceObjectNumber(record, "rendered_by_kind", "locked") > 0;
+
+    if (liveStarvedThisRecord) {
       liveEntryStarvation = true;
+    }
+
+    if (record.live_starvation_with_reserved === true || liveStarvedThisRecord) {
+      liveStarvationWithReserved = true;
     }
   }
 
@@ -655,6 +672,8 @@ function sharedStateCapPressureMetrics(
     shared_state_compile_evaluated_turns: compileEvaluatedTurnIds.size,
     shared_state_omitted_recent_entries: omittedRecentEntries,
     shared_state_live_entry_starvation: liveEntryStarvation,
+    shared_state_newest_entries_reserved: newestEntriesReserved,
+    shared_state_live_starvation_with_reserved: liveStarvationWithReserved,
   };
 }
 
@@ -1126,6 +1145,134 @@ function openQuestionResolvedCount(borg: Borg): number {
     ).length;
 }
 
+const OPEN_QUESTION_SOURCE_BUCKETS = [
+  "user_question",
+  "borg_inferred",
+  "review_promoted",
+  "unknown",
+] as const;
+const OPEN_QUESTION_STATUS_AGE_BUCKETS = [
+  "<3_turns",
+  "3-10_turns",
+  "10-30_turns",
+  "30+_turns",
+] as const;
+
+function openQuestionSourceBucket(
+  source: OpenQuestionSource | undefined,
+): (typeof OPEN_QUESTION_SOURCE_BUCKETS)[number] {
+  if (source === "user") {
+    return "user_question";
+  }
+
+  if (source === "contradiction" || source === "overseer") {
+    return "review_promoted";
+  }
+
+  if (source === undefined) {
+    return "unknown";
+  }
+
+  return "borg_inferred";
+}
+
+function openQuestionsBySource(questions: readonly Partial<OpenQuestion>[]): Record<string, number> {
+  const counts = zeroCounts(OPEN_QUESTION_SOURCE_BUCKETS);
+
+  for (const question of questions) {
+    counts[openQuestionSourceBucket(question.source)] += 1;
+  }
+
+  return counts;
+}
+
+function openQuestionAgeBucket(ageTurns: number): string {
+  if (ageTurns < 3) {
+    return "<3_turns";
+  }
+
+  if (ageTurns <= 10) {
+    return "3-10_turns";
+  }
+
+  if (ageTurns <= 30) {
+    return "10-30_turns";
+  }
+
+  return "30+_turns";
+}
+
+function openQuestionCreatedTurn(input: {
+  createdAt: number;
+  previousRows: readonly MetricsRow[];
+  currentTurnCounter: number;
+  currentTs: number;
+}): number {
+  const timeline = [
+    ...input.previousRows.map((row) => ({
+      ts: row.ts,
+      turnCounter: row.turn_counter,
+    })),
+    {
+      ts: input.currentTs,
+      turnCounter: input.currentTurnCounter,
+    },
+  ].sort((left, right) => left.ts - right.ts || left.turnCounter - right.turnCounter);
+  const firstObserved = timeline.find((row) => row.ts >= input.createdAt);
+
+  return firstObserved?.turnCounter ?? input.currentTurnCounter;
+}
+
+function openQuestionsByStatusAge(input: {
+  questions: readonly Partial<OpenQuestion>[];
+  previousRows: readonly MetricsRow[];
+  currentTurnCounter: number;
+  currentTs: number;
+}): Record<string, number> {
+  const counts: Record<string, number> = {};
+
+  for (const status of OPEN_QUESTION_STATUSES) {
+    for (const bucket of OPEN_QUESTION_STATUS_AGE_BUCKETS) {
+      counts[`${status}:${bucket}`] = 0;
+    }
+  }
+
+  for (const question of input.questions) {
+    const status = OPEN_QUESTION_STATUSES.includes(question.status as OpenQuestionStatus)
+      ? (question.status as OpenQuestionStatus)
+      : "open";
+    const createdAt =
+      typeof question.created_at === "number" && Number.isFinite(question.created_at)
+        ? question.created_at
+        : input.currentTs;
+    const createdTurn = openQuestionCreatedTurn({
+      createdAt,
+      previousRows: input.previousRows,
+      currentTurnCounter: input.currentTurnCounter,
+      currentTs: input.currentTs,
+    });
+    const ageTurns = Math.max(0, input.currentTurnCounter - createdTurn);
+    const key = `${status}:${openQuestionAgeBucket(ageTurns)}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+
+  return counts;
+}
+
+function openQuestionsPromotedFromReviewItems(
+  questions: readonly Partial<OpenQuestion>[],
+): number {
+  return questions.filter(
+    (question) => question.source === "contradiction" || question.source === "overseer",
+  ).length;
+}
+
+function openQuestionsRenderedToFinalizer(traceRecords: readonly TraceRecord[]): number {
+  return traceRecords
+    .filter((record) => record.event === "evidence_ledger.completed")
+    .reduce((sum, record) => sum + traceObjectNumber(record, "entry_counts", "open_questions"), 0);
+}
+
 function identityValueStatus(value: unknown): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -1163,6 +1310,25 @@ export class MetricsCapture {
 
   listRows(): MetricsRow[] {
     return this.capturedRows.map((row) => ({ ...row }));
+  }
+
+  finalizeLastRow(patch: Partial<MetricsRow>): MetricsRow {
+    const previous = this.capturedRows.at(-1);
+
+    if (previous === undefined) {
+      throw new Error("Cannot finalize simulator metrics before a row is captured");
+    }
+
+    const updated: MetricsRow = {
+      ...previous,
+      ...patch,
+    };
+
+    this.capturedRows[this.capturedRows.length - 1] = updated;
+    const lines = readFileSync(this.filepath, "utf8").trimEnd().split(/\r?\n/);
+    lines[lines.length - 1] = JSON.stringify(updated);
+    writeFileAtomic(this.filepath, `${lines.join("\n")}\n`);
+    return { ...updated };
   }
 
   private recordHealthWarnings(row: MetricsRow): void {
@@ -1414,10 +1580,12 @@ export class MetricsCapture {
       this.previousSemanticEdgeCount === undefined
         ? 0
         : Math.max(0, semanticEdges.length - this.previousSemanticEdgeCount);
-    const openQuestions = borg.self.openQuestions.list({
-      status: "open",
+    const allOpenQuestions = borg.self.openQuestions.list({
       limit: LARGE_COUNT_LIMIT,
     });
+    const openQuestions = allOpenQuestions.filter(
+      (question) => question.status === undefined || question.status === "open",
+    );
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const memoryBandMetrics = await this.captureMemoryBandMetrics(
@@ -1454,9 +1622,10 @@ export class MetricsCapture {
       turnId,
       turnCounter,
     });
+    const rowTs = Date.now();
     const row: MetricsRow = {
       event: TURN_METRICS_EVENT,
-      ts: Date.now(),
+      ts: rowTs,
       turn_counter: turnCounter,
       turnId,
       transport_chat_attempts: context.transportChatAttempts,
@@ -1484,6 +1653,18 @@ export class MetricsCapture {
       borg_input_tokens: usage.inputTokens,
       borg_output_tokens: usage.outputTokens,
       open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
+      open_questions_by_source: openQuestionsBySource(allOpenQuestions),
+      open_questions_by_status_age: openQuestionsByStatusAge({
+        questions: allOpenQuestions,
+        previousRows: this.capturedRows,
+        currentTurnCounter: turnCounter,
+        currentTs: rowTs,
+      }),
+      open_questions_resolved_this_run: memoryBandMetrics.open_question_resolved_count,
+      open_questions_rendered_to_finalizer_this_turn:
+        openQuestionsRenderedToFinalizer(traceRecords),
+      open_questions_promoted_from_review_items:
+        openQuestionsPromotedFromReviewItems(allOpenQuestions),
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
@@ -1612,6 +1793,10 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
       shared_state_live_entry_starvation:
         sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
+      shared_state_newest_entries_reserved:
+        sharedStateCapPressureMetricCounts.shared_state_newest_entries_reserved,
+      shared_state_live_starvation_with_reserved:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_with_reserved,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
@@ -1646,10 +1831,12 @@ export class MetricsCapture {
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
     const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
-    const openQuestions = borg.self.openQuestions.list({
-      status: "open",
+    const allOpenQuestions = borg.self.openQuestions.list({
       limit: LARGE_COUNT_LIMIT,
     });
+    const openQuestions = allOpenQuestions.filter(
+      (question) => question.status === undefined || question.status === "open",
+    );
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const memoryBandMetrics = await this.captureMemoryBandMetrics(
@@ -1680,9 +1867,10 @@ export class MetricsCapture {
       traceRecords: [],
       cumulativeTraceRecords: allTraceRecords,
     });
+    const rowTs = Date.now();
     const row: MetricsRow = {
       event,
-      ts: Date.now(),
+      ts: rowTs,
       turn_counter: turnCounter,
       turnId,
       transport_chat_attempts: context.transportChatAttempts,
@@ -1703,6 +1891,18 @@ export class MetricsCapture {
       borg_input_tokens: 0,
       borg_output_tokens: 0,
       open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
+      open_questions_by_source: openQuestionsBySource(allOpenQuestions),
+      open_questions_by_status_age: openQuestionsByStatusAge({
+        questions: allOpenQuestions,
+        previousRows: this.capturedRows,
+        currentTurnCounter: turnCounter,
+        currentTs: rowTs,
+      }),
+      open_questions_resolved_this_run: memoryBandMetrics.open_question_resolved_count,
+      open_questions_rendered_to_finalizer_this_turn:
+        openQuestionsRenderedToFinalizer(traceRecords),
+      open_questions_promoted_from_review_items:
+        openQuestionsPromotedFromReviewItems(allOpenQuestions),
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
@@ -1831,6 +2031,10 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
       shared_state_live_entry_starvation:
         sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
+      shared_state_newest_entries_reserved:
+        sharedStateCapPressureMetricCounts.shared_state_newest_entries_reserved,
+      shared_state_live_starvation_with_reserved:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_with_reserved,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,

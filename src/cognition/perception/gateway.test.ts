@@ -10,13 +10,13 @@ import type { RecencyWindow } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { PerceptionGateway } from "./gateway.js";
 
-function makeConfig(useLlmFallback: boolean): Config {
+function makeConfig(llmEnabled: boolean): Config {
   return {
     perception: {
-      useLlmFallback,
+      llmEnabled,
     },
     affective: {
-      useLlmFallback: false,
+      llmEnabled: false,
     },
     anthropic: {
       models: {
@@ -104,7 +104,7 @@ describe("PerceptionGateway", () => {
       ["user: prior question", "assistant: prior answer"],
       expect.objectContaining({
         model: "background-model",
-        useLlmFallback: false,
+        llmEnabled: false,
       }),
     );
     expect(tracer.emit).toHaveBeenCalledWith("recency.completed", {

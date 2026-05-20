@@ -88,10 +88,10 @@ function replayConfig(
 ): CreateEvalBorgOptions["config"] {
   return {
     perception: {
-      useLlmFallback: scenario.perceptionUseLlmFallback ?? false,
+      llmEnabled: scenario.perceptionLlmEnabled ?? false,
     },
     affective: {
-      useLlmFallback: false,
+      llmEnabled: false,
     },
     anthropic: {
       models: {

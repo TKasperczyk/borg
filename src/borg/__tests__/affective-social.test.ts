@@ -39,10 +39,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -131,10 +131,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -220,10 +220,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -310,10 +310,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -430,10 +430,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -499,10 +499,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -666,10 +666,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -727,10 +727,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,
@@ -816,10 +816,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: true,
+          llmEnabled: true,
         },
         affective: {
-          useLlmFallback: false,
+          llmEnabled: false,
           incomingMoodWeight: 0.3,
           moodHalfLifeHours: 24,
           moodHistoryRetentionDays: 90,

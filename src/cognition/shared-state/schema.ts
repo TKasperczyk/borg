@@ -216,6 +216,7 @@ export type SharedStateCompileDegradedReason =
 export type SharedStateLifecycleOptions = {
   maxActiveEntries?: number;
   kindSoftCaps?: Partial<Record<SharedStateEntryKind, number>>;
+  newestStateChangeReservedSlots?: number;
 };
 
 export type SharedStateLedgerMode = "delta" | "full_fallback";

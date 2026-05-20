@@ -361,6 +361,11 @@ function metricsRow(turnCounter: number): MetricsRow {
     borg_input_tokens: 0,
     borg_output_tokens: 0,
     open_question_resolved_count: 0,
+    open_questions_by_source: {},
+    open_questions_by_status_age: {},
+    open_questions_resolved_this_run: 0,
+    open_questions_rendered_to_finalizer_this_turn: 0,
+    open_questions_promoted_from_review_items: 0,
     action_record_count_total: 0,
     action_record_count_by_state: zeroCounts(ACTION_STATES),
     action_record_count_committed_to_do: 0,
@@ -476,6 +481,8 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_compile_evaluated_turns: 0,
     shared_state_omitted_recent_entries: 0,
     shared_state_live_entry_starvation: false,
+    shared_state_newest_entries_reserved: 0,
+    shared_state_live_starvation_with_reserved: false,
     simulator_persona_failures: 0,
     borg_hard_aborted_turns: 0,
     borg_intentional_suppressions: 0,
@@ -612,7 +619,11 @@ describe("SimulatorRunner", () => {
       durationMs: 1,
     });
 
-    expect(report).toContain("Run result: partial");
+    expect(report).toContain("Run completion: completed");
+    expect(report).toContain("Simulator validity: partial (1 persona failure)");
+    expect(report).toContain("Borg turn result: completed");
+    expect(report).not.toContain("Run result:");
+    expect(report).not.toContain("Result state:");
     expect(report).toContain(
       "Simulator aborts: persona failures 1, hard aborts 0, intentional suppressions 1 (by reason: finalizer_no_output=1)",
     );
@@ -1673,6 +1684,63 @@ describe("SimulatorRunner", () => {
     ]);
     expect(metricsRows).toHaveLength(20);
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
+  });
+
+  it("writes aggregate capability metrics into the final JSONL row", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    spyMaintenanceTick();
+
+    const report = await runSimulation({
+      runId: "sim-runner-capability-final-metrics-test",
+      persona: tomPersona,
+      totalTurns: 1,
+      checkEvery: 1,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+      overseerRunner: async ({ turnCounter }) => {
+        const finding = {
+          category: "K" as const,
+          claim_status: "unclear" as const,
+          source_kind: "emitted_output" as const,
+          status_impact: "concerning" as const,
+          assistant_stream_entry_id: "strm_capability_final_metrics",
+          quoted_emitted_span: "I'll monitor that.",
+          evidence_summary: "Capability boundary was ambiguous.",
+        };
+        const raw_verdict = {
+          status: "concerning" as const,
+          observations: ["Capability audit found one ambiguity."],
+          recommendation: "Inspect the boundary wording.",
+          findings: [finding],
+        };
+
+        return {
+          ts: Date.now(),
+          turn_counter: turnCounter,
+          status: raw_verdict.status,
+          observations: raw_verdict.observations,
+          recommendation: raw_verdict.recommendation,
+          findings: [finding],
+          rejected_findings: [],
+          raw_verdict,
+        };
+      },
+    });
+    const finalJsonlRow = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as MetricsRow)
+      .at(-1);
+
+    expect(report.finalMetrics.capability_ambiguity_count).toBe(1);
+    expect(finalJsonlRow).toMatchObject({
+      capability_overclaim_count: report.finalMetrics.capability_overclaim_count,
+      capability_ambiguity_count: report.finalMetrics.capability_ambiguity_count,
+      capability_boundary_refusal_count: report.finalMetrics.capability_boundary_refusal_count,
+    });
   });
 
   it("carries overseer finding dedup state across checkpoints", async () => {

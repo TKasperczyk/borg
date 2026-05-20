@@ -13,7 +13,7 @@ const scenario: ReplayScenario = {
   },
   userMessage: "I'm Tom, by the way.",
   audience: "Tom",
-  perceptionUseLlmFallback: true,
+  perceptionLlmEnabled: true,
   unsafeCandidateText: "Goodnight, Tom.",
   scriptLLMResponses(_client, context) {
     context.enqueueBeforeRecall({

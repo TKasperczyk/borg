@@ -65,8 +65,8 @@ export type PerceiverOptions = {
    * the Perceiver functional in tests that wire a single fake LLM.
    */
   fastModel?: string;
-  useLlmFallback?: boolean;
-  affectiveUseLlmFallback?: boolean;
+  llmEnabled?: boolean;
+  affectiveLlmEnabled?: boolean;
   /**
    * If true (default) and an LLM client + model are configured, temporal
    * cue extraction runs an LLM classifier every turn. Previously this was
@@ -74,7 +74,7 @@ export type PerceiverOptions = {
    * phrasings ("last Tuesday", "earlier today", "a few days ago"). With
    * fakes or no LLM, degrades to "no temporal filter".
    */
-  temporalCueUseLlmFallback?: boolean;
+  temporalCueLlmEnabled?: boolean;
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
@@ -90,8 +90,8 @@ export class Perceiver {
   private readonly llmClient?: LLMClient;
   private readonly model?: string;
   private readonly fastModel?: string;
-  private readonly affectiveUseLlmFallback: boolean;
-  private readonly temporalCueUseLlmFallback: boolean;
+  private readonly affectiveLlmEnabled: boolean;
+  private readonly temporalCueLlmEnabled: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
   private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
   private readonly onClassifierFailure?: PerceptionClassifierFailureObserver;
@@ -103,8 +103,8 @@ export class Perceiver {
     this.llmClient = options.llmClient;
     this.model = options.model;
     this.fastModel = options.fastModel ?? options.model;
-    this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? true;
-    this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
+    this.affectiveLlmEnabled = options.affectiveLlmEnabled ?? true;
+    this.temporalCueLlmEnabled = options.temporalCueLlmEnabled ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
     this.onClassifierFailure = options.onClassifierFailure;
@@ -117,7 +117,7 @@ export class Perceiver {
     this.modeDetector = new ModeDetector({
       llmClient: options.llmClient,
       model: options.model,
-      useLlmFallback: options.useLlmFallback,
+      llmEnabled: options.llmEnabled,
     });
   }
 
@@ -153,7 +153,7 @@ export class Perceiver {
       const signal = await this.detectAffectiveSignal(text, recentHistory, {
         llmClient: this.llmClient,
         model: this.model,
-        useLlmFallback: this.affectiveUseLlmFallback,
+        llmEnabled: this.affectiveLlmEnabled,
         onDegraded: markDegraded,
       });
 
@@ -205,8 +205,8 @@ export class Perceiver {
       // no LLM client is configured. Runs in parallel with the rest of
       // perception so it doesn't add serial latency.
       detectTemporalCue(text, nowMs, {
-        llmClient: this.temporalCueUseLlmFallback ? this.llmClient : undefined,
-        model: this.temporalCueUseLlmFallback ? this.fastModel : undefined,
+        llmClient: this.temporalCueLlmEnabled ? this.llmClient : undefined,
+        model: this.temporalCueLlmEnabled ? this.fastModel : undefined,
         onDegraded: async (reason, error) => {
           if (this.tracer.enabled && this.turnId !== undefined) {
             this.tracer.emit("perception.classifier.degraded", {

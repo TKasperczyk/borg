@@ -71,18 +71,18 @@ function createCliTempDir(tempDirs: string[]): string {
 function openTestBorg(
   tempDir: string,
   llm = new FakeLLMClient(),
-  options: { perceptionUseLlmFallback?: boolean } = {},
+  options: { perceptionLlmEnabled?: boolean } = {},
 ) {
   return Borg.open({
     config: createTestConfig({
       dataDir: tempDir,
       perception: {
-        useLlmFallback: options.perceptionUseLlmFallback ?? false,
+        llmEnabled: options.perceptionLlmEnabled ?? false,
       },
-      ...(options.perceptionUseLlmFallback === true
+      ...(options.perceptionLlmEnabled === true
         ? {
             affective: {
-              useLlmFallback: false,
+              llmEnabled: false,
             },
           }
         : {}),
@@ -1398,7 +1398,7 @@ describe("cli", () => {
         stdout: stdout.stream,
         stderr: stderr.stream,
         dataDir: tempDir,
-        openBorg: async () => openTestBorg(tempDir, llm, { perceptionUseLlmFallback: true }),
+        openBorg: async () => openTestBorg(tempDir, llm, { perceptionLlmEnabled: true }),
       },
     );
     const output = stdout.read();

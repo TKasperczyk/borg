@@ -23,6 +23,7 @@ export function sharedStateRenderOptions(config: Config): SharedStateRenderOptio
     maxTokens: sharedStateConfig.renderMaxTokens,
     reservedSlots: sharedStateConfig.renderReservedSlots,
     lockedMaxEntries: sharedStateConfig.renderLockedCap,
+    newestStateChangeReservedSlots: sharedStateConfig.newestStateChangeReservedSlots,
   };
 }
 

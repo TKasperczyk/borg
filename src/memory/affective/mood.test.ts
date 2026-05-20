@@ -23,7 +23,7 @@ describe("MoodRepository", () => {
         affective: {
           moodHalfLifeHours: 1,
           incomingMoodWeight: 0.5,
-          useLlmFallback: false,
+          llmEnabled: false,
           moodHistoryRetentionDays: 90,
         },
       } as never,

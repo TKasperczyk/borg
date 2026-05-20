@@ -48,7 +48,7 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
         dims: 4,
       },
       perception: {
-        useLlmFallback: false,
+        llmEnabled: false,
       },
       anthropic: {
         auth: "api-key",

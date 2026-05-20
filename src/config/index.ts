@@ -29,6 +29,47 @@ export function expandPath(pathLike: string): string {
 
 const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
 export const postGenerationGuardModeSchema = z.enum(["enforce", "shadow"]);
+function normalizeLlmEnabledAlias(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const record = { ...(value as Record<string, unknown>) };
+
+  if (record.llmEnabled === undefined && record.useLlmFallback !== undefined) {
+    record.llmEnabled = record.useLlmFallback;
+  }
+
+  delete record.useLlmFallback;
+
+  return record;
+}
+
+const perceptionConfigSchema = z
+  .preprocess(
+    normalizeLlmEnabledAlias,
+    z
+      .object({
+        llmEnabled: z.boolean().default(true),
+      })
+      .strict(),
+  )
+  .prefault({});
+const affectiveConfigSchema = z
+  .preprocess(
+    normalizeLlmEnabledAlias,
+    z
+      .object({
+        // Affective perception uses the background model as the primary classifier
+        // when configured; heuristics are the offline/test fallback path.
+        llmEnabled: z.boolean().default(true),
+        incomingMoodWeight: z.number().min(0).max(1).default(0.3),
+        moodHistoryRetentionDays: z.number().positive().default(90),
+        moodHalfLifeHours: z.number().positive().default(24),
+      })
+      .strict(),
+  )
+  .prefault({});
 const postGenerationGuardConfigSchema = z
   .object({
     mode: postGenerationGuardModeSchema.default("enforce"),
@@ -116,6 +157,7 @@ const sharedStateConfigSchema = z
     renderMaxTokens: z.number().int().positive().default(3_000),
     renderReservedSlots: sharedStateRenderReservedSlotsSchema,
     renderLockedCap: z.number().int().nonnegative().default(14),
+    newestStateChangeReservedSlots: z.number().int().nonnegative().default(3),
     previousArtifactSummary: sharedStatePreviousArtifactSummaryConfigSchema,
     compilerPrefilter: sharedStateCompilerPrefilterConfigSchema,
     ledgerDelta: sharedStateLedgerDeltaConfigSchema,
@@ -207,21 +249,8 @@ const configBaseSchema = z.object({
   dataDir: z.string().min(1).default(DEFAULT_DATA_DIR).transform(expandPath),
   defaultUser: z.string().min(1).optional(),
   host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
-  perception: z
-    .object({
-      useLlmFallback: z.boolean().default(true),
-    })
-    .prefault({}),
-  affective: z
-    .object({
-      // Affective perception uses the background model as the primary classifier
-      // when configured; heuristics are the offline/test fallback path.
-      useLlmFallback: z.boolean().default(true),
-      incomingMoodWeight: z.number().min(0).max(1).default(0.3),
-      moodHistoryRetentionDays: z.number().positive().default(90),
-      moodHalfLifeHours: z.number().positive().default(24),
-    })
-    .prefault({}),
+  perception: perceptionConfigSchema,
+  affective: affectiveConfigSchema,
   embedding: z
     .object({
       baseUrl: z.string().url().default("http://localhost:1234/v1"),
@@ -606,6 +635,14 @@ function readOptionalEnvBoolean(env: NodeJS.ProcessEnv, name: string): boolean |
   throw new ConfigError(`Environment variable ${name} must be true/false or 1/0`);
 }
 
+function readOptionalEnvBooleanAlias(
+  env: NodeJS.ProcessEnv,
+  primary: string,
+  deprecated: string,
+): boolean | undefined {
+  return readOptionalEnvBoolean(env, primary) ?? readOptionalEnvBoolean(env, deprecated);
+}
+
 function readOptionalEnvAnthropicAuthMode(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -693,13 +730,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["perception", "useLlmFallback"],
-    readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK"),
+    ["perception", "llmEnabled"],
+    readOptionalEnvBooleanAlias(
+      env,
+      "BORG_PERCEPTION_LLM_ENABLED",
+      "BORG_PERCEPTION_USE_LLM_FALLBACK",
+    ),
   );
   setConfigOverride(
     overrides,
-    ["affective", "useLlmFallback"],
-    readOptionalEnvBoolean(env, "BORG_AFFECTIVE_USE_LLM_FALLBACK"),
+    ["affective", "llmEnabled"],
+    readOptionalEnvBooleanAlias(
+      env,
+      "BORG_AFFECTIVE_LLM_ENABLED",
+      "BORG_AFFECTIVE_USE_LLM_FALLBACK",
+    ),
   );
   setConfigOverride(
     overrides,

@@ -74,7 +74,7 @@ describe("autonomy integration", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -222,7 +222,7 @@ describe("autonomy integration", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -371,7 +371,7 @@ describe("autonomy integration", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",

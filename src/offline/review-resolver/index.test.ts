@@ -315,6 +315,80 @@ describe("review resolver process", () => {
     });
   });
 
+  it("resolves vector-only duplicate candidates by superseding after LLM compatibility judgment", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "Atlas platform and deployment platform refer to the same deployment service.",
+    );
+    const winner = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas platform",
+        description: "Atlas is the deployment service.",
+        confidence: 0.9,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const loser = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Deployment platform",
+        description: "The deployment platform is Atlas.",
+        confidence: 0.6,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "duplicate",
+      reason: "Vector-only semantic merge candidate with similarity 0.920",
+      refs: {
+        node_ids: [loser.id, winner.id],
+        node_labels: [loser.label, winner.label],
+        duplicate_subtype: "vector_only_merge_candidate",
+        vector_similarity: 0.92,
+        source_overlap: {
+          candidate_source_episode_ids: [source.episode.id],
+          matched_source_episode_ids: [source.episode.id],
+          overlapping_source_episode_ids: [source.episode.id],
+          overlap_count: 1,
+        },
+      },
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The supplied node records describe the same deployment service.",
+        cited_stream_ids: [],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const storedWinner = await harness.semanticNodeRepository.get(winner.id);
+    const storedLoser = await harness.semanticNodeRepository.get(loser.id);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.errors).toEqual([]);
+    expect(result.candidate_stats).toMatchObject({
+      accepted: 1,
+      rejected: 0,
+    });
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "supersede",
+    });
+    expect(storedWinner?.status).toBe("active");
+    expect(storedLoser).toMatchObject({
+      status: "superseded",
+      corrected_by: winner.id,
+    });
+    expect(prompt).toContain("vector_only_merge_candidate");
+  });
+
   it("keeps needs_manual reviews open with a resolver diagnostic", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({

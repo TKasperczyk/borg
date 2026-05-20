@@ -399,6 +399,117 @@ describe("semantic extractor", () => {
     });
   });
 
+  it("inserts vector-only semantic matches separately and queues duplicate review metadata", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas vector note");
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const existing = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Atlas platform",
+      description: "Atlas existing node",
+      domain: "tech",
+      aliases: [],
+      confidence: 0.7,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "entity",
+                label: "Deployment platform",
+                description: "Atlas service used for deployments.",
+                domain: "tech",
+                aliases: [],
+                confidence: 0.65,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      clock,
+      traceTurnId: "turn_vector_only",
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const nodes = await nodeRepository.list();
+    const inserted = nodes.find((node) => node.label === "Deployment platform");
+
+    expect(result).toMatchObject({
+      insertedNodes: 1,
+      updatedNodes: 0,
+    });
+    expect(nodes).toHaveLength(2);
+    expect(inserted).toBeDefined();
+    expect(await nodeRepository.get(existing.id)).toMatchObject({
+      label: "Atlas platform",
+      source_episode_ids: [episode.id],
+    });
+    expect(reviewEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "duplicate",
+        sourceProcess: "semantic-extractor",
+        traceTurnId: "turn_vector_only",
+        refs: expect.objectContaining({
+          node_ids: [inserted?.id, existing.id],
+          node_labels: ["Deployment platform", "Atlas platform"],
+          duplicate_subtype: "vector_only_merge_candidate",
+          vector_similarity: expect.closeTo(1, 5),
+          source_overlap: {
+            candidate_source_episode_ids: [episode.id],
+            matched_source_episode_ids: [episode.id],
+            overlapping_source_episode_ids: [episode.id],
+            overlap_count: 1,
+          },
+        }),
+      }),
+    );
+  });
+
   it("skips malformed and dangling edges while preserving valid candidates", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

@@ -170,6 +170,9 @@ export function traceCompileCompleted(options: {
       artifact_active_entry_count: artifactSummary.activeEntryCount,
       artifact_max_active_entries: options.maxActiveEntries ?? null,
       artifact_omitted_entry_count: artifactSummary.omittedEntryCount,
+      newest_entries_reserved: artifactSummary.newestReservedEntryCount,
+      live_starvation_with_reserved:
+        artifactSummary.omittedByKind.live > 0 && artifactSummary.renderedByKind.locked > 0,
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),

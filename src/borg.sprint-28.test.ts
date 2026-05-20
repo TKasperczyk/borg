@@ -42,7 +42,7 @@ describe("Sprint 28 integration", () => {
       dataDir: overrides.dataDir,
       perception: {
         ...DEFAULT_CONFIG.perception,
-        useLlmFallback: false,
+        llmEnabled: false,
       },
       embedding: {
         ...DEFAULT_CONFIG.embedding,
@@ -213,11 +213,11 @@ describe("Sprint 28 integration", () => {
         ...configWith({ dataDir: tempDir }),
         perception: {
           ...DEFAULT_CONFIG.perception,
-          useLlmFallback: true,
+          llmEnabled: true,
         },
         affective: {
           ...DEFAULT_CONFIG.affective,
-          useLlmFallback: false,
+          llmEnabled: false,
         },
       },
       clock: new ManualClock(1_000_000),

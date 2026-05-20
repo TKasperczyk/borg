@@ -1146,10 +1146,7 @@ export class SimulatorRunner {
         }
       }
 
-      finalMetrics = {
-        ...finalMetrics,
-        ...capabilityFindingMetrics(overseerCheckpoints),
-      };
+      finalMetrics = metrics.finalizeLastRow(capabilityFindingMetrics(overseerCheckpoints));
 
       const postHocHealthWarnings = simulatorHealthWarningsForRows(metrics.listRows(), {
         scenarioKey: this.options.scenarioKey,
@@ -1271,17 +1268,29 @@ function checkpointStatusSummary(checkpoint: OverseerVerdict): {
   };
 }
 
-function runResultForReport(report: SimulatorRunReport): "completed" | "failed" | "partial" {
+function pluralize(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`;
+}
+
+function simulatorValidityForReport(report: SimulatorRunReport): string {
+  const personaFailures = (report.simulatorPersonaFailures ?? []).length;
+
+  if (personaFailures > 0) {
+    return `partial (${personaFailures} ${pluralize(personaFailures, "persona failure")})`;
+  }
+
+  return "completed";
+}
+
+function borgTurnResultForReport(report: SimulatorRunReport): string {
   if (report.finalMetrics.event === "aborted_turn") {
     return "failed";
   }
 
-  if (
-    report.resultState !== "completed" ||
-    report.turnFailures.length > 0 ||
-    (report.simulatorPersonaFailures ?? []).length > 0
-  ) {
-    return "partial";
+  if (report.turnFailures.length > 0) {
+    const failures = report.turnFailures.length;
+
+    return `partial (${failures} ${pluralize(failures, "turn failure")})`;
   }
 
   return "completed";
@@ -1433,13 +1442,14 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     participantLine,
     `Audience: ${report.audience}`,
     `Turns: ${report.totalTurns}`,
-    `Run result: ${runResultForReport(report)}`,
+    `Run completion: ${report.resultState}`,
+    `Simulator validity: ${simulatorValidityForReport(report)}`,
+    `Borg turn result: ${borgTurnResultForReport(report)}`,
     `Run worst behavioral status: ${runSummary.behavioralStatus}`,
     `Run worst substrate status: ${runSummary.substrateStatus}`,
     `Run worst capability status: ${runSummary.capabilityStatus}`,
     `Final checkpoint status: ${runSummary.finalCheckpointStatus}`,
     `Unresolved validated concerns: ${runSummary.unresolvedValidatedConcerns}`,
-    `Result state: ${report.resultState}`,
     `Sessions: ${report.sessions.length}`,
     `Duration: ${Math.round(report.durationMs)}ms`,
     "",
@@ -1449,14 +1459,16 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Semantic nodes: ${report.finalMetrics.semantic_node_count}`,
     `- Semantic edges: ${report.finalMetrics.semantic_edge_count}`,
     `- Semantic added since previous check: ${report.finalMetrics.semantic_nodes_added_since_last_check} nodes, ${report.finalMetrics.semantic_edges_added_since_last_check} edges`,
-    `- Open questions: ${report.finalMetrics.open_question_count}`,
+    `- Open questions: ${report.finalMetrics.open_question_count} (resolved this run ${report.finalMetrics.open_questions_resolved_this_run}, rendered to finalizer ${report.finalMetrics.open_questions_rendered_to_finalizer_this_turn}, review-promoted ${report.finalMetrics.open_questions_promoted_from_review_items})`,
+    `- Open question sources: ${reportCountMap(report.finalMetrics.open_questions_by_source)}`,
+    `- Open question status age: ${reportCountMap(report.finalMetrics.open_questions_by_status_age)}`,
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Active actions: ${report.finalMetrics.action_record_count_active} (Borg ${report.finalMetrics.borg_owned_active_actions}, participants ${report.finalMetrics.participant_owned_active_actions}, group ${report.finalMetrics.group_owned_active_actions})`,
     `- Prompt-salient actions: ${report.finalMetrics.prompt_salient_actions_total} (Borg active ${report.finalMetrics.borg_owned_salient_active_actions}, participant active ${report.finalMetrics.participant_owned_salient_active_actions}, stale omitted ${report.finalMetrics.stale_actions_omitted_from_prompt})`,
     `- Action pressure: actions/turn ${report.finalMetrics.actions_per_turn.toFixed(2)}, salient/turn ${report.finalMetrics.salient_actions_per_turn.toFixed(2)}, retirement ratio ${report.finalMetrics.action_retirement_ratio.toFixed(2)}, dormant ${report.finalMetrics.dormant_actions_total}, stale ${report.finalMetrics.stale_action_count}`,
     `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
     `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
-    `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ${report.finalMetrics.shared_state_live_entry_starvation}`,
+    `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ${report.finalMetrics.shared_state_live_entry_starvation}, newest reserved ${report.finalMetrics.shared_state_newest_entries_reserved}, residual live starvation ${report.finalMetrics.shared_state_live_starvation_with_reserved}`,
     `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, hard aborts ${report.finalMetrics.borg_hard_aborted_turns}, intentional suppressions ${report.finalMetrics.borg_intentional_suppressions} (by reason: ${intentionalSuppressionReasons})`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,

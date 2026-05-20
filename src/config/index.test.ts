@@ -39,8 +39,8 @@ describe("config", () => {
     });
     expect(config.host_capabilities).toContain("Inputs available to you");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
-    expect(config.perception.useLlmFallback).toBe(true);
-    expect(config.affective.useLlmFallback).toBe(true);
+    expect(config.perception.llmEnabled).toBe(true);
+    expect(config.affective.llmEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
@@ -100,6 +100,7 @@ describe("config", () => {
           pending: 3,
         },
         renderLockedCap: 14,
+        newestStateChangeReservedSlots: 3,
         previousArtifactSummary: {
           maxEntries: {
             locked: 14,
@@ -141,6 +142,22 @@ describe("config", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
   });
 
+  it("accepts deprecated llm fallback aliases as llmEnabled config", () => {
+    const config = configSchema.parse({
+      perception: {
+        useLlmFallback: false,
+      },
+      affective: {
+        useLlmFallback: false,
+      },
+    });
+
+    expect(config.perception.llmEnabled).toBe(false);
+    expect(config.affective.llmEnabled).toBe(false);
+    expect("useLlmFallback" in config.perception).toBe(false);
+    expect("useLlmFallback" in config.affective).toBe(false);
+  });
+
   it("caps semantic retrieval overfetch multiplier in config", () => {
     expect(
       configSchema.parse({
@@ -174,6 +191,22 @@ describe("config", () => {
     expect(config.offline.overseer).toEqual(DEFAULT_CONFIG.offline.overseer);
     expect(config.generation.cognition).toEqual(DEFAULT_CONFIG.generation.cognition);
     expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
+  });
+
+  it("accepts deprecated llm fallback env aliases", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_PERCEPTION_USE_LLM_FALLBACK: "false",
+        BORG_AFFECTIVE_USE_LLM_FALLBACK: "false",
+      },
+    });
+
+    expect(config.perception.llmEnabled).toBe(false);
+    expect(config.affective.llmEnabled).toBe(false);
   });
 
   it("names the autonomy wake cap for the configured rolling window", () => {
@@ -280,7 +313,7 @@ describe("config", () => {
       env: {
         BORG_EMBEDDING_MODEL: "env-model",
         BORG_EMBEDDING_DIMS: "1024",
-        BORG_PERCEPTION_USE_LLM_FALLBACK: "false",
+        BORG_PERCEPTION_LLM_ENABLED: "false",
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
         BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
@@ -305,7 +338,7 @@ describe("config", () => {
 
     expect(config.embedding.model).toBe("env-model");
     expect(config.embedding.dims).toBe(1024);
-    expect(config.perception.useLlmFallback).toBe(false);
+    expect(config.perception.llmEnabled).toBe(false);
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");

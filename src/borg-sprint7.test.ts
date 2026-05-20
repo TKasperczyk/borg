@@ -296,11 +296,11 @@ describe("Borg Sprint 7", () => {
         ...DEFAULT_CONFIG,
         dataDir: tempDir,
         perception: {
-          useLlmFallback: true,
+          llmEnabled: true,
         },
         affective: {
           ...DEFAULT_CONFIG.affective,
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           ...DEFAULT_CONFIG.embedding,

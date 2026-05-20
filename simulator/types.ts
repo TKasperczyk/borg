@@ -56,6 +56,11 @@ export type MetricsRow = {
   borg_output_tokens: number;
   // JSONL key order is part of the simulator metrics contract; new 6d-9 fields append here.
   open_question_resolved_count: number;
+  open_questions_by_source: Record<string, number>;
+  open_questions_by_status_age: Record<string, number>;
+  open_questions_resolved_this_run: number;
+  open_questions_rendered_to_finalizer_this_turn: number;
+  open_questions_promoted_from_review_items: number;
   action_record_count_total: number;
   action_record_count_by_state: Record<ActionState, number>;
   action_record_count_committed_to_do: number;
@@ -151,6 +156,8 @@ export type MetricsRow = {
   shared_state_compile_evaluated_turns: number;
   shared_state_omitted_recent_entries: number;
   shared_state_live_entry_starvation: boolean;
+  shared_state_newest_entries_reserved: number;
+  shared_state_live_starvation_with_reserved: boolean;
   simulator_persona_failures: number;
   borg_hard_aborted_turns: number;
   borg_intentional_suppressions: number;

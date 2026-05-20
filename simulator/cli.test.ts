@@ -10,12 +10,6 @@ describe("simulator CLI", () => {
     expect(options.emissionBaseline).toBe(true);
   });
 
-  it("parses deprecated --pipeline-c-double-prime as emission baseline", () => {
-    const options = parseSimulatorCliOptions(["node", "simulate", "--pipeline-c-double-prime"]);
-
-    expect(options.emissionBaseline).toBe(true);
-  });
-
   it("parses flags after a pnpm-style -- separator", () => {
     const options = parseSimulatorCliOptions(["node", "cli.ts", "--", "--mock", "--turns", "1"]);
 
@@ -132,18 +126,6 @@ describe("simulator CLI", () => {
         "node",
         "simulate",
         "--emission-baseline",
-        "--shadow-post-gen-guards",
-      ]),
-    ).toThrow(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);
-  });
-
-  it("rejects incompatible deprecated pipeline alias after a pnpm-style -- separator", () => {
-    expect(() =>
-      parseSimulatorCliOptions([
-        "node",
-        "cli.ts",
-        "--",
-        "--pipeline-c-double-prime",
         "--shadow-post-gen-guards",
       ]),
     ).toThrow(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);

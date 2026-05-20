@@ -5,6 +5,7 @@ import {
   markSemanticContradicted,
   markSemanticSuperseded,
 } from "../../lifecycle-ops/index.js";
+import { episodeIdSchema } from "../../episodic/index.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticNode } from "../types.js";
 import {
   reviewResolutionSchema,
@@ -26,6 +27,17 @@ const semanticPairNodeRefsSchema = z
   .object({
     node_ids: z.tuple([semanticNodeIdSchema, semanticNodeIdSchema]),
     node_labels: z.tuple([z.string().min(1), z.string().min(1)]).optional(),
+    duplicate_subtype: z.literal("vector_only_merge_candidate").optional(),
+    vector_similarity: z.number().min(0).max(1).optional(),
+    source_overlap: z
+      .object({
+        candidate_source_episode_ids: z.array(episodeIdSchema),
+        matched_source_episode_ids: z.array(episodeIdSchema),
+        overlapping_source_episode_ids: z.array(episodeIdSchema),
+        overlap_count: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
     edge_id: semanticEdgeIdSchema.optional(),
   })
   .strict();

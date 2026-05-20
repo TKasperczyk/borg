@@ -65,14 +65,14 @@ export type ModeDetectorOptions = {
    * classification path has always existed as a fallback; this removes the
    * heuristic and lets the LLM do the work on every turn.
    */
-  useLlmFallback?: boolean;
+  llmEnabled?: boolean;
 };
 
 export class ModeDetector {
-  private readonly useLlmFallback: boolean;
+  private readonly llmEnabled: boolean;
 
   constructor(private readonly options: ModeDetectorOptions = {}) {
-    this.useLlmFallback = options.useLlmFallback ?? true;
+    this.llmEnabled = options.llmEnabled ?? true;
   }
 
   async detectMode(
@@ -80,7 +80,7 @@ export class ModeDetector {
     recentHistory: readonly string[] = [],
   ): Promise<ModeDetectionResult> {
     if (
-      !this.useLlmFallback ||
+      !this.llmEnabled ||
       this.options.llmClient === undefined ||
       this.options.model === undefined
     ) {

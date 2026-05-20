@@ -38,7 +38,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -166,7 +166,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -267,7 +267,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -348,7 +348,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -405,7 +405,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -460,7 +460,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -538,7 +538,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -632,7 +632,7 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
+          llmEnabled: false,
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",

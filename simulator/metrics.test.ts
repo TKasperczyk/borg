@@ -77,6 +77,11 @@ const TURN_METRICS_KEY_ORDER = [
   "borg_input_tokens",
   "borg_output_tokens",
   "open_question_resolved_count",
+  "open_questions_by_source",
+  "open_questions_by_status_age",
+  "open_questions_resolved_this_run",
+  "open_questions_rendered_to_finalizer_this_turn",
+  "open_questions_promoted_from_review_items",
   "action_record_count_total",
   "action_record_count_by_state",
   "action_record_count_committed_to_do",
@@ -168,6 +173,8 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_compile_evaluated_turns",
   "shared_state_omitted_recent_entries",
   "shared_state_live_entry_starvation",
+  "shared_state_newest_entries_reserved",
+  "shared_state_live_starvation_with_reserved",
   "simulator_persona_failures",
   "borg_hard_aborted_turns",
   "borg_intentional_suppressions",
@@ -874,6 +881,7 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 40,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 3,
+          newest_entries_reserved: 2,
           rendered_by_kind: {
             locked: 14,
             live: 8,
@@ -888,6 +896,7 @@ describe("MetricsCapture", () => {
             invalidated: 0,
             tentative: 0,
           },
+          live_starvation_with_reserved: true,
         },
         {
           ts: 101,
@@ -896,6 +905,7 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 39,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 0,
+          newest_entries_reserved: 1,
           rendered_by_kind: {},
           omitted_by_kind: {},
         },
@@ -906,6 +916,7 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 40,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 3,
+          newest_entries_reserved: 3,
           rendered_by_kind: {
             locked: 10,
           },
@@ -933,6 +944,8 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_compile_evaluated_turns).toBe(3);
     expect(row.shared_state_omitted_recent_entries).toBe(6);
     expect(row.shared_state_live_entry_starvation).toBe(true);
+    expect(row.shared_state_newest_entries_reserved).toBe(6);
+    expect(row.shared_state_live_starvation_with_reserved).toBe(true);
   });
 
   it("splits active actions by Borg, participant, and group actor ownership", async () => {
@@ -1563,6 +1576,7 @@ describe("MetricsCapture", () => {
   it("counts open questions resolved through the identity update path", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
     const db = openDatabase(join(dir, "borg.db"), {
       migrations: composeMigrations(selfMigrations, commitmentMigrations, identityMigrations),
     });
@@ -1579,6 +1593,14 @@ describe("MetricsCapture", () => {
         related_semantic_node_ids: [],
         provenance,
         source: "user",
+      });
+      identity.addOpenQuestion({
+        question: "Does the review item need follow-up?",
+        urgency: 0.6,
+        related_episode_ids: [],
+        related_semantic_node_ids: [],
+        provenance,
+        source: "overseer",
       });
       const result = identity.updateOpenQuestion(
         question.id,
@@ -1609,15 +1631,43 @@ describe("MetricsCapture", () => {
           },
         },
       } as unknown as Borg;
+      writeFileSync(
+        tracePath,
+        `${JSON.stringify({
+          ts: 1_001,
+          turnId: "turn-oq-update",
+          event: "evidence_ledger.completed",
+          entry_counts: {
+            open_questions: 2,
+          },
+        })}\n`,
+      );
 
-      const row = await new MetricsCapture(metricsPath).capture(borg, "turn-oq-update", 1, {
-        sessionId,
-        sessionIds: [sessionId],
-        transportChatAttempts: 1,
-      });
+      const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+        borg,
+        "turn-oq-update",
+        1,
+        {
+          sessionId,
+          sessionIds: [sessionId],
+          transportChatAttempts: 1,
+        },
+      );
 
       expect(result.status).toBe("applied");
       expect(row.open_question_resolved_count).toBe(1);
+      expect(row.open_question_count).toBe(1);
+      expect(row.open_questions_by_source).toMatchObject({
+        user_question: 1,
+        review_promoted: 1,
+      });
+      expect(row.open_questions_by_status_age).toMatchObject({
+        "open:<3_turns": 1,
+        "resolved:<3_turns": 1,
+      });
+      expect(row.open_questions_resolved_this_run).toBe(1);
+      expect(row.open_questions_rendered_to_finalizer_this_turn).toBe(2);
+      expect(row.open_questions_promoted_from_review_items).toBe(1);
     } finally {
       db.close();
     }

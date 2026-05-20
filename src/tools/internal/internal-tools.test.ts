@@ -41,7 +41,7 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
     config: createTestConfig({
       dataDir: tempDir,
       perception: {
-        useLlmFallback: false,
+        llmEnabled: false,
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",

@@ -150,7 +150,7 @@ describe("perception", () => {
   it("defaults to idle when no LLM client is configured", async () => {
     // The heuristic tier was removed; without an LLM, the safe neutral
     // default is "idle" (skips S2 planning, uses default retrieval weights).
-    const detector = new ModeDetector({ useLlmFallback: false });
+    const detector = new ModeDetector({ llmEnabled: false });
     await expect(detector.detectMode("pnpm build throws an error trace")).resolves.toEqual({
       mode: "idle",
       isOperational: false,
@@ -203,7 +203,7 @@ describe("perception", () => {
     const modeDetector = new ModeDetector({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
+      llmEnabled: true,
     });
 
     expect(await entityExtractor.extractEntities("something vague")).toEqual(["Atlas"]);
@@ -228,8 +228,8 @@ describe("perception", () => {
     const perceiver = new Perceiver({
       llmClient: llm,
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
     });
 
     const perceived = await perceiver.perceive("Recap the locked Atlas deployment state.");
@@ -347,8 +347,8 @@ describe("perception", () => {
     const perceiver = new Perceiver({
       llmClient: llm,
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
       onClassifierFailure,
     });
 
@@ -378,8 +378,8 @@ describe("perception", () => {
     const perceiver = new Perceiver({
       llmClient: llm,
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
       onClassifierFailure,
     });
 
@@ -406,8 +406,8 @@ describe("perception", () => {
     const perceiver = new Perceiver({
       llmClient: llm,
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
       onClassifierFailure,
     });
 
@@ -437,16 +437,16 @@ describe("perception", () => {
         responses: [entityResponse(["Atlas"]), modeResponse("reflective")],
       }),
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
     }).perceive("plain lower text");
     const degraded = await new Perceiver({
       llmClient: new FakeLLMClient({
         responses: [invalidEntityResponse(), invalidModeResponse()],
       }),
       model: "haiku",
-      affectiveUseLlmFallback: false,
-      temporalCueUseLlmFallback: false,
+      affectiveLlmEnabled: false,
+      temporalCueLlmEnabled: false,
     }).perceive("plain lower text");
 
     expect(Object.keys(degraded).sort()).toEqual(Object.keys(successful).sort());
@@ -467,7 +467,7 @@ describe("perception", () => {
     // empty perception payload rather than confidently-wrong tags.
     const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
     const perceiver = new Perceiver({
-      useLlmFallback: false,
+      llmEnabled: false,
       clock: new FixedClock(nowMs),
     });
     const perceived = await perceiver.perceive("Jane Doe said yesterday was rough");
@@ -516,7 +516,7 @@ describe("perception", () => {
     const perceiver = new Perceiver({
       llmClient: llm,
       model: "haiku",
-      affectiveUseLlmFallback: false,
+      affectiveLlmEnabled: false,
       clock: new FixedClock(nowMs),
       tracer,
       turnId: "turn-1",
@@ -564,7 +564,7 @@ describe("perception", () => {
       llmClient: llm,
       model: "background-opus",
       fastModel: "haiku-fast",
-      affectiveUseLlmFallback: false,
+      affectiveLlmEnabled: false,
       clock: new FixedClock(nowMs),
     });
 
