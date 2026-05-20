@@ -12,13 +12,8 @@ import {
   type CommitmentType,
 } from "../../memory/commitments/index.js";
 import type {
-  SharedStateArtifact,
-  SharedStateEntry,
-} from "../../memory/decision-artifacts/index.js";
-import type {
   SemanticNodeCorrectionRef,
   SemanticNodeSearchCandidate,
-  SemanticNodeStatusTransition,
 } from "../../memory/semantic/index.js";
 import {
   SemanticNodeRepository,
@@ -32,7 +27,6 @@ import { FixedClock, ManualClock } from "../../util/clock.js";
 import {
   createActionId,
   createCommitmentId,
-  createSharedStateEntryId,
   createEntityId,
   createEpisodeId,
   createGoalId,
@@ -44,13 +38,24 @@ import {
 } from "../../util/ids.js";
 import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
 import {
+  makeTestTurnTraceRecorder,
+  makeCommitmentRecord,
+  makeCompletedActionRecord,
+  makeLiveSharedStateEntry,
+  makeLockedSharedStateEntry,
+  makeSemanticNodeStatusTransition,
+  makeSemanticRevisionDependencies,
+  makeSemanticRevisionResponse,
+  makeSharedStateAddOperation,
+  makeSharedStateArtifact,
+} from "../../test-support/factories/index.js";
+import {
   findUnsettledSharedStateReconciliation,
   reconcileSharedStateCanonicalizations,
   reconcileSemanticBeliefRevision,
   SemanticRevisionVerdictCache,
 } from "./reconciliation.js";
 import { SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 
 const CANONICALIZABLE_COMMITMENT_TYPES = SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES;
 const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
@@ -59,44 +64,6 @@ const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
 ] as const satisfies readonly CommitmentType[];
 const PROMISE_COMMITMENT_TYPE = CANONICALIZABLE_COMMITMENT_TYPES[0];
 const PREFERENCE_COMMITMENT_TYPE = NON_CANONICALIZABLE_COMMITMENT_TYPES[0];
-
-function lockedEntry(overrides: Partial<SharedStateEntry> = {}): SharedStateEntry {
-  const streamEntryId = createStreamEntryId();
-
-  return {
-    id: overrides.id ?? createSharedStateEntryId(),
-    audience_entity_id: overrides.audience_entity_id ?? createEntityId(),
-    kind: overrides.kind ?? "locked",
-    text: overrides.text ?? "Release freeze is locked for the workstream",
-    owner_entity_id: overrides.owner_entity_id ?? null,
-    provenance_stream_entry_ids: overrides.provenance_stream_entry_ids ?? [streamEntryId],
-    last_updated_stream_entry_ids: overrides.last_updated_stream_entry_ids ?? [streamEntryId],
-    created_at: overrides.created_at ?? 1_000,
-    last_updated_at: overrides.last_updated_at ?? 1_000,
-    superseded_by_id: overrides.superseded_by_id ?? null,
-    rank: overrides.rank ?? 0,
-    canonicalizes: overrides.canonicalizes ?? {
-      goal_ids: [],
-      commitment_ids: [],
-      action_ids: [],
-      open_question_ids: [],
-    },
-  };
-}
-
-function sharedStateArtifact(entries: readonly SharedStateEntry[]): SharedStateArtifact {
-  const audienceEntityId = entries[0]?.audience_entity_id ?? createEntityId();
-
-  return {
-    audience_entity_id: audienceEntityId,
-    record_version: 1,
-    created_at: 1_000,
-    updated_at: 1_000,
-    last_compiled_at: 1_000,
-    last_compiled_stream_entry_id: createStreamEntryId(),
-    entries: [...entries],
-  };
-}
 
 function addCommitment(
   repository: CommitmentRepository,
@@ -120,183 +87,6 @@ function addCommitment(
   });
 }
 
-function createTraceRecorder(): TurnTracer & {
-  events: Array<{ event: TurnTraceEventName; data: TurnTraceData }>;
-} {
-  const events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
-
-  return {
-    enabled: true,
-    includePayloads: true,
-    events,
-    emit: vi.fn((event: TurnTraceEventName, data: TurnTraceData) => {
-      events.push({ event, data });
-    }),
-  };
-}
-
-function semanticRevisionResponse(input: {
-  verdicts: Array<{
-    node_id: SemanticNodeId;
-    verdict: "supersede" | "contradict" | "keep" | "uncertain";
-  }>;
-}) {
-  return {
-    text: "",
-    input_tokens: 5,
-    output_tokens: 5,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_decision_artifact_semantic_revision",
-        name: "EmitDecisionArtifactSemanticRevision",
-        input: {
-          verdicts: input.verdicts,
-        },
-      },
-    ],
-  };
-}
-
-function semanticRevisionOperation(entry: SharedStateEntry) {
-  return {
-    type: "add" as const,
-    id: entry.id,
-    kind: "locked" as const,
-    text: entry.text,
-    owner_entity_id: entry.owner_entity_id,
-    provenance_stream_entry_ids: entry.provenance_stream_entry_ids,
-    last_updated_stream_entry_ids: entry.last_updated_stream_entry_ids,
-    rank: entry.rank,
-    canonicalizes: entry.canonicalizes,
-  };
-}
-
-function semanticRevisionDependencies(input: {
-  nodeId?: SemanticNodeId;
-  verdict?: "supersede" | "contradict" | "keep" | "uncertain";
-  searchError?: Error;
-  llmError?: Error;
-  candidateCount?: number;
-  verdictCache?: SemanticRevisionVerdictCache;
-}) {
-  const episodeId = createEpisodeId();
-  const node = createSemanticNodeFixture(
-    {
-      id: input.nodeId ?? createSemanticNodeId(),
-      label: "Project runtime is Node 20",
-      description: "The project runtime is Node 20.",
-      source_episode_ids: [episodeId],
-    },
-    [1, 0, 0, 0],
-  );
-  const candidates = Array.from({ length: input.candidateCount ?? 1 }, (_, index) => ({
-    node:
-      index === 0
-        ? node
-        : createSemanticNodeFixture(
-            {
-              id: createSemanticNodeId(),
-              label: `Project runtime candidate ${index}`,
-              description: `Runtime candidate ${index}.`,
-              source_episode_ids: [episodeId],
-            },
-            [1, 0, 0, 0],
-          ),
-    similarity: 0.95,
-  }));
-  const searchByVector = vi.fn(async () => {
-    if (input.searchError !== undefined) {
-      throw input.searchError;
-    }
-
-    return candidates;
-  });
-  const markSuperseded = vi.fn(
-    async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) => ({
-      id,
-      fromStatus: "active" as const,
-      toStatus: "superseded" as const,
-      correctedBy,
-      supersededAt,
-    }),
-  );
-  const markContradicted = vi.fn(
-    async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) => ({
-      id,
-      fromStatus: "active" as const,
-      toStatus: "contradicted" as const,
-      correctedBy,
-      supersededAt,
-    }),
-  );
-  const complete = vi.fn(async () => {
-    if (input.llmError !== undefined) {
-      throw input.llmError;
-    }
-
-    return semanticRevisionResponse({
-      verdicts: candidates.map((candidate) => ({
-        node_id: candidate.node.id,
-        verdict: input.verdict ?? "keep",
-      })),
-    });
-  });
-
-  return {
-    node,
-    searchByVector,
-    markSuperseded,
-    markContradicted,
-    complete,
-    dependencies: {
-      semanticNodeRepository: {
-        searchByVector,
-        markSuperseded,
-        markContradicted,
-      },
-      episodicRepository: {
-        getMany: vi.fn(async (ids: EpisodeId[]) =>
-          ids.map((id) =>
-            createEpisodeFixture({
-              id,
-              audience_entity_id: null,
-              shared: true,
-            }),
-          ),
-        ),
-      },
-      embeddingClient: {
-        embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
-        embedBatch: vi.fn(async (texts: readonly string[]) =>
-          texts.map(() => Float32Array.from([1, 0, 0, 0])),
-        ),
-      },
-      llmClient: {
-        complete,
-        converse: vi.fn(),
-      },
-      model: "semantic-revision-test",
-      verdictCache: input.verdictCache ?? new SemanticRevisionVerdictCache(),
-    },
-  };
-}
-
-function semanticStatusTransition(input: {
-  id: SemanticNodeId;
-  toStatus: "superseded" | "contradicted";
-  correctedBy: SemanticNodeCorrectionRef;
-  supersededAt: number;
-}): SemanticNodeStatusTransition {
-  return {
-    id: input.id,
-    fromStatus: "active",
-    toStatus: input.toStatus,
-    correctedBy: input.correctedBy,
-    supersededAt: input.supersededAt,
-  };
-}
-
 describe("findUnsettledSharedStateReconciliation", () => {
   it("does not flag durable commitment canonicalizations as unsettled", () => {
     const db = openDatabase(":memory:", {
@@ -315,7 +105,7 @@ describe("findUnsettledSharedStateReconciliation", () => {
         directive: "Prefer concise work updates.",
         createdAt: 500,
       });
-      const entry = lockedEntry({
+      const entry = makeLockedSharedStateEntry({
         canonicalizes: {
           goal_ids: [],
           commitment_ids: [commitment.id],
@@ -325,7 +115,7 @@ describe("findUnsettledSharedStateReconciliation", () => {
       });
 
       const unsettledReconciliation = findUnsettledSharedStateReconciliation({
-        previousArtifact: sharedStateArtifact([entry]),
+        previousArtifact: makeSharedStateArtifact([entry]),
         repositories: {
           commitmentRepository,
         },
@@ -341,17 +131,17 @@ describe("findUnsettledSharedStateReconciliation", () => {
 
 describe("reconcileSemanticBeliefRevision", () => {
   it("keeps active candidate nodes when the judge returns keep", async () => {
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       verdict: "keep",
     });
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       tracer: trace,
@@ -401,19 +191,19 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("reuses cached keep verdicts without calling the judge again for unchanged entry and candidate status", async () => {
     const cache = new SemanticRevisionVerdictCache();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       verdict: "keep",
       verdictCache: cache,
     });
-    const firstTrace = createTraceRecorder();
-    const secondTrace = createTraceRecorder();
+    const firstTrace = makeTestTurnTraceRecorder();
+    const secondTrace = makeTestTurnTraceRecorder();
 
     await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       tracer: firstTrace,
@@ -422,8 +212,8 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 3_000,
       tracer: secondTrace,
@@ -461,21 +251,21 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("re-judges a cached pair when the artifact entry text changes", async () => {
     const cache = new SemanticRevisionVerdictCache();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
     const updatedEntry = {
       ...entry,
       text: "Project runtime is Node 24",
     };
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       verdict: "keep",
       verdictCache: cache,
     });
 
     await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       turnId: "turn_semantic_cache_text_seed",
@@ -483,8 +273,8 @@ describe("reconcileSemanticBeliefRevision", () => {
     });
 
     await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([updatedEntry]),
-      operations: [semanticRevisionOperation(updatedEntry)],
+      artifact: makeSharedStateArtifact([updatedEntry]),
+      operations: [makeSharedStateAddOperation(updatedEntry)],
       dependencies: deps.dependencies,
       nowMs: 3_000,
       turnId: "turn_semantic_cache_text_changed",
@@ -513,7 +303,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       clock,
     });
     const cache = new SemanticRevisionVerdictCache();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
     const episodeId = createEpisodeId();
@@ -541,7 +331,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       });
 
       const complete = vi.fn(async () =>
-        semanticRevisionResponse({
+        makeSemanticRevisionResponse({
           verdicts: [
             {
               node_id: nodeId,
@@ -550,7 +340,7 @@ describe("reconcileSemanticBeliefRevision", () => {
           ],
         }),
       );
-      const trace = createTraceRecorder();
+      const trace = makeTestTurnTraceRecorder();
 
       const dependencies = {
         semanticNodeRepository,
@@ -578,8 +368,8 @@ describe("reconcileSemanticBeliefRevision", () => {
       };
 
       await reconcileSemanticBeliefRevision({
-        artifact: sharedStateArtifact([entry]),
-        operations: [semanticRevisionOperation(entry)],
+        artifact: makeSharedStateArtifact([entry]),
+        operations: [makeSharedStateAddOperation(entry)],
         dependencies,
         nowMs: 2_000,
         turnId: "turn_semantic_cache_node_update_seed",
@@ -595,8 +385,8 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect(updatedNode?.updated_at).toBe(3_000);
 
       await reconcileSemanticBeliefRevision({
-        artifact: sharedStateArtifact([entry]),
-        operations: [semanticRevisionOperation(entry)],
+        artifact: makeSharedStateArtifact([entry]),
+        operations: [makeSharedStateAddOperation(entry)],
         dependencies,
         nowMs: 3_000,
         tracer: trace,
@@ -606,9 +396,7 @@ describe("reconcileSemanticBeliefRevision", () => {
 
       expect(complete).toHaveBeenCalledTimes(2);
       expect(
-        trace.events.filter(
-          (event) => event.event === "semantic_revision.cache.completed",
-        ),
+        trace.events.filter((event) => event.event === "semantic_revision.cache.completed"),
       ).toHaveLength(0);
     } finally {
       db.close();
@@ -619,7 +407,7 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("filters a cached candidate that is no longer active before cache reuse", async () => {
     const cache = new SemanticRevisionVerdictCache();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
     const episodeId = createEpisodeId();
@@ -640,7 +428,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     let currentNode = activeNode;
     const searchByVector = vi.fn(async () => [{ node: currentNode, similarity: 0.95 }]);
     const complete = vi.fn(async () =>
-      semanticRevisionResponse({
+      makeSemanticRevisionResponse({
         verdicts: [
           {
             node_id: nodeId,
@@ -649,7 +437,7 @@ describe("reconcileSemanticBeliefRevision", () => {
         ],
       }),
     );
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const dependencies = {
       semanticNodeRepository: {
@@ -680,8 +468,8 @@ describe("reconcileSemanticBeliefRevision", () => {
     };
 
     await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies,
       nowMs: 2_000,
       turnId: "turn_semantic_cache_status_seed",
@@ -691,8 +479,8 @@ describe("reconcileSemanticBeliefRevision", () => {
     currentNode = supersededNode;
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies,
       nowMs: 3_000,
       tracer: trace,
@@ -703,9 +491,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(complete).toHaveBeenCalledTimes(1);
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
     expect(
-      trace.events.filter(
-        (event) => event.event === "semantic_revision.cache.completed",
-      ),
+      trace.events.filter((event) => event.event === "semantic_revision.cache.completed"),
     ).toHaveLength(0);
     expect(trace.events).toContainEqual(
       expect.objectContaining({
@@ -754,17 +540,17 @@ describe("reconcileSemanticBeliefRevision", () => {
   });
 
   it("succeeds without calling the judge when embedding search returns no candidates", async () => {
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       candidateCount: 0,
     });
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       tracer: trace,
@@ -786,17 +572,17 @@ describe("reconcileSemanticBeliefRevision", () => {
   });
 
   it("degrades without marking nodes when embedding search fails", async () => {
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       searchError: new Error("vector index unavailable"),
     });
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       tracer: trace,
@@ -818,17 +604,17 @@ describe("reconcileSemanticBeliefRevision", () => {
   });
 
   it("degrades without marking nodes when the LLM judge fails", async () => {
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       llmError: new Error("judge unavailable"),
     });
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       tracer: trace,
@@ -851,18 +637,18 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("does not process locked entries with contaminated provenance", async () => {
     const source = createStreamEntryId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
       provenance_stream_entry_ids: [source],
       last_updated_stream_entry_ids: [source],
     });
-    const deps = semanticRevisionDependencies({
+    const deps = makeSemanticRevisionDependencies({
       verdict: "supersede",
     });
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: deps.dependencies,
       nowMs: 2_000,
       sourceTrustValidator: () => ({ allowed: false, reason: "quarantined" }),
@@ -880,7 +666,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const otherAudience = createEntityId();
     const visibleEpisodeId = createEpisodeId();
     const hiddenEpisodeId = createEpisodeId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       audience_entity_id: audience,
       text: "Project runtime is Node 22",
     });
@@ -926,7 +712,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     );
     const markSuperseded = vi.fn(
       async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
-        semanticStatusTransition({
+        makeSemanticNodeStatusTransition({
           id,
           toStatus: "superseded",
           correctedBy,
@@ -934,7 +720,7 @@ describe("reconcileSemanticBeliefRevision", () => {
         }),
     );
     const complete = vi.fn(async () =>
-      semanticRevisionResponse({
+      makeSemanticRevisionResponse({
         verdicts: [
           {
             node_id: targetNode.id,
@@ -943,11 +729,11 @@ describe("reconcileSemanticBeliefRevision", () => {
         ],
       }),
     );
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
           searchByVector,
@@ -1003,7 +789,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       description: "The project runtime is Node 20.",
       source_episode_ids: [episodeId],
     });
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
       provenance_stream_entry_ids: [source],
       last_updated_stream_entry_ids: [source],
@@ -1011,7 +797,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     const searchByVector = vi.fn(async () => [{ node, similarity: 0.98 }]);
     const markSuperseded = vi.fn(
       async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
-        semanticStatusTransition({
+        makeSemanticNodeStatusTransition({
           id,
           toStatus: "superseded",
           correctedBy,
@@ -1019,7 +805,7 @@ describe("reconcileSemanticBeliefRevision", () => {
         }),
     );
     const complete = vi.fn(async () =>
-      semanticRevisionResponse({
+      makeSemanticRevisionResponse({
         verdicts: [
           {
             node_id: node.id,
@@ -1028,11 +814,11 @@ describe("reconcileSemanticBeliefRevision", () => {
         ],
       }),
     );
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
           searchByVector,
@@ -1080,7 +866,7 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("counts missing nodes from mark calls as skipped while processing the remaining verdicts", async () => {
     const episodeId = createEpisodeId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       text: "Project runtime is Node 22",
     });
     const nodes = Array.from({ length: 3 }, (_, index) =>
@@ -1096,7 +882,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
         id === nodes[0]?.id
           ? null
-          : semanticStatusTransition({
+          : makeSemanticNodeStatusTransition({
               id,
               toStatus: "superseded",
               correctedBy,
@@ -1104,18 +890,18 @@ describe("reconcileSemanticBeliefRevision", () => {
             }),
     );
     const complete = vi.fn(async () =>
-      semanticRevisionResponse({
+      makeSemanticRevisionResponse({
         verdicts: nodes.map((node) => ({
           node_id: node.id,
           verdict: "supersede",
         })),
       }),
     );
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact([entry]),
-      operations: [semanticRevisionOperation(entry)],
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
       dependencies: {
         semanticNodeRepository: {
           searchByVector,
@@ -1178,17 +964,17 @@ describe("reconcileSemanticBeliefRevision", () => {
 
   it("caps semantic revision to the first three locked artifact entries per turn", async () => {
     const entries = Array.from({ length: 7 }, (_, index) =>
-      lockedEntry({
+      makeLockedSharedStateEntry({
         text: `Workstream runtime decision ${index} is locked`,
         rank: index,
       }),
     );
     const searchByVector = vi.fn(async () => []);
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = await reconcileSemanticBeliefRevision({
-      artifact: sharedStateArtifact(entries),
-      operations: entries.map((entry) => semanticRevisionOperation(entry)),
+      artifact: makeSharedStateArtifact(entries),
+      operations: entries.map((entry) => makeSharedStateAddOperation(entry)),
       dependencies: {
         semanticNodeRepository: {
           searchByVector,
@@ -1216,15 +1002,12 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(searchByVector).toHaveBeenCalledTimes(3);
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
     expect(
-      trace.events.filter(
-        (event) => event.event === "semantic_revision.completed",
-      ),
+      trace.events.filter((event) => event.event === "semantic_revision.completed"),
     ).toHaveLength(3);
     expect(
       trace.events.filter(
         (event) =>
-          event.event === "semantic_revision.degraded" &&
-          event.data.reason === "skipped_over_cap",
+          event.event === "semantic_revision.degraded" && event.data.reason === "skipped_over_cap",
       ),
     ).toEqual([
       expect.objectContaining({
@@ -1262,7 +1045,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
     const commitmentId = createCommitmentId();
     const actionId = createActionId();
     const openQuestionId = createOpenQuestionId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       provenance_stream_entry_ids: [quarantinedSource],
       last_updated_stream_entry_ids: [quarantinedSource],
       canonicalizes: {
@@ -1287,7 +1070,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
       get: vi.fn(),
       resolve: vi.fn(),
     };
-    const trace = createTraceRecorder();
+    const trace = makeTestTurnTraceRecorder();
 
     const result = reconcileSharedStateCanonicalizations({
       entries: [entry],
@@ -1354,7 +1137,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
     const commitmentId = createCommitmentId();
     const actionId = createActionId();
     const openQuestionId = createOpenQuestionId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       canonicalizes: {
         goal_ids: [goalId],
         commitment_ids: [commitmentId],
@@ -1366,18 +1149,19 @@ describe("reconcileSharedStateCanonicalizations", () => {
       updateStatus: vi.fn(),
     };
     const commitmentRepository = {
-      get: vi.fn(
-        () =>
-          ({
-            id: commitmentId,
-            type: PROMISE_COMMITMENT_TYPE,
-            revoked_at: null,
-            expired_at: null,
-            expires_at: null,
-            superseded_by: null,
-          }) as never,
+      get: vi.fn(() =>
+        makeCommitmentRecord({
+          id: commitmentId,
+          type: PROMISE_COMMITMENT_TYPE,
+        }),
       ),
-      revoke: vi.fn(() => ({ id: commitmentId }) as never),
+      revoke: vi.fn(() =>
+        makeCommitmentRecord({
+          id: commitmentId,
+          type: PROMISE_COMMITMENT_TYPE,
+          revoked_at: 2_000,
+        }),
+      ),
     };
     const actionRepository = {
       update: vi.fn(),
@@ -1504,7 +1288,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
         unknown_at: null,
         canonicalized_by_artifact_entry_id: null,
       });
-      const entry = lockedEntry({
+      const entry = makeLockedSharedStateEntry({
         last_updated_stream_entry_ids: [source],
         canonicalizes: {
           goal_ids: [],
@@ -1540,7 +1324,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
 
   it("reports a missing canonicalized commitment as a reconciliation error", () => {
     const commitmentId = createCommitmentId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       canonicalizes: {
         goal_ids: [],
         commitment_ids: [commitmentId],
@@ -1573,7 +1357,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
 
   it("counts already terminal action canonicalizations as skipped", () => {
     const actionId = createActionId();
-    const entry = lockedEntry({
+    const entry = makeLockedSharedStateEntry({
       canonicalizes: {
         goal_ids: [],
         commitment_ids: [],
@@ -1582,7 +1366,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
       },
     });
     const actionRepository = {
-      get: vi.fn(() => ({ id: actionId, state: "completed" }) as never),
+      get: vi.fn(() => makeCompletedActionRecord({ id: actionId })),
       update: vi.fn(),
     };
 
@@ -1624,7 +1408,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
         expiresAt: 900,
       });
       const revoke = vi.spyOn(commitmentRepository, "revoke");
-      const entry = lockedEntry({
+      const entry = makeLockedSharedStateEntry({
         canonicalizes: {
           goal_ids: [],
           commitment_ids: [expired.id],
@@ -1678,7 +1462,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
           createdAt: 500,
         });
         const revoke = vi.spyOn(commitmentRepository, "revoke");
-        const entry = lockedEntry({
+        const entry = makeLockedSharedStateEntry({
           canonicalizes: {
             goal_ids: [],
             commitment_ids: [commitment.id],
@@ -1742,7 +1526,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
           createdAt: 500,
         });
         const revoke = vi.spyOn(commitmentRepository, "revoke");
-        const entry = lockedEntry({
+        const entry = makeLockedSharedStateEntry({
           canonicalizes: {
             goal_ids: [],
             commitment_ids: [commitment.id],
@@ -1797,8 +1581,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
 
     const result = reconcileSharedStateCanonicalizations({
       entries: [
-        lockedEntry({
-          kind: "live",
+        makeLiveSharedStateEntry({
           canonicalizes: {
             goal_ids: [goalId],
             commitment_ids: [],
