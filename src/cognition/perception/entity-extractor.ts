@@ -8,6 +8,7 @@ import {
 } from "../../llm/index.js";
 import { entityKindSchema, type EntityKind } from "../../memory/commitments/index.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 
 const extractedEntitySchema = z.union([
   z.string().min(1),
@@ -209,7 +210,7 @@ export class EntityExtractor {
         ],
         tools: [ENTITY_FALLBACK_TOOL],
         tool_choice: { type: "tool", name: ENTITY_FALLBACK_TOOL_NAME },
-        max_tokens: 512,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "perception-entity-fallback",
       });
       return parseEntityFallback(response);

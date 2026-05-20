@@ -1,0 +1,1 @@
+export const EXTRACTOR_MAX_TOKENS_DEFAULT = 8_000;

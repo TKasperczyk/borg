@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
 import { FrameAnomalyClassifier } from "./classifier.js";
 import { isFrameAnomaly, type FrameAnomalyKind } from "./types.js";
@@ -149,6 +150,7 @@ describe("FrameAnomalyClassifier", () => {
     expect(llm.requests[0]).toMatchObject({
       model: "test-recall",
       budget: "frame-anomaly-classifier",
+      max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
       tool_choice: {
         type: "tool",
         name: "ClassifyFrameAnomaly",

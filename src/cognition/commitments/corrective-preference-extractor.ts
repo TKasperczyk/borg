@@ -23,12 +23,12 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
-const CORRECTIVE_PREFERENCE_MAX_TOKENS = 768;
 
 const correctivePreferenceEntityIdSchema = z
   .string()
@@ -463,7 +463,7 @@ export class CorrectivePreferenceExtractor {
         messages,
         tools,
         tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
-        max_tokens: CORRECTIVE_PREFERENCE_MAX_TOKENS,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "corrective-preference-extractor",
       });
     } catch (error) {

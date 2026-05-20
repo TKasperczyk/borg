@@ -8,6 +8,7 @@ import {
 } from "../../llm/index.js";
 import { cognitiveModeSchema, type CognitiveMode } from "../types.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 
 const modeFallbackSchema = z.object({
   mode: cognitiveModeSchema,
@@ -116,7 +117,7 @@ export class ModeDetector {
         ],
         tools: [MODE_FALLBACK_TOOL],
         tool_choice: { type: "tool", name: MODE_FALLBACK_TOOL_NAME },
-        max_tokens: 256,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "perception-mode-fallback",
       });
       return parseModeFallback(response);

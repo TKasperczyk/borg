@@ -18,6 +18,7 @@ import {
   createStreamEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import {
   ActionStateExtractor,
   type ActionCandidateClassification,
@@ -1369,6 +1370,7 @@ describe("ActionStateExtractor", () => {
     expect(llm.requests[0]).toMatchObject({
       model: "recall-expansion-model",
       budget: "action-state-extractor",
+      max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
       tool_choice: {
         type: "tool",
         name: "EmitActionStates",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { LLMPendingActionJudge } from "./pending-action-judge.js";
 
 describe("LLMPendingActionJudge", () => {
@@ -43,6 +44,7 @@ describe("LLMPendingActionJudge", () => {
       type: "tool",
       name: "ClassifyPendingAction",
     });
+    expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
   });
 
   it("rejects LLM-classified belief mutations", async () => {

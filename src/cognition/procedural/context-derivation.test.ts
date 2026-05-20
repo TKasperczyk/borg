@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { EntityId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { PerceptionResult } from "../types.js";
 import { deriveProceduralContext } from "./context-derivation.js";
 
@@ -98,6 +99,7 @@ describe("deriveProceduralContext", () => {
       type: "tool",
       name: PROCEDURAL_CONTEXT_TOOL_NAME,
     });
+    expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     const payload = JSON.parse(prompt.split("\n").at(-1) ?? "{}") as {
       recent_messages?: unknown;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { toToolInputSchema, type LLMClient, type LLMToolDefinition } from "../../llm/index.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TemporalCue } from "../types.js";
 
 const temporalCueJudgeSchema = z.object({
@@ -61,7 +62,7 @@ export async function detectTemporalCue(
       ],
       tools: [TEMPORAL_CUE_TOOL],
       tool_choice: { type: "tool", name: TEMPORAL_CUE_TOOL_NAME },
-      max_tokens: 400,
+      max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
       budget: "perception-temporal-cue",
     });
 

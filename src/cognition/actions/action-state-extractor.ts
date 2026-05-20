@@ -34,13 +34,12 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
-// v62 P3 action classification fields made the old 768 cap truncate in v63 runs.
-const ACTION_STATE_EXTRACTOR_MAX_TOKENS = 1536;
 const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "considering",
   "committed_to_do",
@@ -847,7 +846,7 @@ export class ActionStateExtractor {
         messages,
         tools,
         tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
-        max_tokens: ACTION_STATE_EXTRACTOR_MAX_TOKENS,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "action-state-extractor",
       });
     } catch (error) {

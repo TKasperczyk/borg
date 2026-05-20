@@ -11,6 +11,7 @@ import type { EntityKind } from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
 import type { ActiveParticipant } from "../participants.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
@@ -623,7 +624,7 @@ export class FrameAnomalyClassifier {
         messages,
         tools,
         tool_choice: { type: "tool", name: FRAME_ANOMALY_CLASSIFIER_TOOL_NAME },
-        max_tokens: 512,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "frame-anomaly-classifier",
       });
     } catch (error) {

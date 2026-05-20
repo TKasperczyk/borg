@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
@@ -89,7 +90,7 @@ describe("CorrectivePreferenceExtractor", () => {
       confidence: 0.9,
     });
     expect(llm.requests[0]?.model).toBe("haiku");
-    expect(llm.requests[0]?.max_tokens).toBe(768);
+    expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: "EmitCorrectivePreference",

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { IntentRecord } from "../types.js";
 
 const pendingActionJudgmentSchema = z.object({
@@ -70,7 +71,7 @@ export class LLMPendingActionJudge implements PendingActionJudge {
         ],
         tools: [PENDING_ACTION_JUDGE_TOOL],
         tool_choice: { type: "tool", name: PENDING_ACTION_JUDGE_TOOL_NAME },
-        max_tokens: 256,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "pending-action-judge",
       });
       const call = result.tool_calls.find(

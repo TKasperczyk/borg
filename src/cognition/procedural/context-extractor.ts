@@ -16,6 +16,7 @@ import {
 } from "../../llm/index.js";
 import { LLMError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { PerceptionResult } from "../types.js";
 
 const proceduralContextExtractionSchema = z.object({
@@ -142,7 +143,7 @@ export class ProceduralContextExtractor {
           ],
           tools: [PROCEDURAL_CONTEXT_TOOL],
           tool_choice: { type: "tool", name: PROCEDURAL_CONTEXT_TOOL_NAME },
-          max_tokens: 512,
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
           budget: "procedural-context",
         }),
       );

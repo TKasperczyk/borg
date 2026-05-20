@@ -10,6 +10,7 @@ import {
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   buildUsageTraceBlock,
@@ -32,7 +33,6 @@ export const CLOSURE_LOOP_DIALOGUE_ACTS = [
 export type ClosureLoopDialogueAct = (typeof CLOSURE_LOOP_DIALOGUE_ACTS)[number];
 
 export const CLOSURE_LOOP_CLASSIFIER_TOOL_NAME = "ClassifyClosureLoopDialogueActs";
-const CLOSURE_LOOP_CLASSIFIER_MAX_TOKENS = 1_050;
 const CLOSURE_LOOP_RATIONALE_MAX_CHARS = 2_000;
 const CLOSURE_LOOP_CLASSIFICATION_FIELDS = ["messages", "confidence", "rationale"] as const;
 const CLOSURE_LOOP_MESSAGE_FIELDS = [
@@ -876,7 +876,7 @@ export class ClosureLoopClassifier {
         messages,
         tools: [CLOSURE_LOOP_CLASSIFIER_TOOL],
         tool_choice: { type: "tool", name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME },
-        max_tokens: CLOSURE_LOOP_CLASSIFIER_MAX_TOKENS,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "closure-loop-classifier",
       });
     } catch (error) {

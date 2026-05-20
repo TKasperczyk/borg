@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
   GOAL_PROMOTION_CLASSIFICATIONS,
@@ -133,7 +134,7 @@ describe("GoalPromotionExtractor", () => {
       type: "tool",
       name: "EmitGoalPromotion",
     });
-    expect(llm.requests[0]?.max_tokens).toBe(1536);
+    expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
   });
 

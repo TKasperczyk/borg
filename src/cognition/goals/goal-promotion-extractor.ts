@@ -11,13 +11,13 @@ import {
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
+import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
-const GOAL_PROMOTION_MAX_TOKENS = 1536;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
 
 export const GOAL_PROMOTION_CLASSIFICATIONS = [
@@ -684,7 +684,7 @@ export class GoalPromotionExtractor {
         messages: input.messages,
         tools: input.tools,
         tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
-        max_tokens: GOAL_PROMOTION_MAX_TOKENS,
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
         budget: "goal-promotion-extractor",
       });
 
