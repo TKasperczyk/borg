@@ -3,6 +3,7 @@ import { beliefRevisionDomainsScenario } from "./belief-revision-domains.js";
 import { capabilityBoundaryScenario } from "./capability-boundary.js";
 import { codingIncidentScenario } from "./coding-incident.js";
 import { familyAgingParentScenario } from "./family-aging-parent.js";
+import { kinshipCorrectnessScenario } from "./kinship-correctness.js";
 import { tripPlanningScenario } from "./trip-planning.js";
 import type { SimulatorScenarioDefinition } from "../types.js";
 
@@ -10,6 +11,7 @@ export const simulatorScenarios = [
   tripPlanningScenario,
   codingIncidentScenario,
   familyAgingParentScenario,
+  kinshipCorrectnessScenario,
   capabilityBoundaryScenario,
   actionLifecycleScenario,
   beliefRevisionDomainsScenario,
@@ -29,5 +31,6 @@ export {
   capabilityBoundaryScenario,
   codingIncidentScenario,
   familyAgingParentScenario,
+  kinshipCorrectnessScenario,
   tripPlanningScenario,
 };

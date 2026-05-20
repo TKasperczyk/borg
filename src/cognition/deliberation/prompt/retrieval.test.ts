@@ -35,6 +35,7 @@ function makeNode(overrides: Partial<SemanticNode> = {}): SemanticNode {
     description: overrides.description ?? "A claim about Atlas deployment state.",
     domain: overrides.domain ?? null,
     aliases: overrides.aliases ?? [],
+    observation_metadata: overrides.observation_metadata ?? null,
     confidence: overrides.confidence ?? 0.7,
     source_episode_ids:
       overrides.source_episode_ids ??

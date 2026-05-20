@@ -59,6 +59,17 @@ const reviewResolverVerdictSchema = z
     ]),
     reason: z.string().min(1).max(4_000),
     cited_stream_ids: z.array(streamEntryIdSchema).default([]),
+    support_basis: z
+      .enum([
+        "direct_user_or_source",
+        "relational_slot",
+        "trusted_memory",
+        "assistant_output",
+        "assistant_output_under_review",
+        "mixed",
+        "unclear",
+      ])
+      .default("unclear"),
   })
   .strict();
 
@@ -100,11 +111,20 @@ export type ReviewResolverProcessOptions = {
 type ResolvedSourceEntry = {
   id: StreamEntryId;
   entry: StreamEntry | null;
+  taint: "none" | "assistant_output_under_review";
+  evidence_rank:
+    | "direct_user_or_source"
+    | "relational_slot"
+    | "trusted_memory"
+    | "assistant_output"
+    | "assistant_output_under_review"
+    | "missing";
 };
 type LoadedReviewContext = {
   target: unknown;
   sourceEntries: ResolvedSourceEntry[];
   missingSourceIds: StreamEntryId[];
+  taintedReviewedAssistantStreamIds: StreamEntryId[];
   payload: z.infer<typeof overseerFlagAuditPayloadSchema>;
 };
 type PreparedDecision =
@@ -209,13 +229,28 @@ function promptPayload(input: {
         unsupported_identity_or_temporal_shapes:
           "Use needs_manual when the supplied refs do not provide a supported bounded repair.",
       },
+      evidence_hierarchy: [
+        "direct user/source entries",
+        "relational slots",
+        "trusted memory",
+        "assistant outputs",
+      ],
+      taint_rule: {
+        assistant_output_under_review:
+          "Evidence pulled from the assistant utterance currently under review is suspect and cannot independently support the claim under review.",
+        disposition:
+          "If the only support for accept_repair is an assistant_output_under_review source, use needs_manual.",
+      },
       verdict_criteria: {
         accept_repair: [
           "The overseer's flag claim is correct.",
-          "The proposed patch is well-formed.",
-          "Applying it would produce a verifiably better memory state than current.",
-          "Example: a target says Alice wrote a deployment script, source entries clearly say Ben wrote it, and the patch surgically corrects that attribution.",
-        ],
+        "The proposed patch is well-formed.",
+        "Applying it would produce a verifiably better memory state than current.",
+        "The decision cites at least one source_bundle.source_entries item whose entry is present and whose taint is none.",
+        "The repair is supported by evidence above assistant outputs in the evidence hierarchy, or by a mixed bundle that does not rely on the assistant output under review as independent support.",
+        "Do not cite stream ids that are missing from the supplied source bundle as support for accept_repair.",
+        "Example: a target says Alice wrote a deployment script, source entries clearly say Ben wrote it, and the patch surgically corrects that attribution.",
+      ],
         dismiss_false_positive: [
           "The source bundle does not actually contradict the target.",
           "Example: the target says Alice reviewed a deployment script and the source confirms Alice reviewed it.",
@@ -237,6 +272,7 @@ function promptPayload(input: {
         overseer_flag: sanitizeRecord(input.loaded.payload),
         source_entries: sanitizeRecord(input.loaded.sourceEntries),
         missing_source_ids: input.loaded.missingSourceIds,
+        tainted_reviewed_assistant_stream_ids: input.loaded.taintedReviewedAssistantStreamIds,
       },
       resolver_will_supersede_semantic_node:
         input.item.kind === "misattribution" && input.meaningChangingSemanticPatch,
@@ -361,6 +397,34 @@ function idsFromUnknown(value: unknown): StreamEntryId[] {
   });
 }
 
+function idFromUnknown(value: unknown): StreamEntryId[] {
+  const parsed = streamEntryIdSchema.safeParse(value);
+
+  return parsed.success ? [parsed.data] : [];
+}
+
+function reviewedAssistantStreamIdsForItem(
+  item: ReviewQueueItem,
+  payload: z.infer<typeof overseerFlagAuditPayloadSchema>,
+): StreamEntryId[] {
+  const payloadRecord = payload as Record<string, unknown>;
+
+  return uniqueStreamIds([
+    ...idFromUnknown(item.refs.reviewed_assistant_stream_entry_id),
+    ...idFromUnknown(item.refs.assistant_stream_entry_id),
+    ...idFromUnknown(item.refs.assistant_output_stream_entry_id),
+    ...idsFromUnknown(item.refs.reviewed_assistant_stream_entry_ids),
+    ...idsFromUnknown(item.refs.assistant_stream_entry_ids),
+    ...idsFromUnknown(item.refs.assistant_output_stream_entry_ids),
+    ...idFromUnknown(payloadRecord.reviewed_assistant_stream_entry_id),
+    ...idFromUnknown(payloadRecord.assistant_stream_entry_id),
+    ...idFromUnknown(payloadRecord.assistant_output_stream_entry_id),
+    ...idsFromUnknown(payloadRecord.reviewed_assistant_stream_entry_ids),
+    ...idsFromUnknown(payloadRecord.assistant_stream_entry_ids),
+    ...idsFromUnknown(payloadRecord.assistant_output_stream_entry_ids),
+  ]);
+}
+
 function sourceStreamIdsForItem(
   item: ReviewQueueItem,
   payload: z.infer<typeof overseerFlagAuditPayloadSchema>,
@@ -369,7 +433,31 @@ function sourceStreamIdsForItem(
     ...idsFromUnknown(item.refs.evidence_stream_ids),
     ...(payload.source_stream_ids ?? []),
     ...(payload.cited_stream_ids ?? []),
+    ...reviewedAssistantStreamIdsForItem(item, payload),
   ]);
+}
+
+function evidenceRankForSourceEntry(input: {
+  entry: StreamEntry | null;
+  tainted: boolean;
+}): ResolvedSourceEntry["evidence_rank"] {
+  if (input.tainted) {
+    return "assistant_output_under_review";
+  }
+
+  if (input.entry === null) {
+    return "missing";
+  }
+
+  if (
+    input.entry.kind === "agent_msg" ||
+    input.entry.kind === "agent_observed" ||
+    input.entry.kind === "agent_suppressed"
+  ) {
+    return "assistant_output";
+  }
+
+  return "direct_user_or_source";
 }
 
 async function loadTarget(ctx: OfflineContext, item: ReviewQueueItem): Promise<unknown | null> {
@@ -411,10 +499,17 @@ async function loadReviewContext(
   }
 
   const sourceIds = sourceStreamIdsForItem(item, payload.data);
+  const taintedReviewedAssistantStreamIds = reviewedAssistantStreamIdsForItem(item, payload.data);
+  const taintedSourceIds = new Set(taintedReviewedAssistantStreamIds);
   const resolvedEntries = await ctx.retrievalPipeline.resolveSourceEntries(sourceIds);
-  const sourceEntries = sourceIds.map((id) => ({
+  const sourceEntries: ResolvedSourceEntry[] = sourceIds.map((id) => ({
     id,
     entry: resolvedEntries.get(id) ?? null,
+    taint: taintedSourceIds.has(id) ? "assistant_output_under_review" : "none",
+    evidence_rank: evidenceRankForSourceEntry({
+      entry: resolvedEntries.get(id) ?? null,
+      tainted: taintedSourceIds.has(id),
+    }),
   }));
   const missingSourceIds = sourceEntries.flatMap((source) =>
     source.entry === null ? [source.id] : [],
@@ -424,6 +519,7 @@ async function loadReviewContext(
     target,
     sourceEntries,
     missingSourceIds,
+    taintedReviewedAssistantStreamIds,
     payload: payload.data,
   };
 }
@@ -447,7 +543,7 @@ function semanticNodeSupersedeCorrectionRef(
   loaded: LoadedReviewContext,
 ): SemanticNodeCorrectionRef | null {
   const candidates = uniqueStreamIds([
-    ...verdict.cited_stream_ids,
+    ...loadedNonTaintedCitedStreamIds(verdict, loaded),
     ...idsFromUnknown(item.refs.evidence_stream_ids),
     ...(loaded.payload.cited_stream_ids ?? []),
     ...(loaded.payload.source_stream_ids ?? []),
@@ -460,6 +556,19 @@ function semanticNodeSupersedeCorrectionRef(
   return null;
 }
 
+function loadedNonTaintedCitedStreamIds(
+  verdict: ReviewResolverVerdict,
+  loaded: LoadedReviewContext,
+): StreamEntryId[] {
+  const loadedNonTaintedSourceIds = new Set(
+    loaded.sourceEntries.flatMap((source) =>
+      source.entry !== null && source.taint === "none" ? [source.id] : [],
+    ),
+  );
+
+  return verdict.cited_stream_ids.filter((streamId) => loadedNonTaintedSourceIds.has(streamId));
+}
+
 function needsManual(reason: string, diagnosticReason = reason): PreparedDecision {
   return {
     action: "needs_manual",
@@ -469,11 +578,49 @@ function needsManual(reason: string, diagnosticReason = reason): PreparedDecisio
   };
 }
 
+function acceptRepairCitationFailure(input: {
+  verdict: ReviewResolverVerdict;
+  loaded: LoadedReviewContext;
+}): string | null {
+  if (input.verdict.verdict !== "accept_repair") {
+    return null;
+  }
+
+  if (
+    input.verdict.support_basis === "assistant_output_under_review"
+  ) {
+    return "tainted_assistant_output_under_review_cannot_independently_support_claim";
+  }
+
+  if (input.verdict.cited_stream_ids.length === 0) {
+    return "accept_repair_requires_loaded_non_tainted_citation";
+  }
+
+  const tainted = new Set(input.loaded.taintedReviewedAssistantStreamIds);
+
+  if (loadedNonTaintedCitedStreamIds(input.verdict, input.loaded).length > 0) {
+    return null;
+  }
+
+  return input.verdict.cited_stream_ids.some((streamId) => tainted.has(streamId))
+    ? "tainted_assistant_output_under_review_cannot_independently_support_claim"
+    : "accept_repair_requires_loaded_non_tainted_citation";
+}
+
 function decisionFromVerdict(input: {
   item: ReviewQueueItem;
   verdict: ReviewResolverVerdict;
   loaded: LoadedReviewContext;
 }): PreparedDecision {
+  const citationFailure = acceptRepairCitationFailure(input);
+
+  if (citationFailure !== null) {
+    return needsManual(
+      "accept_repair requires at least one loaded non-tainted source citation",
+      citationFailure,
+    );
+  }
+
   if (input.verdict.verdict === "needs_manual") {
     return needsManual(input.verdict.reason);
   }

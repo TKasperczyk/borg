@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { SystemClock } from "../../util/clock.js";
+import type { StreamEntryId } from "../../util/ids.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import {
   mergeSemanticBeliefRevisionResult,
@@ -72,6 +73,52 @@ function emptyPatch(): EmitSharedStatePatch {
   return { operations: [] };
 }
 
+function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
+  const seen = new Set<string>();
+  const unique: StreamEntryId[] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+    unique.push(id);
+  }
+
+  return unique;
+}
+
+function relationalSlotEvidenceStreamEntryIds(
+  input: Pick<CompileSharedStateArtifactInput, "relationalSlotsContext">,
+): StreamEntryId[] {
+  return uniqueStreamEntryIds(
+    (input.relationalSlotsContext ?? []).flatMap((slot) => slot.evidence_stream_entry_ids),
+  );
+}
+
+function trustedSourceStreamEntryIds(
+  streamEntryIds: readonly StreamEntryId[],
+  input: Pick<CompileSharedStateArtifactInput, "sourceTrustValidator">,
+): StreamEntryId[] {
+  return streamEntryIds.filter(
+    (streamEntryId) => input.sourceTrustValidator?.(streamEntryId).allowed !== false,
+  );
+}
+
+function offLimitsSourceStreamEntryIds(
+  streamEntryIds: readonly StreamEntryId[],
+  input: Pick<CompileSharedStateArtifactInput, "sourceTrustValidator">,
+): StreamEntryId[] {
+  if (input.sourceTrustValidator === undefined) {
+    return [];
+  }
+
+  return streamEntryIds.filter(
+    (streamEntryId) => input.sourceTrustValidator?.(streamEntryId).allowed === false,
+  );
+}
+
 async function degraded(
   input: CompileSharedStateArtifactInput,
   reason: SharedStateCompileDegradedReason,
@@ -108,6 +155,18 @@ export async function compileSharedStateArtifact(
     input.previousArtifactSummaryOptions,
   );
   const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
+  const relationalSlotSourceStreamEntryIds = relationalSlotEvidenceStreamEntryIds(input);
+  const allowedSourceStreamEntryIdsForPrompt =
+    input.allowedSourceStreamEntryIds === undefined
+      ? undefined
+      : uniqueStreamEntryIds([
+          ...input.allowedSourceStreamEntryIds,
+          ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
+        ]);
+  const offLimitsSourceStreamEntryIdsForPrompt = uniqueStreamEntryIds([
+    ...(input.offLimitsSourceStreamEntryIds ?? []),
+    ...offLimitsSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
+  ]);
   const messages = buildSharedStateArtifactMessages({
     audienceEntityId: input.audienceEntityId,
     selfEntityId: input.selfEntityId,
@@ -118,8 +177,9 @@ export async function compileSharedStateArtifact(
     promptVisibleLedger: input.promptVisibleLedger,
     previousArtifactSummary,
     canonicalizationCandidates,
-    allowedSourceStreamEntryIds: input.allowedSourceStreamEntryIds,
-    offLimitsSourceStreamEntryIds: input.offLimitsSourceStreamEntryIds,
+    relationalSlotsContext: input.relationalSlotsContext,
+    allowedSourceStreamEntryIds: allowedSourceStreamEntryIdsForPrompt,
+    offLimitsSourceStreamEntryIds: offLimitsSourceStreamEntryIdsForPrompt,
   });
   const tools = [SHARED_STATE_TOOL];
   const ledgerMode = input.ledgerMode ?? "full_fallback";
@@ -221,9 +281,9 @@ export async function compileSharedStateArtifact(
   }
 
   const allowedSourceStreamEntryIds =
-    input.allowedSourceStreamEntryIds === undefined
+    allowedSourceStreamEntryIdsForPrompt === undefined
       ? null
-      : new Set(input.allowedSourceStreamEntryIds);
+      : new Set(allowedSourceStreamEntryIdsForPrompt);
   const normalized = normalizePatch({
     patch: parsed,
     previousArtifact,

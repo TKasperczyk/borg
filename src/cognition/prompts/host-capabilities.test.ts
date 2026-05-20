@@ -24,4 +24,10 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
       'Avoid unqualified "I\'ll prompt you"',
     );
   });
+
+  it("includes relationship-label grounding guidance", () => {
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("Relationship label grounding");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("sibling, partner, spouse");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("direct evidence supports it");
+  });
 });

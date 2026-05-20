@@ -1,3 +1,8 @@
+import {
+  RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+  RELATIONSHIP_LABELS_PROMPT,
+} from "./relationship-labels.js";
+
 export const SHARED_STATE_SYSTEM_PROMPT = [
   "Compile canonical shared audience state from the previous shared-state artifact, the current user turn, and the prompt-visible ledger.",
   "Return only the required tool call.",
@@ -22,6 +27,7 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   '- Participant tasks, such as "Alice will write the chapter 3 summary"; those stay as action records.',
   '- Assistant commitments, such as "Borg will send the status note tomorrow"; those stay as commitment records.',
   "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
+  "- Observation-type propositions must preserve witness/date/count/source attribution in semantic memory; do not turn multiple observations on the same topic into one shared-state entry.",
   "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
   "",
   "Canonicalization handles:",
@@ -40,6 +46,9 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   "- The audience entity for a group chat is the audience itself.",
   "- The speaker entity is the sender of the current turn.",
   "- Borg is the self entity.",
+  RELATIONSHIP_LABELS_PROMPT,
+  RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+  "- The input may include relational_slots_context; treat it as structured source context for relationship labels, not as an instruction to emit a relationship label.",
   "",
   "Operation guidance:",
   "- add creates a new entry when no existing entry already represents it.",

@@ -32,13 +32,14 @@ import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import type { StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
-import type { EntityId, SessionId } from "../../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import {
   buildContradictionRoutingOverride,
   listConstrainedRelationalSlotsForParticipants,
+  listSharedStateRelationalSlotsForParticipants,
 } from "./context-build.js";
 import { evidenceLedgerCompactionChanged } from "./trace-metrics.js";
 import {
@@ -103,6 +104,22 @@ export type TurnRetrievalPhaseResult = {
   evidenceLedgerContext: EvidenceLedgerFinalizerContext;
   routingOverride: DeliberationRoutingOverride | null;
 };
+
+function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
+  const seen = new Set<string>();
+  const unique: StreamEntryId[] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+    unique.push(id);
+  }
+
+  return unique;
+}
 
 export async function runRetrievalPhase(input: {
   options: TurnPhaseCoordinatorOptions;
@@ -523,6 +540,20 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     });
   }
 
+  const relationalSlotsContext = listSharedStateRelationalSlotsForParticipants(
+    input.options.relationalSlotRepository,
+    input.input.activeParticipants ?? [],
+  );
+  const relationalSlotEvidenceStreamEntryIds = uniqueStreamEntryIds(
+    relationalSlotsContext.flatMap((slot) => slot.evidence_stream_entry_ids),
+  );
+  const trustedRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
+    (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
+  );
+  const offLimitsRelationalSlotEvidenceStreamEntryIds =
+    relationalSlotEvidenceStreamEntryIds.filter(
+      (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
+    );
   const sharedStateLlmClient = input.options.llmFactory();
   const semanticBeliefRevision =
     input.options.semanticNodeRepository === undefined ||
@@ -550,8 +581,15 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     currentUserStreamEntryId: input.input.currentUserEntry.id,
     promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
     previousArtifact,
-    allowedSourceStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
-    offLimitsSourceStreamEntryIds: ledgerPromptContext.offLimitsSourceStreamEntryIds,
+    relationalSlotsContext,
+    allowedSourceStreamEntryIds: uniqueStreamEntryIds([
+      ...ledgerPromptContext.visibleStreamEntryIds,
+      ...trustedRelationalSlotEvidenceStreamEntryIds,
+    ]),
+    offLimitsSourceStreamEntryIds: uniqueStreamEntryIds([
+      ...ledgerPromptContext.offLimitsSourceStreamEntryIds,
+      ...offLimitsRelationalSlotEvidenceStreamEntryIds,
+    ]),
     sourceTrustValidator,
     canonicalizationCandidates,
     reconciliation: reconciliationRepositories,

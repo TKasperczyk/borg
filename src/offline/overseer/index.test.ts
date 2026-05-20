@@ -13,8 +13,10 @@ import {
   createSemanticNodeFixture,
 } from "../test-support.js";
 import { OverseerProcess } from "./index.js";
+import { ReviewResolverProcess } from "../review-resolver/index.js";
 
 const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
+const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 
 function createOverseerResponse(flags: unknown[], inputTokens = 12, outputTokens = 8) {
@@ -28,6 +30,22 @@ function createOverseerResponse(flags: unknown[], inputTokens = 12, outputTokens
         id: "toolu_1",
         name: OVERSEER_TOOL_NAME,
         input: { flags },
+      },
+    ],
+  };
+}
+
+function createReviewResolverResponse(input: Record<string, unknown>) {
+  return {
+    text: "",
+    input_tokens: 7,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_review_resolver",
+        name: REVIEW_RESOLVER_TOOL_NAME,
+        input,
       },
     ],
   };
@@ -931,6 +949,88 @@ describe("overseer process", () => {
         evidence_stream_ids: [source.id],
       },
     });
+  });
+
+  it("tags assistant-authored overseer evidence so the resolver treats it as tainted", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(
+      harness,
+      "Borg called Priya one of the three siblings.",
+      "agent_msg",
+    );
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([source.id], {
+          reason: "The target copied Borg's own sibling label.",
+          patch: {
+            narrative: "Nora and Julian are siblings; Priya is Nora's partner.",
+          },
+        }),
+      ]),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Assistant sibling label",
+          narrative: "Nora, Julian, and Priya are the three siblings.",
+          participants: ["Nora", "Julian", "Priya"],
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const overseer = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await overseer.plan(ctx, {});
+    await overseer.apply(ctx, plan);
+    const review = harness.reviewQueueRepository.getOpen()[0];
+
+    expect(review).toBeDefined();
+
+    expect(review).toMatchObject({
+      kind: "misattribution",
+      refs: {
+        evidence_stream_ids: [source.id],
+        reviewed_assistant_stream_entry_ids: [source.id],
+      },
+    });
+
+    llm.pushResponse(
+      createReviewResolverResponse({
+        verdict: "accept_repair",
+        reason: "The only cited source is the assistant utterance under review.",
+        cited_stream_ids: [source.id],
+      }),
+    );
+
+    const resolver = new ReviewResolverProcess({
+      db: harness.db,
+      maxItemsPerPass: 1,
+    });
+    await resolver.run(harness.createContext(), {});
+    const open = harness.reviewQueueRepository.get(review!.id);
+    const resolverPrompt = requestPrompt(llm, 1);
+
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "tainted_assistant_output_under_review_cannot_independently_support_claim",
+    });
+    expect(resolverPrompt).toContain("assistant_output_under_review");
   });
 
   it("queues temporal drift reviews for semantic edges without mutating them", async () => {

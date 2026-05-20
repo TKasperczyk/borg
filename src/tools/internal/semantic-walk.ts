@@ -50,6 +50,7 @@ function toSemanticWalkNodeOutput(
     description: node.description,
     domain: node.domain,
     aliases: node.aliases,
+    observation_metadata: node.observation_metadata,
     confidence: node.confidence,
     source_episode_ids: node.source_episode_ids,
     created_at: node.created_at,

@@ -109,6 +109,7 @@ function makeSemanticNode(input: {
     description: "A semantic proposition derived from an assistant self-report episode.",
     domain: null,
     aliases: [],
+    observation_metadata: null,
     confidence: 0.7,
     source_episode_ids: [input.episodeId],
     created_at: NOW_MS,

@@ -62,6 +62,17 @@ const float32ArraySchema = z.custom<Float32Array>((value) => value instanceof Fl
   message: "Expected Float32Array embedding",
 });
 
+export const semanticObservationMetadataSchema = z
+  .object({
+    witness: z.string().min(1).nullable().default(null),
+    timeframe: z.string().min(1).nullable().default(null),
+    count_or_intensity: z.string().min(1).nullable().default(null),
+    source_kind: z.string().min(1).nullable().default(null),
+    confidence: z.number().min(0).max(1).nullable().default(null),
+    status: z.string().min(1).nullable().default(null),
+  })
+  .strict();
+
 export const semanticNodeSchema = z.object({
   id: semanticNodeIdSchema,
   kind: semanticNodeKindSchema,
@@ -69,6 +80,7 @@ export const semanticNodeSchema = z.object({
   description: z.string().min(1),
   domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
+  observation_metadata: semanticObservationMetadataSchema.nullable().default(null),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(episodeIdSchema).min(1),
   created_at: z.number().finite(),
@@ -132,6 +144,7 @@ export const semanticEdgePatchSchema = semanticEdgeBaseSchema
   .partial();
 
 export type SemanticNode = z.infer<typeof semanticNodeSchema>;
+export type SemanticObservationMetadata = z.infer<typeof semanticObservationMetadataSchema>;
 export type SemanticNodeStatus = z.infer<typeof semanticNodeStatusSchema>;
 export type SemanticNodeCorrectionRef = z.infer<typeof semanticNodeCorrectionRefSchema>;
 export type SemanticNodePatch = z.infer<typeof semanticNodePatchSchema>;

@@ -26,6 +26,7 @@ import {
   createEntityId,
   createGoalId,
   createOpenQuestionId,
+  createRelationalSlotId,
   createStreamEntryId,
   type EntityId,
   type StreamEntryId,
@@ -196,6 +197,89 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("shared planning decision state");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Relationship label grounding");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("cite the supporting relational slot or stream entry");
+  });
+
+  it("passes relational slots as structured compiler context", async () => {
+    const slotSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [currentStreamEntryId, slotSource],
+      relationalSlotsContext: [
+        {
+          id: createRelationalSlotId(),
+          subject_entity_id: alice,
+          slot_key: "partner.name",
+          value: "Priya",
+          state: "established",
+          evidence_stream_entry_ids: [slotSource],
+          contradicted_by_stream_entry_ids: [],
+          alternate_values: [],
+        },
+      ],
+    });
+
+    const content = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content ?? "{}")) as {
+      relational_slots_context?: unknown;
+    };
+
+    expect(content.relational_slots_context).toEqual([
+      expect.objectContaining({
+        subject_entity_id: alice,
+        slot_key: "partner.name",
+        value: "Priya",
+        state: "established",
+        evidence_stream_entry_ids: [slotSource],
+      }),
+    ]);
+  });
+
+  it("allows prompt-visible relational-slot evidence ids as shared-state citations", async () => {
+    const slotSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Priya is Avery's partner for care-planning context.",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [slotSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [currentStreamEntryId],
+      relationalSlotsContext: [
+        {
+          id: createRelationalSlotId(),
+          subject_entity_id: alice,
+          slot_key: "partner.name",
+          value: "Priya",
+          state: "established",
+          evidence_stream_entry_ids: [slotSource],
+          contradicted_by_stream_entry_ids: [],
+          alternate_values: [],
+        },
+      ],
+    });
+
+    expect(activeEntries()).toEqual([
+      expect.objectContaining({
+        text: "Priya is Avery's partner for care-planning context.",
+        provenance_stream_entry_ids: [slotSource],
+      }),
+    ]);
   });
 
   it("adds a locked decision emitted by the LLM", async () => {

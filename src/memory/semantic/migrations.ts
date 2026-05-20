@@ -160,4 +160,23 @@ export const semanticMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "semantic_node_observation_metadata",
+    up: (db) => {
+      if (!tableExists(db, "semantic_nodes")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "semantic_nodes", "observation_metadata")) {
+        db.exec("ALTER TABLE semantic_nodes ADD COLUMN observation_metadata TEXT NULL");
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS semantic_nodes_observation_metadata_idx
+          ON semantic_nodes(observation_metadata)
+          WHERE observation_metadata IS NOT NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

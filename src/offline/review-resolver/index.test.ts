@@ -5,7 +5,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/tracing/tracer.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
 import { createEpisodeFixture, createOfflineTestHarness, createSemanticNodeFixture } from "../test-support.js";
 import { ReviewResolverProcess } from "./index.js";
 
@@ -67,13 +67,33 @@ async function insertSource(harness: OfflineHarness, content: string) {
   return { entry, episode };
 }
 
+async function insertAssistantSource(harness: OfflineHarness, content: string) {
+  const entry = await harness.streamWriter.append({
+    kind: "agent_msg",
+    content,
+  });
+  const episode = await harness.episodicRepository.insert(
+    createEpisodeFixture({
+      narrative: content,
+      source_stream_ids: [entry.id],
+    }),
+  );
+
+  return { entry, episode };
+}
+
 function overseerFlag(input: {
   kind: "misattribution" | "identity_inconsistency" | "temporal_drift";
   reason: string;
   sourceEntryId: StreamEntryId;
   sourceEpisodeId: Episode["id"];
+  sourceEntryIds?: StreamEntryId[];
+  sourceEpisodeIds?: Episode["id"][];
   patch?: Record<string, unknown>;
 }) {
+  const sourceEntryIds = input.sourceEntryIds ?? [input.sourceEntryId];
+  const sourceEpisodeIds = input.sourceEpisodeIds ?? [input.sourceEpisodeId];
+
   return {
     kind: input.kind,
     flag_kind: input.kind,
@@ -81,11 +101,11 @@ function overseerFlag(input: {
     confidence: 0.9,
     ...(input.patch === undefined ? {} : { patch: input.patch }),
     source_assessment: "supports_flag",
-    cited_stream_ids: [input.sourceEntryId],
+    cited_stream_ids: sourceEntryIds,
     quoted_span: "deployment script",
     audience_entities: [],
-    source_episode_ids: [input.sourceEpisodeId],
-    source_stream_ids: [input.sourceEntryId],
+    source_episode_ids: sourceEpisodeIds,
+    source_stream_ids: sourceEntryIds,
   };
 }
 
@@ -176,6 +196,55 @@ async function enqueueEpisodeMisattribution(harness: OfflineHarness) {
   return {
     item,
     episodeId: episode.id,
+    sourceEntryId: source.entry.id,
+  };
+}
+
+async function enqueueTaintedSemanticMisattribution(
+  harness: OfflineHarness,
+  legitimateSource?: Awaited<ReturnType<typeof insertSource>>,
+) {
+  const tainted = await insertAssistantSource(
+    harness,
+    "Borg called Priya one of the three siblings.",
+  );
+  const evidenceSources = legitimateSource === undefined ? [tainted] : [tainted, legitimateSource];
+  const patch = {
+    description: "Nora and Julian are siblings; Priya is Nora's partner.",
+  };
+  const node = await harness.semanticNodeRepository.insert(
+    createSemanticNodeFixture({
+      label: "Family sibling group",
+      description: "Nora, Julian, and Priya are the three siblings.",
+      source_episode_ids: evidenceSources.map((source) => source.episode.id),
+    }),
+  );
+  const item = harness.reviewQueueRepository.enqueue({
+    kind: "misattribution",
+    reason: "The node may have laundered Borg's own sibling label.",
+    refs: {
+      target_type: "semantic_node",
+      target_id: node.id,
+      patch,
+      evidence_stream_ids: evidenceSources.map((source) => source.entry.id),
+      reviewed_assistant_stream_entry_id: tainted.entry.id,
+      overseer_flag: overseerFlag({
+        kind: "misattribution",
+        reason: "The node may have laundered Borg's own sibling label.",
+        sourceEntryId: tainted.entry.id,
+        sourceEpisodeId: tainted.episode.id,
+        sourceEntryIds: evidenceSources.map((source) => source.entry.id),
+        sourceEpisodeIds: evidenceSources.map((source) => source.episode.id),
+        patch,
+      }),
+    },
+  });
+
+  return {
+    item,
+    node,
+    taintedSourceEntryId: tainted.entry.id,
+    legitimateSourceEntryId: legitimateSource?.entry.id ?? null,
   };
 }
 
@@ -281,6 +350,151 @@ describe("review resolver process", () => {
     expect(node?.status).toBe("active");
   });
 
+  it("does not accept a repair supported only by the assistant output under review", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { item, node, taintedSourceEntryId } =
+      await enqueueTaintedSemanticMisattribution(harness);
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The cited utterance says Priya was treated as a sibling.",
+        cited_stream_ids: [taintedSourceEntryId],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const storedNode = await harness.semanticNodeRepository.get(node.id);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.candidate_stats).toMatchObject({
+      proposed: 1,
+      accepted: 0,
+    });
+    expect(open).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "tainted_assistant_output_under_review_cannot_independently_support_claim",
+    });
+    expect(storedNode?.status).toBe("active");
+    expect(prompt).toContain("evidence_hierarchy");
+    expect(prompt).toContain("assistant_output_under_review");
+    expect(prompt).toContain("cannot independently support the claim");
+  });
+
+  it("does not accept a zero-citation repair", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { item, nodeId } = await enqueueSemanticMisattribution(harness, {
+      descriptionPatch: "Ben wrote the deployment script.",
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The repair is asserted without a citation.",
+        cited_stream_ids: [],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const node = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(result.candidate_stats).toMatchObject({
+      accepted: 0,
+    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "accept_repair_requires_loaded_non_tainted_citation",
+    });
+    expect(node?.status).toBe("active");
+  });
+
+  it("does not accept a repair cited by tainted and unloaded sources only", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { item, node, taintedSourceEntryId } =
+      await enqueueTaintedSemanticMisattribution(harness);
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The repair cites one tainted source and one unloaded source.",
+        cited_stream_ids: [taintedSourceEntryId, createStreamEntryId()],
+      }),
+    );
+
+    await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const storedNode = await harness.semanticNodeRepository.get(node.id);
+
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "tainted_assistant_output_under_review_cannot_independently_support_claim",
+    });
+    expect(storedNode?.status).toBe("active");
+  });
+
+  it("accepts a tainted citation only when a loaded non-tainted citation also supports it", async () => {
+    const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      tracer,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const legitimate = await insertSource(
+      harness,
+      "Nora and Julian are siblings; Priya is Nora's partner.",
+    );
+    const { item, node, taintedSourceEntryId, legitimateSourceEntryId } =
+      await enqueueTaintedSemanticMisattribution(harness, legitimate);
+
+    if (legitimateSourceEntryId === null) {
+      throw new Error("expected legitimate source entry id");
+    }
+
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The user source supports the repair independently of the tainted utterance.",
+        cited_stream_ids: [taintedSourceEntryId, legitimateSourceEntryId],
+        support_basis: "mixed",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const storedNode = await harness.semanticNodeRepository.get(node.id);
+
+    expect(result.candidate_stats).toMatchObject({
+      accepted: 1,
+    });
+    expect(resolved?.resolution).toBe("accept");
+    expect(resolved?.refs.__borg_review_resolver_repair).toMatchObject({
+      mode: "repair_via_supersede",
+      corrected_by: legitimateSourceEntryId,
+    });
+    expect(storedNode?.status).toBe("superseded");
+    expect(storedNode?.corrected_by).toBe(legitimateSourceEntryId);
+  });
+
   it("allows manual resolution after a needs_manual diagnostic is present", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
@@ -376,12 +590,12 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
-    const { item, episodeId } = await enqueueEpisodeMisattribution(harness);
+    const { item, episodeId, sourceEntryId } = await enqueueEpisodeMisattribution(harness);
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
         reason: "The source clearly identifies Ben as the helper author.",
-        cited_stream_ids: [],
+        cited_stream_ids: [sourceEntryId],
       }),
     );
 
@@ -427,7 +641,7 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
-    const { item } = await enqueueEpisodeMisattribution(harness);
+    const { item, sourceEntryId } = await enqueueEpisodeMisattribution(harness);
     vi.spyOn(harness.episodicRepository, "update").mockRejectedValue(
       new Error("repair handler failed"),
     );
@@ -435,7 +649,7 @@ describe("review resolver process", () => {
       resolverResponse({
         verdict: "accept_repair",
         reason: "The alias patch is supported by the source.",
-        cited_stream_ids: [],
+        cited_stream_ids: [sourceEntryId],
       }),
     );
 

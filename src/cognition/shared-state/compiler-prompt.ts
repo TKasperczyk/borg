@@ -9,6 +9,7 @@ import type {
   SharedStateCanonicalizationCandidate,
   SharedStateCanonicalizationCandidates,
   SharedStateCommitmentCanonicalizationCandidate,
+  SharedStateRelationalSlotContext,
 } from "./schema.js";
 
 export function buildCanonicalizationCandidatePromptPayload(
@@ -37,6 +38,7 @@ export function buildSharedStateArtifactMessages(input: {
   promptVisibleLedger: string;
   previousArtifactSummary: SharedStatePromptSummary | null;
   canonicalizationCandidates: SharedStateCanonicalizationCandidates;
+  relationalSlotsContext?: readonly SharedStateRelationalSlotContext[];
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
   offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
 }): LLMMessage[] {
@@ -66,6 +68,19 @@ export function buildSharedStateArtifactMessages(input: {
         },
         previous_artifact_summary: input.previousArtifactSummary,
         canonicalization_candidates: canonicalizationCandidates,
+        relational_slots_context: (input.relationalSlotsContext ?? []).map((slot) => ({
+          id: slot.id,
+          subject_entity_id: slot.subject_entity_id,
+          slot_key: slot.slot_key,
+          value: slot.value,
+          state: slot.state,
+          evidence_stream_entry_ids: slot.evidence_stream_entry_ids,
+          contradicted_by_stream_entry_ids: slot.contradicted_by_stream_entry_ids,
+          alternate_values: slot.alternate_values.map((alternate) => ({
+            value: alternate.value,
+            evidence_stream_entry_ids: alternate.evidence_stream_entry_ids,
+          })),
+        })),
         prompt_visible_ledger: input.promptVisibleLedger,
       }),
     },

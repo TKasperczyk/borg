@@ -132,6 +132,8 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("Distinguish temporally bounded events");
     expect(prompt).toContain("do not collapse event-scoped language");
     expect(prompt).toContain("prefer the narrower event-scoped interpretation");
+    expect(prompt).toContain("observation_metadata");
+    expect(prompt).toContain("Distinct witness, timeframe/date, count_or_intensity");
   });
 
   it("extracts nodes and edges, rejects hallucinated refs, and merges duplicates", async () => {
@@ -1446,6 +1448,125 @@ describe("semantic extractor", () => {
         label: "Artisanal craft",
         domain: "artisanal-craft",
       }),
+    ]);
+  });
+
+  it("preserves distinct observation nodes with different timeframe and count metadata", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const firstEpisode = buildEpisode(
+      "ep_aaaaaaaaaaaaaaaa" as Episode["id"],
+      "Early April video call",
+      {
+        narrative: "Nora observed Ruth repeat the same question three times on a video call.",
+      },
+    );
+    const secondEpisode = buildEpisode(
+      "ep_bbbbbbbbbbbbbbbb" as Episode["id"],
+      "Mid April video call",
+      {
+        narrative: "Nora observed Ruth repeat the same question five times on a later video call.",
+      },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "proposition",
+              label: "Ruth repeated a question during a video call",
+              description:
+                "Nora observed Ruth repeat the same question three times during the early April video call.",
+              domain: "family",
+              aliases: [],
+              observation_metadata: {
+                witness: "Nora",
+                timeframe: "early April video call",
+                count_or_intensity: "three repetitions",
+                source_kind: "direct_observation",
+                confidence: 0.7,
+                status: "observed",
+              },
+              confidence: 0.7,
+              source_episode_ids: [firstEpisode.id],
+            },
+          ],
+          edges: [],
+        }),
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "proposition",
+              label: "Ruth repeated a question during a video call",
+              description:
+                "Nora observed Ruth repeat the same question five times during the mid-April video call.",
+              domain: "family",
+              aliases: [],
+              observation_metadata: {
+                witness: "Nora",
+                timeframe: "mid-April video call",
+                count_or_intensity: "five repetitions",
+                source_kind: "direct_observation",
+                confidence: 0.7,
+                status: "observed",
+              },
+              confidence: 0.7,
+              source_episode_ids: [secondEpisode.id],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([firstEpisode, secondEpisode]),
+      llmClient: llm,
+      model: "haiku",
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await extractor.extractFromEpisodes([firstEpisode]);
+    const secondResult = await extractor.extractFromEpisodes([secondEpisode]);
+    const nodes = await nodeRepository.list({
+      limit: 10,
+    });
+
+    expect(secondResult).toMatchObject({
+      insertedNodes: 1,
+      updatedNodes: 0,
+    });
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => node.observation_metadata?.count_or_intensity).sort()).toEqual([
+      "five repetitions",
+      "three repetitions",
     ]);
   });
 });

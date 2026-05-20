@@ -909,6 +909,7 @@ export function createSemanticNodeFixture(
       "Rollback planning tends to reduce deployment mistakes in the release workflow.",
     domain: overrides.domain ?? null,
     aliases: overrides.aliases ?? [],
+    observation_metadata: overrides.observation_metadata ?? null,
     confidence: overrides.confidence ?? 0.5,
     source_episode_ids: overrides.source_episode_ids ?? [createEpisodeId()],
     created_at: nowMs,

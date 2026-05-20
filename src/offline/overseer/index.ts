@@ -13,7 +13,7 @@ import {
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
-import { streamEntryIdSchema } from "../../stream/index.js";
+import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
@@ -153,6 +153,49 @@ function parseFlags(result: LLMCompleteResult) {
   }
 
   return overseerResponseSchema.parse(call.input);
+}
+
+function isAssistantAuthoredReviewSource(entry: Pick<StreamEntry, "kind">): boolean {
+  return (
+    entry.kind === "agent_msg" ||
+    entry.kind === "agent_observed" ||
+    entry.kind === "agent_suppressed"
+  );
+}
+
+function uniqueStreamIds(ids: readonly z.infer<typeof streamEntryIdSchema>[]) {
+  const seen = new Set<string>();
+  const unique: z.infer<typeof streamEntryIdSchema>[] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+    unique.push(id);
+  }
+
+  return unique;
+}
+
+async function assistantAuthoredCitedStreamEntryIds(
+  ctx: OfflineContext,
+  citedStreamIds: readonly z.infer<typeof streamEntryIdSchema>[] | undefined,
+) {
+  if (citedStreamIds === undefined || citedStreamIds.length === 0) {
+    return [];
+  }
+
+  const resolved = await ctx.retrievalPipeline.resolveSourceEntries(citedStreamIds);
+
+  return uniqueStreamIds(
+    citedStreamIds.filter((streamEntryId) => {
+      const entry = resolved.get(streamEntryId);
+
+      return entry !== undefined && isAssistantAuthoredReviewSource(entry);
+    }),
+  );
 }
 
 function summarizeSelfState(ctx: OfflineContext): string {
@@ -564,6 +607,10 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
     };
 
     for (const item of plan.items) {
+      const reviewedAssistantStreamEntryIds =
+        item.kind === "misattribution"
+          ? await assistantAuthoredCitedStreamEntryIds(ctx, item.cited_stream_ids)
+          : [];
       const repairRefs =
         item.kind === "identity_inconsistency"
           ? item.target_type === "semantic_edge"
@@ -600,6 +647,9 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 ...(item.cited_stream_ids === undefined
                   ? {}
                   : { evidence_stream_ids: item.cited_stream_ids }),
+                ...(reviewedAssistantStreamEntryIds.length === 0
+                  ? {}
+                  : { reviewed_assistant_stream_entry_ids: reviewedAssistantStreamEntryIds }),
                 proposed_provenance: proposedProvenance,
               }
             : item.kind === "temporal_drift"

@@ -11,6 +11,7 @@ import {
   type SharedStateSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import type { Clock } from "../../util/clock.js";
+import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import type {
   ActionId,
   CommitmentId,
@@ -174,6 +175,18 @@ export type SharedStateCanonicalizationCandidates = {
   openQuestions?: readonly SharedStateCanonicalizationCandidate[];
 };
 
+export type SharedStateRelationalSlotContext = Pick<
+  RelationalSlot,
+  | "id"
+  | "subject_entity_id"
+  | "slot_key"
+  | "value"
+  | "state"
+  | "evidence_stream_entry_ids"
+  | "contradicted_by_stream_entry_ids"
+  | "alternate_values"
+>;
+
 export type SharedStateCompileDegradedReason =
   | "llm_unavailable"
   | "repository_unavailable"
@@ -202,6 +215,7 @@ export type CompileSharedStateArtifactInput = {
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;
   previousArtifact?: SharedStateArtifact | null;
+  relationalSlotsContext?: readonly SharedStateRelationalSlotContext[];
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
   offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
   sourceTrustValidator?: SharedStateSourceTrustValidator;

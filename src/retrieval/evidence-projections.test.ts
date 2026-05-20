@@ -258,6 +258,7 @@ function semanticNode(id: SemanticNodeId, label: string): SemanticNode {
     description: `${label} description`,
     domain: null,
     aliases: [],
+    observation_metadata: null,
     confidence: 0.9,
     source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as EpisodeId],
     created_at: 1,

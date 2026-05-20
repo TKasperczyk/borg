@@ -1,3 +1,5 @@
+import { RELATIONSHIP_LABELS_PROMPT } from "./relationship-labels.js";
+
 export const BORG_HOST_CAPABILITY_CATEGORIES = ["allowed", "impossible"] as const;
 export type BorgHostCapabilityCategory = (typeof BORG_HOST_CAPABILITY_CATEGORIES)[number];
 
@@ -88,6 +90,8 @@ export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   '- Avoid unqualified "I\'ll prompt you", "I\'ll surface it when...", or "I\'ll wait and remind..."; those imply proactive outbound capability.',
   "",
   "If a candidate requires an impossible capability, do not treat it as Borg-owned work. Borg can offer current-turn drafting, remember conversation-grounded state, or help interpret user-provided data instead.",
+  "",
+  RELATIONSHIP_LABELS_PROMPT,
 ].join("\n");
 
 export const DEFAULT_HOST_CAPABILITIES_SECTION = [

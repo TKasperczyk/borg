@@ -125,6 +125,34 @@ export function listConstrainedRelationalSlotsForParticipants(
     .slice(0, DELIBERATION_RELATIONAL_SLOT_LIMIT);
 }
 
+export function listSharedStateRelationalSlotsForParticipants(
+  repository: Pick<RelationalSlotRepository, "list"> | undefined,
+  participants: readonly ActiveParticipant[],
+) {
+  const states = ["established", "contested", "quarantined"] as const;
+
+  if (repository === undefined) {
+    return [];
+  }
+
+  if (participants.length === 0) {
+    return repository.list({
+      states,
+      limit: DELIBERATION_RELATIONAL_SLOT_LIMIT,
+    });
+  }
+
+  return participants
+    .flatMap((participant) =>
+      repository.list({
+        subjectEntityId: participant.entityId,
+        states,
+        limit: DELIBERATION_RELATIONAL_SLOT_LIMIT,
+      }),
+    )
+    .slice(0, DELIBERATION_RELATIONAL_SLOT_LIMIT);
+}
+
 export function audienceProfileForParticipants(
   participantProfiles: readonly ParticipantProfileContext[],
   audienceEntityId: EntityId | null,

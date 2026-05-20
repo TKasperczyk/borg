@@ -20,6 +20,11 @@ import {
   familyAgingParentArcs,
   familyAgingParentScenario,
 } from "./family-aging-parent.js";
+import {
+  kinshipCorrectnessArcKeys,
+  kinshipCorrectnessArcs,
+  kinshipCorrectnessScenario,
+} from "./kinship-correctness.js";
 import { findSimulatorScenario, simulatorScenarios } from "./index.js";
 import type { SimulatorScenarioDefinition } from "../types.js";
 
@@ -115,6 +120,17 @@ const regressionScenarioFixtures: readonly RegressionScenarioFixture[] = [
       "stable-cadence-and-capability-boundary",
     ],
   },
+  {
+    scenario: kinshipCorrectnessScenario,
+    exportedArcKeys: kinshipCorrectnessArcKeys,
+    arcs: kinshipCorrectnessArcs,
+    expectedPersonas: [
+      ["avery-kinship", "Avery"],
+      ["leo-kinship", "Leo"],
+      ["priya-kinship", "Priya"],
+    ],
+    expectedArcKeys: ["partner-not-sibling"],
+  },
 ];
 
 function expectNonEmptyText(value: string): void {
@@ -138,6 +154,7 @@ describe("simulator scenarios", () => {
       "trip-planning",
       "coding-incident",
       "family-aging-parent",
+      "kinship-correctness",
       "capability-boundary",
       "action-lifecycle",
       "belief-revision-domains",

@@ -237,11 +237,15 @@ describe("semantic repositories", () => {
     expect(columnNames.has("status")).toBe(true);
     expect(columnNames.has("corrected_by")).toBe(true);
     expect(columnNames.has("superseded_at")).toBe(true);
+    expect(columnNames.has("observation_metadata")).toBe(true);
     expect(status?.dflt_value).toBe("'active'");
     expect(indexes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           name: "semantic_nodes_status_updated_idx",
+        }),
+        expect.objectContaining({
+          name: "semantic_nodes_observation_metadata_idx",
         }),
       ]),
     );
@@ -266,6 +270,14 @@ describe("semantic repositories", () => {
     const updated = await fixture.nodeRepository.update(inserted.id, {
       aliases: ["deploy issue"],
       confidence: 0.8,
+      observation_metadata: {
+        witness: "Alice",
+        timeframe: "Monday call",
+        count_or_intensity: "two sightings",
+        source_kind: "direct_observation",
+        confidence: 0.8,
+        status: "observed",
+      },
     });
     const listed = await fixture.nodeRepository.list();
     const deleted = await fixture.nodeRepository.delete(inserted.id);
@@ -273,9 +285,45 @@ describe("semantic repositories", () => {
     expect(fetched?.id).toBe(inserted.id);
     expect(searched[0]?.node.id).toBe(inserted.id);
     expect(updated?.aliases).toContain("deploy issue");
+    expect(updated?.observation_metadata).toMatchObject({
+      witness: "Alice",
+      timeframe: "Monday call",
+      count_or_intensity: "two sightings",
+      source_kind: "direct_observation",
+    });
     expect(listed).toHaveLength(1);
     expect(deleted).toBe(true);
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
+  });
+
+  it("preserves observation metadata when unrelated patches omit it", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Video-call observation"),
+      observation_metadata: {
+        witness: "Nora",
+        timeframe: "Tuesday video call",
+        count_or_intensity: "three calls",
+        source_kind: "direct_observation",
+        confidence: 0.76,
+        status: "observed",
+      },
+    });
+    const updated = await fixture.nodeRepository.update(inserted.id, {
+      aliases: ["call observation"],
+      confidence: 0.82,
+    });
+
+    expect(updated?.aliases).toContain("call observation");
+    expect(updated?.confidence).toBe(0.82);
+    expect(updated?.observation_metadata).toEqual(inserted.observation_metadata);
   });
 
   it("updates semantic node lifecycle status without archiving", async () => {
@@ -771,6 +819,7 @@ describe("semantic repositories", () => {
           description: inserted.description,
           domain: "technology",
           aliases: JSON.stringify(inserted.aliases),
+          observation_metadata: null,
           confidence: inserted.confidence,
           source_episode_ids: JSON.stringify(inserted.source_episode_ids),
           created_at: inserted.created_at,

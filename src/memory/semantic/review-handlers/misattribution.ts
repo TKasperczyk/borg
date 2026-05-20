@@ -41,6 +41,15 @@ const semanticNodeMisattributionPatchSchema = z
     message: "Misattribution semantic node patch must not be empty",
   });
 
+const reviewedAssistantSourceRefsShape = {
+  reviewed_assistant_stream_entry_id: streamEntryIdSchema.optional(),
+  assistant_stream_entry_id: streamEntryIdSchema.optional(),
+  assistant_output_stream_entry_id: streamEntryIdSchema.optional(),
+  reviewed_assistant_stream_entry_ids: z.array(streamEntryIdSchema).optional(),
+  assistant_stream_entry_ids: z.array(streamEntryIdSchema).optional(),
+  assistant_output_stream_entry_ids: z.array(streamEntryIdSchema).optional(),
+};
+
 export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type", [
   z
     .object({
@@ -48,6 +57,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       target_id: episodeIdSchema,
       patch: misattributionEpisodePatchSchema,
       evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
+      ...reviewedAssistantSourceRefsShape,
       proposed_provenance: provenanceSchema.optional(),
       overseer_flag: z.unknown().optional(),
     })
@@ -58,6 +68,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       target_id: semanticNodeIdSchema,
       patch: semanticNodeMisattributionPatchSchema,
       evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
+      ...reviewedAssistantSourceRefsShape,
       proposed_provenance: provenanceSchema.optional(),
       overseer_flag: z.unknown().optional(),
     })

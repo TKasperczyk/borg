@@ -38,6 +38,7 @@ import {
   semanticNodeIdSchema,
   semanticNodePatchSchema,
   semanticNodeSchema,
+  semanticObservationMetadataSchema,
   semanticRelationSchema,
   semanticNodeStatusSchema,
   type SemanticEdge,
@@ -49,6 +50,7 @@ import {
   type SemanticNodeSearchCandidate,
   type SemanticNodeSearchOptions,
   type SemanticNodeStatus,
+  type SemanticObservationMetadata,
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
 
@@ -66,6 +68,7 @@ type SemanticNodeRow = {
   description: string;
   domain: string | null;
   aliases: string;
+  observation_metadata: string | null;
   confidence: number;
   source_episode_ids: string;
   created_at: number;
@@ -128,6 +131,23 @@ function normalizeAliases(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
+function parseObservationMetadata(value: unknown): SemanticObservationMetadata | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(String(value)) as unknown;
+
+    return semanticObservationMetadataSchema.nullable().parse(parsed);
+  } catch (error) {
+    throw new SemanticError("Failed to decode semantic observation_metadata", {
+      cause: error,
+      code: "SEMANTIC_ROW_INVALID",
+    });
+  }
+}
+
 function normalizeVectorSyncOutboxLimit(limit: number | undefined): number {
   return assertPositiveLimit(
     limit,
@@ -176,6 +196,8 @@ function nodeToRow(node: SemanticNode): SemanticNodeRow {
     description: node.description,
     domain: node.domain,
     aliases: serializeJsonValue(node.aliases),
+    observation_metadata:
+      node.observation_metadata === null ? null : serializeJsonValue(node.observation_metadata),
     confidence: node.confidence,
     source_episode_ids: serializeJsonValue(node.source_episode_ids),
     created_at: node.created_at,
@@ -197,6 +219,7 @@ function nodeFromRow(row: Record<string, unknown>): SemanticNode {
     aliases: normalizeAliases(
       parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", SEMANTIC_JSON_ARRAY_CODEC),
     ),
+    observation_metadata: parseObservationMetadata(row.observation_metadata),
     confidence: Number(row.confidence),
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
@@ -322,6 +345,7 @@ export function createSemanticNodesTableSchema(dimensions: number) {
     utf8Field("description"),
     utf8Field("domain", true),
     utf8Field("aliases"),
+    utf8Field("observation_metadata", true),
     float64Field("confidence"),
     utf8Field("source_episode_ids"),
     float64Field("created_at"),
@@ -420,7 +444,7 @@ export class SemanticNodeRepository {
         `
           SELECT id, kind, label, description, domain, aliases, confidence, source_episode_ids,
                  created_at, updated_at, last_verified_at, archived, superseded_by,
-                 status, corrected_by, superseded_at
+                 status, corrected_by, superseded_at, observation_metadata
           FROM semantic_nodes
           WHERE id = ?
         `,
@@ -641,16 +665,17 @@ export class SemanticNodeRepository {
       .prepare(
         `
           INSERT INTO semantic_nodes (
-            id, kind, label, description, domain, aliases, confidence, source_episode_ids,
+            id, kind, label, description, domain, aliases, observation_metadata, confidence, source_episode_ids,
             created_at, updated_at, last_verified_at, archived, superseded_by, status,
             corrected_by, superseded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             kind = excluded.kind,
             label = excluded.label,
             description = excluded.description,
             domain = excluded.domain,
             aliases = excluded.aliases,
+            observation_metadata = excluded.observation_metadata,
             confidence = excluded.confidence,
             source_episode_ids = excluded.source_episode_ids,
             updated_at = excluded.updated_at,
@@ -669,6 +694,7 @@ export class SemanticNodeRepository {
         node.description,
         node.domain,
         serializeJsonValue(node.aliases),
+        node.observation_metadata === null ? null : serializeJsonValue(node.observation_metadata),
         node.confidence,
         serializeJsonValue(node.source_episode_ids),
         node.created_at,
@@ -940,7 +966,8 @@ export class SemanticNodeRepository {
       .prepare(
         `
           SELECT id, kind, label, description, aliases, confidence, source_episode_ids,
-                 created_at, updated_at, last_verified_at, archived, superseded_by, domain
+                 created_at, updated_at, last_verified_at, archived, superseded_by, domain,
+                 observation_metadata
           FROM semantic_nodes
           ORDER BY updated_at DESC, id ASC
         `,
@@ -1204,6 +1231,7 @@ export class SemanticNodeRepository {
       "status",
       "corrected_by",
       "superseded_at",
+      "observation_metadata",
     ] as const) {
       if (!patchKeys.has(field)) {
         delete appliedPatch[field];

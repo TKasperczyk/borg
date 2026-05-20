@@ -17,7 +17,13 @@ import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js"
 import type { SemanticReviewService } from "./review-service.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
 import { canonicalizeDomain } from "./domain.js";
-import { semanticNodeKindSchema, semanticRelationSchema, type SemanticNode } from "./types.js";
+import {
+  semanticNodeKindSchema,
+  semanticObservationMetadataSchema,
+  semanticRelationSchema,
+  type SemanticNode,
+  type SemanticObservationMetadata,
+} from "./types.js";
 
 const extractorNodeSchema = z.object({
   kind: semanticNodeKindSchema,
@@ -25,6 +31,7 @@ const extractorNodeSchema = z.object({
   description: z.string().min(1),
   domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
+  observation_metadata: semanticObservationMetadataSchema.nullable().default(null),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
@@ -116,6 +123,8 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Distinguish temporally bounded events such as trips, visits, conversations, or meetings from permanent or long-term state changes such as moves, relocations, role changes, or life changes.",
     "When choosing labels and aliases, do not collapse event-scoped language into permanent-state language or the reverse.",
     "If the source wording is ambiguous, prefer the narrower event-scoped interpretation.",
+    "For observation-type propositions, decide by meaning whether the node records that someone observed something happened. When it does, populate observation_metadata with any directly stated witness, timeframe/date, count_or_intensity, source_kind, confidence, and status. Use null for unknown fields and null observation_metadata for non-observation nodes.",
+    "Do not merge multiple observations into one proposition merely because they concern the same topic. Distinct witness, timeframe/date, count_or_intensity, source_kind, confidence, or status belongs in observation_metadata so identity can preserve separate observations.",
     "Each node must cite source_episode_ids from the provided episode ids only.",
     "Each edge must use from_label and to_label values that match node labels exactly.",
     "Only use relation values allowed by the tool schema.",
@@ -264,8 +273,15 @@ function buildNodeEmbeddingText(input: {
   label: string;
   description: string;
   aliases: readonly string[];
+  observationMetadata: SemanticObservationMetadata | null;
 }): string {
-  return `${input.label}\n${input.description}\n${input.aliases.join(" ")}`;
+  const parts = [input.label, input.description, input.aliases.join(" ")];
+
+  if (input.observationMetadata !== null) {
+    parts.push(JSON.stringify(input.observationMetadata));
+  }
+
+  return parts.join("\n");
 }
 
 function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
@@ -274,6 +290,27 @@ function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
 
 function haveSameScopeKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function observationMetadataIdentity(input: SemanticObservationMetadata | null): string | null {
+  if (input === null) {
+    return null;
+  }
+
+  return JSON.stringify({
+    witness: input.witness,
+    timeframe: input.timeframe,
+    count_or_intensity: input.count_or_intensity,
+    source_kind: input.source_kind,
+    status: input.status,
+  });
+}
+
+function observationMetadataAligns(
+  left: SemanticObservationMetadata | null,
+  right: SemanticObservationMetadata | null,
+): boolean {
+  return observationMetadataIdentity(left) === observationMetadataIdentity(right);
 }
 
 export class SemanticExtractor {
@@ -397,10 +434,15 @@ export class SemanticExtractor {
           label: candidateLabel,
           description: candidateDescription,
           aliases: candidateAliases,
+          observationMetadata: candidate.observation_metadata,
         }),
       );
       const isCompatibleNode = async (node: SemanticNode): Promise<boolean> => {
         if (node.kind !== candidate.kind) {
+          return false;
+        }
+
+        if (!observationMetadataAligns(node.observation_metadata, candidate.observation_metadata)) {
           return false;
         }
 
@@ -452,6 +494,7 @@ export class SemanticExtractor {
           description: candidateDescription,
           domain: canonicalizeDomain(candidate.domain),
           aliases: candidateAliases,
+          observation_metadata: candidate.observation_metadata,
           confidence: Math.min(candidate.confidence, this.confidenceCeiling),
           source_episode_ids: sourceEpisodeIds,
           created_at: nowMs,
@@ -477,12 +520,14 @@ export class SemanticExtractor {
           label: existing.label,
           description: nextDescription,
           aliases: nextAliases,
+          observationMetadata: candidate.observation_metadata,
         }),
       );
       const updated = await this.options.nodeRepository.update(existing.id, {
         description: nextDescription,
         domain: existing.domain ?? canonicalizeDomain(candidate.domain),
         aliases: nextAliases,
+        observation_metadata: existing.observation_metadata,
         confidence: Math.max(
           existing.confidence * 0.99,
           Math.min(candidate.confidence, this.confidenceCeiling),
