@@ -137,6 +137,14 @@ const TURN_METRICS_KEY_ORDER = [
   "decision_artifact_semantic_revision_cache_hits",
   "decision_artifact_semantic_revision_cache_size",
   "overseer_due_on_suppressed_turn",
+  "closure_loop_completed_count",
+  "closure_loop_degraded_count",
+  "corrective_preference_completed_count",
+  "corrective_preference_degraded_count",
+  "extractor_max_tokens_stop_count",
+  "capability_overclaim_count",
+  "capability_ambiguity_count",
+  "capability_boundary_refusal_count",
 ] as const;
 
 class SameVectorEmbeddingClient implements EmbeddingClient {
@@ -353,10 +361,43 @@ describe("MetricsCapture", () => {
         { ts: 125, turnId: "turn-1", event: "retrieval.completed" },
         { ts: 130, turnId: "turn-1", event: "llm_call.started" },
         {
+          ts: 131,
+          turnId: "turn-1",
+          event: "llm_call.completed",
+          label: "closure_loop_classifier",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 132,
+          turnId: "turn-1",
+          event: "closure_loop.degraded",
+          reason: "missing_tool_call",
+        },
+        {
+          ts: 133,
+          turnId: "turn-1",
+          event: "llm_call.completed",
+          label: "corrective_preference_extractor",
+          stop_reason: "max_tokens",
+        },
+        {
+          ts: 134,
+          turnId: "turn-1",
+          event: "extraction.commitments.degraded",
+          reason: "invalid_payload",
+        },
+        {
           ts: 190,
           turnId: "turn-1",
           event: "llm_call.completed",
           usage: { inputTokens: 11, outputTokens: 7 },
+        },
+        {
+          ts: 135,
+          turnId: "other-turn",
+          event: "llm_call.completed",
+          label: "goal_promotion_extractor",
+          stopReason: "max_tokens",
         },
         {
           ts: 191,
@@ -437,6 +478,14 @@ describe("MetricsCapture", () => {
     expect(row.deliberation_latency_ms).toBe(60);
     expect(row.borg_input_tokens).toBe(11);
     expect(row.borg_output_tokens).toBe(7);
+    expect(row.closure_loop_completed_count).toBe(1);
+    expect(row.closure_loop_degraded_count).toBe(1);
+    expect(row.corrective_preference_completed_count).toBe(1);
+    expect(row.corrective_preference_degraded_count).toBe(1);
+    expect(row.extractor_max_tokens_stop_count).toBe(2);
+    expect(row.capability_overclaim_count).toBe(0);
+    expect(row.capability_ambiguity_count).toBe(0);
+    expect(row.capability_boundary_refusal_count).toBe(0);
     expect(row.decision_artifact_semantic_revisions_attempted).toBe(2);
     expect(row.decision_artifact_semantic_revisions_completed_succeeded).toBe(1);
     expect(row.decision_artifact_semantic_nodes_marked_superseded).toBe(2);

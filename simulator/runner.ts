@@ -18,7 +18,7 @@ import {
 import { isNaturalSilenceSuppressionReason } from "../src/cognition/generation/types.js";
 
 import { MetricsCapture } from "./metrics.js";
-import { simulatorHealthWarningsForRows } from "./health-warnings.js";
+import { capabilityFindingMetrics, simulatorHealthWarningsForRows } from "./health-warnings.js";
 import { buildMemorySnapshotMarkdown } from "./memory-snapshot.js";
 import { appendJsonlLine } from "./jsonl.js";
 import {
@@ -981,10 +981,19 @@ export class SimulatorRunner {
         endSimulatorSession(transport, currentSessionId);
       }
 
+      finalMetrics = {
+        ...finalMetrics,
+        ...capabilityFindingMetrics(overseerCheckpoints),
+      };
+
       const postHocHealthWarnings = simulatorHealthWarningsForRows(metrics.listRows(), {
         scenarioKey: this.options.scenarioKey,
         overseerCheckpoints,
-      }).filter((warning) => warning.kind === "capability_overclaim_count_high");
+      }).filter(
+        (warning) =>
+          warning.kind === "capability_overclaim_count_high" ||
+          warning.kind === "capability_ambiguity_count_high",
+      );
 
       return {
         runId: this.options.runId,
@@ -1143,6 +1152,8 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Active actions: ${report.finalMetrics.action_record_count_active} (Borg ${report.finalMetrics.borg_owned_active_actions}, participants ${report.finalMetrics.participant_owned_active_actions}, group ${report.finalMetrics.group_owned_active_actions})`,
     `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
+    `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
+    `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
     "## Health Warnings",

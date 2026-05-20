@@ -120,6 +120,14 @@ export type MetricsRow = {
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;
+  closure_loop_completed_count: number;
+  closure_loop_degraded_count: number;
+  corrective_preference_completed_count: number;
+  corrective_preference_degraded_count: number;
+  extractor_max_tokens_stop_count: number;
+  capability_overclaim_count: number;
+  capability_ambiguity_count: number;
+  capability_boundary_refusal_count: number;
 };
 
 export type SimulatorHealthWarningKind =
@@ -135,6 +143,10 @@ export type SimulatorHealthWarningKind =
   | "semantic_revision_transition_yield_low"
   | "classifier_degraded_rate_high"
   | "capability_overclaim_count_high"
+  | "capability_ambiguity_count_high"
+  | "closure_loop_degraded_rate_high"
+  | "corrective_preference_degraded_rate_high"
+  | "extractor_max_tokens_high"
   | "review_queue_backlog_high";
 
 export type SimulatorHealthWarning = {

@@ -5,9 +5,11 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { FixedClock } from "../../util/clock.js";
 import { createEntityId, createGoalId, createStreamEntryId } from "../../util/ids.js";
 import type { GoalRecord, GoalTreeNode } from "../../memory/self/index.js";
+import type { GoalPromotionClassification } from "./goal-promotion-extractor.js";
 import { TurnGoalPromotionService } from "./turn-goal-promotion-service.js";
 
 type GoalPromotionFixture = {
+  classification?: GoalPromotionClassification;
   description?: string;
   priority?: number;
   target_at?: number | null;
@@ -40,7 +42,7 @@ function goalPromotionResponse(
         input: {
           durable_goal_batch: options.durableGoalBatch ?? "single",
           promotions: promotions.map((promotion) => ({
-            classification: "durable_borg_goal",
+            classification: promotion.classification ?? "durable_borg_goal",
             description: promotion.description ?? "Track Alice drafting the launch brief",
             priority: promotion.priority ?? 6,
             target_at: promotion.target_at ?? null,
@@ -102,43 +104,19 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
 }
 
 describe("TurnGoalPromotionService", () => {
-  it("persists group-chat promoted goals with the speaker as owner", async () => {
+  it("rejects group-chat participant goals instead of persisting them as speaker-owned goals", async () => {
     const group = createEntityId();
     const alice = createEntityId();
-    const activeGoal = goalRecord({
-      audience_entity_id: group,
-      owner_entity_id: alice,
-      description: "Track Alice updating the roadmap",
-    });
-    const goalId = createGoalId();
     const userEntryId = createStreamEntryId();
-    const addGoal = vi.fn((input): GoalRecord => {
-      expect(input).toMatchObject({
-        description: "Track Alice drafting the launch brief",
-        audienceEntityId: group,
-        ownerEntityId: alice,
-        sourceStreamEntryIds: [userEntryId],
-      });
-
-      return {
-        id: goalId,
-        record_version: 1,
-        description: input.description,
-        priority: input.priority,
-        parent_goal_id: null,
-        status: "active",
-        progress_notes: null,
-        last_progress_ts: null,
-        created_at: 2_000,
-        target_at: input.targetAt,
-        audience_entity_id: input.audienceEntityId,
-        owner_entity_id: input.ownerEntityId,
-        source_stream_entry_ids: input.sourceStreamEntryIds,
-        provenance: input.provenance,
-      };
-    });
+    const addGoal = vi.fn();
     const llm = new FakeLLMClient({
-      responses: [goalPromotionResponse()],
+      responses: [
+        goalPromotionResponse({
+          classification: "not_borg_responsibility",
+          description: "Alice will draft the launch brief",
+          reason: "The durable responsibility belongs to Alice, not Borg.",
+        }),
+      ],
     });
     const service = new TurnGoalPromotionService({
       model: "haiku",
@@ -160,18 +138,15 @@ describe("TurnGoalPromotionService", () => {
       ownerEntityId: alice,
       speakerDisplayName: "Alice",
       temporalCue: null,
-      activeGoals: [activeGoal],
+      activeGoals: [],
       persistedUserEntryId: userEntryId,
       onHookFailure: vi.fn(),
     });
 
-    expect(result.goalIds).toEqual([goalId]);
-    expect(addGoal).toHaveBeenCalledOnce();
+    expect(result).toEqual({ goalIds: [], executiveStepIds: [] });
+    expect(addGoal).not.toHaveBeenCalled();
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
-    );
-    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
-      `"owner_entity_id":"${alice}"`,
     );
   });
 

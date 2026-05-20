@@ -166,6 +166,15 @@ type SharedStateActionLifecycleMetricCounts = Pick<
   "actions_canonicalized" | "actions_completed_via_canonicalization"
 >;
 
+type ExtractorHealthMetricCounts = Pick<
+  MetricsRow,
+  | "closure_loop_completed_count"
+  | "closure_loop_degraded_count"
+  | "corrective_preference_completed_count"
+  | "corrective_preference_degraded_count"
+  | "extractor_max_tokens_stop_count"
+>;
+
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
   let count = 0;
   const stack = [...nodes];
@@ -265,6 +274,12 @@ function traceKind(record: TraceRecord): string | null {
 
 function traceReason(record: TraceRecord): string | null {
   return typeof record.reason === "string" ? record.reason : null;
+}
+
+function traceStopReason(record: TraceRecord): string | null {
+  const value = record.stopReason ?? record.stop_reason;
+
+  return typeof value === "string" ? value : null;
 }
 
 function traceNumber(record: TraceRecord, key: string): number {
@@ -539,6 +554,40 @@ function reviewResolverMetrics(traceRecords: readonly TraceRecord[]): ReviewReso
     review_queue_enqueued_this_turn: enqueued,
     review_queue_resolved_this_turn: resolved,
     review_queue_drain_rate: enqueued === 0 ? null : resolved / enqueued,
+  };
+}
+
+function llmCompletedCount(traceRecords: readonly TraceRecord[], label: string): number {
+  return traceRecords.filter(
+    (record) => record.event === "llm_call.completed" && traceLabel(record) === label,
+  ).length;
+}
+
+function isExtractorMaxTokensStop(record: TraceRecord): boolean {
+  const label = traceLabel(record);
+
+  return (
+    record.event === "llm_call.completed" &&
+    traceStopReason(record) === "max_tokens" &&
+    label !== null &&
+    (label.endsWith("_extractor") || label.endsWith("_classifier"))
+  );
+}
+
+function extractorHealthMetrics(traceRecords: readonly TraceRecord[]): ExtractorHealthMetricCounts {
+  return {
+    closure_loop_completed_count: llmCompletedCount(traceRecords, "closure_loop_classifier"),
+    closure_loop_degraded_count: traceRecords.filter(
+      (record) => record.event === "closure_loop.degraded",
+    ).length,
+    corrective_preference_completed_count: llmCompletedCount(
+      traceRecords,
+      "corrective_preference_extractor",
+    ),
+    corrective_preference_degraded_count: traceRecords.filter(
+      (record) => record.event === "extraction.commitments.degraded",
+    ).length,
+    extractor_max_tokens_stop_count: traceRecords.filter(isExtractorMaxTokensStop).length,
   };
 }
 
@@ -1025,6 +1074,7 @@ export class MetricsCapture {
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
+    const extractorHealthMetricCounts = extractorHealthMetrics(traceRecords);
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -1144,6 +1194,17 @@ export class MetricsCapture {
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
+      closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
+      closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      corrective_preference_completed_count:
+        extractorHealthMetricCounts.corrective_preference_completed_count,
+      corrective_preference_degraded_count:
+        extractorHealthMetricCounts.corrective_preference_degraded_count,
+      extractor_max_tokens_stop_count:
+        extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      capability_overclaim_count: 0,
+      capability_ambiguity_count: 0,
+      capability_boundary_refusal_count: 0,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -1188,6 +1249,7 @@ export class MetricsCapture {
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
+    const extractorHealthMetricCounts = extractorHealthMetrics([]);
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -1295,6 +1357,17 @@ export class MetricsCapture {
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
+      closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
+      closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      corrective_preference_completed_count:
+        extractorHealthMetricCounts.corrective_preference_completed_count,
+      corrective_preference_degraded_count:
+        extractorHealthMetricCounts.corrective_preference_degraded_count,
+      extractor_max_tokens_stop_count:
+        extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      capability_overclaim_count: 0,
+      capability_ambiguity_count: 0,
+      capability_boundary_refusal_count: 0,
     };
 
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);

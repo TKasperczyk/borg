@@ -215,6 +215,14 @@ function metricsRow(turn: number): MetricsRow {
     decision_artifact_semantic_revision_cache_hits: 0,
     decision_artifact_semantic_revision_cache_size: 0,
     overseer_due_on_suppressed_turn: false,
+    closure_loop_completed_count: 0,
+    closure_loop_degraded_count: 0,
+    corrective_preference_completed_count: 0,
+    corrective_preference_degraded_count: 0,
+    extractor_max_tokens_stop_count: 0,
+    capability_overclaim_count: 0,
+    capability_ambiguity_count: 0,
+    capability_boundary_refusal_count: 0,
   };
 }
 
@@ -1570,6 +1578,12 @@ describe("simulator overseer", () => {
     ]);
     expect(requests[0]?.messages[0]?.content).toContain("K. CAPABILITY CONSISTENCY");
     expect(requests[0]?.messages[0]?.content).toContain("external_document_editing");
+    expect(requests[0]?.messages[0]?.content).toContain(
+      "use unsupported or contradicted for actual unwired capability overclaims",
+    );
+    expect(requests[0]?.messages[0]?.content).toContain(
+      "grounded with status_impact none when Borg explicitly refuses",
+    );
     expect(requests[0]?.tools[0]?.input_schema).toEqual(
       expect.objectContaining({
         properties: expect.objectContaining({

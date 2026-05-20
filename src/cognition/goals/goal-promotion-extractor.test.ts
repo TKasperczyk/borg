@@ -195,6 +195,16 @@ describe("GoalPromotionExtractor", () => {
     );
     expect(llm.requests[0]?.system).toContain("monitoring p95");
     expect(llm.requests[0]?.system).toContain("scheduled document edits");
+    expect(llm.requests[0]?.system).toContain(
+      "Durable goals are about Borg's durable conversation/memory responsibility",
+    );
+    expect(llm.requests[0]?.system).toContain(
+      'A user saying "my goal is to..." is usually participant-side context',
+    );
+    expect(llm.requests[0]?.system).toContain(
+      'my goal is to deploy", "friend will respond"',
+    );
+    expect(llm.requests[0]?.system).not.toContain("treat that speaker as the goal owner");
     expect(llm.requests[0]?.system).toContain("user will deploy -> not_borg_responsibility");
     expect(llm.requests[0]?.system).toContain(
       "Borg will monitor p95 -> impossible_for_borg_without_capability",

@@ -24,7 +24,7 @@ import {
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import { createSimulatorScenario, formatSimulatorReport, runSimulation } from "./runner.js";
-import { simulatorHealthWarningsForRows } from "./health-warnings.js";
+import { capabilityFindingMetrics, simulatorHealthWarningsForRows } from "./health-warnings.js";
 import {
   validateOverseerVerdict,
   type FindingCarryoverCache,
@@ -445,6 +445,14 @@ function metricsRow(turnCounter: number): MetricsRow {
     decision_artifact_semantic_revision_cache_hits: 0,
     decision_artifact_semantic_revision_cache_size: 0,
     overseer_due_on_suppressed_turn: false,
+    closure_loop_completed_count: 0,
+    closure_loop_degraded_count: 0,
+    corrective_preference_completed_count: 0,
+    corrective_preference_degraded_count: 0,
+    extractor_max_tokens_stop_count: 0,
+    capability_overclaim_count: 0,
+    capability_ambiguity_count: 0,
+    capability_boundary_refusal_count: 0,
   };
 }
 
@@ -536,6 +544,39 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("threshold=0.5");
   });
 
+  it("formats capability and extractor health counters in final metrics", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-observability-counter-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 30,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [],
+      healthWarnings: [],
+      turnFailures: [],
+      finalMetrics: {
+        ...metricsRow(30),
+        capability_overclaim_count: 1,
+        capability_ambiguity_count: 2,
+        capability_boundary_refusal_count: 3,
+        closure_loop_completed_count: 9,
+        closure_loop_degraded_count: 1,
+        corrective_preference_completed_count: 8,
+        corrective_preference_degraded_count: 2,
+        extractor_max_tokens_stop_count: 4,
+      },
+      durationMs: 1,
+    });
+
+    expect(report).toContain("Capability audit: overclaims 1, ambiguities 2, boundary refusals 3");
+    expect(report).toContain(
+      "Extractor health: closure loop degraded 1/9, corrective preference degraded 2/8, max-token stops 4",
+    );
+  });
+
   it("formats overseer checkpoint statuses as labelled fields", () => {
     const report = formatSimulatorReport({
       runId: "sim-runner-status-label-test",
@@ -597,23 +638,15 @@ describe("SimulatorRunner", () => {
   });
 
   it("detects expanded simulator health warnings with conservative thresholds", () => {
-    const capabilityOverclaimCheckpoint: OverseerVerdict = {
+    const capabilityCheckpoint = (
+      findings: OverseerVerdict["findings"],
+    ): OverseerVerdict => ({
       ts: Date.now(),
       turn_counter: 20,
       status: "concerning",
       observations: ["Capability overclaim found."],
       recommendation: "Inspect.",
-      findings: [
-        {
-          category: "K",
-          claim_status: "unsupported",
-          source_kind: "emitted_output",
-          status_impact: "concerning",
-          assistant_stream_entry_id: "strm_capability_warning",
-          quoted_emitted_span: "I'll monitor p95",
-          evidence_summary: "Borg promised external monitoring.",
-        },
-      ],
+      findings,
       rejected_findings: [],
       raw_verdict: {
         status: "concerning",
@@ -621,7 +654,28 @@ describe("SimulatorRunner", () => {
         recommendation: "Inspect.",
         findings: [],
       },
-    };
+    });
+    const capabilityFinding = (
+      claimStatus: "grounded" | "unsupported" | "contradicted" | "unclear",
+      index = 0,
+      statusImpact: "none" | "concerning" | "failing" =
+        claimStatus === "grounded" ? "none" : "concerning",
+    ): OverseerVerdict["findings"][number] => ({
+      category: "K",
+      claim_status: claimStatus,
+      source_kind: claimStatus === "grounded" ? "snapshot_memory" : "emitted_output",
+      status_impact: statusImpact,
+      assistant_stream_entry_id:
+        claimStatus === "grounded" ? undefined : `strm_capability_warning_${index}`,
+      quoted_emitted_span: claimStatus === "grounded" ? undefined : "I'll monitor p95",
+      evidence_summary:
+        claimStatus === "grounded"
+          ? "Borg correctly refused an unwired capability."
+          : "Borg capability claim needs audit.",
+    });
+    const capabilityOverclaimCheckpoint = capabilityCheckpoint([
+      capabilityFinding("unsupported"),
+    ]);
     const cases: Array<{
       name: string;
       rows: MetricsRow[];
@@ -771,10 +825,107 @@ describe("SimulatorRunner", () => {
         expectedKinds: [],
       },
       {
+        name: "closure loop degraded rate high fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            closure_loop_completed_count: 10,
+            closure_loop_degraded_count: 2,
+          },
+        ],
+        expectedKinds: ["closure_loop_degraded_rate_high"],
+      },
+      {
+        name: "closure loop degraded rate at threshold does not fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            closure_loop_completed_count: 10,
+            closure_loop_degraded_count: 1,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "closure loop degraded-only outage fires at full rate",
+        rows: [
+          {
+            ...metricsRow(12),
+            closure_loop_completed_count: 0,
+            closure_loop_degraded_count: 2,
+          },
+        ],
+        expectedKinds: ["closure_loop_degraded_rate_high"],
+      },
+      {
+        name: "corrective preference degraded rate high fires",
+        rows: [
+          {
+            ...metricsRow(12),
+            corrective_preference_completed_count: 10,
+            corrective_preference_degraded_count: 2,
+          },
+        ],
+        expectedKinds: ["corrective_preference_degraded_rate_high"],
+      },
+      {
+        name: "corrective preference degraded-only outage fires at full rate",
+        rows: [
+          {
+            ...metricsRow(12),
+            corrective_preference_completed_count: 0,
+            corrective_preference_degraded_count: 2,
+          },
+        ],
+        expectedKinds: ["corrective_preference_degraded_rate_high"],
+      },
+      {
+        name: "extractor max tokens high fires",
+        rows: [{ ...metricsRow(12), extractor_max_tokens_stop_count: 11 }],
+        expectedKinds: ["extractor_max_tokens_high"],
+      },
+      {
+        name: "extractor max tokens at threshold does not fire",
+        rows: [{ ...metricsRow(12), extractor_max_tokens_stop_count: 10 }],
+        expectedKinds: [],
+      },
+      {
         name: "capability overclaim count high fires",
         rows: [metricsRow(12)],
         overseerCheckpoints: [capabilityOverclaimCheckpoint],
         expectedKinds: ["capability_overclaim_count_high"],
+      },
+      {
+        name: "capability contradicted count high fires",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [capabilityCheckpoint([capabilityFinding("contradicted")])],
+        expectedKinds: ["capability_overclaim_count_high"],
+      },
+      {
+        name: "capability unclear count high fires only at three",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [
+          capabilityCheckpoint([
+            capabilityFinding("unclear", 1),
+            capabilityFinding("unclear", 2),
+            capabilityFinding("unclear", 3),
+          ]),
+        ],
+        expectedKinds: ["capability_ambiguity_count_high"],
+      },
+      {
+        name: "capability unclear count below threshold does not fire",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [
+          capabilityCheckpoint([capabilityFinding("unclear", 1), capabilityFinding("unclear", 2)]),
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "capability grounded refusal count does not warn",
+        rows: [metricsRow(12)],
+        overseerCheckpoints: [capabilityCheckpoint([capabilityFinding("grounded")])],
+        expectedKinds: [],
       },
       {
         name: "capability overclaim carryover demotion does not fire",
@@ -832,6 +983,73 @@ describe("SimulatorRunner", () => {
         testCase.name,
       ).toEqual(testCase.expectedKinds);
     }
+  });
+
+  it("summarizes capability findings by claim-status severity", () => {
+    const checkpoint: OverseerVerdict = {
+      ts: Date.now(),
+      turn_counter: 10,
+      status: "concerning",
+      observations: ["Mixed capability findings."],
+      recommendation: "Inspect.",
+      findings: [
+        {
+          category: "K",
+          claim_status: "unsupported",
+          source_kind: "emitted_output",
+          status_impact: "concerning",
+          assistant_stream_entry_id: "strm_capability_unsupported",
+          quoted_emitted_span: "I'll monitor p95",
+          evidence_summary: "Unsupported capability claim.",
+        },
+        {
+          category: "K",
+          claim_status: "contradicted",
+          source_kind: "emitted_output",
+          status_impact: "failing",
+          assistant_stream_entry_id: "strm_capability_contradicted",
+          quoted_emitted_span: "I'll send it tomorrow",
+          evidence_summary: "Contradicted capability claim.",
+        },
+        {
+          category: "K",
+          claim_status: "unclear",
+          source_kind: "emitted_output",
+          status_impact: "concerning",
+          assistant_stream_entry_id: "strm_capability_unclear",
+          quoted_emitted_span: "I'll surface it",
+          evidence_summary: "Ambiguous capability phrasing.",
+        },
+        {
+          category: "K",
+          claim_status: "grounded",
+          source_kind: "snapshot_memory",
+          status_impact: "none",
+          evidence_summary: "Borg refused the unwired capability.",
+        },
+        {
+          category: "K",
+          claim_status: "unsupported",
+          source_kind: "emitted_output",
+          status_impact: "none",
+          carryover_demoted: true,
+          evidence_summary: "Prior finding already counted.",
+        },
+      ],
+      rejected_findings: [],
+      raw_verdict: {
+        status: "concerning",
+        observations: ["Mixed capability findings."],
+        recommendation: "Inspect.",
+        findings: [],
+      },
+    };
+
+    expect(capabilityFindingMetrics([checkpoint])).toEqual({
+      capability_overclaim_count: 2,
+      capability_ambiguity_count: 1,
+      capability_boundary_refusal_count: 1,
+    });
   });
 
   it("builds emission baseline config overrides", () => {

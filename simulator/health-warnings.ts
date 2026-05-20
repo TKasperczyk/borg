@@ -34,8 +34,13 @@ export const SEMANTIC_REVISION_TRANSITION_YIELD_LOW_THRESHOLD = 0.25;
 export const CLASSIFIER_DEGRADED_RATE_MIN_CALLS = 10;
 export const CLASSIFIER_DEGRADED_RATE_HIGH_THRESHOLD = 0.2;
 
-// Any validated capability overclaim is worth surfacing in P0 stabilization.
-export const CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD = 0;
+// Any validated unsupported/contradicted capability overclaim is worth surfacing.
+export const CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD = 1;
+export const CAPABILITY_AMBIGUITY_COUNT_HIGH_THRESHOLD = 3;
+
+export const CLOSURE_LOOP_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
+export const CORRECTIVE_PREFERENCE_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
+export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 10;
 
 // Review backlog needs to be large enough to indicate drain trouble, not just
 // a few expected review items.
@@ -45,6 +50,11 @@ export type SimulatorHealthWarningOptions = {
   scenarioKey?: string;
   overseerCheckpoints?: readonly OverseerVerdict[];
 };
+
+export type CapabilityFindingMetrics = Pick<
+  MetricsRow,
+  "capability_overclaim_count" | "capability_ambiguity_count" | "capability_boundary_refusal_count"
+>;
 
 function total(values: Record<string, number>): number {
   return Object.values(values).reduce((sum, value) => sum + value, 0);
@@ -86,30 +96,67 @@ function maxNumberRow(
   return max;
 }
 
-function capabilityOverclaimCount(
+function isActiveCapabilityFinding(finding: OverseerVerdict["findings"][number]): boolean {
+  return finding.category === "K" && finding.carryover_demoted !== true;
+}
+
+export function capabilityFindingMetrics(
   overseerCheckpoints: readonly OverseerVerdict[] | undefined,
-): number {
+): CapabilityFindingMetrics {
   if (overseerCheckpoints === undefined) {
-    return 0;
+    return {
+      capability_overclaim_count: 0,
+      capability_ambiguity_count: 0,
+      capability_boundary_refusal_count: 0,
+    };
   }
 
-  return overseerCheckpoints.reduce((sum, checkpoint) => {
-    return (
-      sum +
-      checkpoint.findings.filter(
-        (finding) =>
-          finding.category === "K" &&
-          finding.carryover_demoted !== true &&
-          finding.status_impact !== "none",
-      ).length
-    );
-  }, 0);
+  const metrics: CapabilityFindingMetrics = {
+    capability_overclaim_count: 0,
+    capability_ambiguity_count: 0,
+    capability_boundary_refusal_count: 0,
+  };
+
+  for (const checkpoint of overseerCheckpoints) {
+    for (const finding of checkpoint.findings) {
+      if (!isActiveCapabilityFinding(finding)) {
+        continue;
+      }
+
+      if (
+        (finding.claim_status === "unsupported" || finding.claim_status === "contradicted") &&
+        finding.status_impact !== "none"
+      ) {
+        metrics.capability_overclaim_count += 1;
+        continue;
+      }
+
+      if (finding.claim_status === "unclear" && finding.status_impact !== "none") {
+        metrics.capability_ambiguity_count += 1;
+        continue;
+      }
+
+      if (finding.claim_status === "grounded" && finding.status_impact === "none") {
+        metrics.capability_boundary_refusal_count += 1;
+      }
+    }
+  }
+
+  return metrics;
 }
 
 function actionsPerTurnThreshold(options: SimulatorHealthWarningOptions): number {
   return options.scenarioKey === "coding-incident"
     ? INCIDENT_ACTIONS_PER_TURN_HIGH_THRESHOLD
     : ACTIONS_PER_TURN_HIGH_THRESHOLD;
+}
+
+function degradedRate(input: { completed: number; degraded: number }): number | null {
+  if (input.completed === 0) {
+    return input.degraded > 0 ? 1 : null;
+  }
+
+  return input.degraded / input.completed;
 }
 
 export function simulatorHealthWarningsForRows(
@@ -304,15 +351,101 @@ export function simulatorHealthWarningsForRows(
     }
   }
 
-  const overclaimCount = capabilityOverclaimCount(options.overseerCheckpoints);
+  const closureLoopCompleted = rows.reduce(
+    (sum, row) => sum + row.closure_loop_completed_count,
+    0,
+  );
 
-  if (overclaimCount > CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD) {
+  const closureLoopDegraded = rows.reduce(
+    (sum, row) => sum + row.closure_loop_degraded_count,
+    0,
+  );
+  const closureLoopDegradedRate = degradedRate({
+    completed: closureLoopCompleted,
+    degraded: closureLoopDegraded,
+  });
+
+  if (
+    closureLoopDegradedRate !== null &&
+    closureLoopDegradedRate > CLOSURE_LOOP_DEGRADED_RATE_HIGH_THRESHOLD
+  ) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "closure_loop_degraded_rate_high",
+        threshold: CLOSURE_LOOP_DEGRADED_RATE_HIGH_THRESHOLD,
+        observedValue: closureLoopDegradedRate,
+      }),
+    );
+  }
+
+  const correctivePreferenceCompleted = rows.reduce(
+    (sum, row) => sum + row.corrective_preference_completed_count,
+    0,
+  );
+
+  const correctivePreferenceDegraded = rows.reduce(
+    (sum, row) => sum + row.corrective_preference_degraded_count,
+    0,
+  );
+  const correctivePreferenceDegradedRate = degradedRate({
+    completed: correctivePreferenceCompleted,
+    degraded: correctivePreferenceDegraded,
+  });
+
+  if (
+    correctivePreferenceDegradedRate !== null &&
+    correctivePreferenceDegradedRate > CORRECTIVE_PREFERENCE_DEGRADED_RATE_HIGH_THRESHOLD
+  ) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "corrective_preference_degraded_rate_high",
+        threshold: CORRECTIVE_PREFERENCE_DEGRADED_RATE_HIGH_THRESHOLD,
+        observedValue: correctivePreferenceDegradedRate,
+      }),
+    );
+  }
+
+  const extractorMaxTokensStops = rows.reduce(
+    (sum, row) => sum + row.extractor_max_tokens_stop_count,
+    0,
+  );
+
+  if (extractorMaxTokensStops > EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "extractor_max_tokens_high",
+        threshold: EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD,
+        observedValue: extractorMaxTokensStops,
+      }),
+    );
+  }
+
+  const capabilityMetrics = capabilityFindingMetrics(options.overseerCheckpoints);
+  const overclaimCount = capabilityMetrics.capability_overclaim_count;
+
+  if (overclaimCount >= CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD) {
     warnings.push(
       latestWarning({
         row: latest,
         kind: "capability_overclaim_count_high",
         threshold: CAPABILITY_OVERCLAIM_COUNT_HIGH_THRESHOLD,
         observedValue: overclaimCount,
+      }),
+    );
+  }
+
+  const ambiguityCount = capabilityMetrics.capability_ambiguity_count;
+
+  if (ambiguityCount >= CAPABILITY_AMBIGUITY_COUNT_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "capability_ambiguity_count_high",
+        threshold: CAPABILITY_AMBIGUITY_COUNT_HIGH_THRESHOLD,
+        observedValue: ambiguityCount,
       }),
     );
   }
