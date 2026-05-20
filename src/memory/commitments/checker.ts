@@ -20,7 +20,10 @@ export type CommitmentCheckResult = {
     | { kind: "message"; content: string }
     | {
         kind: "suppressed";
-        reason: "commitment_revision_failed" | "rewrite_unsupported_or_empty";
+        reason:
+          | "commitment_violation"
+          | "commitment_revision_failed"
+          | "rewrite_unsupported_or_empty";
       };
 };
 
@@ -249,6 +252,7 @@ export class CommitmentChecker {
     untrustedContext?: string | null;
     commitments: readonly CommitmentRecord[];
     relevantEntities?: readonly string[];
+    rewriteOnViolation?: boolean;
   }): Promise<CommitmentCheckResult> {
     const violations = await this.detectViolations(
       input.commitments,
@@ -265,6 +269,18 @@ export class CommitmentChecker {
         emission: {
           kind: "message",
           content: input.response,
+        },
+      };
+    }
+
+    if (input.rewriteOnViolation !== true) {
+      return {
+        passed: true,
+        violations,
+        revised: false,
+        emission: {
+          kind: "suppressed",
+          reason: "commitment_violation",
         },
       };
     }

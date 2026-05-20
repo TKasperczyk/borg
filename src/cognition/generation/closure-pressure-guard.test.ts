@@ -328,6 +328,11 @@ describe("ClosurePressureGuard", () => {
 
   it("passes closure tails when no no-closure preference is active", async () => {
     const response = "The shelf test is the right move. Go read.";
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
     const llm = new FakeLLMClient({
       responses: [
         closureAuditResponse({
@@ -347,6 +352,7 @@ describe("ClosurePressureGuard", () => {
       llmClient: llm,
       auditModel: "audit",
       rewriteModel: "rewrite",
+      tracer,
     });
 
     const result = await guard.run({
@@ -362,6 +368,16 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("passed");
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_response_guard.completed",
+      expect.objectContaining({
+        mode: "shadow",
+        verdict: "passed",
+        wouldHaveVerdict: "passed",
+        removed_spans: [],
+        reason: "no_active_closure_preference",
+      }),
+    );
   });
 
   it("treats recent closure-pressure history as an active closure constraint", async () => {

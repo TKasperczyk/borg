@@ -135,6 +135,7 @@ describe("commitment checker", () => {
       response: "Atlas is down for Sam right now.",
       userMessage: "Can you tell Sam about Atlas?",
       commitments: [boundary],
+      rewriteOnViolation: true,
     });
 
     expect(result.revised).toBe(true);
@@ -148,6 +149,52 @@ describe("commitment checker", () => {
       'Rewrite only to remove or neutralize the commitment violation. Do not introduce any new facts, names, relationship claims, prior-message callbacks ("you said earlier", "we talked about"), action-completion claims ("you booked", "you already did"), or self-correction claims ("I just did the thing", "you corrected me earlier") that were not already present in the original response AND supported by the current user message or supplied evidence. Prefer deletion over explanation. If preserving the response would require unsupported memory claims, return an empty string -- the caller will treat that as suppression. Return plain text only.',
     );
     expect(llm.requests[2]?.model).toBe("haiku");
+
+    db.close();
+  });
+
+  it("suppresses on violation without rewriting by default", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const boundary = commitments.add({
+      type: "boundary",
+      kind: "boundary",
+      directiveFamily: "atlas_boundary",
+      directive: "Do not discuss Atlas",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        judgeResponse([
+          {
+            commitment_id: boundary.id,
+            reason: "Discloses Atlas details",
+          },
+        ]),
+      ],
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "Atlas deployment details are private.",
+      userMessage: "Tell me about Atlas.",
+      commitments: [boundary],
+    });
+
+    expect(result.revised).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "commitment_violation",
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual(["commitment-judge"]);
 
     db.close();
   });
@@ -212,6 +259,7 @@ describe("commitment checker", () => {
       response: "I will promise a public launch date next week.",
       userMessage: "Can you commit to a launch date?",
       commitments: [promise],
+      rewriteOnViolation: true,
     });
 
     expect(result.revised).toBe(true);
@@ -260,6 +308,7 @@ describe("commitment checker", () => {
       response: "You corrected me earlier, so I will use that.",
       userMessage: "What should we do next?",
       commitments: [promise],
+      rewriteOnViolation: true,
     });
 
     expect(result.revised).toBe(true);
@@ -303,6 +352,7 @@ describe("commitment checker", () => {
       response: "Atlas deployment details are private.",
       userMessage: "Tell me about Atlas.",
       commitments: [boundary],
+      rewriteOnViolation: true,
     });
 
     expect(result.violations).toHaveLength(1);
@@ -353,6 +403,7 @@ describe("commitment checker", () => {
       response: "Atlas deployment details are private.",
       userMessage: "Tell me about Atlas.",
       commitments: [boundary],
+      rewriteOnViolation: true,
     });
 
     expect(result.violations).toHaveLength(1);

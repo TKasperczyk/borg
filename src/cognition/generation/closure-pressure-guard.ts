@@ -25,22 +25,6 @@ export const CLOSURE_RESPONSE_SPAN_KINDS = [
 
 export const CLOSURE_RESPONSE_SHAPES = ["no_closure", "mixed", "closure_only"] as const;
 
-export const CLOSURE_FUNCTION_EXAMPLES = [
-  "Go.",
-  "Go read.",
-  "Go finish it.",
-  "Go save the streak.",
-  "Sleep.",
-  "Held.",
-  "Standing by.",
-  "Surface when you surface.",
-  "Trip thread held.",
-  "Manana.",
-  "That's the right note to end on.",
-  "Banks is waiting.",
-  "Held. Book.",
-] as const;
-
 export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TTL_MS = 600_000;
 export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW = 5;
 
@@ -71,8 +55,8 @@ const CLOSURE_RESPONSE_AUDIT_SYSTEM_PROMPT = [
   "You audit a just-generated assistant response for closure-pressure spans.",
   "A closure-pressure span pushes the user toward ending, pausing, sleeping, leaving, validating a terminal beat, or converting an open transition into a quotable closing tag.",
   "Classify spans only in the candidate response. Do not classify the user's message.",
-  "Closure-function examples include:",
-  ...CLOSURE_FUNCTION_EXAMPLES.map((example) => `- ${example}`),
+  "Look for the conversational function of the span, not any fixed phrase list.",
+  "Closure shapes include imperative send-offs, aphoristic or valedictory tails, ritual holding phrases, and taglines that make the exchange feel complete rather than answer the user's substantive need.",
   "Return spans as exact text copied from the response.",
   'Set response_shape to "no_closure" when no span has closure function.',
   'Set response_shape to "mixed" when the response has substantive content plus one or more closure-function spans.',
@@ -173,6 +157,18 @@ function activeClosurePressureHistoryEntries(input: {
   });
 }
 
+export function shouldEnforceClosurePressure(input: {
+  activeClosureCommitments: readonly CommitmentRecord[];
+  closureLoop: ClosureLoopState | null;
+  closureHistoryActive: boolean;
+}): boolean {
+  return (
+    input.closureHistoryActive ||
+    input.activeClosureCommitments.length > 0 ||
+    input.closureLoop?.status === "named"
+  );
+}
+
 function traceClosureGuard(input: {
   tracer?: TurnTracer;
   turnId: string;
@@ -262,8 +258,9 @@ export class ClosurePressureGuard {
   private applyMode(
     input: ClosurePressureGuardInput,
     result: ClosurePressureGuardResult,
+    mode: PostGenerationGuardMode,
   ): ClosurePressureGuardResult {
-    if (this.mode() === "enforce" || result.verdict === "passed") {
+    if (mode === "enforce" || result.verdict === "passed") {
       return result;
     }
 
@@ -307,15 +304,22 @@ export class ClosurePressureGuard {
       ...(closureHistoryActive ? ["closure_pressure_history"] : []),
     ];
     const closureLoopNamed = input.closureLoop?.status === "named";
+    const effectiveMode: PostGenerationGuardMode =
+      this.mode() === "enforce" &&
+      shouldEnforceClosurePressure({
+        activeClosureCommitments: activeCommitments,
+        closureLoop: input.closureLoop,
+        closureHistoryActive,
+      })
+        ? "enforce"
+        : "shadow";
     let audit: ClosureResponseAudit;
 
     try {
       audit = await this.audit(input.response);
     } catch (error) {
       const auditError = formatAuditError(error);
-      const failClosed =
-        this.mode() === "enforce" &&
-        (activeCommitments.length > 0 || closureLoopNamed || closureHistoryActive);
+      const failClosed = effectiveMode === "enforce";
 
       if (failClosed) {
         const reason = "closure_response_audit_failed_closed";
@@ -323,7 +327,7 @@ export class ClosurePressureGuard {
         traceClosureGuard({
           tracer: this.options.tracer,
           turnId: input.turnId,
-          mode: this.mode(),
+          mode: effectiveMode,
           verdict: "suppressed",
           wouldHaveSuppressionReason: reason,
           removedSpans: [],
@@ -352,7 +356,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -371,7 +375,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit: null,
-      });
+      }, effectiveMode);
     }
 
     if (audit.spans.length === 0 && audit.response_shape === "no_closure") {
@@ -380,7 +384,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -398,7 +402,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      });
+      }, effectiveMode);
     }
 
     if (audit.spans.length === 0) {
@@ -414,7 +418,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -432,7 +436,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      });
+      }, effectiveMode);
     }
 
     if (audit.response_shape === "no_closure") {
@@ -450,7 +454,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -468,7 +472,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      });
+      }, effectiveMode);
     }
 
     const removedSpans = audit.spans.map((span) => span.text);
@@ -479,7 +483,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "suppressed",
         wouldHaveSuppressionReason: reason,
         removedSpans,
@@ -499,7 +503,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      });
+      }, effectiveMode);
     }
 
     // Auditor spans can be phrase-only, so sentence-aware deletion prevents closure gap residue.
@@ -514,7 +518,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        mode: this.mode(),
+        mode: effectiveMode,
         verdict: "suppressed",
         wouldHaveSuppressionReason: reason,
         removedSpans,
@@ -534,7 +538,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      });
+      }, effectiveMode);
     }
 
     const reason = "closure_spans_removed";
@@ -542,7 +546,7 @@ export class ClosurePressureGuard {
     traceClosureGuard({
       tracer: this.options.tracer,
       turnId: input.turnId,
-      mode: this.mode(),
+      mode: effectiveMode,
       verdict: "rewritten",
       removedSpans,
       activeClosureCommitments: activeCommitmentLabels,
@@ -563,6 +567,6 @@ export class ClosurePressureGuard {
       active_closure_commitments: activeCommitmentLabels,
       reason,
       audit,
-    });
+    }, effectiveMode);
   }
 }

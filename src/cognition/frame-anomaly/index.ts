@@ -1,12 +1,9 @@
 export {
-  FRAME_ANOMALY_DEGRADED_FALLBACK_PATTERNS,
   FRAME_ANOMALY_CLASSIFIER_TOOL_NAME,
   FrameAnomalyClassifier,
-  classifyFrameAnomalyDegradedFallback,
   type ClassifyFrameAnomalyInput,
   type FrameAnomalyConversationContext,
   type FrameAnomalyConversationEntityContext,
-  type FrameAnomalyDegradedFallbackResult,
   type FrameAnomalyClassifierDegradedReason,
   type FrameAnomalyClassifierOptions,
 } from "./classifier.js";

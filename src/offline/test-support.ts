@@ -219,6 +219,14 @@ export function createTestConfig(
         },
       },
     },
+    commitments: {
+      ...DEFAULT_CONFIG.commitments,
+      ...overrides.commitments,
+      enforce: {
+        ...DEFAULT_CONFIG.commitments.enforce,
+        ...overrides.commitments?.enforce,
+      },
+    },
     deliberation: {
       ...DEFAULT_CONFIG.deliberation,
       ...overrides.deliberation,

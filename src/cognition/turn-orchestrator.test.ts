@@ -2948,6 +2948,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     try {
       const commitment = borg.commitments.add({
         type: "boundary",
+        kind: "boundary",
         directiveFamily: "launch_date_boundary",
         directive: "Do not disclose launch dates.",
         priority: 10,
@@ -2990,11 +2991,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.response).toBe("");
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "commitment_revision_failed",
+        reason: "commitment_violation",
       });
       expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
       expect(suppressionEntry?.content).toMatchObject({
-        reason: "commitment_revision_failed",
+        reason: "commitment_violation",
       });
       expect(activeStop).toMatchObject({
         provenance: "commitment_guard",
@@ -3933,7 +3934,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("uses the degraded fallback to fail closed on catastrophic frame phrases", async () => {
+  it("fails open with observability when frame-anomaly classification degrades", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -3947,7 +3948,15 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const llm = new FakeLLMClient({
       responses: [
         degradedFrameClassifier,
+        createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "No durable correction detected.",
+          confidence: 0,
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
         createEmitAnswerResponse("I will avoid treating that as memory."),
+        createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3960,10 +3969,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       this: Deliberator,
       ...args: Parameters<Deliberator["run"]>
     ) {
-      expect(args[0].frameAnomaly).toMatchObject({
-        status: "ok",
-        kind: "assistant_self_claim_in_user_role",
-      });
+      expect(args[0].frameAnomaly).toBeNull();
 
       return originalRun.apply(this, args);
     });
@@ -3983,14 +3989,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const traceEvents = readTraceEvents(tracePath);
 
       expect(budgets).toContain("frame-anomaly-classifier");
-      expect(budgets).not.toContain("corrective-preference-extractor");
-      expect(budgets).not.toContain("action-state-extractor");
-      expect(budgets).not.toContain("goal-promotion-extractor");
-      expect(extractSpy).not.toHaveBeenCalled();
-      expect(quarantineEvent?.content).toMatchObject({
-        event: QUARANTINED_USER_ENTRY_EVENT,
-        kind: "assistant_self_claim_in_user_role",
-      });
+      expect(budgets).toContain("corrective-preference-extractor");
+      expect(budgets).toContain("action-state-extractor");
+      expect(budgets).toContain("goal-promotion-extractor");
+      expect(extractSpy).toHaveBeenCalled();
+      expect(quarantineEvent).toBeUndefined();
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
           event: "frame_anomaly.degraded",
@@ -3999,17 +4002,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       );
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly.fallback.completed",
-          pattern: "i'm claude",
-          kind: "assistant_self_claim_in_user_role",
+          event: "frame_anomaly.degraded_fail_open",
+          reason: "llm_failed",
         }),
       );
-      expect(traceEvents).toContainEqual(
-        expect.objectContaining({
-          event: "frame_anomaly.transitioned",
-          kind: "assistant_self_claim_in_user_role",
-        }),
-      );
+      expect(traceEvents.some((event) => event.event === "frame_anomaly.transitioned")).toBe(false);
       expect(runSpy).toHaveBeenCalledOnce();
       expect(borg.actions.list({ limit: 10 })).toEqual([]);
     } finally {
@@ -4019,7 +4016,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("treats degraded frame classification without fallback match as normal", async () => {
+  it("treats degraded frame classification as fail-open normal flow", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -4085,7 +4082,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(quarantineEvent).toBeUndefined();
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
-          event: "frame_anomaly.fallback.completed",
+          event: "frame_anomaly.degraded_fail_open",
+          reason: "llm_failed",
         }),
       );
       expect(borg.actions.list({ state: "completed" })).toEqual([
@@ -4319,7 +4317,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("enforces a corrective preference on the same turn by rewriting a violation", async () => {
+  it("shadows corrective-preference violations before closure pressure handles no-closure directives", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_176_000);
@@ -4336,9 +4334,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         }),
         createEmitAnswerResponse("Sleep well."),
         createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
-        "I will leave it there.",
-        createCommitmentJudgeResponse([]),
-        createEmptyReflectionResponse(),
+        createMixedClosureResponseAuditResponse("Sleep well."),
       ],
     });
     const borg = await openTestBorg(tempDir, llm, clock);
@@ -4349,9 +4345,13 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         audience: "Sam",
       });
 
-      expect(result.emitted).toBe(true);
-      expect(result.response).toBe("I will leave it there.");
-      expect(llm.requests.map((request) => request.budget)).toContain("commitment-revision");
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "closure_pressure_only",
+      });
+      expect(llm.requests.map((request) => request.budget)).not.toContain("commitment-revision");
     } finally {
       await borg.close();
     }
@@ -4401,47 +4401,52 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("suppresses pure corrective-preference violations when revision still violates", async () => {
+  it("observes neutral participant-preference violations without suppressing the turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_177_000);
     const llm = new FakeLLMClient({
       responses: [
         createCorrectivePreferenceResponse({
           classification: "corrective_preference",
           type: "preference",
-          directive: "Do not add ritual closing lines when the conversation is open.",
-          closure_pressure_relevance: "no_closure",
+          directive: "Do not use the phrase azure in replies.",
+          directive_family: "avoid_azure_phrase",
+          closure_pressure_relevance: "neutral",
           priority: 8,
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
         }),
-        createEmitAnswerResponse("Sleep well."),
-        createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
-        "Sleep well.",
-        createDynamicCommitmentJudgeResponse("The revision still repeats the corrected pattern."),
+        createEmitAnswerResponse("Azure."),
+        createDynamicCommitmentJudgeResponse("The response repeats the corrected phrase."),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
 
     try {
       const result = await borg.turn({
-        userMessage: "You keep doing those little closing lines. Stop that.",
+        userMessage: "Stop saying azure in replies.",
         audience: "Sam",
       });
-      const suppressionEntry = borg.stream
-        .tail(10)
-        .find((entry) => entry.kind === "agent_suppressed");
+      const traceEvents = readTraceEvents(tracePath);
 
-      expect(result.emitted).toBe(false);
-      expect(result.response).toBe("");
-      expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "commitment_revision_failed",
-      });
-      expect(suppressionEntry?.content).toMatchObject({
-        reason: "commitment_revision_failed",
-      });
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Azure.");
+      expect(borg.stream.tail(10).some((entry) => entry.kind === "agent_suppressed")).toBe(false);
+      expect(llm.requests.map((request) => request.budget)).not.toContain("commitment-revision");
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.shadow_observation",
+          wouldHaveVerdict: "suppressed",
+          wouldHaveSuppressionReason: "commitment_violation",
+          commitmentKinds: ["participant_preference"],
+        }),
+      );
     } finally {
       await borg.close();
     }
@@ -4464,14 +4469,13 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         }),
         createEmitAnswerResponse("I will adjust that pattern."),
         createCommitmentJudgeResponse([]),
+        createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
         createEmitAnswerResponse("Sleep well."),
         createDynamicCommitmentJudgeResponse(
           "The later response repeats the durable corrected pattern.",
         ),
-        "I will stop here.",
-        createCommitmentJudgeResponse([]),
-        createEmptyReflectionResponse(),
+        createMixedClosureResponseAuditResponse("Sleep well."),
       ],
     });
     const borg = await openTestBorg(tempDir, llm, clock);
@@ -4488,9 +4492,14 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         audience: "Sam",
       });
 
-      expect(result.response).toBe("I will stop here.");
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "closure_pressure_only",
+      });
       expect(llm.requests.filter((request) => request.budget === "commitment-judge")).toHaveLength(
-        3,
+        2,
       );
     } finally {
       await borg.close();

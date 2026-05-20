@@ -780,6 +780,11 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
+        commitments: {
+          enforce: {
+            rewriteOnViolation: true,
+          },
+        },
       }),
       clock,
       embeddingDimensions: 4,
@@ -790,6 +795,7 @@ describe("Borg", () => {
     try {
       const commitment = borg.commitments.add({
         type: "boundary",
+        kind: "boundary",
         directiveFamily: "atlas_sam_boundary",
         directive: "Do not discuss Atlas with Sam",
         priority: 10,

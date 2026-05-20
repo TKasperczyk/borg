@@ -1,6 +1,5 @@
 import {
   FrameAnomalyClassifier,
-  classifyFrameAnomalyDegradedFallback,
   isFrameAnomaly,
   type ActualFrameAnomalyClassification,
   type FrameAnomalyClassification,
@@ -60,7 +59,7 @@ export async function classifyFrameAnomalyPhase(input: {
       });
     },
   });
-  let classification = await classifier.classify({
+  const classification = await classifier.classify({
     userMessage: input.userMessage,
     recentHistory: input.recentHistory,
     ...(input.conversationContext === undefined
@@ -68,26 +67,11 @@ export async function classifyFrameAnomalyPhase(input: {
       : { conversationContext: input.conversationContext }),
   });
 
-  if (classification.status === "degraded") {
-    const fallback = classifyFrameAnomalyDegradedFallback(input.userMessage);
-
-    if (fallback.matched) {
-      if (input.options.tracer.enabled) {
-        input.options.tracer.emit("frame_anomaly.fallback.completed", {
-          turnId: input.turnId,
-          matched: true,
-          pattern: fallback.pattern,
-          kind: fallback.kind,
-        });
-      }
-
-      classification = fallback.classification;
-    } else if (input.options.tracer.enabled) {
-      input.options.tracer.emit("frame_anomaly.fallback.completed", {
-        turnId: input.turnId,
-        matched: false,
-      });
-    }
+  if (classification.status === "degraded" && input.options.tracer.enabled) {
+    input.options.tracer.emit("frame_anomaly.degraded_fail_open", {
+      turnId: input.turnId,
+      reason: classification.reason,
+    });
   }
 
   if (isFrameAnomaly(classification)) {

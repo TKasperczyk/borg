@@ -97,14 +97,6 @@ describe("post-generation guard shadow chain", () => {
             confidence: 0.95,
           },
         ]),
-        {
-          text: "I can't discuss launch timing. You mentioned Marta earlier. The shelf test is the right move. Go read.",
-          input_tokens: 1,
-          output_tokens: 1,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        commitmentVerdictResponse([]),
         closureAuditResponse({
           spans: [
             {
@@ -184,8 +176,6 @@ describe("post-generation guard shadow chain", () => {
     });
     expect(llm.requests.map((request) => request.budget)).toEqual([
       "commitment-judge",
-      "commitment-revision",
-      "commitment-judge",
       "closure-response-auditor",
     ]);
     expect(emit.mock.calls).toEqual(
@@ -195,7 +185,7 @@ describe("post-generation guard shadow chain", () => {
           expect.objectContaining({
             mode: "shadow",
             verdict: "passed",
-            wouldHaveVerdict: "rewritten",
+            wouldHaveVerdict: "suppressed",
           }),
         ],
         [

@@ -195,6 +195,8 @@ export class TurnOrchestrator {
       detectionModel: options.config.anthropic.models.background,
       rewriteModel: options.config.anthropic.models.cognition,
       mode: options.config.generation.postGenerationGuards.commitment.mode,
+      criticalKinds: options.config.commitments.enforce.criticalKinds,
+      rewriteOnViolation: options.config.commitments.enforce.rewriteOnViolation,
       entityRepository: options.entityRepository,
       tracer: this.tracer,
     });

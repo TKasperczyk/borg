@@ -9,6 +9,7 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("review_resolver.completed")).toBe("review");
     expect(phaseForTraceEventName("turn.rejected")).toBe("session");
     expect(phaseForTraceEventName("frame_anomaly.completed")).toBe("perception");
+    expect(phaseForTraceEventName("frame_anomaly.degraded_fail_open")).toBe("perception");
     expect(phaseForTraceEventName("semantic_revision.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.reconcile.completed")).toBe("retrieval");

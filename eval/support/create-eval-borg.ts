@@ -19,6 +19,9 @@ type EvalConfigOverrides = {
   retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
     semantic?: Partial<Config["retrieval"]["semantic"]>;
   };
+  commitments?: Partial<Omit<Config["commitments"], "enforce">> & {
+    enforce?: Partial<Config["commitments"]["enforce"]>;
+  };
   deliberation?: Partial<Omit<Config["deliberation"], "contradictionRouting">> & {
     contradictionRouting?: Partial<Config["deliberation"]["contradictionRouting"]>;
   };
@@ -131,6 +134,14 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       semantic: {
         ...DEFAULT_CONFIG.retrieval.semantic,
         ...options.config?.retrieval?.semantic,
+      },
+    },
+    commitments: {
+      ...DEFAULT_CONFIG.commitments,
+      ...options.config?.commitments,
+      enforce: {
+        ...DEFAULT_CONFIG.commitments.enforce,
+        ...options.config?.commitments?.enforce,
       },
     },
     deliberation: {

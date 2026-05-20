@@ -8,6 +8,7 @@ import {
   type EvidenceLedgerSectionId,
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
+import { commitmentKindSchema, type CommitmentKind } from "../memory/commitments/types.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
@@ -32,6 +33,21 @@ const postGenerationGuardConfigSchema = z
   .object({
     mode: postGenerationGuardModeSchema.default("enforce"),
   })
+  .prefault({});
+const commitmentEnforceConfigSchema = z
+  .object({
+    criticalKinds: z
+      .array(commitmentKindSchema)
+      .default(["boundary", "audience_rule"] satisfies CommitmentKind[]),
+    rewriteOnViolation: z.boolean().default(false),
+  })
+  .strict()
+  .prefault({});
+const commitmentsConfigSchema = z
+  .object({
+    enforce: commitmentEnforceConfigSchema,
+  })
+  .strict()
   .prefault({});
 const evidenceLedgerSectionIds = EVIDENCE_LEDGER_SECTION_DEFINITIONS.map(
   (definition) => definition.id,
@@ -239,6 +255,7 @@ const configBaseSchema = z.object({
         .prefault({}),
     })
     .prefault({}),
+  commitments: commitmentsConfigSchema,
   deliberation: deliberationConfigSchema,
   generation: z
     .object({

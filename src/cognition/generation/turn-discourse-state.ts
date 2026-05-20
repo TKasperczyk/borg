@@ -319,6 +319,7 @@ export class TurnDiscourseStateService {
     }
 
     if (
+      input.reason === "commitment_violation" ||
       input.reason === "commitment_revision_failed" ||
       input.reason === "rewrite_unsupported_or_empty"
     ) {
@@ -327,9 +328,11 @@ export class TurnDiscourseStateService {
         provenance: "commitment_guard",
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
-          input.reason === "commitment_revision_failed"
-            ? "Commitment guard suppressed this turn because revision still violated an active commitment."
-            : "Commitment guard suppressed this turn because rewrite produced no supported output.",
+          input.reason === "commitment_violation"
+            ? "Commitment guard suppressed this turn because output violated an enforceable commitment."
+            : input.reason === "commitment_revision_failed"
+              ? "Commitment guard suppressed this turn because revision still violated an active commitment."
+              : "Commitment guard suppressed this turn because rewrite produced no supported output.",
         turnId: input.turnId,
       });
     }

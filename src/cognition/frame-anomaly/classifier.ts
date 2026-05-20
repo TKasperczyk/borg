@@ -116,62 +116,6 @@ type NormalizedFrameAnomalyPayload = {
   normalizations: FrameAnomalyPayloadNormalization[];
 };
 
-type FrameAnomalyFallbackPatternDefinition = {
-  pattern: string;
-  kind: Exclude<FrameAnomalyKind, "normal">;
-};
-
-const FRAME_ANOMALY_DEGRADED_FALLBACK_PATTERN_DEFINITIONS = [
-  // A user-role message claiming Claude identity is assistant substrate, not user-world memory.
-  { pattern: "i'm claude", kind: "assistant_self_claim_in_user_role" },
-  // The expanded form is the same direct assistant-identity claim.
-  { pattern: "i am claude", kind: "assistant_self_claim_in_user_role" },
-  // Claims about who played Tom assign the dialogue to a harness frame.
-  { pattern: "i was playing tom", kind: "frame_assignment_claim" },
-  // This makes the current user role claim provenance for the persona.
-  { pattern: "i've been playing tom", kind: "frame_assignment_claim" },
-  // This is the same persona-provenance claim without the contraction.
-  { pattern: "i have been playing tom", kind: "frame_assignment_claim" },
-  // A user-role report of hidden prompt instructions is unsafe system-prompt substrate.
-  { pattern: "system prompt instructed me", kind: "system_prompt_claim" },
-  // This is a direct claim about hidden prompt content.
-  { pattern: "the system prompt told me", kind: "system_prompt_claim" },
-  // Asking to leave the frame asserts an external frame over the conversation.
-  { pattern: "step out of the frame", kind: "frame_assignment_claim" },
-  // Asking to leave roleplay recasts the conversation as roleplay substrate.
-  { pattern: "step out of the roleplay", kind: "frame_assignment_claim" },
-  // Asking to leave fiction recasts the conversation as fictional substrate.
-  { pattern: "step out of the fiction", kind: "frame_assignment_claim" },
-  // Naming the interaction as fiction inverts the operational frame.
-  { pattern: "inside the fiction", kind: "roleplay_inversion" },
-  // Claiming authorship of both sides makes user-role text unsafe as user evidence.
-  { pattern: "i generated both halves", kind: "agent_authorship_claim" },
-  // Phase A's shorter authorship backstop catches the same catastrophic claim.
-  { pattern: "generated both halves", kind: "agent_authorship_claim" },
-  // This explicitly claims the current role authored both dialogue sides.
-  { pattern: "i was generating both", kind: "agent_authorship_claim" },
-  // Breaking character frames the live exchange as a performance role.
-  { pattern: "broke character", kind: "roleplay_inversion" },
-  // The imperative form asks Borg to accept a roleplay boundary.
-  { pattern: "break character", kind: "roleplay_inversion" },
-  // This directly states the real/user-assistant role mapping was inverted.
-  { pattern: "i had the role assignment inverted", kind: "roleplay_inversion" },
-] as const satisfies readonly FrameAnomalyFallbackPatternDefinition[];
-
-export const FRAME_ANOMALY_DEGRADED_FALLBACK_PATTERNS =
-  FRAME_ANOMALY_DEGRADED_FALLBACK_PATTERN_DEFINITIONS.map((definition) => definition.pattern);
-
-export type FrameAnomalyDegradedFallbackResult =
-  | {
-      matched: true;
-      pattern: string;
-      kind: Exclude<FrameAnomalyKind, "normal">;
-      classification: FrameAnomalyClassification;
-    }
-  | {
-      matched: false;
-    };
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -327,35 +271,6 @@ function normalizeFrameAnomalyToolInput(input: unknown): NormalizedFrameAnomalyP
       rationale: normalizeRationale(input.rationale, normalizations),
     },
     normalizations,
-  };
-}
-
-function normalizeFrameAnomalyFallbackText(message: string): string {
-  return message.replaceAll("\u2019", "'").replaceAll("\u2018", "'").toLowerCase();
-}
-
-export function classifyFrameAnomalyDegradedFallback(
-  userMessage: string,
-): FrameAnomalyDegradedFallbackResult {
-  const normalized = normalizeFrameAnomalyFallbackText(userMessage);
-  const match = FRAME_ANOMALY_DEGRADED_FALLBACK_PATTERN_DEFINITIONS.find((definition) =>
-    normalized.includes(definition.pattern),
-  );
-
-  if (match === undefined) {
-    return { matched: false };
-  }
-
-  return {
-    matched: true,
-    pattern: match.pattern,
-    kind: match.kind,
-    classification: {
-      status: "ok",
-      kind: match.kind,
-      confidence: 1,
-      rationale: `Frame anomaly classifier degraded; high-precision fallback matched "${match.pattern}".`,
-    },
   };
 }
 

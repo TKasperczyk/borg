@@ -16,6 +16,7 @@ export type GenerationSuppressionReason =
   | "s2_planner_no_output"
   | "closure_pressure_only"
   | "closure_response_audit_failed_closed"
+  | "commitment_violation"
   | "commitment_revision_failed"
   | "internal_identifier_leak"
   | "rewrite_unsupported_or_empty";

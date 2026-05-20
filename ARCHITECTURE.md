@@ -256,6 +256,20 @@ auditing, versus deciding what reaches the user. For non-critical semantic
 correctness issues, fix retrieval, extraction, ledger presentation, or prompt
 copy; do not add a second model to veto the first.
 
+## Guard Taxonomy
+
+| Guard | Mode | Triggers | Actions |
+| --- | --- | --- | --- |
+| CommitmentChecker | enforce (kinds: `boundary`, `audience_rule`) | LLM judge | suppress (`rewriteOnViolation` optional/off by default) |
+| CommitmentChecker | shadow (other kinds) | LLM judge | observe and trace |
+| ClosurePressureGuard | enforce (history active, `no_closure` commitment, or named closure loop) | LLM judge | delete spans or suppress |
+| ClosurePressureGuard | shadow (otherwise) | LLM judge | observe and trace |
+| GenerationGate | structural enforce (always) | `active_stop`, `minimal_loop`, hard cap | suppress |
+| GenerationGate | LLM-narrowed | only when structural condition is present | clear or hold |
+| FrameAnomaly | LLM-only | classifier | quarantine on confirmed anomaly |
+| FrameAnomaly degraded | fail-open with observability | classifier degraded | trace and allow |
+| InternalIdGuard | enforce (always) | regex substrate hygiene | redact/suppress |
+
 ## Host Capabilities
 
 Host capabilities are defined in `src/cognition/prompts/host-capabilities.ts`

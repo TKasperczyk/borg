@@ -67,6 +67,12 @@ describe("config", () => {
       enabled: true,
       cooldownTurns: 5,
     });
+    expect(config.commitments).toEqual({
+      enforce: {
+        criticalKinds: ["boundary", "audience_rule"],
+        rewriteOnViolation: false,
+      },
+    });
     expect(config.generation.evidenceLedger).toEqual({
       enabled: false,
       currentSessionTranscriptTokenBudget: 2_500,
@@ -310,6 +316,10 @@ describe("config", () => {
       enabled: false,
       cooldownTurns: 3,
     });
+    expect(config.commitments.enforce).toEqual({
+      criticalKinds: ["boundary", "audience_rule"],
+      rewriteOnViolation: false,
+    });
     expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("enforce");
     expect(config.generation.evidenceLedger.enabled).toBe(true);
@@ -368,6 +378,30 @@ describe("config", () => {
 
     expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("shadow");
+  });
+
+  it("accepts commitment enforce guard options", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      commitments: {
+        enforce: {
+          criticalKinds: ["boundary"],
+          rewriteOnViolation: true,
+        },
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {},
+    });
+
+    expect(config.commitments.enforce).toEqual({
+      criticalKinds: ["boundary"],
+      rewriteOnViolation: true,
+    });
   });
 
   it("defaults recall expansion to the dedicated Haiku slot", () => {
