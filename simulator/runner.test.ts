@@ -458,6 +458,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     decision_artifact_semantic_nodes_marked_contradicted: 0,
     decision_artifact_semantic_revision_cache_hits: 0,
     decision_artifact_semantic_revision_cache_size: 0,
+    semantic_revision_error_count: 0,
+    semantic_revision_skipped_due_to_error: 0,
+    semantic_revision_error_total_by_reason: {},
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
@@ -474,6 +477,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_omitted_recent_entries: 0,
     shared_state_live_entry_starvation: false,
     simulator_persona_failures: 0,
+    borg_hard_aborted_turns: 0,
+    borg_intentional_suppressions: 0,
+    borg_intentional_suppressions_by_reason: {},
     borg_aborted_turns: 0,
   };
 }
@@ -598,13 +604,18 @@ describe("SimulatorRunner", () => {
       finalMetrics: {
         ...metricsRow(3),
         simulator_persona_failures: 1,
-        borg_aborted_turns: 1,
+        borg_intentional_suppressions: 1,
+        borg_intentional_suppressions_by_reason: {
+          finalizer_no_output: 1,
+        },
       },
       durationMs: 1,
     });
 
     expect(report).toContain("Run result: partial");
-    expect(report).toContain("Simulator aborts: persona failures 1, Borg aborted turns 1");
+    expect(report).toContain(
+      "Simulator aborts: persona failures 1, hard aborts 0, intentional suppressions 1 (by reason: finalizer_no_output=1)",
+    );
     expect(report).toContain("## Simulator Persona Failures");
     expect(report).toContain("persona_role_bleed: assistant_self_claim");
     expect(report).toContain("## Borg Behavioral Suppressions");
@@ -786,6 +797,52 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Run worst capability status: healthy");
     expect(report).toContain("Final checkpoint status: healthy");
     expect(report).toContain("Unresolved validated concerns: 0");
+  });
+
+  it("downgrades behavioral status for hard aborts but not intentional suppressions", () => {
+    const intentionalOnly = formatSimulatorReport({
+      runId: "sim-runner-intentional-suppression-status-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 1,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [],
+      healthWarnings: [],
+      turnFailures: [],
+      finalMetrics: {
+        ...metricsRow(1),
+        borg_intentional_suppressions: 1,
+        borg_intentional_suppressions_by_reason: {
+          finalizer_no_output: 1,
+        },
+      },
+      durationMs: 1,
+    });
+    const hardAbort = formatSimulatorReport({
+      runId: "sim-runner-hard-abort-status-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 1,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [],
+      healthWarnings: [],
+      turnFailures: [],
+      finalMetrics: {
+        ...metricsRow(1),
+        borg_hard_aborted_turns: 1,
+        borg_aborted_turns: 1,
+      },
+      durationMs: 1,
+    });
+
+    expect(intentionalOnly).toContain("Run worst behavioral status: healthy");
+    expect(hardAbort).toContain("Run worst behavioral status: concerning");
   });
 
   it("detects expanded simulator health warnings with conservative thresholds", () => {
@@ -1054,26 +1111,45 @@ describe("SimulatorRunner", () => {
         expectedKinds: ["corrective_preference_degraded_rate_high"],
       },
       {
-        name: "extractor max tokens high fires per label",
+        name: "extractor max tokens high fires for registered canonical labels",
         rows: [
           {
             ...metricsRow(12),
             extractor_max_tokens_total_by_label: {
-              closure_loop_classifier: 16,
-              corrective_preference_extractor: 4,
+              pending_action_judge: 1,
             },
           },
         ],
         expectedKinds: ["extractor_max_tokens_high"],
       },
       {
-        name: "extractor max tokens at threshold does not fire",
+        name: "extractor max tokens severe fires for repeated label stops",
         rows: [
           {
             ...metricsRow(12),
             extractor_max_tokens_total_by_label: {
-              closure_loop_classifier: 15,
+              closure_loop_classifier: 3,
             },
+          },
+        ],
+        expectedKinds: ["extractor_max_tokens_high", "extractor_max_tokens_severe"],
+      },
+      {
+        name: "semantic revision degraded high fires at threshold",
+        rows: [
+          {
+            ...metricsRow(12),
+            semantic_revision_error_count: 3,
+          },
+        ],
+        expectedKinds: ["semantic_revision_degraded_high"],
+      },
+      {
+        name: "semantic revision degraded high does not fire below threshold",
+        rows: [
+          {
+            ...metricsRow(12),
+            semantic_revision_error_count: 2,
           },
         ],
         expectedKinds: [],
@@ -1207,29 +1283,13 @@ describe("SimulatorRunner", () => {
     }
   });
 
-  it("warns on extractor max-token totals per label rather than summed totals", () => {
-    const summedBelowThresholdWarnings = simulatorHealthWarningsForRows([
-      {
-        ...metricsRow(12),
-        extractor_max_tokens_total_by_label: {
-          closure_loop_classifier: 14,
-          corrective_preference_extractor: 14,
-        },
-      },
-    ]);
-
-    expect(
-      summedBelowThresholdWarnings.filter(
-        (warning) => warning.kind === "extractor_max_tokens_high",
-      ),
-    ).toEqual([]);
-
+  it("warns on the highest extractor max-token label", () => {
     const oneLabelHighWarnings = simulatorHealthWarningsForRows([
       {
         ...metricsRow(12),
         extractor_max_tokens_total_by_label: {
-          closure_loop_classifier: 16,
-          corrective_preference_extractor: 14,
+          closure_loop_classifier: 2,
+          corrective_preference_extractor: 1,
         },
       },
     ]).filter((warning) => warning.kind === "extractor_max_tokens_high");
@@ -1238,7 +1298,7 @@ describe("SimulatorRunner", () => {
       expect.objectContaining({
         kind: "extractor_max_tokens_high",
         label: "closure_loop_classifier",
-        observed_value: 16,
+        observed_value: 2,
       }),
     ]);
   });
@@ -1543,6 +1603,7 @@ describe("SimulatorRunner", () => {
             event: string;
             transport_chat_attempts: number;
             failure_reason?: string;
+            borg_hard_aborted_turns?: number;
             borg_aborted_turns?: number;
           },
       );
@@ -1567,11 +1628,13 @@ describe("SimulatorRunner", () => {
         event: "aborted_turn",
         transport_chat_attempts: 3,
         failure_reason: failureMessage,
+        borg_hard_aborted_turns: 1,
         borg_aborted_turns: 1,
       },
       {
         event: "turn_metrics",
         transport_chat_attempts: 1,
+        borg_hard_aborted_turns: 1,
         borg_aborted_turns: 1,
       },
     ]);
@@ -2450,8 +2513,58 @@ describe("SimulatorRunner", () => {
         sessionContinued: true,
       },
     ]);
-    expect(report.finalMetrics.borg_aborted_turns).toBe(1);
+    expect(report.finalMetrics.borg_hard_aborted_turns).toBe(0);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(0);
+    expect(report.finalMetrics.borg_intentional_suppressions).toBe(1);
+    expect(report.finalMetrics.borg_intentional_suppressions_by_reason).toEqual({
+      commitment_revision_failed: 1,
+    });
     expect(report.finalMetrics.simulator_persona_failures).toBe(0);
+  });
+
+  it("uses post-generation rejection trace reason for intentional suppression metrics", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    const persona = fakePersonaSession(["trace reason turn"]);
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      appendFileSync(
+        tracePath,
+        `${JSON.stringify({
+          ts: Date.now(),
+          turnId: "turn-trace-suppression",
+          event: "post_generation.rejected",
+          reason: "active_discourse_stop",
+        })}\n`,
+      );
+
+      return chatResult({
+        response: "",
+        emitted: false,
+        turnId: "turn-trace-suppression",
+        sessionId: options.sessionId as SessionId,
+        suppressionReason: "generation_gate",
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-trace-suppression-reason-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 999,
+      maxSessions: 3,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+
+    expect(report.finalMetrics.borg_intentional_suppressions).toBe(1);
+    expect(report.finalMetrics.borg_intentional_suppressions_by_reason).toEqual({
+      active_discourse_stop: 1,
+    });
   });
 
   it("rejects a persona role-bleed draft, regenerates, and records a trace artifact", async () => {
@@ -2740,7 +2853,12 @@ describe("SimulatorRunner", () => {
         sessionContinued: false,
       },
     ]);
-    expect(report.finalMetrics.borg_aborted_turns).toBe(1);
+    expect(report.finalMetrics.borg_hard_aborted_turns).toBe(0);
+    expect(report.finalMetrics.borg_aborted_turns).toBe(0);
+    expect(report.finalMetrics.borg_intentional_suppressions).toBe(1);
+    expect(report.finalMetrics.borg_intentional_suppressions_by_reason).toEqual({
+      finalizer_no_output: 1,
+    });
   });
 
   it("ends simulator sessions before starting the next session", async () => {

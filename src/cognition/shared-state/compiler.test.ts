@@ -46,6 +46,7 @@ import {
   SHARED_STATE_TOOL_NAME,
   type EmitSharedStatePatch,
 } from "./compiler.js";
+import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 
 function emitSharedStateArtifactPatchResponse(
   patch: EmitSharedStatePatch,
@@ -869,6 +870,92 @@ describe("compileSharedStateArtifact", () => {
       }
     },
   );
+
+  it("traces top-level semantic revision fail-open errors separately from no-op revision", async () => {
+    const embeddingClient = new TestEmbeddingClient(
+      new Map([["Project runtime is Node 22", [1, 0, 0, 0]]]),
+    );
+    const harness = await createOfflineTestHarness({
+      clock,
+      embeddingClient,
+    });
+    const artifactRepository = new SharedStateRepository({
+      db: harness.db,
+      clock,
+    });
+    const trace = createTraceRecorder();
+    const throwingVerdictCache = {
+      get() {
+        throw new Error("semantic revision cache failed");
+      },
+      set: vi.fn(),
+      clear: vi.fn(),
+      size: 0,
+    } as unknown as SemanticRevisionVerdictCache;
+
+    try {
+      const sourceEpisode = createEpisodeFixture({
+        audience_entity_id: audience,
+        shared: false,
+      });
+      await harness.episodicRepository.insert(sourceEpisode);
+      await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Project runtime is Node 20",
+            description: "The project runtime is Node 20.",
+            source_episode_ids: [sourceEpisode.id],
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "add",
+                kind: "locked",
+                text: "Project runtime is Node 22",
+                owner_entity_id: audience,
+                source_stream_entry_ids: [currentStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        repository: artifactRepository,
+        currentUserMessage: "Lock the project runtime as Node 22.",
+        semanticBeliefRevision: {
+          semanticNodeRepository: harness.semanticNodeRepository,
+          episodicRepository: harness.episodicRepository,
+          embeddingClient,
+          model: "semantic-revision-test",
+          verdictCache: throwingVerdictCache,
+        },
+        tracer: trace,
+      });
+
+      expect(artifactRepository.get(audience)?.entries[0]).toMatchObject({
+        kind: "locked",
+        text: "Project runtime is Node 22",
+      });
+      expect(trace.events).toContainEqual(
+        expect.objectContaining({
+          event: "shared_state.semantic_revision.degraded",
+          data: expect.objectContaining({
+            reason: "semantic revision cache failed",
+            skipped_due_to_error: 1,
+          }),
+        }),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
 
   it("retries stranded canonicalizes on an otherwise no-op compile", async () => {
     const trace = createTraceRecorder();

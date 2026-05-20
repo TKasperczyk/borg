@@ -30,6 +30,7 @@ export const DELIBERATION_LATENCY_MAX_HIGH_THRESHOLD_MS = 120_000;
 export const SEMANTIC_REVISION_LLM_CALLS_HIGH_THRESHOLD = 40;
 export const SEMANTIC_REVISION_TRANSITION_YIELD_MIN_CALLS = 6;
 export const SEMANTIC_REVISION_TRANSITION_YIELD_LOW_THRESHOLD = 0.25;
+export const SEMANTIC_REVISION_DEGRADED_HIGH_THRESHOLD = 3;
 
 // Classifier degradation is noisy in tiny samples; wait for a meaningful call
 // count before flagging.
@@ -42,7 +43,8 @@ export const CAPABILITY_AMBIGUITY_COUNT_HIGH_THRESHOLD = 3;
 
 export const CLOSURE_LOOP_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
 export const CORRECTIVE_PREFERENCE_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
-export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 15;
+export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 1;
+export const EXTRACTOR_MAX_TOKENS_SEVERE_THRESHOLD = 3;
 
 // Review backlog needs to be large enough to indicate drain trouble, not just
 // a few expected review items.
@@ -370,6 +372,22 @@ export function simulatorHealthWarningsForRows(
     }
   }
 
+  const semanticRevisionErrors = rows.reduce(
+    (sum, row) => sum + row.semantic_revision_error_count,
+    0,
+  );
+
+  if (semanticRevisionErrors >= SEMANTIC_REVISION_DEGRADED_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "semantic_revision_degraded_high",
+        threshold: SEMANTIC_REVISION_DEGRADED_HIGH_THRESHOLD,
+        observedValue: semanticRevisionErrors,
+      }),
+    );
+  }
+
   const classifierCalls = rows.reduce((sum, row) => sum + row.frame_anomaly_classifier_calls, 0);
 
   if (classifierCalls >= CLASSIFIER_DEGRADED_RATE_MIN_CALLS) {
@@ -442,13 +460,28 @@ export function simulatorHealthWarningsForRows(
 
   if (
     extractorMaxTokensStops !== null &&
-    extractorMaxTokensStops.count > EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD
+    extractorMaxTokensStops.count >= EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD
   ) {
     warnings.push(
       latestWarning({
         row: latest,
         kind: "extractor_max_tokens_high",
         threshold: EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD,
+        observedValue: extractorMaxTokensStops.count,
+        label: extractorMaxTokensStops.label,
+      }),
+    );
+  }
+
+  if (
+    extractorMaxTokensStops !== null &&
+    extractorMaxTokensStops.count >= EXTRACTOR_MAX_TOKENS_SEVERE_THRESHOLD
+  ) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "extractor_max_tokens_severe",
+        threshold: EXTRACTOR_MAX_TOKENS_SEVERE_THRESHOLD,
         observedValue: extractorMaxTokensStops.count,
         label: extractorMaxTokensStops.label,
       }),

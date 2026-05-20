@@ -87,6 +87,13 @@ async function openTestBorg(
         useLlmFallback: false,
         ...configOverrides.affective,
       },
+      generation: {
+        ...configOverrides.generation,
+        evidenceLedger: {
+          ...configOverrides.generation?.evidenceLedger,
+          enabled: configOverrides.generation?.evidenceLedger?.enabled ?? false,
+        },
+      },
       embedding: {
         baseUrl: "http://localhost:1234/v1",
         apiKey: "test",
@@ -858,7 +865,15 @@ describe("TurnOrchestrator evidence ledger", () => {
     const llm = new FakeLLMClient({
       responses: ledgerTurnResponses("I will use the current session."),
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: false,
+          },
+        },
+      },
+    });
 
     try {
       await borg.turn({

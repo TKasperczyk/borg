@@ -230,6 +230,9 @@ function metricsRow(turn: number): MetricsRow {
     decision_artifact_semantic_nodes_marked_contradicted: 0,
     decision_artifact_semantic_revision_cache_hits: 0,
     decision_artifact_semantic_revision_cache_size: 0,
+    semantic_revision_error_count: 0,
+    semantic_revision_skipped_due_to_error: 0,
+    semantic_revision_error_total_by_reason: {},
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
@@ -246,6 +249,9 @@ function metricsRow(turn: number): MetricsRow {
     shared_state_omitted_recent_entries: 0,
     shared_state_live_entry_starvation: false,
     simulator_persona_failures: 0,
+    borg_hard_aborted_turns: 0,
+    borg_intentional_suppressions: 0,
+    borg_intentional_suppressions_by_reason: {},
     borg_aborted_turns: 0,
   };
 }

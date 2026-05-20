@@ -37,6 +37,7 @@ import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
+import { isExtractorMaxTokenLlmLabel } from "../src/cognition/tracing/extractor-labels.js";
 
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
@@ -134,6 +135,12 @@ export type MetricsCaptureContext = {
   transportChatAttempts: number;
   overseerDueOnSuppressedTurn?: boolean;
   simulatorPersonaFailures?: number;
+  borgHardAbortedTurns?: number;
+  borgIntentionalSuppressions?: number;
+  borgIntentionalSuppressionsByReason?: Record<string, number>;
+  /**
+   * Deprecated compatibility input; use borgHardAbortedTurns.
+   */
   borgAbortedTurns?: number;
 };
 
@@ -168,6 +175,13 @@ type SharedStateArtifactSemanticRevisionMetricCounts = Pick<
   | "decision_artifact_semantic_nodes_marked_superseded"
   | "decision_artifact_semantic_nodes_marked_contradicted"
   | "decision_artifact_semantic_revision_cache_hits"
+>;
+
+type SemanticRevisionErrorMetricCounts = Pick<
+  MetricsRow,
+  | "semantic_revision_error_count"
+  | "semantic_revision_skipped_due_to_error"
+  | "semantic_revision_error_total_by_reason"
 >;
 
 type SharedStateCapPressureMetricCounts = Pick<
@@ -577,6 +591,32 @@ function sharedStateSemanticRevisionMetrics(
   };
 }
 
+function semanticRevisionErrorMetrics(input: {
+  traceRecords: readonly TraceRecord[];
+  cumulativeTraceRecords: readonly TraceRecord[];
+}): SemanticRevisionErrorMetricCounts {
+  const degraded = input.traceRecords.filter(
+    (record) => record.event === "shared_state.semantic_revision.degraded",
+  );
+  const cumulativeDegraded = input.cumulativeTraceRecords.filter(
+    (record) => record.event === "shared_state.semantic_revision.degraded",
+  );
+  const totalsByReason = new Map<string, number>();
+
+  for (const record of cumulativeDegraded) {
+    incrementReasonCount(totalsByReason, traceReason(record) ?? "unknown");
+  }
+
+  return {
+    semantic_revision_error_count: degraded.length,
+    semantic_revision_skipped_due_to_error: degraded.reduce(
+      (sum, record) => sum + Math.max(1, traceNumber(record, "skipped_due_to_error")),
+      0,
+    ),
+    semantic_revision_error_total_by_reason: sortedNumberRecord(totalsByReason),
+  };
+}
+
 function sharedStateCapPressureMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateCapPressureMetricCounts {
@@ -674,6 +714,22 @@ function incrementLabelCount(counts: Map<string, number>, label: string): void {
   counts.set(label, (counts.get(label) ?? 0) + 1);
 }
 
+function incrementReasonCount(counts: Map<string, number>, reason: string): void {
+  counts.set(reason, (counts.get(reason) ?? 0) + 1);
+}
+
+function sortedContextCounts(counts: Record<string, number> | undefined): Record<string, number> {
+  if (counts === undefined) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(counts)
+      .filter(([, value]) => Number.isFinite(value) && value > 0)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 function isExtractorMaxTokensStop(record: TraceRecord): boolean {
   const label = traceLabel(record);
 
@@ -681,7 +737,7 @@ function isExtractorMaxTokensStop(record: TraceRecord): boolean {
     record.event === "llm_call.completed" &&
     traceStopReason(record) === "max_tokens" &&
     label !== null &&
-    (label.endsWith("_extractor") || label.endsWith("_classifier"))
+    isExtractorMaxTokenLlmLabel(label)
   );
 }
 
@@ -1383,6 +1439,10 @@ export class MetricsCapture {
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics(traceRecords);
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
+    const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
+      traceRecords,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     const extractorHealthMetricCounts = extractorHealthMetrics({
@@ -1524,6 +1584,12 @@ export class MetricsCapture {
       decision_artifact_semantic_revision_cache_hits:
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      semantic_revision_error_count:
+        semanticRevisionErrorMetricCounts.semantic_revision_error_count,
+      semantic_revision_skipped_due_to_error:
+        semanticRevisionErrorMetricCounts.semantic_revision_skipped_due_to_error,
+      semantic_revision_error_total_by_reason:
+        semanticRevisionErrorMetricCounts.semantic_revision_error_total_by_reason,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
@@ -1547,7 +1613,12 @@ export class MetricsCapture {
       shared_state_live_entry_starvation:
         sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
-      borg_aborted_turns: context.borgAbortedTurns ?? 0,
+      borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
+      borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
+      borg_intentional_suppressions_by_reason: sortedContextCounts(
+        context.borgIntentionalSuppressionsByReason,
+      ),
+      borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -1587,6 +1658,7 @@ export class MetricsCapture {
       turnCounter,
     );
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
+    const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords: [],
       borg,
@@ -1598,6 +1670,10 @@ export class MetricsCapture {
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
+    const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
+      traceRecords,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const extractorHealthMetricCounts = extractorHealthMetrics({
@@ -1727,6 +1803,12 @@ export class MetricsCapture {
       decision_artifact_semantic_revision_cache_hits:
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      semantic_revision_error_count:
+        semanticRevisionErrorMetricCounts.semantic_revision_error_count,
+      semantic_revision_skipped_due_to_error:
+        semanticRevisionErrorMetricCounts.semantic_revision_skipped_due_to_error,
+      semantic_revision_error_total_by_reason:
+        semanticRevisionErrorMetricCounts.semantic_revision_error_total_by_reason,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
@@ -1750,7 +1832,12 @@ export class MetricsCapture {
       shared_state_live_entry_starvation:
         sharedStateCapPressureMetricCounts.shared_state_live_entry_starvation,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
-      borg_aborted_turns: context.borgAbortedTurns ?? 0,
+      borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
+      borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
+      borg_intentional_suppressions_by_reason: sortedContextCounts(
+        context.borgIntentionalSuppressionsByReason,
+      ),
+      borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);

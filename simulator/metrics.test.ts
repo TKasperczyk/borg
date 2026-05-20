@@ -150,6 +150,9 @@ const TURN_METRICS_KEY_ORDER = [
   "decision_artifact_semantic_nodes_marked_contradicted",
   "decision_artifact_semantic_revision_cache_hits",
   "decision_artifact_semantic_revision_cache_size",
+  "semantic_revision_error_count",
+  "semantic_revision_skipped_due_to_error",
+  "semantic_revision_error_total_by_reason",
   "overseer_due_on_suppressed_turn",
   "closure_loop_completed_count",
   "closure_loop_degraded_count",
@@ -166,6 +169,9 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_omitted_recent_entries",
   "shared_state_live_entry_starvation",
   "simulator_persona_failures",
+  "borg_hard_aborted_turns",
+  "borg_intentional_suppressions",
+  "borg_intentional_suppressions_by_reason",
   "borg_aborted_turns",
 ] as const;
 
@@ -415,6 +421,34 @@ describe("MetricsCapture", () => {
           reason: "invalid_payload",
         },
         {
+          ts: 136,
+          turnId: "turn-1",
+          event: "llm_call.completed",
+          label: "pending_action_judge",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 137,
+          turnId: "turn-1",
+          event: "llm_call.completed",
+          label: "procedural-context",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 138,
+          turnId: "turn-1",
+          event: "llm_call.completed",
+          label: "not_registered_extractor",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 139,
+          turnId: "turn-1",
+          event: "shared_state.semantic_revision.degraded",
+          reason: "semantic vector search failed",
+          skipped_due_to_error: 1,
+        },
+        {
           ts: 190,
           turnId: "turn-1",
           event: "llm_call.completed",
@@ -510,11 +544,13 @@ describe("MetricsCapture", () => {
     expect(row.closure_loop_degraded_count).toBe(1);
     expect(row.corrective_preference_completed_count).toBe(1);
     expect(row.corrective_preference_degraded_count).toBe(1);
-    expect(row.extractor_max_tokens_stop_count).toBe(2);
+    expect(row.extractor_max_tokens_stop_count).toBe(4);
     expect(row.extractor_max_tokens_total_by_label).toEqual({
       closure_loop_classifier: 1,
       corrective_preference_extractor: 1,
       goal_promotion_extractor: 1,
+      pending_action_judge: 1,
+      "procedural-context": 1,
     });
     expect(row.extractor_degraded_total_by_label).toEqual({
       closure_loop_classifier: 1,
@@ -529,6 +565,11 @@ describe("MetricsCapture", () => {
     expect(row.decision_artifact_semantic_nodes_marked_contradicted).toBe(1);
     expect(row.decision_artifact_semantic_revision_cache_hits).toBe(1);
     expect(row.decision_artifact_semantic_revision_cache_size).toBe(17);
+    expect(row.semantic_revision_error_count).toBe(1);
+    expect(row.semantic_revision_skipped_due_to_error).toBe(1);
+    expect(row.semantic_revision_error_total_by_reason).toEqual({
+      "semantic vector search failed": 1,
+    });
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);

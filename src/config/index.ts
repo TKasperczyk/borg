@@ -124,7 +124,7 @@ const sharedStateConfigSchema = z
   .prefault({});
 const evidenceLedgerConfigSchema = z
   .object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     currentSessionTranscriptTokenBudget: z.number().int().positive().default(2_500),
     actionThreadRenderLimit: z.number().int().positive().default(12),
     actionThreadSimilarityThreshold: z.number().min(0).max(1).default(0.85),

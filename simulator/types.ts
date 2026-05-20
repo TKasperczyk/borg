@@ -131,6 +131,9 @@ export type MetricsRow = {
   decision_artifact_semantic_nodes_marked_contradicted: number;
   decision_artifact_semantic_revision_cache_hits: number;
   decision_artifact_semantic_revision_cache_size: number;
+  semantic_revision_error_count: number;
+  semantic_revision_skipped_due_to_error: number;
+  semantic_revision_error_total_by_reason: Record<string, number>;
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;
@@ -149,6 +152,12 @@ export type MetricsRow = {
   shared_state_omitted_recent_entries: number;
   shared_state_live_entry_starvation: boolean;
   simulator_persona_failures: number;
+  borg_hard_aborted_turns: number;
+  borg_intentional_suppressions: number;
+  borg_intentional_suppressions_by_reason: Record<string, number>;
+  /**
+   * Deprecated compatibility alias for borg_hard_aborted_turns.
+   */
   borg_aborted_turns: number;
 };
 
@@ -166,12 +175,14 @@ export type SimulatorHealthWarningKind =
   | "deliberation_latency_max_high"
   | "semantic_revision_llm_calls_high"
   | "semantic_revision_transition_yield_low"
+  | "semantic_revision_degraded_high"
   | "classifier_degraded_rate_high"
   | "capability_overclaim_count_high"
   | "capability_ambiguity_count_high"
   | "closure_loop_degraded_rate_high"
   | "corrective_preference_degraded_rate_high"
   | "extractor_max_tokens_high"
+  | "extractor_max_tokens_severe"
   | "review_queue_backlog_high";
 
 export type SimulatorHealthWarning = {

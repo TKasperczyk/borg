@@ -25,6 +25,7 @@ export type TurnTraceEventName =
   | "shared_state.lifecycle.degraded"
   | "shared_state.reconcile.completed"
   | "shared_state.reconcile.skipped"
+  | "shared_state.semantic_revision.degraded"
   | "semantic_revision.completed"
   | "semantic_revision.cache.completed"
   | "semantic_revision.degraded"

@@ -74,7 +74,7 @@ describe("config", () => {
       },
     });
     expect(config.generation.evidenceLedger).toEqual({
-      enabled: false,
+      enabled: true,
       currentSessionTranscriptTokenBudget: 2_500,
       actionThreadRenderLimit: 12,
       actionThreadSimilarityThreshold: 0.85,

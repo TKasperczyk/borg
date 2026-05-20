@@ -37,6 +37,7 @@ import {
   dedupeCanonicalizesAcrossOperations,
   normalizePatch,
 } from "./patch-validation.js";
+import { errorMessage } from "./reconciliation-summary.js";
 import { applySharedStateArtifactLifecycleCap, expandPruneDependencies } from "./lifecycle-cap.js";
 import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candidates.js";
 import { buildSharedStateArtifactPromptSummary } from "./summary.js";
@@ -54,12 +55,29 @@ function semanticBeliefRevisionDependencies(
   };
 }
 
+function traceSharedStateSemanticRevisionDegraded(
+  input: Parameters<typeof reconcileSemanticBeliefRevision>[0],
+  error: unknown,
+): void {
+  if (input.tracer?.enabled !== true || input.turnId === undefined) {
+    return;
+  }
+
+  input.tracer.emit("shared_state.semantic_revision.degraded", {
+    turnId: input.turnId,
+    reason: errorMessage(error),
+    skipped_due_to_error: 1,
+  });
+}
+
 async function reconcileSemanticBeliefRevisionFailOpen(
   input: Parameters<typeof reconcileSemanticBeliefRevision>[0],
 ): ReturnType<typeof reconcileSemanticBeliefRevision> {
   try {
     return await reconcileSemanticBeliefRevision(input);
-  } catch {
+  } catch (error) {
+    traceSharedStateSemanticRevisionDegraded(input, error);
+
     return {
       semantic_nodes_reviewed_attempted: 0,
       semantic_nodes_marked_superseded: 0,

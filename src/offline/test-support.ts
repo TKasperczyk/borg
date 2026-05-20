@@ -248,6 +248,10 @@ export function createTestConfig(
       },
       evidenceLedger: {
         ...DEFAULT_CONFIG.generation.evidenceLedger,
+        // Most full-turn test fixtures use short fake LLM response queues
+        // and exercise legacy prompt paths unless they explicitly opt into
+        // ledger behavior.
+        enabled: overrides.generation?.evidenceLedger?.enabled ?? false,
         ...overrides.generation?.evidenceLedger,
         decisionArtifact: {
           ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,

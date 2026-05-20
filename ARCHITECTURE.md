@@ -106,6 +106,12 @@ types, session scope, actor, trust rank, taint, citations, and compaction
 metadata. When adding evidence, prefer a ledger section or existing evidence
 entry shape over bespoke prompt text.
 
+The evidence ledger is enabled by default. Setting
+`generation.evidenceLedger.enabled=false` is a deprecated migration and debug
+flag that keeps the older prompt sections alive for legacy fixtures and
+targeted comparison runs; new architecture work should assume ledger-on
+grounding.
+
 ## Shared-State Artifact
 
 The shared-state artifact is an audience-scoped compact state record stored by

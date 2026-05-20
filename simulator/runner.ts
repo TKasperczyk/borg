@@ -163,6 +163,25 @@ function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefi
   return isNaturalSilenceSuppressionReason(reason);
 }
 
+function incrementSuppressionReason(
+  counts: Record<string, number>,
+  reason: GenerationSuppressionReason,
+): void {
+  counts[reason] = (counts[reason] ?? 0) + 1;
+}
+
+function postGenerationRejectedReasonForTurn(
+  tracePath: string,
+  turnId: string,
+): GenerationSuppressionReason | undefined {
+  const record = [...readTraceEvents(tracePath)]
+    .reverse()
+    .find((event) => event.turnId === turnId && event.event === "post_generation.rejected");
+  const reason = record?.reason;
+
+  return typeof reason === "string" ? (reason as GenerationSuppressionReason) : undefined;
+}
+
 export function createSimulatorScenario(
   personaOrPersonas: Persona | readonly Persona[],
   totalTurns: number,
@@ -670,7 +689,9 @@ export class SimulatorRunner {
       const simulatorPersonaFailures: SimulatorPersonaFailureRecord[] = [];
       const borgBehavioralSuppressions: SimulatorBorgBehavioralSuppressionRecord[] = [];
       let simulatorPersonaFailureCount = 0;
-      let borgAbortedTurnCount = 0;
+      let borgHardAbortedTurnCount = 0;
+      let borgIntentionalSuppressionCount = 0;
+      const borgIntentionalSuppressionsByReason: Record<string, number> = {};
 
       const attemptTurn = async (
         draft: PersonaTurnDraft,
@@ -764,7 +785,9 @@ export class SimulatorRunner {
             failureReason: detail,
             turnId: `simulator_persona_failure_${turn}`,
             simulatorPersonaFailures: simulatorPersonaFailureCount,
-            borgAbortedTurns: borgAbortedTurnCount,
+            borgHardAbortedTurns: borgHardAbortedTurnCount,
+            borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+            borgIntentionalSuppressionsByReason,
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -823,7 +846,9 @@ export class SimulatorRunner {
               failureReason: detail,
               turnId: `${PERSONA_ROLE_BLEED_RETRY}_${turn}`,
               simulatorPersonaFailures: simulatorPersonaFailureCount,
-              borgAbortedTurns: borgAbortedTurnCount,
+              borgHardAbortedTurns: borgHardAbortedTurnCount,
+              borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+              borgIntentionalSuppressionsByReason,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -851,7 +876,9 @@ export class SimulatorRunner {
               failureReason: detail,
               turnId: `simulator_persona_failure_${turn}`,
               simulatorPersonaFailures: simulatorPersonaFailureCount,
-              borgAbortedTurns: borgAbortedTurnCount,
+              borgHardAbortedTurns: borgHardAbortedTurnCount,
+              borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+              borgIntentionalSuppressionsByReason,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -897,7 +924,9 @@ export class SimulatorRunner {
                 failureReason: formatErrorChain(error),
                 turnId: failedTurnId,
                 simulatorPersonaFailures: simulatorPersonaFailureCount,
-                borgAbortedTurns: borgAbortedTurnCount,
+                borgHardAbortedTurns: borgHardAbortedTurnCount,
+                borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+                borgIntentionalSuppressionsByReason,
               });
             }
 
@@ -913,14 +942,16 @@ export class SimulatorRunner {
           const detail = formatErrorChain(attemptError);
           personaSession.rollback(draft);
           turnFailures.push({ turn, error: detail, attempts: attemptsMade });
-          borgAbortedTurnCount += 1;
+          borgHardAbortedTurnCount += 1;
           await metrics.captureAborted(transport.getBorg(), turn, {
             sessionId: currentSessionId,
             sessionIds,
             transportChatAttempts: attemptsMade,
             failureReason: detail,
             simulatorPersonaFailures: simulatorPersonaFailureCount,
-            borgAbortedTurns: borgAbortedTurnCount,
+            borgHardAbortedTurns: borgHardAbortedTurnCount,
+            borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+            borgIntentionalSuppressionsByReason,
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -951,8 +982,12 @@ export class SimulatorRunner {
         consecutiveFailures = 0;
 
         const overseerDue = overseerSchedulingEnabled && turn % checkEvery === 0;
-        const suppressionReason = success.emitted ? undefined : success.suppressionReason;
         const isObserveTurn = !success.emitted && success.emissionKind === "observed";
+        const suppressionReason =
+          !success.emitted && !isObserveTurn
+            ? (postGenerationRejectedReasonForTurn(transport.tracePath, success.turnId) ??
+              success.suppressionReason)
+            : undefined;
         const continuesSuppressedSession =
           !success.emitted &&
           !isObserveTurn &&
@@ -960,7 +995,8 @@ export class SimulatorRunner {
           !isSessionEndingSuppression(suppressionReason);
 
         if (!success.emitted && !isObserveTurn && suppressionReason !== undefined) {
-          borgAbortedTurnCount += 1;
+          borgIntentionalSuppressionCount += 1;
+          incrementSuppressionReason(borgIntentionalSuppressionsByReason, suppressionReason);
           borgBehavioralSuppressions.push({
             sessionIndex: sessions.length,
             sessionId: currentSessionId,
@@ -1024,7 +1060,9 @@ export class SimulatorRunner {
           transportChatAttempts: success.transportChatAttempts,
           overseerDueOnSuppressedTurn: !success.emitted && !isObserveTurn && overseerDue,
           simulatorPersonaFailures: simulatorPersonaFailureCount,
-          borgAbortedTurns: borgAbortedTurnCount,
+          borgHardAbortedTurns: borgHardAbortedTurnCount,
+          borgIntentionalSuppressions: borgIntentionalSuppressionCount,
+          borgIntentionalSuppressionsByReason,
         });
 
         if (overseerDue) {
@@ -1274,6 +1312,10 @@ function runCheckpointStatusSummary(report: SimulatorRunReport): {
     capabilityStatus = maxStatus(capabilityStatus, summary.capabilityStatus);
   }
 
+  if (report.finalMetrics.borg_hard_aborted_turns > 0) {
+    behavioralStatus = maxStatus(behavioralStatus, "concerning");
+  }
+
   const finalCheckpoint = report.overseerCheckpoints.at(-1);
   const finalCheckpointSummary =
     finalCheckpoint === undefined ? null : checkpointStatusSummary(finalCheckpoint);
@@ -1329,6 +1371,7 @@ const STATE_PRESSURE_WARNING_KINDS = new Set<SimulatorHealthWarningKind>([
 const SEVERE_HEALTH_WARNING_KINDS = new Set<SimulatorHealthWarningKind>([
   "capability_overclaim_count_high",
   "capability_ambiguity_count_high",
+  "extractor_max_tokens_severe",
 ]);
 
 function healthWarningBucket(
@@ -1381,6 +1424,9 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   const runSummary = runCheckpointStatusSummary(report);
   const simulatorPersonaFailures = report.simulatorPersonaFailures ?? [];
   const borgBehavioralSuppressions = report.borgBehavioralSuppressions ?? [];
+  const intentionalSuppressionReasons = reportCountMap(
+    report.finalMetrics.borg_intentional_suppressions_by_reason,
+  );
   const lines = [
     `# Borg Simulator Run ${report.runId}`,
     "",
@@ -1411,7 +1457,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
     `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
     `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ${report.finalMetrics.shared_state_live_entry_starvation}`,
-    `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, Borg aborted turns ${report.finalMetrics.borg_aborted_turns}`,
+    `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, hard aborts ${report.finalMetrics.borg_hard_aborted_turns}, intentional suppressions ${report.finalMetrics.borg_intentional_suppressions} (by reason: ${intentionalSuppressionReasons})`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
@@ -1419,6 +1465,10 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     "",
     `- Max-token stops by label: ${reportCountMap(report.finalMetrics.extractor_max_tokens_total_by_label)}`,
     `- Degraded by label: ${reportCountMap(report.finalMetrics.extractor_degraded_total_by_label)}`,
+    "",
+    "## Cumulative Semantic Revision Health",
+    "",
+    `- Revision errors by reason: ${reportCountMap(report.finalMetrics.semantic_revision_error_total_by_reason)}`,
     "",
     "## Health Warnings",
     "",
