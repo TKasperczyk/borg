@@ -171,7 +171,14 @@ function makeAction(
     scheduled_at: state === "scheduled" ? NOW_MS : null,
     completed_at: null,
     not_done_at: null,
+    expired_at: null,
+    archived_at: null,
     unknown_at: null,
+    canonicalized_by_artifact_entry_id: null,
+    session_scope: null,
+    session_anchor_id: null,
+    last_referenced_at_ms: NOW_MS,
+    last_referenced_turn_counter: null,
     ...overrides,
   };
 }
@@ -2052,6 +2059,92 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
     );
+  });
+
+  it("renders action salience ordering and caps stale participant actions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Let's keep the action ledger tight.",
+    });
+    const borgCurrent = makeAction(userEntry.id, {
+      description: "Log the care-plan decision",
+      actor: "borg",
+      state: "committed_to_do",
+      committed_at: NOW_MS,
+      scheduled_at: null,
+    });
+    const participantRecent = makeAction(userEntry.id, {
+      description: "Call the clinic back",
+      actor: "user",
+      state: "committed_to_do",
+      committed_at: NOW_MS - 10,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+    });
+    const stale = Array.from({ length: 7 }, (_, index) =>
+      makeAction(userEntry.id, {
+        description: `Stale participant action ${index}`,
+        actor: "user",
+        state: "committed_to_do",
+        committed_at: NOW_MS - 100 - index,
+        updated_at: NOW_MS - 100 - index,
+        scheduled_at: null,
+        last_referenced_turn_counter: 0,
+      }),
+    );
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [participantRecent, ...stale, borgCurrent],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 20,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+
+    expect(actionEntries[0]?.salience_class).toBe("borg_current_turn_action");
+    expect(actionEntries[1]?.salience_class).toBe("participant_pending_recent");
+    expect(
+      actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
+    ).toHaveLength(6);
+    expect(
+      actionEntries.filter((entry) => entry.id.startsWith("action_thread:")).slice(-5),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          salience_class: "participant_pending_stale",
+        }),
+      ]),
+    );
+    expect(
+      actionEntries.find((entry) => entry.id === "action_threads:participant_pending_stale_summary")
+        ?.text,
+    ).toContain("count=2");
   });
 
   it("renders non-raw retrieved evidence sources into ledger sections", async () => {

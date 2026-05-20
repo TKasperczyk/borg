@@ -14,6 +14,7 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
       : `[citation: ${entry.citations.join(", ")}]`,
     entry.stream_index === undefined ? null : `stream_index=${entry.stream_index}`,
     entry.state === undefined ? null : `state=${entry.state}`,
+    entry.salience_class === undefined ? null : `salience_class=${entry.salience_class}`,
     stateMetadata === undefined ? null : `state_metadata=${stateMetadata}`,
     entry.taint === undefined ? null : `taint=${entry.taint}`,
     entry.persistence_class === undefined ? null : `persistence_class=${entry.persistence_class}`,

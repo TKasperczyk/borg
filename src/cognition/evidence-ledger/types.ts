@@ -22,6 +22,13 @@ export type EvidenceLedgerSourceType = z.infer<typeof evidenceLedgerSourceTypeSc
 export type EvidenceLedgerSessionScope = "current_session" | "prior_session" | "global";
 export type EvidenceLedgerActor = "user" | "assistant" | "system" | "memory";
 export type EvidenceLedgerTaint = "none" | "assistant_seeded" | "quarantined" | "contested";
+export type EvidenceLedgerActionSalienceClass =
+  | "borg_current_turn_action"
+  | "borg_memory_tracking_action"
+  | "participant_pending_recent"
+  | "participant_pending_stale"
+  | "group_pending"
+  | "completed_recent";
 
 export type EvidenceLedgerEntry = {
   id: string;
@@ -32,6 +39,7 @@ export type EvidenceLedgerEntry = {
   text?: string;
   value?: string;
   state?: string;
+  salience_class?: EvidenceLedgerActionSalienceClass;
   state_metadata?: Record<string, unknown>;
   taint?: EvidenceLedgerTaint;
   persistence_class?: StreamEntryPersistenceClass;

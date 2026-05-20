@@ -68,6 +68,11 @@ export const TRACE_EVENT_TAXONOMY = {
     "action_persistence.dedup.skipped",
     "action_persistence.dedup.degraded",
     "action_state.transitioned",
+    "action_state.borg_self_performance.completed",
+    "action_state.archived",
+    "action_session_scope.expired",
+    "action_session_scope.rolled_over",
+    "action_inactivity_scan.completed",
     "action_duplicate_pressure.completed",
     "extraction.goals.degraded",
     "extraction.goals.completed",
@@ -108,9 +113,7 @@ export const TRACE_EVENT_TAXONOMY = {
 export type TraceTaxonomyPhase = keyof typeof TRACE_EVENT_TAXONOMY;
 export type TracePhaseWithOther = TraceTaxonomyPhase | "other";
 
-export const TRACE_TAXONOMY_PHASES = Object.keys(
-  TRACE_EVENT_TAXONOMY,
-) as TraceTaxonomyPhase[];
+export const TRACE_TAXONOMY_PHASES = Object.keys(TRACE_EVENT_TAXONOMY) as TraceTaxonomyPhase[];
 export const TRACE_TAXONOMY_PHASES_WITH_OTHER: readonly TracePhaseWithOther[] = [
   ...TRACE_TAXONOMY_PHASES,
   "other",

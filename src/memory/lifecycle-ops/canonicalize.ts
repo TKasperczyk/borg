@@ -130,6 +130,8 @@ export function canonicalizeActionWithSharedStateEntry(input: {
   actionId: ActionId;
   entry: SharedStateEntry;
   repository: CompleteActionRepository;
+  nowMs?: number;
+  turnCounter?: number | null;
   tracer?: LifecycleTracer;
   turnId?: string;
 }): LifecycleOperationResult<{ actionId: ActionId; previous: ActionRecord | null }> {
@@ -138,6 +140,8 @@ export function canonicalizeActionWithSharedStateEntry(input: {
     repository: input.repository,
     canonicalizedByArtifactEntryId: input.entry.id,
     skipSideEffects: true,
+    lastReferencedAtMs: input.nowMs,
+    lastReferencedTurnCounter: input.turnCounter,
     tracer: input.tracer,
     turnId: input.turnId,
     traceSource: "shared_state_reconciliation",
@@ -175,9 +179,7 @@ export function canonicalizeCommitmentWithSharedStateEntry(input: {
     };
   }
 
-  if (
-    !isSharedStateArtifactCanonicalizableCommitmentType(commitment.type)
-  ) {
+  if (!isSharedStateArtifactCanonicalizableCommitmentType(commitment.type)) {
     return {
       status: "no_op",
       reason: "non_canonicalizable_commitment_type",

@@ -384,9 +384,13 @@ function metricsRow(turnCounter: number): MetricsRow {
     action_persistence_dedup_skipped_embedding: 0,
     action_persistence_dedup_degraded: 0,
     actions_closed_by_terminal_emission: 0,
+    actions_closed_by_borg_self_performance: 0,
+    actions_expired_at_session_close: 0,
     actions_rejected_capability: 0,
     actions_canonicalized: 0,
     actions_completed_via_canonicalization: 0,
+    actions_dormant_count: 0,
+    actions_archived_count: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
     commitment_count_active_by_kind: {
@@ -638,9 +642,7 @@ describe("SimulatorRunner", () => {
   });
 
   it("detects expanded simulator health warnings with conservative thresholds", () => {
-    const capabilityCheckpoint = (
-      findings: OverseerVerdict["findings"],
-    ): OverseerVerdict => ({
+    const capabilityCheckpoint = (findings: OverseerVerdict["findings"]): OverseerVerdict => ({
       ts: Date.now(),
       turn_counter: 20,
       status: "concerning",
@@ -658,8 +660,9 @@ describe("SimulatorRunner", () => {
     const capabilityFinding = (
       claimStatus: "grounded" | "unsupported" | "contradicted" | "unclear",
       index = 0,
-      statusImpact: "none" | "concerning" | "failing" =
-        claimStatus === "grounded" ? "none" : "concerning",
+      statusImpact: "none" | "concerning" | "failing" = claimStatus === "grounded"
+        ? "none"
+        : "concerning",
     ): OverseerVerdict["findings"][number] => ({
       category: "K",
       claim_status: claimStatus,
@@ -673,9 +676,7 @@ describe("SimulatorRunner", () => {
           ? "Borg correctly refused an unwired capability."
           : "Borg capability claim needs audit.",
     });
-    const capabilityOverclaimCheckpoint = capabilityCheckpoint([
-      capabilityFinding("unsupported"),
-    ]);
+    const capabilityOverclaimCheckpoint = capabilityCheckpoint([capabilityFinding("unsupported")]);
     const cases: Array<{
       name: string;
       rows: MetricsRow[];
@@ -1601,6 +1602,67 @@ describe("SimulatorRunner", () => {
     });
   });
 
+  it("captures session-close action expirations on the session-ending turn metrics row", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    const persona = fakePersonaSession(["natural silence"]);
+    const borg = {
+      ...fakeSimulatorBorg(),
+      endSession: vi.fn((sessionId: SessionId) => {
+        appendFileSync(
+          tracePath,
+          `${JSON.stringify({
+            ts: Date.now(),
+            turnId: `session_end:${sessionId}`,
+            event: "action_session_scope.expired",
+            actions_expired_at_session_close: 2,
+          })}\n`,
+        );
+      }),
+    } as unknown as Borg & { endSession: ReturnType<typeof vi.fn> };
+
+    vi.spyOn(BorgTransport.prototype, "open").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "close").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue(borg);
+    vi.spyOn(BorgTransport.prototype, "resolveEntity").mockReturnValue(createEntityId());
+    spyMaintenanceTick();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) =>
+      chatResult({
+        response: "",
+        emitted: false,
+        turnId: "turn-session-ending-expiration",
+        sessionId: options.sessionId as SessionId,
+        suppressionReason: "finalizer_no_output",
+      }),
+    );
+
+    await runSimulation({
+      runId: "sim-runner-session-expiration-metrics-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+
+    const [metricsRow] = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            actions_expired_at_session_close: number;
+          },
+      );
+
+    expect(borg.endSession).toHaveBeenCalledOnce();
+    expect(metricsRow?.actions_expired_at_session_close).toBe(2);
+  });
+
   it("runs periodic maintenance ticks on cadence in mock mode", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
@@ -2372,8 +2434,11 @@ describe("SimulatorRunner", () => {
 
     expect(report.sessions).toHaveLength(2);
     expect(endSession).toHaveBeenCalledTimes(2);
-    expect(endSession).toHaveBeenNthCalledWith(1, chatSessionIds[0]);
-    expect(endSession).toHaveBeenNthCalledWith(2, chatSessionIds[1]);
+    expect(endSession.mock.calls[0]?.[0]).toBe(chatSessionIds[0]);
+    expect(endSession.mock.calls[0]?.[1]).toMatchObject({
+      nextSessionId: chatSessionIds[1],
+    });
+    expect(endSession.mock.calls[1]).toEqual([chatSessionIds[1], {}]);
     expect(persona.startNewSession).toHaveBeenCalledTimes(1);
     expect(endSession.mock.invocationCallOrder[0]).toBeLessThan(
       persona.startNewSession.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,

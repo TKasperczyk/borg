@@ -5,16 +5,19 @@ import {
   type ActionState,
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
 import { isActionVisibleToSession } from "./audience-visibility.js";
 import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver.js";
-import type { EvidenceLedgerSessionScope } from "./types.js";
+import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } from "./types.js";
 
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
 export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
+export const PARTICIPANT_DORMANT_ACTION_TURN_WINDOW = 15;
+export const STALE_PARTICIPANT_ACTION_RENDER_LIMIT = 5;
 
 const OLDER_ACTION_THREAD_SAMPLE_LIMIT = 4;
 const OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS = 80;
@@ -25,6 +28,10 @@ export type ActionThread = {
   origin: ActionRecord;
   current: ActionRecord;
   scope: EvidenceLedgerSessionScope;
+};
+
+export type ActionThreadWithSalience = ActionThread & {
+  salienceClass: EvidenceLedgerActionSalienceClass;
 };
 
 export function normalizePositiveInteger(value: number | undefined, fallback: number): number {
@@ -123,6 +130,10 @@ function actionTimestampForState(action: ActionRecord): number {
       return action.completed_at ?? action.updated_at;
     case "not_done":
       return action.not_done_at ?? action.updated_at;
+    case "expired":
+      return action.expired_at ?? action.updated_at;
+    case "archived":
+      return action.archived_at ?? action.updated_at;
     case "unknown":
       return action.unknown_at ?? action.updated_at;
   }
@@ -271,6 +282,118 @@ export function actionThreadStateMetadata(
 
 export function actionThreadState(thread: ActionThread): ActionState {
   return thread.current.state;
+}
+
+export function isActiveActionState(state: ActionState): boolean {
+  return (
+    state === "considering" ||
+    state === "committed_to_do" ||
+    state === "scheduled" ||
+    state === "unknown"
+  );
+}
+
+export function isTerminalRenderedActionState(state: ActionState): boolean {
+  return state === "completed" || state === "not_done" || state === "expired";
+}
+
+function isCurrentTurnAction(
+  action: ActionRecord,
+  currentUserStreamEntryId: StreamEntryId | undefined,
+): boolean {
+  return (
+    currentUserStreamEntryId !== undefined &&
+    action.provenance_stream_entry_ids.includes(currentUserStreamEntryId)
+  );
+}
+
+function isGroupOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entity_id">): boolean {
+  return (
+    action.actor !== "user" && action.actor !== "borg" && action.actor === action.audience_entity_id
+  );
+}
+
+function referencedWithinTurns(input: {
+  action: ActionRecord;
+  currentTurnCounter: number | undefined;
+  windowTurns: number;
+}): boolean {
+  if (
+    input.currentTurnCounter === undefined ||
+    input.action.last_referenced_turn_counter === null
+  ) {
+    return false;
+  }
+
+  return input.currentTurnCounter - input.action.last_referenced_turn_counter <= input.windowTurns;
+}
+
+export function actionSalienceClass(input: {
+  thread: ActionThread;
+  currentUserStreamEntryId?: StreamEntryId;
+  currentTurnCounter?: number;
+}): EvidenceLedgerActionSalienceClass | null {
+  const action = input.thread.current;
+
+  if (action.state === "archived") {
+    return null;
+  }
+
+  if (isTerminalRenderedActionState(action.state)) {
+    if (isCurrentTurnAction(action, input.currentUserStreamEntryId)) {
+      return "completed_recent";
+    }
+
+    return referencedWithinTurns({
+      action,
+      currentTurnCounter: input.currentTurnCounter,
+      windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
+    })
+      ? "completed_recent"
+      : null;
+  }
+
+  if (action.actor === "borg") {
+    return isCurrentTurnAction(action, input.currentUserStreamEntryId)
+      ? "borg_current_turn_action"
+      : "borg_memory_tracking_action";
+  }
+
+  if (isGroupOwnedAction(action)) {
+    return "group_pending";
+  }
+
+  return referencedWithinTurns({
+    action,
+    currentTurnCounter: input.currentTurnCounter,
+    windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
+  })
+    ? "participant_pending_recent"
+    : "participant_pending_stale";
+}
+
+const ACTION_SALIENCE_ORDER: readonly EvidenceLedgerActionSalienceClass[] = [
+  "borg_current_turn_action",
+  "borg_memory_tracking_action",
+  "participant_pending_recent",
+  "group_pending",
+  "participant_pending_stale",
+  "completed_recent",
+];
+
+function salienceRank(salienceClass: EvidenceLedgerActionSalienceClass): number {
+  return ACTION_SALIENCE_ORDER.indexOf(salienceClass);
+}
+
+export function orderActionThreadsBySalience(
+  threads: readonly ActionThreadWithSalience[],
+): ActionThreadWithSalience[] {
+  return [...threads].sort(
+    (left, right) =>
+      salienceRank(left.salienceClass) - salienceRank(right.salienceClass) ||
+      right.current.updated_at - left.current.updated_at ||
+      left.current.id.localeCompare(right.current.id),
+  );
 }
 
 function truncateOlderActionThreadSample(text: string): string {

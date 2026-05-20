@@ -92,9 +92,13 @@ const TURN_METRICS_KEY_ORDER = [
   "action_persistence_dedup_skipped_embedding",
   "action_persistence_dedup_degraded",
   "actions_closed_by_terminal_emission",
+  "actions_closed_by_borg_self_performance",
+  "actions_expired_at_session_close",
   "actions_rejected_capability",
   "actions_canonicalized",
   "actions_completed_via_canonicalization",
+  "actions_dormant_count",
+  "actions_archived_count",
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_active_by_kind",
@@ -188,8 +192,14 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     scheduled_at: overrides.scheduled_at ?? null,
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
+    expired_at: overrides.expired_at ?? null,
+    archived_at: overrides.archived_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
     canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
+    session_scope: overrides.session_scope ?? null,
+    session_anchor_id: overrides.session_anchor_id ?? null,
+    last_referenced_at_ms: overrides.last_referenced_at_ms ?? nowMs,
+    last_referenced_turn_counter: overrides.last_referenced_turn_counter ?? null,
   };
 }
 
@@ -569,6 +579,12 @@ describe("MetricsCapture", () => {
           action_id: "act_terminal_close",
         },
         {
+          ts: 106,
+          turnId: "turn-action",
+          event: "action_state.borg_self_performance.completed",
+          action_id: "act_self_performed",
+        },
+        {
           ts: 200,
           turnId: "other-turn",
           event: "action_persistence.dedup.skipped",
@@ -602,6 +618,7 @@ describe("MetricsCapture", () => {
       action_persistence_dedup_skipped_embedding: 1,
       action_persistence_dedup_degraded: 1,
       actions_closed_by_terminal_emission: 1,
+      actions_closed_by_borg_self_performance: 1,
       actions_rejected_capability: 3,
     });
   });

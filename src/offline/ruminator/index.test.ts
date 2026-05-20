@@ -514,7 +514,14 @@ describe("RuminatorProcess", () => {
         scheduled_at: null,
         completed_at: null,
         not_done_at: null,
+        expired_at: null,
+        archived_at: null,
         unknown_at: null,
+        canonicalized_by_artifact_entry_id: null,
+        session_scope: null,
+        session_anchor_id: null,
+        last_referenced_at_ms: harness.clock.now(),
+        last_referenced_turn_counter: null,
       });
 
       const ctx = harness.createContext();

@@ -316,6 +316,9 @@ export function selectSharedStateArtifactActionCandidates(input: {
     candidates: selected.map(({ action }) => ({
       id: action.id,
       text: compactSharedStateArtifactCandidateText(action.description),
+      actor: action.actor,
+      state: action.state,
+      session_scope: action.session_scope,
     })),
     countByScope,
   };

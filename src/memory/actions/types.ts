@@ -12,7 +12,10 @@ import {
   type EpisodeId,
   type GoalId,
   type OpenQuestionId,
+  type SessionId,
   type StreamEntryId,
+  isSessionId,
+  parseSessionId,
 } from "../../util/ids.js";
 import { goalIdSchema, openQuestionIdSchema } from "../self/index.js";
 
@@ -22,8 +25,12 @@ export const ACTION_STATES = [
   "scheduled",
   "completed",
   "not_done",
+  "expired",
+  "archived",
   "unknown",
 ] as const;
+
+export const ACTION_SESSION_SCOPES = ["current_session", "next_session"] as const;
 
 export const actionIdSchema = z
   .string()
@@ -42,6 +49,15 @@ export const actionEntityIdSchema = z
 export const actionActorSchema = z.union([z.enum(["user", "borg"]), actionEntityIdSchema]);
 
 export const actionStateSchema = z.enum(ACTION_STATES);
+
+export const actionSessionScopeSchema = z.enum(ACTION_SESSION_SCOPES);
+
+export const actionSessionAnchorIdSchema = z
+  .string()
+  .refine((value) => isSessionId(value), {
+    message: "Invalid action session anchor id",
+  })
+  .transform((value) => parseSessionId(value));
 
 export const actionEpisodeIdSchema = z
   .string()
@@ -82,10 +98,16 @@ const actionRecordShape = z.object({
   scheduled_at: z.number().finite().nullable(),
   completed_at: z.number().finite().nullable(),
   not_done_at: z.number().finite().nullable(),
+  expired_at: z.number().finite().nullable().default(null),
+  archived_at: z.number().finite().nullable().default(null),
   unknown_at: z.number().finite().nullable(),
   canonicalized_by_artifact_entry_id: actionCanonicalizedByArtifactEntryIdSchema
     .nullable()
     .optional(),
+  session_scope: actionSessionScopeSchema.nullable().default(null),
+  session_anchor_id: actionSessionAnchorIdSchema.nullable().default(null),
+  last_referenced_at_ms: z.number().finite().nullable().default(null),
+  last_referenced_turn_counter: z.number().int().nonnegative().nullable().default(null),
 });
 
 export const actionRecordSchema = actionRecordShape
@@ -112,6 +134,8 @@ export const actionRecordPatchSchema = actionRecordShape
 
 export type ActionState = z.infer<typeof actionStateSchema>;
 export type ActionActor = z.infer<typeof actionActorSchema>;
+export type ActionSessionScope = z.infer<typeof actionSessionScopeSchema>;
+export type ActionSessionAnchorId = SessionId;
 export type ActionRecord = z.infer<typeof actionRecordSchema>;
 export type ActionRecordPatch = z.infer<typeof actionRecordPatchSchema>;
 export type ActionGoalId = GoalId;

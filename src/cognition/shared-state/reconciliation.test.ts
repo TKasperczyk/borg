@@ -1215,6 +1215,8 @@ describe("reconcileSharedStateCanonicalizations", () => {
       {
         state: "completed",
         canonicalized_by_artifact_entry_id: entry.id,
+        last_referenced_at_ms: expect.any(Number),
+        last_referenced_turn_counter: null,
       },
       {
         skipSideEffects: true,
@@ -1285,8 +1287,14 @@ describe("reconcileSharedStateCanonicalizations", () => {
         scheduled_at: null,
         completed_at: null,
         not_done_at: null,
+        expired_at: null,
+        archived_at: null,
         unknown_at: null,
         canonicalized_by_artifact_entry_id: null,
+        session_scope: null,
+        session_anchor_id: null,
+        last_referenced_at_ms: clock.now(),
+        last_referenced_turn_counter: null,
       });
       const entry = makeLockedSharedStateEntry({
         last_updated_stream_entry_ids: [source],

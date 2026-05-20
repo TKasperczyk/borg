@@ -43,6 +43,8 @@ export const actionMigrations = [
               'scheduled',
               'completed',
               'not_done',
+              'expired',
+              'archived',
               'unknown'
             )
           ),
@@ -56,7 +58,16 @@ export const actionMigrations = [
           scheduled_at INTEGER NULL,
           completed_at INTEGER NULL,
           not_done_at INTEGER NULL,
-          unknown_at INTEGER NULL
+          expired_at INTEGER NULL,
+          archived_at INTEGER NULL,
+          unknown_at INTEGER NULL,
+          canonicalized_by_artifact_entry_id TEXT NULL,
+          session_scope TEXT NULL CHECK (
+            session_scope IS NULL OR session_scope IN ('current_session', 'next_session')
+          ),
+          session_anchor_id TEXT NULL,
+          last_referenced_at_ms INTEGER NULL,
+          last_referenced_turn_counter INTEGER NULL
         );
 
         CREATE INDEX IF NOT EXISTS action_records_state_idx
@@ -71,6 +82,12 @@ export const actionMigrations = [
           ON action_records(open_question_id);
         CREATE INDEX IF NOT EXISTS action_records_updated_idx
           ON action_records(updated_at DESC, id ASC);
+        CREATE INDEX IF NOT EXISTS action_records_session_scope_idx
+          ON action_records(session_scope);
+        CREATE INDEX IF NOT EXISTS action_records_session_anchor_scope_idx
+          ON action_records(session_anchor_id, session_scope);
+        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
+          ON action_records(last_referenced_turn_counter);
       `);
     },
   },
@@ -118,6 +135,146 @@ export const actionMigrations = [
             ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
         `);
       }
+    },
+  },
+  {
+    id: 4,
+    name: "action_records_scope_and_aging",
+    up: (db) => {
+      if (!tableExists(db, "action_records")) {
+        return;
+      }
+
+      if (
+        tableHasColumn(db, "action_records", "session_scope") &&
+        tableHasColumn(db, "action_records", "last_referenced_at_ms") &&
+        tableHasColumn(db, "action_records", "last_referenced_turn_counter") &&
+        tableHasColumn(db, "action_records", "expired_at") &&
+        tableHasColumn(db, "action_records", "archived_at")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        CREATE TABLE action_records_next (
+          id TEXT PRIMARY KEY,
+          description TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          audience_entity_id TEXT NULL,
+          goal_id TEXT NULL,
+          open_question_id TEXT NULL,
+          state TEXT NOT NULL CHECK (
+            state IN (
+              'considering',
+              'committed_to_do',
+              'scheduled',
+              'completed',
+              'not_done',
+              'expired',
+              'archived',
+              'unknown'
+            )
+          ),
+          confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+          provenance_episode_ids TEXT NOT NULL,
+          provenance_stream_entry_ids TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          considering_at INTEGER NULL,
+          committed_at INTEGER NULL,
+          scheduled_at INTEGER NULL,
+          completed_at INTEGER NULL,
+          not_done_at INTEGER NULL,
+          expired_at INTEGER NULL,
+          archived_at INTEGER NULL,
+          unknown_at INTEGER NULL,
+          canonicalized_by_artifact_entry_id TEXT NULL,
+          session_scope TEXT NULL CHECK (
+            session_scope IS NULL OR session_scope IN ('current_session', 'next_session')
+          ),
+          session_anchor_id TEXT NULL,
+          last_referenced_at_ms INTEGER NULL,
+          last_referenced_turn_counter INTEGER NULL
+        );
+
+        INSERT INTO action_records_next (
+          id, description, actor, audience_entity_id, goal_id, open_question_id, state, confidence,
+          provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
+          considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
+          archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
+          session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter
+        )
+        SELECT
+          id,
+          description,
+          actor,
+          audience_entity_id,
+          goal_id,
+          open_question_id,
+          state,
+          confidence,
+          provenance_episode_ids,
+          provenance_stream_entry_ids,
+          created_at,
+          updated_at,
+          considering_at,
+          committed_at,
+          scheduled_at,
+          completed_at,
+          not_done_at,
+          NULL,
+          NULL,
+          unknown_at,
+          canonicalized_by_artifact_entry_id,
+          NULL,
+          NULL,
+          updated_at,
+          NULL
+        FROM action_records;
+
+        DROP TABLE action_records;
+        ALTER TABLE action_records_next RENAME TO action_records;
+
+        CREATE INDEX IF NOT EXISTS action_records_state_idx
+          ON action_records(state);
+        CREATE INDEX IF NOT EXISTS action_records_actor_idx
+          ON action_records(actor);
+        CREATE INDEX IF NOT EXISTS action_records_audience_entity_idx
+          ON action_records(audience_entity_id);
+        CREATE INDEX IF NOT EXISTS action_records_goal_idx
+          ON action_records(goal_id);
+        CREATE INDEX IF NOT EXISTS action_records_open_question_idx
+          ON action_records(open_question_id);
+        CREATE INDEX IF NOT EXISTS action_records_updated_idx
+          ON action_records(updated_at DESC, id ASC);
+        CREATE INDEX IF NOT EXISTS action_records_session_scope_idx
+          ON action_records(session_scope);
+        CREATE INDEX IF NOT EXISTS action_records_session_anchor_scope_idx
+          ON action_records(session_anchor_id, session_scope);
+        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
+          ON action_records(last_referenced_turn_counter);
+      `);
+    },
+  },
+  {
+    id: 5,
+    name: "action_records_session_anchor",
+    up: (db) => {
+      if (!tableExists(db, "action_records")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "action_records", "session_anchor_id")) {
+        db.exec(`
+          ALTER TABLE action_records
+            ADD COLUMN session_anchor_id TEXT NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS action_records_session_anchor_scope_idx
+          ON action_records(session_anchor_id, session_scope);
+      `);
     },
   },
 ] as const satisfies readonly Migration[];

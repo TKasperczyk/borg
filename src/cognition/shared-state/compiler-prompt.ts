@@ -5,6 +5,7 @@ import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import type { SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactParticipantContext,
+  SharedStateActionCanonicalizationCandidate,
   SharedStateCanonicalizationCandidate,
   SharedStateCanonicalizationCandidates,
   SharedStateCommitmentCanonicalizationCandidate,
@@ -15,7 +16,7 @@ export function buildCanonicalizationCandidatePromptPayload(
 ): {
   active_goals: readonly SharedStateCanonicalizationCandidate[];
   active_commitments: readonly SharedStateCommitmentCanonicalizationCandidate[];
-  active_actions: readonly SharedStateCanonicalizationCandidate[];
+  active_actions: readonly SharedStateActionCanonicalizationCandidate[];
   open_questions: readonly SharedStateCanonicalizationCandidate[];
 } {
   return {

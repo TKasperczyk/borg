@@ -71,9 +71,13 @@ export type MetricsRow = {
   action_persistence_dedup_skipped_embedding: number;
   action_persistence_dedup_degraded: number;
   actions_closed_by_terminal_emission: number;
+  actions_closed_by_borg_self_performance: number;
+  actions_expired_at_session_close: number;
   actions_rejected_capability: number;
   actions_canonicalized: number;
   actions_completed_via_canonicalization: number;
+  actions_dormant_count: number;
+  actions_archived_count: number;
   recent_completed_action_count: number;
   commitment_count_active: number;
   commitment_count_active_by_kind: Record<CommitmentKind, number>;

@@ -10,13 +10,17 @@ import {
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   ACTION_STATES,
+  actionIdSchema,
   actionEntityIdSchema,
   actionActorSchema,
+  actionSessionScopeSchema,
   type ActionRecord,
   type ActionRecordPatch,
   type ActionRepository,
+  type ActionSessionScope,
   type ActionState,
 } from "../../memory/actions/index.js";
+import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
@@ -26,6 +30,7 @@ import {
   type EntityId,
   type GoalId,
   type OpenQuestionId,
+  type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
@@ -80,6 +85,8 @@ const actionStateCandidateSchema = z
     actor: actionActorSchema,
     state: extractedActionStateSchema,
     audience_entity_id: actionEntityIdSchema.nullable().optional(),
+    session_scope: actionSessionScopeSchema.nullable().optional(),
+    matched_existing_action_id: actionIdSchema.nullable().optional(),
     evidence_stream_entry_ids: z.array(z.string().min(1)),
     confidence: z.number().min(0).max(1),
   })
@@ -87,6 +94,12 @@ const actionStateCandidateSchema = z
 
 const actionStateOutputSchema = z
   .object({
+    referenced_action_ids: z
+      .array(actionIdSchema)
+      .default([])
+      .describe(
+        "Supplied active action ids explicitly referenced by the current user message or post-turn structural evidence, even when no state transition is asserted.",
+      ),
     action_states: z
       .array(actionStateCandidateSchema)
       .describe(
@@ -97,6 +110,7 @@ const actionStateOutputSchema = z
 
 const actionStateEnvelopeSchema = z
   .object({
+    referenced_action_ids: z.array(z.unknown()).optional(),
     action_states: z.array(z.unknown()),
   })
   .strict();
@@ -133,6 +147,7 @@ type ActionCandidateRejected = {
   reason: ActionCandidateRejectedReason;
 };
 type ActionStateParseResult = {
+  referencedActionIds: ActionId[];
   candidates: ParsedActionStateCandidateWithIndex[];
   candidatesEmitted: number;
   validCandidateCount: number;
@@ -178,13 +193,47 @@ export type ActionStateExtractorOptions = {
 export type ExtractActionStatesInput = {
   userMessage: string;
   currentUserStreamEntryId: StreamEntryId;
+  currentAgentStreamEntryId?: StreamEntryId;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
+  sessionId?: SessionId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
+  turnCounter?: number | null;
+  activeActionsForReference?: readonly ActionRecord[];
+  postTurnSelfPerformance?: {
+    activeBorgActions: readonly ActionRecord[];
+    currentTurnSharedStateEntries: readonly SharedStateEntry[];
+    agentResponse: string;
+  };
+  persistNewActions?: boolean;
 };
+
+function compactActionForPrompt(action: ActionRecord): Record<string, unknown> {
+  return {
+    id: action.id,
+    description: action.description,
+    actor: action.actor,
+    state: action.state,
+    audience_entity_id: action.audience_entity_id,
+    session_scope: action.session_scope,
+    session_anchor_id: action.session_anchor_id,
+    last_referenced_turn_counter: action.last_referenced_turn_counter,
+  };
+}
+
+function compactSharedStateEntryForPrompt(entry: SharedStateEntry): Record<string, unknown> {
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    text: entry.text,
+    owner_entity_id: entry.owner_entity_id,
+    last_updated_stream_entry_ids: entry.last_updated_stream_entry_ids,
+    canonicalizes: entry.canonicalizes,
+  };
+}
 
 function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[] {
   return [
@@ -198,8 +247,25 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
           content: message.content,
         })),
         audience_entity_id: input.audienceEntityId,
+        current_session_id: input.sessionId ?? null,
         speaker_entity_id: input.speakerEntityId ?? null,
         speaker_display_name: input.speakerDisplayName ?? null,
+        current_agent_stream_entry_id: input.currentAgentStreamEntryId ?? null,
+        active_actions_for_reference: (input.activeActionsForReference ?? []).map(
+          compactActionForPrompt,
+        ),
+        post_turn_self_performance:
+          input.postTurnSelfPerformance === undefined
+            ? null
+            : {
+                active_borg_actions:
+                  input.postTurnSelfPerformance.activeBorgActions.map(compactActionForPrompt),
+                current_turn_shared_state_entries:
+                  input.postTurnSelfPerformance.currentTurnSharedStateEntries.map(
+                    compactSharedStateEntryForPrompt,
+                  ),
+                agent_response: input.postTurnSelfPerformance.agentResponse,
+              },
       }),
     },
   ];
@@ -324,8 +390,14 @@ function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
   }
 
   const candidates = parseCandidates(parsed.data);
+  const referencedActionIds = (parsed.data.referenced_action_ids ?? []).flatMap((rawId) => {
+    const parsedId = actionIdSchema.safeParse(rawId);
+
+    return parsedId.success ? [parsedId.data] : [];
+  });
 
   return {
+    referencedActionIds,
     candidates: candidates.candidates,
     candidatesEmitted: parsed.data.action_states.length,
     validCandidateCount: candidates.candidates.length + candidates.rejectedCandidates.length,
@@ -344,6 +416,37 @@ function hasCurrentUserEvidence(
   );
 }
 
+function allowedEvidenceStreamEntryIds(input: ExtractActionStatesInput): Set<string> {
+  return new Set([
+    input.currentUserStreamEntryId,
+    ...(input.currentAgentStreamEntryId === undefined ? [] : [input.currentAgentStreamEntryId]),
+  ]);
+}
+
+function hasAllowedEvidence(
+  candidate: ParsedActionStateCandidate,
+  input: ExtractActionStatesInput,
+): boolean {
+  if (input.postTurnSelfPerformance === undefined) {
+    return hasCurrentUserEvidence(candidate, input.currentUserStreamEntryId);
+  }
+
+  const allowed = allowedEvidenceStreamEntryIds(input);
+
+  return candidate.evidence_stream_entry_ids.some((entryId) => allowed.has(entryId));
+}
+
+function allowedCandidateEvidenceStreamEntryIds(
+  candidate: ParsedActionStateCandidate,
+  input: ExtractActionStatesInput,
+): StreamEntryId[] {
+  const allowed = allowedEvidenceStreamEntryIds(input);
+
+  return candidate.evidence_stream_entry_ids.filter((entryId): entryId is StreamEntryId =>
+    allowed.has(entryId),
+  );
+}
+
 function stateTimestampPatch(
   state: ActionState,
   timestamp: number,
@@ -355,6 +458,8 @@ function stateTimestampPatch(
     | "scheduled_at"
     | "completed_at"
     | "not_done_at"
+    | "expired_at"
+    | "archived_at"
     | "unknown_at"
   >
 > {
@@ -369,6 +474,10 @@ function stateTimestampPatch(
       return { completed_at: timestamp };
     case "not_done":
       return { not_done_at: timestamp };
+    case "expired":
+      return { expired_at: timestamp };
+    case "archived":
+      return { archived_at: timestamp };
     case "unknown":
       return { unknown_at: timestamp };
   }
@@ -378,10 +487,12 @@ function toActionRecord(input: {
   candidate: ParsedActionStateCandidate;
   currentUserStreamEntryId: StreamEntryId;
   audienceEntityId: EntityId | null;
+  sessionId: SessionId | null;
   speakerEntityId: EntityId | null;
   goalId: GoalId | null;
   openQuestionId: OpenQuestionId | null;
   nowMs: number;
+  turnCounter: number | null;
 }): ActionRecord {
   return {
     id: createActionId(),
@@ -404,8 +515,14 @@ function toActionRecord(input: {
     scheduled_at: null,
     completed_at: null,
     not_done_at: null,
+    expired_at: null,
+    archived_at: null,
     unknown_at: null,
     canonicalized_by_artifact_entry_id: null,
+    session_scope: input.candidate.session_scope ?? null,
+    session_anchor_id: input.candidate.session_scope == null ? null : input.sessionId,
+    last_referenced_at_ms: input.nowMs,
+    last_referenced_turn_counter: input.turnCounter ?? null,
     ...stateTimestampPatch(input.candidate.state, input.nowMs),
   };
 }
@@ -522,6 +639,7 @@ function traceExtractorCompleted(options: {
   dedupSkippedEmbedding?: number;
   dedupDegraded?: number;
   terminalEmissionClosures?: number;
+  selfPerformanceClosures?: number;
   degraded: boolean;
   fatalReason?: ActionStateExtractorDegradedReason;
 }): void {
@@ -571,6 +689,7 @@ function traceExtractorCompleted(options: {
     action_persistence_dedup_skipped_embedding: options.dedupSkippedEmbedding ?? 0,
     action_persistence_dedup_degraded: options.dedupDegraded ?? 0,
     actions_closed_by_terminal_emission: options.terminalEmissionClosures ?? 0,
+    actions_closed_by_borg_self_performance: options.selfPerformanceClosures ?? 0,
     degraded: options.degraded,
     ...(options.fatalReason === undefined ? {} : { fatal_reason: options.fatalReason }),
   });
@@ -790,8 +909,34 @@ export class ActionStateExtractor {
     let dedupSkippedEmbedding = 0;
     let dedupDegraded = 0;
     let terminalEmissionClosures = 0;
+    let selfPerformanceClosures = 0;
     const nowMs = this.clock.now();
+    const turnCounter = input.turnCounter ?? null;
     const dedupStates = new Map<string, ActionEmbeddingDedupState | null>();
+    const allowedReferencedActionIds = new Set(
+      [
+        ...(input.activeActionsForReference ?? []),
+        ...(input.postTurnSelfPerformance?.activeBorgActions ?? []),
+      ].map((action) => action.id),
+    );
+
+    if (this.options.actionRepository.update !== undefined && allowedReferencedActionIds.size > 0) {
+      for (const actionId of parsed.referencedActionIds) {
+        if (!allowedReferencedActionIds.has(actionId)) {
+          continue;
+        }
+
+        try {
+          this.options.actionRepository.update(actionId, {
+            last_referenced_at_ms: nowMs,
+            last_referenced_turn_counter: turnCounter,
+          });
+        } catch (error) {
+          degraded = true;
+          await this.degraded("repository_failed", error);
+        }
+      }
+    }
 
     const getEmbeddingDedupState = async (
       record: ActionRecord,
@@ -849,7 +994,7 @@ export class ActionStateExtractor {
 
     for (const parsedCandidate of parsed.candidates) {
       const candidate = parsedCandidate.candidate;
-      if (!hasCurrentUserEvidence(candidate, input.currentUserStreamEntryId)) {
+      if (!hasAllowedEvidence(candidate, input)) {
         incrementSkippedReason(skippedReasons, "missing_current_user_evidence");
         incrementSkippedCandidate(
           skippedCandidates,
@@ -859,14 +1004,75 @@ export class ActionStateExtractor {
         continue;
       }
 
+      const matchedExistingActionId = candidate.matched_existing_action_id ?? null;
+      if (
+        matchedExistingActionId !== null &&
+        input.postTurnSelfPerformance !== undefined &&
+        isTerminalEmissionState(candidate.state)
+      ) {
+        const activeBorgAction = input.postTurnSelfPerformance.activeBorgActions.find(
+          (action) => action.id === matchedExistingActionId,
+        );
+
+        if (activeBorgAction !== undefined && this.options.actionRepository.update !== undefined) {
+          const patch = {
+            state: candidate.state,
+            confidence: Math.max(activeBorgAction.confidence, candidate.confidence),
+            provenance_stream_entry_ids: mergeUniqueIds(
+              activeBorgAction.provenance_stream_entry_ids,
+              allowedCandidateEvidenceStreamEntryIds(candidate, input),
+            ),
+            updated_at: nowMs,
+            last_referenced_at_ms: nowMs,
+            last_referenced_turn_counter: turnCounter,
+            ...stateTimestampPatch(candidate.state, nowMs),
+          } satisfies ActionRecordPatch;
+
+          try {
+            this.options.actionRepository.update(matchedExistingActionId, patch);
+            selfPerformanceClosures += 1;
+            terminalEmissionClosures += 1;
+            traceBorgSelfPerformanceClosure({
+              tracer: this.options.tracer,
+              turnId: this.options.turnId,
+              candidateIndex: parsedCandidate.candidateIndex,
+              matchedActionId: matchedExistingActionId,
+              terminalState: candidate.state,
+              description: candidate.description,
+            });
+            continue;
+          } catch (error) {
+            degraded = true;
+            incrementSkippedReason(skippedReasons, "repository_failed");
+            incrementSkippedCandidate(
+              skippedCandidates,
+              parsedCandidate.candidateIndex,
+              "repository_failed",
+            );
+            await this.degraded("repository_failed", error);
+            continue;
+          }
+        }
+
+        if (input.persistNewActions === false) {
+          continue;
+        }
+      }
+
+      if (input.persistNewActions === false) {
+        continue;
+      }
+
       const record = toActionRecord({
         candidate,
         currentUserStreamEntryId: input.currentUserStreamEntryId,
         audienceEntityId: input.audienceEntityId,
+        sessionId: input.sessionId ?? null,
         speakerEntityId: input.speakerEntityId ?? null,
         goalId: input.goalId ?? null,
         openQuestionId: input.openQuestionId ?? null,
         nowMs,
+        turnCounter,
       });
       const dedupState = await getEmbeddingDedupState(record);
       let candidateVector: Float32Array | null = null;
@@ -928,6 +1134,8 @@ export class ActionStateExtractor {
                     record.provenance_stream_entry_ids,
                   ),
                   updated_at: nowMs,
+                  last_referenced_at_ms: nowMs,
+                  last_referenced_turn_counter: turnCounter,
                   ...stateTimestampPatch(record.state, nowMs),
                 } satisfies ActionRecordPatch;
 
@@ -960,6 +1168,27 @@ export class ActionStateExtractor {
             }
 
             if (!persistTerminalWithoutUpdate && bestMatch.record.state !== "unknown") {
+              if (this.options.actionRepository.update !== undefined) {
+                try {
+                  const referencePatch = {
+                    last_referenced_at_ms: nowMs,
+                    last_referenced_turn_counter: turnCounter,
+                  } satisfies ActionRecordPatch;
+
+                  this.options.actionRepository.update(bestMatch.actionId, referencePatch);
+                  Object.assign(bestMatch.record, referencePatch, { updated_at: nowMs });
+                } catch (error) {
+                  degraded = true;
+                  traceDedupDegraded({
+                    tracer: this.options.tracer,
+                    turnId: this.options.turnId,
+                    reason: "reference_touch_failed",
+                    error,
+                    candidateDescription: record.description,
+                  });
+                }
+              }
+
               const rejection = rejectedCandidate({
                 candidateIndex: parsedCandidate.candidateIndex,
                 classification: "concrete_action",
@@ -1023,6 +1252,7 @@ export class ActionStateExtractor {
       dedupSkippedEmbedding,
       dedupDegraded,
       terminalEmissionClosures,
+      selfPerformanceClosures,
       degraded,
     });
 
@@ -1050,6 +1280,27 @@ function traceTerminalEmissionClosure(options: {
     terminal_state: options.terminalState,
     description_excerpt: descriptionExcerpt(options.description),
     similarity: options.similarity,
+  });
+}
+
+function traceBorgSelfPerformanceClosure(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  candidateIndex: number;
+  matchedActionId: ActionId;
+  terminalState: "completed" | "not_done";
+  description: string;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("action_state.borg_self_performance.completed", {
+    turnId: options.turnId,
+    action_id: options.matchedActionId,
+    candidate_index: options.candidateIndex,
+    terminal_state: options.terminalState,
+    description_excerpt: descriptionExcerpt(options.description),
   });
 }
 

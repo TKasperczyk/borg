@@ -2,7 +2,9 @@ import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "./host-capabilities.js";
 
 export const ACTION_STATE_SYSTEM_PROMPT = [
   "Extract action-state assertions from the current user message.",
-  "Use recent_history only to understand elliptical references. The evidence must be in current_user_message, and every emitted item must cite current_user_stream_entry_id.",
+  "Use recent_history only to understand elliptical references. For normal extraction, the evidence must be in current_user_message and every emitted item must cite current_user_stream_entry_id.",
+  "When active_actions_for_reference is supplied, also emit referenced_action_ids for supplied active action ids the current user message explicitly refers to, even if the message does not change their state.",
+  "When post_turn_self_performance is supplied, inspect only its active_borg_actions, current_turn_shared_state_entries, and agent_response to decide whether a supplied Borg-owned action was structurally performed this turn. If it was, emit a completed concrete_action with actor=borg and matched_existing_action_id set to that action id. This is lifecycle extraction only: do not judge, rewrite, suppress, approve, or police the assistant response.",
   "Emit an empty action_states array when the current user message contains no action-state assertion.",
   "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
@@ -11,6 +13,7 @@ export const ACTION_STATE_SYSTEM_PROMPT = [
   BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
   "In group chat, first-person user actions belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Set audience_entity_id only when the current message clearly scopes the action to a supplied audience; otherwise use null so Borg can default it to the current audience.",
+  "Set session_scope to current_session for actions only meant for the present session/call/draft/work block, next_session for actions explicitly carried into the next session, and null for durable actions.",
   "",
   "Classifications:",
   "- concrete_action: a discrete task someone (Borg, the user, a participant, or a third party) will do, has done, is doing, or is considering doing. Has a clear actor and a clear thing being done.",

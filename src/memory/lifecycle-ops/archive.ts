@@ -1,29 +1,17 @@
 import type { ActionRepository } from "../actions/repository.js";
 import type { ActionRecord } from "../actions/types.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
-import type { ActionId, SharedStateEntryId } from "../../util/ids.js";
+import type { ActionId } from "../../util/ids.js";
+import { isTerminalActionState } from "./complete.js";
 import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 
-export function isTerminalActionState(state: string): boolean {
-  return (
-    state === "completed" ||
-    state === "not_done" ||
-    state === "expired" ||
-    state === "archived" ||
-    state === "superseded"
-  );
-}
-
-export type CompleteActionRepository = Pick<ActionRepository, "update"> &
+export type ArchiveStaleActionRepository = Pick<ActionRepository, "update"> &
   Partial<Pick<ActionRepository, "get">>;
 
-export function completeAction(input: {
+export function archiveStaleAction(input: {
   actionId: ActionId;
-  repository: CompleteActionRepository;
-  canonicalizedByArtifactEntryId?: SharedStateEntryId;
-  skipSideEffects?: boolean;
-  lastReferencedAtMs?: number;
-  lastReferencedTurnCounter?: number | null;
+  repository: ArchiveStaleActionRepository;
+  nowMs: number;
   tracer?: LifecycleTracer;
   turnId?: string;
   traceSource?: string;
@@ -53,26 +41,11 @@ export function completeAction(input: {
   }
 
   try {
-    input.repository.update(
-      input.actionId,
-      {
-        state: "completed",
-        ...(input.canonicalizedByArtifactEntryId === undefined
-          ? {}
-          : {
-              canonicalized_by_artifact_entry_id: input.canonicalizedByArtifactEntryId,
-            }),
-        ...(input.lastReferencedAtMs === undefined
-          ? {}
-          : { last_referenced_at_ms: input.lastReferencedAtMs }),
-        ...(input.lastReferencedTurnCounter === undefined
-          ? {}
-          : { last_referenced_turn_counter: input.lastReferencedTurnCounter }),
-      },
-      {
-        skipSideEffects: input.skipSideEffects,
-      },
-    );
+    input.repository.update(input.actionId, {
+      state: "archived",
+      archived_at: input.nowMs,
+      updated_at: input.nowMs,
+    });
   } catch (error) {
     if (error instanceof IdentityCasMismatchError) {
       return {
@@ -85,10 +58,9 @@ export function completeAction(input: {
   }
 
   if (input.tracer?.enabled === true && input.turnId !== undefined) {
-    input.tracer.emit("action_state.transitioned", {
+    input.tracer.emit("action_state.archived", {
       turnId: input.turnId,
       action_id: input.actionId,
-      terminal_state: "completed",
       source: input.traceSource,
     });
   }

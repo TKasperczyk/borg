@@ -68,8 +68,14 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     scheduled_at: overrides.scheduled_at ?? null,
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
+    expired_at: overrides.expired_at ?? null,
+    archived_at: overrides.archived_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
     canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
+    session_scope: overrides.session_scope ?? null,
+    session_anchor_id: overrides.session_anchor_id ?? null,
+    last_referenced_at_ms: overrides.last_referenced_at_ms ?? nowMs,
+    last_referenced_turn_counter: overrides.last_referenced_turn_counter ?? null,
   };
 }
 

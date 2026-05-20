@@ -14,6 +14,7 @@ import {
   createEntityId,
   createGoalId,
   createOpenQuestionId,
+  createSessionId,
   createStreamEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -21,6 +22,7 @@ import {
   ActionStateExtractor,
   type ActionCandidateClassification,
 } from "./action-state-extractor.js";
+import { makeSharedStateEntry } from "../../test-support/factories/shared-state.js";
 
 type ActionStateInput = {
   classification?: ActionCandidateClassification | string;
@@ -28,6 +30,8 @@ type ActionStateInput = {
   actor?: "user" | "borg" | string;
   state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done";
   audience_entity_id?: string | null;
+  session_scope?: "current_session" | "next_session" | null;
+  matched_existing_action_id?: string | null;
   evidence_stream_entry_ids?: string[];
   confidence?: number;
 };
@@ -40,6 +44,8 @@ function actionStateResponse(actionStates: ActionStateInput[]): LLMCompleteResul
       actor: actionState.actor ?? "user",
       state: actionState.state ?? "completed",
       audience_entity_id: actionState.audience_entity_id ?? null,
+      session_scope: actionState.session_scope,
+      matched_existing_action_id: actionState.matched_existing_action_id,
       evidence_stream_entry_ids: actionState.evidence_stream_entry_ids ?? [],
       confidence: actionState.confidence ?? 0.9,
     })),
@@ -58,6 +64,28 @@ function rawActionStateResponse(actionStates: unknown[]): LLMCompleteResult {
         name: "EmitActionStates",
         input: {
           action_states: actionStates,
+        },
+      },
+    ],
+  };
+}
+
+function rawActionStateEnvelopeResponse(input: {
+  action_states?: unknown[];
+  referenced_action_ids?: unknown[];
+}): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 6,
+    output_tokens: 3,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_action_states",
+        name: "EmitActionStates",
+        input: {
+          referenced_action_ids: input.referenced_action_ids ?? [],
+          action_states: input.action_states ?? [],
         },
       },
     ],
@@ -96,8 +124,14 @@ function makeActionRecord(
     scheduled_at: overrides.scheduled_at ?? null,
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
+    expired_at: overrides.expired_at ?? null,
+    archived_at: overrides.archived_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
     canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
+    session_scope: overrides.session_scope ?? null,
+    session_anchor_id: overrides.session_anchor_id ?? null,
+    last_referenced_at_ms: overrides.last_referenced_at_ms ?? nowMs,
+    last_referenced_turn_counter: overrides.last_referenced_turn_counter ?? null,
   };
 }
 
@@ -272,6 +306,83 @@ describe("ActionStateExtractor", () => {
     );
   });
 
+  it("persists LLM-classified session scope on extracted actions", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const sessionId = createSessionId();
+    const add = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            description: "finish tonight's agenda pass",
+            state: "committed_to_do",
+            session_scope: "current_session",
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add },
+      clock: new FixedClock(2_000),
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      sessionId,
+      turnCounter: 12,
+    });
+
+    expect(records[0]).toMatchObject({
+      session_scope: "current_session",
+      session_anchor_id: sessionId,
+      last_referenced_at_ms: 2_000,
+      last_referenced_turn_counter: 12,
+    });
+  });
+
+  it("touches active actions that the extractor marks as referenced", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const existingAction = makeActionRecord({
+      description: "send the release update",
+      actor: "user",
+      last_referenced_at_ms: 1_000,
+      last_referenced_turn_counter: 2,
+    });
+    const repository = makeActionRepository([existingAction]);
+    const llm = new FakeLLMClient({
+      responses: [
+        rawActionStateEnvelopeResponse({
+          referenced_action_ids: [existingAction.id],
+          action_states: [],
+        }),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: repository,
+      clock: new FixedClock(4_000),
+    });
+
+    await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      activeActionsForReference: [existingAction],
+      turnCounter: 9,
+    });
+
+    expect(repository.update).toHaveBeenCalledWith(existingAction.id, {
+      last_referenced_at_ms: 4_000,
+      last_referenced_turn_counter: 9,
+    });
+    expect(repository.records[0]).toMatchObject({
+      last_referenced_at_ms: 4_000,
+      last_referenced_turn_counter: 9,
+    });
+  });
+
   it("does not write ActionRecords when the LLM emits no action states", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const add = vi.fn();
@@ -339,14 +450,14 @@ describe("ActionStateExtractor", () => {
         skipped_count: 1,
         skipped_reasons: [{ reason: "missing_current_user_evidence", count: 1 }],
         skipped_candidates: [{ candidate_index: 0, reason: "missing_current_user_evidence" }],
-        persisted_by_state: {
+        persisted_by_state: expect.objectContaining({
           considering: 0,
           committed_to_do: 0,
           scheduled: 0,
           completed: 1,
           not_done: 0,
           unknown: 0,
-        },
+        }),
         classification_counts: expect.objectContaining({
           concrete_action: 2,
         }),
@@ -767,6 +878,135 @@ describe("ActionStateExtractor", () => {
         actions_closed_by_terminal_emission: 1,
       }),
     });
+  });
+
+  it("closes a Borg action when post-turn structural evidence says Borg performed it", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const agentStreamEntryId = createStreamEntryId();
+    const previousStreamEntryId = createStreamEntryId();
+    const sharedStateEntry = makeSharedStateEntry({
+      text: "Mom's medication incident has been logged for the family care thread.",
+      last_updated_stream_entry_ids: [currentUserStreamEntryId],
+      provenance_stream_entry_ids: [currentUserStreamEntryId],
+    });
+    const existingAction = makeActionRecord({
+      description: "Log Mom's medication incident in shared state",
+      actor: "borg",
+      state: "committed_to_do",
+      provenance_stream_entry_ids: [previousStreamEntryId],
+      committed_at: 1_000,
+    });
+    const repository = makeActionRepository([existingAction]);
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            description: "Logged Mom's medication incident in shared state",
+            actor: "borg",
+            state: "completed",
+            matched_existing_action_id: existingAction.id,
+            evidence_stream_entry_ids: [currentUserStreamEntryId, agentStreamEntryId],
+            confidence: 0.96,
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: repository,
+      clock: new FixedClock(2_500),
+      turnId: "turn_self_performed",
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event, data) => events.push({ event, data }),
+      },
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      currentAgentStreamEntryId: agentStreamEntryId,
+      postTurnSelfPerformance: {
+        activeBorgActions: [existingAction],
+        currentTurnSharedStateEntries: [sharedStateEntry],
+        agentResponse: "I logged Mom's medication incident in the shared state.",
+      },
+      persistNewActions: false,
+      turnCounter: 18,
+    });
+
+    expect(records).toEqual([]);
+    expect(repository.add).not.toHaveBeenCalled();
+    expect(repository.update).toHaveBeenCalledWith(
+      existingAction.id,
+      expect.objectContaining({
+        state: "completed",
+        confidence: 0.96,
+        provenance_stream_entry_ids: [
+          previousStreamEntryId,
+          currentUserStreamEntryId,
+          agentStreamEntryId,
+        ],
+        completed_at: 2_500,
+        last_referenced_at_ms: 2_500,
+        last_referenced_turn_counter: 18,
+      }),
+    );
+    expect(events).toContainEqual({
+      event: "action_state.borg_self_performance.completed",
+      data: expect.objectContaining({
+        turnId: "turn_self_performed",
+        action_id: existingAction.id,
+        terminal_state: "completed",
+      }),
+    });
+    expect(events).toContainEqual({
+      event: "extraction.actions.completed",
+      data: expect.objectContaining({
+        actions_closed_by_borg_self_performance: 1,
+      }),
+    });
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(sharedStateEntry.text);
+  });
+
+  it("does not close a Borg self-performance action when the extractor finds no structural evidence", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const agentStreamEntryId = createStreamEntryId();
+    const existingAction = makeActionRecord({
+      description: "Track Mom's medication incident in shared state",
+      actor: "borg",
+      state: "committed_to_do",
+      provenance_stream_entry_ids: [currentUserStreamEntryId],
+      committed_at: 1_000,
+    });
+    const repository = makeActionRepository([existingAction]);
+    const llm = new FakeLLMClient({
+      responses: [actionStateResponse([])],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: repository,
+      clock: new FixedClock(2_500),
+      turnId: "turn_self_performed_no_evidence",
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      currentAgentStreamEntryId: agentStreamEntryId,
+      postTurnSelfPerformance: {
+        activeBorgActions: [existingAction],
+        currentTurnSharedStateEntries: [],
+        agentResponse: "I can keep that in mind.",
+      },
+      persistNewActions: false,
+      turnCounter: 18,
+    });
+
+    expect(records).toEqual([]);
+    expect(repository.update).not.toHaveBeenCalled();
   });
 
   it("does not suppress a new candidate with an unknown-state existing action", async () => {

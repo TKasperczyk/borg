@@ -18,9 +18,7 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../../memory/self/index.js";
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
-export {
-  SHARED_STATE_RECONCILIATION_PROVENANCE as RECONCILIATION_PROVENANCE,
-} from "../../memory/lifecycle-ops/index.js";
+export { SHARED_STATE_RECONCILIATION_PROVENANCE as RECONCILIATION_PROVENANCE } from "../../memory/lifecycle-ops/index.js";
 import type { DroppedCanonicalizeId } from "./schema.js";
 import type { SemanticRevisionVerdictCache } from "./semantic-revision-cache.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -101,6 +99,7 @@ export type SharedStateReconciliationResult = {
   actions_completed_attempted: number;
   actions_completed_succeeded: number;
   actions_completed_skipped: number;
+  actions_closed_by_borg_self_performance: number;
   open_questions_resolved_attempted: number;
   open_questions_resolved_succeeded: number;
   open_questions_resolved_skipped: number;
@@ -118,6 +117,7 @@ export type ReconcileSharedStateCanonicalizationsInput = {
   repositories?: SharedStateReconciliationRepositories;
   unknownIds?: readonly DroppedCanonicalizeId[];
   nowMs?: number;
+  turnCounter?: number | null;
   sourceTrustValidator?: SharedStateSourceTrustValidator;
   tracer?: TurnTracer;
   turnId?: string;

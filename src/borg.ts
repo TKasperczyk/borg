@@ -6,6 +6,10 @@ import type { BorgFacades } from "./borg/facade-types.js";
 import { closeBorgDependencies } from "./borg/lifecycle.js";
 import { openBorgDependencies } from "./borg/open.js";
 import type { BorgDependencies, BorgOpenOptions } from "./borg/types.js";
+import {
+  expireSessionScopedActions,
+  rolloverNextSessionActions,
+} from "./memory/lifecycle-ops/index.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "./util/ids.js";
 
 export type {
@@ -65,11 +69,40 @@ export class Borg {
     return this.deps.turnOrchestrator.run(input);
   }
 
-  endSession(sessionId: SessionId = DEFAULT_SESSION_ID): void {
+  endSession(
+    sessionId: SessionId = DEFAULT_SESSION_ID,
+    options: { nextSessionId?: SessionId } = {},
+  ): void {
+    const rollover =
+      options.nextSessionId === undefined
+        ? null
+        : rolloverNextSessionActions({
+            fromSessionId: sessionId,
+            toSessionId: options.nextSessionId,
+            repository: this.deps.actionRepository,
+            nowMs: this.deps.clock.now(),
+            tracer: this.deps.tracer,
+          });
+    const expired = expireSessionScopedActions({
+      sessionId,
+      repository: this.deps.actionRepository,
+      nowMs: this.deps.clock.now(),
+      tracer: this.deps.tracer,
+    });
+    const expiredCount = expired.value?.expiredActionIds.length ?? 0;
+    const expirationConflictCount = expired.value?.conflictedActionIds.length ?? 0;
+    const promotedCount = rollover?.value?.promotedActionIds.length ?? 0;
+    const rolloverConflictCount = rollover?.value?.conflictedActionIds.length ?? 0;
+
     if (this.deps.tracer.enabled) {
       this.deps.tracer.emit("session.completed", {
         turnId: `session_end:${sessionId}`,
         session_id: sessionId,
+        next_session_id: options.nextSessionId,
+        actions_expired_at_session_close: expiredCount,
+        actions_expiration_conflict_count: expirationConflictCount,
+        actions_promoted_to_next_session: promotedCount,
+        actions_rollover_conflict_count: rolloverConflictCount,
       });
     }
   }

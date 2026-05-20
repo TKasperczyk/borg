@@ -540,8 +540,16 @@ async function runMaintenanceTick(
   }
 }
 
-function endSimulatorSession(transport: BorgTransport, sessionId: SessionId): void {
-  (transport.getBorg() as { endSession?: (sessionId: SessionId) => void }).endSession?.(sessionId);
+function endSimulatorSession(
+  transport: BorgTransport,
+  sessionId: SessionId,
+  options: { nextSessionId?: SessionId } = {},
+): void {
+  (
+    transport.getBorg() as {
+      endSession?: (sessionId: SessionId, options?: { nextSessionId?: SessionId }) => void;
+    }
+  ).endSession?.(sessionId, options);
 }
 
 export class SimulatorRunner {
@@ -613,6 +621,7 @@ export class SimulatorRunner {
     const suppressionEvents: SimulatorSuppressionRecord[] = [];
     let currentSessionStartTurn = 1;
     let currentSessionId: SessionId = createSessionId();
+    let currentSessionEnded = false;
     let lastOverseerCheckpointTurn = 0;
     const sessionIds: SessionId[] = [currentSessionId];
     const maxSessions = this.options.maxSessions ?? MAX_SESSIONS_DEFAULT;
@@ -901,6 +910,27 @@ export class SimulatorRunner {
           heavyMaintenanceRan = true;
         }
 
+        const sessionEndsOnThisTurn =
+          (!success.emitted && !isObserveTurn && !continuesSuppressedSession) ||
+          turn === this.options.totalTurns;
+        const nextSessionIdForSuppression =
+          !success.emitted &&
+          !isObserveTurn &&
+          !continuesSuppressedSession &&
+          turn !== this.options.totalTurns &&
+          sessions.length + 1 < maxSessions
+            ? createSessionId()
+            : null;
+
+        if (sessionEndsOnThisTurn && !currentSessionEnded) {
+          endSimulatorSession(transport, currentSessionId, {
+            ...(nextSessionIdForSuppression === null
+              ? {}
+              : { nextSessionId: nextSessionIdForSuppression }),
+          });
+          currentSessionEnded = true;
+        }
+
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
           sessionId: currentSessionId,
           sessionIds,
@@ -936,11 +966,14 @@ export class SimulatorRunner {
             endReason: "suppression",
             ...(suppressionReason === undefined ? {} : { suppressionReason }),
           });
-          endSimulatorSession(transport, currentSessionId);
-
           if (sessions.length >= maxSessions) {
             resultState = "max_sessions_reached";
             break;
+          }
+
+          if (turn === this.options.totalTurns) {
+            currentSessionStartTurn = turn + 1;
+            continue;
           }
 
           const gap =
@@ -952,8 +985,9 @@ export class SimulatorRunner {
           channelTranscript.length = 0;
           priorBorgTurn = { kind: "new_session", gapContext: gap };
           currentSessionStartTurn = turn + 1;
-          currentSessionId = createSessionId();
+          currentSessionId = nextSessionIdForSuppression ?? createSessionId();
           sessionIds.push(currentSessionId);
+          currentSessionEnded = false;
           continue;
         }
 
@@ -978,7 +1012,10 @@ export class SimulatorRunner {
           endedAtTurn: finalMetrics.turn_counter,
           endReason: "run_complete",
         });
-        endSimulatorSession(transport, currentSessionId);
+        if (!currentSessionEnded) {
+          endSimulatorSession(transport, currentSessionId);
+          currentSessionEnded = true;
+        }
       }
 
       finalMetrics = {

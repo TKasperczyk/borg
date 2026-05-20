@@ -24,6 +24,7 @@ function sharedStateReconciliationOutcomeCounts(
     actions_completed_attempted: result.actions_completed_attempted,
     actions_completed_succeeded: result.actions_completed_succeeded,
     actions_completed_skipped: result.actions_completed_skipped,
+    actions_closed_by_borg_self_performance: result.actions_closed_by_borg_self_performance,
     open_questions_resolved_attempted: result.open_questions_resolved_attempted,
     open_questions_resolved_succeeded: result.open_questions_resolved_succeeded,
     open_questions_resolved_skipped: result.open_questions_resolved_skipped,

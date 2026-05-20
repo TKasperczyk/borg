@@ -59,6 +59,7 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "unknown",
 ];
 const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
+const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;
 const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
   ...GOAL_PROMOTION_CLASSIFICATIONS,
   "invalid_classification",
@@ -80,6 +81,8 @@ type MemoryBandMetricCounts = Pick<
   | "group_owned_active_actions"
   | "action_record_creation_source_per_turn"
   | "action_record_creation_count_this_turn"
+  | "actions_dormant_count"
+  | "actions_archived_count"
   | "recent_completed_action_count"
   | "commitment_count_active"
   | "commitment_count_active_by_kind"
@@ -158,8 +161,11 @@ type ActionCandidateMetricCounts = Pick<
   | "action_persistence_dedup_skipped_embedding"
   | "action_persistence_dedup_degraded"
   | "actions_closed_by_terminal_emission"
+  | "actions_closed_by_borg_self_performance"
   | "actions_rejected_capability"
 >;
+
+type ActionSessionLifecycleMetricCounts = Pick<MetricsRow, "actions_expired_at_session_close">;
 
 type SharedStateActionLifecycleMetricCounts = Pick<
   MetricsRow,
@@ -398,7 +404,20 @@ function actionCandidateMetrics(traceRecords: readonly TraceRecord[]): ActionCan
     actions_closed_by_terminal_emission: traceRecords.filter(
       (record) => record.event === "action_state.transitioned",
     ).length,
+    actions_closed_by_borg_self_performance: traceRecords.filter(
+      (record) => record.event === "action_state.borg_self_performance.completed",
+    ).length,
     actions_rejected_capability: classificationsPerTurn.outside_borg_capability,
+  };
+}
+
+function actionSessionLifecycleMetrics(
+  traceRecords: readonly TraceRecord[],
+): ActionSessionLifecycleMetricCounts {
+  return {
+    actions_expired_at_session_close: traceRecords
+      .filter((record) => record.event === "action_session_scope.expired")
+      .reduce((sum, record) => sum + traceNumber(record, "actions_expired_at_session_close"), 0),
   };
 }
 
@@ -406,12 +425,10 @@ function sharedStateActionLifecycleMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateActionLifecycleMetricCounts {
   const completed = traceRecords.filter(
-    (record) =>
-      record.event === "shared_state.reconcile.completed" && record.mode !== "retry_only",
+    (record) => record.event === "shared_state.reconcile.completed" && record.mode !== "retry_only",
   );
   const retryOnly = traceRecords.filter(
-    (record) =>
-      record.event === "shared_state.reconcile.completed" && record.mode === "retry_only",
+    (record) => record.event === "shared_state.reconcile.completed" && record.mode === "retry_only",
   );
   const actionsCanonicalized =
     completed.reduce((sum, record) => sum + traceNumber(record, "actions_retired"), 0) +
@@ -434,9 +451,7 @@ function sharedStateActionLifecycleMetrics(
 }
 
 function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromotionMetricCounts {
-  const completed = traceRecords.filter(
-    (record) => record.event === "extraction.goals.completed",
-  );
+  const completed = traceRecords.filter((record) => record.event === "extraction.goals.completed");
   const skippedAsDuplicate = traceRecords.filter(
     (record) => record.event === "extraction.goals.skipped",
   );
@@ -483,12 +498,8 @@ function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromoti
 function sharedStateSemanticRevisionMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateArtifactSemanticRevisionMetricCounts {
-  const completed = traceRecords.filter(
-    (record) => record.event === "semantic_revision.completed",
-  );
-  const degraded = traceRecords.filter(
-    (record) => record.event === "semantic_revision.degraded",
-  );
+  const completed = traceRecords.filter((record) => record.event === "semantic_revision.completed");
+  const degraded = traceRecords.filter((record) => record.event === "semantic_revision.degraded");
   const cacheHits = traceRecords.filter(
     (record) => record.event === "semantic_revision.cache.completed",
   );
@@ -516,9 +527,7 @@ function sharedStateSemanticRevisionMetrics(
 }
 
 function reviewResolverMetrics(traceRecords: readonly TraceRecord[]): ReviewResolverMetricCounts {
-  const completed = traceRecords.filter(
-    (record) => record.event === "review_resolver.completed",
-  );
+  const completed = traceRecords.filter((record) => record.event === "review_resolver.completed");
   const reviewQueueDecisions = traceRecords.filter(
     (record) => record.event === "review_queue.completed",
   );
@@ -766,6 +775,30 @@ function activeActionActorSplit(
   };
 }
 
+function isParticipantOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entity_id">) {
+  return (
+    action.actor !== "borg" &&
+    !(action.actor !== "user" && action.actor === action.audience_entity_id)
+  );
+}
+
+function dormantActionCount(
+  actions: readonly Pick<
+    ActionRecord,
+    "actor" | "audience_entity_id" | "state" | "scheduled_at" | "last_referenced_turn_counter"
+  >[],
+  turnCounter: number,
+): number {
+  return actions.filter(
+    (action) =>
+      isParticipantOwnedAction(action) &&
+      action.state !== "scheduled" &&
+      action.scheduled_at === null &&
+      action.last_referenced_turn_counter !== null &&
+      turnCounter - action.last_referenced_turn_counter >= ACTION_DORMANT_AFTER_INACTIVE_TURNS,
+  ).length;
+}
+
 function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
   const counts = zeroCounts(REVIEW_KINDS);
 
@@ -897,7 +930,11 @@ export class MetricsCapture {
     }
   }
 
-  private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
+  private captureMemoryBandMetrics(
+    borg: Borg,
+    sessionId: SessionId,
+    turnCounter: number,
+  ): MemoryBandMetricCounts {
     const actionRecordCountByState = borg.actions.countByState();
     const activeActions = borg.actions.list({
       states: ACTIVE_ACTION_STATES,
@@ -935,6 +972,8 @@ export class MetricsCapture {
       group_owned_active_actions: activeActorSplit.group_owned_active_actions,
       action_record_creation_source_per_turn: actionCreationSourcePerTurn,
       action_record_creation_count_this_turn: actionCreationCountTotal(actionCreationSourcePerTurn),
+      actions_dormant_count: dormantActionCount(activeActions, turnCounter),
+      actions_archived_count: actionRecordCountByState.archived ?? 0,
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
       commitment_count_active_by_kind: {
@@ -1061,7 +1100,7 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
-    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
+    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId, turnCounter);
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords,
       borg,
@@ -1069,6 +1108,9 @@ export class MetricsCapture {
       turnId,
     });
     const actionCandidateMetricCounts = actionCandidateMetrics(traceRecords);
+    const actionSessionLifecycleMetricCounts = actionSessionLifecycleMetrics(
+      traceRecordsSinceLastCapture,
+    );
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics(traceRecords);
     const sharedStateSemanticRevisionMetricCounts =
@@ -1132,10 +1174,16 @@ export class MetricsCapture {
         actionCandidateMetricCounts.action_persistence_dedup_degraded,
       actions_closed_by_terminal_emission:
         actionCandidateMetricCounts.actions_closed_by_terminal_emission,
+      actions_closed_by_borg_self_performance:
+        actionCandidateMetricCounts.actions_closed_by_borg_self_performance,
+      actions_expired_at_session_close:
+        actionSessionLifecycleMetricCounts.actions_expired_at_session_close,
       actions_rejected_capability: actionCandidateMetricCounts.actions_rejected_capability,
       actions_canonicalized: sharedStateActionLifecycleMetricCounts.actions_canonicalized,
       actions_completed_via_canonicalization:
         sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
+      actions_dormant_count: memoryBandMetrics.actions_dormant_count,
+      actions_archived_count: memoryBandMetrics.actions_archived_count,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
@@ -1200,8 +1248,7 @@ export class MetricsCapture {
         extractorHealthMetricCounts.corrective_preference_completed_count,
       corrective_preference_degraded_count:
         extractorHealthMetricCounts.corrective_preference_degraded_count,
-      extractor_max_tokens_stop_count:
-        extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      extractor_max_tokens_stop_count: extractorHealthMetricCounts.extractor_max_tokens_stop_count,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -1236,7 +1283,7 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
-    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
+    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId, turnCounter);
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords: [],
@@ -1245,6 +1292,7 @@ export class MetricsCapture {
       turnId,
     });
     const actionCandidateMetricCounts = actionCandidateMetrics([]);
+    const actionSessionLifecycleMetricCounts = actionSessionLifecycleMetrics([]);
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
@@ -1295,10 +1343,16 @@ export class MetricsCapture {
         actionCandidateMetricCounts.action_persistence_dedup_degraded,
       actions_closed_by_terminal_emission:
         actionCandidateMetricCounts.actions_closed_by_terminal_emission,
+      actions_closed_by_borg_self_performance:
+        actionCandidateMetricCounts.actions_closed_by_borg_self_performance,
+      actions_expired_at_session_close:
+        actionSessionLifecycleMetricCounts.actions_expired_at_session_close,
       actions_rejected_capability: actionCandidateMetricCounts.actions_rejected_capability,
       actions_canonicalized: sharedStateActionLifecycleMetricCounts.actions_canonicalized,
       actions_completed_via_canonicalization:
         sharedStateActionLifecycleMetricCounts.actions_completed_via_canonicalization,
+      actions_dormant_count: memoryBandMetrics.actions_dormant_count,
+      actions_archived_count: memoryBandMetrics.actions_archived_count,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
@@ -1363,8 +1417,7 @@ export class MetricsCapture {
         extractorHealthMetricCounts.corrective_preference_completed_count,
       corrective_preference_degraded_count:
         extractorHealthMetricCounts.corrective_preference_degraded_count,
-      extractor_max_tokens_stop_count:
-        extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      extractor_max_tokens_stop_count: extractorHealthMetricCounts.extractor_max_tokens_stop_count,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,

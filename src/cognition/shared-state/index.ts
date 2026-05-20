@@ -4,6 +4,7 @@ export {
   SHARED_STATE_TOOL_NAME,
   MAX_PATCH_OUTPUT_TOKENS,
   type CompileSharedStateArtifactInput,
+  type SharedStateActionCanonicalizationCandidate,
   type SharedStateCanonicalizationCandidate,
   type SharedStateCanonicalizationCandidates,
   type SharedStateCommitmentCanonicalizationCandidate,

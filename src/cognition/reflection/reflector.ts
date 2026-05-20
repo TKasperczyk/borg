@@ -362,6 +362,10 @@ function stateTimestampPatch(
       return { completed_at: timestamp };
     case "not_done":
       return { not_done_at: timestamp };
+    case "expired":
+      return { expired_at: timestamp };
+    case "archived":
+      return { archived_at: timestamp };
     case "considering":
       return { considering_at: timestamp };
     case "committed_to_do":
@@ -990,8 +994,14 @@ export class Reflector {
             scheduled_at: null,
             completed_at: null,
             not_done_at: null,
+            expired_at: null,
+            archived_at: null,
             unknown_at: null,
             canonicalized_by_artifact_entry_id: null,
+            session_scope: null,
+            session_anchor_id: null,
+            last_referenced_at_ms: nowMs,
+            last_referenced_turn_counter: context.workingMemory.turn_counter,
             ...stateTimestampPatch(state, nowMs),
           },
           { creationSource: "reflector" },

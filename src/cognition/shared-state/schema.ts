@@ -154,6 +154,12 @@ export type SharedStateCanonicalizationCandidate = {
   text: string;
 };
 
+export type SharedStateActionCanonicalizationCandidate = SharedStateCanonicalizationCandidate & {
+  actor?: string;
+  state?: string;
+  session_scope?: string | null;
+};
+
 export type SharedStateCommitmentCanonicalizationCandidate =
   SharedStateCanonicalizationCandidate & {
     kind: string;
@@ -164,7 +170,7 @@ export type SharedStateCommitmentCanonicalizationCandidate =
 export type SharedStateCanonicalizationCandidates = {
   goals?: readonly SharedStateCanonicalizationCandidate[];
   commitments?: readonly SharedStateCommitmentCanonicalizationCandidate[];
-  actions?: readonly SharedStateCanonicalizationCandidate[];
+  actions?: readonly SharedStateActionCanonicalizationCandidate[];
   openQuestions?: readonly SharedStateCanonicalizationCandidate[];
 };
 

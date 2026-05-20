@@ -230,6 +230,8 @@ export function traceReconciliationCompleted(options: {
       actions_completed_attempted: options.result.actions_completed_attempted,
       actions_completed_succeeded: options.result.actions_completed_succeeded,
       actions_completed_skipped: options.result.actions_completed_skipped,
+      actions_closed_by_borg_self_performance:
+        options.result.actions_closed_by_borg_self_performance,
       open_questions_resolved_attempted: options.result.open_questions_resolved_attempted,
       open_questions_resolved_succeeded: options.result.open_questions_resolved_succeeded,
       open_questions_resolved_skipped: options.result.open_questions_resolved_skipped,

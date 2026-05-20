@@ -16,6 +16,9 @@ import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
+import type { ActionRecord, ActionState } from "../../../memory/actions/index.js";
+import { archiveStaleAction } from "../../../memory/lifecycle-ops/index.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput, TurnPhaseResult } from "./types.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { TurnDeliberationPhaseResult } from "./deliberation-phase.js";
@@ -33,6 +36,91 @@ type CorrectiveCommitment = Parameters<
 type CorrectiveCommitmentSupersession = Parameters<
   CorrectivePreferenceTurnService["persistCommitment"]
 >[0]["supersession"];
+
+const ACTIVE_ACTION_STATES: readonly ActionState[] = [
+  "considering",
+  "committed_to_do",
+  "scheduled",
+];
+const ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 40;
+
+function currentTurnSharedStateEntries(input: {
+  retrievalPhase: TurnRetrievalPhaseResult;
+  persistedUserEntryId?: StreamEntry["id"];
+}): SharedStateEntry[] {
+  if (input.persistedUserEntryId === undefined) {
+    return [];
+  }
+
+  const persistedUserEntryId = input.persistedUserEntryId;
+
+  return (input.retrievalPhase.evidenceLedgerContext.ledger?.sharedState?.entries ?? []).filter(
+    (entry) => entry.last_updated_stream_entry_ids.includes(persistedUserEntryId),
+  );
+}
+
+function isParticipantOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entity_id">) {
+  return (
+    action.actor !== "borg" &&
+    !(action.actor !== "user" && action.actor === action.audience_entity_id)
+  );
+}
+
+function actionHasNoDueDate(action: Pick<ActionRecord, "state" | "scheduled_at">): boolean {
+  return action.state !== "scheduled" && action.scheduled_at === null;
+}
+
+function archiveInactiveParticipantActions(input: {
+  options: TurnPhaseCoordinatorOptions;
+  turnId: string;
+  turnCounter: number;
+}): number {
+  const candidates = input.options.actionRepository.list({
+    states: ACTIVE_ACTION_STATES,
+    limit: 256,
+  });
+  let archivedCount = 0;
+
+  for (const action of candidates) {
+    if (!isParticipantOwnedAction(action) || !actionHasNoDueDate(action)) {
+      continue;
+    }
+
+    if (action.last_referenced_turn_counter === null) {
+      continue;
+    }
+
+    if (
+      input.turnCounter - action.last_referenced_turn_counter <
+      ACTION_ARCHIVE_AFTER_INACTIVE_TURNS
+    ) {
+      continue;
+    }
+
+    const result = archiveStaleAction({
+      actionId: action.id,
+      repository: input.options.actionRepository,
+      nowMs: input.options.clock.now(),
+      tracer: input.options.tracer,
+      turnId: input.turnId,
+      traceSource: "post_generation_inactivity_scan",
+    });
+
+    if (result.status === "success") {
+      archivedCount += 1;
+    }
+  }
+
+  if (archivedCount > 0 && input.options.tracer.enabled) {
+    input.options.tracer.emit("action_inactivity_scan.completed", {
+      turnId: input.turnId,
+      archived_count: archivedCount,
+      archive_after_turns: ACTION_ARCHIVE_AFTER_INACTIVE_TURNS,
+    });
+  }
+
+  return archivedCount;
+}
 
 export async function runPostGenerationPhase(input: {
   options: TurnPhaseCoordinatorOptions;
@@ -252,6 +340,30 @@ export async function runPostGenerationPhase(input: {
     streamWriter: input.streamWriter,
     onHookFailure: (hook, error) => input.appendHookFailureEvent(input.streamWriter, hook, error),
     trackReflectionEffects: (effects) => input.lifecycleTracker.trackReflectionEffects(effects),
+  });
+  if (actionEmission.kind === "message" && input.persistedUserEntryId !== undefined) {
+    await input.options.turnActionStateService.closeBorgSelfPerformedActions({
+      llmClient: input.llmClient,
+      turnId: input.turnId,
+      userMessage: input.turnInput.userMessage,
+      persistedUserEntryId: input.persistedUserEntryId,
+      persistedAgentEntryId: persistedAgentEntry.id,
+      agentResponse: actionResult.response,
+      recentHistory: [],
+      audienceEntityId: input.audienceEntityId,
+      sessionId: input.sessionId,
+      speakerEntityId: input.senderEntityId,
+      currentTurnSharedStateEntries: currentTurnSharedStateEntries({
+        retrievalPhase: input.retrievalPhase,
+        persistedUserEntryId: input.persistedUserEntryId,
+      }),
+      turnCounter: input.workingMemory.turn_counter,
+    });
+  }
+  archiveInactiveParticipantActions({
+    options: input.options,
+    turnId: input.turnId,
+    turnCounter: input.workingMemory.turn_counter,
   });
   await persistCorrectiveCommitment({
     service: input.options.correctivePreferenceTurnService,

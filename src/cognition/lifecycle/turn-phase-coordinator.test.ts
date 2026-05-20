@@ -170,8 +170,14 @@ function actionRecord(input: {
     scheduled_at: null,
     completed_at: null,
     not_done_at: null,
+    expired_at: null,
+    archived_at: null,
     unknown_at: null,
     canonicalized_by_artifact_entry_id: null,
+    session_scope: null,
+    session_anchor_id: null,
+    last_referenced_at_ms: input.updatedAt,
+    last_referenced_turn_counter: null,
   };
 }
 
@@ -1589,9 +1595,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     });
 
     expect(llmClient.requests).toHaveLength(1);
-    expect(events.find((event) => event.event === "shared_state.compile.skipped")).toBe(
-      undefined,
-    );
+    expect(events.find((event) => event.event === "shared_state.compile.skipped")).toBe(undefined);
     expect(events).toContainEqual(
       expect.objectContaining({
         event: "shared_state.compile.transitioned",
@@ -1759,9 +1763,9 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     };
 
     expect(requestPayload.canonicalization_candidates?.active_actions).toEqual([
-      { id: actorAction.id, text: "Alice actor-scoped release action" },
-      { id: audienceAction.id, text: "Audience-scoped release action" },
-      { id: globalAction.id, text: "Global release action" },
+      expect.objectContaining({ id: actorAction.id, text: "Alice actor-scoped release action" }),
+      expect.objectContaining({ id: audienceAction.id, text: "Audience-scoped release action" }),
+      expect.objectContaining({ id: globalAction.id, text: "Global release action" }),
     ]);
     expect(requestPayload.canonicalization_candidates?.active_commitments).toEqual([
       {
@@ -1949,9 +1953,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
           off_limits_source_stream_entry_ids?: string[];
         };
       };
-      const completed = events.find(
-        (event) => event.event === "shared_state.compile.completed",
-      );
+      const completed = events.find((event) => event.event === "shared_state.compile.completed");
 
       expect(upsertCount).toBe(0);
       expect(requestPayload.source_trust).toEqual({

@@ -14,16 +14,19 @@ export {
 } from "./repository.js";
 export {
   ACTION_STATES,
+  ACTION_SESSION_SCOPES,
   actionActorSchema,
   actionEntityIdSchema,
   actionEpisodeIdSchema,
   actionIdSchema,
   actionRecordPatchSchema,
+  actionSessionScopeSchema,
   actionRecordSchema,
   actionStateSchema,
   actionStreamEntryIdSchema,
   type ActionActor,
   type ActionRecord,
   type ActionRecordPatch,
+  type ActionSessionScope,
   type ActionState,
 } from "./types.js";

@@ -182,6 +182,7 @@ export function reconcileSharedStateCanonicalizations(
     actions_completed_attempted: 0,
     actions_completed_succeeded: 0,
     actions_completed_skipped: 0,
+    actions_closed_by_borg_self_performance: 0,
     open_questions_resolved_attempted: 0,
     open_questions_resolved_succeeded: 0,
     open_questions_resolved_skipped: 0,
@@ -249,6 +250,8 @@ export function reconcileSharedStateCanonicalizations(
       repository: actionRepository,
       retiredActions,
       result,
+      nowMs,
+      turnCounter: input.turnCounter ?? null,
       tracer: input.tracer,
       turnId: input.turnId,
     });

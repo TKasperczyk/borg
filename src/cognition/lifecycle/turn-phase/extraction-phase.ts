@@ -99,9 +99,11 @@ export async function runExtractionPhase(input: {
       persistedUserEntryId: input.persistedUserEntryId,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
+      sessionId: input.sessionId,
       speakerEntityId: input.groupSpeakerEntityId,
       speakerDisplayName: input.groupSpeakerDisplayName,
       goalId: actionLinkGoalId,
+      turnCounter: input.workingMemory.turn_counter,
       frameAnomaly: input.frameAnomalyClassification,
     }),
     currentTurnFrameAnomaly === null

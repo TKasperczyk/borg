@@ -12,7 +12,19 @@ export {
   type CanonicalizeGoalRepository,
   type CanonicalizeOpenQuestionRepository,
 } from "./canonicalize.js";
-export { completeAction, isTerminalActionState, type CompleteActionRepository } from "./complete.js";
+export {
+  completeAction,
+  isTerminalActionState,
+  type CompleteActionRepository,
+} from "./complete.js";
+export { archiveStaleAction, type ArchiveStaleActionRepository } from "./archive.js";
+export {
+  expireSessionScopedActions,
+  rolloverNextSessionActions,
+  type ExpireSessionScopedActionsRepository,
+  type ExpireSessionScopedActionsResult,
+  type RolloverNextSessionActionsResult,
+} from "./expire.js";
 export {
   SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
   type SharedStateCommitmentCanonicalizationType,

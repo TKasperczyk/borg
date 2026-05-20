@@ -24,6 +24,7 @@ import {
   type EpisodeId,
   type GoalId,
   type OpenQuestionId,
+  type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
@@ -34,6 +35,7 @@ import {
   type ActionActor,
   type ActionRecord,
   type ActionRecordPatch,
+  type ActionSessionScope,
   type ActionState,
 } from "./types.js";
 
@@ -95,6 +97,10 @@ function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.completed_at === null || row.completed_at === undefined ? null : Number(row.completed_at),
     not_done_at:
       row.not_done_at === null || row.not_done_at === undefined ? null : Number(row.not_done_at),
+    expired_at:
+      row.expired_at === null || row.expired_at === undefined ? null : Number(row.expired_at),
+    archived_at:
+      row.archived_at === null || row.archived_at === undefined ? null : Number(row.archived_at),
     unknown_at:
       row.unknown_at === null || row.unknown_at === undefined ? null : Number(row.unknown_at),
     canonicalized_by_artifact_entry_id:
@@ -102,6 +108,20 @@ function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.canonicalized_by_artifact_entry_id === undefined
         ? null
         : String(row.canonicalized_by_artifact_entry_id),
+    session_scope:
+      row.session_scope === null || row.session_scope === undefined ? null : row.session_scope,
+    session_anchor_id:
+      row.session_anchor_id === null || row.session_anchor_id === undefined
+        ? null
+        : row.session_anchor_id,
+    last_referenced_at_ms:
+      row.last_referenced_at_ms === null || row.last_referenced_at_ms === undefined
+        ? null
+        : Number(row.last_referenced_at_ms),
+    last_referenced_turn_counter:
+      row.last_referenced_turn_counter === null || row.last_referenced_turn_counter === undefined
+        ? null
+        : Number(row.last_referenced_turn_counter),
   });
 
   if (!parsed.success) {
@@ -167,6 +187,8 @@ type ActionStateTimestampField =
   | "scheduled_at"
   | "completed_at"
   | "not_done_at"
+  | "expired_at"
+  | "archived_at"
   | "unknown_at";
 
 function stateTimestampField(state: ActionState): ActionStateTimestampField {
@@ -181,6 +203,10 @@ function stateTimestampField(state: ActionState): ActionStateTimestampField {
       return "completed_at";
     case "not_done":
       return "not_done_at";
+    case "expired":
+      return "expired_at";
+    case "archived":
+      return "archived_at";
     case "unknown":
       return "unknown_at";
   }
@@ -190,6 +216,8 @@ export type ActionRecordListFilter = {
   state?: ActionState;
   states?: readonly ActionState[];
   actor?: ActionActor;
+  sessionScope?: ActionSessionScope | null;
+  sessionAnchorId?: SessionId | null;
   audienceEntityId?: EntityId | null;
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
@@ -297,9 +325,10 @@ export class ActionRepository {
           INSERT INTO action_records (
             id, description, actor, audience_entity_id, goal_id, open_question_id, state, confidence,
             provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
-            considering_at, committed_at, scheduled_at, completed_at, not_done_at, unknown_at,
-            canonicalized_by_artifact_entry_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
+            archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
+            session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
@@ -316,8 +345,14 @@ export class ActionRepository {
             scheduled_at = excluded.scheduled_at,
             completed_at = excluded.completed_at,
             not_done_at = excluded.not_done_at,
+            expired_at = excluded.expired_at,
+            archived_at = excluded.archived_at,
             unknown_at = excluded.unknown_at,
-            canonicalized_by_artifact_entry_id = excluded.canonicalized_by_artifact_entry_id
+            canonicalized_by_artifact_entry_id = excluded.canonicalized_by_artifact_entry_id,
+            session_scope = excluded.session_scope,
+            session_anchor_id = excluded.session_anchor_id,
+            last_referenced_at_ms = excluded.last_referenced_at_ms,
+            last_referenced_turn_counter = excluded.last_referenced_turn_counter
         `,
       )
       .run(
@@ -338,8 +373,14 @@ export class ActionRepository {
         record.scheduled_at,
         record.completed_at,
         record.not_done_at,
+        record.expired_at,
+        record.archived_at,
         record.unknown_at,
         record.canonicalized_by_artifact_entry_id ?? null,
+        record.session_scope ?? null,
+        record.session_anchor_id ?? null,
+        record.last_referenced_at_ms ?? null,
+        record.last_referenced_turn_counter ?? null,
       );
   }
 
@@ -348,9 +389,9 @@ export class ActionRepository {
       ...record,
       id: record.id ?? createActionId(),
     });
-    const existing = this.db
-      .prepare("SELECT 1 FROM action_records WHERE id = ?")
-      .get(parsed.id) as { 1: number } | undefined;
+    const existing = this.db.prepare("SELECT 1 FROM action_records WHERE id = ?").get(parsed.id) as
+      | { 1: number }
+      | undefined;
 
     this.upsertSqlRow(parsed);
     this.scheduleVectorUpsert(parsed);
@@ -444,6 +485,24 @@ export class ActionRepository {
     if (filter.actor !== undefined) {
       clauses.push("actor = ?");
       values.push(filter.actor);
+    }
+
+    if ("sessionScope" in filter) {
+      if (filter.sessionScope === null) {
+        clauses.push("session_scope IS NULL");
+      } else if (filter.sessionScope !== undefined) {
+        clauses.push("session_scope = ?");
+        values.push(filter.sessionScope);
+      }
+    }
+
+    if ("sessionAnchorId" in filter) {
+      if (filter.sessionAnchorId === null) {
+        clauses.push("session_anchor_id IS NULL");
+      } else if (filter.sessionAnchorId !== undefined) {
+        clauses.push("session_anchor_id = ?");
+        values.push(filter.sessionAnchorId);
+      }
     }
 
     if ("audienceEntityId" in filter) {

@@ -20,7 +20,14 @@ function timestampForActionState(
   timestamp: number,
 ): Pick<
   ActionRecord,
-  "considering_at" | "committed_at" | "scheduled_at" | "completed_at" | "not_done_at" | "unknown_at"
+  | "considering_at"
+  | "committed_at"
+  | "scheduled_at"
+  | "completed_at"
+  | "not_done_at"
+  | "expired_at"
+  | "archived_at"
+  | "unknown_at"
 > {
   return {
     considering_at: state === "considering" ? timestamp : null,
@@ -28,6 +35,8 @@ function timestampForActionState(
     scheduled_at: state === "scheduled" ? timestamp : null,
     completed_at: state === "completed" ? timestamp : null,
     not_done_at: state === "not_done" ? timestamp : null,
+    expired_at: state === "expired" ? timestamp : null,
+    archived_at: state === "archived" ? timestamp : null,
     unknown_at: state === "unknown" ? timestamp : null,
   };
 }
@@ -56,8 +65,14 @@ export function makeActionRecord(overrides: Partial<ActionRecord> = {}): ActionR
     scheduled_at: stateTimestamps.scheduled_at,
     completed_at: stateTimestamps.completed_at,
     not_done_at: stateTimestamps.not_done_at,
+    expired_at: stateTimestamps.expired_at,
+    archived_at: stateTimestamps.archived_at,
     unknown_at: stateTimestamps.unknown_at,
     canonicalized_by_artifact_entry_id: null,
+    session_scope: null,
+    session_anchor_id: null,
+    last_referenced_at_ms: updatedAt,
+    last_referenced_turn_counter: null,
   };
 
   return {
