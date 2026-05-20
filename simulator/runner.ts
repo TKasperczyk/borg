@@ -1153,15 +1153,27 @@ function reportHealthWarningLine(warning: SimulatorHealthWarning): string {
     warning.window_start_turn === undefined || warning.window_turns === undefined
       ? ""
       : ` window=${warning.window_start_turn}+${warning.window_turns}`;
+  const label = warning.label === undefined ? "" : ` label=${warning.label}`;
 
   return [
     `- Turn ${warning.turn_counter}: ${warning.kind}`,
     `observed=${warning.observed_value.toFixed(2)}`,
     `threshold=${warning.threshold}`,
+    label,
     window,
   ]
     .filter((part) => part.length > 0)
     .join(" ");
+}
+
+function reportCountMap(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right));
+
+  if (entries.length === 0) {
+    return "none";
+  }
+
+  return entries.map(([label, count]) => `${label}=${count}`).join(", ");
 }
 
 export function formatSimulatorReport(report: SimulatorRunReport): string {
@@ -1192,6 +1204,11 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
+    "",
+    "## Cumulative Extractor Health",
+    "",
+    `- Max-token stops by label: ${reportCountMap(report.finalMetrics.extractor_max_tokens_total_by_label)}`,
+    `- Degraded by label: ${reportCountMap(report.finalMetrics.extractor_degraded_total_by_label)}`,
     "",
     "## Health Warnings",
     "",

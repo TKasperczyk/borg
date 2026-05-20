@@ -28,6 +28,7 @@ import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
+const CORRECTIVE_PREFERENCE_MAX_TOKENS = 768;
 
 const correctivePreferenceEntityIdSchema = z
   .string()
@@ -172,6 +173,7 @@ export type CorrectivePreferenceExtractorOptions = {
   onDegraded?: (
     reason: CorrectivePreferenceExtractorDegradedReason,
     error?: unknown,
+    metadata?: { stopReason: string | null },
   ) => Promise<void> | void;
 };
 
@@ -414,9 +416,14 @@ export class CorrectivePreferenceExtractor {
   private async degraded(
     reason: CorrectivePreferenceExtractorDegradedReason,
     error?: unknown,
+    metadata?: { stopReason: string | null },
   ): Promise<null> {
     try {
-      await this.options.onDegraded?.(reason, error);
+      if (metadata === undefined) {
+        await this.options.onDegraded?.(reason, error);
+      } else {
+        await this.options.onDegraded?.(reason, error, metadata);
+      }
     } catch {
       // Best-effort degraded-mode logging only.
     }
@@ -456,7 +463,7 @@ export class CorrectivePreferenceExtractor {
         messages,
         tools,
         tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
-        max_tokens: 512,
+        max_tokens: CORRECTIVE_PREFERENCE_MAX_TOKENS,
         budget: "corrective-preference-extractor",
       });
     } catch (error) {
@@ -490,6 +497,7 @@ export class CorrectivePreferenceExtractor {
             ? "invalid_payload"
             : "llm_failed",
         error,
+        { stopReason: response.stop_reason },
       );
       return {
         preference: null,

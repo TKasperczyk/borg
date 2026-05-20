@@ -32,6 +32,7 @@ export const CLOSURE_LOOP_DIALOGUE_ACTS = [
 export type ClosureLoopDialogueAct = (typeof CLOSURE_LOOP_DIALOGUE_ACTS)[number];
 
 export const CLOSURE_LOOP_CLASSIFIER_TOOL_NAME = "ClassifyClosureLoopDialogueActs";
+const CLOSURE_LOOP_CLASSIFIER_MAX_TOKENS = 1_050;
 const CLOSURE_LOOP_RATIONALE_MAX_CHARS = 2_000;
 const CLOSURE_LOOP_CLASSIFICATION_FIELDS = ["messages", "confidence", "rationale"] as const;
 const CLOSURE_LOOP_MESSAGE_FIELDS = [
@@ -112,6 +113,7 @@ export type ClosureLoopClassifierOptions = {
   onDegraded?: (
     reason: ClosureLoopClassifierDegradedReason,
     error?: unknown,
+    metadata?: { stopReason: string | null },
   ) => Promise<void> | void;
 };
 
@@ -836,9 +838,14 @@ export class ClosureLoopClassifier {
   private async degraded(
     reason: ClosureLoopClassifierDegradedReason,
     error?: unknown,
+    metadata?: { stopReason: string | null },
   ): Promise<ClosureLoopClassification> {
     try {
-      await this.options.onDegraded?.(reason, error);
+      if (metadata === undefined) {
+        await this.options.onDegraded?.(reason, error);
+      } else {
+        await this.options.onDegraded?.(reason, error, metadata);
+      }
     } catch {
       // Best-effort degraded-mode logging only.
     }
@@ -869,7 +876,7 @@ export class ClosureLoopClassifier {
         messages,
         tools: [CLOSURE_LOOP_CLASSIFIER_TOOL],
         tool_choice: { type: "tool", name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME },
-        max_tokens: 700,
+        max_tokens: CLOSURE_LOOP_CLASSIFIER_MAX_TOKENS,
         budget: "closure-loop-classifier",
       });
     } catch (error) {
@@ -901,6 +908,7 @@ export class ClosureLoopClassifier {
             ? "invalid_payload"
             : "llm_failed",
         error,
+        { stopReason: response.stop_reason },
       );
     }
   }

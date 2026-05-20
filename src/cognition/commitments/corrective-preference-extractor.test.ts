@@ -33,9 +33,7 @@ function correctivePreferenceResponse(input: {
           type: input.type ?? null,
           kind:
             input.kind ??
-            (input.classification === "corrective_preference"
-              ? "participant_preference"
-              : null),
+            (input.classification === "corrective_preference" ? "participant_preference" : null),
           directive: input.directive ?? null,
           directive_family: input.directive_family ?? null,
           closure_pressure_relevance:
@@ -91,6 +89,7 @@ describe("CorrectivePreferenceExtractor", () => {
       confidence: 0.9,
     });
     expect(llm.requests[0]?.model).toBe("haiku");
+    expect(llm.requests[0]?.max_tokens).toBe(768);
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: "EmitCorrectivePreference",

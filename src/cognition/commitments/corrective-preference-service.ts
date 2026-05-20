@@ -218,14 +218,16 @@ export class CorrectivePreferenceTurnService {
       model: this.options.model,
       tracer: this.options.tracer,
       turnId: input.turnId,
-      onDegraded: (reason, error) => {
+      onDegraded: (reason, error, metadata) => {
         if (!this.options.tracer.enabled) {
           return;
         }
 
         this.options.tracer.emit("extraction.commitments.degraded", {
           turnId: input.turnId,
+          label: "corrective_preference_extractor",
           reason,
+          stopReason: metadata?.stopReason ?? null,
           ...(this.options.tracer.includePayloads && error !== undefined
             ? { error: error instanceof Error ? error.message : String(error) }
             : {}),

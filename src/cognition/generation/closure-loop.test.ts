@@ -125,6 +125,7 @@ describe("ClosureLoopClassifier", () => {
     expect(llm.requests[0]).toMatchObject({
       model: "test-recall",
       budget: "closure-loop-classifier",
+      max_tokens: 1_050,
       tool_choice: {
         type: "tool",
         name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,

@@ -146,6 +146,8 @@ const TURN_METRICS_KEY_ORDER = [
   "corrective_preference_completed_count",
   "corrective_preference_degraded_count",
   "extractor_max_tokens_stop_count",
+  "extractor_max_tokens_total_by_label",
+  "extractor_degraded_total_by_label",
   "capability_overclaim_count",
   "capability_ambiguity_count",
   "capability_boundary_refusal_count",
@@ -493,6 +495,15 @@ describe("MetricsCapture", () => {
     expect(row.corrective_preference_completed_count).toBe(1);
     expect(row.corrective_preference_degraded_count).toBe(1);
     expect(row.extractor_max_tokens_stop_count).toBe(2);
+    expect(row.extractor_max_tokens_total_by_label).toEqual({
+      closure_loop_classifier: 1,
+      corrective_preference_extractor: 1,
+      goal_promotion_extractor: 1,
+    });
+    expect(row.extractor_degraded_total_by_label).toEqual({
+      closure_loop_classifier: 1,
+      corrective_preference_extractor: 1,
+    });
     expect(row.capability_overclaim_count).toBe(0);
     expect(row.capability_ambiguity_count).toBe(0);
     expect(row.capability_boundary_refusal_count).toBe(0);
@@ -521,6 +532,119 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("carries cumulative extractor health totals onto a clean final turn", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-earlier",
+          event: "llm_call.completed",
+          label: "closure_loop_classifier",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 101,
+          turnId: "turn-earlier",
+          event: "closure_loop.degraded",
+          label: "closure_loop_classifier",
+          stopReason: "max_tokens",
+          reason: "missing_tool_call",
+        },
+        {
+          ts: 102,
+          turnId: "turn-earlier",
+          event: "llm_call.completed",
+          label: "corrective_preference_extractor",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 103,
+          turnId: "turn-earlier",
+          event: "extraction.commitments.degraded",
+          label: "corrective_preference_extractor",
+          stopReason: "max_tokens",
+          reason: "invalid_payload",
+        },
+        {
+          ts: 200,
+          turnId: "turn-final-clean",
+          event: "llm_call.completed",
+          label: "closure_loop_classifier",
+          stopReason: "tool_use",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+    const row = await capture.capture(fakeBorg(), "turn-final-clean", 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(row.extractor_max_tokens_stop_count).toBe(0);
+    expect(row.closure_loop_degraded_count).toBe(0);
+    expect(row.corrective_preference_degraded_count).toBe(0);
+    expect(row.extractor_max_tokens_total_by_label).toEqual({
+      closure_loop_classifier: 1,
+      corrective_preference_extractor: 1,
+    });
+    expect(row.extractor_degraded_total_by_label).toEqual({
+      closure_loop_classifier: 1,
+      corrective_preference_extractor: 1,
+    });
+  });
+
+  it("does not count simulator health warning labels as extractor degradations", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-warning",
+          event: "simulator_health.degraded",
+          artifact: "simulator",
+          warning_kind: "extractor_max_tokens_high",
+          label: "closure_loop_classifier",
+          threshold: 15,
+          observed_value: 16,
+        },
+        {
+          ts: 200,
+          turnId: "turn-clean",
+          event: "llm_call.completed",
+          label: "closure_loop_classifier",
+          stopReason: "tool_use",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+    const row = await capture.capture(fakeBorg(), "turn-clean", 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(row.extractor_degraded_total_by_label).toEqual({});
+    expect(row.closure_loop_degraded_count).toBe(0);
   });
 
   it("counts action candidate classification and embedding-dedup traces", async () => {

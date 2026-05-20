@@ -226,6 +226,8 @@ function metricsRow(turn: number): MetricsRow {
     corrective_preference_completed_count: 0,
     corrective_preference_degraded_count: 0,
     extractor_max_tokens_stop_count: 0,
+    extractor_max_tokens_total_by_label: {},
+    extractor_degraded_total_by_label: {},
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,

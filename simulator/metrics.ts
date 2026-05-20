@@ -179,6 +179,8 @@ type ExtractorHealthMetricCounts = Pick<
   | "corrective_preference_completed_count"
   | "corrective_preference_degraded_count"
   | "extractor_max_tokens_stop_count"
+  | "extractor_max_tokens_total_by_label"
+  | "extractor_degraded_total_by_label"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -572,6 +574,16 @@ function llmCompletedCount(traceRecords: readonly TraceRecord[], label: string):
   ).length;
 }
 
+function sortedNumberRecord(counts: ReadonlyMap<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function incrementLabelCount(counts: Map<string, number>, label: string): void {
+  counts.set(label, (counts.get(label) ?? 0) + 1);
+}
+
 function isExtractorMaxTokensStop(record: TraceRecord): boolean {
   const label = traceLabel(record);
 
@@ -583,20 +595,86 @@ function isExtractorMaxTokensStop(record: TraceRecord): boolean {
   );
 }
 
-function extractorHealthMetrics(traceRecords: readonly TraceRecord[]): ExtractorHealthMetricCounts {
+const EXTRACTOR_DEGRADED_EVENT_LABELS: Readonly<Record<string, string>> = {
+  "closure_loop.degraded": "closure_loop_classifier",
+  "extraction.actions.degraded": "action_state_extractor",
+  "extraction.commitments.degraded": "corrective_preference_extractor",
+  "extraction.goals.degraded": "goal_promotion_extractor",
+  "frame_anomaly.degraded": "frame_anomaly_classifier",
+  "semantic_extractor.degraded": "semantic_extractor",
+};
+
+function extractorDegradedLabel(record: TraceRecord): string | null {
+  const fallbackLabel = EXTRACTOR_DEGRADED_EVENT_LABELS[record.event];
+
+  if (fallbackLabel === undefined) {
+    return null;
+  }
+
+  return traceLabel(record) ?? fallbackLabel;
+}
+
+function extractorMaxTokensTotalsByLabel(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of traceRecords) {
+    if (!isExtractorMaxTokensStop(record)) {
+      continue;
+    }
+
+    const label = traceLabel(record);
+
+    if (label === null) {
+      continue;
+    }
+
+    incrementLabelCount(counts, label);
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function extractorDegradedTotalsByLabel(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of traceRecords) {
+    const label = extractorDegradedLabel(record);
+
+    if (label === null) {
+      continue;
+    }
+
+    incrementLabelCount(counts, label);
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function extractorHealthMetrics(input: {
+  traceRecords: readonly TraceRecord[];
+  cumulativeTraceRecords: readonly TraceRecord[];
+}): ExtractorHealthMetricCounts {
   return {
-    closure_loop_completed_count: llmCompletedCount(traceRecords, "closure_loop_classifier"),
-    closure_loop_degraded_count: traceRecords.filter(
+    closure_loop_completed_count: llmCompletedCount(input.traceRecords, "closure_loop_classifier"),
+    closure_loop_degraded_count: input.traceRecords.filter(
       (record) => record.event === "closure_loop.degraded",
     ).length,
     corrective_preference_completed_count: llmCompletedCount(
-      traceRecords,
+      input.traceRecords,
       "corrective_preference_extractor",
     ),
-    corrective_preference_degraded_count: traceRecords.filter(
+    corrective_preference_degraded_count: input.traceRecords.filter(
       (record) => record.event === "extraction.commitments.degraded",
     ).length,
-    extractor_max_tokens_stop_count: traceRecords.filter(isExtractorMaxTokensStop).length,
+    extractor_max_tokens_stop_count: input.traceRecords.filter(isExtractorMaxTokensStop).length,
+    extractor_max_tokens_total_by_label: extractorMaxTokensTotalsByLabel(
+      input.cumulativeTraceRecords,
+    ),
+    extractor_degraded_total_by_label: extractorDegradedTotalsByLabel(input.cumulativeTraceRecords),
   };
 }
 
@@ -921,6 +999,7 @@ export class MetricsCapture {
           turn_counter: warning.turn_counter,
           threshold: warning.threshold,
           observed_value: warning.observed_value,
+          ...(warning.label === undefined ? {} : { label: warning.label }),
           ...(warning.window_start_turn === undefined
             ? {}
             : { window_start_turn: warning.window_start_turn }),
@@ -1116,7 +1195,10 @@ export class MetricsCapture {
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
-    const extractorHealthMetricCounts = extractorHealthMetrics(traceRecords);
+    const extractorHealthMetricCounts = extractorHealthMetrics({
+      traceRecords,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -1249,6 +1331,10 @@ export class MetricsCapture {
       corrective_preference_degraded_count:
         extractorHealthMetricCounts.corrective_preference_degraded_count,
       extractor_max_tokens_stop_count: extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      extractor_max_tokens_total_by_label:
+        extractorHealthMetricCounts.extractor_max_tokens_total_by_label,
+      extractor_degraded_total_by_label:
+        extractorHealthMetricCounts.extractor_degraded_total_by_label,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -1273,6 +1359,7 @@ export class MetricsCapture {
     },
   ): Promise<MetricsRow> {
     const event = context.event ?? ABORTED_TURN_EVENT;
+    const allTraceRecords = this.tracePath === undefined ? [] : readTraceEvents(this.tracePath);
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
@@ -1297,7 +1384,10 @@ export class MetricsCapture {
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
-    const extractorHealthMetricCounts = extractorHealthMetrics([]);
+    const extractorHealthMetricCounts = extractorHealthMetrics({
+      traceRecords: [],
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -1418,6 +1508,10 @@ export class MetricsCapture {
       corrective_preference_degraded_count:
         extractorHealthMetricCounts.corrective_preference_degraded_count,
       extractor_max_tokens_stop_count: extractorHealthMetricCounts.extractor_max_tokens_stop_count,
+      extractor_max_tokens_total_by_label:
+        extractorHealthMetricCounts.extractor_max_tokens_total_by_label,
+      extractor_degraded_total_by_label:
+        extractorHealthMetricCounts.extractor_degraded_total_by_label,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,

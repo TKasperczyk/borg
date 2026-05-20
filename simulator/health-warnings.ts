@@ -40,7 +40,7 @@ export const CAPABILITY_AMBIGUITY_COUNT_HIGH_THRESHOLD = 3;
 
 export const CLOSURE_LOOP_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
 export const CORRECTIVE_PREFERENCE_DEGRADED_RATE_HIGH_THRESHOLD = 0.1;
-export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 10;
+export const EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD = 15;
 
 // Review backlog needs to be large enough to indicate drain trouble, not just
 // a few expected review items.
@@ -65,6 +65,7 @@ function latestWarning(input: {
   kind: SimulatorHealthWarning["kind"];
   threshold: number;
   observedValue: number;
+  label?: string;
 }): SimulatorHealthWarning {
   return {
     kind: input.kind,
@@ -72,6 +73,7 @@ function latestWarning(input: {
     turnId: input.row.turnId,
     threshold: input.threshold,
     observed_value: input.observedValue,
+    ...(input.label === undefined ? {} : { label: input.label }),
   };
 }
 
@@ -98,6 +100,22 @@ function maxNumberRow(
 
 function isActiveCapabilityFinding(finding: OverseerVerdict["findings"][number]): boolean {
   return finding.category === "K" && finding.carryover_demoted !== true;
+}
+
+function maxLabelCount(counts: Record<string, number>): { label: string; count: number } | null {
+  let max: { label: string; count: number } | null = null;
+
+  for (const [label, count] of Object.entries(counts)) {
+    if (!Number.isFinite(count)) {
+      continue;
+    }
+
+    if (max === null || count > max.count) {
+      max = { label, count };
+    }
+  }
+
+  return max;
 }
 
 export function capabilityFindingMetrics(
@@ -351,15 +369,9 @@ export function simulatorHealthWarningsForRows(
     }
   }
 
-  const closureLoopCompleted = rows.reduce(
-    (sum, row) => sum + row.closure_loop_completed_count,
-    0,
-  );
+  const closureLoopCompleted = rows.reduce((sum, row) => sum + row.closure_loop_completed_count, 0);
 
-  const closureLoopDegraded = rows.reduce(
-    (sum, row) => sum + row.closure_loop_degraded_count,
-    0,
-  );
+  const closureLoopDegraded = rows.reduce((sum, row) => sum + row.closure_loop_degraded_count, 0);
   const closureLoopDegradedRate = degradedRate({
     completed: closureLoopCompleted,
     degraded: closureLoopDegraded,
@@ -407,18 +419,19 @@ export function simulatorHealthWarningsForRows(
     );
   }
 
-  const extractorMaxTokensStops = rows.reduce(
-    (sum, row) => sum + row.extractor_max_tokens_stop_count,
-    0,
-  );
+  const extractorMaxTokensStops = maxLabelCount(latest.extractor_max_tokens_total_by_label);
 
-  if (extractorMaxTokensStops > EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD) {
+  if (
+    extractorMaxTokensStops !== null &&
+    extractorMaxTokensStops.count > EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD
+  ) {
     warnings.push(
       latestWarning({
         row: latest,
         kind: "extractor_max_tokens_high",
         threshold: EXTRACTOR_MAX_TOKENS_HIGH_THRESHOLD,
-        observedValue: extractorMaxTokensStops,
+        observedValue: extractorMaxTokensStops.count,
+        label: extractorMaxTokensStops.label,
       }),
     );
   }

@@ -129,6 +129,8 @@ export type MetricsRow = {
   corrective_preference_completed_count: number;
   corrective_preference_degraded_count: number;
   extractor_max_tokens_stop_count: number;
+  extractor_max_tokens_total_by_label: Record<string, number>;
+  extractor_degraded_total_by_label: Record<string, number>;
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
   capability_boundary_refusal_count: number;
@@ -159,6 +161,7 @@ export type SimulatorHealthWarning = {
   turnId: string;
   threshold: number;
   observed_value: number;
+  label?: string;
   window_start_turn?: number;
   window_turns?: number;
 };

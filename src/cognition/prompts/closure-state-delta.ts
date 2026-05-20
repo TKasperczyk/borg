@@ -23,5 +23,6 @@ export const CLOSURE_LOOP_SYSTEM_PROMPT = [
   '- "What\'s the timeline?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
   '- "Could you check X?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
   "Judge semantic function across languages. Do not rely on exact words, punctuation, capitalization, or phrase shape.",
+  "Keep rationale to one short sentence.",
   "Return classifications only for supplied message_ref values. Use the tool exactly once.",
 ].join("\n");

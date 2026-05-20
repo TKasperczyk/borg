@@ -12,5 +12,6 @@ export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Emit kind as boundary for prohibitions/limits, participant_preference for a participant's durable preference, audience_rule for a rule scoped to the audience/channel, or process_norm for a recurring workflow norm. Do not emit assistant_commitment from this extractor.",
   "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
   'Emit closure_pressure_relevance as "no_closure" for durable no-wrap-up/no-signoff/no-closure corrections, "closure_seeking" for durable requests to add closure, and "neutral" otherwise.',
+  "Keep directive and reason concise; do not explain ordinary none classifications beyond the required reason field.",
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
 ].join("\n");

@@ -454,6 +454,8 @@ function metricsRow(turnCounter: number): MetricsRow {
     corrective_preference_completed_count: 0,
     corrective_preference_degraded_count: 0,
     extractor_max_tokens_stop_count: 0,
+    extractor_max_tokens_total_by_label: {},
+    extractor_degraded_total_by_label: {},
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
@@ -571,6 +573,14 @@ describe("SimulatorRunner", () => {
         corrective_preference_completed_count: 8,
         corrective_preference_degraded_count: 2,
         extractor_max_tokens_stop_count: 4,
+        extractor_max_tokens_total_by_label: {
+          closure_loop_classifier: 46,
+          corrective_preference_extractor: 10,
+        },
+        extractor_degraded_total_by_label: {
+          closure_loop_classifier: 26,
+          corrective_preference_extractor: 1,
+        },
       },
       durationMs: 1,
     });
@@ -578,6 +588,13 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Capability audit: overclaims 1, ambiguities 2, boundary refusals 3");
     expect(report).toContain(
       "Extractor health: closure loop degraded 1/9, corrective preference degraded 2/8, max-token stops 4",
+    );
+    expect(report).toContain("## Cumulative Extractor Health");
+    expect(report).toContain(
+      "Max-token stops by label: closure_loop_classifier=46, corrective_preference_extractor=10",
+    );
+    expect(report).toContain(
+      "Degraded by label: closure_loop_classifier=26, corrective_preference_extractor=1",
     );
   });
 
@@ -881,13 +898,28 @@ describe("SimulatorRunner", () => {
         expectedKinds: ["corrective_preference_degraded_rate_high"],
       },
       {
-        name: "extractor max tokens high fires",
-        rows: [{ ...metricsRow(12), extractor_max_tokens_stop_count: 11 }],
+        name: "extractor max tokens high fires per label",
+        rows: [
+          {
+            ...metricsRow(12),
+            extractor_max_tokens_total_by_label: {
+              closure_loop_classifier: 16,
+              corrective_preference_extractor: 4,
+            },
+          },
+        ],
         expectedKinds: ["extractor_max_tokens_high"],
       },
       {
         name: "extractor max tokens at threshold does not fire",
-        rows: [{ ...metricsRow(12), extractor_max_tokens_stop_count: 10 }],
+        rows: [
+          {
+            ...metricsRow(12),
+            extractor_max_tokens_total_by_label: {
+              closure_loop_classifier: 15,
+            },
+          },
+        ],
         expectedKinds: [],
       },
       {
@@ -984,6 +1016,42 @@ describe("SimulatorRunner", () => {
         testCase.name,
       ).toEqual(testCase.expectedKinds);
     }
+  });
+
+  it("warns on extractor max-token totals per label rather than summed totals", () => {
+    const summedBelowThresholdWarnings = simulatorHealthWarningsForRows([
+      {
+        ...metricsRow(12),
+        extractor_max_tokens_total_by_label: {
+          closure_loop_classifier: 14,
+          corrective_preference_extractor: 14,
+        },
+      },
+    ]);
+
+    expect(
+      summedBelowThresholdWarnings.filter(
+        (warning) => warning.kind === "extractor_max_tokens_high",
+      ),
+    ).toEqual([]);
+
+    const oneLabelHighWarnings = simulatorHealthWarningsForRows([
+      {
+        ...metricsRow(12),
+        extractor_max_tokens_total_by_label: {
+          closure_loop_classifier: 16,
+          corrective_preference_extractor: 14,
+        },
+      },
+    ]).filter((warning) => warning.kind === "extractor_max_tokens_high");
+
+    expect(oneLabelHighWarnings).toEqual([
+      expect.objectContaining({
+        kind: "extractor_max_tokens_high",
+        label: "closure_loop_classifier",
+        observed_value: 16,
+      }),
+    ]);
   });
 
   it("summarizes capability findings by claim-status severity", () => {

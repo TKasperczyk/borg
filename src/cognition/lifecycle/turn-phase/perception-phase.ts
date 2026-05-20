@@ -147,14 +147,16 @@ export async function classifyClosureLoopPhase(input: {
     model: input.options.config.anthropic.models.recallExpansion,
     tracer: input.options.tracer,
     turnId: input.turnId,
-    onDegraded: (reason, error) => {
+    onDegraded: (reason, error, metadata) => {
       if (!input.options.tracer.enabled) {
         return;
       }
 
       input.options.tracer.emit("closure_loop.degraded", {
         turnId: input.turnId,
+        label: "closure_loop_classifier",
         reason,
+        stopReason: metadata?.stopReason ?? null,
         ...(input.options.tracer.includePayloads && error !== undefined
           ? { error: error instanceof Error ? error.message : String(error) }
           : {}),
