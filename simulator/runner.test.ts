@@ -298,6 +298,7 @@ function emptyOverseerAuditContext(turnCounter: number): OverseerAuditContext {
     chronology_rule: "Stream ts is authoritative for tests.",
     assistant_emitted: [],
     user_messages: [],
+    recent_user_statements: [],
     prompt_visible_memory: {
       summary: "Test memory.",
       note: "Test prompt-visible memory.",
@@ -351,6 +352,7 @@ function metricsRow(turnCounter: number): MetricsRow {
     semantic_edge_count: 0,
     semantic_nodes_added_since_last_check: 0,
     semantic_edges_added_since_last_check: 0,
+    semantic_nodes_rejected_ungrounded_label_count: 0,
     open_question_count: 0,
     active_goal_count: 0,
     generation_suppression_count: 0,
@@ -432,6 +434,7 @@ function metricsRow(turnCounter: number): MetricsRow {
       correction: 0,
       belief_revision: 0,
       skill_split: 0,
+      relationship_label_ungrounded: 0,
     },
     frame_anomaly_classifier_calls: 0,
     frame_anomaly_classified_normal_count: 0,

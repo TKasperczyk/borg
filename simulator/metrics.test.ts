@@ -67,6 +67,7 @@ const TURN_METRICS_KEY_ORDER = [
   "semantic_edge_count",
   "semantic_nodes_added_since_last_check",
   "semantic_edges_added_since_last_check",
+  "semantic_nodes_rejected_ungrounded_label_count",
   "open_question_count",
   "active_goal_count",
   "generation_suppression_count",
@@ -456,6 +457,13 @@ describe("MetricsCapture", () => {
           skipped_due_to_error: 1,
         },
         {
+          ts: 140,
+          turnId: "semantic_extractor",
+          event: "semantic_insert.skipped",
+          kind: "node",
+          reason: "relationship_label_ungrounded",
+        },
+        {
           ts: 190,
           turnId: "turn-1",
           event: "llm_call.completed",
@@ -540,6 +548,7 @@ describe("MetricsCapture", () => {
     expect(row.semantic_edge_count).toBe(2);
     expect(row.semantic_nodes_added_since_last_check).toBe(0);
     expect(row.semantic_edges_added_since_last_check).toBe(0);
+    expect(row.semantic_nodes_rejected_ungrounded_label_count).toBe(1);
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);
     expect(row.generation_suppression_count).toBe(1);

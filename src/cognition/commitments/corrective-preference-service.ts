@@ -19,6 +19,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { ParticipantRoster } from "../perception/index.js";
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
@@ -46,6 +47,7 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   audienceEntityId: EntityId | null;
   committedByEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  participantRoster?: ParticipantRoster | null;
   sessionId: SessionId;
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
   trackAppliedSlotNegation: (slot: RelationalSlot) => void;
@@ -241,6 +243,7 @@ export class CorrectivePreferenceTurnService {
       audienceEntityId: input.audienceEntityId,
       speakerEntityId: input.committedByEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      participantRoster: input.participantRoster ?? null,
       activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
         id: commitment.id,
         type: commitment.type,

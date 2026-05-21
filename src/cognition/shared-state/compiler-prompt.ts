@@ -2,6 +2,7 @@ import type { LLMMessage, LLMToolDefinition } from "../../llm/index.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
+import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactParticipantContext,
@@ -33,6 +34,7 @@ export function buildSharedStateArtifactMessages(input: {
   selfEntityId: EntityId;
   speakerEntityId: EntityId | null;
   participants: readonly SharedStateArtifactParticipantContext[];
+  participantRoster?: ParticipantRoster | null;
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;
@@ -57,6 +59,7 @@ export function buildSharedStateArtifactMessages(input: {
           entity_id: participant.entityId,
           display_name: participant.displayName ?? null,
         })),
+        participant_roster: renderParticipantRoster(input.participantRoster),
         current_user_turn: {
           stream_entry_id: input.currentUserStreamEntryId,
           text: input.currentUserMessage,

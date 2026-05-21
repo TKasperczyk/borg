@@ -22,6 +22,10 @@ import {
   EntityRepository,
   commitmentMigrations,
 } from "../memory/commitments/index.js";
+import {
+  RelationalSlotRepository,
+  relationalSlotMigrations,
+} from "../memory/relational-slots/index.js";
 import { sharedStateMigrations } from "../memory/decision-artifacts/index.js";
 import {
   EpisodicRepository,
@@ -439,6 +443,7 @@ export type OfflineTestHarness = {
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
+  relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
   proceduralContextStatsRepository: ProceduralContextStatsRepository;
@@ -487,6 +492,7 @@ export async function createOfflineTestHarness(
       retrievalMigrations,
       semanticMigrations,
       commitmentMigrations,
+      relationalSlotMigrations,
       sharedStateMigrations,
       socialMigrations,
       proceduralMigrations,
@@ -615,6 +621,10 @@ export async function createOfflineTestHarness(
     db,
     clock,
     identityEventRepository,
+  });
+  const relationalSlotRepository = new RelationalSlotRepository({
+    db,
+    clock,
   });
   const identityService = new IdentityService({
     valuesRepository,
@@ -780,6 +790,7 @@ export async function createOfflineTestHarness(
     actionRepository,
     socialRepository,
     entityRepository,
+    relationalSlotRepository,
     commitmentRepository,
     skillRepository,
     proceduralContextStatsRepository,
@@ -820,6 +831,7 @@ export async function createOfflineTestHarness(
       actionRepository,
       socialRepository,
       entityRepository,
+      relationalSlotRepository,
       commitmentRepository,
       skillRepository,
       proceduralEvidenceRepository,

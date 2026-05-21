@@ -8,6 +8,7 @@ export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   RELATIONSHIP_LABELS_PROMPT,
+  "The input may include participant_roster; use it as structured context for current speaker, active participants, and grounded relationship-slot sources.",
   "When speaker_entity_id is supplied and the current speaker gives a durable first-person correction, treat that speaker as the committer. In group chat, first-person user commitments/preferences belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Emit kind as boundary for prohibitions/limits, participant_preference for a participant's durable preference, audience_rule for a rule scoped to the audience/channel, or process_norm for a recurring workflow norm. Do not emit assistant_commitment from this extractor.",
   "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",

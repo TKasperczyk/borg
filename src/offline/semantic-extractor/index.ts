@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import { buildParticipantRosterFromRepositories } from "../../cognition/perception/index.js";
 import {
   SemanticExtractor,
   semanticEdgeIdSchema,
@@ -464,6 +465,11 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           episodicRepository: ctx.episodicRepository,
           llmClient: wrapClient(ctx.llm.extraction),
           model: ctx.config.anthropic.models.extraction,
+          participantRoster: buildParticipantRosterFromRepositories({
+            activeParticipants: [],
+            entityRepository: ctx.entityRepository,
+            relationalSlotRepository: ctx.relationalSlotRepository,
+          }),
           reviewEnqueue: (input) => {
             deferredReviews.push({
               ...input,

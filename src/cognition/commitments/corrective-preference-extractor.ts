@@ -24,6 +24,7 @@ import {
 } from "../../util/ids.js";
 import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -184,6 +185,7 @@ export type ExtractCorrectivePreferenceInput = {
   audienceEntityId: EntityId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  participantRoster?: ParticipantRoster | null;
   activeCommitments: readonly {
     id: CommitmentId;
     type: string;
@@ -304,6 +306,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
         audience_entity_id: input.audienceEntityId,
         speaker_entity_id: input.speakerEntityId ?? null,
         speaker_display_name: input.speakerDisplayName ?? null,
+        participant_roster: renderParticipantRoster(input.participantRoster),
         active_commitments: input.activeCommitments.map((commitment) => ({
           id: commitment.id,
           type: commitment.type,

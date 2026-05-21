@@ -2,6 +2,7 @@
 
 import { EpisodicExtractor } from "../memory/episodic/index.js";
 import { SemanticExtractor } from "../memory/semantic/index.js";
+import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
 import { revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
@@ -375,6 +376,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           model: deps.config.anthropic.models.extraction,
           semanticReviewService: deps.semanticReviewService,
           reviewEnqueue: (input) => deps.reviewQueueRepository.enqueue(input),
+          participantRoster: buildParticipantRosterFromRepositories({
+            activeParticipants: [],
+            entityRepository: deps.entityRepository,
+            relationalSlotRepository: deps.relationalSlotRepository,
+          }),
           clock: deps.clock,
         });
 

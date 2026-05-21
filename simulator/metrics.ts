@@ -240,6 +240,11 @@ type ExtractorHealthMetricCounts = Pick<
   | "extractor_degraded_total_by_label"
 >;
 
+type SemanticMemoryWriteGateMetricCounts = Pick<
+  MetricsRow,
+  "semantic_nodes_rejected_ungrounded_label_count"
+>;
+
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
   let count = 0;
   const stack = [...nodes];
@@ -840,6 +845,19 @@ function extractorHealthMetrics(input: {
       input.cumulativeTraceRecords,
     ),
     extractor_degraded_total_by_label: extractorDegradedTotalsByLabel(input.cumulativeTraceRecords),
+  };
+}
+
+function semanticMemoryWriteGateMetrics(
+  traceRecords: readonly TraceRecord[],
+): SemanticMemoryWriteGateMetricCounts {
+  return {
+    semantic_nodes_rejected_ungrounded_label_count: traceRecords.filter(
+      (record) =>
+        record.event === "semantic_insert.skipped" &&
+        traceKind(record) === "node" &&
+        traceReason(record) === "relationship_label_ungrounded",
+    ).length,
   };
 }
 
@@ -1613,6 +1631,9 @@ export class MetricsCapture {
     });
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
+    const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics(
+      traceRecordsSinceLastCapture,
+    );
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
@@ -1635,6 +1656,8 @@ export class MetricsCapture {
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: semanticNodesAdded,
       semantic_edges_added_since_last_check: semanticEdgesAdded,
+      semantic_nodes_rejected_ungrounded_label_count:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_count,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,
@@ -1881,6 +1904,7 @@ export class MetricsCapture {
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,
+      semantic_nodes_rejected_ungrounded_label_count: 0,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,

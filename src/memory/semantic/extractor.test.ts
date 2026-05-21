@@ -11,6 +11,8 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEntityId, createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
+import type { ParticipantRoster } from "../../cognition/perception/index.js";
+import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";
 import { semanticMigrations } from "./migrations.js";
@@ -95,6 +97,42 @@ function createEpisodeLookup(episodes: readonly Episode[]) {
   };
 }
 
+async function createSemanticRepositories(cleanup: Array<() => Promise<void>>) {
+  const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+  const store = new LanceDbStore({
+    uri: join(tempDir, "lancedb"),
+  });
+  const db = openDatabase(join(tempDir, "borg.db"), {
+    migrations: semanticMigrations,
+  });
+  const table = await store.openTable({
+    name: "semantic_nodes",
+    schema: createSemanticNodesTableSchema(4),
+  });
+  const clock = new FixedClock(1_000);
+  const nodeRepository = new SemanticNodeRepository({
+    table,
+    db,
+    clock,
+  });
+  const edgeRepository = new SemanticEdgeRepository({
+    db,
+    clock,
+  });
+
+  cleanup.push(async () => {
+    db.close();
+    await store.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  return {
+    nodeRepository,
+    edgeRepository,
+    clock,
+  };
+}
+
 describe("semantic extractor", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -123,6 +161,19 @@ describe("semantic extractor", () => {
       episodicRepository: createEpisodeLookup([episode]),
       llmClient: llm,
       model: "haiku",
+      participantRoster: {
+        participants: [
+          {
+            entity_id: "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+            display_name: "Nora",
+            known_relationships: ["spouse:Priya"],
+            audience_role: "speaker",
+            relationship_source: "relational_slot:rslot_grounded",
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
     });
 
     await extractor.extractFromEpisodes([episode]);
@@ -134,6 +185,251 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("prefer the narrower event-scoped interpretation");
     expect(prompt).toContain("observation_metadata");
     expect(prompt).toContain("Distinct witness, timeframe/date, count_or_intensity");
+    expect(prompt).toContain("Memory-write relationship label grounding");
+    expect(prompt).toContain("Headcount and set grounding");
+    expect(prompt).toContain("relationship_evidence_relational_slot_ids");
+    expect(prompt).toContain("Thread roster:");
+    expect(prompt).toContain("relational_slot:rslot_grounded");
+  });
+
+  it("queues and skips semantic nodes with ungrounded protected relationship labels", async () => {
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Birthday lunch", {
+      narrative: "The user discussed birthday lunch attendance.",
+    });
+    const reviewEnqueue = vi.fn();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const extractor = new SemanticExtractor({
+      nodeRepository: {
+        findByExactLabelOrAlias: async () => [],
+      } as unknown as SemanticNodeRepository,
+      edgeRepository: {} as SemanticEdgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Birthday lunch siblings",
+                description: "The four siblings plus Mom and Dad are attending lunch.",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      tracer,
+      participantRoster: {
+        participants: [],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
+      traceTurnId: "turn_ungrounded_relationship",
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedNodes: 0,
+      updatedNodes: 0,
+      skippedNodes: 1,
+      insertedEdges: 0,
+      skippedEdges: 0,
+    });
+    expect(reviewEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "relationship_label_ungrounded",
+        sourceProcess: "semantic-extractor",
+        traceTurnId: "turn_ungrounded_relationship",
+        refs: expect.objectContaining({
+          target_type: "semantic_node_candidate",
+          label: "Birthday lunch siblings",
+          protected_relationship_labels: expect.arrayContaining(["siblings"]),
+          relationship_evidence_relational_slot_ids: [],
+        }),
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith("semantic_insert.skipped", {
+      turnId: "turn_ungrounded_relationship",
+      kind: "node",
+      reason: "relationship_label_ungrounded",
+    });
+  });
+
+  it("rejects protected-label semantic nodes grounded only by uncertain roster slots", async () => {
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Birthday lunch", {
+      narrative: "The user discussed birthday lunch attendance.",
+    });
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository: {
+        findByExactLabelOrAlias: async () => [],
+      } as unknown as SemanticNodeRepository,
+      edgeRepository: {} as SemanticEdgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Birthday lunch siblings",
+                description: "The siblings are attending lunch.",
+                aliases: [],
+                confidence: 0.7,
+                relationship_evidence_relational_slot_ids: ["rslot_contested"],
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      participantRoster: {
+        participants: [],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [
+          {
+            entity_id: null,
+            display_name: "uncertain family group",
+            known_relationships: ["sibling:uncertain"],
+            reason: "relational_slot_state:contested",
+            relationship_source: "relational_slot:rslot_contested",
+            relationship_sources: ["relational_slot:rslot_contested"],
+          },
+        ],
+      },
+      traceTurnId: "turn_uncertain_relationship",
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedNodes: 0,
+      skippedNodes: 1,
+    });
+    expect(reviewEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "relationship_label_ungrounded",
+        refs: expect.objectContaining({
+          relationship_evidence_relational_slot_ids: ["rslot_contested"],
+        }),
+      }),
+    );
+  });
+
+  it("inserts protected-label semantic nodes with grounded participant relational slot evidence", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Sibling planning", {
+      narrative: "The user stated the sibling relationship was established in the roster.",
+    });
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Sibling planning",
+                description: "Nora's sibling relationship is relevant to the planning thread.",
+                aliases: [],
+                confidence: 0.7,
+                relationship_evidence_relational_slot_ids: ["rslot_grounded"],
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      participantRoster: {
+        participants: [
+          {
+            entity_id: "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+            display_name: "Nora",
+            known_relationships: ["sibling:Julian"],
+            audience_role: "speaker",
+            relationship_source: "relational_slot:rslot_grounded",
+            relationship_sources: ["relational_slot:rslot_grounded"],
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const nodes = await nodeRepository.list();
+
+    expect(result).toMatchObject({
+      insertedNodes: 1,
+      skippedNodes: 0,
+    });
+    expect(nodes.map((node) => node.label)).toContain("Sibling planning");
+    expect(reviewEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("inserts semantic nodes without protected relationship labels as before", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Rollback plan");
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "concept",
+                label: "Rollback",
+                description: "Rollback plan",
+                aliases: [],
+                confidence: 0.6,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const nodes = await nodeRepository.list();
+
+    expect(result).toMatchObject({
+      insertedNodes: 1,
+      skippedNodes: 0,
+    });
+    expect(nodes.map((node) => node.label)).toContain("Rollback");
+    expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
   it("extracts nodes and edges, rejects hallucinated refs, and merges duplicates", async () => {

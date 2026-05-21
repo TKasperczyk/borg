@@ -29,6 +29,7 @@ import type {
   SharedStateSemanticBeliefRevisionDependencies,
 } from "./reconciliation.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { ParticipantRoster } from "../perception/index.js";
 
 export const SHARED_STATE_TOOL_NAME = "EmitSharedStatePatch";
 export const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
@@ -229,6 +230,7 @@ export type CompileSharedStateArtifactInput = {
   selfEntityId: EntityId;
   speakerEntityId?: EntityId | null;
   participants: readonly SharedStateArtifactParticipantContext[];
+  participantRoster?: ParticipantRoster | null;
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;

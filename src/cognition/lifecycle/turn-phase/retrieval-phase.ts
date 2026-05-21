@@ -18,6 +18,7 @@ import {
   type ActualFrameAnomalyClassification,
 } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
+import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import {
   compileSharedStateArtifact,
@@ -65,6 +66,7 @@ export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
   isUserTurn: boolean;
   perception: PerceptionResult;
   closureLoopAssessment: ClosureLoopAssessment | null;
+  participantRoster?: ParticipantRoster | null;
 };
 
 export type TurnRetrievalPhaseResult = {
@@ -101,6 +103,7 @@ export type TurnRetrievalPhaseResult = {
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["selectedSkill"];
   relationalSlots: ReturnType<typeof listConstrainedRelationalSlotsForParticipants>;
+  participantRoster: ParticipantRoster | null;
   evidenceLedgerContext: EvidenceLedgerFinalizerContext;
   routingOverride: DeliberationRoutingOverride | null;
 };
@@ -145,6 +148,7 @@ export async function runRetrievalPhase(input: {
     CorrectivePreferenceTurnService["persistCommitment"]
   >[0]["commitment"];
   activeParticipants: readonly ActiveParticipant[];
+  participantRoster: ParticipantRoster | null;
   participantProfiles: readonly ParticipantProfileContext[];
   persistedUserEntry?: StreamEntry;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
@@ -224,6 +228,7 @@ export async function runRetrievalPhase(input: {
       pendingCorrections,
       frameAnomaly: input.currentTurnFrameAnomaly,
       activeParticipants: input.activeParticipants,
+      participantRoster: input.participantRoster,
       isUserTurn: input.isUserTurn,
       perception: input.perception,
       closureLoopAssessment: input.closureLoopAssessment,
@@ -252,6 +257,7 @@ export async function runRetrievalPhase(input: {
     proceduralContext,
     selectedSkill,
     relationalSlots,
+    participantRoster: input.participantRoster,
     evidenceLedgerContext,
     routingOverride,
   };
@@ -578,6 +584,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
       entityId: participant.entityId,
       displayName: participant.displayName,
     })),
+    participantRoster: input.input.participantRoster ?? null,
     currentUserMessage: input.input.currentUserMessage,
     currentUserStreamEntryId: input.input.currentUserEntry.id,
     promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,

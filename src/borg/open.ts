@@ -101,6 +101,7 @@ export async function openBorgDependencies(
       actionRepository: repositories.actionRepository,
       socialRepository: repositories.socialRepository,
       entityRepository: repositories.entityRepository,
+      relationalSlotRepository: repositories.relationalSlotRepository,
       commitmentRepository: repositories.commitmentRepository,
       skillRepository: repositories.skillRepository,
       proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,

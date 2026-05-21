@@ -39,6 +39,7 @@ import type { PendingTurnEmission } from "../generation/types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledger/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../participants.js";
+import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
@@ -120,6 +121,7 @@ export type DeliberationContext = {
   pendingCorrectionsContext?: readonly ReviewQueueItem[];
   relationalSlots?: readonly RelationalSlot[];
   activeParticipants?: readonly ActiveParticipant[];
+  participantRoster?: ParticipantRoster | null;
   participantProfiles?: readonly ParticipantProfileContext[];
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;

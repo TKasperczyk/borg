@@ -3,6 +3,17 @@ import { z } from "zod";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import {
+  participantRosterRelationalSlotIds,
+  renderParticipantRoster,
+  type ParticipantRoster,
+} from "../../cognition/perception/index.js";
+import {
+  HEADCOUNT_SET_GROUNDING_PROMPT,
+  RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
+  RELATIONSHIP_LABELS_PROMPT,
+  protectedRelationshipLabelsInText,
+} from "../../cognition/prompts/relationship-labels.js";
+import {
   type LLMClient,
   type LLMCompleteResult,
   type LLMToolDefinition,
@@ -32,6 +43,7 @@ const extractorNodeSchema = z.object({
   domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
   observation_metadata: semanticObservationMetadataSchema.nullable().default(null),
+  relationship_evidence_relational_slot_ids: z.array(z.string().min(1)).default([]),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
@@ -89,6 +101,7 @@ export type SemanticExtractorOptions = {
   model: string;
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
+  participantRoster?: ParticipantRoster | null;
   clock?: Clock;
   tracer?: TurnTracer;
   traceTurnId?: string;
@@ -112,9 +125,15 @@ type SemanticInsertSkipReason =
   | "invalid_endpoint"
   | "validity_window_conflict"
   | "episode_archived_post_plan"
+  | "relationship_label_ungrounded"
   | "other";
 
-function buildPrompt(episodes: readonly Episode[]): string {
+function buildPrompt(input: {
+  episodes: readonly Episode[];
+  participantRoster?: ParticipantRoster | null;
+}): string {
+  const roster = renderParticipantRoster(input.participantRoster);
+
   return [
     "Extract semantic knowledge from the provided episodes.",
     `Emit your result by calling the ${EXTRACT_SEMANTIC_TOOL_NAME} tool exactly once.`,
@@ -131,9 +150,14 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Edges may only reference nodes that already exist or are extracted in this batch.",
     'Emit a compact canonical domain string for each node when it helps metadata display or later filtering (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes. Domain never decides semantic compatibility; vector meaning and exact labels do.',
     "Temporal validity for edges: set valid_from_ts and valid_to_ts to numeric Unix epoch milliseconds only when the episode wording explicitly says when the relation became true or stopped being true. Resolve relative dates against the episode start time yourself. Use null when unknown. Do not infer validity dates from the episode timestamp alone.",
+    RELATIONSHIP_LABELS_PROMPT,
+    RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
+    HEADCOUNT_SET_GROUNDING_PROMPT,
+    "When a node label or description uses a protected relationship label, fill relationship_evidence_relational_slot_ids with the supplied relational slot id that grounds that label. If no supplied relational slot grounds it, rewrite the node neutrally before emitting it.",
+    roster === null ? "Thread roster: none supplied." : roster,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
-    ...episodes.map((episode) =>
+    ...input.episodes.map((episode) =>
       JSON.stringify({
         id: episode.id,
         title: episode.title,
@@ -419,6 +443,49 @@ export class SemanticExtractor {
     return candidateIds.map((value) => value as Episode["id"]);
   }
 
+  private protectedRelationshipLabelsForCandidate(candidate: ExtractorNode): string[] {
+    return [
+      ...new Set(
+        protectedRelationshipLabelsInText(`${candidate.label}\n${candidate.description}`),
+      ),
+    ];
+  }
+
+  private hasGroundedRelationshipSlotEvidence(candidate: ExtractorNode): boolean {
+    const rosterSlotIds = participantRosterRelationalSlotIds(this.options.participantRoster);
+
+    if (rosterSlotIds.size === 0) {
+      return false;
+    }
+
+    return candidate.relationship_evidence_relational_slot_ids.some((id) => rosterSlotIds.has(id));
+  }
+
+  private queueUngroundedRelationshipLabelReview(input: {
+    candidate: ExtractorNode;
+    protectedLabels: readonly string[];
+  }): void {
+    this.options.reviewEnqueue?.({
+      kind: "relationship_label_ungrounded",
+      refs: {
+        target_type: "semantic_node_candidate",
+        label: input.candidate.label,
+        description: input.candidate.description,
+        kind: input.candidate.kind,
+        domain: input.candidate.domain,
+        aliases: input.candidate.aliases,
+        source_episode_ids: input.candidate.source_episode_ids,
+        protected_relationship_labels: [...input.protectedLabels],
+        relationship_evidence_relational_slot_ids:
+          input.candidate.relationship_evidence_relational_slot_ids,
+      },
+      reason:
+        "Semantic node candidate used a protected relationship label without a grounded relational slot id.",
+      sourceProcess: "semantic-extractor",
+      ...(this.options.traceTurnId === undefined ? {} : { traceTurnId: this.options.traceTurnId }),
+    });
+  }
+
   private async upsertNode(
     candidate: ExtractorNode,
     allowedEpisodeIds: ReadonlySet<string>,
@@ -433,6 +500,23 @@ export class SemanticExtractor {
       allowedEpisodeIds,
       "source_episode_ids",
     );
+    const protectedLabels = this.protectedRelationshipLabelsForCandidate(candidate);
+
+    if (
+      protectedLabels.length > 0 &&
+      !this.hasGroundedRelationshipSlotEvidence(candidate)
+    ) {
+      this.queueUngroundedRelationshipLabelReview({
+        candidate,
+        protectedLabels,
+      });
+
+      return {
+        status: "skipped",
+        reason: "relationship_label_ungrounded",
+      };
+    }
+
     const sourceEpisodes = sourceEpisodeIds
       .map((episodeId) => episodeById.get(episodeId))
       .filter((episode): episode is Episode => episode !== undefined);
@@ -710,7 +794,10 @@ export class SemanticExtractor {
         messages: [
           {
             role: "user",
-            content: buildPrompt(episodes),
+            content: buildPrompt({
+              episodes,
+              participantRoster: this.options.participantRoster ?? null,
+            }),
           },
         ],
         tools: [EXTRACT_SEMANTIC_TOOL],

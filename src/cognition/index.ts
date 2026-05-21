@@ -43,7 +43,18 @@ export {
   type CompactPlannerLedgerPrompt,
   type CompactPlannerLedgerTraceSummary,
 } from "./evidence-ledger/index.js";
-export { Perceiver, perceive } from "./perception/index.js";
+export {
+  Perceiver,
+  buildParticipantRoster,
+  buildParticipantRosterFromRepositories,
+  participantRosterRelationalSlotIds,
+  perceive,
+  renderParticipantRoster,
+  type ParticipantRoster,
+  type ParticipantRosterMember,
+  type ParticipantRosterSubject,
+  type ParticipantRosterUncertain,
+} from "./perception/index.js";
 export {
   clearStopUntilSubstantiveContent,
   reviewStopHardCap,

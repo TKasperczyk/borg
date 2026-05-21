@@ -26,6 +26,7 @@ import type {
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type { StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { MaintenanceRunId } from "../util/ids.js";
@@ -113,6 +114,7 @@ export type OfflineContext = {
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
+  relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;

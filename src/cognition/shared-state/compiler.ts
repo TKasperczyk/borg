@@ -190,6 +190,7 @@ export async function compileSharedStateArtifact(
     selfEntityId: input.selfEntityId,
     speakerEntityId,
     participants: input.participants,
+    participantRoster: input.participantRoster,
     currentUserMessage: input.currentUserMessage,
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     promptVisibleLedger: input.promptVisibleLedger,

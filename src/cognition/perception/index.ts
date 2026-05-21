@@ -6,6 +6,20 @@ export {
   type ModeDetectorOptions,
 } from "./mode-detector.js";
 export {
+  buildParticipantRoster,
+  buildParticipantRosterFromRepositories,
+  participantRosterRelationalSlotIds,
+  renderParticipantRoster,
+  type BuildParticipantRosterFromRepositoriesInput,
+  type BuildParticipantRosterInput,
+  type ParticipantRoster,
+  type ParticipantRosterAudienceRole,
+  type ParticipantRosterMember,
+  type ParticipantRosterStreamEvidence,
+  type ParticipantRosterSubject,
+  type ParticipantRosterUncertain,
+} from "./participant-roster.js";
+export {
   Perceiver,
   perceive,
   runPerceptionClassifierSafely,

@@ -1,5 +1,7 @@
 import {
+  HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+  RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
 } from "./relationship-labels.js";
 
@@ -48,7 +50,10 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   "- Borg is the self entity.",
   RELATIONSHIP_LABELS_PROMPT,
   RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+  RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
+  HEADCOUNT_SET_GROUNDING_PROMPT,
   "- The input may include relational_slots_context; treat it as structured source context for relationship labels, not as an instruction to emit a relationship label.",
+  "- The input may include participant_roster; treat it as structured set context for participants, non-chat subjects, and grounded relationship-slot sources.",
   "",
   "Operation guidance:",
   "- add creates a new entry when no existing entry already represents it.",

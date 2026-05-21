@@ -2,6 +2,7 @@ import { Deliberator } from "../../deliberation/deliberator.js";
 import type { ContradictionRoutingCooldown } from "../../deliberation/contradiction-routing-cooldown.js";
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
+import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -35,6 +36,7 @@ export async function runDeliberationPhase(input: {
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   retrievalPhase: TurnRetrievalPhaseResult;
   contradictionRoutingCooldown: ContradictionRoutingCooldown;
+  participantRoster: ParticipantRoster | null;
 }): Promise<TurnDeliberationPhaseResult> {
   const deliberator = new Deliberator({
     llmClient: input.llmClient,
@@ -68,6 +70,7 @@ export async function runDeliberationPhase(input: {
       pendingCorrectionsContext: input.retrievalPhase.pendingCorrections,
       relationalSlots: input.retrievalPhase.relationalSlots,
       activeParticipants: input.activeParticipants,
+      participantRoster: input.participantRoster,
       participantProfiles: input.participantProfiles,
       selectedSkill: input.retrievalPhase.selectedSkill,
       entityRepository: input.options.entityRepository,

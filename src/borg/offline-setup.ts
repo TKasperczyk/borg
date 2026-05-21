@@ -10,6 +10,7 @@ import type { CommitmentRepository, EntityRepository } from "../memory/commitmen
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -81,6 +82,7 @@ export type BuildOfflineSetupOptions = {
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
+  relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
@@ -198,6 +200,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       actionRepository: options.actionRepository,
       socialRepository: options.socialRepository,
       entityRepository: options.entityRepository,
+      relationalSlotRepository: options.relationalSlotRepository,
       commitmentRepository: options.commitmentRepository,
       skillRepository: options.skillRepository,
       proceduralEvidenceRepository: options.proceduralEvidenceRepository,

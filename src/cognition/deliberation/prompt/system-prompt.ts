@@ -22,6 +22,7 @@ import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
+import { renderParticipantRoster } from "../../perception/index.js";
 import {
   BASE_IDENTITY_PREAMBLE,
   CURRENT_USER_MESSAGE_REMINDER,
@@ -131,6 +132,10 @@ function buildBaseSystemPromptSections(
     {
       tag: "borg_audience_profile",
       content: summarizeParticipantProfiles(context.participantProfiles, context.audienceProfile),
+    },
+    {
+      tag: "borg_thread_roster",
+      content: renderParticipantRoster(context.participantRoster),
     },
     {
       tag: "borg_retrieved_evidence",

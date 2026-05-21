@@ -1,6 +1,7 @@
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import type { FrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import { isFrameAnomaly } from "../../frame-anomaly/index.js";
+import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -44,6 +45,7 @@ export async function runExtractionPhase(input: {
   audienceEntityId: EntityId | null;
   groupSpeakerEntityId: EntityId | null;
   groupSpeakerDisplayName: string | null;
+  participantRoster: ParticipantRoster | null;
   persistedUserEntryId?: StreamEntry["id"];
   frameAnomalyClassification: FrameAnomalyClassification | null;
   streamWriter: StreamWriter;
@@ -81,6 +83,7 @@ export async function runExtractionPhase(input: {
           audienceEntityId: input.audienceEntityId,
           committedByEntityId: input.groupSpeakerEntityId,
           speakerDisplayName: input.groupSpeakerDisplayName,
+          participantRoster: input.participantRoster,
           sessionId: input.sessionId,
           onHookFailure: (hook, error, details) =>
             input.appendHookFailureEvent(input.streamWriter, hook, error, details),

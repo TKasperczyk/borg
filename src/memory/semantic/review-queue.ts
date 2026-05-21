@@ -38,6 +38,7 @@ export const REVIEW_KINDS = [
   "correction",
   "belief_revision",
   "skill_split",
+  "relationship_label_ungrounded",
 ] as const;
 export const REVIEW_RESOLUTIONS = [
   "keep_both",
@@ -416,7 +417,11 @@ export class ReviewQueueRepository {
       return "overseer";
     }
 
-    if (itemOrInput.kind === "contradiction" || itemOrInput.kind === "duplicate") {
+    if (
+      itemOrInput.kind === "contradiction" ||
+      itemOrInput.kind === "duplicate" ||
+      itemOrInput.kind === "relationship_label_ungrounded"
+    ) {
       return "semantic-extractor";
     }
 

@@ -3,6 +3,7 @@ import { formatAutonomyTriggerContext } from "../autonomy-trigger.js";
 import { ContradictionRoutingCooldown } from "../deliberation/contradiction-routing-cooldown.js";
 import { GenerationGate } from "../generation/generation-gate.js";
 import { isFrameAnomaly } from "../frame-anomaly/index.js";
+import { buildParticipantRosterFromRepositories } from "../perception/index.js";
 import {
   resolveActiveParticipants,
   resolveParticipantProfiles,
@@ -214,6 +215,12 @@ export class TurnPhaseCoordinator {
       entityRepository: this.options.entityRepository,
       limit: activeParticipantLimit,
     });
+    let participantRoster = buildParticipantRosterFromRepositories({
+      activeParticipants,
+      audienceEntityId,
+      entityRepository: this.options.entityRepository,
+      relationalSlotRepository: this.options.relationalSlotRepository,
+    });
     const participantProfiles = resolveParticipantProfiles(
       activeParticipants,
       this.options.socialRepository,
@@ -261,6 +268,7 @@ export class TurnPhaseCoordinator {
       audienceEntityId,
       groupSpeakerEntityId,
       groupSpeakerDisplayName,
+      participantRoster,
       persistedUserEntryId,
       frameAnomalyClassification,
       streamWriter,
@@ -269,6 +277,12 @@ export class TurnPhaseCoordinator {
     const correctiveCommitment = extraction.correctiveCommitment;
     const correctiveCommitmentSupersession = extraction.correctiveCommitmentSupersession;
     workingMemory = extraction.workingMemory;
+    participantRoster = buildParticipantRosterFromRepositories({
+      activeParticipants,
+      audienceEntityId,
+      entityRepository: this.options.entityRepository,
+      relationalSlotRepository: this.options.relationalSlotRepository,
+    });
     lifecycleTracker.trackCreatedActionIds(extraction.createdActionIds);
     lifecycleTracker.trackCreatedGoalIds(extraction.persistedPromotions.goalIds);
     lifecycleTracker.trackCreatedExecutiveStepIds(extraction.persistedPromotions.executiveStepIds);
@@ -389,6 +403,7 @@ export class TurnPhaseCoordinator {
       persistedPromotions: extraction.persistedPromotions,
       correctiveCommitment,
       activeParticipants,
+      participantRoster,
       participantProfiles,
       persistedUserEntry: persistedUserEntry ?? undefined,
       currentTurnFrameAnomaly,
@@ -406,6 +421,7 @@ export class TurnPhaseCoordinator {
       perception,
       workingMemory,
       activeParticipants,
+      participantRoster,
       participantProfiles,
       audienceProfile,
       recencyMessages: recencyWindow.messages,

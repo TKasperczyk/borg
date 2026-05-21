@@ -45,6 +45,7 @@ export type MetricsRow = {
   semantic_edge_count: number;
   semantic_nodes_added_since_last_check: number;
   semantic_edges_added_since_last_check: number;
+  semantic_nodes_rejected_ungrounded_label_count: number;
   open_question_count: number;
   active_goal_count: number;
   generation_suppression_count: number;
@@ -234,7 +235,12 @@ export type OverseerFindingSourceKind =
   | "prompt_visible_memory"
   | "snapshot_memory";
 
-export type OverseerFindingStatusImpact = "none" | "concerning" | "failing";
+export type OverseerFindingStatusImpact = "none" | "minor" | "concerning" | "failing";
+
+export type OverseerSourcePrecedenceClassification =
+  | "latest_user_correction_accepted"
+  | "conflict_not_surfaced"
+  | "source_precedence_ambiguity";
 
 export type OverseerTemporalDirection =
   | "claim_before_evidence"
@@ -246,6 +252,7 @@ export type OverseerFinding = {
   claim_status: OverseerClaimStatus;
   source_kind: OverseerFindingSourceKind;
   status_impact?: OverseerFindingStatusImpact;
+  source_precedence_classification?: OverseerSourcePrecedenceClassification;
   assistant_stream_entry_id?: string;
   assistant_ts?: number;
   metrics_turn_counter?: number;

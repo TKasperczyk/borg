@@ -12,6 +12,7 @@ import {
 } from "../src/util/ids.js";
 
 import {
+  buildOverseerAuditContext,
   runOverseer,
   validateOverseerVerdict,
   type FindingCarryoverCache,
@@ -104,6 +105,7 @@ function metricsRow(turn: number): MetricsRow {
     semantic_edge_count: 0,
     semantic_nodes_added_since_last_check: 0,
     semantic_edges_added_since_last_check: 0,
+    semantic_nodes_rejected_ungrounded_label_count: 0,
     open_question_count: 0,
     active_goal_count: 0,
     generation_suppression_count: 0,
@@ -204,6 +206,7 @@ function metricsRow(turn: number): MetricsRow {
       correction: 0,
       belief_revision: 0,
       skill_split: 0,
+      relationship_label_ungrounded: 0,
     },
     frame_anomaly_classifier_calls: 0,
     frame_anomaly_classified_normal_count: 0,
@@ -292,6 +295,19 @@ function auditContextFor(
         text: entry.content as string,
       })),
     user_messages: entries
+      .filter((entry) => entry.kind === "user_msg")
+      .map((entry) => ({
+        stream_entry_id: entry.id,
+        ts: entry.timestamp,
+        turn_counter: null,
+        turn_id: entry.turn_id ?? null,
+        session_id: entry.session_id,
+        text: entry.content as string,
+        sender_entity_id: entry.sender_entity_id,
+        quarantined: false,
+        quarantine_reason: null,
+      })),
+    recent_user_statements: entries
       .filter((entry) => entry.kind === "user_msg")
       .map((entry) => ({
         stream_entry_id: entry.id,
@@ -828,6 +844,213 @@ describe("simulator overseer", () => {
     expect(prompt).toContain(`"stream_entry_id": "${earlyMayaEntry.id}"`);
     expect(prompt).toContain(`"session_id": "${firstSession}"`);
     expect(prompt).toContain("Maya is my partner.");
+  });
+
+  it("classifies verbatim recent user detail as grounded source precedence, not fabrication", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content:
+        "The April 6 Sunday video call was around 4pm. She asked the same three questions in twenty minutes with the same phrasing.",
+      timestamp: 10,
+      turnId: "turn-30",
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content:
+        "You gave me the April 6 Sunday video-call details: around 4pm, three questions in twenty minutes, same phrasing.",
+      timestamp: 11,
+      turnId: "turn-30",
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-source-precedence.jsonl",
+      turnCounter: 30,
+      totalTurns: 70,
+      client: createClient(requests, {
+        status: "healthy",
+        observations: ["Borg restated direct user-supplied detail."],
+        recommendation: "Do not count as fabrication.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "none",
+            source_precedence_classification: "latest_user_correction_accepted",
+            assistant_stream_entry_id: agentEntry.id,
+            evidence_summary: `The emitted details match recent user statement ${userEntry.id}.`,
+          },
+        ],
+      }),
+    });
+    const prompt = String(requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).toContain("recent_user_statements");
+    expect(prompt).toContain("do not mark that claim unsupported or contradicted");
+    expect(prompt).toContain(userEntry.content as string);
+    expect(verdict.findings[0]).toMatchObject({
+      claim_status: "grounded",
+      status_impact: "none",
+      source_precedence_classification: "latest_user_correction_accepted",
+    });
+    expect(verdict.rejected_findings).toEqual([]);
+  });
+
+  it("caps null-turn recent_user_statements to the recent stream tail", async () => {
+    const oldUserEntry = streamEntry({
+      kind: "user_msg",
+      content: "Old null-turn detail that should not affect this audit.",
+      timestamp: 1,
+    });
+    const newerUserEntries = Array.from({ length: 13 }, (_, index) =>
+      streamEntry({
+        kind: "user_msg",
+        content: `Recent null-turn detail ${index}`,
+        timestamp: 60 * 60 * 1000 + index,
+      }),
+    );
+
+    const auditContext = await buildOverseerAuditContext({
+      transport: transportFor([oldUserEntry, ...newerUserEntries]),
+      metricsPath: "/tmp/borg-overseer-test-null-turn-window.jsonl",
+      turnCounter: 1,
+      totalTurns: 1,
+    });
+
+    expect(auditContext.user_messages.map((entry) => entry.stream_entry_id)).toContain(
+      oldUserEntry.id,
+    );
+    expect(auditContext.recent_user_statements.map((entry) => entry.stream_entry_id)).not.toContain(
+      oldUserEntry.id,
+    );
+    expect(auditContext.recent_user_statements).toHaveLength(12);
+    expect(auditContext.recent_user_statements.at(-1)?.text).toBe("Recent null-turn detail 12");
+  });
+
+  it("rejects unsupported findings whose quoted span is verbatim-supported by recent user input", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "The April 6 Sunday video call was around 4pm.",
+      timestamp: 10,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "The April 6 Sunday video call was around 4pm.",
+      timestamp: 11,
+    });
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-source-precedence-bypass.jsonl",
+      turnCounter: 30,
+      totalTurns: 70,
+      client: createClient([], {
+        status: "concerning",
+        observations: ["Malformed J unsupported finding despite direct user support."],
+        recommendation: "Reclassify source precedence.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "The April 6 Sunday video call was around 4pm.",
+            evidence_summary: "The snapshot does not contain the April 6 call.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.findings).toEqual([]);
+    expect(verdict.rejected_findings).toEqual([
+      expect.objectContaining({
+        category: "J",
+        claim_status: "unsupported",
+        validation_warning: expect.stringContaining("recent_user_statements"),
+      }),
+    ]);
+  });
+
+  it("accepts recent-user corrections that conflict with older memory as source-precedence findings", () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Correction: the birthday lunch is just Nora, Julian, Priya, Mom, and Dad.",
+      timestamp: 20,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content:
+        "Updated birthday lunch headcount: Nora, Julian, Priya, Mom, and Dad. I should flag that this differs from older memory.",
+      timestamp: 21,
+    });
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Borg matched the latest correction but did not surface older conflict."],
+        recommendation: "Treat as a source-precedence conflict, not contradiction.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            source_precedence_classification: "conflict_not_surfaced",
+            assistant_stream_entry_id: agentEntry.id,
+            evidence_summary: `Recent user statement ${userEntry.id} supports the headcount but older memory disagreed.`,
+          },
+        ],
+      },
+      {
+        ...auditContextFor([userEntry, agentEntry], { from_turn: 50, to_turn: 60 }),
+        prompt_visible_memory: {
+          summary: "Older memory says the lunch includes four siblings plus Mom and Dad.",
+          note: "Test prompt-visible memory.",
+        },
+      },
+    );
+
+    expect(validated.status).toBe("concerning");
+    expect(validated.findings[0]).toMatchObject({
+      claim_status: "grounded",
+      status_impact: "concerning",
+      source_precedence_classification: "conflict_not_surfaced",
+    });
+    expect(validated.rejected_findings).toEqual([]);
+  });
+
+  it("rejects source-precedence findings reported as unsupported or contradicted", () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You just corrected the date to April 6.",
+      timestamp: 25,
+    });
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Malformed source-precedence finding."],
+        recommendation: "Reject malformed finding.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            source_precedence_classification: "latest_user_correction_accepted",
+            assistant_stream_entry_id: agentEntry.id,
+            quoted_emitted_span: "April 6",
+            evidence_summary: "This combines source precedence with unsupported.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 1, to_turn: 2 }),
+    );
+
+    expect(validated.findings).toEqual([]);
+    expect(validated.rejected_findings[0]?.validation_warning).toContain(
+      "Source-precedence findings must not use claim_status unsupported or contradicted",
+    );
   });
 
   it("renders long transcript entries without truncating text after 500 characters", async () => {
