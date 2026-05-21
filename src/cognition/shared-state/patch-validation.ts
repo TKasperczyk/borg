@@ -36,6 +36,8 @@ import type {
 } from "./schema.js";
 import { parseSourceStreamEntryIds } from "./source-trust.js";
 
+const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
+
 function parseEntryId(value: string): SharedStateEntryId | null {
   try {
     return sharedStateEntryIdHelpers.parse(value);
@@ -252,11 +254,98 @@ function previousEntryById(
   };
 }
 
+type StateKeyTrackedEntry = Pick<
+  SharedStateEntry,
+  "kind" | "state_key" | "created_at" | "last_updated_at" | "rank"
+> & {
+  id: string;
+  fromPreviousArtifact: boolean;
+};
+
+function normalizeMaxLiveEntriesPerKey(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined && value > 0
+    ? Math.floor(value)
+    : DEFAULT_MAX_LIVE_ENTRIES_PER_KEY;
+}
+
+function activePreviousEntriesByStateKey(
+  artifact: SharedStateArtifact | null,
+): Map<string, StateKeyTrackedEntry> {
+  const entries = new Map<string, StateKeyTrackedEntry>();
+
+  for (const entry of artifact?.entries ?? []) {
+    if (entry.superseded_by_id !== null) {
+      continue;
+    }
+
+    entries.set(entry.id, {
+      id: entry.id,
+      kind: entry.kind,
+      state_key: entry.state_key,
+      created_at: entry.created_at,
+      last_updated_at: entry.last_updated_at,
+      rank: entry.rank,
+      fromPreviousArtifact: true,
+    });
+  }
+
+  return entries;
+}
+
+function compareTrackedEntryRecency(
+  left: StateKeyTrackedEntry,
+  right: StateKeyTrackedEntry,
+): number {
+  return (
+    right.last_updated_at - left.last_updated_at ||
+    right.created_at - left.created_at ||
+    left.rank - right.rank ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function liveEntriesForStateKey(
+  entries: ReadonlyMap<string, StateKeyTrackedEntry>,
+  stateKey: string,
+): StateKeyTrackedEntry[] {
+  return [...entries.values()].filter(
+    (entry) => entry.kind === "live" && entry.state_key === stateKey,
+  );
+}
+
+function lockedEntriesForStateKey(
+  entries: ReadonlyMap<string, StateKeyTrackedEntry>,
+  stateKey: string,
+): StateKeyTrackedEntry[] {
+  return [...entries.values()].filter(
+    (entry) => entry.kind === "locked" && entry.state_key === stateKey,
+  );
+}
+
+function mostRecentPreviousEntry(
+  entries: readonly StateKeyTrackedEntry[],
+): StateKeyTrackedEntry | null {
+  return (
+    entries.filter((entry) => entry.fromPreviousArtifact).sort(compareTrackedEntryRecency)[0] ??
+    null
+  );
+}
+
 function rejection(
   operation: ParsedPatchOperation,
   operationIndex: number,
   reason: PatchRejection["reason"],
-  details: Pick<PatchRejection, "sourceStreamEntryId" | "sourceTrustReason"> = {},
+  details: Pick<
+    PatchRejection,
+    | "sourceStreamEntryId"
+    | "sourceTrustReason"
+    | "stateKey"
+    | "currentCount"
+    | "proposedCount"
+    | "maxLiveEntriesPerKey"
+    | "targetEntryId"
+    | "lockedEntryIds"
+  > = {},
 ): PatchRejection {
   return {
     reason,
@@ -276,6 +365,7 @@ export function normalizePatch(input: {
   allowedSourceStreamEntryIds: ReadonlySet<StreamEntryId> | null;
   sourceTrustValidator?: SharedStateSourceTrustValidator;
   allowedCanonicalizationIds: AllowedCanonicalizationIds;
+  maxLiveEntriesPerKey?: number;
 }): {
   operations: SharedStateOperation[];
   rejected: PatchRejection[];
@@ -295,15 +385,88 @@ export function normalizePatch(input: {
   const previousEntries = new Map<SharedStateEntryId, SharedStateEntry>(
     (input.previousArtifact?.entries ?? []).map((entry) => [entry.id, entry]),
   );
+  const activeEntriesByStateKey = activePreviousEntriesByStateKey(input.previousArtifact);
   const operations: SharedStateOperation[] = [];
   const rejected: PatchRejection[] = [];
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const baseRank = input.previousArtifact?.entries.length ?? 0;
+  const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
+
+  const addTrackedEntry = (
+    operationIndex: number,
+    entry: Pick<SharedStateEntry, "kind" | "state_key"> & {
+      id?: SharedStateEntryId;
+      created_at?: number;
+      last_updated_at?: number;
+      rank?: number;
+    },
+  ): void => {
+    const id = entry.id ?? `operation:${operationIndex}`;
+    const createdAt = entry.created_at ?? 0;
+
+    activeEntriesByStateKey.set(id, {
+      id,
+      kind: entry.kind,
+      state_key: entry.state_key,
+      created_at: createdAt,
+      last_updated_at: entry.last_updated_at ?? createdAt,
+      rank: entry.rank ?? baseRank + operations.length,
+      fromPreviousArtifact: false,
+    });
+  };
+
+  const validateAddStateKey = (
+    operation: Extract<ParsedPatchOperation, { type: "add" }>,
+    operationIndex: number,
+  ): PatchRejection | null => {
+    const lockedEntries = lockedEntriesForStateKey(activeEntriesByStateKey, operation.state_key);
+
+    if ((operation.kind === "locked" || operation.kind === "live") && lockedEntries.length > 0) {
+      const target = mostRecentPreviousEntry(lockedEntries);
+
+      return rejection(operation, operationIndex, "locked_state_key_collision", {
+        stateKey: operation.state_key,
+        currentCount: lockedEntries.length,
+        targetEntryId: target?.id,
+        lockedEntryIds: lockedEntries
+          .filter((entry) => entry.fromPreviousArtifact)
+          .map((entry) => entry.id),
+      });
+    }
+
+    if (operation.kind !== "live") {
+      return null;
+    }
+
+    const currentLiveEntries = liveEntriesForStateKey(activeEntriesByStateKey, operation.state_key);
+    const proposedCount = currentLiveEntries.length + 1;
+
+    if (proposedCount <= maxLiveEntriesPerKey) {
+      return null;
+    }
+
+    const target = mostRecentPreviousEntry(currentLiveEntries);
+
+    return rejection(operation, operationIndex, "live_entry_cap_exceeded_for_key", {
+      stateKey: operation.state_key,
+      currentCount: currentLiveEntries.length,
+      proposedCount,
+      maxLiveEntriesPerKey,
+      targetEntryId: target?.id,
+    });
+  };
 
   input.patch.operations.forEach((operation, operationIndex) => {
     switch (operation.type) {
       case "add": {
+        const stateKeyRejection = validateAddStateKey(operation, operationIndex);
+
+        if (stateKeyRejection !== null) {
+          rejected.push(stateKeyRejection);
+          return;
+        }
+
         const ownerEntityId = normalizeOwnerEntityId(
           operation.owner_entity_id,
           allowedOwnerEntityIds,
@@ -339,16 +502,23 @@ export function normalizePatch(input: {
           dropped: droppedCanonicalizeIds,
           nonLockedDrops: nonLockedCanonicalizesDrops,
         });
+        const rank = baseRank + operations.length;
 
         operations.push({
           type: "add",
+          state_key: operation.state_key,
           kind: operation.kind,
           text: operation.text,
           owner_entity_id: ownerEntityId,
           provenance_stream_entry_ids: citations.streamEntryIds,
           last_updated_stream_entry_ids: citations.streamEntryIds,
-          rank: baseRank + operations.length,
+          rank,
           ...(canonicalizes === undefined ? {} : { canonicalizes }),
+        });
+        addTrackedEntry(operationIndex, {
+          state_key: operation.state_key,
+          kind: operation.kind,
+          rank,
         });
         return;
       }
@@ -372,7 +542,8 @@ export function normalizePatch(input: {
           operation.kind === undefined &&
           operation.text === undefined &&
           operation.owner_entity_id === undefined &&
-          operation.canonicalizes === undefined
+          operation.canonicalizes === undefined &&
+          operation.state_key === entry.state_key
         ) {
           rejected.push(rejection(operation, operationIndex, "empty_update"));
           return;
@@ -417,6 +588,7 @@ export function normalizePatch(input: {
         operations.push({
           type: "update",
           id,
+          state_key: operation.state_key,
           kind: nextKind,
           text: operation.text,
           owner_entity_id: operation.owner_entity_id === undefined ? undefined : ownerEntityId,
@@ -424,6 +596,14 @@ export function normalizePatch(input: {
           last_updated_stream_entry_ids: citations.streamEntryIds,
           ...(canonicalizes === undefined ? {} : { canonicalizes }),
         });
+        const tracked = activeEntriesByStateKey.get(id);
+        if (tracked !== undefined) {
+          activeEntriesByStateKey.set(id, {
+            ...tracked,
+            kind: nextKind,
+            state_key: operation.state_key,
+          });
+        }
         return;
       }
 
@@ -493,20 +673,28 @@ export function normalizePatch(input: {
           dropped: droppedCanonicalizeIds,
           nonLockedDrops: nonLockedCanonicalizesDrops,
         });
+        const rank = baseRank + operations.length;
 
         operations.push({
           type: "supersede",
           id,
           replacement: {
+            state_key: operation.replacement.state_key,
             kind: operation.replacement.kind,
             text: operation.replacement.text,
             owner_entity_id: ownerEntityId,
             provenance_stream_entry_ids: replacementCitations.streamEntryIds,
             last_updated_stream_entry_ids: replacementCitations.streamEntryIds,
-            rank: baseRank + operations.length,
+            rank,
             ...(canonicalizes === undefined ? {} : { canonicalizes }),
           },
           last_updated_stream_entry_ids: updateCitations.streamEntryIds,
+        });
+        activeEntriesByStateKey.delete(id);
+        addTrackedEntry(operationIndex, {
+          state_key: operation.replacement.state_key,
+          kind: operation.replacement.kind,
+          rank,
         });
         return;
       }
@@ -528,6 +716,7 @@ export function normalizePatch(input: {
           type: "prune",
           id,
         });
+        activeEntriesByStateKey.delete(id);
       }
     }
   });

@@ -18,6 +18,7 @@ export const sharedStateMigrations = [
       CREATE TABLE decision_artifact_entries (
         id TEXT PRIMARY KEY,
         audience_entity_id TEXT NOT NULL,
+        state_key TEXT NULL,
         kind TEXT NOT NULL CHECK (
           kind IN ('locked', 'live', 'tentative', 'invalidated', 'pending')
         ),
@@ -43,6 +44,8 @@ export const sharedStateMigrations = [
         ON decision_artifact_entries(kind);
       CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_superseded
         ON decision_artifact_entries(superseded_by_id);
+      CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_audience_state_key
+        ON decision_artifact_entries(audience_entity_id, state_key);
     `,
   },
   {
@@ -59,6 +62,26 @@ export const sharedStateMigrations = [
       db.exec(`
         ALTER TABLE decision_artifact_entries
           ADD COLUMN canonicalizes TEXT NOT NULL DEFAULT '{"goal_ids":[],"commitment_ids":[],"action_ids":[],"open_question_ids":[]}';
+      `);
+    },
+  },
+  {
+    id: 3,
+    name: "decision_artifact_entry_state_key",
+    up: (db) => {
+      if (
+        !tableExists(db, "decision_artifact_entries") ||
+        tableHasColumn(db, "decision_artifact_entries", "state_key")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE decision_artifact_entries
+          ADD COLUMN state_key TEXT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_audience_state_key
+          ON decision_artifact_entries(audience_entity_id, state_key);
       `);
     },
   },

@@ -529,6 +529,10 @@ function metricsRow(turnCounter: number): MetricsRow {
       prune: 0,
     },
     shared_state_add_to_update_ratio: 0,
+    shared_state_entries_by_key: {},
+    shared_state_add_to_update_ratio_by_key: {},
+    shared_state_top_keys_by_entry_count: {},
+    shared_state_add_rejected_cap_exceeded_total: 0,
     simulator_persona_failures: 0,
     borg_hard_aborted_turns: 0,
     borg_intentional_suppressions: 0,
@@ -740,6 +744,19 @@ describe("SimulatorRunner", () => {
           prune: 2,
         },
         shared_state_add_to_update_ratio: 2.5,
+        shared_state_entries_by_key: {
+          "plan.attendees": 3,
+          "decision.architecture": 1,
+        },
+        shared_state_add_to_update_ratio_by_key: {
+          "plan.attendees": 4,
+          "decision.architecture": 1,
+        },
+        shared_state_top_keys_by_entry_count: {
+          "plan.attendees": 3,
+          "decision.architecture": 1,
+        },
+        shared_state_add_rejected_cap_exceeded_total: 1,
         semantic_revision_calls_total: 6,
         semantic_revision_candidates_reviewed_total: 31,
         semantic_revision_superseded_total: 4,
@@ -777,6 +794,7 @@ describe("SimulatorRunner", () => {
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );
     expect(report).toContain("Shared-state compiler add/update ratio: 2.50");
+    expect(report).toContain("Shared-state add rejected by per-key cap: 1");
     expect(report).toContain("## Cumulative Semantic Revision Health");
     expect(report).toContain("Revision LLM calls: 6");
     expect(report).toContain("Candidates reviewed: 31");

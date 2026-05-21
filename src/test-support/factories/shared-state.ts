@@ -32,6 +32,7 @@ export function makeSharedStateEntry(overrides: Partial<SharedStateEntry> = {}):
   return {
     id: overrides.id ?? createSharedStateEntryId(),
     audience_entity_id: overrides.audience_entity_id ?? createEntityId(),
+    state_key: overrides.state_key ?? "decision.fixture",
     kind: overrides.kind ?? "locked",
     text: overrides.text ?? "Release freeze is locked for the workstream",
     owner_entity_id: overrides.owner_entity_id ?? null,
@@ -101,6 +102,7 @@ export function makeSharedStateAddOperation(
     type: "add",
     id: entry.id,
     kind: entry.kind as SharedStateEntryKind,
+    state_key: entry.state_key ?? "decision.fixture",
     text: entry.text,
     owner_entity_id: entry.owner_entity_id,
     provenance_stream_entry_ids: entry.provenance_stream_entry_ids,

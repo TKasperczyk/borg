@@ -252,6 +252,10 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_compiler_repair_failed_total"
   | "shared_state_compiler_operations_total_by_kind"
   | "shared_state_add_to_update_ratio"
+  | "shared_state_entries_by_key"
+  | "shared_state_add_to_update_ratio_by_key"
+  | "shared_state_top_keys_by_entry_count"
+  | "shared_state_add_rejected_cap_exceeded_total"
 >;
 
 type ReviewResolverMetricCounts = {
@@ -891,10 +895,113 @@ function sharedStateAddToUpdateRatio(counts: Record<string, number>): number {
   return addCount / Math.max(1, consolidationCount);
 }
 
+function traceNestedOperationCounts(
+  record: TraceRecord,
+  objectKey: string,
+): Record<string, Record<string, number>> {
+  const value = record[objectKey];
+
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const counts: Record<string, Record<string, number>> = {};
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (nested === null || typeof nested !== "object" || Array.isArray(nested)) {
+      continue;
+    }
+
+    const nestedCounts: Record<string, number> = {};
+    for (const [operationKind, count] of Object.entries(nested as Record<string, unknown>)) {
+      if (typeof count === "number" && Number.isFinite(count)) {
+        nestedCounts[operationKind] = count;
+      }
+    }
+
+    counts[key] = nestedCounts;
+  }
+
+  return counts;
+}
+
+function mergeNestedOperationCounts(
+  left: Record<string, Record<string, number>>,
+  right: Record<string, Record<string, number>>,
+): Record<string, Record<string, number>> {
+  const merged: Record<string, Record<string, number>> = { ...left };
+
+  for (const [key, counts] of Object.entries(right)) {
+    merged[key] = { ...(merged[key] ?? {}) };
+
+    for (const [operationKind, count] of Object.entries(counts)) {
+      merged[key][operationKind] = (merged[key][operationKind] ?? 0) + count;
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(merged).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)),
+  );
+}
+
+function sharedStateOperationCountsByKey(
+  traceRecords: readonly TraceRecord[],
+): Record<string, Record<string, number>> {
+  let counts: Record<string, Record<string, number>> = {};
+
+  for (const record of traceRecords) {
+    if (record.event !== "shared_state.compile.completed" || record.applied !== true) {
+      continue;
+    }
+
+    counts = mergeNestedOperationCounts(
+      counts,
+      traceNestedOperationCounts(record, "operation_counts_by_state_key"),
+    );
+  }
+
+  return counts;
+}
+
+function sharedStateAddToUpdateRatioByKey(
+  countsByKey: Record<string, Record<string, number>>,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(countsByKey)
+      .map(([key, counts]) => [key, sharedStateAddToUpdateRatio(counts)] as const)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)),
+  );
+}
+
+function latestSharedStateEntriesByKey(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const latest = [...traceRecords]
+    .reverse()
+    .find((record) => record.event === "shared_state.compile.completed");
+
+  return latest === undefined
+    ? {}
+    : traceObjectNumberEntries(latest, "shared_state_entries_by_key");
+}
+
+function latestSharedStateTopKeysByEntryCount(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const latest = [...traceRecords]
+    .reverse()
+    .find((record) => record.event === "shared_state.compile.completed");
+
+  return latest === undefined
+    ? {}
+    : traceObjectNumberEntries(latest, "shared_state_top_keys_by_entry_count");
+}
+
 function sharedStateCompilerHealthMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateCompilerHealthMetricCounts {
   const operationsTotalByKind = sharedStateCompilerOperationCountsByKind(traceRecords);
+  const operationsByKey = sharedStateOperationCountsByKey(traceRecords);
 
   return {
     shared_state_compiler_max_tokens_total: traceRecords.filter(
@@ -917,6 +1024,12 @@ function sharedStateCompilerHealthMetrics(
     ).length,
     shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
     shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
+    shared_state_entries_by_key: latestSharedStateEntriesByKey(traceRecords),
+    shared_state_add_to_update_ratio_by_key: sharedStateAddToUpdateRatioByKey(operationsByKey),
+    shared_state_top_keys_by_entry_count: latestSharedStateTopKeysByEntryCount(traceRecords),
+    shared_state_add_rejected_cap_exceeded_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.add_rejected_cap_exceeded",
+    ).length,
   };
 }
 
@@ -2345,6 +2458,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_operations_total_by_kind,
       shared_state_add_to_update_ratio:
         sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio,
+      shared_state_entries_by_key:
+        sharedStateCompilerHealthMetricCounts.shared_state_entries_by_key,
+      shared_state_add_to_update_ratio_by_key:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio_by_key,
+      shared_state_top_keys_by_entry_count:
+        sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
+      shared_state_add_rejected_cap_exceeded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
@@ -2655,6 +2776,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_operations_total_by_kind,
       shared_state_add_to_update_ratio:
         sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio,
+      shared_state_entries_by_key:
+        sharedStateCompilerHealthMetricCounts.shared_state_entries_by_key,
+      shared_state_add_to_update_ratio_by_key:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio_by_key,
+      shared_state_top_keys_by_entry_count:
+        sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
+      shared_state_add_rejected_cap_exceeded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,

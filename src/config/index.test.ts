@@ -86,6 +86,7 @@ describe("config", () => {
       sectionOptions: {},
       decisionArtifact: {
         maxActiveEntries: 40,
+        maxLiveEntriesPerKey: 2,
         kindSoftCaps: {
           locked: 24,
           live: 10,
@@ -376,6 +377,7 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
     expect(config.generation.evidenceLedger.decisionArtifact).toMatchObject({
       maxActiveEntries: 40,
+      maxLiveEntriesPerKey: 2,
       renderMaxEntries: 40,
       renderLockedCap: 14,
     });

@@ -1361,6 +1361,7 @@ describe("Borg", () => {
       internal.deps.sharedStateRepository.upsert(audience, [
         {
           type: "add",
+          state_key: "decision.route_order",
           kind: "locked",
           text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
           owner_entity_id: audience,
@@ -1471,6 +1472,7 @@ describe("Borg", () => {
       internal.deps.sharedStateRepository.upsert(audience, [
         {
           type: "add",
+          state_key: "decision.route_order",
           kind: "locked",
           text: lockedOrder,
           owner_entity_id: audience,
@@ -1478,6 +1480,7 @@ describe("Borg", () => {
         },
         {
           type: "add",
+          state_key: "decision.final_base",
           kind: "locked",
           text: lockedFinalBase,
           owner_entity_id: audience,
@@ -1546,6 +1549,7 @@ describe("Borg", () => {
           operations: [
             {
               type: "add",
+              state_key: "decision.route",
               kind: "locked",
               text: "Invented route fact",
               owner_entity_id: null,

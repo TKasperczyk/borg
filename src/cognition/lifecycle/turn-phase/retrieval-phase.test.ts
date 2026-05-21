@@ -85,6 +85,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
                 operations: [
                   {
                     type: "add",
+                    state_key: "decision.route",
                     kind: "locked",
                     text: "The clinic callback follow-up is locked.",
                     owner_entity_id: audienceEntityId,

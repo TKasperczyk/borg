@@ -209,6 +209,10 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_live_starvation_final",
   "shared_state_compiler_operations_total_by_kind",
   "shared_state_add_to_update_ratio",
+  "shared_state_entries_by_key",
+  "shared_state_add_to_update_ratio_by_key",
+  "shared_state_top_keys_by_entry_count",
+  "shared_state_add_rejected_cap_exceeded_total",
   "simulator_persona_failures",
   "borg_hard_aborted_turns",
   "borg_intentional_suppressions",
@@ -903,6 +907,34 @@ describe("MetricsCapture", () => {
             supersede: 1,
             prune: 0,
           },
+          operation_counts_by_state_key: {
+            "plan.attendees": {
+              add: 3,
+              update: 1,
+              supersede: 0,
+              prune: 0,
+            },
+            "decision.architecture": {
+              add: 1,
+              update: 0,
+              supersede: 1,
+              prune: 0,
+            },
+          },
+          shared_state_entries_by_key: {
+            "plan.attendees": 2,
+            "decision.architecture": 1,
+          },
+          shared_state_top_keys_by_entry_count: {
+            "plan.attendees": 2,
+            "decision.architecture": 1,
+          },
+        },
+        {
+          ts: 102.5,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.add_rejected_cap_exceeded",
+          state_key: "plan.attendees",
         },
         {
           ts: 103,
@@ -934,6 +966,22 @@ describe("MetricsCapture", () => {
             supersede: 0,
             prune: 0,
           },
+          operation_counts_by_state_key: {
+            "plan.attendees": {
+              add: 1,
+              update: 0,
+              supersede: 0,
+              prune: 0,
+            },
+          },
+          shared_state_entries_by_key: {
+            "plan.attendees": 3,
+            "decision.architecture": 1,
+          },
+          shared_state_top_keys_by_entry_count: {
+            "plan.attendees": 3,
+            "decision.architecture": 1,
+          },
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -959,6 +1007,19 @@ describe("MetricsCapture", () => {
       prune: 0,
     });
     expect(row.shared_state_add_to_update_ratio).toBe(2.5);
+    expect(row.shared_state_entries_by_key).toEqual({
+      "plan.attendees": 3,
+      "decision.architecture": 1,
+    });
+    expect(row.shared_state_add_to_update_ratio_by_key).toEqual({
+      "decision.architecture": 1,
+      "plan.attendees": 4,
+    });
+    expect(row.shared_state_top_keys_by_entry_count).toEqual({
+      "plan.attendees": 3,
+      "decision.architecture": 1,
+    });
+    expect(row.shared_state_add_rejected_cap_exceeded_total).toBe(1);
     expect(capture.listHealthWarnings()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: "shared_state_compiler_max_tokens_high" }),

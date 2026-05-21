@@ -35,6 +35,7 @@ function lockedEntry(overrides: Partial<SharedStateEntry> = {}): SharedStateEntr
   return {
     id: overrides.id ?? createSharedStateEntryId(),
     audience_entity_id: overrides.audience_entity_id ?? createEntityId(),
+    state_key: overrides.state_key ?? "decision.project",
     kind: "locked",
     text: overrides.text ?? "Canonical project state",
     owner_entity_id: overrides.owner_entity_id ?? null,

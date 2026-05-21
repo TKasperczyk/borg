@@ -17,6 +17,7 @@ import {
   tokenDropIndexForKinds,
   type SharedStateKindCounts,
 } from "./selection.js";
+import { sharedStateKeyBucket } from "./state-key.js";
 import { truncateSharedStateArtifactText } from "./render.js";
 
 const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES = {
@@ -37,6 +38,7 @@ export type SharedStatePromptSummaryOptions = {
 
 export type SharedStatePromptSummaryEntry = {
   id: SharedStateEntry["id"];
+  state_key: SharedStateEntry["state_key"];
   text: string;
   owner_entity_id?: NonNullable<SharedStateEntry["owner_entity_id"]>;
   last_updated_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
@@ -54,6 +56,7 @@ export type SharedStatePromptSummary = {
   record_version: SharedStateArtifact["record_version"];
   active_counts_by_kind: SharedStateKindCounts;
   active_entries: Record<SharedStateEntryKind, SharedStatePromptSummaryEntry[]>;
+  active_entries_by_state_key: Record<string, SharedStatePromptSummaryEntry[]>;
   omitted_counts_by_kind: SharedStateKindCounts;
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
 };
@@ -129,6 +132,7 @@ function toSharedStatePromptSummaryEntry(
 
   return {
     id: entry.id,
+    state_key: entry.state_key,
     text,
     ...(entry.owner_entity_id === null ? {} : { owner_entity_id: entry.owner_entity_id }),
     last_updated_stream_entry_id: lastUpdatedStreamEntryId(entry),
@@ -194,11 +198,14 @@ function buildSharedStateArtifactPromptSummaryFromEntries(input: {
   maxEntryTextTokens: number;
 }): SharedStatePromptSummary {
   const activeEntriesByKind = emptySharedStatePromptSummaryEntries();
+  const activeEntriesByStateKey: Record<string, SharedStatePromptSummaryEntry[]> = {};
 
   for (const entry of input.selectedEntries) {
-    activeEntriesByKind[entry.kind].push(
-      toSharedStatePromptSummaryEntry(entry, input.maxEntryTextTokens),
-    );
+    const summaryEntry = toSharedStatePromptSummaryEntry(entry, input.maxEntryTextTokens);
+
+    activeEntriesByKind[entry.kind].push(summaryEntry);
+    const key = sharedStateKeyBucket(entry.state_key);
+    activeEntriesByStateKey[key] = [...(activeEntriesByStateKey[key] ?? []), summaryEntry];
   }
 
   return {
@@ -206,6 +213,9 @@ function buildSharedStateArtifactPromptSummaryFromEntries(input: {
     record_version: input.artifact.record_version,
     active_counts_by_kind: countSharedStateArtifactEntriesByKind(input.activeEntries),
     active_entries: activeEntriesByKind,
+    active_entries_by_state_key: Object.fromEntries(
+      Object.entries(activeEntriesByStateKey).sort(([left], [right]) => left.localeCompare(right)),
+    ),
     omitted_counts_by_kind: subtractSharedStateKindCounts(
       countSharedStateArtifactEntriesByKind(input.activeEntries),
       countSharedStateArtifactEntriesByKind(input.selectedEntries),

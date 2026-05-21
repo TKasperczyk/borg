@@ -61,6 +61,7 @@ function sharedStateEntry(input: {
   return {
     id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
+    state_key: `${input.kind}.decision`,
     kind: input.kind,
     text: `${input.kind} decision`,
     owner_entity_id: input.audience,
@@ -640,6 +641,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
                 operations: [
                   {
                     type: "add",
+                    state_key: "decision.deployment_target",
                     kind: "locked",
                     text: "The deployment target is staging.",
                     owner_entity_id: audience,
@@ -1021,6 +1023,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
                   operations: [
                     {
                       type: "add",
+                      state_key: "decision.deployment_target",
                       kind: "locked",
                       text: "The deployment target is staging.",
                       owner_entity_id: audience,
@@ -1067,6 +1070,8 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
               nextEntries.push({
                 id: createSharedStateEntryId(),
                 audience_entity_id: audience,
+                state_key:
+                  typeof operation.state_key === "string" ? operation.state_key : "decision.test",
                 kind: operation.kind as SharedStateEntryKind,
                 text: String(operation.text),
                 owner_entity_id: audience,
@@ -1848,6 +1853,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
                   operations: [
                     {
                       type: "add",
+                      state_key: "decision.workstream",
                       kind: "locked",
                       text: "Canonical workstream decision",
                       owner_entity_id: audience,

@@ -43,6 +43,7 @@ const EMPTY_SHARED_STATE_CANONICALIZES: SharedStateCanonicalizes = {
 export type SharedStateAddOperation = {
   type: "add";
   id?: SharedStateEntryId;
+  state_key: string;
   kind: SharedStateEntryKind;
   text: string;
   owner_entity_id?: EntityId | null;
@@ -57,6 +58,7 @@ export type SharedStateAddOperation = {
 export type SharedStateUpdateOperation = {
   type: "update";
   id: SharedStateEntryId;
+  state_key: string;
   kind?: SharedStateEntryKind;
   text?: string;
   owner_entity_id?: EntityId | null;
@@ -167,10 +169,21 @@ function parseCanonicalizes(value: unknown): SharedStateCanonicalizes {
   }
 }
 
+function requiredWriteStateKey(value: unknown, operationType: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new StorageError(`Shared state ${operationType} operation requires state_key`, {
+      code: "SHARED_STATE_STATE_KEY_REQUIRED",
+    });
+  }
+
+  return value;
+}
+
 function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
   const parsed = sharedStateEntrySchema.safeParse({
     id: row.id,
     audience_entity_id: row.audience_entity_id,
+    state_key: row.state_key === null || row.state_key === undefined ? null : row.state_key,
     kind: row.kind,
     text: row.text,
     owner_entity_id:
@@ -397,15 +410,16 @@ export class SharedStateRepository {
       .prepare(
         `
           INSERT INTO decision_artifact_entries (
-            id, audience_entity_id, kind, text, owner_entity_id,
+            id, audience_entity_id, state_key, kind, text, owner_entity_id,
             provenance_stream_entry_ids, last_updated_stream_entry_ids,
             created_at, last_updated_at, superseded_by_id, rank, canonicalizes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
         parsed.id,
         parsed.audience_entity_id,
+        parsed.state_key,
         parsed.kind,
         parsed.text,
         parsed.owner_entity_id,
@@ -474,10 +488,12 @@ export class SharedStateRepository {
       "last_updated_stream_entry_ids",
       sourceTrustValidator,
     );
+    const stateKey = requiredWriteStateKey(operation.state_key, "add");
 
     const entry = sharedStateEntrySchema.parse({
       id: operation.id ?? createSharedStateEntryId(),
       audience_entity_id: audienceEntityId,
+      state_key: stateKey,
       kind: operation.kind,
       text: operation.text,
       owner_entity_id: operation.owner_entity_id ?? null,
@@ -520,9 +536,11 @@ export class SharedStateRepository {
       "last_updated_stream_entry_ids",
       sourceTrustValidator,
     );
+    const stateKey = requiredWriteStateKey(operation.state_key, "update");
 
     const next = sharedStateEntrySchema.parse({
       ...current,
+      state_key: stateKey,
       kind: operation.kind ?? current.kind,
       text: operation.text ?? current.text,
       owner_entity_id:
@@ -540,7 +558,8 @@ export class SharedStateRepository {
       .prepare(
         `
           UPDATE decision_artifact_entries
-          SET kind = ?,
+          SET state_key = ?,
+              kind = ?,
               text = ?,
               owner_entity_id = ?,
               provenance_stream_entry_ids = ?,
@@ -552,6 +571,7 @@ export class SharedStateRepository {
         `,
       )
       .run(
+        next.state_key,
         next.kind,
         next.text,
         next.owner_entity_id,

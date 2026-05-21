@@ -15,6 +15,11 @@ import {
   tokenDropIndex,
   type SharedStateKindCounts,
 } from "./selection.js";
+import {
+  countSharedStateEntriesByKey,
+  sharedStateKeyBucket,
+  topSharedStateEntryKeysByCount,
+} from "./state-key.js";
 
 const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
@@ -37,6 +42,8 @@ export type SharedStateArtifactRenderSummary = {
   newestReservedEntryCount: number;
   renderedByKind: SharedStateKindCounts;
   omittedByKind: SharedStateKindCounts;
+  activeEntriesByKey: Record<string, number>;
+  topKeysByEntryCount: Record<string, number>;
 };
 
 export type SharedStateRenderOptions = {
@@ -101,12 +108,32 @@ function formatSharedStateKindCounts(
 
 function renderSharedStateEntry(entry: SharedStateEntry): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
+  const stateKey = `state_key=${sharedStateKeyBucket(entry.state_key)}`;
   const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
 
   return [
-    `- kind=${entry.kind} id=${entry.id} ${owner} last_updated_at=${entry.last_updated_at} ${citations}`,
+    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner} last_updated_at=${entry.last_updated_at} ${citations}`,
     `  text: ${entry.text}`,
   ].join("\n");
+}
+
+function entriesGroupedByStateKey(entries: readonly SharedStateEntry[]): Array<{
+  stateKey: string;
+  entries: SharedStateEntry[];
+}> {
+  const groups = new Map<string, SharedStateEntry[]>();
+
+  for (const entry of entries) {
+    const key = sharedStateKeyBucket(entry.state_key);
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
+  }
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([stateKey, groupEntries]) => ({
+      stateKey,
+      entries: groupEntries,
+    }));
 }
 
 function renderSharedStateArtifactContent(input: {
@@ -129,7 +156,10 @@ function renderSharedStateArtifactContent(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
-    ...input.entries.map(renderSharedStateEntry),
+    ...entriesGroupedByStateKey(input.entries).flatMap((group) => [
+      `state_key_bucket=${group.stateKey}`,
+      ...group.entries.map(renderSharedStateEntry),
+    ]),
     omission,
   ]
     .filter((part): part is string => part !== null)
@@ -246,6 +276,8 @@ function cappedSharedStateArtifactRender(input: {
         newestReservedEntryCount: 0,
         renderedByKind: emptySharedStateKindCounts(),
         omittedByKind: emptySharedStateKindCounts(),
+        activeEntriesByKey: {},
+        topKeysByEntryCount: {},
       },
     };
   }
@@ -318,6 +350,11 @@ function cappedSharedStateArtifactRender(input: {
       newestReservedEntryCount: entries.filter((entry) => newestReservedIds.has(entry.id)).length,
       renderedByKind: counts.renderedByKind,
       omittedByKind: counts.omittedByKind,
+      activeEntriesByKey: countSharedStateEntriesByKey(activeEntries),
+      topKeysByEntryCount: topSharedStateEntryKeysByCount(
+        countSharedStateEntriesByKey(activeEntries),
+        5,
+      ),
     },
   };
 }
@@ -350,6 +387,8 @@ export function summarizeSharedStateArtifactRender(
       newestReservedEntryCount: 0,
       renderedByKind: emptySharedStateKindCounts(),
       omittedByKind: emptySharedStateKindCounts(),
+      activeEntriesByKey: {},
+      topKeysByEntryCount: {},
     };
   }
 

@@ -91,6 +91,7 @@ export const sharedStateEntrySchema = z
   .object({
     id: sharedStateEntryIdSchema,
     audience_entity_id: sharedStateEntityIdSchema,
+    state_key: z.string().trim().min(1).nullable().default(null),
     kind: sharedStateEntryKindSchema,
     text: z.string().trim().min(1),
     owner_entity_id: sharedStateEntityIdSchema.nullable(),

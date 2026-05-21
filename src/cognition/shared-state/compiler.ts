@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
+import type {
+  SharedStateArtifact,
+  SharedStateEntry,
+  SharedStateOperation,
+} from "../../memory/decision-artifacts/index.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
@@ -21,10 +26,12 @@ import {
   SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
   type EmitSharedStatePatch,
+  type PatchRejection,
   type SharedStateCompileDegradedReason,
 } from "./schema.js";
 import {
   parseResponse,
+  traceAddRejectedCapExceeded,
   traceCompileCompleted,
   traceCompileDegraded,
   traceCompileOverBudget,
@@ -116,6 +123,94 @@ function operationCountsByKind(
   }
 
   return counts;
+}
+
+function emptyOperationCountsByStateKey(): Record<SharedStateOperationKind, number> {
+  return emptyOperationCountsByKind();
+}
+
+function entryStateKeyById(
+  artifact: SharedStateArtifact | null,
+): Map<SharedStateEntry["id"], string | null> {
+  return new Map((artifact?.entries ?? []).map((entry) => [entry.id, entry.state_key]));
+}
+
+function operationStateKey(
+  operation: SharedStateOperation,
+  previousStateKeysById: ReadonlyMap<SharedStateEntry["id"], string | null>,
+): string | null {
+  switch (operation.type) {
+    case "add":
+      return operation.state_key ?? null;
+    case "update":
+      return operation.state_key ?? previousStateKeysById.get(operation.id) ?? null;
+    case "supersede":
+      return operation.replacement.state_key ?? previousStateKeysById.get(operation.id) ?? null;
+    case "prune":
+      return previousStateKeysById.get(operation.id) ?? null;
+  }
+}
+
+function operationCountsByStateKey(
+  operations: readonly SharedStateOperation[],
+  previousArtifact: SharedStateArtifact | null,
+): Record<string, Record<SharedStateOperationKind, number>> {
+  const previousStateKeysById = entryStateKeyById(previousArtifact);
+  const counts: Record<string, Record<SharedStateOperationKind, number>> = {};
+
+  for (const operation of operations) {
+    const stateKey = operationStateKey(operation, previousStateKeysById);
+
+    if (stateKey === null) {
+      continue;
+    }
+
+    counts[stateKey] = counts[stateKey] ?? emptyOperationCountsByStateKey();
+    counts[stateKey][operation.type] += 1;
+  }
+
+  return Object.fromEntries(
+    Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function repairablePatchRejections(rejections: readonly PatchRejection[]): PatchRejection[] {
+  return rejections.filter(
+    (rejection) =>
+      rejection.reason === "live_entry_cap_exceeded_for_key" ||
+      rejection.reason === "locked_state_key_collision",
+  );
+}
+
+function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): string {
+  const details = rejections
+    .map((rejection) => {
+      if (rejection.reason === "live_entry_cap_exceeded_for_key") {
+        return [
+          `operation ${rejection.operationIndex} add state_key=${rejection.stateKey ?? "unknown"}`,
+          `would create ${rejection.proposedCount ?? "too many"} live entries`,
+          `with max ${rejection.maxLiveEntriesPerKey ?? "unknown"}`,
+          rejection.targetEntryId === undefined
+            ? "use update or supersede on an existing same-key live entry"
+            : `use update or supersede around existing entry ${rejection.targetEntryId}`,
+        ].join("; ");
+      }
+
+      if (rejection.reason === "locked_state_key_collision") {
+        const lockedIds = rejection.lockedEntryIds?.join(", ") || "an existing locked entry";
+
+        return [
+          `operation ${rejection.operationIndex} add state_key=${rejection.stateKey ?? "unknown"}`,
+          `collides with locked entry ${lockedIds}`,
+          "update/supersede the locked entry, or mark unsettled material tentative/pending",
+        ].join("; ");
+      }
+
+      return `operation ${rejection.operationIndex} rejected: ${rejection.reason}`;
+    })
+    .join(" | ");
+
+  return `Your previous patch violated structural shared-state key compaction: ${details}. Emit a corrected patch.`;
 }
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
@@ -310,6 +405,7 @@ export async function compileSharedStateArtifact(
   });
 
   let parsed: EmitSharedStatePatch | undefined;
+  let repairAttempted = false;
 
   try {
     parsed = parseResponse(response);
@@ -335,6 +431,7 @@ export async function compileSharedStateArtifact(
         audienceEntityId: input.audienceEntityId,
         error,
       });
+      repairAttempted = true;
 
       const repairMessages = buildSharedStateArtifactMessages({
         ...messageInput,
@@ -467,7 +564,7 @@ export async function compileSharedStateArtifact(
     allowedSourceStreamEntryIdsForPrompt === undefined
       ? null
       : new Set(allowedSourceStreamEntryIdsForPrompt);
-  const normalized = normalizePatch({
+  let normalized = normalizePatch({
     patch: parsed,
     previousArtifact,
     audienceEntityId: input.audienceEntityId,
@@ -477,7 +574,199 @@ export async function compileSharedStateArtifact(
     allowedSourceStreamEntryIds,
     sourceTrustValidator: input.sourceTrustValidator,
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
+    maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
   });
+
+  let repairableRejections = repairablePatchRejections(normalized.rejected);
+  for (const rejection of repairableRejections) {
+    if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
+      continue;
+    }
+
+    traceAddRejectedCapExceeded({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      rejection,
+    });
+  }
+
+  if (repairableRejections.length > 0) {
+    const repairError = new Error(patchRejectionRepairMessage(repairableRejections));
+
+    if (repairAttempted) {
+      traceCompileRepairFailed({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        error: repairError,
+      });
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn: 0,
+        supersededEntryCountThisTurn: 0,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      });
+
+      return degraded(input, "invalid_patch", repairError);
+    }
+
+    traceCompileRepairAttempted({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      error: repairError,
+    });
+    repairAttempted = true;
+
+    const repairMessages = buildSharedStateArtifactMessages({
+      ...messageInput,
+      additionalPromptSections: [patchRejectionRepairMessage(repairableRejections)],
+    });
+
+    traceLlmCallStarted({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      model: input.model,
+      messages: repairMessages,
+      tools,
+    });
+
+    let repairResponse: LLMCompleteResult;
+
+    try {
+      repairResponse = await input.llmClient.complete({
+        model: input.model,
+        system: SHARED_STATE_SYSTEM_PROMPT,
+        messages: repairMessages,
+        tools,
+        tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
+        max_tokens: MAX_PATCH_OUTPUT_TOKENS,
+        budget: "decision-artifact-compiler",
+      });
+    } catch (error) {
+      traceLlmCallError({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        error,
+      });
+      traceCompileRepairFailed({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        error,
+      });
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn: 0,
+        supersededEntryCountThisTurn: 0,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      });
+
+      return degraded(input, "llm_failed", error);
+    }
+
+    traceLlmCallResponse({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      response: repairResponse,
+    });
+
+    let repairedParsed: EmitSharedStatePatch;
+
+    try {
+      repairedParsed = parseResponse(repairResponse);
+    } catch (error) {
+      traceCompileRepairFailed({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        error,
+      });
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn: 0,
+        supersededEntryCountThisTurn: 0,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      });
+
+      return degraded(
+        input,
+        error instanceof MissingSharedStateArtifactToolCallError
+          ? "missing_tool_call"
+          : error instanceof z.ZodError
+            ? "invalid_payload"
+            : "llm_failed",
+        error,
+      );
+    }
+
+    normalized = normalizePatch({
+      patch: repairedParsed,
+      previousArtifact,
+      audienceEntityId: input.audienceEntityId,
+      selfEntityId: input.selfEntityId,
+      speakerEntityId,
+      participants: input.participants,
+      allowedSourceStreamEntryIds,
+      sourceTrustValidator: input.sourceTrustValidator,
+      allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
+      maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
+    });
+    repairableRejections = repairablePatchRejections(normalized.rejected);
+    for (const rejection of repairableRejections) {
+      if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
+        continue;
+      }
+
+      traceAddRejectedCapExceeded({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        rejection,
+      });
+    }
+
+    if (repairableRejections.length > 0) {
+      const error = new Error(patchRejectionRepairMessage(repairableRejections));
+      traceCompileRepairFailed({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        error,
+      });
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn: 0,
+        supersededEntryCountThisTurn: 0,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      });
+
+      return degraded(input, "invalid_patch", error);
+    }
+
+    traceCompileRepairSucceeded({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+    });
+  }
 
   if (normalized.operations.length === 0 && normalized.rejected.length > 0) {
     traceCompileCompleted({
@@ -523,6 +812,7 @@ export async function compileSharedStateArtifact(
   const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
   const operations = dedupedCanonicalizations.operations;
   const operationCounts = operationCountsByKind(operations);
+  const operationCountsByStateKeyForTrace = operationCountsByStateKey(operations, previousArtifact);
   const prunedEntryCountThisTurn = operations.filter(
     (operation) => operation.type === "prune",
   ).length;
@@ -551,6 +841,7 @@ export async function compileSharedStateArtifact(
         prunedEntryCountThisTurn,
         supersededEntryCountThisTurn,
         operationCountsByKind: operationCounts,
+        operationCountsByStateKey: operationCountsByStateKeyForTrace,
         nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
       });
 
@@ -606,6 +897,7 @@ export async function compileSharedStateArtifact(
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
+      operationCountsByStateKey: operationCountsByStateKeyForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
@@ -670,6 +962,7 @@ export async function compileSharedStateArtifact(
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
+      operationCountsByStateKey: operationCountsByStateKeyForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
   } catch (error) {
@@ -682,6 +975,7 @@ export async function compileSharedStateArtifact(
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
+      operationCountsByStateKey: operationCountsByStateKeyForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
@@ -694,6 +988,7 @@ export async function compileSharedStateArtifact(
         case "add":
           return {
             type: "add",
+            state_key: operation.state_key ?? "legacy",
             kind: operation.kind,
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
@@ -706,6 +1001,7 @@ export async function compileSharedStateArtifact(
           return {
             type: "update",
             id: operation.id,
+            state_key: operation.state_key ?? "legacy",
             kind: operation.kind,
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
@@ -719,6 +1015,7 @@ export async function compileSharedStateArtifact(
             type: "supersede",
             id: operation.id,
             replacement: {
+              state_key: operation.replacement.state_key ?? "legacy",
               kind: operation.replacement.kind,
               text: operation.replacement.text,
               owner_entity_id: operation.replacement.owner_entity_id,

@@ -24,6 +24,7 @@ function entry(input: {
   return {
     id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
+    state_key: `${input.kind}.state`,
     kind: input.kind,
     text: `${input.kind} state ${input.rank}`,
     owner_entity_id: null,

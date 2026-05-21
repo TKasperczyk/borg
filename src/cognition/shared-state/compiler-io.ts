@@ -139,6 +139,7 @@ export function traceCompileCompleted(options: {
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
   operationCountsByKind?: Record<SharedStateOperation["type"], number>;
+  operationCountsByStateKey?: Record<string, Record<SharedStateOperation["type"], number>>;
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
@@ -187,8 +188,11 @@ export function traceCompileCompleted(options: {
           prune: 0,
         },
       ),
+      operation_counts_by_state_key: toTraceJsonValue(options.operationCountsByStateKey ?? {}),
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
       omitted_by_kind: toTraceJsonValue(artifactSummary.omittedByKind),
+      shared_state_entries_by_key: toTraceJsonValue(artifactSummary.activeEntriesByKey),
+      shared_state_top_keys_by_entry_count: toTraceJsonValue(artifactSummary.topKeysByEntryCount),
       ledger_mode: options.ledgerMode,
       input_token_estimate: options.promptBudget.inputTokenEstimate,
       input_token_breakdown: toTraceJsonValue(options.promptBudget.breakdown),
@@ -197,6 +201,29 @@ export function traceCompileCompleted(options: {
       ),
     });
   }
+}
+
+export function traceAddRejectedCapExceeded(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  rejection: PatchRejection;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.add_rejected_cap_exceeded", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    operation_index: options.rejection.operationIndex,
+    operation_type: options.rejection.operationType,
+    state_key: options.rejection.stateKey ?? null,
+    current_count: options.rejection.currentCount ?? null,
+    proposed_count: options.rejection.proposedCount ?? null,
+    max_live_entries_per_key: options.rejection.maxLiveEntriesPerKey ?? null,
+    target_entry_id: options.rejection.targetEntryId ?? null,
+  });
 }
 
 export function traceCompileDegraded(options: {

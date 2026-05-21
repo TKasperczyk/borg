@@ -609,6 +609,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     turnCounter: input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter,
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,
+      maxLiveEntriesPerKey: sharedStateConfig.maxLiveEntriesPerKey,
       kindSoftCaps: sharedStateConfig.kindSoftCaps,
       newestStateChangeReservedSlots: sharedStateConfig.newestStateChangeReservedSlots,
     },

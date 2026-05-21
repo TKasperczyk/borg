@@ -408,6 +408,7 @@ function makeGranadaConstraintConflictLedger(): EvidenceLedger {
       {
         id: createSharedStateEntryId(),
         audience_entity_id: audience,
+        state_key: "decision.route",
         kind: "locked",
         text: GRANADA_TUESDAY_CONSTRAINT,
         owner_entity_id: audience,
@@ -873,12 +874,12 @@ describe("deliberator", () => {
     );
 
     expect(result.path).toBe("system_1");
-    expect(
-      tracer.events.some((event) => event.event === "deliberation.path.transitioned"),
-    ).toBe(false);
-    expect(tracer.events.some((event) => event.event === "deliberation.contradiction_routing.completed")).toBe(
+    expect(tracer.events.some((event) => event.event === "deliberation.path.transitioned")).toBe(
       false,
     );
+    expect(
+      tracer.events.some((event) => event.event === "deliberation.contradiction_routing.completed"),
+    ).toBe(false);
     expect(tracer.events).toContainEqual(
       expect.objectContaining({
         event: "deliberation.path.completed",
@@ -1659,7 +1660,9 @@ describe("deliberator", () => {
       const finalizerSystemBlocks = llm.requests[1]?.system as readonly { text: string }[];
       const finalizerSystem = finalizerSystemBlocks.map((block) => block.text).join("\n\n");
       expect(finalizerSystem).toContain("Emission recommendation: no assistant message");
-      expect(tracer.events.some((entry) => entry.event === "deliberation.plan.completed")).toBe(true);
+      expect(tracer.events.some((entry) => entry.event === "deliberation.plan.completed")).toBe(
+        true,
+      );
       expect(tracer.events.some((entry) => entry.event === "finalizer.completed")).toBe(true);
     } finally {
       writer.close();

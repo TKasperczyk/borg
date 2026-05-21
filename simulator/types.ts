@@ -192,6 +192,10 @@ export type MetricsRow = {
   shared_state_live_starvation_final: boolean;
   shared_state_compiler_operations_total_by_kind: Record<string, number>;
   shared_state_add_to_update_ratio: number;
+  shared_state_entries_by_key: Record<string, number>;
+  shared_state_add_to_update_ratio_by_key: Record<string, number>;
+  shared_state_top_keys_by_entry_count: Record<string, number>;
+  shared_state_add_rejected_cap_exceeded_total: number;
   simulator_persona_failures: number;
   borg_hard_aborted_turns: number;
   borg_intentional_suppressions: number;

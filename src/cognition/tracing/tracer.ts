@@ -22,6 +22,7 @@ export type TurnTraceEventName =
   | "shared_state.compile.transitioned"
   | "shared_state.compile.completed"
   | "shared_state.compile.degraded"
+  | "shared_state.compile.add_rejected_cap_exceeded"
   | "shared_state.compile.repair_attempted"
   | "shared_state.compile.repair_succeeded"
   | "shared_state.compile.repair_failed"

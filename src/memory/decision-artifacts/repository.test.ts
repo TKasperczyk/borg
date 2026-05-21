@@ -11,9 +11,10 @@ import {
 } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { IdentityCasMismatchError, StorageError } from "../../util/errors.js";
-import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { createEntityId, createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
+import { serializeJsonValue } from "../../util/json-value.js";
 import { sharedStateMigrations } from "./migrations.js";
-import { SharedStateRepository } from "./repository.js";
+import { SharedStateRepository, type SharedStateOperation } from "./repository.js";
 
 describe("SharedStateRepository", () => {
   let db: SqliteDatabase;
@@ -74,6 +75,7 @@ describe("SharedStateRepository", () => {
       [
         {
           type: "add",
+          state_key: "decision.route",
           kind: "locked",
           text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
           owner_entity_id: owner,
@@ -93,12 +95,99 @@ describe("SharedStateRepository", () => {
     expect(artifact?.entries).toHaveLength(1);
     expect(artifact?.entries[0]).toMatchObject({
       kind: "locked",
+      state_key: "decision.route",
       text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
       owner_entity_id: owner,
       provenance_stream_entry_ids: [source],
       last_updated_stream_entry_ids: [source],
       superseded_by_id: null,
     });
+  });
+
+  it("reads legacy entries without a state key as null", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+
+    db.prepare(
+      `
+        INSERT INTO decision_artifacts (
+          audience_entity_id, record_version, created_at, updated_at,
+          last_compiled_at, last_compiled_stream_entry_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+    ).run(audience, 1, clock.now(), clock.now(), null, null);
+    db.prepare(
+      `
+        INSERT INTO decision_artifact_entries (
+          id, audience_entity_id, state_key, kind, text, owner_entity_id,
+          provenance_stream_entry_ids, last_updated_stream_entry_ids,
+          created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      entryId,
+      audience,
+      null,
+      "live",
+      "Legacy-shaped live entry",
+      null,
+      serializeJsonValue([source]),
+      serializeJsonValue([source]),
+      clock.now(),
+      clock.now(),
+      null,
+      0,
+      serializeJsonValue({
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [],
+        open_question_ids: [],
+      }),
+    );
+
+    const artifact = repository.get(audience);
+
+    expect(artifact?.entries[0]?.state_key).toBeNull();
+  });
+
+  it("rejects add writes without a state key and accepts keyed adds", () => {
+    const rejectedAudience = createEntityId();
+    const acceptedAudience = createEntityId();
+    const rejectedSource = createStreamEntryId();
+    const acceptedSource = createStreamEntryId();
+    const missingStateKeyOperation = {
+      type: "add",
+      state_key: null,
+      kind: "live",
+      text: "Unkeyed live entry",
+      provenance_stream_entry_ids: [rejectedSource],
+    } as unknown as SharedStateOperation;
+
+    let thrown: unknown;
+
+    try {
+      repository.upsert(rejectedAudience, [missingStateKeyOperation]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect(thrown).toMatchObject({
+      code: "SHARED_STATE_STATE_KEY_REQUIRED",
+    });
+
+    const artifact = repository.upsert(acceptedAudience, [
+      {
+        type: "add",
+        state_key: "x",
+        kind: "live",
+        text: "Keyed live entry",
+        provenance_stream_entry_ids: [acceptedSource],
+      },
+    ]);
+
+    expect(artifact?.entries[0]?.state_key).toBe("x");
   });
 
   it("rejects add, update, and supersede writes with quarantined source ids when a trust validator is configured", () => {
@@ -135,6 +224,7 @@ describe("SharedStateRepository", () => {
     const initial = trustedRepository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.workstream",
         kind: "locked",
         text: "Canonical workstream decision",
         provenance_stream_entry_ids: [allowedSource],
@@ -150,6 +240,7 @@ describe("SharedStateRepository", () => {
       trustedRepository.upsert(audience, [
         {
           type: "add",
+          state_key: "decision.workstream",
           kind: "locked",
           text: "Untrusted canonical decision",
           provenance_stream_entry_ids: [quarantinedSource],
@@ -161,6 +252,7 @@ describe("SharedStateRepository", () => {
         {
           type: "update",
           id: entryId!,
+          state_key: "decision.workstream",
           text: "Updated canonical workstream decision",
           add_provenance_stream_entry_ids: [quarantinedSource],
           last_updated_stream_entry_ids: [quarantinedSource],
@@ -173,6 +265,7 @@ describe("SharedStateRepository", () => {
           type: "supersede",
           id: entryId!,
           replacement: {
+            state_key: "decision.workstream",
             kind: "locked",
             text: "Replacement canonical workstream decision",
             provenance_stream_entry_ids: [quarantinedSource],
@@ -201,6 +294,7 @@ describe("SharedStateRepository", () => {
         trustedRepository.upsert(audience, [
           {
             type: "add",
+            state_key: "decision.workstream",
             kind: "locked",
             text: "Canonical workstream decision",
             provenance_stream_entry_ids: [allowedSource],
@@ -231,6 +325,7 @@ describe("SharedStateRepository", () => {
     const initial = trustedRepository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.workstream",
         kind: "locked",
         text: "Canonical workstream decision",
         provenance_stream_entry_ids: [firstSource],
@@ -246,6 +341,7 @@ describe("SharedStateRepository", () => {
           {
             type: "update",
             id: entryId!,
+            state_key: "decision.workstream",
             text: "Updated canonical workstream decision",
             add_provenance_stream_entry_ids: [secondSource],
             last_updated_stream_entry_ids: [quarantinedSource],
@@ -276,6 +372,7 @@ describe("SharedStateRepository", () => {
     const initial = trustedRepository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.workstream",
         kind: "locked",
         text: "Canonical workstream decision",
         provenance_stream_entry_ids: [firstSource],
@@ -292,6 +389,7 @@ describe("SharedStateRepository", () => {
             type: "supersede",
             id: entryId!,
             replacement: {
+              state_key: "decision.workstream",
               kind: "locked",
               text: "Replacement canonical workstream decision",
               provenance_stream_entry_ids: [replacementSource],
@@ -315,6 +413,7 @@ describe("SharedStateRepository", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "question.granada_pacing",
         kind: "live",
         text: "Question: Granada pacing",
         provenance_stream_entry_ids: [firstSource],
@@ -329,6 +428,7 @@ describe("SharedStateRepository", () => {
         {
           type: "update",
           id: entryId!,
+          state_key: "question.granada_pacing",
           text: "Question: Granada pacing and accommodation type",
           add_provenance_stream_entry_ids: [secondSource],
           last_updated_stream_entry_ids: [secondSource],
@@ -375,6 +475,7 @@ describe("SharedStateRepository", () => {
       [
         {
           type: "add",
+          state_key: "question.granada_pacing",
           kind: "live",
           text: "Question: Granada pacing",
           provenance_stream_entry_ids: [firstSource],
@@ -406,6 +507,7 @@ describe("SharedStateRepository", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "question.granada_pacing",
         kind: "live",
         text: "Question: Granada pacing",
         provenance_stream_entry_ids: [firstSource],
@@ -468,6 +570,7 @@ describe("SharedStateRepository", () => {
       firstWriter.upsert(audience, [
         {
           type: "add",
+          state_key: "question.toledo_placement",
           kind: "live",
           text: "Question: Toledo placement",
           provenance_stream_entry_ids: [firstSource],
@@ -486,6 +589,7 @@ describe("SharedStateRepository", () => {
           {
             type: "update",
             id: entryId!,
+            state_key: "question.toledo_placement",
             text: "Question: Toledo placement before Madrid",
             add_provenance_stream_entry_ids: [secondSource],
             last_updated_stream_entry_ids: [secondSource],
@@ -503,6 +607,7 @@ describe("SharedStateRepository", () => {
             {
               type: "update",
               id: entryId!,
+              state_key: "question.toledo_placement",
               text: "Question: Toledo placement after Madrid",
               add_provenance_stream_entry_ids: [thirdSource],
               last_updated_stream_entry_ids: [thirdSource],
@@ -527,6 +632,7 @@ describe("SharedStateRepository", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.route",
         kind: "locked",
         text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 2",
         provenance_stream_entry_ids: [firstSource],
@@ -540,6 +646,7 @@ describe("SharedStateRepository", () => {
         type: "supersede",
         id: oldEntryId!,
         replacement: {
+          state_key: "decision.route",
           kind: "locked",
           text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
           provenance_stream_entry_ids: [secondSource],
@@ -572,6 +679,7 @@ describe("SharedStateRepository", () => {
     repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.flight",
         kind: "locked",
         text: "Locked flight: SS to SVQ at 4:15pm",
         provenance_stream_entry_ids: [source],

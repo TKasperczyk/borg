@@ -153,6 +153,7 @@ const sharedStateLedgerDeltaConfigSchema = z
 const sharedStateConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
+    maxLiveEntriesPerKey: z.number().int().positive().default(2),
     kindSoftCaps: sharedStateKindSoftCapsSchema,
     renderMaxEntries: z.number().int().positive().default(40),
     renderMaxTokens: z.number().int().positive().default(5_000),

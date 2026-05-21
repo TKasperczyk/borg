@@ -88,6 +88,7 @@ function sharedStateEntry(input: {
   return {
     id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
+    state_key: `${input.kind}.decision`,
     kind: input.kind,
     text: input.text ?? `${input.kind} decision ${input.index}`,
     owner_entity_id: input.audience,
@@ -221,6 +222,7 @@ describe("renderSharedStateArtifact", () => {
         {
           id: createSharedStateEntryId(),
           audience_entity_id: audience,
+          state_key: "decision.oversized",
           kind: "locked",
           text: "oversized decision ".repeat(10_000),
           owner_entity_id: audience,

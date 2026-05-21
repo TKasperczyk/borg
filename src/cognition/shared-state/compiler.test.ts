@@ -45,15 +45,64 @@ import {
   DECISION_ARTIFACT_TOOL_NAME,
   SHARED_STATE_SYSTEM_PROMPT,
   SHARED_STATE_TOOL_NAME,
-  type EmitSharedStatePatch,
 } from "./compiler.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 
-function emitSharedStateArtifactPatchResponse(
-  patch: EmitSharedStatePatch,
-  toolName = SHARED_STATE_TOOL_NAME,
-) {
-  return emitRawSharedStateArtifactPatchResponse(patch, toolName);
+let defaultStateKeyCounter = 0;
+
+function emitSharedStateArtifactPatchResponse(patch: unknown, toolName = SHARED_STATE_TOOL_NAME) {
+  return emitRawSharedStateArtifactPatchResponse(withDefaultStateKeys(patch), toolName);
+}
+
+function withDefaultStateKeys(input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+
+  const patch = input as { operations?: unknown };
+
+  if (!Array.isArray(patch.operations)) {
+    return input;
+  }
+
+  return {
+    ...patch,
+    operations: patch.operations.map((operation) => {
+      if (operation === null || typeof operation !== "object" || Array.isArray(operation)) {
+        return operation;
+      }
+
+      const typedOperation = operation as {
+        type?: unknown;
+        state_key?: unknown;
+        replacement?: unknown;
+      };
+
+      if (typedOperation.type === "add" || typedOperation.type === "update") {
+        return {
+          state_key: `decision.fixture_${defaultStateKeyCounter++}`,
+          ...typedOperation,
+        };
+      }
+
+      if (
+        typedOperation.type === "supersede" &&
+        typedOperation.replacement !== null &&
+        typeof typedOperation.replacement === "object" &&
+        !Array.isArray(typedOperation.replacement)
+      ) {
+        return {
+          ...typedOperation,
+          replacement: {
+            state_key: `decision.fixture_${defaultStateKeyCounter++}`,
+            ...(typedOperation.replacement as Record<string, unknown>),
+          },
+        };
+      }
+
+      return operation;
+    }),
+  };
 }
 
 function emitRawSharedStateArtifactPatchResponse(
@@ -217,7 +266,10 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "Before proposing add, scan previous_artifact_summary.active_entries",
     );
-    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("third or later live entry on the same topic");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
+      "third or later live entry with the same state_key",
+    );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Every add, update, and supersede replacement");
   });
 
   it("passes relational slots as structured compiler context", async () => {
@@ -1066,6 +1118,7 @@ describe("compileSharedStateArtifact", () => {
       [
         {
           type: "add",
+          state_key: "decision.granada_duration",
           kind: "locked",
           text: "Granada is locked for 3 nights",
           provenance_stream_entry_ids: [strandedSource],
@@ -1147,6 +1200,7 @@ describe("compileSharedStateArtifact", () => {
       [
         {
           type: "add",
+          state_key: "decision.granada_duration",
           kind: "locked",
           text: "Granada is locked for 3 nights",
           provenance_stream_entry_ids: [strandedSource],
@@ -1334,6 +1388,7 @@ describe("compileSharedStateArtifact", () => {
       [
         {
           type: "add",
+          state_key: "decision.route",
           kind: "locked",
           text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 2",
           provenance_stream_entry_ids: [firstSource],
@@ -1404,6 +1459,7 @@ describe("compileSharedStateArtifact", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.live",
         kind: "live",
         text: "Question: Granada pacing",
         provenance_stream_entry_ids: [currentStreamEntryId],
@@ -1727,6 +1783,7 @@ describe("compileSharedStateArtifact", () => {
     repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.live",
         kind: "live",
         text: "Live shared-state decision",
         provenance_stream_entry_ids: [currentStreamEntryId],
@@ -1744,15 +1801,24 @@ describe("compileSharedStateArtifact", () => {
         active_entries?: {
           live?: Array<{ text: string }>;
         };
+        active_entries_by_state_key?: Record<string, Array<{ text: string }>>;
       };
     };
 
     expect(prompt.previous_artifact).toBeUndefined();
     expect(prompt.previous_artifact_summary?.active_entries?.live).toEqual([
       expect.objectContaining({
+        state_key: "decision.live",
         text: "Live shared-state decision",
       }),
     ]);
+    expect(prompt.previous_artifact_summary?.active_entries_by_state_key).toMatchObject({
+      "decision.live": [
+        expect.objectContaining({
+          text: "Live shared-state decision",
+        }),
+      ],
+    });
   });
 
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
@@ -1841,6 +1907,111 @@ describe("compileSharedStateArtifact", () => {
     );
     expect(trace.events.some((event) => event.event === "shared_state.compile.repair_failed")).toBe(
       false,
+    );
+  });
+
+  it("repairs live adds that exceed the per-key active-entry cap", async () => {
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "observation.recurring",
+        kind: "live",
+        text: "Live observation cluster A",
+        owner_entity_id: audience,
+        provenance_stream_entry_ids: [firstSource],
+        created_at: 1_000,
+        last_updated_at: 1_000,
+        rank: 0,
+      },
+      {
+        type: "add",
+        state_key: "observation.recurring",
+        kind: "live",
+        text: "Live observation cluster B",
+        owner_entity_id: audience,
+        provenance_stream_entry_ids: [secondSource],
+        created_at: 1_100,
+        last_updated_at: 1_100,
+        rank: 1,
+      },
+    ]);
+    const targetEntryId = activeEntries()[1]?.id;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "observation.recurring",
+              kind: "live",
+              text: "Third parallel live observation",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: targetEntryId,
+              state_key: "observation.recurring",
+              text: "Merged recurring observation cluster",
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      lifecycle: {
+        maxLiveEntriesPerKey: 2,
+      },
+    });
+    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
+      additional_prompt_sections?: string[];
+    };
+
+    expect(targetEntryId).toBeDefined();
+    expect(llmClient.requests).toHaveLength(2);
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "structural shared-state key compaction",
+    );
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain("observation.recurring");
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: targetEntryId,
+        state_key: "observation.recurring",
+        text: "Merged recurring observation cluster",
+      }),
+    ]);
+    expect(
+      activeEntries().filter((entry) => entry.state_key === "observation.recurring"),
+    ).toHaveLength(2);
+    expect(activeEntries().map((entry) => entry.text)).toContain(
+      "Merged recurring observation cluster",
+    );
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "shared_state.compile.add_rejected_cap_exceeded",
+          data: expect.objectContaining({
+            state_key: "observation.recurring",
+            current_count: 2,
+            proposed_count: 3,
+            max_live_entries_per_key: 2,
+            target_entry_id: targetEntryId,
+          }),
+        }),
+        expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
+      ]),
     );
   });
 
@@ -1935,6 +2106,7 @@ describe("compileSharedStateArtifact", () => {
       audience,
       Array.from({ length: 50 }, (_, index) => ({
         type: "add" as const,
+        state_key: `decision.lifecycle_${index}`,
         kind: "locked" as const,
         text: `Locked planning entry ${index}`,
         provenance_stream_entry_ids: [source],
@@ -2082,6 +2254,7 @@ describe("compileSharedStateArtifact", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.original_route",
         kind: "locked",
         text: "Original locked route",
         provenance_stream_entry_ids: [firstSource],
@@ -2098,6 +2271,7 @@ describe("compileSharedStateArtifact", () => {
         type: "supersede",
         id: originalId!,
         replacement: {
+          state_key: "decision.original_route",
           kind: "locked",
           text: "Replacement locked route",
           provenance_stream_entry_ids: [secondSource],
@@ -2109,6 +2283,7 @@ describe("compileSharedStateArtifact", () => {
       },
       {
         type: "add",
+        state_key: "decision.extra_route_1",
         kind: "locked",
         text: "Extra locked route 1",
         provenance_stream_entry_ids: [extraSource],
@@ -2118,6 +2293,7 @@ describe("compileSharedStateArtifact", () => {
       },
       {
         type: "add",
+        state_key: "decision.extra_route_2",
         kind: "locked",
         text: "Extra locked route 2",
         provenance_stream_entry_ids: [extraSource],
@@ -2169,6 +2345,7 @@ describe("compileSharedStateArtifact", () => {
       const original = repository.upsert(audience, [
         {
           type: "add",
+          state_key: `decision.route_${index}`,
           kind: "locked",
           text: originalText,
           provenance_stream_entry_ids: [source],
@@ -2186,6 +2363,7 @@ describe("compileSharedStateArtifact", () => {
           type: "supersede",
           id: originalId!,
           replacement: {
+            state_key: `decision.route_${index}`,
             kind: "locked",
             text: replacementText,
             provenance_stream_entry_ids: [source],
@@ -2241,6 +2419,7 @@ describe("compileSharedStateArtifact", () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
+        state_key: "decision.original_route",
         kind: "locked",
         text: "Original locked route",
         provenance_stream_entry_ids: [firstSource],
@@ -2258,6 +2437,7 @@ describe("compileSharedStateArtifact", () => {
         type: "supersede",
         id: originalId!,
         replacement: {
+          state_key: "decision.original_route",
           kind: "locked",
           text: "Replacement locked route",
           provenance_stream_entry_ids: [secondSource],

@@ -60,6 +60,13 @@ const sharedStateToolKindSchema = z.enum(SHARED_STATE_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .describe("Stream entry ids that support this artifact operation.");
+const stateKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .describe(
+    "Stable, domain-neutral dotted key for the shared-state dimension this entry belongs to.",
+  );
 export const canonicalizesSchema = z
   .object({
     goal_ids: z.array(z.string().trim().min(1)).optional(),
@@ -81,6 +88,7 @@ const ownerEntityIdSchema = z
 const addOperationSchema = z
   .object({
     type: z.literal("add"),
+    state_key: stateKeySchema,
     kind: sharedStateToolKindSchema,
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
@@ -93,6 +101,7 @@ const updateOperationSchema = z
   .object({
     type: z.literal("update"),
     id: z.string().trim().min(1),
+    state_key: stateKeySchema,
     kind: sharedStateToolKindSchema.optional(),
     text: z.string().trim().min(1).optional(),
     owner_entity_id: ownerEntityIdSchema,
@@ -103,6 +112,7 @@ const updateOperationSchema = z
 
 const replacementEntrySchema = z
   .object({
+    state_key: stateKeySchema,
     kind: sharedStateToolKindSchema,
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
@@ -216,6 +226,7 @@ export type SharedStateCompileDegradedReason =
 
 export type SharedStateLifecycleOptions = {
   maxActiveEntries?: number;
+  maxLiveEntriesPerKey?: number;
   kindSoftCaps?: Partial<Record<SharedStateEntryKind, number>>;
   newestStateChangeReservedSlots?: number;
 };
@@ -267,11 +278,19 @@ export type PatchRejection = {
     | "disallowed_source_stream_entry_id"
     | "quarantined_source_stream_entry_id"
     | "inactive_source_stream_entry_id"
-    | "empty_update";
+    | "empty_update"
+    | "live_entry_cap_exceeded_for_key"
+    | "locked_state_key_collision";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
   sourceStreamEntryId?: string;
   sourceTrustReason?: SharedStateSourceTrustRejectionReason | "unknown";
+  stateKey?: string;
+  currentCount?: number;
+  proposedCount?: number;
+  maxLiveEntriesPerKey?: number;
+  targetEntryId?: string;
+  lockedEntryIds?: string[];
 };
 
 export type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";
