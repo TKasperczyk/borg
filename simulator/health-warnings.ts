@@ -15,6 +15,7 @@ export const ACTIONS_PER_TURN_HIGH_THRESHOLD = 2;
 export const SALIENT_ACTIONS_PER_TURN_HIGH_THRESHOLD = 0.8;
 export const ACTION_RETIREMENT_RATIO_LOW_THRESHOLD = 0.3;
 export const ACTION_RETIREMENT_RATIO_MIN_TOTAL_ACTIONS = 10;
+export const DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD = 0;
 
 // Canonicalization is expected to remain sparse, but a large action set with
 // almost no canonicalization is a stabilization signal.
@@ -50,6 +51,10 @@ export const EXTRACTOR_MAX_TOKENS_SEVERE_THRESHOLD = 3;
 // a few expected review items.
 export const REVIEW_QUEUE_BACKLOG_HIGH_THRESHOLD = 50;
 export const SHARED_STATE_CAP_SATURATION_HIGH_THRESHOLD = 0.5;
+export const SHARED_STATE_STARVATION_HIGH_THRESHOLD = 1;
+export const SHARED_STATE_STARVATION_PERSISTENT_THRESHOLD = 1;
+export const SHARED_STATE_COMPILER_ADD_DOMINANT_THRESHOLD = 2;
+export const SHARED_STATE_COMPILER_MAX_TOKENS_HIGH_THRESHOLD = 1;
 
 export type SimulatorHealthWarningOptions = {
   scenarioKey?: string;
@@ -302,6 +307,17 @@ export function simulatorHealthWarningsForRows(
     }
   }
 
+  if (latest.dormant_archive_eligible_count > DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "dormant_archive_eligible_count_high",
+        threshold: DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD,
+        observedValue: latest.dormant_archive_eligible_count,
+      }),
+    );
+  }
+
   const maxRetrievalLatency = maxNumberRow(rows, (row) => row.retrieval_latency_ms);
 
   if (
@@ -474,6 +490,20 @@ export function simulatorHealthWarningsForRows(
   }
 
   if (
+    latest.shared_state_compiler_max_tokens_total >= SHARED_STATE_COMPILER_MAX_TOKENS_HIGH_THRESHOLD
+  ) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "shared_state_compiler_max_tokens_high",
+        threshold: SHARED_STATE_COMPILER_MAX_TOKENS_HIGH_THRESHOLD,
+        observedValue: latest.shared_state_compiler_max_tokens_total,
+        label: "decision_artifact_compiler",
+      }),
+    );
+  }
+
+  if (
     extractorMaxTokensStops !== null &&
     extractorMaxTokensStops.count >= EXTRACTOR_MAX_TOKENS_SEVERE_THRESHOLD
   ) {
@@ -540,6 +570,39 @@ export function simulatorHealthWarningsForRows(
         kind: "shared_state_cap_saturation_high",
         threshold: SHARED_STATE_CAP_SATURATION_HIGH_THRESHOLD,
         observedValue: sharedStateCapSaturation,
+      }),
+    );
+  }
+
+  if (latest.shared_state_live_starvation_ever) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "shared_state_starvation_high",
+        threshold: SHARED_STATE_STARVATION_HIGH_THRESHOLD,
+        observedValue: 1,
+      }),
+    );
+  }
+
+  if (latest.shared_state_live_starvation_final) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "shared_state_starvation_persistent",
+        threshold: SHARED_STATE_STARVATION_PERSISTENT_THRESHOLD,
+        observedValue: 1,
+      }),
+    );
+  }
+
+  if (latest.shared_state_add_to_update_ratio > SHARED_STATE_COMPILER_ADD_DOMINANT_THRESHOLD) {
+    warnings.push(
+      latestWarning({
+        row: latest,
+        kind: "shared_state_compiler_add_dominant",
+        threshold: SHARED_STATE_COMPILER_ADD_DOMINANT_THRESHOLD,
+        observedValue: latest.shared_state_add_to_update_ratio,
       }),
     );
   }

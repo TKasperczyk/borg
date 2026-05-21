@@ -60,7 +60,10 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   "- update modifies an existing entry while preserving its id.",
   "- supersede replaces an existing entry when the conversation changes or narrows it.",
   "- prune removes stale shared-state clutter only when the supplied context makes it clearly obsolete.",
-  "- If a similar entry already exists, prefer update or supersede instead of adding a new one.",
+  "- Before proposing add, scan previous_artifact_summary.active_entries. If an active entry covers the same topic, decision, constraint, or observation-type surface, use update or supersede instead.",
+  "- If the new entry would become the third or later live entry on the same topic, you MUST update or supersede older live entries rather than add another parallel entry.",
+  '- Example: "User is asking about X" and an active live entry already covers X -> update that entry.',
+  '- Example: "Newer observation about a repeated state type" and an active live entry covers that same state type -> supersede the older entry if the new evidence replaces it.',
   "- Prefer update, supersede, and prune over add whenever the existing shared-state artifact already carries the relevant shared state.",
   "- When locking durable shared state, actively look for older live fragments about the same topic or decision and supersede or prune them instead of leaving parallel live entries to accumulate.",
 ].join("\n");

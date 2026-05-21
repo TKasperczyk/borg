@@ -74,6 +74,10 @@ export type MetricsRow = {
   borg_owned_salient_active_actions: number;
   participant_owned_salient_active_actions: number;
   dormant_actions_total: number;
+  dormant_not_archive_eligible_count: number;
+  dormant_archive_eligible_count: number;
+  archive_oldest_inactive_turns: number;
+  archive_inactive_turn_distribution: Record<string, number>;
   stale_actions_omitted_from_prompt: number;
   actions_per_turn: number;
   salient_actions_per_turn: number;
@@ -150,6 +154,8 @@ export type MetricsRow = {
   extractor_max_tokens_stop_count: number;
   extractor_max_tokens_total_by_label: Record<string, number>;
   extractor_degraded_total_by_label: Record<string, number>;
+  shared_state_compiler_max_tokens_total: number;
+  shared_state_compiler_degraded_total: number;
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
   capability_boundary_refusal_count: number;
@@ -159,6 +165,10 @@ export type MetricsRow = {
   shared_state_live_entry_starvation: boolean;
   shared_state_newest_entries_reserved: number;
   shared_state_live_starvation_with_reserved: boolean;
+  shared_state_live_starvation_ever: boolean;
+  shared_state_live_starvation_final: boolean;
+  shared_state_compiler_operations_total_by_kind: Record<string, number>;
+  shared_state_add_to_update_ratio: number;
   simulator_persona_failures: number;
   borg_hard_aborted_turns: number;
   borg_intentional_suppressions: number;
@@ -178,7 +188,11 @@ export type SimulatorHealthWarningKind =
   | "salient_actions_per_turn_high"
   | "action_retirement_ratio_low"
   | "action_canonicalization_rate_low"
+  | "dormant_archive_eligible_count_high"
   | "shared_state_cap_saturation_high"
+  | "shared_state_starvation_high"
+  | "shared_state_starvation_persistent"
+  | "shared_state_compiler_add_dominant"
   | "retrieval_latency_max_high"
   | "deliberation_latency_max_high"
   | "semantic_revision_llm_calls_high"
@@ -191,6 +205,7 @@ export type SimulatorHealthWarningKind =
   | "corrective_preference_degraded_rate_high"
   | "extractor_max_tokens_high"
   | "extractor_max_tokens_severe"
+  | "shared_state_compiler_max_tokens_high"
   | "review_queue_backlog_high";
 
 export type SimulatorHealthWarning = {

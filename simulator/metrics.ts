@@ -82,6 +82,10 @@ const SHARED_STATE_RECENT_RENDER_KINDS = ["live", "pending", "invalidated"] as c
 const DEFAULT_SHARED_STATE_MAX_ACTIVE_ENTRIES = 40;
 const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
 const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;
+const ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
+const ACTION_INACTIVE_TURN_BUCKETS = ["0-15", "15-20", "20-30", "30+"] as const;
+const SHARED_STATE_COMPILER_LABEL = "decision_artifact_compiler";
+const SHARED_STATE_COMPILER_OPERATION_KINDS = ["add", "update", "supersede", "prune"] as const;
 const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
   ...GOAL_PROMOTION_CLASSIFICATIONS,
   "invalid_classification",
@@ -105,6 +109,10 @@ type MemoryBandMetricCounts = Pick<
   | "borg_owned_salient_active_actions"
   | "participant_owned_salient_active_actions"
   | "dormant_actions_total"
+  | "dormant_not_archive_eligible_count"
+  | "dormant_archive_eligible_count"
+  | "archive_oldest_inactive_turns"
+  | "archive_inactive_turn_distribution"
   | "stale_actions_omitted_from_prompt"
   | "actions_per_turn"
   | "salient_actions_per_turn"
@@ -198,6 +206,16 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_live_entry_starvation"
   | "shared_state_newest_entries_reserved"
   | "shared_state_live_starvation_with_reserved"
+  | "shared_state_live_starvation_ever"
+  | "shared_state_live_starvation_final"
+>;
+
+type SharedStateCompilerHealthMetricCounts = Pick<
+  MetricsRow,
+  | "shared_state_compiler_max_tokens_total"
+  | "shared_state_compiler_degraded_total"
+  | "shared_state_compiler_operations_total_by_kind"
+  | "shared_state_add_to_update_ratio"
 >;
 
 type ReviewResolverMetricCounts = {
@@ -382,6 +400,22 @@ function canonicalizeTraceRecords(records: readonly TraceRecord[]): TraceRecord[
 
     return event === record.event ? record : { ...record, event };
   });
+}
+
+function archiveAfterInactiveTurnsFromTrace(records: readonly TraceRecord[]): number {
+  for (const record of [...records].reverse()) {
+    if (record.event !== "action_archive_scan.completed") {
+      continue;
+    }
+
+    const archiveAfterTurns = traceOptionalNumber(record, "archive_after_turns");
+
+    if (archiveAfterTurns !== null && archiveAfterTurns >= 0) {
+      return Math.floor(archiveAfterTurns);
+    }
+  }
+
+  return ACTION_ARCHIVE_AFTER_INACTIVE_TURNS;
 }
 
 function streamContentEvent(content: unknown): string | null {
@@ -642,6 +676,7 @@ function sharedStateCapPressureMetrics(
   let liveEntryStarvation = false;
   let newestEntriesReserved = 0;
   let liveStarvationWithReserved = false;
+  let liveStarvationFinal = false;
 
   for (const record of completed) {
     const activeEntryCount = traceOptionalNumber(record, "artifact_active_entry_count");
@@ -667,9 +702,14 @@ function sharedStateCapPressureMetrics(
       liveEntryStarvation = true;
     }
 
-    if (record.live_starvation_with_reserved === true || liveStarvedThisRecord) {
+    const starvedWithReservedThisRecord =
+      record.live_starvation_with_reserved === true || liveStarvedThisRecord;
+
+    if (starvedWithReservedThisRecord) {
       liveStarvationWithReserved = true;
     }
+
+    liveStarvationFinal = starvedWithReservedThisRecord;
   }
 
   return {
@@ -679,6 +719,64 @@ function sharedStateCapPressureMetrics(
     shared_state_live_entry_starvation: liveEntryStarvation,
     shared_state_newest_entries_reserved: newestEntriesReserved,
     shared_state_live_starvation_with_reserved: liveStarvationWithReserved,
+    shared_state_live_starvation_ever: liveStarvationWithReserved,
+    shared_state_live_starvation_final: liveStarvationFinal,
+  };
+}
+
+function zeroSharedStateCompilerOperationCounts(): Record<
+  (typeof SHARED_STATE_COMPILER_OPERATION_KINDS)[number],
+  number
+> {
+  return zeroCounts(SHARED_STATE_COMPILER_OPERATION_KINDS);
+}
+
+function sharedStateCompilerOperationCountsByKind(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = zeroSharedStateCompilerOperationCounts();
+
+  for (const record of traceRecords) {
+    if (record.event !== "shared_state.compile.completed" || record.applied !== true) {
+      continue;
+    }
+
+    for (const kind of SHARED_STATE_COMPILER_OPERATION_KINDS) {
+      counts[kind] += traceObjectNumber(record, "operation_counts_by_kind", kind);
+    }
+  }
+
+  return counts;
+}
+
+function sharedStateAddToUpdateRatio(counts: Record<string, number>): number {
+  const addCount = counts.add ?? 0;
+  const consolidationCount = (counts.update ?? 0) + (counts.supersede ?? 0);
+
+  if (addCount <= 0) {
+    return 0;
+  }
+
+  return addCount / Math.max(1, consolidationCount);
+}
+
+function sharedStateCompilerHealthMetrics(
+  traceRecords: readonly TraceRecord[],
+): SharedStateCompilerHealthMetricCounts {
+  const operationsTotalByKind = sharedStateCompilerOperationCountsByKind(traceRecords);
+
+  return {
+    shared_state_compiler_max_tokens_total: traceRecords.filter(
+      (record) =>
+        record.event === "llm_call.completed" &&
+        traceLabel(record) === SHARED_STATE_COMPILER_LABEL &&
+        traceStopReason(record) === "max_tokens",
+    ).length,
+    shared_state_compiler_degraded_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.degraded",
+    ).length,
+    shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
+    shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
   };
 }
 
@@ -1075,6 +1173,88 @@ function dormantActionCount(
   ).length;
 }
 
+function archiveInactiveTurns(
+  action: Pick<ActionRecord, "last_referenced_turn_counter">,
+  turnCounter: number,
+): number | null {
+  if (action.last_referenced_turn_counter === null) {
+    return null;
+  }
+
+  return Math.max(0, turnCounter - action.last_referenced_turn_counter);
+}
+
+function archiveInactiveTurnBucket(
+  inactiveTurns: number,
+): (typeof ACTION_INACTIVE_TURN_BUCKETS)[number] {
+  if (inactiveTurns < 15) {
+    return "0-15";
+  }
+
+  if (inactiveTurns < 20) {
+    return "15-20";
+  }
+
+  if (inactiveTurns < 30) {
+    return "20-30";
+  }
+
+  return "30+";
+}
+
+function emptyArchiveInactiveTurnDistribution(): Record<
+  (typeof ACTION_INACTIVE_TURN_BUCKETS)[number],
+  number
+> {
+  return zeroCounts(ACTION_INACTIVE_TURN_BUCKETS);
+}
+
+function actionArchiveVisibilityMetrics(
+  actions: readonly Pick<ActionRecord, "last_referenced_turn_counter">[],
+  turnCounter: number,
+  archiveAfterInactiveTurns: number,
+): Pick<
+  MemoryBandMetricCounts,
+  | "dormant_not_archive_eligible_count"
+  | "dormant_archive_eligible_count"
+  | "archive_oldest_inactive_turns"
+  | "archive_inactive_turn_distribution"
+> {
+  const distribution = emptyArchiveInactiveTurnDistribution();
+  let oldestInactiveTurns = 0;
+  let dormantNotArchiveEligibleCount = 0;
+  let dormantArchiveEligibleCount = 0;
+
+  for (const action of actions) {
+    const inactiveTurns = archiveInactiveTurns(action, turnCounter);
+
+    if (inactiveTurns === null) {
+      continue;
+    }
+
+    distribution[archiveInactiveTurnBucket(inactiveTurns)] += 1;
+    oldestInactiveTurns = Math.max(oldestInactiveTurns, inactiveTurns);
+
+    if (inactiveTurns < ACTION_DORMANT_AFTER_INACTIVE_TURNS) {
+      continue;
+    }
+
+    if (inactiveTurns < archiveAfterInactiveTurns) {
+      dormantNotArchiveEligibleCount += 1;
+      continue;
+    }
+
+    dormantArchiveEligibleCount += 1;
+  }
+
+  return {
+    dormant_not_archive_eligible_count: dormantNotArchiveEligibleCount,
+    dormant_archive_eligible_count: dormantArchiveEligibleCount,
+    archive_oldest_inactive_turns: oldestInactiveTurns,
+    archive_inactive_turn_distribution: distribution,
+  };
+}
+
 function emptyActionPromptSalienceSummary(): ActionPromptSalienceSummary {
   return {
     promptSalientActionsTotal: 0,
@@ -1406,6 +1586,7 @@ export class MetricsCapture {
     borg: Borg,
     sessionId: SessionId,
     turnCounter: number,
+    archiveAfterInactiveTurns: number,
   ): Promise<MemoryBandMetricCounts> {
     const actionRecordCountByState = borg.actions.countByState();
     const allActions = borg.actions.list({ limit: LARGE_COUNT_LIMIT });
@@ -1440,6 +1621,11 @@ export class MetricsCapture {
 
     const totalActions = borg.actions.count();
     const dormantActionsTotal = dormantActionCount(activeActions, turnCounter);
+    const archiveVisibilityMetrics = actionArchiveVisibilityMetrics(
+      activeActions,
+      turnCounter,
+      archiveAfterInactiveTurns,
+    );
     const terminalActionCount = actionRecordCountForStates(
       actionRecordCountByState,
       TERMINAL_ACTION_STATES,
@@ -1464,6 +1650,12 @@ export class MetricsCapture {
       participant_owned_salient_active_actions:
         promptSalienceSummary.participantOwnedSalientActiveActions,
       dormant_actions_total: dormantActionsTotal,
+      dormant_not_archive_eligible_count:
+        archiveVisibilityMetrics.dormant_not_archive_eligible_count,
+      dormant_archive_eligible_count: archiveVisibilityMetrics.dormant_archive_eligible_count,
+      archive_oldest_inactive_turns: archiveVisibilityMetrics.archive_oldest_inactive_turns,
+      archive_inactive_turn_distribution:
+        archiveVisibilityMetrics.archive_inactive_turn_distribution,
       stale_actions_omitted_from_prompt: promptSalienceSummary.staleActionsOmittedFromPrompt,
       actions_per_turn: actionRatio(totalActions, turnCounter),
       salient_actions_per_turn: actionRatio(
@@ -1606,10 +1798,12 @@ export class MetricsCapture {
     );
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
+    const archiveAfterInactiveTurns = archiveAfterInactiveTurnsFromTrace(allTraceRecords);
     const memoryBandMetrics = await this.captureMemoryBandMetrics(
       borg,
       context.sessionId,
       turnCounter,
+      archiveAfterInactiveTurns,
     );
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords,
@@ -1630,6 +1824,7 @@ export class MetricsCapture {
       cumulativeTraceRecords: allTraceRecords,
     });
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
+    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics(
       traceRecordsSinceLastCapture,
@@ -1701,6 +1896,10 @@ export class MetricsCapture {
       participant_owned_salient_active_actions:
         memoryBandMetrics.participant_owned_salient_active_actions,
       dormant_actions_total: memoryBandMetrics.dormant_actions_total,
+      dormant_not_archive_eligible_count: memoryBandMetrics.dormant_not_archive_eligible_count,
+      dormant_archive_eligible_count: memoryBandMetrics.dormant_archive_eligible_count,
+      archive_oldest_inactive_turns: memoryBandMetrics.archive_oldest_inactive_turns,
+      archive_inactive_turn_distribution: memoryBandMetrics.archive_inactive_turn_distribution,
       stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
       actions_per_turn: memoryBandMetrics.actions_per_turn,
       salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
@@ -1806,6 +2005,10 @@ export class MetricsCapture {
         extractorHealthMetricCounts.extractor_max_tokens_total_by_label,
       extractor_degraded_total_by_label:
         extractorHealthMetricCounts.extractor_degraded_total_by_label,
+      shared_state_compiler_max_tokens_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_max_tokens_total,
+      shared_state_compiler_degraded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_degraded_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -1820,6 +2023,14 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_newest_entries_reserved,
       shared_state_live_starvation_with_reserved:
         sharedStateCapPressureMetricCounts.shared_state_live_starvation_with_reserved,
+      shared_state_live_starvation_ever:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_ever,
+      shared_state_live_starvation_final:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_final,
+      shared_state_compiler_operations_total_by_kind:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_operations_total_by_kind,
+      shared_state_add_to_update_ratio:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
@@ -1862,10 +2073,12 @@ export class MetricsCapture {
     );
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
+    const archiveAfterInactiveTurns = archiveAfterInactiveTurnsFromTrace(allTraceRecords);
     const memoryBandMetrics = await this.captureMemoryBandMetrics(
       borg,
       context.sessionId,
       turnCounter,
+      archiveAfterInactiveTurns,
     );
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
     const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);
@@ -1885,6 +2098,7 @@ export class MetricsCapture {
       cumulativeTraceRecords: allTraceRecords,
     });
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
+    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords: [],
@@ -1940,6 +2154,10 @@ export class MetricsCapture {
       participant_owned_salient_active_actions:
         memoryBandMetrics.participant_owned_salient_active_actions,
       dormant_actions_total: memoryBandMetrics.dormant_actions_total,
+      dormant_not_archive_eligible_count: memoryBandMetrics.dormant_not_archive_eligible_count,
+      dormant_archive_eligible_count: memoryBandMetrics.dormant_archive_eligible_count,
+      archive_oldest_inactive_turns: memoryBandMetrics.archive_oldest_inactive_turns,
+      archive_inactive_turn_distribution: memoryBandMetrics.archive_inactive_turn_distribution,
       stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
       actions_per_turn: memoryBandMetrics.actions_per_turn,
       salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
@@ -2045,6 +2263,10 @@ export class MetricsCapture {
         extractorHealthMetricCounts.extractor_max_tokens_total_by_label,
       extractor_degraded_total_by_label:
         extractorHealthMetricCounts.extractor_degraded_total_by_label,
+      shared_state_compiler_max_tokens_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_max_tokens_total,
+      shared_state_compiler_degraded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_degraded_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -2059,6 +2281,14 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_newest_entries_reserved,
       shared_state_live_starvation_with_reserved:
         sharedStateCapPressureMetricCounts.shared_state_live_starvation_with_reserved,
+      shared_state_live_starvation_ever:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_ever,
+      shared_state_live_starvation_final:
+        sharedStateCapPressureMetricCounts.shared_state_live_starvation_final,
+      shared_state_compiler_operations_total_by_kind:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_operations_total_by_kind,
+      shared_state_add_to_update_ratio:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_to_update_ratio,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,

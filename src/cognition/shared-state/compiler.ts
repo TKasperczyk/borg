@@ -26,6 +26,7 @@ import {
 import {
   parseResponse,
   traceCompileCompleted,
+  traceCompileDegraded,
   traceCompileOverBudget,
   traceLlmCallError,
   traceLlmCallResponse,
@@ -91,6 +92,29 @@ function emptyPatch(): EmitSharedStatePatch {
   return { operations: [] };
 }
 
+type SharedStateOperationKind = EmitSharedStatePatch["operations"][number]["type"];
+
+function emptyOperationCountsByKind(): Record<SharedStateOperationKind, number> {
+  return {
+    add: 0,
+    update: 0,
+    supersede: 0,
+    prune: 0,
+  };
+}
+
+function operationCountsByKind(
+  operations: readonly { type: SharedStateOperationKind }[],
+): Record<SharedStateOperationKind, number> {
+  const counts = emptyOperationCountsByKind();
+
+  for (const operation of operations) {
+    counts[operation.type] += 1;
+  }
+
+  return counts;
+}
+
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   const seen = new Set<string>();
   const unique: StreamEntryId[] = [];
@@ -142,6 +166,14 @@ async function degraded(
   reason: SharedStateCompileDegradedReason,
   error?: unknown,
 ): Promise<EmitSharedStatePatch> {
+  traceCompileDegraded({
+    tracer: input.tracer,
+    turnId: input.turnId,
+    audienceEntityId: input.audienceEntityId,
+    reason,
+    error,
+  });
+
   try {
     await input.onDegraded?.(reason, error);
   } catch {
@@ -358,6 +390,7 @@ export async function compileSharedStateArtifact(
   });
   const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
   const operations = dedupedCanonicalizations.operations;
+  const operationCounts = operationCountsByKind(operations);
   const prunedEntryCountThisTurn = operations.filter(
     (operation) => operation.type === "prune",
   ).length;
@@ -385,6 +418,7 @@ export async function compileSharedStateArtifact(
         artifact: previousArtifact,
         prunedEntryCountThisTurn,
         supersededEntryCountThisTurn,
+        operationCountsByKind: operationCounts,
         nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
       });
 
@@ -439,6 +473,7 @@ export async function compileSharedStateArtifact(
       artifact: markedArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      operationCountsByKind: operationCounts,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
@@ -502,6 +537,7 @@ export async function compileSharedStateArtifact(
       artifact: nextArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      operationCountsByKind: operationCounts,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
   } catch (error) {
@@ -513,6 +549,7 @@ export async function compileSharedStateArtifact(
       artifact: previousArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      operationCountsByKind: operationCounts,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 

@@ -1,5 +1,8 @@
 import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm/index.js";
-import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
+import type {
+  SharedStateArtifact,
+  SharedStateOperation,
+} from "../../memory/decision-artifacts/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
@@ -135,6 +138,7 @@ export function traceCompileCompleted(options: {
   maxActiveEntries?: number;
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
+  operationCountsByKind?: Record<SharedStateOperation["type"], number>;
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
@@ -175,6 +179,14 @@ export function traceCompileCompleted(options: {
         artifactSummary.omittedByKind.live > 0 && artifactSummary.renderedByKind.locked > 0,
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
+      operation_counts_by_kind: toTraceJsonValue(
+        options.operationCountsByKind ?? {
+          add: 0,
+          update: 0,
+          supersede: 0,
+          prune: 0,
+        },
+      ),
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
       omitted_by_kind: toTraceJsonValue(artifactSummary.omittedByKind),
       ledger_mode: options.ledgerMode,
@@ -185,6 +197,27 @@ export function traceCompileCompleted(options: {
       ),
     });
   }
+}
+
+export function traceCompileDegraded(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  reason: string;
+  error?: unknown;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.degraded", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    reason: options.reason,
+    ...(options.error === undefined
+      ? {}
+      : { error: options.error instanceof Error ? options.error.message : String(options.error) }),
+  });
 }
 
 export function traceCompileOverBudget(options: {

@@ -380,6 +380,15 @@ function metricsRow(turnCounter: number): MetricsRow {
     borg_owned_salient_active_actions: 0,
     participant_owned_salient_active_actions: 0,
     dormant_actions_total: 0,
+    dormant_not_archive_eligible_count: 0,
+    dormant_archive_eligible_count: 0,
+    archive_oldest_inactive_turns: 0,
+    archive_inactive_turn_distribution: {
+      "0-15": 0,
+      "15-20": 0,
+      "20-30": 0,
+      "30+": 0,
+    },
     stale_actions_omitted_from_prompt: 0,
     actions_per_turn: 0,
     salient_actions_per_turn: 0,
@@ -477,6 +486,8 @@ function metricsRow(turnCounter: number): MetricsRow {
     extractor_max_tokens_stop_count: 0,
     extractor_max_tokens_total_by_label: {},
     extractor_degraded_total_by_label: {},
+    shared_state_compiler_max_tokens_total: 0,
+    shared_state_compiler_degraded_total: 0,
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
@@ -486,6 +497,15 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_live_entry_starvation: false,
     shared_state_newest_entries_reserved: 0,
     shared_state_live_starvation_with_reserved: false,
+    shared_state_live_starvation_ever: false,
+    shared_state_live_starvation_final: false,
+    shared_state_compiler_operations_total_by_kind: {
+      add: 0,
+      update: 0,
+      supersede: 0,
+      prune: 0,
+    },
+    shared_state_add_to_update_ratio: 0,
     simulator_persona_failures: 0,
     borg_hard_aborted_turns: 0,
     borg_intentional_suppressions: 0,
@@ -655,6 +675,17 @@ describe("SimulatorRunner", () => {
         capability_overclaim_count: 1,
         capability_ambiguity_count: 2,
         capability_boundary_refusal_count: 3,
+        dormant_not_archive_eligible_count: 3,
+        dormant_archive_eligible_count: 1,
+        archive_oldest_inactive_turns: 24,
+        archive_inactive_turn_distribution: {
+          "0-15": 4,
+          "15-20": 3,
+          "20-30": 1,
+          "30+": 0,
+        },
+        shared_state_live_starvation_ever: true,
+        shared_state_live_starvation_final: false,
         closure_loop_completed_count: 9,
         closure_loop_degraded_count: 1,
         corrective_preference_completed_count: 8,
@@ -668,11 +699,24 @@ describe("SimulatorRunner", () => {
           closure_loop_classifier: 26,
           corrective_preference_extractor: 1,
         },
+        shared_state_compiler_max_tokens_total: 1,
+        shared_state_compiler_degraded_total: 2,
+        shared_state_compiler_operations_total_by_kind: {
+          add: 5,
+          update: 1,
+          supersede: 1,
+          prune: 2,
+        },
+        shared_state_add_to_update_ratio: 2.5,
       },
       durationMs: 1,
     });
 
     expect(report).toContain("Capability audit: overclaims 1, ambiguities 2, boundary refusals 3");
+    expect(report).toContain(
+      "Action archive visibility: dormant below archive threshold 3, archive-eligible still active 1, oldest inactive 24 turns, inactive buckets 0-15=4, 15-20=3, 20-30=1, 30+=0",
+    );
+    expect(report).toContain("live starvation ever true, live starvation final false");
     expect(report).toContain(
       "Extractor health: closure loop degraded 1/9, corrective preference degraded 2/8, max-token stops 4",
     );
@@ -683,6 +727,13 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Degraded by label: closure_loop_classifier=26, corrective_preference_extractor=1",
     );
+    expect(report).toContain("## Cumulative Compiler Health");
+    expect(report).toContain("Shared-state compiler max-token stops: 1");
+    expect(report).toContain("Shared-state compiler degraded events: 2");
+    expect(report).toContain(
+      "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
+    );
+    expect(report).toContain("Shared-state compiler add/update ratio: 2.50");
   });
 
   it("formats overseer checkpoint statuses as labelled fields", () => {
@@ -1196,6 +1247,26 @@ describe("SimulatorRunner", () => {
         expectedKinds: ["extractor_max_tokens_high", "extractor_max_tokens_severe"],
       },
       {
+        name: "shared-state compiler max tokens fires on any stop",
+        rows: [
+          {
+            ...metricsRow(12),
+            shared_state_compiler_max_tokens_total: 1,
+          },
+        ],
+        expectedKinds: ["shared_state_compiler_max_tokens_high"],
+      },
+      {
+        name: "dormant archive-eligible active actions fire",
+        rows: [
+          {
+            ...metricsRow(12),
+            dormant_archive_eligible_count: 1,
+          },
+        ],
+        expectedKinds: ["dormant_archive_eligible_count_high"],
+      },
+      {
         name: "semantic revision degraded high fires at threshold",
         rows: [
           {
@@ -1325,6 +1396,48 @@ describe("SimulatorRunner", () => {
             ...metricsRow(100),
             shared_state_at_cap_turns: 25,
             shared_state_compile_evaluated_turns: 50,
+          },
+        ],
+        expectedKinds: [],
+      },
+      {
+        name: "shared-state starvation recovered still fires ever warning",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_live_starvation_ever: true,
+            shared_state_live_starvation_final: false,
+          },
+        ],
+        expectedKinds: ["shared_state_starvation_high"],
+      },
+      {
+        name: "shared-state starvation persistent fires both warnings",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_live_starvation_ever: true,
+            shared_state_live_starvation_final: true,
+          },
+        ],
+        expectedKinds: ["shared_state_starvation_high", "shared_state_starvation_persistent"],
+      },
+      {
+        name: "shared-state compiler add dominance fires above threshold",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_add_to_update_ratio: 2.01,
+          },
+        ],
+        expectedKinds: ["shared_state_compiler_add_dominant"],
+      },
+      {
+        name: "shared-state compiler add dominance does not fire at threshold",
+        rows: [
+          {
+            ...metricsRow(100),
+            shared_state_add_to_update_ratio: 2,
           },
         ],
         expectedKinds: [],

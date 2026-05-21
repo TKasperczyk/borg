@@ -95,6 +95,10 @@ const TURN_METRICS_KEY_ORDER = [
   "borg_owned_salient_active_actions",
   "participant_owned_salient_active_actions",
   "dormant_actions_total",
+  "dormant_not_archive_eligible_count",
+  "dormant_archive_eligible_count",
+  "archive_oldest_inactive_turns",
+  "archive_inactive_turn_distribution",
   "stale_actions_omitted_from_prompt",
   "actions_per_turn",
   "salient_actions_per_turn",
@@ -167,6 +171,8 @@ const TURN_METRICS_KEY_ORDER = [
   "extractor_max_tokens_stop_count",
   "extractor_max_tokens_total_by_label",
   "extractor_degraded_total_by_label",
+  "shared_state_compiler_max_tokens_total",
+  "shared_state_compiler_degraded_total",
   "capability_overclaim_count",
   "capability_ambiguity_count",
   "capability_boundary_refusal_count",
@@ -176,6 +182,10 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_live_entry_starvation",
   "shared_state_newest_entries_reserved",
   "shared_state_live_starvation_with_reserved",
+  "shared_state_live_starvation_ever",
+  "shared_state_live_starvation_final",
+  "shared_state_compiler_operations_total_by_kind",
+  "shared_state_add_to_update_ratio",
   "simulator_persona_failures",
   "borg_hard_aborted_turns",
   "borg_intentional_suppressions",
@@ -344,6 +354,43 @@ function fakeBorg(
           ? [{ kind: "agent_suppressed" }]
           : [];
       },
+    },
+  } as unknown as Borg;
+}
+
+function fakeBorgWithActions(actions: readonly ActionRecord[]): Borg {
+  const activeStates = new Set(["considering", "committed_to_do", "scheduled", "unknown"]);
+  const countByState = () => {
+    const counts = zeroCounts(ACTION_STATES);
+
+    for (const action of actions) {
+      counts[action.state] += 1;
+    }
+
+    return counts;
+  };
+
+  return {
+    ...fakeBorg(),
+    actions: {
+      count: () => actions.length,
+      countByState,
+      countCanonicalized: () => 0,
+      countActive: () => actions.filter((action) => activeStates.has(action.state)).length,
+      getCreationCountsBySource: () => ({
+        extractor: 0,
+        reflector: 0,
+        api: 0,
+        unknown: 0,
+      }),
+      countCompletedSince: () => 0,
+      latestCompletedAt: () => null,
+      listCompletedIds: () => [],
+      list: (filter: { states?: readonly ActionRecord["state"][] } = {}) =>
+        actions.filter(
+          (action) => filter.states === undefined || filter.states.includes(action.state),
+        ),
+      findSimilarDescriptionPairs: async () => [],
     },
   } as unknown as Borg;
 }
@@ -720,6 +767,100 @@ describe("MetricsCapture", () => {
     expect(row.closure_loop_degraded_count).toBe(0);
   });
 
+  it("captures shared-state compiler health and operation bias totals", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-compiler-1",
+          event: "llm_call.completed",
+          label: "decision_artifact_compiler",
+          stopReason: "max_tokens",
+        },
+        {
+          ts: 101,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.degraded",
+          reason: "missing_tool_call",
+        },
+        {
+          ts: 102,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.completed",
+          applied: true,
+          operation_counts_by_kind: {
+            add: 4,
+            update: 1,
+            supersede: 1,
+            prune: 0,
+          },
+        },
+        {
+          ts: 103,
+          turnId: "turn-compiler-failed",
+          event: "shared_state.compile.completed",
+          applied: false,
+          operation_counts_by_kind: {
+            add: 9,
+            update: 0,
+            supersede: 0,
+            prune: 0,
+          },
+        },
+        {
+          ts: 200,
+          turnId: "turn-compiler-2",
+          event: "llm_call.completed",
+          label: "decision_artifact_compiler",
+          stopReason: "tool_use",
+        },
+        {
+          ts: 201,
+          turnId: "turn-compiler-2",
+          event: "shared_state.compile.completed",
+          applied: true,
+          operation_counts_by_kind: {
+            add: 1,
+            update: 0,
+            supersede: 0,
+            prune: 0,
+          },
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+    const row = await capture.capture(fakeBorg(), "turn-compiler-2", 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(row.shared_state_compiler_max_tokens_total).toBe(1);
+    expect(row.shared_state_compiler_degraded_total).toBe(1);
+    expect(row.shared_state_compiler_operations_total_by_kind).toEqual({
+      add: 5,
+      update: 1,
+      supersede: 1,
+      prune: 0,
+    });
+    expect(row.shared_state_add_to_update_ratio).toBe(2.5);
+    expect(capture.listHealthWarnings()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "shared_state_compiler_max_tokens_high" }),
+        expect.objectContaining({ kind: "shared_state_compiler_add_dominant" }),
+      ]),
+    );
+  });
+
   it("counts action candidate classification and embedding-dedup traces", async () => {
     const dir = tempDir();
     const tracePath = join(dir, "trace.jsonl");
@@ -955,6 +1096,61 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_live_entry_starvation).toBe(true);
     expect(row.shared_state_newest_entries_reserved).toBe(6);
     expect(row.shared_state_live_starvation_with_reserved).toBe(true);
+    expect(row.shared_state_live_starvation_ever).toBe(true);
+    expect(row.shared_state_live_starvation_final).toBe(false);
+  });
+
+  it("reports persistent shared-state starvation on the latest compile", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-shared-recovered",
+          event: "shared_state.compile.completed",
+          rendered_by_kind: {
+            locked: 12,
+          },
+          omitted_by_kind: {
+            live: 0,
+          },
+          live_starvation_with_reserved: false,
+        },
+        {
+          ts: 101,
+          turnId: "turn-shared-persistent",
+          event: "shared_state.compile.completed",
+          rendered_by_kind: {
+            locked: 12,
+          },
+          omitted_by_kind: {
+            live: 2,
+          },
+          live_starvation_with_reserved: true,
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-shared-persistent",
+      4,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.shared_state_live_starvation_ever).toBe(true);
+    expect(row.shared_state_live_starvation_final).toBe(true);
   });
 
   it("splits active actions by Borg, participant, and group actor ownership", async () => {
@@ -1128,6 +1324,80 @@ describe("MetricsCapture", () => {
     expect(row.stale_action_count).toBe(8);
     expect(row.salient_actions_per_turn).toBe(0.1);
     expect(row.action_retirement_ratio).toBe(0.1);
+  });
+
+  it("captures dormant/archive eligibility and inactive turn distributions", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const audience = createEntityId();
+    const actions = [
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "committed_to_do",
+        last_referenced_turn_counter: 40,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "committed_to_do",
+        last_referenced_turn_counter: 25,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "considering",
+        last_referenced_turn_counter: 21,
+      }),
+      makeAction({
+        actor: "borg",
+        audience_entity_id: audience,
+        state: "committed_to_do",
+        last_referenced_turn_counter: 20,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "scheduled",
+        scheduled_at: 1_000,
+        last_referenced_turn_counter: 10,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "completed",
+        completed_at: 1_000,
+        last_referenced_turn_counter: 0,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "unknown",
+        last_referenced_turn_counter: null,
+      }),
+    ];
+
+    const row = await new MetricsCapture(metricsPath).capture(
+      fakeBorgWithActions(actions),
+      "turn-archive-visibility",
+      40,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.dormant_not_archive_eligible_count).toBe(2);
+    expect(row.dormant_archive_eligible_count).toBe(2);
+    expect(row.archive_oldest_inactive_turns).toBe(30);
+    expect(row.archive_inactive_turn_distribution).toEqual({
+      "0-15": 1,
+      "15-20": 2,
+      "20-30": 1,
+      "30+": 1,
+    });
   });
 
   it("counts goal-promotion salvage and initial-step downgrade traces", async () => {

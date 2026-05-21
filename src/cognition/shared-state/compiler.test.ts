@@ -206,6 +206,10 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "cite the supporting relational slot or stream entry",
     );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
+      "Before proposing add, scan previous_artifact_summary.active_entries",
+    );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("third or later live entry on the same topic");
   });
 
   it("passes relational slots as structured compiler context", async () => {
@@ -318,7 +322,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(llmClient.requests[0]).toMatchObject({
       model: "claude-haiku-test",
-      max_tokens: 1536,
+      max_tokens: 8_000,
       budget: "decision-artifact-compiler",
       tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
     });
@@ -2114,6 +2118,12 @@ describe("compileSharedStateArtifact", () => {
           rejectedCount: 0,
           rejectionReasons: [],
           applied: true,
+          operation_counts_by_kind: {
+            add: 5,
+            update: 0,
+            supersede: 0,
+            prune: 0,
+          },
         }),
       }),
     );
