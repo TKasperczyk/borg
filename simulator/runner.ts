@@ -1308,7 +1308,8 @@ function runCheckpointStatusSummary(report: SimulatorRunReport): {
   substrateStatus: OverseerVerdict["status"];
   capabilityStatus: OverseerVerdict["status"];
   finalCheckpointStatus: OverseerVerdict["status"] | "n/a";
-  unresolvedValidatedConcerns: number;
+  finalCheckpointActiveFindings: number;
+  validatedCheckpointConcernLines: string[];
 } {
   let behavioralStatus: OverseerVerdict["status"] = "healthy";
   let substrateStatus: OverseerVerdict["status"] = "healthy";
@@ -1326,9 +1327,7 @@ function runCheckpointStatusSummary(report: SimulatorRunReport): {
   }
 
   const finalCheckpoint = report.overseerCheckpoints.at(-1);
-  const finalCheckpointSummary =
-    finalCheckpoint === undefined ? null : checkpointStatusSummary(finalCheckpoint);
-  const unresolvedValidatedConcerns =
+  const finalCheckpointActiveFindings =
     finalCheckpoint === undefined
       ? 0
       : finalCheckpoint.findings.filter(
@@ -1339,13 +1338,66 @@ function runCheckpointStatusSummary(report: SimulatorRunReport): {
     behavioralStatus,
     substrateStatus,
     capabilityStatus,
-    finalCheckpointStatus: finalCheckpointSummary?.worstStatus ?? "n/a",
-    unresolvedValidatedConcerns,
+    finalCheckpointStatus: finalCheckpoint?.status ?? "n/a",
+    finalCheckpointActiveFindings,
+    validatedCheckpointConcernLines: report.overseerCheckpoints
+      .filter((checkpoint) => checkpoint.status !== "healthy")
+      .map(reportCheckpointConcernSummaryLine),
   };
 }
 
 function reportConcernLine(finding: OverseerVerdict["findings"][number]): string {
   return `[${finding.category} ${finding.status_impact ?? "none"}] ${finding.evidence_summary}`;
+}
+
+function reportOneLine(value: string, maxLength = 140): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function checkpointConcernBucketLabels(
+  findings: readonly OverseerVerdict["findings"][number][],
+): string[] {
+  const labels: string[] = [];
+
+  if (findings.some((finding) => !isSubstrateFinding(finding) && !isCapabilityFinding(finding))) {
+    labels.push("behavioral");
+  }
+  if (findings.some(isSubstrateFinding)) {
+    labels.push("substrate");
+  }
+  if (findings.some(isCapabilityFinding)) {
+    labels.push("capability");
+  }
+
+  return labels;
+}
+
+function reportCheckpointConcernSummaryLine(checkpoint: OverseerVerdict): string {
+  const activeConcerns = checkpoint.findings.filter(
+    (finding) => !isCarryoverDemotedFinding(finding) && findingImpactSeverity(finding) > 0,
+  );
+  const labels = checkpointConcernBucketLabels(activeConcerns);
+  const statusLabel = labels.length === 0 ? checkpoint.status : labels.join(" + ");
+  const findingSummary =
+    activeConcerns.length === 0
+      ? checkpoint.observations[0] ?? checkpoint.recommendation
+      : activeConcerns
+          .map((finding) =>
+            reportOneLine(
+              `${finding.category} ${finding.claim_status}: ${finding.evidence_summary}`,
+              96,
+            ),
+          )
+          .join("; ");
+  const summary = reportOneLine(findingSummary.length === 0 ? "no structured verdict" : findingSummary);
+
+  return `- Turn ${checkpoint.turn_counter}: ${statusLabel} (${summary})`;
 }
 
 function reportCarryoverFindingLine(finding: OverseerVerdict["findings"][number]): string {
@@ -1449,9 +1501,13 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `Run worst substrate status: ${runSummary.substrateStatus}`,
     `Run worst capability status: ${runSummary.capabilityStatus}`,
     `Final checkpoint status: ${runSummary.finalCheckpointStatus}`,
-    `Unresolved validated concerns: ${runSummary.unresolvedValidatedConcerns}`,
+    `Final checkpoint active findings: ${runSummary.finalCheckpointActiveFindings}`,
     `Sessions: ${report.sessions.length}`,
     `Duration: ${Math.round(report.durationMs)}ms`,
+    "Validated checkpoint concerns by turn:",
+    ...(runSummary.validatedCheckpointConcernLines.length === 0
+      ? ["- none"]
+      : runSummary.validatedCheckpointConcernLines),
     "",
     "## Final Metrics",
     "",

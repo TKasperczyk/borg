@@ -42,7 +42,14 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "committed_to_do",
   "scheduled",
 ];
-const ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 40;
+const DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
+
+type ActionArchiveScanResult = {
+  scannedCount: number;
+  eligibleCount: number;
+  archivedCount: number;
+  skippedByReason: Record<string, number>;
+};
 
 function currentTurnSharedStateEntries(input: {
   retrievalPhase: TurnRetrievalPhaseResult;
@@ -70,32 +77,65 @@ function actionHasNoDueDate(action: Pick<ActionRecord, "state" | "scheduled_at">
   return action.state !== "scheduled" && action.scheduled_at === null;
 }
 
+function actionArchiveAfterInactiveTurns(options: TurnPhaseCoordinatorOptions): number {
+  return (
+    options.config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns ??
+    DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS
+  );
+}
+
+function incrementSkippedReason(skippedByReason: Record<string, number>, reason: string): void {
+  skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
+}
+
 function archiveInactiveParticipantActions(input: {
   options: TurnPhaseCoordinatorOptions;
   turnId: string;
   turnCounter: number;
-}): number {
+}): ActionArchiveScanResult {
   const candidates = input.options.actionRepository.list({
     states: ACTIVE_ACTION_STATES,
     limit: 256,
   });
+  const archiveAfterTurns = actionArchiveAfterInactiveTurns(input.options);
+  const skippedByReason: Record<string, number> = {};
+  let eligibleCount = 0;
   let archivedCount = 0;
 
   for (const action of candidates) {
-    if (!isParticipantOwnedAction(action) || !actionHasNoDueDate(action)) {
+    if (action.actor === "borg") {
+      incrementSkippedReason(skippedByReason, "borg_owned");
+      continue;
+    }
+
+    if (action.actor !== "user" && action.actor === action.audience_entity_id) {
+      incrementSkippedReason(skippedByReason, "group_owned");
+      continue;
+    }
+
+    if (!isParticipantOwnedAction(action)) {
+      incrementSkippedReason(skippedByReason, "non_participant_owned");
+      continue;
+    }
+
+    if (!actionHasNoDueDate(action)) {
+      incrementSkippedReason(skippedByReason, "scheduled_or_due");
       continue;
     }
 
     if (action.last_referenced_turn_counter === null) {
+      incrementSkippedReason(skippedByReason, "missing_reference_turn");
       continue;
     }
 
-    if (
-      input.turnCounter - action.last_referenced_turn_counter <
-      ACTION_ARCHIVE_AFTER_INACTIVE_TURNS
-    ) {
+    const inactiveTurns = input.turnCounter - action.last_referenced_turn_counter;
+
+    if (inactiveTurns < archiveAfterTurns) {
+      incrementSkippedReason(skippedByReason, "below_inactive_threshold");
       continue;
     }
+
+    eligibleCount += 1;
 
     const result = archiveStaleAction({
       actionId: action.id,
@@ -108,18 +148,44 @@ function archiveInactiveParticipantActions(input: {
 
     if (result.status === "success") {
       archivedCount += 1;
+      if (input.options.tracer.enabled) {
+        input.options.tracer.emit("action_archive.completed", {
+          turnId: input.turnId,
+          action_id: action.id,
+          source: "post_generation_inactivity_scan",
+          inactive_turns: inactiveTurns,
+          last_referenced_turn_counter: action.last_referenced_turn_counter,
+          archive_after_turns: archiveAfterTurns,
+        });
+      }
+      continue;
     }
+
+    incrementSkippedReason(
+      skippedByReason,
+      result.status === "conflict" ? "archive_conflict" : `archive_no_op_${result.reason}`,
+    );
   }
 
-  if (archivedCount > 0 && input.options.tracer.enabled) {
-    input.options.tracer.emit("action_inactivity_scan.completed", {
+  const scanResult: ActionArchiveScanResult = {
+    scannedCount: candidates.length,
+    eligibleCount,
+    archivedCount,
+    skippedByReason,
+  };
+
+  if (input.options.tracer.enabled) {
+    input.options.tracer.emit("action_archive_scan.completed", {
       turnId: input.turnId,
-      archived_count: archivedCount,
-      archive_after_turns: ACTION_ARCHIVE_AFTER_INACTIVE_TURNS,
+      scanned_count: scanResult.scannedCount,
+      eligible_count: scanResult.eligibleCount,
+      archived_count: scanResult.archivedCount,
+      skipped_by_reason: scanResult.skippedByReason,
+      archive_after_turns: archiveAfterTurns,
     });
   }
 
-  return archivedCount;
+  return scanResult;
 }
 
 export async function runPostGenerationPhase(input: {
@@ -471,6 +537,11 @@ export async function suppressFromClosureLoopPhase(input: {
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
+  archiveInactiveParticipantActions({
+    options: input.options,
+    turnId: input.turnId,
+    turnCounter: input.workingMemory.turn_counter,
+  });
 
   return suppressedTurnPhaseResult({
     mode: input.perceptionMode,
@@ -568,6 +639,11 @@ export async function suppressFromGenerationGatePhase(input: {
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
+  archiveInactiveParticipantActions({
+    options: input.options,
+    turnId: input.turnId,
+    turnCounter: input.workingMemory.turn_counter,
+  });
 
   return suppressedTurnPhaseResult({
     mode: input.perceptionMode,
@@ -640,6 +716,11 @@ async function suppressFromActionPhase(input: {
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
+  });
+  archiveInactiveParticipantActions({
+    options: input.options,
+    turnId: input.turnId,
+    turnCounter: input.actionResult.workingMemory.turn_counter,
   });
 
   return suppressedTurnPhaseResult({

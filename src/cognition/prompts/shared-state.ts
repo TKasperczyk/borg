@@ -57,4 +57,5 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   "- prune removes stale shared-state clutter only when the supplied context makes it clearly obsolete.",
   "- If a similar entry already exists, prefer update or supersede instead of adding a new one.",
   "- Prefer update, supersede, and prune over add whenever the existing shared-state artifact already carries the relevant shared state.",
+  "- When locking durable shared state, actively look for older live fragments about the same topic or decision and supersede or prune them instead of leaving parallel live entries to accumulate.",
 ].join("\n");

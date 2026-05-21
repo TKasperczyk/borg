@@ -241,7 +241,7 @@ describe("renderSharedStateArtifact", () => {
     };
     const rendered = renderSharedStateArtifact(artifact) ?? "";
 
-    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(3_000);
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(5_000);
     expect(rendered).toContain(" ... [text truncated]");
   });
 

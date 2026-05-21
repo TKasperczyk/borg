@@ -235,6 +235,14 @@ export function createTestConfig(
         ...overrides.deliberation?.contradictionRouting,
       },
     },
+    cognition: {
+      ...DEFAULT_CONFIG.cognition,
+      ...overrides.cognition,
+      actionLifecycle: {
+        ...DEFAULT_CONFIG.cognition.actionLifecycle,
+        ...overrides.cognition?.actionLifecycle,
+      },
+    },
     generation: {
       ...DEFAULT_CONFIG.generation,
       ...overrides.generation,

@@ -84,7 +84,7 @@ describe("runPostGenerationPhase", () => {
       actor: participantId,
       audience_entity_id: null,
       state: "committed_to_do",
-      last_referenced_turn_counter: 5,
+      last_referenced_turn_counter: 25,
     });
     const borgAction = makeAction({
       actor: "borg",
@@ -248,9 +248,158 @@ describe("runPostGenerationPhase", () => {
       expect.objectContaining({ id: terminalAction.id, state: "completed" }),
     );
     expect(events).toContainEqual({
-      event: "action_inactivity_scan.completed",
+      event: "action_archive.completed",
       data: expect.objectContaining({
+        action_id: staleParticipantAction.id,
+        archive_after_turns: 20,
+        inactive_turns: 25,
+      }),
+    });
+    expect(events).toContainEqual({
+      event: "action_archive_scan.completed",
+      data: expect.objectContaining({
+        scanned_count: 4,
+        eligible_count: 1,
         archived_count: 1,
+        archive_after_turns: 20,
+        skipped_by_reason: {
+          below_inactive_threshold: 1,
+          borg_owned: 1,
+          group_owned: 1,
+        },
+      }),
+    });
+  });
+
+  it("runs the action archive scan on suppressed no-output turns", async () => {
+    const sessionId = createSessionId();
+    const participantId = createEntityId();
+    const staleParticipantAction = makeAction({
+      actor: participantId,
+      state: "committed_to_do",
+      last_referenced_turn_counter: 1,
+    });
+    const actionRepository = makeActionRepository([staleParticipantAction]);
+    const workingMemory = {
+      ...createWorkingMemory(sessionId, 1_000),
+      turn_counter: 70,
+    };
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const suppressedEntry = {
+      id: createStreamEntryId(),
+      kind: "event",
+      turn_id: "turn_post_generation_suppressed_archive",
+      content: "",
+    };
+
+    await runPostGenerationPhase({
+      options: {
+        config: DEFAULT_CONFIG,
+        clock: { now: () => 20_000 },
+        actionRepository,
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event: string, data: Record<string, unknown>) => events.push({ event, data }),
+        },
+        turnActionCoordinator: {
+          run: vi.fn(async () => ({
+            actionResult: {
+              response: "",
+              tool_calls: [],
+              intents: [],
+              workingMemory,
+              pending_action_merge_count: 0,
+            },
+            actionEmission: {
+              kind: "suppressed",
+              reason: "finalizer_no_output",
+            },
+          })),
+        },
+        discourseStateService: {
+          appendSuppressionMarker: vi.fn(async () => suppressedEntry),
+          applySuppressedEmissionState: vi.fn(({ workingMemory: memory }) => memory),
+        },
+        workingMemoryStore: {
+          save: vi.fn(),
+        },
+        correctivePreferenceTurnService: {
+          persistCommitment: vi.fn(async () => undefined),
+        },
+        streamIngestionCoordinator: undefined,
+      } as never,
+      appendHookFailureEvent: vi.fn(async () => undefined),
+      llmClient: new FakeLLMClient({ responses: [] }),
+      sessionId,
+      turnId: "turn_post_generation_suppressed_archive",
+      turnInput: {
+        userMessage: "No output needed",
+      },
+      streamWriter: {} as never,
+      lifecycleTracker: {
+        trackPendingActionMerges: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      } as never,
+      cognitionInput: "No output needed",
+      perception: {
+        mode: "conversational",
+        entities: [],
+      } as never,
+      workingMemory,
+      workingMood: null as never,
+      persistedPerceptionEntry: null as never,
+      persistedUserEntryId: createStreamEntryId(),
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      deliberation: {
+        path: "system1",
+        thoughts: [],
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "suppressed",
+        },
+        retrievedEpisodes: [],
+        referencedEpisodeIds: [],
+      } as never,
+      retrievalPhase: {
+        applicableCommitments: [],
+        retrievedEpisodes: [],
+        selfSnapshot: null,
+        retrieval: { confidence: 1 },
+        executiveFocusWithStep: null,
+        selectedSkill: null,
+        proceduralContext: null,
+        evidenceLedgerContext: { ledger: null },
+      } as never,
+      origin: "user",
+      autonomyTrigger: undefined,
+      closureLoopCurrentUserAct: null,
+      audienceEntityId: null,
+      audienceIsGroup: false,
+      senderEntityId: participantId,
+      socialInteractionEntityId: null,
+      pendingSocialAttribution: null,
+      suppressionSet: null as never,
+      isUserTurn: true,
+      frameAnomalyClassification: null,
+    });
+
+    expect(actionRepository.records).toContainEqual(
+      expect.objectContaining({
+        id: staleParticipantAction.id,
+        state: "archived",
+        archived_at: 20_000,
+      }),
+    );
+    expect(events).toContainEqual({
+      event: "action_archive_scan.completed",
+      data: expect.objectContaining({
+        scanned_count: 1,
+        eligible_count: 1,
+        archived_count: 1,
+        skipped_by_reason: {},
       }),
     });
   });

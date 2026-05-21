@@ -58,6 +58,8 @@ export type TurnTraceEventName =
   | "action_state.archived"
   | "action_session_scope.expired"
   | "action_session_scope.rolled_over"
+  | "action_archive.completed"
+  | "action_archive_scan.completed"
   | "action_inactivity_scan.completed"
   | "extraction.actions.completed"
   | "extraction.actions.degraded"

@@ -16,8 +16,8 @@ import {
   type SharedStateKindCounts,
 } from "./selection.js";
 
-const DEFAULT_SHARED_STATE_MAX_ENTRIES = 30;
-const DEFAULT_SHARED_STATE_MAX_TOKENS = 3_000;
+const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
+const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 const DEFAULT_SHARED_STATE_RESERVED_SLOTS = {
   live: 8,
   invalidated: 3,

@@ -76,6 +76,8 @@ export const TRACE_EVENT_TAXONOMY = {
     "action_state.archived",
     "action_session_scope.expired",
     "action_session_scope.rolled_over",
+    "action_archive.completed",
+    "action_archive_scan.completed",
     "action_inactivity_scan.completed",
     "action_duplicate_pressure.completed",
     "extraction.goals.degraded",

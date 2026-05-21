@@ -22,6 +22,9 @@ type EvalConfigOverrides = {
   commitments?: Partial<Omit<Config["commitments"], "enforce">> & {
     enforce?: Partial<Config["commitments"]["enforce"]>;
   };
+  cognition?: Partial<Omit<Config["cognition"], "actionLifecycle">> & {
+    actionLifecycle?: Partial<Config["cognition"]["actionLifecycle"]>;
+  };
   deliberation?: Partial<Omit<Config["deliberation"], "contradictionRouting">> & {
     contradictionRouting?: Partial<Config["deliberation"]["contradictionRouting"]>;
   };
@@ -150,6 +153,14 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       contradictionRouting: {
         ...DEFAULT_CONFIG.deliberation.contradictionRouting,
         ...options.config?.deliberation?.contradictionRouting,
+      },
+    },
+    cognition: {
+      ...DEFAULT_CONFIG.cognition,
+      ...options.config?.cognition,
+      actionLifecycle: {
+        ...DEFAULT_CONFIG.cognition.actionLifecycle,
+        ...options.config?.cognition?.actionLifecycle,
       },
     },
     generation: {

@@ -153,8 +153,8 @@ const sharedStateConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
     kindSoftCaps: sharedStateKindSoftCapsSchema,
-    renderMaxEntries: z.number().int().positive().default(30),
-    renderMaxTokens: z.number().int().positive().default(3_000),
+    renderMaxEntries: z.number().int().positive().default(40),
+    renderMaxTokens: z.number().int().positive().default(5_000),
     renderReservedSlots: sharedStateRenderReservedSlotsSchema,
     renderLockedCap: z.number().int().nonnegative().default(14),
     newestStateChangeReservedSlots: z.number().int().nonnegative().default(3),
@@ -186,10 +186,22 @@ const cognitionThinkingConfigSchema = z
     budget_tokens: z.number().int().positive().default(4096),
   })
   .prefault({});
-const cognitionConfigSchema = z
+const generationCognitionConfigSchema = z
   .object({
     thinking: cognitionThinkingConfigSchema,
   })
+  .prefault({});
+const actionLifecycleConfigSchema = z
+  .object({
+    archiveStaleAfterInactiveTurns: z.number().int().nonnegative().default(20),
+  })
+  .strict()
+  .prefault({});
+const cognitionConfigSchema = z
+  .object({
+    actionLifecycle: actionLifecycleConfigSchema,
+  })
+  .strict()
   .prefault({});
 const contradictionRoutingConfigSchema = z
   .object({
@@ -285,12 +297,13 @@ const configBaseSchema = z.object({
     })
     .prefault({}),
   commitments: commitmentsConfigSchema,
+  cognition: cognitionConfigSchema,
   deliberation: deliberationConfigSchema,
   generation: z
     .object({
       discourseStateHardCapTurns: z.number().int().positive().default(50),
       activeParticipantLimit: z.number().int().positive().default(DEFAULT_ACTIVE_PARTICIPANT_LIMIT),
-      cognition: cognitionConfigSchema,
+      cognition: generationCognitionConfigSchema,
       evidenceLedger: evidenceLedgerConfigSchema,
       postGenerationGuards: postGenerationGuardsConfigSchema,
     })
@@ -830,6 +843,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["deliberation", "contradictionRouting", "cooldownTurns"],
     readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["cognition", "actionLifecycle", "archiveStaleAfterInactiveTurns"],
+    readOptionalEnvNumber(env, "BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS"),
   );
   setConfigOverride(
     overrides,

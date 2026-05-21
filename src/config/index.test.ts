@@ -92,8 +92,8 @@ describe("config", () => {
           pending: 4,
           tentative: 2,
         },
-        renderMaxEntries: 30,
-        renderMaxTokens: 3_000,
+        renderMaxEntries: 40,
+        renderMaxTokens: 5_000,
         renderReservedSlots: {
           live: 8,
           invalidated: 3,
@@ -126,6 +126,9 @@ describe("config", () => {
         enabled: false,
         budget_tokens: 4096,
       },
+    });
+    expect(config.cognition.actionLifecycle).toEqual({
+      archiveStaleAfterInactiveTurns: 20,
     });
     expect(config.generation.activeParticipantLimit).toBe(8);
     expect(config.generation.postGenerationGuards).toEqual({
@@ -285,6 +288,11 @@ describe("config", () => {
           maxEntries: 12,
         },
       },
+      cognition: {
+        actionLifecycle: {
+          archiveStaleAfterInactiveTurns: 24,
+        },
+      },
       generation: {
         evidenceLedger: {
           enabled: true,
@@ -327,6 +335,7 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
+        BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS: "18",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED: "false",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS: "3",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
@@ -365,7 +374,7 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
     expect(config.generation.evidenceLedger.decisionArtifact).toMatchObject({
       maxActiveEntries: 40,
-      renderMaxEntries: 30,
+      renderMaxEntries: 40,
       renderLockedCap: 14,
     });
     expect(config.generation.evidenceLedger.sectionOptions).toEqual({
@@ -380,6 +389,7 @@ describe("config", () => {
       enabled: true,
       budget_tokens: 8192,
     });
+    expect(config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns).toBe(18);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);

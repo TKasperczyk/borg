@@ -84,6 +84,14 @@ export function resolveBorgConfig(options: {
         ...(rawConfig as Partial<Config>).streamIngestion?.preTurnCatchup,
       },
     },
+    cognition: {
+      ...DEFAULT_CONFIG.cognition,
+      ...(rawConfig as Partial<Config>).cognition,
+      actionLifecycle: {
+        ...DEFAULT_CONFIG.cognition.actionLifecycle,
+        ...(rawConfig as Partial<Config>).cognition?.actionLifecycle,
+      },
+    },
     generation: {
       ...DEFAULT_CONFIG.generation,
       ...(rawConfig as Partial<Config>).generation,

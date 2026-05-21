@@ -738,7 +738,11 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Run worst behavioral status: healthy");
     expect(report).toContain("Run worst capability status: concerning");
     expect(report).toContain("Final checkpoint status: concerning");
-    expect(report).toContain("Unresolved validated concerns: 1");
+    expect(report).toContain("Final checkpoint active findings: 1");
+    expect(report).toContain("Validated checkpoint concerns by turn:");
+    expect(report).toContain(
+      "- Turn 10: capability (K unsupported: Borg promised external monitoring.)",
+    );
     expect(report).toContain("Behavioral status: healthy");
     expect(report).toContain("Substrate status: healthy");
     expect(report).toContain("Capability status: concerning");
@@ -807,7 +811,50 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Run worst substrate status: healthy");
     expect(report).toContain("Run worst capability status: healthy");
     expect(report).toContain("Final checkpoint status: healthy");
-    expect(report).toContain("Unresolved validated concerns: 0");
+    expect(report).toContain("Final checkpoint active findings: 0");
+    expect(report).toContain(
+      "- Turn 10: behavioral (H unsupported: Borg made an unsupported memory claim mid-run.)",
+    );
+  });
+
+  it("uses the validated checkpoint status for the final checkpoint summary", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-final-validated-status-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 10,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [
+        {
+          ts: Date.now(),
+          turn_counter: 10,
+          status: "concerning",
+          observations: ["Overseer call cap reached before a structured verdict."],
+          recommendation: "Rerun the checkpoint.",
+          findings: [],
+          rejected_findings: [],
+          raw_verdict: {
+            status: "healthy",
+            observations: ["Overseer call cap reached before a structured verdict."],
+            recommendation: "Rerun the checkpoint.",
+            findings: [],
+          },
+        },
+      ],
+      healthWarnings: [],
+      turnFailures: [],
+      finalMetrics: metricsRow(10),
+      durationMs: 1,
+    });
+
+    expect(report).toContain("Final checkpoint status: concerning");
+    expect(report).toContain("Final checkpoint active findings: 0");
+    expect(report).toContain(
+      "- Turn 10: concerning (Overseer call cap reached before a structured verdict.)",
+    );
   });
 
   it("downgrades behavioral status for hard aborts but not intentional suppressions", () => {
