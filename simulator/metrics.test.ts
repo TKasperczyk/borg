@@ -68,6 +68,8 @@ const TURN_METRICS_KEY_ORDER = [
   "semantic_nodes_added_since_last_check",
   "semantic_edges_added_since_last_check",
   "semantic_nodes_rejected_ungrounded_label_count",
+  "semantic_nodes_rejected_ungrounded_label_total",
+  "semantic_nodes_rejected_ungrounded_label_by_label",
   "open_question_count",
   "active_goal_count",
   "generation_suppression_count",
@@ -99,6 +101,12 @@ const TURN_METRICS_KEY_ORDER = [
   "dormant_archive_eligible_count",
   "archive_oldest_inactive_turns",
   "archive_inactive_turn_distribution",
+  "archive_archivable_count",
+  "archive_skipped_borg_owned",
+  "archive_skipped_due_date",
+  "archive_skipped_below_threshold",
+  "archive_skipped_other",
+  "archive_oldest_archivable_inactive_turns",
   "stale_actions_omitted_from_prompt",
   "actions_per_turn",
   "salient_actions_per_turn",
@@ -185,6 +193,9 @@ const TURN_METRICS_KEY_ORDER = [
   "extractor_degraded_total_by_label",
   "shared_state_compiler_max_tokens_total",
   "shared_state_compiler_degraded_total",
+  "shared_state_compiler_repair_attempted_total",
+  "shared_state_compiler_repair_succeeded_total",
+  "shared_state_compiler_repair_failed_total",
   "capability_overclaim_count",
   "capability_ambiguity_count",
   "capability_boundary_refusal_count",
@@ -254,6 +265,8 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     session_anchor_id: overrides.session_anchor_id ?? null,
     last_referenced_at_ms: overrides.last_referenced_at_ms ?? nowMs,
     last_referenced_turn_counter: overrides.last_referenced_turn_counter ?? null,
+    last_referenced_turn_global:
+      overrides.last_referenced_turn_global ?? overrides.last_referenced_turn_counter ?? null,
   };
 }
 
@@ -521,6 +534,7 @@ describe("MetricsCapture", () => {
           event: "semantic_insert.skipped",
           kind: "node",
           reason: "relationship_label_ungrounded",
+          protected_relationship_labels: ["siblings"],
         },
         {
           ts: 190,
@@ -659,6 +673,10 @@ describe("MetricsCapture", () => {
     expect(row.semantic_nodes_added_since_last_check).toBe(0);
     expect(row.semantic_edges_added_since_last_check).toBe(0);
     expect(row.semantic_nodes_rejected_ungrounded_label_count).toBe(1);
+    expect(row.semantic_nodes_rejected_ungrounded_label_total).toBe(1);
+    expect(row.semantic_nodes_rejected_ungrounded_label_by_label).toEqual({
+      siblings: 1,
+    });
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);
     expect(row.generation_suppression_count).toBe(1);
@@ -865,6 +883,16 @@ describe("MetricsCapture", () => {
           reason: "missing_tool_call",
         },
         {
+          ts: 101.1,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.repair_attempted",
+        },
+        {
+          ts: 101.2,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.repair_succeeded",
+        },
+        {
           ts: 102,
           turnId: "turn-compiler-1",
           event: "shared_state.compile.completed",
@@ -921,6 +949,9 @@ describe("MetricsCapture", () => {
 
     expect(row.shared_state_compiler_max_tokens_total).toBe(1);
     expect(row.shared_state_compiler_degraded_total).toBe(1);
+    expect(row.shared_state_compiler_repair_attempted_total).toBe(1);
+    expect(row.shared_state_compiler_repair_succeeded_total).toBe(1);
+    expect(row.shared_state_compiler_repair_failed_total).toBe(0);
     expect(row.shared_state_compiler_operations_total_by_kind).toEqual({
       add: 5,
       update: 1,
@@ -1403,6 +1434,7 @@ describe("MetricsCapture", () => {
 
   it("captures dormant/archive eligibility and inactive turn distributions", async () => {
     const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
     const metricsPath = join(dir, "metrics.jsonl");
     const sessionId = createSessionId();
     const audience = createEntityId();
@@ -1441,6 +1473,12 @@ describe("MetricsCapture", () => {
       makeAction({
         actor: "user",
         audience_entity_id: audience,
+        state: "committed_to_do",
+        last_referenced_turn_counter: 5,
+      }),
+      makeAction({
+        actor: "user",
+        audience_entity_id: audience,
         state: "completed",
         completed_at: 1_000,
         last_referenced_turn_counter: 0,
@@ -1453,7 +1491,26 @@ describe("MetricsCapture", () => {
       }),
     ];
 
-    const row = await new MetricsCapture(metricsPath).capture(
+    writeFileSync(
+      tracePath,
+      `${JSON.stringify({
+        event: "action_archive_scan.completed",
+        turnId: "turn-archive-visibility",
+        scanned_count: 6,
+        eligible_count: 1,
+        archived_count: 1,
+        skipped_by_reason: {
+          below_inactive_threshold: 3,
+          borg_owned: 1,
+          scheduled_or_due: 1,
+        },
+        oldest_inactive_turns: 35,
+        oldest_eligible_inactive_turns: 35,
+        archive_after_turns: 20,
+      })}\n`,
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
       fakeBorgWithActions(actions),
       "turn-archive-visibility",
       40,
@@ -1464,13 +1521,19 @@ describe("MetricsCapture", () => {
       },
     );
 
-    expect(row.dormant_not_archive_eligible_count).toBe(2);
-    expect(row.dormant_archive_eligible_count).toBe(2);
-    expect(row.archive_oldest_inactive_turns).toBe(30);
+    expect(row.dormant_not_archive_eligible_count).toBe(3);
+    expect(row.dormant_archive_eligible_count).toBe(1);
+    expect(row.archive_archivable_count).toBe(1);
+    expect(row.archive_skipped_borg_owned).toBe(1);
+    expect(row.archive_skipped_due_date).toBe(1);
+    expect(row.archive_skipped_below_threshold).toBe(3);
+    expect(row.archive_skipped_other).toBe(0);
+    expect(row.archive_oldest_inactive_turns).toBe(35);
+    expect(row.archive_oldest_archivable_inactive_turns).toBe(35);
     expect(row.archive_inactive_turn_distribution).toEqual({
       "0-15": 1,
       "15-20": 2,
-      "20-30": 1,
+      "20-30": 0,
       "30+": 1,
     });
   });

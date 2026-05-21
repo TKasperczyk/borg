@@ -694,6 +694,7 @@ export class SimulatorRunner {
       const borgIntentionalSuppressionsByReason: Record<string, number> = {};
 
       const attemptTurn = async (
+        turn: number,
         draft: PersonaTurnDraft,
         speakerEntityId: EntityId,
       ): Promise<{
@@ -707,6 +708,7 @@ export class SimulatorRunner {
           audience: audienceName,
           sessionId: currentSessionId,
           senderEntityId: speakerEntityId,
+          globalTurnCounter: turn,
         });
         const suppressionReason =
           result.emission?.kind === "suppressed" ? result.emission.reason : undefined;
@@ -902,7 +904,7 @@ export class SimulatorRunner {
           attemptsMade = attempt + 1;
           const traceBeforeCount = readTraceEvents(transport.tracePath).length;
           try {
-            const result = await attemptTurn(draft, speakerEntityId);
+            const result = await attemptTurn(turn, draft, speakerEntityId);
             success = {
               ...result,
               transportChatAttempts: attemptsMade,
@@ -1386,7 +1388,7 @@ function reportCheckpointConcernSummaryLine(checkpoint: OverseerVerdict): string
   const statusLabel = labels.length === 0 ? checkpoint.status : labels.join(" + ");
   const findingSummary =
     activeConcerns.length === 0
-      ? checkpoint.observations[0] ?? checkpoint.recommendation
+      ? (checkpoint.observations[0] ?? checkpoint.recommendation)
       : activeConcerns
           .map((finding) =>
             reportOneLine(
@@ -1395,7 +1397,9 @@ function reportCheckpointConcernSummaryLine(checkpoint: OverseerVerdict): string
             ),
           )
           .join("; ");
-  const summary = reportOneLine(findingSummary.length === 0 ? "no structured verdict" : findingSummary);
+  const summary = reportOneLine(
+    findingSummary.length === 0 ? "no structured verdict" : findingSummary,
+  );
 
   return `- Turn ${checkpoint.turn_counter}: ${statusLabel} (${summary})`;
 }
@@ -1527,7 +1531,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Prompt-salient actions: ${report.finalMetrics.prompt_salient_actions_total} (Borg active ${report.finalMetrics.borg_owned_salient_active_actions}, participant active ${report.finalMetrics.participant_owned_salient_active_actions}, stale omitted ${report.finalMetrics.stale_actions_omitted_from_prompt})`,
     `- Action pressure: actions/turn ${report.finalMetrics.actions_per_turn.toFixed(2)}, salient/turn ${report.finalMetrics.salient_actions_per_turn.toFixed(2)}, retirement ratio ${report.finalMetrics.action_retirement_ratio.toFixed(2)}, dormant ${report.finalMetrics.dormant_actions_total}, stale ${report.finalMetrics.stale_action_count}`,
     `- Action lifecycle this turn: terminal closures ${report.finalMetrics.actions_closed_by_terminal_emission}, capability rejections ${report.finalMetrics.actions_rejected_capability}, canonicalized ${report.finalMetrics.actions_canonicalized}, completed via canonicalization ${report.finalMetrics.actions_completed_via_canonicalization}`,
-    `- Action archive visibility: dormant below archive threshold ${report.finalMetrics.dormant_not_archive_eligible_count}, archive-eligible still active ${report.finalMetrics.dormant_archive_eligible_count}, oldest inactive ${report.finalMetrics.archive_oldest_inactive_turns} turns, inactive buckets ${reportCountMap(report.finalMetrics.archive_inactive_turn_distribution)}`,
+    `- Action archive visibility: archivable ${report.finalMetrics.archive_archivable_count}, skipped Borg-owned ${report.finalMetrics.archive_skipped_borg_owned}, skipped due-date ${report.finalMetrics.archive_skipped_due_date}, skipped below threshold ${report.finalMetrics.archive_skipped_below_threshold}, skipped other ${report.finalMetrics.archive_skipped_other}, oldest archivable ${report.finalMetrics.archive_oldest_archivable_inactive_turns} turns, inactive buckets ${reportCountMap(report.finalMetrics.archive_inactive_turn_distribution)}`,
     `- Capability audit: overclaims ${report.finalMetrics.capability_overclaim_count}, ambiguities ${report.finalMetrics.capability_ambiguity_count}, boundary refusals ${report.finalMetrics.capability_boundary_refusal_count}`,
     `- Commitment regeneration: attempted ${report.finalMetrics.commitment_regeneration_attempted_total}, succeeded ${report.finalMetrics.commitment_regeneration_succeeded_total}, failed ${report.finalMetrics.commitment_regeneration_failed_total}`,
     `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ever ${report.finalMetrics.shared_state_live_starvation_ever}, live starvation final ${report.finalMetrics.shared_state_live_starvation_final}, newest reserved ${report.finalMetrics.shared_state_newest_entries_reserved}`,
@@ -1539,11 +1543,13 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     "",
     `- Max-token stops by label: ${reportCountMap(report.finalMetrics.extractor_max_tokens_total_by_label)}`,
     `- Degraded by label: ${reportCountMap(report.finalMetrics.extractor_degraded_total_by_label)}`,
+    `- Semantic gate rejections: protected relationship labels ${report.finalMetrics.semantic_nodes_rejected_ungrounded_label_total} total (${reportCountMap(report.finalMetrics.semantic_nodes_rejected_ungrounded_label_by_label)})`,
     "",
     "## Cumulative Compiler Health",
     "",
     `- Shared-state compiler max-token stops: ${report.finalMetrics.shared_state_compiler_max_tokens_total}`,
     `- Shared-state compiler degraded events: ${report.finalMetrics.shared_state_compiler_degraded_total}`,
+    `- Shared-state compiler repair: attempted ${report.finalMetrics.shared_state_compiler_repair_attempted_total}, succeeded ${report.finalMetrics.shared_state_compiler_repair_succeeded_total}, failed ${report.finalMetrics.shared_state_compiler_repair_failed_total}`,
     `- Shared-state compiler operations by kind: ${reportCountMap(report.finalMetrics.shared_state_compiler_operations_total_by_kind)}`,
     `- Shared-state compiler add/update ratio: ${report.finalMetrics.shared_state_add_to_update_ratio.toFixed(2)}`,
     "",

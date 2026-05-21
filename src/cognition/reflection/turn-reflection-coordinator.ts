@@ -39,6 +39,7 @@ export type RunTurnReflectionInput = {
   llmClient: LLMClient;
   sessionId: SessionId;
   turnId: string;
+  actionLifecycleTurnCounter?: number | null;
   origin?: "user" | "autonomous";
   userMessage: string;
   perception: PerceptionResult;
@@ -122,6 +123,7 @@ export class TurnReflectionCoordinator {
     const reflection = await reflector.reflect(
       {
         turnId: input.turnId,
+        actionLifecycleTurnCounter: input.actionLifecycleTurnCounter ?? null,
         origin: input.origin ?? "user",
         userMessage: input.userMessage,
         perception: input.perception,

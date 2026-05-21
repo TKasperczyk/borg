@@ -57,6 +57,7 @@ import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "..
 import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
   turnId?: string;
+  actionLifecycleTurnCounter?: number | null;
   origin?: "user" | "autonomous";
   userMessage: string;
   perception?: PerceptionResult;
@@ -1002,6 +1003,8 @@ export class Reflector {
             session_anchor_id: null,
             last_referenced_at_ms: nowMs,
             last_referenced_turn_counter: context.workingMemory.turn_counter,
+            last_referenced_turn_global:
+              context.actionLifecycleTurnCounter ?? context.workingMemory.turn_counter,
             ...stateTimestampPatch(state, nowMs),
           },
           { creationSource: "reflector" },

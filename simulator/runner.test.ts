@@ -353,6 +353,8 @@ function metricsRow(turnCounter: number): MetricsRow {
     semantic_nodes_added_since_last_check: 0,
     semantic_edges_added_since_last_check: 0,
     semantic_nodes_rejected_ungrounded_label_count: 0,
+    semantic_nodes_rejected_ungrounded_label_total: 0,
+    semantic_nodes_rejected_ungrounded_label_by_label: {},
     open_question_count: 0,
     active_goal_count: 0,
     generation_suppression_count: 0,
@@ -389,6 +391,12 @@ function metricsRow(turnCounter: number): MetricsRow {
       "20-30": 0,
       "30+": 0,
     },
+    archive_archivable_count: 0,
+    archive_skipped_borg_owned: 0,
+    archive_skipped_due_date: 0,
+    archive_skipped_below_threshold: 0,
+    archive_skipped_other: 0,
+    archive_oldest_archivable_inactive_turns: 0,
     stale_actions_omitted_from_prompt: 0,
     actions_per_turn: 0,
     salient_actions_per_turn: 0,
@@ -500,6 +508,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     extractor_degraded_total_by_label: {},
     shared_state_compiler_max_tokens_total: 0,
     shared_state_compiler_degraded_total: 0,
+    shared_state_compiler_repair_attempted_total: 0,
+    shared_state_compiler_repair_succeeded_total: 0,
+    shared_state_compiler_repair_failed_total: 0,
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
@@ -696,6 +707,12 @@ describe("SimulatorRunner", () => {
           "20-30": 1,
           "30+": 0,
         },
+        archive_archivable_count: 1,
+        archive_skipped_borg_owned: 2,
+        archive_skipped_due_date: 1,
+        archive_skipped_below_threshold: 3,
+        archive_skipped_other: 0,
+        archive_oldest_archivable_inactive_turns: 24,
         shared_state_live_starvation_ever: true,
         shared_state_live_starvation_final: false,
         closure_loop_completed_count: 9,
@@ -713,6 +730,9 @@ describe("SimulatorRunner", () => {
         },
         shared_state_compiler_max_tokens_total: 1,
         shared_state_compiler_degraded_total: 2,
+        shared_state_compiler_repair_attempted_total: 3,
+        shared_state_compiler_repair_succeeded_total: 2,
+        shared_state_compiler_repair_failed_total: 1,
         shared_state_compiler_operations_total_by_kind: {
           add: 5,
           update: 1,
@@ -736,7 +756,7 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Capability audit: overclaims 1, ambiguities 2, boundary refusals 3");
     expect(report).toContain("Commitment regeneration: attempted 2, succeeded 1, failed 1");
     expect(report).toContain(
-      "Action archive visibility: dormant below archive threshold 3, archive-eligible still active 1, oldest inactive 24 turns, inactive buckets 0-15=4, 15-20=3, 20-30=1, 30+=0",
+      "Action archive visibility: archivable 1, skipped Borg-owned 2, skipped due-date 1, skipped below threshold 3, skipped other 0, oldest archivable 24 turns, inactive buckets 0-15=4, 15-20=3, 20-30=1, 30+=0",
     );
     expect(report).toContain("live starvation ever true, live starvation final false");
     expect(report).toContain(
@@ -752,6 +772,7 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("## Cumulative Compiler Health");
     expect(report).toContain("Shared-state compiler max-token stops: 1");
     expect(report).toContain("Shared-state compiler degraded events: 2");
+    expect(report).toContain("Shared-state compiler repair: attempted 3, succeeded 2, failed 1");
     expect(report).toContain(
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );
@@ -1291,6 +1312,7 @@ describe("SimulatorRunner", () => {
           {
             ...metricsRow(12),
             dormant_archive_eligible_count: 1,
+            archive_archivable_count: 1,
           },
         ],
         expectedKinds: ["dormant_archive_eligible_count_high"],

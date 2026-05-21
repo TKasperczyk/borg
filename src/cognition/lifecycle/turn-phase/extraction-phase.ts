@@ -106,7 +106,7 @@ export async function runExtractionPhase(input: {
       speakerEntityId: input.groupSpeakerEntityId,
       speakerDisplayName: input.groupSpeakerDisplayName,
       goalId: actionLinkGoalId,
-      turnCounter: input.workingMemory.turn_counter,
+      turnCounter: input.turnInput.globalTurnCounter ?? input.workingMemory.turn_counter,
       frameAnomaly: input.frameAnomalyClassification,
     }),
     currentTurnFrameAnomaly === null

@@ -806,6 +806,7 @@ export async function createOfflineTestHarness(
       clock,
       auditLog,
       streamWriter,
+      entryIndex,
       embeddingClient,
       tracer: options.tracer,
       llm: {

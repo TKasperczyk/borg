@@ -220,6 +220,57 @@ export function traceCompileDegraded(options: {
   });
 }
 
+function traceRepairEvent(
+  event:
+    | "shared_state.compile.repair_attempted"
+    | "shared_state.compile.repair_succeeded"
+    | "shared_state.compile.repair_failed",
+  options: {
+    tracer?: TurnTracer;
+    turnId?: string;
+    audienceEntityId: EntityId;
+    error?: unknown;
+  },
+): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit(event, {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    ...(options.error === undefined
+      ? {}
+      : { error: options.error instanceof Error ? options.error.message : String(options.error) }),
+  });
+}
+
+export function traceCompileRepairAttempted(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  error: unknown;
+}): void {
+  traceRepairEvent("shared_state.compile.repair_attempted", options);
+}
+
+export function traceCompileRepairSucceeded(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+}): void {
+  traceRepairEvent("shared_state.compile.repair_succeeded", options);
+}
+
+export function traceCompileRepairFailed(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  error: unknown;
+}): void {
+  traceRepairEvent("shared_state.compile.repair_failed", options);
+}
+
 export function traceCompileOverBudget(options: {
   tracer?: TurnTracer;
   turnId?: string;

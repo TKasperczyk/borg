@@ -1,7 +1,10 @@
 // Public Borg facade adapters over the internal repository and service graph.
 
 import { EpisodicExtractor } from "../memory/episodic/index.js";
-import { SemanticExtractor } from "../memory/semantic/index.js";
+import {
+  SemanticExtractor,
+  createUserStreamEntryRelationshipEvidenceTrustValidator,
+} from "../memory/semantic/index.js";
 import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
 import { revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
@@ -381,6 +384,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
             entityRepository: deps.entityRepository,
             relationalSlotRepository: deps.relationalSlotRepository,
           }),
+          relationshipEvidenceStreamEntryTrust:
+            createUserStreamEntryRelationshipEvidenceTrustValidator({
+              entryIndex: deps.entryIndex,
+              createStreamReader: (sessionId) =>
+                new StreamReader({
+                  dataDir: deps.config.dataDir,
+                  sessionId,
+                }),
+            }),
           clock: deps.clock,
         });
 

@@ -84,6 +84,7 @@ export async function openBorgDependencies(
       clock,
       embeddingClient,
       lazyLlmClient,
+      entryIndex: repositories.entryIndex,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,

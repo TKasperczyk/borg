@@ -34,6 +34,12 @@ import {
   summarizeActionPromptSalience,
   type ActionPromptSalienceSummary,
 } from "../src/cognition/evidence-ledger/action-threads.js";
+import {
+  ACTION_ARCHIVE_ACTIVE_STATES,
+  ACTION_ARCHIVE_SCAN_LIMIT,
+  classifyActionArchiveCandidate,
+  lastReferencedActionLifecycleTurn,
+} from "../src/memory/actions/index.js";
 import type { ActionLedgerRepository } from "../src/cognition/evidence-ledger/builder-types.js";
 import type { ScopeResolver } from "../src/cognition/evidence-ledger/scope-resolver.js";
 import { sharedStateSemanticRevisionVerdictCacheSize } from "../src/cognition/shared-state/reconciliation.js";
@@ -114,6 +120,12 @@ type MemoryBandMetricCounts = Pick<
   | "dormant_archive_eligible_count"
   | "archive_oldest_inactive_turns"
   | "archive_inactive_turn_distribution"
+  | "archive_archivable_count"
+  | "archive_skipped_borg_owned"
+  | "archive_skipped_due_date"
+  | "archive_skipped_below_threshold"
+  | "archive_skipped_other"
+  | "archive_oldest_archivable_inactive_turns"
   | "stale_actions_omitted_from_prompt"
   | "actions_per_turn"
   | "salient_actions_per_turn"
@@ -235,6 +247,9 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   MetricsRow,
   | "shared_state_compiler_max_tokens_total"
   | "shared_state_compiler_degraded_total"
+  | "shared_state_compiler_repair_attempted_total"
+  | "shared_state_compiler_repair_succeeded_total"
+  | "shared_state_compiler_repair_failed_total"
   | "shared_state_compiler_operations_total_by_kind"
   | "shared_state_add_to_update_ratio"
 >;
@@ -281,7 +296,9 @@ type ExtractorHealthMetricCounts = Pick<
 
 type SemanticMemoryWriteGateMetricCounts = Pick<
   MetricsRow,
-  "semantic_nodes_rejected_ungrounded_label_count"
+  | "semantic_nodes_rejected_ungrounded_label_count"
+  | "semantic_nodes_rejected_ungrounded_label_total"
+  | "semantic_nodes_rejected_ungrounded_label_by_label"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -407,6 +424,24 @@ function traceObjectNumber(record: TraceRecord, objectKey: string, numberKey: st
   const nested = (value as Record<string, unknown>)[numberKey];
 
   return typeof nested === "number" && Number.isFinite(nested) ? nested : 0;
+}
+
+function traceObjectNumberEntries(record: TraceRecord, objectKey: string): Record<string, number> {
+  const value = record[objectKey];
+
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const entries: Record<string, number> = {};
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof nested === "number" && Number.isFinite(nested)) {
+      entries[key] = nested;
+    }
+  }
+
+  return entries;
 }
 
 function traceOptionalNumber(record: TraceRecord, key: string): number | null {
@@ -871,6 +906,15 @@ function sharedStateCompilerHealthMetrics(
     shared_state_compiler_degraded_total: traceRecords.filter(
       (record) => record.event === "shared_state.compile.degraded",
     ).length,
+    shared_state_compiler_repair_attempted_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.repair_attempted",
+    ).length,
+    shared_state_compiler_repair_succeeded_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.repair_succeeded",
+    ).length,
+    shared_state_compiler_repair_failed_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.repair_failed",
+    ).length,
     shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
     shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
   };
@@ -1042,16 +1086,52 @@ function extractorHealthMetrics(input: {
   };
 }
 
-function semanticMemoryWriteGateMetrics(
+function semanticRelationshipLabelRejectionRecords(
   traceRecords: readonly TraceRecord[],
-): SemanticMemoryWriteGateMetricCounts {
+): TraceRecord[] {
+  return traceRecords.filter(
+    (record) =>
+      record.event === "semantic_insert.skipped" &&
+      traceKind(record) === "node" &&
+      traceReason(record) === "relationship_label_ungrounded",
+  );
+}
+
+function semanticRelationshipLabelRejectionsByLabel(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+
+  for (const record of semanticRelationshipLabelRejectionRecords(traceRecords)) {
+    const labels = Array.isArray(record.protected_relationship_labels)
+      ? record.protected_relationship_labels.filter(
+          (label): label is string => typeof label === "string",
+        )
+      : [];
+
+    for (const label of labels.length === 0 ? ["unknown"] : labels) {
+      counts[label] = (counts[label] ?? 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
+function semanticMemoryWriteGateMetrics(input: {
+  traceRecords: readonly TraceRecord[];
+  cumulativeTraceRecords: readonly TraceRecord[];
+}): SemanticMemoryWriteGateMetricCounts {
+  const intervalRejections = semanticRelationshipLabelRejectionRecords(input.traceRecords);
+  const cumulativeRejections = semanticRelationshipLabelRejectionRecords(
+    input.cumulativeTraceRecords,
+  );
+
   return {
-    semantic_nodes_rejected_ungrounded_label_count: traceRecords.filter(
-      (record) =>
-        record.event === "semantic_insert.skipped" &&
-        traceKind(record) === "node" &&
-        traceReason(record) === "relationship_label_ungrounded",
-    ).length,
+    semantic_nodes_rejected_ungrounded_label_count: intervalRejections.length,
+    semantic_nodes_rejected_ungrounded_label_total: cumulativeRejections.length,
+    semantic_nodes_rejected_ungrounded_label_by_label: semanticRelationshipLabelRejectionsByLabel(
+      input.cumulativeTraceRecords,
+    ),
   };
 }
 
@@ -1245,39 +1325,28 @@ function borgOwnedActionCount(actions: readonly Pick<ActionRecord, "actor">[]): 
   return actions.filter((action) => action.actor === "borg").length;
 }
 
-function isParticipantOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entity_id">) {
-  return (
-    action.actor !== "borg" &&
-    !(action.actor !== "user" && action.actor === action.audience_entity_id)
-  );
-}
-
 function dormantActionCount(
   actions: readonly Pick<
     ActionRecord,
-    "actor" | "audience_entity_id" | "state" | "scheduled_at" | "last_referenced_turn_counter"
+    | "actor"
+    | "audience_entity_id"
+    | "state"
+    | "scheduled_at"
+    | "last_referenced_turn_counter"
+    | "last_referenced_turn_global"
   >[],
   turnCounter: number,
 ): number {
   return actions.filter(
     (action) =>
-      isParticipantOwnedAction(action) &&
+      action.actor !== "borg" &&
+      !(action.actor !== "user" && action.actor === action.audience_entity_id) &&
       action.state !== "scheduled" &&
       action.scheduled_at === null &&
-      action.last_referenced_turn_counter !== null &&
-      turnCounter - action.last_referenced_turn_counter >= ACTION_DORMANT_AFTER_INACTIVE_TURNS,
+      lastReferencedActionLifecycleTurn(action) !== null &&
+      turnCounter - (lastReferencedActionLifecycleTurn(action) ?? turnCounter) >=
+        ACTION_DORMANT_AFTER_INACTIVE_TURNS,
   ).length;
-}
-
-function archiveInactiveTurns(
-  action: Pick<ActionRecord, "last_referenced_turn_counter">,
-  turnCounter: number,
-): number | null {
-  if (action.last_referenced_turn_counter === null) {
-    return null;
-  }
-
-  return Math.max(0, turnCounter - action.last_referenced_turn_counter);
 }
 
 function archiveInactiveTurnBucket(
@@ -1306,48 +1375,135 @@ function emptyArchiveInactiveTurnDistribution(): Record<
 }
 
 function actionArchiveVisibilityMetrics(
-  actions: readonly Pick<ActionRecord, "last_referenced_turn_counter">[],
+  actions: readonly Pick<
+    ActionRecord,
+    | "actor"
+    | "audience_entity_id"
+    | "state"
+    | "scheduled_at"
+    | "last_referenced_turn_counter"
+    | "last_referenced_turn_global"
+  >[],
   turnCounter: number,
   archiveAfterInactiveTurns: number,
+  traceRecords: readonly TraceRecord[],
 ): Pick<
   MemoryBandMetricCounts,
   | "dormant_not_archive_eligible_count"
   | "dormant_archive_eligible_count"
   | "archive_oldest_inactive_turns"
   | "archive_inactive_turn_distribution"
+  | "archive_archivable_count"
+  | "archive_skipped_borg_owned"
+  | "archive_skipped_due_date"
+  | "archive_skipped_below_threshold"
+  | "archive_skipped_other"
+  | "archive_oldest_archivable_inactive_turns"
 > {
   const distribution = emptyArchiveInactiveTurnDistribution();
   let oldestInactiveTurns = 0;
-  let dormantNotArchiveEligibleCount = 0;
-  let dormantArchiveEligibleCount = 0;
+  let archiveOldestArchivableInactiveTurns = 0;
+  let archiveArchivableCount = 0;
+  let archiveSkippedBorgOwned = 0;
+  let archiveSkippedDueDate = 0;
+  let archiveSkippedBelowThreshold = 0;
+  let archiveSkippedOther = 0;
+  const scanRecords = traceRecords.filter(
+    (record) => record.event === "action_archive_scan.completed",
+  );
+
+  for (const record of scanRecords) {
+    archiveArchivableCount += traceNumber(record, "eligible_count");
+    archiveSkippedBorgOwned += traceObjectNumber(record, "skipped_by_reason", "borg_owned");
+    archiveSkippedDueDate += traceObjectNumber(record, "skipped_by_reason", "scheduled_or_due");
+    archiveSkippedBelowThreshold += traceObjectNumber(
+      record,
+      "skipped_by_reason",
+      "below_inactive_threshold",
+    );
+    archiveOldestArchivableInactiveTurns = Math.max(
+      archiveOldestArchivableInactiveTurns,
+      traceNumber(record, "oldest_eligible_inactive_turns"),
+    );
+    oldestInactiveTurns = Math.max(
+      oldestInactiveTurns,
+      traceNumber(record, "oldest_inactive_turns"),
+    );
+
+    const skippedByReason = traceObjectNumberEntries(record, "skipped_by_reason");
+    for (const [reason, count] of Object.entries(skippedByReason)) {
+      if (
+        reason === "borg_owned" ||
+        reason === "scheduled_or_due" ||
+        reason === "below_inactive_threshold"
+      ) {
+        continue;
+      }
+
+      archiveSkippedOther += count;
+    }
+  }
 
   for (const action of actions) {
-    const inactiveTurns = archiveInactiveTurns(action, turnCounter);
+    const classification = classifyActionArchiveCandidate(action, {
+      turnCounter,
+      archiveAfterTurns: archiveAfterInactiveTurns,
+    });
 
-    if (inactiveTurns === null) {
+    if (classification.inactiveTurns === undefined) {
+      if (scanRecords.length > 0) {
+        continue;
+      }
+
+      if (classification.status === "skipped") {
+        switch (classification.reason) {
+          case "borg_owned":
+            archiveSkippedBorgOwned += 1;
+            break;
+          case "scheduled_or_due":
+            archiveSkippedDueDate += 1;
+            break;
+          case "below_inactive_threshold":
+            archiveSkippedBelowThreshold += 1;
+            break;
+          default:
+            archiveSkippedOther += 1;
+            break;
+        }
+      }
+
       continue;
     }
 
+    const inactiveTurns = Math.max(0, classification.inactiveTurns);
     distribution[archiveInactiveTurnBucket(inactiveTurns)] += 1;
-    oldestInactiveTurns = Math.max(oldestInactiveTurns, inactiveTurns);
 
-    if (inactiveTurns < ACTION_DORMANT_AFTER_INACTIVE_TURNS) {
-      continue;
+    if (scanRecords.length === 0) {
+      oldestInactiveTurns = Math.max(oldestInactiveTurns, inactiveTurns);
+
+      if (classification.status === "eligible") {
+        archiveArchivableCount += 1;
+        archiveOldestArchivableInactiveTurns = Math.max(
+          archiveOldestArchivableInactiveTurns,
+          inactiveTurns,
+        );
+      } else if (classification.reason === "below_inactive_threshold") {
+        archiveSkippedBelowThreshold += 1;
+      }
     }
-
-    if (inactiveTurns < archiveAfterInactiveTurns) {
-      dormantNotArchiveEligibleCount += 1;
-      continue;
-    }
-
-    dormantArchiveEligibleCount += 1;
   }
 
   return {
-    dormant_not_archive_eligible_count: dormantNotArchiveEligibleCount,
-    dormant_archive_eligible_count: dormantArchiveEligibleCount,
+    dormant_not_archive_eligible_count: archiveSkippedBelowThreshold,
+    dormant_archive_eligible_count: archiveArchivableCount,
     archive_oldest_inactive_turns: oldestInactiveTurns,
     archive_inactive_turn_distribution: distribution,
+    archive_archivable_count: archiveArchivableCount,
+    archive_skipped_borg_owned: archiveSkippedBorgOwned,
+    archive_skipped_due_date: archiveSkippedDueDate,
+    archive_skipped_below_threshold: archiveSkippedBelowThreshold,
+    archive_skipped_other: archiveSkippedOther,
+    archive_oldest_archivable_inactive_turns: archiveOldestArchivableInactiveTurns,
   };
 }
 
@@ -1470,7 +1626,9 @@ function openQuestionSourceBucket(
   return "borg_inferred";
 }
 
-function openQuestionsBySource(questions: readonly Partial<OpenQuestion>[]): Record<string, number> {
+function openQuestionsBySource(
+  questions: readonly Partial<OpenQuestion>[],
+): Record<string, number> {
   const counts = zeroCounts(OPEN_QUESTION_SOURCE_BUCKETS);
 
   for (const question of questions) {
@@ -1553,9 +1711,7 @@ function openQuestionsByStatusAge(input: {
   return counts;
 }
 
-function openQuestionsPromotedFromReviewItems(
-  questions: readonly Partial<OpenQuestion>[],
-): number {
+function openQuestionsPromotedFromReviewItems(questions: readonly Partial<OpenQuestion>[]): number {
   return questions.filter(
     (question) => question.source === "contradiction" || question.source === "overseer",
   ).length;
@@ -1683,6 +1839,7 @@ export class MetricsCapture {
     sessionId: SessionId,
     turnCounter: number,
     archiveAfterInactiveTurns: number,
+    archiveTraceRecords: readonly TraceRecord[],
   ): Promise<MemoryBandMetricCounts> {
     const actionRecordCountByState = borg.actions.countByState();
     const allActions = borg.actions.list({ limit: LARGE_COUNT_LIMIT });
@@ -1692,6 +1849,10 @@ export class MetricsCapture {
     const activeActions = borg.actions.list({
       states: ACTIVE_ACTION_STATES,
       limit: LARGE_COUNT_LIMIT,
+    });
+    const archiveScanCandidateActions = borg.actions.list({
+      states: ACTION_ARCHIVE_ACTIVE_STATES,
+      limit: ACTION_ARCHIVE_SCAN_LIMIT,
     });
     const activeActorSplit = activeActionActorSplit(activeActions);
     const promptSalienceSummary = await actionPromptSalienceSummary({
@@ -1718,9 +1879,10 @@ export class MetricsCapture {
     const totalActions = borg.actions.count();
     const dormantActionsTotal = dormantActionCount(activeActions, turnCounter);
     const archiveVisibilityMetrics = actionArchiveVisibilityMetrics(
-      activeActions,
+      archiveScanCandidateActions,
       turnCounter,
       archiveAfterInactiveTurns,
+      archiveTraceRecords,
     );
     const terminalActionCount = actionRecordCountForStates(
       actionRecordCountByState,
@@ -1752,6 +1914,13 @@ export class MetricsCapture {
       archive_oldest_inactive_turns: archiveVisibilityMetrics.archive_oldest_inactive_turns,
       archive_inactive_turn_distribution:
         archiveVisibilityMetrics.archive_inactive_turn_distribution,
+      archive_archivable_count: archiveVisibilityMetrics.archive_archivable_count,
+      archive_skipped_borg_owned: archiveVisibilityMetrics.archive_skipped_borg_owned,
+      archive_skipped_due_date: archiveVisibilityMetrics.archive_skipped_due_date,
+      archive_skipped_below_threshold: archiveVisibilityMetrics.archive_skipped_below_threshold,
+      archive_skipped_other: archiveVisibilityMetrics.archive_skipped_other,
+      archive_oldest_archivable_inactive_turns:
+        archiveVisibilityMetrics.archive_oldest_archivable_inactive_turns,
       stale_actions_omitted_from_prompt: promptSalienceSummary.staleActionsOmittedFromPrompt,
       actions_per_turn: actionRatio(totalActions, turnCounter),
       salient_actions_per_turn: actionRatio(
@@ -1900,6 +2069,7 @@ export class MetricsCapture {
       context.sessionId,
       turnCounter,
       archiveAfterInactiveTurns,
+      traceRecordsSinceLastCapture,
     );
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords,
@@ -1928,9 +2098,10 @@ export class MetricsCapture {
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
-    const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics(
-      traceRecordsSinceLastCapture,
-    );
+    const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics({
+      traceRecords: traceRecordsSinceLastCapture,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
@@ -1955,6 +2126,10 @@ export class MetricsCapture {
       semantic_edges_added_since_last_check: semanticEdgesAdded,
       semantic_nodes_rejected_ungrounded_label_count:
         semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_count,
+      semantic_nodes_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
+      semantic_nodes_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,
@@ -2002,6 +2177,13 @@ export class MetricsCapture {
       dormant_archive_eligible_count: memoryBandMetrics.dormant_archive_eligible_count,
       archive_oldest_inactive_turns: memoryBandMetrics.archive_oldest_inactive_turns,
       archive_inactive_turn_distribution: memoryBandMetrics.archive_inactive_turn_distribution,
+      archive_archivable_count: memoryBandMetrics.archive_archivable_count,
+      archive_skipped_borg_owned: memoryBandMetrics.archive_skipped_borg_owned,
+      archive_skipped_due_date: memoryBandMetrics.archive_skipped_due_date,
+      archive_skipped_below_threshold: memoryBandMetrics.archive_skipped_below_threshold,
+      archive_skipped_other: memoryBandMetrics.archive_skipped_other,
+      archive_oldest_archivable_inactive_turns:
+        memoryBandMetrics.archive_oldest_archivable_inactive_turns,
       stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
       actions_per_turn: memoryBandMetrics.actions_per_turn,
       salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
@@ -2135,6 +2317,12 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_max_tokens_total,
       shared_state_compiler_degraded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_degraded_total,
+      shared_state_compiler_repair_attempted_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_attempted_total,
+      shared_state_compiler_repair_succeeded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_succeeded_total,
+      shared_state_compiler_repair_failed_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -2205,6 +2393,7 @@ export class MetricsCapture {
       context.sessionId,
       turnCounter,
       archiveAfterInactiveTurns,
+      [],
     );
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
     const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);
@@ -2236,6 +2425,10 @@ export class MetricsCapture {
       traceRecords: [],
       cumulativeTraceRecords: allTraceRecords,
     });
+    const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics({
+      traceRecords: [],
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const rowTs = Date.now();
     const row: MetricsRow = {
       event,
@@ -2251,6 +2444,10 @@ export class MetricsCapture {
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,
       semantic_nodes_rejected_ungrounded_label_count: 0,
+      semantic_nodes_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
+      semantic_nodes_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,
@@ -2290,6 +2487,13 @@ export class MetricsCapture {
       dormant_archive_eligible_count: memoryBandMetrics.dormant_archive_eligible_count,
       archive_oldest_inactive_turns: memoryBandMetrics.archive_oldest_inactive_turns,
       archive_inactive_turn_distribution: memoryBandMetrics.archive_inactive_turn_distribution,
+      archive_archivable_count: memoryBandMetrics.archive_archivable_count,
+      archive_skipped_borg_owned: memoryBandMetrics.archive_skipped_borg_owned,
+      archive_skipped_due_date: memoryBandMetrics.archive_skipped_due_date,
+      archive_skipped_below_threshold: memoryBandMetrics.archive_skipped_below_threshold,
+      archive_skipped_other: memoryBandMetrics.archive_skipped_other,
+      archive_oldest_archivable_inactive_turns:
+        memoryBandMetrics.archive_oldest_archivable_inactive_turns,
       stale_actions_omitted_from_prompt: memoryBandMetrics.stale_actions_omitted_from_prompt,
       actions_per_turn: memoryBandMetrics.actions_per_turn,
       salient_actions_per_turn: memoryBandMetrics.salient_actions_per_turn,
@@ -2423,6 +2627,12 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_max_tokens_total,
       shared_state_compiler_degraded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_degraded_total,
+      shared_state_compiler_repair_attempted_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_attempted_total,
+      shared_state_compiler_repair_succeeded_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_succeeded_total,
+      shared_state_compiler_repair_failed_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,

@@ -21,7 +21,7 @@ import {
 } from "../../llm/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
-import { createSemanticNodeId } from "../../util/ids.js";
+import { createSemanticNodeId, streamEntryIdHelpers, type StreamEntryId } from "../../util/ids.js";
 import { episodeAccessScopeKey } from "../episodic/access.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
@@ -44,6 +44,7 @@ const extractorNodeSchema = z.object({
   aliases: z.array(z.string().min(1)),
   observation_metadata: semanticObservationMetadataSchema.nullable().default(null),
   relationship_evidence_relational_slot_ids: z.array(z.string().min(1)).default([]),
+  relationship_evidence_stream_entry_ids: z.array(z.string().min(1)).default([]),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
@@ -102,12 +103,24 @@ export type SemanticExtractorOptions = {
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
   participantRoster?: ParticipantRoster | null;
+  relationshipEvidenceStreamEntryTrust?: SemanticRelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
   tracer?: TurnTracer;
   traceTurnId?: string;
   dedupThreshold?: number;
   confidenceCeiling?: number;
 };
+
+export type SemanticRelationshipEvidenceStreamEntryTrustResult = {
+  allowed: boolean;
+  reason?: "missing" | "not_user_msg" | "untrusted" | "unavailable";
+};
+
+export type SemanticRelationshipEvidenceStreamEntryTrustValidator = (
+  streamEntryId: StreamEntryId,
+) =>
+  | SemanticRelationshipEvidenceStreamEntryTrustResult
+  | Promise<SemanticRelationshipEvidenceStreamEntryTrustResult>;
 
 export type ExtractSemanticResult = {
   insertedNodes: number;
@@ -153,7 +166,7 @@ function buildPrompt(input: {
     RELATIONSHIP_LABELS_PROMPT,
     RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
     HEADCOUNT_SET_GROUNDING_PROMPT,
-    "When a node label or description uses a protected relationship label, fill relationship_evidence_relational_slot_ids with the supplied relational slot id that grounds that label. If no supplied relational slot grounds it, rewrite the node neutrally before emitting it.",
+    "When a node label or description uses a protected relationship label, fill relationship_evidence_relational_slot_ids with a supplied grounded relational slot id, or relationship_evidence_stream_entry_ids with a supplied direct user-message stream entry id. Do not cite assistant output as relationship evidence. If neither supplied evidence type grounds it, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
@@ -364,6 +377,9 @@ export class SemanticExtractor {
   private traceInsertSkipped(input: {
     kind: "node" | "edge";
     reason: SemanticInsertSkipReason;
+    protectedLabels?: readonly string[];
+    relationshipEvidenceRelationalSlotIds?: readonly string[];
+    relationshipEvidenceStreamEntryIds?: readonly string[];
   }): void {
     if (this.options.tracer?.enabled !== true) {
       return;
@@ -373,6 +389,21 @@ export class SemanticExtractor {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       kind: input.kind,
       reason: input.reason,
+      ...(input.protectedLabels === undefined
+        ? {}
+        : { protected_relationship_labels: [...input.protectedLabels] }),
+      ...(input.relationshipEvidenceRelationalSlotIds === undefined
+        ? {}
+        : {
+            relationship_evidence_relational_slot_ids: [
+              ...input.relationshipEvidenceRelationalSlotIds,
+            ],
+          }),
+      ...(input.relationshipEvidenceStreamEntryIds === undefined
+        ? {}
+        : {
+            relationship_evidence_stream_entry_ids: [...input.relationshipEvidenceStreamEntryIds],
+          }),
     });
   }
 
@@ -445,9 +476,7 @@ export class SemanticExtractor {
 
   private protectedRelationshipLabelsForCandidate(candidate: ExtractorNode): string[] {
     return [
-      ...new Set(
-        protectedRelationshipLabelsInText(`${candidate.label}\n${candidate.description}`),
-      ),
+      ...new Set(protectedRelationshipLabelsInText(`${candidate.label}\n${candidate.description}`)),
     ];
   }
 
@@ -459,6 +488,45 @@ export class SemanticExtractor {
     }
 
     return candidate.relationship_evidence_relational_slot_ids.some((id) => rosterSlotIds.has(id));
+  }
+
+  private async hasGroundedRelationshipStreamEntryEvidence(
+    candidate: ExtractorNode,
+    sourceEpisodes: readonly Episode[],
+  ): Promise<boolean> {
+    const trustValidator = this.options.relationshipEvidenceStreamEntryTrust;
+
+    if (trustValidator === undefined) {
+      return false;
+    }
+
+    const sourceStreamEntryIds = new Set(
+      sourceEpisodes.flatMap((episode) => episode.source_stream_ids),
+    );
+
+    for (const rawId of candidate.relationship_evidence_stream_entry_ids) {
+      if (!streamEntryIdHelpers.is(rawId) || !sourceStreamEntryIds.has(rawId as StreamEntryId)) {
+        continue;
+      }
+
+      const trust = await trustValidator(rawId as StreamEntryId);
+
+      if (trust.allowed) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async hasGroundedRelationshipEvidence(
+    candidate: ExtractorNode,
+    sourceEpisodes: readonly Episode[],
+  ): Promise<boolean> {
+    return (
+      this.hasGroundedRelationshipSlotEvidence(candidate) ||
+      (await this.hasGroundedRelationshipStreamEntryEvidence(candidate, sourceEpisodes))
+    );
   }
 
   private queueUngroundedRelationshipLabelReview(input: {
@@ -478,6 +546,8 @@ export class SemanticExtractor {
         protected_relationship_labels: [...input.protectedLabels],
         relationship_evidence_relational_slot_ids:
           input.candidate.relationship_evidence_relational_slot_ids,
+        relationship_evidence_stream_entry_ids:
+          input.candidate.relationship_evidence_stream_entry_ids,
       },
       reason:
         "Semantic node candidate used a protected relationship label without a grounded relational slot id.",
@@ -501,10 +571,13 @@ export class SemanticExtractor {
       "source_episode_ids",
     );
     const protectedLabels = this.protectedRelationshipLabelsForCandidate(candidate);
+    const sourceEpisodes = sourceEpisodeIds
+      .map((episodeId) => episodeById.get(episodeId))
+      .filter((episode): episode is Episode => episode !== undefined);
 
     if (
       protectedLabels.length > 0 &&
-      !this.hasGroundedRelationshipSlotEvidence(candidate)
+      !(await this.hasGroundedRelationshipEvidence(candidate, sourceEpisodes))
     ) {
       this.queueUngroundedRelationshipLabelReview({
         candidate,
@@ -517,9 +590,6 @@ export class SemanticExtractor {
       };
     }
 
-    const sourceEpisodes = sourceEpisodeIds
-      .map((episodeId) => episodeById.get(episodeId))
-      .filter((episode): episode is Episode => episode !== undefined);
     const candidateScopeKeys = resolveEpisodeScopeKeys(sourceEpisodes);
 
     try {
@@ -879,6 +949,15 @@ export class SemanticExtractor {
           this.traceInsertSkipped({
             kind: "node",
             reason,
+            ...(reason === "relationship_label_ungrounded"
+              ? {
+                  protectedLabels: this.protectedRelationshipLabelsForCandidate(candidate),
+                  relationshipEvidenceRelationalSlotIds:
+                    candidate.relationship_evidence_relational_slot_ids,
+                  relationshipEvidenceStreamEntryIds:
+                    candidate.relationship_evidence_stream_entry_ids,
+                }
+              : {}),
           });
         }
 

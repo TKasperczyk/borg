@@ -46,6 +46,8 @@ export type MetricsRow = {
   semantic_nodes_added_since_last_check: number;
   semantic_edges_added_since_last_check: number;
   semantic_nodes_rejected_ungrounded_label_count: number;
+  semantic_nodes_rejected_ungrounded_label_total: number;
+  semantic_nodes_rejected_ungrounded_label_by_label: Record<string, number>;
   open_question_count: number;
   active_goal_count: number;
   generation_suppression_count: number;
@@ -78,6 +80,12 @@ export type MetricsRow = {
   dormant_archive_eligible_count: number;
   archive_oldest_inactive_turns: number;
   archive_inactive_turn_distribution: Record<string, number>;
+  archive_archivable_count: number;
+  archive_skipped_borg_owned: number;
+  archive_skipped_due_date: number;
+  archive_skipped_below_threshold: number;
+  archive_skipped_other: number;
+  archive_oldest_archivable_inactive_turns: number;
   stale_actions_omitted_from_prompt: number;
   actions_per_turn: number;
   salient_actions_per_turn: number;
@@ -168,6 +176,9 @@ export type MetricsRow = {
   extractor_degraded_total_by_label: Record<string, number>;
   shared_state_compiler_max_tokens_total: number;
   shared_state_compiler_degraded_total: number;
+  shared_state_compiler_repair_attempted_total: number;
+  shared_state_compiler_repair_succeeded_total: number;
+  shared_state_compiler_repair_failed_total: number;
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
   capability_boundary_refusal_count: number;

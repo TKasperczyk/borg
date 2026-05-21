@@ -63,6 +63,7 @@ export type EvidenceLedgerFinalizerContext = {
 };
 
 export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
+  globalTurnCounter?: number;
   isUserTurn: boolean;
   perception: PerceptionResult;
   closureLoopAssessment: ClosureLoopAssessment | null;
@@ -219,6 +220,7 @@ export async function runRetrievalPhase(input: {
       audienceEntityId: input.audienceEntityId,
       currentUserMessage: input.turnInput.userMessage,
       currentUserEntry: input.persistedUserEntry,
+      globalTurnCounter: input.turnInput.globalTurnCounter,
       workingMemory: input.workingMemory,
       applicableCommitments,
       retrievedEvidence: retrieval.evidence,
@@ -557,10 +559,9 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
   const trustedRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
     (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
   );
-  const offLimitsRelationalSlotEvidenceStreamEntryIds =
-    relationalSlotEvidenceStreamEntryIds.filter(
-      (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
-    );
+  const offLimitsRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
+    (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
+  );
   const sharedStateLlmClient = input.options.llmFactory();
   const semanticBeliefRevision =
     input.options.semanticNodeRepository === undefined ||
@@ -605,7 +606,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     clock: input.options.clock,
     tracer: input.options.tracer,
     turnId: input.input.turnId,
-    turnCounter: input.input.workingMemory?.turn_counter,
+    turnCounter: input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter,
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,
       kindSoftCaps: sharedStateConfig.kindSoftCaps,

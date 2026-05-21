@@ -4,6 +4,7 @@ import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { buildParticipantRosterFromRepositories } from "../../cognition/perception/index.js";
 import {
   SemanticExtractor,
+  createUserStreamEntryRelationshipEvidenceTrustValidator,
   semanticEdgeIdSchema,
   semanticEdgeSchema,
   semanticNodeIdSchema,
@@ -12,6 +13,7 @@ import {
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { StreamReader } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
@@ -470,6 +472,15 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
             entityRepository: ctx.entityRepository,
             relationalSlotRepository: ctx.relationalSlotRepository,
           }),
+          relationshipEvidenceStreamEntryTrust:
+            createUserStreamEntryRelationshipEvidenceTrustValidator({
+              entryIndex: ctx.entryIndex,
+              createStreamReader: (sessionId) =>
+                new StreamReader({
+                  dataDir: ctx.config.dataDir,
+                  sessionId,
+                }),
+            }),
           reviewEnqueue: (input) => {
             deferredReviews.push({
               ...input,

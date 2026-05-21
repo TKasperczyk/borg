@@ -67,7 +67,8 @@ export const actionMigrations = [
           ),
           session_anchor_id TEXT NULL,
           last_referenced_at_ms INTEGER NULL,
-          last_referenced_turn_counter INTEGER NULL
+          last_referenced_turn_counter INTEGER NULL,
+          last_referenced_turn_global INTEGER NULL
         );
 
         CREATE INDEX IF NOT EXISTS action_records_state_idx
@@ -88,6 +89,14 @@ export const actionMigrations = [
           ON action_records(session_anchor_id, session_scope);
         CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
           ON action_records(last_referenced_turn_counter);
+        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_global_idx
+          ON action_records(last_referenced_turn_global);
+        CREATE TABLE IF NOT EXISTS action_lifecycle_turn_counter (
+          id TEXT PRIMARY KEY CHECK (id = 'global'),
+          value INTEGER NOT NULL CHECK (value >= 0)
+        );
+        INSERT OR IGNORE INTO action_lifecycle_turn_counter (id, value)
+          VALUES ('global', 0);
       `);
     },
   },
@@ -194,7 +203,8 @@ export const actionMigrations = [
           ),
           session_anchor_id TEXT NULL,
           last_referenced_at_ms INTEGER NULL,
-          last_referenced_turn_counter INTEGER NULL
+          last_referenced_turn_counter INTEGER NULL,
+          last_referenced_turn_global INTEGER NULL
         );
 
         INSERT INTO action_records_next (
@@ -202,7 +212,8 @@ export const actionMigrations = [
           provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
           considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
           archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
-          session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter
+          session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter,
+          last_referenced_turn_global
         )
         SELECT
           id,
@@ -229,6 +240,7 @@ export const actionMigrations = [
           NULL,
           NULL,
           updated_at,
+          NULL,
           NULL
         FROM action_records;
 
@@ -253,6 +265,8 @@ export const actionMigrations = [
           ON action_records(session_anchor_id, session_scope);
         CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
           ON action_records(last_referenced_turn_counter);
+        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_global_idx
+          ON action_records(last_referenced_turn_global);
       `);
     },
   },
@@ -275,6 +289,71 @@ export const actionMigrations = [
         CREATE INDEX IF NOT EXISTS action_records_session_anchor_scope_idx
           ON action_records(session_anchor_id, session_scope);
       `);
+    },
+  },
+  {
+    id: 6,
+    name: "action_records_global_lifecycle_turn",
+    up: (db) => {
+      if (tableExists(db, "action_records")) {
+        if (!tableHasColumn(db, "action_records", "last_referenced_turn_global")) {
+          db.exec(`
+            ALTER TABLE action_records
+              ADD COLUMN last_referenced_turn_global INTEGER NULL;
+          `);
+        }
+
+        const row = db
+          .prepare(
+            `
+              SELECT COALESCE(MAX(last_referenced_turn_counter), 0) AS value
+              FROM action_records
+            `,
+          )
+          .get() as { value: number } | undefined;
+        const migrationWatermark = Math.max(0, Math.floor(Number(row?.value ?? 0)));
+
+        // Legacy turn counters were session-local. Preserve ordering going forward by treating
+        // every legacy reference as touched at the migration boundary instead of copying
+        // incomparable per-session values row-by-row.
+        db.prepare(
+          `
+            UPDATE action_records
+            SET last_referenced_turn_global = ?
+            WHERE last_referenced_turn_global IS NULL
+              AND last_referenced_turn_counter IS NOT NULL
+          `,
+        ).run(migrationWatermark);
+
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_global_idx
+            ON action_records(last_referenced_turn_global);
+        `);
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS action_lifecycle_turn_counter (
+          id TEXT PRIMARY KEY CHECK (id = 'global'),
+          value INTEGER NOT NULL CHECK (value >= 0)
+        );
+      `);
+
+      if (tableExists(db, "action_records")) {
+        db.exec(`
+          INSERT OR IGNORE INTO action_lifecycle_turn_counter (id, value)
+          SELECT
+            'global',
+            COALESCE(
+              (SELECT MAX(last_referenced_turn_global) FROM action_records),
+              0
+            );
+        `);
+      } else {
+        db.exec(`
+          INSERT OR IGNORE INTO action_lifecycle_turn_counter (id, value)
+            VALUES ('global', 0);
+        `);
+      }
     },
   },
 ] as const satisfies readonly Migration[];

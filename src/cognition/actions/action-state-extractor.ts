@@ -220,6 +220,7 @@ function compactActionForPrompt(action: ActionRecord): Record<string, unknown> {
     session_scope: action.session_scope,
     session_anchor_id: action.session_anchor_id,
     last_referenced_turn_counter: action.last_referenced_turn_counter,
+    last_referenced_turn_global: action.last_referenced_turn_global ?? null,
   };
 }
 
@@ -522,6 +523,7 @@ function toActionRecord(input: {
     session_anchor_id: input.candidate.session_scope == null ? null : input.sessionId,
     last_referenced_at_ms: input.nowMs,
     last_referenced_turn_counter: input.turnCounter ?? null,
+    last_referenced_turn_global: input.turnCounter ?? null,
     ...stateTimestampPatch(input.candidate.state, input.nowMs),
   };
 }
@@ -929,6 +931,7 @@ export class ActionStateExtractor {
           this.options.actionRepository.update(actionId, {
             last_referenced_at_ms: nowMs,
             last_referenced_turn_counter: turnCounter,
+            last_referenced_turn_global: turnCounter,
           });
         } catch (error) {
           degraded = true;
@@ -1024,6 +1027,7 @@ export class ActionStateExtractor {
             updated_at: nowMs,
             last_referenced_at_ms: nowMs,
             last_referenced_turn_counter: turnCounter,
+            last_referenced_turn_global: turnCounter,
             ...stateTimestampPatch(candidate.state, nowMs),
           } satisfies ActionRecordPatch;
 
@@ -1135,6 +1139,7 @@ export class ActionStateExtractor {
                   updated_at: nowMs,
                   last_referenced_at_ms: nowMs,
                   last_referenced_turn_counter: turnCounter,
+                  last_referenced_turn_global: turnCounter,
                   ...stateTimestampPatch(record.state, nowMs),
                 } satisfies ActionRecordPatch;
 
@@ -1172,6 +1177,7 @@ export class ActionStateExtractor {
                   const referencePatch = {
                     last_referenced_at_ms: nowMs,
                     last_referenced_turn_counter: turnCounter,
+                    last_referenced_turn_global: turnCounter,
                   } satisfies ActionRecordPatch;
 
                   this.options.actionRepository.update(bestMatch.actionId, referencePatch);

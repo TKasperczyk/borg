@@ -76,6 +76,7 @@ export type ChatWithBorgOptions = {
   sessionId?: string;
   audience?: string;
   senderEntityId?: EntityId;
+  globalTurnCounter?: number;
 };
 
 export type SeededGoalProgressEvidence = {
@@ -775,6 +776,9 @@ export class BorgTransport {
       stakes: DEFAULT_BORG_STAKES,
       ...(options.audience === undefined ? {} : { audience: options.audience }),
       ...(options.senderEntityId === undefined ? {} : { senderEntityId: options.senderEntityId }),
+      ...(options.globalTurnCounter === undefined
+        ? {}
+        : { globalTurnCounter: options.globalTurnCounter }),
       ...(sessionId === undefined ? {} : { sessionId }),
     });
     const events = readTraceEvents(this.tracePath);

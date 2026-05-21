@@ -377,10 +377,12 @@ describe("ActionStateExtractor", () => {
     expect(repository.update).toHaveBeenCalledWith(existingAction.id, {
       last_referenced_at_ms: 4_000,
       last_referenced_turn_counter: 9,
+      last_referenced_turn_global: 9,
     });
     expect(repository.records[0]).toMatchObject({
       last_referenced_at_ms: 4_000,
       last_referenced_turn_counter: 9,
+      last_referenced_turn_global: 9,
     });
   });
 

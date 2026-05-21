@@ -43,6 +43,7 @@ export function buildSharedStateArtifactMessages(input: {
   relationalSlotsContext?: readonly SharedStateRelationalSlotContext[];
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
   offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
+  additionalPromptSections?: readonly string[];
 }): LLMMessage[] {
   const canonicalizationCandidates = buildCanonicalizationCandidatePromptPayload(
     input.canonicalizationCandidates,
@@ -69,6 +70,10 @@ export function buildSharedStateArtifactMessages(input: {
             input.allowedSourceStreamEntryIds?.length ?? null,
           off_limits_source_stream_entry_ids: input.offLimitsSourceStreamEntryIds ?? [],
         },
+        ...(input.additionalPromptSections === undefined ||
+        input.additionalPromptSections.length === 0
+          ? {}
+          : { additional_prompt_sections: input.additionalPromptSections }),
         previous_artifact_summary: input.previousArtifactSummary,
         canonicalization_candidates: canonicalizationCandidates,
         relational_slots_context: (input.relationalSlotsContext ?? []).map((slot) => ({

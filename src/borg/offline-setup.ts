@@ -49,6 +49,7 @@ import {
 } from "../offline/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
+import type { StreamEntryIndexRepository } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import type { BorgStreamWriterFactory } from "./types.js";
@@ -65,6 +66,7 @@ export type BuildOfflineSetupOptions = {
   clock: Clock;
   embeddingClient: EmbeddingClient;
   lazyLlmClient: LLMClient;
+  entryIndex: StreamEntryIndexRepository;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
@@ -176,6 +178,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     baseContext: {
       config: options.config,
       clock: options.clock,
+      entryIndex: options.entryIndex,
       embeddingClient: options.embeddingClient,
       tracer: options.tracer,
       llm: {

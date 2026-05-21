@@ -1217,6 +1217,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
         canonicalized_by_artifact_entry_id: entry.id,
         last_referenced_at_ms: expect.any(Number),
         last_referenced_turn_counter: null,
+        last_referenced_turn_global: null,
       },
       {
         skipSideEffects: true,

@@ -56,7 +56,10 @@ export class TurnPhaseCoordinator {
   constructor(private readonly options: TurnPhaseCoordinatorOptions) {}
 
   async run(input: RunTurnPhasesInput): Promise<TurnPhaseResult> {
-    const turnInput = input.input;
+    const turnInput = {
+      ...input.input,
+      globalTurnCounter: input.globalTurnCounter,
+    };
     const sessionId = input.sessionId;
     const turnId = input.turnId;
     const streamWriter = input.streamWriter;

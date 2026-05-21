@@ -122,6 +122,10 @@ function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.last_referenced_turn_counter === null || row.last_referenced_turn_counter === undefined
         ? null
         : Number(row.last_referenced_turn_counter),
+    last_referenced_turn_global:
+      row.last_referenced_turn_global === null || row.last_referenced_turn_global === undefined
+        ? null
+        : Number(row.last_referenced_turn_global),
   });
 
   if (!parsed.success) {
@@ -285,6 +289,56 @@ export class ActionRepository {
     return this.options.embeddingClient;
   }
 
+  nextLifecycleTurnGlobal(): number {
+    return this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            INSERT OR IGNORE INTO action_lifecycle_turn_counter (id, value)
+              VALUES ('global', 0)
+          `,
+        )
+        .run();
+      const row = this.db
+        .prepare("SELECT value FROM action_lifecycle_turn_counter WHERE id = 'global'")
+        .get() as { value: number } | undefined;
+      const next = Number(row?.value ?? 0) + 1;
+
+      this.db
+        .prepare("UPDATE action_lifecycle_turn_counter SET value = ? WHERE id = 'global'")
+        .run(next);
+
+      return next;
+    })();
+  }
+
+  ensureLifecycleTurnGlobal(value: number): number {
+    const normalized = Math.max(0, Math.floor(value));
+
+    if (!Number.isFinite(normalized)) {
+      throw new StorageError("Invalid action lifecycle global turn counter", {
+        code: "ACTION_LIFECYCLE_TURN_COUNTER_INVALID",
+      });
+    }
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO action_lifecycle_turn_counter (id, value)
+            VALUES ('global', ?)
+          ON CONFLICT (id) DO UPDATE SET
+            value = CASE
+              WHEN excluded.value > action_lifecycle_turn_counter.value
+              THEN excluded.value
+              ELSE action_lifecycle_turn_counter.value
+            END
+        `,
+      )
+      .run(normalized);
+
+    return normalized;
+  }
+
   private enqueueEmbeddingTask(task: Promise<void>): void {
     this.pendingEmbeddingTasks.add(task);
     void task.finally(() => {
@@ -327,8 +381,9 @@ export class ActionRepository {
             provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
             considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
             archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
-            session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter,
+            last_referenced_turn_global
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
@@ -352,7 +407,8 @@ export class ActionRepository {
             session_scope = excluded.session_scope,
             session_anchor_id = excluded.session_anchor_id,
             last_referenced_at_ms = excluded.last_referenced_at_ms,
-            last_referenced_turn_counter = excluded.last_referenced_turn_counter
+            last_referenced_turn_counter = excluded.last_referenced_turn_counter,
+            last_referenced_turn_global = excluded.last_referenced_turn_global
         `,
       )
       .run(
@@ -381,6 +437,7 @@ export class ActionRepository {
         record.session_anchor_id ?? null,
         record.last_referenced_at_ms ?? null,
         record.last_referenced_turn_counter ?? null,
+        record.last_referenced_turn_global ?? null,
       );
   }
 

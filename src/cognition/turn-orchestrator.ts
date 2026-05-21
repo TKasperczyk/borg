@@ -63,6 +63,7 @@ export type TurnInput = {
   senderEntityId?: EntityId;
   stakes?: TurnStakes;
   sessionId?: SessionId;
+  globalTurnCounter?: number;
   origin?: "user" | "autonomous";
   autonomyTrigger?: AutonomyTriggerContext | null;
 };
@@ -371,6 +372,10 @@ export class TurnOrchestrator {
     }
 
     const turnId = randomUUID();
+    const globalTurnCounter =
+      input.globalTurnCounter === undefined
+        ? this.options.actionRepository.nextLifecycleTurnGlobal()
+        : this.options.actionRepository.ensureLifecycleTurnGlobal(input.globalTurnCounter);
     const streamWriter = this.options.createStreamWriter(sessionId);
     const lifecycleTracker = new TurnLifecycleTracker({
       workingMemoryStore: this.options.workingMemoryStore,
@@ -386,6 +391,7 @@ export class TurnOrchestrator {
       try {
         const result = await this.turnPhaseCoordinator.run({
           input,
+          globalTurnCounter,
           sessionId,
           turnId,
           streamWriter,

@@ -1,4 +1,13 @@
 export { actionMigrations } from "./migrations.js";
+export {
+  ACTION_ARCHIVE_ACTIVE_STATES,
+  ACTION_ARCHIVE_SCAN_LIMIT,
+  classifyActionArchiveCandidate,
+  isParticipantOwnedAction,
+  lastReferencedActionLifecycleTurn,
+  type ActionArchiveCandidateClassification,
+  type ActionArchiveSkipReason,
+} from "./archive-classifier.js";
 export { resolveOpenQuestionsForCompletedAction } from "./open-question-resolution.js";
 export {
   ActionRepository,

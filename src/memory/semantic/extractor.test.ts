@@ -164,7 +164,8 @@ describe("semantic extractor", () => {
       participantRoster: {
         participants: [
           {
-            entity_id: "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+            entity_id:
+              "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
             display_name: "Nora",
             known_relationships: ["spouse:Priya"],
             audience_role: "speaker",
@@ -188,6 +189,7 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("Memory-write relationship label grounding");
     expect(prompt).toContain("Headcount and set grounding");
     expect(prompt).toContain("relationship_evidence_relational_slot_ids");
+    expect(prompt).toContain("relationship_evidence_stream_entry_ids");
     expect(prompt).toContain("Thread roster:");
     expect(prompt).toContain("relational_slot:rslot_grounded");
   });
@@ -263,6 +265,9 @@ describe("semantic extractor", () => {
       turnId: "turn_ungrounded_relationship",
       kind: "node",
       reason: "relationship_label_ungrounded",
+      protected_relationship_labels: expect.arrayContaining(["siblings"]),
+      relationship_evidence_relational_slot_ids: [],
+      relationship_evidence_stream_entry_ids: [],
     });
   });
 
@@ -365,7 +370,8 @@ describe("semantic extractor", () => {
       participantRoster: {
         participants: [
           {
-            entity_id: "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+            entity_id:
+              "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
             display_name: "Nora",
             known_relationships: ["sibling:Julian"],
             audience_role: "speaker",
@@ -388,6 +394,170 @@ describe("semantic extractor", () => {
     });
     expect(nodes.map((node) => node.label)).toContain("Sibling planning");
     expect(reviewEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("inserts protected-label semantic nodes with direct trusted user stream evidence", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const userStreamId = "strm_userdirect000001" as Episode["source_stream_ids"][number];
+    const episode = buildEpisode("ep_userdirect000001" as Episode["id"], "Direct sibling note", {
+      narrative: "The user directly stated Nora and Julian are siblings.",
+      source_stream_ids: [userStreamId],
+    });
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Nora and Julian siblings",
+                description: "Nora and Julian are siblings.",
+                aliases: [],
+                confidence: 0.7,
+                relationship_evidence_stream_entry_ids: [userStreamId],
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      relationshipEvidenceStreamEntryTrust: async (streamEntryId) => ({
+        allowed: streamEntryId === userStreamId,
+      }),
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const nodes = await nodeRepository.list();
+
+    expect(result).toMatchObject({
+      insertedNodes: 1,
+      skippedNodes: 0,
+    });
+    expect(nodes.map((node) => node.label)).toContain("Nora and Julian siblings");
+    expect(reviewEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects protected-label semantic nodes grounded only by assistant output under review", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const assistantStreamId = "strm_assistant0000001" as Episode["source_stream_ids"][number];
+    const episode = buildEpisode("ep_assistant0000001" as Episode["id"], "Assistant sibling note", {
+      narrative: "The assistant output under review stated Nora and Julian are siblings.",
+      source_stream_ids: [assistantStreamId],
+    });
+    const reviewEnqueue = vi.fn();
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Assistant sibling claim",
+                description: "Nora and Julian are siblings.",
+                aliases: [],
+                confidence: 0.7,
+                relationship_evidence_stream_entry_ids: [assistantStreamId],
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      relationshipEvidenceStreamEntryTrust: async () => ({
+        allowed: false,
+        reason: "not_user_msg",
+      }),
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedNodes: 0,
+      skippedNodes: 1,
+    });
+    expect(reviewEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "relationship_label_ungrounded",
+        refs: expect.objectContaining({
+          relationship_evidence_stream_entry_ids: [assistantStreamId],
+        }),
+      }),
+    );
+  });
+
+  it("rejects protected-label semantic nodes with stream evidence outside the source bundle", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const sourceStreamId = "strm_srcbundle0000001" as Episode["source_stream_ids"][number];
+    const citedOutsideBundleId = "strm_notbundle0000001" as Episode["source_stream_ids"][number];
+    const episode = buildEpisode("ep_srcbundle0000001" as Episode["id"], "Source-bundled note", {
+      narrative: "The user directly stated Nora and Julian are siblings.",
+      source_stream_ids: [sourceStreamId],
+    });
+    const reviewEnqueue = vi.fn();
+    const trust = vi.fn(async () => ({
+      allowed: true,
+    }));
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "proposition",
+                label: "Outside-bundle sibling claim",
+                description: "Nora and Julian are siblings.",
+                aliases: [],
+                confidence: 0.7,
+                relationship_evidence_stream_entry_ids: [citedOutsideBundleId],
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      reviewEnqueue,
+      relationshipEvidenceStreamEntryTrust: trust,
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedNodes: 0,
+      skippedNodes: 1,
+    });
+    expect(trust).not.toHaveBeenCalled();
+    expect(reviewEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "relationship_label_ungrounded",
+        refs: expect.objectContaining({
+          relationship_evidence_stream_entry_ids: [citedOutsideBundleId],
+        }),
+      }),
+    );
   });
 
   it("inserts semantic nodes without protected relationship labels as before", async () => {

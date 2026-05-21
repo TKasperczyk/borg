@@ -108,6 +108,7 @@ const actionRecordShape = z.object({
   session_anchor_id: actionSessionAnchorIdSchema.nullable().default(null),
   last_referenced_at_ms: z.number().finite().nullable().default(null),
   last_referenced_turn_counter: z.number().int().nonnegative().nullable().default(null),
+  last_referenced_turn_global: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const actionRecordSchema = actionRecordShape

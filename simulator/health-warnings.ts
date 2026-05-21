@@ -307,13 +307,13 @@ export function simulatorHealthWarningsForRows(
     }
   }
 
-  if (latest.dormant_archive_eligible_count > DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD) {
+  if (latest.archive_archivable_count > DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD) {
     warnings.push(
       latestWarning({
         row: latest,
         kind: "dormant_archive_eligible_count_high",
         threshold: DORMANT_ARCHIVE_ELIGIBLE_COUNT_HIGH_THRESHOLD,
-        observedValue: latest.dormant_archive_eligible_count,
+        observedValue: latest.archive_archivable_count,
       }),
     );
   }

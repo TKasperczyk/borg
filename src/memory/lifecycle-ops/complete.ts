@@ -24,6 +24,7 @@ export function completeAction(input: {
   skipSideEffects?: boolean;
   lastReferencedAtMs?: number;
   lastReferencedTurnCounter?: number | null;
+  lastReferencedTurnGlobal?: number | null;
   tracer?: LifecycleTracer;
   turnId?: string;
   traceSource?: string;
@@ -68,6 +69,9 @@ export function completeAction(input: {
         ...(input.lastReferencedTurnCounter === undefined
           ? {}
           : { last_referenced_turn_counter: input.lastReferencedTurnCounter }),
+        ...(input.lastReferencedTurnGlobal === undefined
+          ? {}
+          : { last_referenced_turn_global: input.lastReferencedTurnGlobal }),
       },
       {
         skipSideEffects: input.skipSideEffects,

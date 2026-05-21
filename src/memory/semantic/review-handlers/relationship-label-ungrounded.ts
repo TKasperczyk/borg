@@ -9,6 +9,7 @@ const refsSchema = z
     description: z.string().min(1),
     protected_relationship_labels: z.array(z.string().min(1)),
     relationship_evidence_relational_slot_ids: z.array(z.string().min(1)),
+    relationship_evidence_stream_entry_ids: z.array(z.string().min(1)).default([]),
   })
   .passthrough();
 

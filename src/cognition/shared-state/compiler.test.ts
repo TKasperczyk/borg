@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import { sharedStateMigrations } from "../../memory/decision-artifacts/migrations.js";
 import { SharedStateRepository } from "../../memory/decision-artifacts/repository.js";
 import type { SharedStateEntryKind } from "../../memory/decision-artifacts/types.js";
@@ -52,6 +53,13 @@ function emitSharedStateArtifactPatchResponse(
   patch: EmitSharedStatePatch,
   toolName = SHARED_STATE_TOOL_NAME,
 ) {
+  return emitRawSharedStateArtifactPatchResponse(patch, toolName);
+}
+
+function emitRawSharedStateArtifactPatchResponse(
+  input: unknown,
+  toolName = SHARED_STATE_TOOL_NAME,
+) {
   return {
     text: "",
     input_tokens: 12,
@@ -61,7 +69,7 @@ function emitSharedStateArtifactPatchResponse(
       {
         id: "toolu_decision_patch",
         name: toolName,
-        input: patch,
+        input,
       },
     ],
   };
@@ -670,6 +678,81 @@ describe("compileSharedStateArtifact", () => {
       status: "done",
       canonicalized_by_artifact_entry_id: artifactEntry?.id,
     });
+  });
+
+  it("touches canonicalized actions with the supplied global turn counter", async () => {
+    const actionId = createActionId();
+    const update = vi.fn();
+    const action = {
+      id: actionId,
+      description: "Follow up with the clinic",
+      actor: "user",
+      audience_entity_id: audience,
+      goal_id: null,
+      open_question_id: null,
+      state: "committed_to_do",
+      confidence: 0.8,
+      provenance_episode_ids: [],
+      provenance_stream_entry_ids: [currentStreamEntryId],
+      created_at: 1_000,
+      updated_at: 1_000,
+      considering_at: null,
+      committed_at: 1_000,
+      scheduled_at: null,
+      completed_at: null,
+      not_done_at: null,
+      expired_at: null,
+      archived_at: null,
+      unknown_at: null,
+      canonicalized_by_artifact_entry_id: null,
+      session_scope: null,
+      session_anchor_id: null,
+      last_referenced_at_ms: null,
+      last_referenced_turn_counter: 2,
+      last_referenced_turn_global: null,
+    } satisfies ActionRecord;
+    const actionRepository = {
+      get: vi.fn(() => action),
+      update,
+    };
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Alice owns the clinic callback follow-up",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                action_ids: [actionId],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      turnCounter: 42,
+      canonicalizationCandidates: {
+        actions: [{ id: actionId, text: "Follow up with the clinic" }],
+      },
+      reconciliation: {
+        actionRepository,
+      },
+    });
+
+    expect(update).toHaveBeenCalledWith(
+      actionId,
+      expect.objectContaining({
+        last_referenced_turn_counter: 42,
+        last_referenced_turn_global: 42,
+      }),
+      { skipSideEffects: true },
+    );
   });
 
   it("runs semantic belief revision from an accepted locked artifact entry", async () => {
@@ -1705,6 +1788,144 @@ describe("compileSharedStateArtifact", () => {
         input_token_estimate: warning?.data.input_token_estimate,
       }),
     );
+  });
+
+  it("repairs an invalid compiler payload once and applies the corrected patch", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitRawSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "replace",
+              text: "Invalid operation type",
+            },
+          ],
+        }),
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "live",
+              text: "Corrected live shared-state entry",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
+      additional_prompt_sections?: string[];
+    };
+
+    expect(llmClient.requests).toHaveLength(2);
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "Your previous patch was invalid:",
+    );
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain("Emit a corrected patch.");
+    expect(patch.operations).toHaveLength(1);
+    expect(activeEntries().map((entry) => entry.text)).toContain(
+      "Corrected live shared-state entry",
+    );
+    expect(trace.events.map((event) => event.event)).toEqual(
+      expect.arrayContaining([
+        "shared_state.compile.repair_attempted",
+        "shared_state.compile.repair_succeeded",
+      ]),
+    );
+    expect(trace.events.some((event) => event.event === "shared_state.compile.repair_failed")).toBe(
+      false,
+    );
+  });
+
+  it("degrades when compiler payload repair is still invalid", async () => {
+    const trace = createTraceRecorder();
+    const invalidResponse = emitRawSharedStateArtifactPatchResponse({
+      operations: [
+        {
+          type: "replace",
+          text: "Still invalid operation type",
+        },
+      ],
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [invalidResponse, invalidResponse],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+
+    expect(llmClient.requests).toHaveLength(2);
+    expect(patch.operations).toHaveLength(0);
+    expect(activeEntries()).toHaveLength(0);
+    expect(trace.events.map((event) => event.event)).toEqual(
+      expect.arrayContaining([
+        "shared_state.compile.repair_attempted",
+        "shared_state.compile.repair_failed",
+        "shared_state.compile.degraded",
+      ]),
+    );
+    expect(
+      trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
+    ).toBe("invalid_payload");
+  });
+
+  it("does not repair max-token-truncated compiler payloads", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          ...emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "replace",
+                text: "Partial invalid operation from truncation",
+              },
+            ],
+          }),
+          stop_reason: "max_tokens",
+        },
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+
+    expect(llmClient.requests).toHaveLength(1);
+    expect(patch.operations).toHaveLength(0);
+    expect(
+      trace.events.some((event) => event.event === "shared_state.compile.repair_attempted"),
+    ).toBe(false);
+    expect(
+      trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
+    ).toBe("invalid_payload");
+  });
+
+  it("does not attempt compiler payload repair when the first patch is valid", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+
+    expect(llmClient.requests).toHaveLength(1);
+    expect(
+      trace.events.some((event) => event.event === "shared_state.compile.repair_attempted"),
+    ).toBe(false);
   });
 
   it("enforces the active-entry lifecycle budget on a no-op patch", async () => {

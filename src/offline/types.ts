@@ -27,7 +27,7 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
-import type { StreamWriter } from "../stream/index.js";
+import type { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { MaintenanceRunId } from "../util/ids.js";
 
@@ -90,6 +90,7 @@ export type OfflineContext = {
   clock: Clock;
   auditLog: AuditLog;
   streamWriter: StreamWriter;
+  entryIndex: StreamEntryIndexRepository;
   embeddingClient: EmbeddingClient;
   tracer?: TurnTracer;
   llm: {

@@ -2,7 +2,10 @@ export {
   SemanticExtractor,
   type ExtractSemanticResult,
   type SemanticExtractorOptions,
+  type SemanticRelationshipEvidenceStreamEntryTrustResult,
+  type SemanticRelationshipEvidenceStreamEntryTrustValidator,
 } from "./extractor.js";
+export { createUserStreamEntryRelationshipEvidenceTrustValidator } from "./source-trust.js";
 export { canonicalizeDomain } from "./domain.js";
 export { SemanticGraph, type SemanticGraphOptions } from "./graph.js";
 export { semanticMigrations } from "./migrations.js";

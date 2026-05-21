@@ -41,6 +41,7 @@ export type TurnPhaseInput = {
   senderEntityId?: EntityId;
   stakes?: TurnStakes;
   sessionId?: SessionId;
+  globalTurnCounter?: number;
   origin?: "user" | "autonomous";
   autonomyTrigger?: AutonomyTriggerContext | null;
 };
@@ -107,6 +108,7 @@ export type TurnPhaseCoordinatorOptions = {
 
 export type RunTurnPhasesInput = {
   input: TurnPhaseInput;
+  globalTurnCounter?: number;
   sessionId: SessionId;
   turnId: string;
   streamWriter: StreamWriter;

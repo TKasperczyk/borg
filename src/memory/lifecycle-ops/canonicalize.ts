@@ -142,6 +142,7 @@ export function canonicalizeActionWithSharedStateEntry(input: {
     skipSideEffects: true,
     lastReferencedAtMs: input.nowMs,
     lastReferencedTurnCounter: input.turnCounter,
+    lastReferencedTurnGlobal: input.turnCounter,
     tracer: input.tracer,
     turnId: input.turnId,
     traceSource: "shared_state_reconciliation",
