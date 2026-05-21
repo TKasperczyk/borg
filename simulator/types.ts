@@ -48,6 +48,10 @@ export type MetricsRow = {
   semantic_nodes_rejected_ungrounded_label_count: number;
   semantic_nodes_rejected_ungrounded_label_total: number;
   semantic_nodes_rejected_ungrounded_label_by_label: Record<string, number>;
+  shared_state_operations_rejected_ungrounded_label_total: number;
+  shared_state_operations_rejected_ungrounded_label_by_label: Record<string, number>;
+  commitment_candidates_rejected_ungrounded_label_total: number;
+  commitment_candidates_rejected_ungrounded_label_by_label: Record<string, number>;
   open_question_count: number;
   active_goal_count: number;
   generation_suppression_count: number;

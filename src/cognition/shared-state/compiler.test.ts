@@ -312,6 +312,7 @@ describe("compileSharedStateArtifact", () => {
 
   it("allows prompt-visible relational-slot evidence ids as shared-state citations", async () => {
     const slotSource = createStreamEntryId();
+    const slotId = createRelationalSlotId();
     const llmClient = new FakeLLMClient({
       responses: [
         emitSharedStateArtifactPatchResponse({
@@ -322,6 +323,7 @@ describe("compileSharedStateArtifact", () => {
               text: "Priya is Avery's partner for care-planning context.",
               owner_entity_id: audience,
               source_stream_entry_ids: [slotSource],
+              relationship_evidence_relational_slot_ids: [slotId],
             },
           ],
         }),
@@ -331,9 +333,22 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       allowedSourceStreamEntryIds: [currentStreamEntryId],
+      participantRoster: {
+        participants: [
+          {
+            entity_id: alice,
+            display_name: "Avery",
+            known_relationships: ["partner.name:Priya"],
+            audience_role: "speaker",
+            relationship_source: `relational_slot:${slotId}`,
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
       relationalSlotsContext: [
         {
-          id: createRelationalSlotId(),
+          id: slotId,
           subject_entity_id: alice,
           slot_key: "partner.name",
           value: "Priya",
@@ -2008,6 +2023,72 @@ describe("compileSharedStateArtifact", () => {
             proposed_count: 3,
             max_live_entries_per_key: 2,
             target_entry_id: targetEntryId,
+          }),
+        }),
+        expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
+      ]),
+    );
+  });
+
+  it("repairs shared-state operations with ungrounded protected relationship labels", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Use the parent constraint for care planning.",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Use the parent constraint for care planning.",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              relationship_evidence_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === currentStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+    });
+    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
+      additional_prompt_sections?: string[];
+    };
+
+    expect(llmClient.requests).toHaveLength(2);
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "relationship_evidence_relational_slot_ids",
+    );
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "Use the parent constraint for care planning.",
+      }),
+    ]);
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "shared_state.compile.label_ungrounded",
+          data: expect.objectContaining({
+            protected_relationship_labels: ["parent"],
+            relationship_evidence_stream_entry_ids: [],
           }),
         }),
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),

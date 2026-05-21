@@ -38,6 +38,7 @@ import {
   traceCompileRepairAttempted,
   traceCompileRepairFailed,
   traceCompileRepairSucceeded,
+  traceLabelUngrounded,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -178,7 +179,8 @@ function repairablePatchRejections(rejections: readonly PatchRejection[]): Patch
   return rejections.filter(
     (rejection) =>
       rejection.reason === "live_entry_cap_exceeded_for_key" ||
-      rejection.reason === "locked_state_key_collision",
+      rejection.reason === "locked_state_key_collision" ||
+      rejection.reason === "relationship_label_ungrounded",
   );
 }
 
@@ -203,6 +205,14 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
           `operation ${rejection.operationIndex} add state_key=${rejection.stateKey ?? "unknown"}`,
           `collides with locked entry ${lockedIds}`,
           "update/supersede the locked entry, or mark unsettled material tentative/pending",
+        ].join("; ");
+      }
+
+      if (rejection.reason === "relationship_label_ungrounded") {
+        return [
+          `operation ${rejection.operationIndex} ${rejection.operationType}`,
+          `uses protected relationship label ${rejection.protectedRelationshipLabels?.join(", ") || "unknown"}`,
+          "include relationship_evidence_relational_slot_ids or relationship_evidence_stream_entry_ids, or rewrite the entry neutrally",
         ].join("; ");
       }
 
@@ -573,6 +583,8 @@ export async function compileSharedStateArtifact(
     participants: input.participants,
     allowedSourceStreamEntryIds,
     sourceTrustValidator: input.sourceTrustValidator,
+    participantRoster: input.participantRoster,
+    relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
   });
@@ -580,6 +592,14 @@ export async function compileSharedStateArtifact(
   let repairableRejections = repairablePatchRejections(normalized.rejected);
   for (const rejection of repairableRejections) {
     if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
+      if (rejection.reason === "relationship_label_ungrounded") {
+        traceLabelUngrounded({
+          tracer: input.tracer,
+          turnId: input.turnId,
+          audienceEntityId: input.audienceEntityId,
+          rejection,
+        });
+      }
       continue;
     }
 
@@ -722,12 +742,22 @@ export async function compileSharedStateArtifact(
       participants: input.participants,
       allowedSourceStreamEntryIds,
       sourceTrustValidator: input.sourceTrustValidator,
+      participantRoster: input.participantRoster,
+      relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
       allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
       maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
     });
     repairableRejections = repairablePatchRejections(normalized.rejected);
     for (const rejection of repairableRejections) {
       if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
+        if (rejection.reason === "relationship_label_ungrounded") {
+          traceLabelUngrounded({
+            tracer: input.tracer,
+            turnId: input.turnId,
+            audienceEntityId: input.audienceEntityId,
+            rejection,
+          });
+        }
         continue;
       }
 

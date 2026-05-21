@@ -3,7 +3,6 @@ import { z } from "zod";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import {
-  participantRosterRelationalSlotIds,
   renderParticipantRoster,
   type ParticipantRoster,
 } from "../../cognition/perception/index.js";
@@ -11,8 +10,8 @@ import {
   HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
-  protectedRelationshipLabelsInText,
 } from "../../cognition/prompts/relationship-labels.js";
+import { checkRelationshipLabelGroundingAsync } from "../../cognition/memory-write-relationship-gate.js";
 import {
   type LLMClient,
   type LLMCompleteResult,
@@ -21,9 +20,13 @@ import {
 } from "../../llm/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
-import { createSemanticNodeId, streamEntryIdHelpers, type StreamEntryId } from "../../util/ids.js";
+import { createSemanticNodeId, type StreamEntryId } from "../../util/ids.js";
 import { episodeAccessScopeKey } from "../episodic/access.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
+import type {
+  RelationshipEvidenceStreamEntryTrustResult,
+  RelationshipEvidenceStreamEntryTrustValidator,
+} from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
@@ -103,7 +106,7 @@ export type SemanticExtractorOptions = {
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
   participantRoster?: ParticipantRoster | null;
-  relationshipEvidenceStreamEntryTrust?: SemanticRelationshipEvidenceStreamEntryTrustValidator;
+  relationshipEvidenceStreamEntryTrust?: RelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
   tracer?: TurnTracer;
   traceTurnId?: string;
@@ -111,16 +114,10 @@ export type SemanticExtractorOptions = {
   confidenceCeiling?: number;
 };
 
-export type SemanticRelationshipEvidenceStreamEntryTrustResult = {
-  allowed: boolean;
-  reason?: "missing" | "not_user_msg" | "untrusted" | "unavailable";
-};
-
-export type SemanticRelationshipEvidenceStreamEntryTrustValidator = (
-  streamEntryId: StreamEntryId,
-) =>
-  | SemanticRelationshipEvidenceStreamEntryTrustResult
-  | Promise<SemanticRelationshipEvidenceStreamEntryTrustResult>;
+export type SemanticRelationshipEvidenceStreamEntryTrustResult =
+  RelationshipEvidenceStreamEntryTrustResult;
+export type SemanticRelationshipEvidenceStreamEntryTrustValidator =
+  RelationshipEvidenceStreamEntryTrustValidator;
 
 export type ExtractSemanticResult = {
   insertedNodes: number;
@@ -474,59 +471,22 @@ export class SemanticExtractor {
     return candidateIds.map((value) => value as Episode["id"]);
   }
 
-  private protectedRelationshipLabelsForCandidate(candidate: ExtractorNode): string[] {
-    return [
-      ...new Set(protectedRelationshipLabelsInText(`${candidate.label}\n${candidate.description}`)),
-    ];
-  }
-
-  private hasGroundedRelationshipSlotEvidence(candidate: ExtractorNode): boolean {
-    const rosterSlotIds = participantRosterRelationalSlotIds(this.options.participantRoster);
-
-    if (rosterSlotIds.size === 0) {
-      return false;
-    }
-
-    return candidate.relationship_evidence_relational_slot_ids.some((id) => rosterSlotIds.has(id));
-  }
-
-  private async hasGroundedRelationshipStreamEntryEvidence(
+  private async relationshipLabelGroundingForCandidate(
     candidate: ExtractorNode,
     sourceEpisodes: readonly Episode[],
-  ): Promise<boolean> {
-    const trustValidator = this.options.relationshipEvidenceStreamEntryTrust;
-
-    if (trustValidator === undefined) {
-      return false;
-    }
-
+  ): ReturnType<typeof checkRelationshipLabelGroundingAsync> {
     const sourceStreamEntryIds = new Set(
       sourceEpisodes.flatMap((episode) => episode.source_stream_ids),
     );
 
-    for (const rawId of candidate.relationship_evidence_stream_entry_ids) {
-      if (!streamEntryIdHelpers.is(rawId) || !sourceStreamEntryIds.has(rawId as StreamEntryId)) {
-        continue;
-      }
-
-      const trust = await trustValidator(rawId as StreamEntryId);
-
-      if (trust.allowed) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private async hasGroundedRelationshipEvidence(
-    candidate: ExtractorNode,
-    sourceEpisodes: readonly Episode[],
-  ): Promise<boolean> {
-    return (
-      this.hasGroundedRelationshipSlotEvidence(candidate) ||
-      (await this.hasGroundedRelationshipStreamEntryEvidence(candidate, sourceEpisodes))
-    );
+    return checkRelationshipLabelGroundingAsync({
+      text: `${candidate.label}\n${candidate.description}`,
+      participantRoster: this.options.participantRoster,
+      relationshipEvidenceRelationalSlotIds: candidate.relationship_evidence_relational_slot_ids,
+      relationshipEvidenceStreamEntryIds: candidate.relationship_evidence_stream_entry_ids,
+      allowedRelationshipEvidenceStreamEntryIds: sourceStreamEntryIds,
+      relationshipEvidenceStreamEntryTrust: this.options.relationshipEvidenceStreamEntryTrust,
+    });
   }
 
   private queueUngroundedRelationshipLabelReview(input: {
@@ -564,29 +524,31 @@ export class SemanticExtractor {
     status: "inserted" | "updated" | "skipped";
     node?: SemanticNode;
     reason?: SemanticInsertSkipReason;
+    protectedLabels?: string[];
   }> {
     const sourceEpisodeIds = this.validateEpisodeRefs(
       candidate.source_episode_ids,
       allowedEpisodeIds,
       "source_episode_ids",
     );
-    const protectedLabels = this.protectedRelationshipLabelsForCandidate(candidate);
     const sourceEpisodes = sourceEpisodeIds
       .map((episodeId) => episodeById.get(episodeId))
       .filter((episode): episode is Episode => episode !== undefined);
+    const relationshipLabelGrounding = await this.relationshipLabelGroundingForCandidate(
+      candidate,
+      sourceEpisodes,
+    );
 
-    if (
-      protectedLabels.length > 0 &&
-      !(await this.hasGroundedRelationshipEvidence(candidate, sourceEpisodes))
-    ) {
+    if (!relationshipLabelGrounding.grounded) {
       this.queueUngroundedRelationshipLabelReview({
         candidate,
-        protectedLabels,
+        protectedLabels: relationshipLabelGrounding.protectedLabels,
       });
 
       return {
         status: "skipped",
         reason: "relationship_label_ungrounded",
+        protectedLabels: relationshipLabelGrounding.protectedLabels,
       };
     }
 
@@ -951,7 +913,7 @@ export class SemanticExtractor {
             reason,
             ...(reason === "relationship_label_ungrounded"
               ? {
-                  protectedLabels: this.protectedRelationshipLabelsForCandidate(candidate),
+                  protectedLabels: outcome.protectedLabels ?? [],
                   relationshipEvidenceRelationalSlotIds:
                     candidate.relationship_evidence_relational_slot_ids,
                   relationshipEvidenceStreamEntryIds:

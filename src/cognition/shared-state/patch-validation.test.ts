@@ -6,6 +6,7 @@ import type {
 } from "../../memory/decision-artifacts/index.js";
 import {
   createEntityId,
+  createRelationalSlotId,
   createSharedStateEntryId,
   createStreamEntryId,
   type EntityId,
@@ -68,6 +69,10 @@ function normalizeKeyedPatch(input: {
   operations: EmitSharedStatePatch["operations"];
   audienceEntityId: EntityId;
   sourceStreamEntryId: StreamEntryId;
+  participantRoster?: Parameters<typeof normalizePatch>[0]["participantRoster"];
+  relationshipEvidenceStreamEntryTrust?: Parameters<
+    typeof normalizePatch
+  >[0]["relationshipEvidenceStreamEntryTrust"];
 }) {
   const selfEntityId = createEntityId();
   const speakerEntityId = createEntityId();
@@ -84,6 +89,8 @@ function normalizeKeyedPatch(input: {
     selfEntityId,
     speakerEntityId,
     participants: [],
+    participantRoster: input.participantRoster,
+    relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
     allowedSourceStreamEntryIds: new Set([input.sourceStreamEntryId]),
     allowedCanonicalizationIds: allowedCanonicalizationIds(undefined),
     maxLiveEntriesPerKey: 2,
@@ -94,7 +101,7 @@ function addOperation(input: {
   stateKey: string;
   kind?: SharedStateEntry["kind"];
   sourceStreamEntryId: StreamEntryId;
-}): EmitSharedStatePatch["operations"][number] {
+}): Extract<EmitSharedStatePatch["operations"][number], { type: "add" }> {
   return {
     type: "add",
     state_key: input.stateKey,
@@ -105,6 +112,335 @@ function addOperation(input: {
 }
 
 describe("normalizePatch state_key validation", () => {
+  it("rejects protected relationship labels without grounding evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.attendees",
+            sourceStreamEntryId,
+          }),
+          text: "Priya is Avery's partner for care-planning context.",
+        },
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "relationship_label_ungrounded",
+        operationType: "add",
+        operationIndex: 0,
+        protectedRelationshipLabels: ["partner"],
+        relationshipEvidenceRelationalSlotIds: [],
+        relationshipEvidenceStreamEntryIds: [],
+      }),
+    ]);
+  });
+
+  it("accepts protected relationship labels grounded by roster relational slot evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const slotId = createRelationalSlotId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      participantRoster: {
+        participants: [
+          {
+            entity_id: audienceEntityId,
+            display_name: "Avery",
+            known_relationships: ["partner.name:Priya"],
+            audience_role: "audience",
+            relationship_source: `relational_slot:${slotId}`,
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.attendees",
+            sourceStreamEntryId,
+          }),
+          text: "Priya is Avery's partner for care-planning context.",
+          relationship_evidence_relational_slot_ids: [slotId],
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "Priya is Avery's partner for care-planning context.",
+      }),
+    ]);
+  });
+
+  it("accepts protected relationship labels grounded by trusted user-message stream evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === sourceStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.attendees",
+            sourceStreamEntryId,
+          }),
+          text: "Use the parent constraint for care planning.",
+          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "Use the parent constraint for care planning.",
+      }),
+    ]);
+  });
+
+  it("rejects protected relationship labels grounded only by assistant stream evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      relationshipEvidenceStreamEntryTrust: () => ({
+        allowed: false,
+        reason: "not_user_msg",
+      }),
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.attendees",
+            sourceStreamEntryId,
+          }),
+          text: "Use the parent constraint for care planning.",
+          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "relationship_label_ungrounded",
+        relationshipEvidenceStreamEntryIds: [sourceStreamEntryId],
+        rejectedRelationshipEvidenceStreamEntryIds: [
+          {
+            id: sourceStreamEntryId,
+            reason: "not_user_msg",
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it("bypasses relationship grounding when operation text has no protected label", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.attendees",
+            sourceStreamEntryId,
+          }),
+          text: "Care planning constraint is locked for the itinerary.",
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "Care planning constraint is locked for the itinerary.",
+      }),
+    ]);
+  });
+
+  it("accepts supersede replacement text grounded by operation-level evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previous = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "plan.care",
+      text: "Legacy care planning entry.",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [previous],
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === sourceStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+      operations: [
+        {
+          type: "supersede",
+          id: previous.id,
+          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+          replacement: {
+            state_key: "plan.care",
+            kind: "locked",
+            text: "Use the parent constraint for care planning.",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "supersede",
+        id: previous.id,
+      }),
+    ]);
+  });
+
+  it("accepts supersede replacement text grounded by replacement-entry evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previous = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "plan.care",
+      text: "Legacy care planning entry.",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [previous],
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === sourceStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+      operations: [
+        {
+          type: "supersede",
+          id: previous.id,
+          replacement: {
+            state_key: "plan.care",
+            kind: "locked",
+            text: "Use the parent constraint for care planning.",
+            source_stream_entry_ids: [sourceStreamEntryId],
+            relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+          },
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "supersede",
+        id: previous.id,
+      }),
+    ]);
+  });
+
+  it("rejects supersede replacement text with no relationship evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previous = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "plan.care",
+      text: "Legacy care planning entry.",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [previous],
+      operations: [
+        {
+          type: "supersede",
+          id: previous.id,
+          replacement: {
+            state_key: "plan.care",
+            kind: "locked",
+            text: "Use the parent constraint for care planning.",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+        },
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "relationship_label_ungrounded",
+        operationType: "supersede",
+        operationIndex: 0,
+        targetEntryId: previous.id,
+      }),
+    ]);
+  });
+
+  it("accepts update text grounded by trusted user-message stream evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previous = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "plan.care",
+      text: "Legacy care planning entry.",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [previous],
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === sourceStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+      operations: [
+        {
+          type: "update",
+          id: previous.id,
+          state_key: "plan.care",
+          text: "Use the parent constraint for care planning.",
+          source_stream_entry_ids: [sourceStreamEntryId],
+          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: previous.id,
+        text: "Use the parent constraint for care planning.",
+      }),
+    ]);
+  });
+
   it("accepts a same-key live add below the per-key cap", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();

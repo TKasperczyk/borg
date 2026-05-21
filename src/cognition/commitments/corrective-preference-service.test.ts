@@ -9,6 +9,7 @@ import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
   createEntityId,
+  createRelationalSlotId,
   createStreamEntryId,
   type CommitmentId,
 } from "../../util/ids.js";
@@ -17,7 +18,13 @@ import { CorrectivePreferenceTurnService } from "./corrective-preference-service
 type AddCommitmentInput = Parameters<IdentityService["addCommitment"]>[0];
 
 function correctivePreferenceResponse(
-  input: { supersedesCommitmentId?: CommitmentId | null } = {},
+  input: {
+    supersedesCommitmentId?: CommitmentId | null;
+    directive?: string;
+    directiveFamily?: string;
+    relationshipEvidenceRelationalSlotIds?: string[];
+    relationshipEvidenceStreamEntryIds?: string[];
+  } = {},
 ) {
   return {
     text: "",
@@ -32,13 +39,16 @@ function correctivePreferenceResponse(
           classification: "corrective_preference",
           type: "preference",
           kind: "participant_preference",
-          directive: "Keep Alice's trip tasks separate from the group channel.",
-          directive_family: "separate_trip_tasks",
+          directive: input.directive ?? "Keep Alice's trip tasks separate from the group channel.",
+          directive_family: input.directiveFamily ?? "separate_trip_tasks",
           closure_pressure_relevance: "neutral",
           priority: 8,
           reason: "The current speaker made a durable correction.",
           confidence: 0.91,
           supersedes_commitment_id: input.supersedesCommitmentId ?? null,
+          relationship_evidence_relational_slot_ids:
+            input.relationshipEvidenceRelationalSlotIds ?? [],
+          relationship_evidence_stream_entry_ids: input.relationshipEvidenceStreamEntryIds ?? [],
           slot_negations: [],
         },
       },
@@ -155,6 +165,297 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
+  });
+
+  it("skips corrective candidates with ungrounded protected relationship labels", async () => {
+    const userEntryId = createStreamEntryId();
+    const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive: "Use the parent constraint for future care-planning replies.",
+          directiveFamily: "care_planning_parent_constraint",
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-ungrounded-relationship-commitment",
+      userMessage: "Make sure future replies respect the care-planning constraint.",
+      persistedUserEntryId: userEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toBeNull();
+    expect(result.commitmentSupersession).toBeNull();
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "corrective_preference.candidate_rejected_ungrounded",
+      expect.objectContaining({
+        turnId: "turn-ungrounded-relationship-commitment",
+        validationStatus: "rejected",
+        reason: "relationship_label_ungrounded",
+        protected_relationship_labels: ["parent"],
+        relationship_evidence_relational_slot_ids: [],
+        relationship_evidence_stream_entry_ids: [],
+      }),
+    );
+  });
+
+  it("rejects corrective candidates grounded only by assistant stream evidence", async () => {
+    const userEntryId = createStreamEntryId();
+    const assistantEntryId = createStreamEntryId();
+    const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive: "Use the parent constraint for future care-planning replies.",
+          directiveFamily: "care_planning_parent_constraint",
+          relationshipEvidenceStreamEntryIds: [assistantEntryId],
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-assistant-evidence-relationship-commitment",
+      userMessage: "Make sure future replies respect the care-planning constraint.",
+      persistedUserEntryId: userEntryId,
+      relationshipEvidenceStreamEntries: [{ id: assistantEntryId, kind: "agent_msg" }],
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toBeNull();
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "corrective_preference.candidate_rejected_ungrounded",
+      expect.objectContaining({
+        protected_relationship_labels: ["parent"],
+        relationship_evidence_stream_entry_ids: [assistantEntryId],
+        rejected_relationship_evidence_stream_entry_ids: [
+          {
+            id: assistantEntryId,
+            reason: "not_user_msg",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("rejects corrective candidates grounded only by out-of-bundle stream evidence", async () => {
+    const userEntryId = createStreamEntryId();
+    const outsideEntryId = createStreamEntryId();
+    const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive: "Use the parent constraint for future care-planning replies.",
+          directiveFamily: "care_planning_parent_constraint",
+          relationshipEvidenceStreamEntryIds: [outsideEntryId],
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-outside-evidence-relationship-commitment",
+      userMessage: "Make sure future replies respect the care-planning constraint.",
+      persistedUserEntryId: userEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toBeNull();
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "corrective_preference.candidate_rejected_ungrounded",
+      expect.objectContaining({
+        protected_relationship_labels: ["parent"],
+        relationship_evidence_stream_entry_ids: [outsideEntryId],
+        rejected_relationship_evidence_stream_entry_ids: [
+          {
+            id: outsideEntryId,
+            reason: "not_in_source_bundle",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("keeps corrective candidates grounded by trusted user-message evidence", async () => {
+    const userEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive: "Use the parent constraint for future care-planning replies.",
+          directiveFamily: "care_planning_parent_constraint",
+          relationshipEvidenceStreamEntryIds: [userEntryId],
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: true, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-grounded-relationship-commitment",
+      userMessage: "My current user message explicitly grounds the parent constraint.",
+      persistedUserEntryId: userEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      directive: "Use the parent constraint for future care-planning replies.",
+      source_stream_entry_ids: [userEntryId],
+    });
+  });
+
+  it("keeps corrective candidates grounded by roster relational slot evidence", async () => {
+    const slotId = createRelationalSlotId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive: "Use the parent constraint for future care-planning replies.",
+          directiveFamily: "care_planning_parent_constraint",
+          relationshipEvidenceRelationalSlotIds: [slotId],
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: true, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-roster-grounded-relationship-commitment",
+      userMessage: "The roster grounds this family role.",
+      persistedUserEntryId: createStreamEntryId(),
+      recentHistory: [],
+      audienceEntityId: null,
+      participantRoster: {
+        participants: [
+          {
+            entity_id: createEntityId(),
+            display_name: "Avery",
+            known_relationships: ["parent.name:Robin"],
+            audience_role: "speaker",
+            relationship_source: `relational_slot:${slotId}`,
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      directive: "Use the parent constraint for future care-planning replies.",
+    });
   });
 
   it("supersedes a visible active commitment selected by the extractor", async () => {

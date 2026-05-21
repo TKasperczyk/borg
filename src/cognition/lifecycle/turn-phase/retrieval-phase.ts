@@ -31,6 +31,7 @@ import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
+import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
@@ -600,6 +601,11 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
       ...offLimitsRelationalSlotEvidenceStreamEntryIds,
     ]),
     sourceTrustValidator,
+    relationshipEvidenceStreamEntryTrust:
+      createLoadedUserStreamEntryRelationshipEvidenceTrustValidator({
+        entries: currentSessionTrustEntries,
+        isTrusted: (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
+      }),
     canonicalizationCandidates,
     reconciliation: reconciliationRepositories,
     semanticBeliefRevision,

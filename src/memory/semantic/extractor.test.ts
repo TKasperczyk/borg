@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -140,6 +140,18 @@ describe("semantic extractor", () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
+  });
+
+  it("routes relationship-label grounding through the promoted shared gate", () => {
+    const semanticSource = readFileSync(new URL("./extractor.ts", import.meta.url), "utf8");
+    const sharedStateSource = readFileSync(
+      new URL("../../cognition/shared-state/patch-validation.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(semanticSource).toContain("checkRelationshipLabelGroundingAsync");
+    expect(sharedStateSource).toContain("checkRelationshipLabelGrounding");
+    expect(semanticSource).not.toContain("protectedRelationshipLabelsInText");
   });
 
   it("includes event-vs-state guidance in the extraction prompt", async () => {

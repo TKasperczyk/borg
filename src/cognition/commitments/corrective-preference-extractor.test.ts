@@ -18,6 +18,8 @@ function correctivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
+  relationship_evidence_relational_slot_ids?: string[];
+  relationship_evidence_stream_entry_ids?: string[];
   slot_negations?: unknown[];
 }): LLMCompleteResult {
   return {
@@ -44,6 +46,10 @@ function correctivePreferenceResponse(input: {
           reason: input.reason ?? "Classification reason.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
+          relationship_evidence_relational_slot_ids:
+            input.relationship_evidence_relational_slot_ids ?? [],
+          relationship_evidence_stream_entry_ids:
+            input.relationship_evidence_stream_entry_ids ?? [],
           slot_negations: input.slot_negations ?? [],
         },
       },
@@ -94,6 +100,44 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: "EmitCorrectivePreference",
+    });
+  });
+
+  it("carries relationship evidence fields on corrective preference candidates", async () => {
+    const streamEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          directive: "Use the parent constraint for future care-planning replies.",
+          directive_family: "care_planning_parent_constraint",
+          closure_pressure_relevance: "neutral",
+          priority: 8,
+          reason: "The user supplied durable relationship-grounded process guidance.",
+          confidence: 0.9,
+          relationship_evidence_relational_slot_ids: ["rslot_parent"],
+          relationship_evidence_stream_entry_ids: [streamEntryId],
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await expect(
+      extractor.extract({
+        userMessage: "Keep that parent planning rule for next time.",
+        currentUserStreamEntryId: streamEntryId,
+        recentHistory: [],
+        audienceEntityId: createEntityId(),
+        activeCommitments: [],
+      }),
+    ).resolves.toMatchObject({
+      directive: "Use the parent constraint for future care-planning replies.",
+      relationship_evidence_relational_slot_ids: ["rslot_parent"],
+      relationship_evidence_stream_entry_ids: [streamEntryId],
     });
   });
 

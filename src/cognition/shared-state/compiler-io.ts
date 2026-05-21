@@ -226,6 +226,35 @@ export function traceAddRejectedCapExceeded(options: {
   });
 }
 
+export function traceLabelUngrounded(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  rejection: PatchRejection;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.label_ungrounded", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    operation_index: options.rejection.operationIndex,
+    operation_type: options.rejection.operationType,
+    operation_id:
+      options.rejection.targetEntryId ?? `operation:${options.rejection.operationIndex}`,
+    protected_relationship_labels: options.rejection.protectedRelationshipLabels ?? [],
+    relationship_evidence_relational_slot_ids:
+      options.rejection.relationshipEvidenceRelationalSlotIds ?? [],
+    relationship_evidence_stream_entry_ids:
+      options.rejection.relationshipEvidenceStreamEntryIds ?? [],
+    rejected_relationship_evidence_relational_slot_ids:
+      options.rejection.rejectedRelationshipEvidenceRelationalSlotIds ?? [],
+    rejected_relationship_evidence_stream_entry_ids:
+      options.rejection.rejectedRelationshipEvidenceStreamEntryIds ?? [],
+  });
+}
+
 export function traceCompileDegraded(options: {
   tracer?: TurnTracer;
   turnId?: string;

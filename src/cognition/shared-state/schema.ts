@@ -10,6 +10,7 @@ import {
   type SharedStateSourceTrustRejectionReason,
   type SharedStateSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
+import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import type { Clock } from "../../util/clock.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import type {
@@ -60,6 +61,18 @@ const sharedStateToolKindSchema = z.enum(SHARED_STATE_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .describe("Stream entry ids that support this artifact operation.");
+const relationshipEvidenceRelationalSlotIdsSchema = z
+  .array(z.string().trim().min(1))
+  .optional()
+  .describe(
+    "Grounded relational slot ids supporting any protected relationship label in this operation text.",
+  );
+const relationshipEvidenceStreamEntryIdsSchema = z
+  .array(z.string().trim().min(1))
+  .optional()
+  .describe(
+    "Trusted user-message stream entry ids supporting any protected relationship label in this operation text.",
+  );
 const stateKeySchema = z
   .string()
   .trim()
@@ -93,6 +106,8 @@ const addOperationSchema = z
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -106,6 +121,8 @@ const updateOperationSchema = z
     text: z.string().trim().min(1).optional(),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -117,6 +134,8 @@ const replacementEntrySchema = z
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
   })
   .strict();
 
@@ -126,6 +145,8 @@ const supersedeOperationSchema = z
     id: z.string().trim().min(1),
     replacement: replacementEntrySchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -250,6 +271,7 @@ export type CompileSharedStateArtifactInput = {
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
   offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
   sourceTrustValidator?: SharedStateSourceTrustValidator;
+  relationshipEvidenceStreamEntryTrust?: SyncRelationshipEvidenceStreamEntryTrustValidator;
   canonicalizationCandidates?: SharedStateCanonicalizationCandidates;
   reconciliation?: SharedStateReconciliationRepositories;
   semanticBeliefRevision?: Omit<SharedStateSemanticBeliefRevisionDependencies, "llmClient">;
@@ -280,7 +302,8 @@ export type PatchRejection = {
     | "inactive_source_stream_entry_id"
     | "empty_update"
     | "live_entry_cap_exceeded_for_key"
-    | "locked_state_key_collision";
+    | "locked_state_key_collision"
+    | "relationship_label_ungrounded";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
   sourceStreamEntryId?: string;
@@ -291,6 +314,11 @@ export type PatchRejection = {
   maxLiveEntriesPerKey?: number;
   targetEntryId?: string;
   lockedEntryIds?: string[];
+  protectedRelationshipLabels?: string[];
+  relationshipEvidenceRelationalSlotIds?: string[];
+  relationshipEvidenceStreamEntryIds?: string[];
+  rejectedRelationshipEvidenceRelationalSlotIds?: string[];
+  rejectedRelationshipEvidenceStreamEntryIds?: Array<{ id: string; reason: string }>;
 };
 
 export type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";

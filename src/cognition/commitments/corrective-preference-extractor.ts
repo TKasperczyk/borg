@@ -45,6 +45,20 @@ const correctivePreferenceStreamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
+const relationshipEvidenceRelationalSlotIdsSchema = z
+  .array(z.string().trim().min(1))
+  .default([])
+  .describe(
+    "Grounded relational slot ids supporting any protected relationship label in the directive.",
+  );
+
+const relationshipEvidenceStreamEntryIdsSchema = z
+  .array(correctivePreferenceStreamEntryIdSchema)
+  .default([])
+  .describe(
+    "Trusted user-message stream entry ids supporting any protected relationship label in the directive.",
+  );
+
 const slotNegationSchema = z
   .object({
     subject_entity_id: correctivePreferenceEntityIdSchema,
@@ -115,6 +129,8 @@ const correctivePreferenceSchema = z
       .describe(
         "Existing commitment id this correction replaces or tightens, if one was clearly selected from the supplied active commitments.",
       ),
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
     slot_negations: z
       .array(slotNegationSchema)
       .default([])
@@ -145,6 +161,8 @@ export type CorrectivePreferenceCandidate = {
   reason: string;
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
+  relationship_evidence_relational_slot_ids: string[];
+  relationship_evidence_stream_entry_ids: StreamEntryId[];
 };
 
 export type CorrectivePreferenceSlotNegation = {
@@ -196,6 +214,7 @@ export type ExtractCorrectivePreferenceInput = {
     priority: number;
   }[];
   relationalSlots?: readonly {
+    id?: string;
     subject_entity_id: EntityId;
     slot_key: string;
     value: string;
@@ -238,6 +257,8 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
     reason,
     confidence: input.confidence,
     supersedes_commitment_id: input.supersedes_commitment_id ?? null,
+    relationship_evidence_relational_slot_ids: [...input.relationship_evidence_relational_slot_ids],
+    relationship_evidence_stream_entry_ids: [...input.relationship_evidence_stream_entry_ids],
   };
 }
 
@@ -317,6 +338,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
           priority: commitment.priority,
         })),
         relational_slots: (input.relationalSlots ?? []).map((slot) => ({
+          id: slot.id ?? null,
           subject_entity_id: slot.subject_entity_id,
           slot_key: slot.slot_key,
           value: slot.value,

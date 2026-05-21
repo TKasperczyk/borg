@@ -303,6 +303,10 @@ type SemanticMemoryWriteGateMetricCounts = Pick<
   | "semantic_nodes_rejected_ungrounded_label_count"
   | "semantic_nodes_rejected_ungrounded_label_total"
   | "semantic_nodes_rejected_ungrounded_label_by_label"
+  | "shared_state_operations_rejected_ungrounded_label_total"
+  | "shared_state_operations_rejected_ungrounded_label_by_label"
+  | "commitment_candidates_rejected_ungrounded_label_total"
+  | "commitment_candidates_rejected_ungrounded_label_by_label"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -1230,6 +1234,34 @@ function semanticRelationshipLabelRejectionsByLabel(
   return counts;
 }
 
+function relationshipLabelRejectionRecords(
+  traceRecords: readonly TraceRecord[],
+  event: string,
+): TraceRecord[] {
+  return traceRecords.filter((record) => record.event === event);
+}
+
+function relationshipLabelRejectionsByLabel(
+  traceRecords: readonly TraceRecord[],
+  event: string,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+
+  for (const record of relationshipLabelRejectionRecords(traceRecords, event)) {
+    const labels = Array.isArray(record.protected_relationship_labels)
+      ? record.protected_relationship_labels.filter(
+          (label): label is string => typeof label === "string",
+        )
+      : [];
+
+    for (const label of labels.length === 0 ? ["unknown"] : labels) {
+      counts[label] = (counts[label] ?? 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
 function semanticMemoryWriteGateMetrics(input: {
   traceRecords: readonly TraceRecord[];
   cumulativeTraceRecords: readonly TraceRecord[];
@@ -1238,12 +1270,30 @@ function semanticMemoryWriteGateMetrics(input: {
   const cumulativeRejections = semanticRelationshipLabelRejectionRecords(
     input.cumulativeTraceRecords,
   );
+  const sharedStateCumulativeRejections = relationshipLabelRejectionRecords(
+    input.cumulativeTraceRecords,
+    "shared_state.compile.label_ungrounded",
+  );
+  const commitmentCumulativeRejections = relationshipLabelRejectionRecords(
+    input.cumulativeTraceRecords,
+    "corrective_preference.candidate_rejected_ungrounded",
+  );
 
   return {
     semantic_nodes_rejected_ungrounded_label_count: intervalRejections.length,
     semantic_nodes_rejected_ungrounded_label_total: cumulativeRejections.length,
     semantic_nodes_rejected_ungrounded_label_by_label: semanticRelationshipLabelRejectionsByLabel(
       input.cumulativeTraceRecords,
+    ),
+    shared_state_operations_rejected_ungrounded_label_total: sharedStateCumulativeRejections.length,
+    shared_state_operations_rejected_ungrounded_label_by_label: relationshipLabelRejectionsByLabel(
+      input.cumulativeTraceRecords,
+      "shared_state.compile.label_ungrounded",
+    ),
+    commitment_candidates_rejected_ungrounded_label_total: commitmentCumulativeRejections.length,
+    commitment_candidates_rejected_ungrounded_label_by_label: relationshipLabelRejectionsByLabel(
+      input.cumulativeTraceRecords,
+      "corrective_preference.candidate_rejected_ungrounded",
     ),
   };
 }
@@ -2243,6 +2293,14 @@ export class MetricsCapture {
         semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
       semantic_nodes_rejected_ungrounded_label_by_label:
         semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
+      shared_state_operations_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_total,
+      shared_state_operations_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_by_label,
+      commitment_candidates_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_total,
+      commitment_candidates_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_by_label,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,
@@ -2569,6 +2627,14 @@ export class MetricsCapture {
         semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
       semantic_nodes_rejected_ungrounded_label_by_label:
         semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
+      shared_state_operations_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_total,
+      shared_state_operations_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_by_label,
+      commitment_candidates_rejected_ungrounded_label_total:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_total,
+      commitment_candidates_rejected_ungrounded_label_by_label:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_by_label,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,

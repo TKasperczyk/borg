@@ -21,6 +21,8 @@ import {
   type SharedStateEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { checkRelationshipLabelGrounding } from "../memory-write-relationship-gate.js";
+import type { ParticipantRoster } from "../perception/index.js";
 import type {
   AllowedCanonicalizationIds,
   CanonicalizationDuplicateDrop,
@@ -35,6 +37,7 @@ import type {
   SharedStateCanonicalizationCandidates,
 } from "./schema.js";
 import { parseSourceStreamEntryIds } from "./source-trust.js";
+import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
 
@@ -345,6 +348,11 @@ function rejection(
     | "maxLiveEntriesPerKey"
     | "targetEntryId"
     | "lockedEntryIds"
+    | "protectedRelationshipLabels"
+    | "relationshipEvidenceRelationalSlotIds"
+    | "relationshipEvidenceStreamEntryIds"
+    | "rejectedRelationshipEvidenceRelationalSlotIds"
+    | "rejectedRelationshipEvidenceStreamEntryIds"
   > = {},
 ): PatchRejection {
   return {
@@ -364,6 +372,8 @@ export function normalizePatch(input: {
   participants: readonly SharedStateArtifactParticipantContext[];
   allowedSourceStreamEntryIds: ReadonlySet<StreamEntryId> | null;
   sourceTrustValidator?: SharedStateSourceTrustValidator;
+  participantRoster?: ParticipantRoster | null;
+  relationshipEvidenceStreamEntryTrust?: SyncRelationshipEvidenceStreamEntryTrustValidator;
   allowedCanonicalizationIds: AllowedCanonicalizationIds;
   maxLiveEntriesPerKey?: number;
 }): {
@@ -392,6 +402,47 @@ export function normalizePatch(input: {
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const baseRank = input.previousArtifact?.entries.length ?? 0;
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
+
+  const relationshipLabelRejection = (
+    operation: Extract<ParsedPatchOperation, { type: "add" | "update" | "supersede" }>,
+    operationIndex: number,
+    text: string | undefined,
+    evidence: {
+      relationship_evidence_relational_slot_ids?: readonly string[];
+      relationship_evidence_stream_entry_ids?: readonly string[];
+    },
+  ): PatchRejection | null => {
+    if (text === undefined) {
+      return null;
+    }
+
+    const check = checkRelationshipLabelGrounding({
+      text,
+      participantRoster: input.participantRoster,
+      relationshipEvidenceRelationalSlotIds:
+        evidence.relationship_evidence_relational_slot_ids ?? [],
+      relationshipEvidenceStreamEntryIds: evidence.relationship_evidence_stream_entry_ids ?? [],
+      allowedRelationshipEvidenceStreamEntryIds: input.allowedSourceStreamEntryIds,
+      relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
+    });
+
+    if (check.grounded) {
+      return null;
+    }
+
+    return rejection(operation, operationIndex, "relationship_label_ungrounded", {
+      ...(operation.type === "add" ? {} : { targetEntryId: operation.id }),
+      protectedRelationshipLabels: check.protectedLabels,
+      relationshipEvidenceRelationalSlotIds: [
+        ...(evidence.relationship_evidence_relational_slot_ids ?? []),
+      ],
+      relationshipEvidenceStreamEntryIds: [
+        ...(evidence.relationship_evidence_stream_entry_ids ?? []),
+      ],
+      rejectedRelationshipEvidenceRelationalSlotIds: check.rejectedRelationalSlotIds,
+      rejectedRelationshipEvidenceStreamEntryIds: check.rejectedStreamEntryIds,
+    });
+  };
 
   const addTrackedEntry = (
     operationIndex: number,
@@ -493,6 +544,18 @@ export function normalizePatch(input: {
           return;
         }
 
+        const labelRejection = relationshipLabelRejection(
+          operation,
+          operationIndex,
+          operation.text,
+          operation,
+        );
+
+        if (labelRejection !== null) {
+          rejected.push(labelRejection);
+          return;
+        }
+
         const canonicalizes = normalizeCanonicalizes({
           value: operation.canonicalizes,
           kind: operation.kind,
@@ -572,6 +635,18 @@ export function normalizePatch(input: {
               sourceTrustReason: citations.sourceTrustReason,
             }),
           );
+          return;
+        }
+
+        const labelRejection = relationshipLabelRejection(
+          operation,
+          operationIndex,
+          operation.text,
+          operation,
+        );
+
+        if (labelRejection !== null) {
+          rejected.push(labelRejection);
           return;
         }
 
@@ -661,6 +736,27 @@ export function normalizePatch(input: {
               sourceTrustReason: updateCitations.sourceTrustReason,
             }),
           );
+          return;
+        }
+
+        const labelRejection = relationshipLabelRejection(
+          operation,
+          operationIndex,
+          operation.replacement.text,
+          {
+            relationship_evidence_relational_slot_ids: [
+              ...(operation.relationship_evidence_relational_slot_ids ?? []),
+              ...(operation.replacement.relationship_evidence_relational_slot_ids ?? []),
+            ],
+            relationship_evidence_stream_entry_ids: [
+              ...(operation.relationship_evidence_stream_entry_ids ?? []),
+              ...(operation.replacement.relationship_evidence_stream_entry_ids ?? []),
+            ],
+          },
+        );
+
+        if (labelRejection !== null) {
+          rejected.push(labelRejection);
           return;
         }
 

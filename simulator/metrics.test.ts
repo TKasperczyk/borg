@@ -70,6 +70,10 @@ const TURN_METRICS_KEY_ORDER = [
   "semantic_nodes_rejected_ungrounded_label_count",
   "semantic_nodes_rejected_ungrounded_label_total",
   "semantic_nodes_rejected_ungrounded_label_by_label",
+  "shared_state_operations_rejected_ungrounded_label_total",
+  "shared_state_operations_rejected_ungrounded_label_by_label",
+  "commitment_candidates_rejected_ungrounded_label_total",
+  "commitment_candidates_rejected_ungrounded_label_by_label",
   "open_question_count",
   "active_goal_count",
   "generation_suppression_count",
@@ -541,6 +545,18 @@ describe("MetricsCapture", () => {
           protected_relationship_labels: ["siblings"],
         },
         {
+          ts: 141,
+          turnId: "turn-1",
+          event: "shared_state.compile.label_ungrounded",
+          protected_relationship_labels: ["partner"],
+        },
+        {
+          ts: 142,
+          turnId: "turn-1",
+          event: "corrective_preference.candidate_rejected_ungrounded",
+          protected_relationship_labels: ["parent"],
+        },
+        {
           ts: 190,
           turnId: "turn-1",
           event: "llm_call.completed",
@@ -680,6 +696,14 @@ describe("MetricsCapture", () => {
     expect(row.semantic_nodes_rejected_ungrounded_label_total).toBe(1);
     expect(row.semantic_nodes_rejected_ungrounded_label_by_label).toEqual({
       siblings: 1,
+    });
+    expect(row.shared_state_operations_rejected_ungrounded_label_total).toBe(1);
+    expect(row.shared_state_operations_rejected_ungrounded_label_by_label).toEqual({
+      partner: 1,
+    });
+    expect(row.commitment_candidates_rejected_ungrounded_label_total).toBe(1);
+    expect(row.commitment_candidates_rejected_ungrounded_label_by_label).toEqual({
+      parent: 1,
     });
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);

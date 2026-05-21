@@ -11,6 +11,7 @@ import type {
   RelationalSlotRepository,
 } from "../../memory/relational-slots/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
+import type { StreamEntry } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import {
   createCommitmentId,
@@ -20,6 +21,7 @@ import {
 } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { ParticipantRoster } from "../perception/index.js";
+import { checkRelationshipLabelGrounding } from "../memory-write-relationship-gate.js";
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
@@ -48,6 +50,7 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   committedByEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   participantRoster?: ParticipantRoster | null;
+  relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
   sessionId: SessionId;
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
   trackAppliedSlotNegation: (slot: RelationalSlot) => void;
@@ -161,6 +164,91 @@ export class CorrectivePreferenceTurnService {
     });
   }
 
+  private traceCandidateRejectedUngrounded(input: {
+    turnId?: string;
+    candidate: CorrectivePreferenceCandidate;
+    protectedLabels: readonly string[];
+    rejectedRelationalSlotIds: readonly string[];
+    rejectedStreamEntryIds: readonly { id: string; reason: string }[];
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("corrective_preference.candidate_rejected_ungrounded", {
+      turnId: input.turnId,
+      validationStatus: "rejected",
+      reason: "relationship_label_ungrounded",
+      directive_family: input.candidate.directive_family,
+      kind: input.candidate.kind,
+      protected_relationship_labels: [...input.protectedLabels],
+      relationship_evidence_relational_slot_ids: [
+        ...input.candidate.relationship_evidence_relational_slot_ids,
+      ],
+      relationship_evidence_stream_entry_ids: [
+        ...input.candidate.relationship_evidence_stream_entry_ids,
+      ],
+      rejected_relationship_evidence_relational_slot_ids: [...input.rejectedRelationalSlotIds],
+      rejected_relationship_evidence_stream_entry_ids: [...input.rejectedStreamEntryIds],
+    });
+  }
+
+  private candidateHasGroundedRelationshipLabels(input: {
+    candidate: CorrectivePreferenceCandidate;
+    turnId?: string;
+    persistedUserEntryId?: StreamEntryId;
+    participantRoster?: ParticipantRoster | null;
+    relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
+  }): boolean {
+    const allowedStreamEntryIds = new Set<StreamEntryId>();
+    const streamEntryKindById = new Map<StreamEntryId, StreamEntry["kind"]>();
+
+    if (input.persistedUserEntryId !== undefined) {
+      allowedStreamEntryIds.add(input.persistedUserEntryId);
+    }
+
+    for (const entry of input.relationshipEvidenceStreamEntries ?? []) {
+      allowedStreamEntryIds.add(entry.id);
+      streamEntryKindById.set(entry.id, entry.kind);
+    }
+
+    const check = checkRelationshipLabelGrounding({
+      text: input.candidate.directive,
+      participantRoster: input.participantRoster ?? null,
+      relationshipEvidenceRelationalSlotIds:
+        input.candidate.relationship_evidence_relational_slot_ids,
+      relationshipEvidenceStreamEntryIds: input.candidate.relationship_evidence_stream_entry_ids,
+      allowedRelationshipEvidenceStreamEntryIds: allowedStreamEntryIds,
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) => {
+        if (streamEntryId === input.persistedUserEntryId) {
+          return { allowed: true };
+        }
+
+        const kind = streamEntryKindById.get(streamEntryId);
+
+        if (kind === undefined) {
+          return { allowed: false, reason: "missing" };
+        }
+
+        return kind === "user_msg" ? { allowed: true } : { allowed: false, reason: "not_user_msg" };
+      },
+    });
+
+    if (check.grounded) {
+      return true;
+    }
+
+    this.traceCandidateRejectedUngrounded({
+      turnId: input.turnId,
+      candidate: input.candidate,
+      protectedLabels: check.protectedLabels,
+      rejectedRelationalSlotIds: check.rejectedRelationalSlotIds,
+      rejectedStreamEntryIds: check.rejectedStreamEntryIds,
+    });
+
+    return false;
+  }
+
   private validateSupersessionClaim(input: {
     claim: CorrectivePreferenceSupersessionClaim;
     newId: CommitmentRecord["id"];
@@ -256,8 +344,19 @@ export class CorrectivePreferenceTurnService {
       relationalSlots: this.relationalSlotsForCorrectionExtractor(),
     });
     const correctiveCandidate = correctiveExtraction.preference;
+    let acceptedCorrectiveCandidate: CorrectivePreferenceCandidate | null = null;
 
-    if (correctiveCandidate !== null) {
+    if (
+      correctiveCandidate !== null &&
+      this.candidateHasGroundedRelationshipLabels({
+        candidate: correctiveCandidate,
+        turnId: input.turnId,
+        persistedUserEntryId: input.persistedUserEntryId,
+        participantRoster: input.participantRoster ?? null,
+        relationshipEvidenceStreamEntries: input.relationshipEvidenceStreamEntries,
+      })
+    ) {
+      acceptedCorrectiveCandidate = correctiveCandidate;
       correctiveCommitment = buildCorrectivePreferenceCommitment({
         candidate: correctiveCandidate,
         audienceEntityId: input.audienceEntityId,
@@ -300,11 +399,11 @@ export class CorrectivePreferenceTurnService {
     return {
       commitment: correctiveCommitment,
       commitmentSupersession:
-        correctiveCandidate?.supersedes_commitment_id === undefined ||
-        correctiveCandidate.supersedes_commitment_id === null
+        acceptedCorrectiveCandidate?.supersedes_commitment_id === undefined ||
+        acceptedCorrectiveCandidate.supersedes_commitment_id === null
           ? null
           : {
-              supersededId: correctiveCandidate.supersedes_commitment_id,
+              supersededId: acceptedCorrectiveCandidate.supersedes_commitment_id,
               allowedActiveCommitmentIds: activeCommitmentsForExtractor.map(
                 (commitment) => commitment.id,
               ),
@@ -426,6 +525,7 @@ export class CorrectivePreferenceTurnService {
     return this.options.relationalSlotRepository
       .list({ limit: CORRECTIVE_RELATIONAL_SLOT_LIMIT })
       .map((slot) => ({
+        id: slot.id,
         subject_entity_id: slot.subject_entity_id,
         slot_key: slot.slot_key,
         value: slot.value,

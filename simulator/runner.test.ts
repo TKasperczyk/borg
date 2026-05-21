@@ -355,6 +355,10 @@ function metricsRow(turnCounter: number): MetricsRow {
     semantic_nodes_rejected_ungrounded_label_count: 0,
     semantic_nodes_rejected_ungrounded_label_total: 0,
     semantic_nodes_rejected_ungrounded_label_by_label: {},
+    shared_state_operations_rejected_ungrounded_label_total: 0,
+    shared_state_operations_rejected_ungrounded_label_by_label: {},
+    commitment_candidates_rejected_ungrounded_label_total: 0,
+    commitment_candidates_rejected_ungrounded_label_by_label: {},
     open_question_count: 0,
     active_goal_count: 0,
     generation_suppression_count: 0,
@@ -732,6 +736,10 @@ describe("SimulatorRunner", () => {
           closure_loop_classifier: 26,
           corrective_preference_extractor: 1,
         },
+        commitment_candidates_rejected_ungrounded_label_total: 1,
+        commitment_candidates_rejected_ungrounded_label_by_label: {
+          parent: 1,
+        },
         shared_state_compiler_max_tokens_total: 1,
         shared_state_compiler_degraded_total: 2,
         shared_state_compiler_repair_attempted_total: 3,
@@ -757,6 +765,10 @@ describe("SimulatorRunner", () => {
           "decision.architecture": 1,
         },
         shared_state_add_rejected_cap_exceeded_total: 1,
+        shared_state_operations_rejected_ungrounded_label_total: 2,
+        shared_state_operations_rejected_ungrounded_label_by_label: {
+          partner: 2,
+        },
         semantic_revision_calls_total: 6,
         semantic_revision_candidates_reviewed_total: 31,
         semantic_revision_superseded_total: 4,
@@ -786,6 +798,9 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Degraded by label: closure_loop_classifier=26, corrective_preference_extractor=1",
     );
+    expect(report).toContain(
+      "Commitment gate rejections: protected relationship labels 1 total (parent=1)",
+    );
     expect(report).toContain("## Cumulative Compiler Health");
     expect(report).toContain("Shared-state compiler max-token stops: 1");
     expect(report).toContain("Shared-state compiler degraded events: 2");
@@ -795,6 +810,9 @@ describe("SimulatorRunner", () => {
     );
     expect(report).toContain("Shared-state compiler add/update ratio: 2.50");
     expect(report).toContain("Shared-state add rejected by per-key cap: 1");
+    expect(report).toContain(
+      "Shared-state gate rejections: protected relationship labels 2 total (partner=2)",
+    );
     expect(report).toContain("## Cumulative Semantic Revision Health");
     expect(report).toContain("Revision LLM calls: 6");
     expect(report).toContain("Candidates reviewed: 31");
