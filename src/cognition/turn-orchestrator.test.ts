@@ -508,7 +508,12 @@ function createClosureLoopSignoffResponseFromRequest() {
 }
 
 function createCommitmentJudgeResponse(
-  violations: Array<{ commitment_id: string; reason: string; confidence?: number }>,
+  violations: Array<{
+    commitment_id: string;
+    reason: string;
+    confidence?: number;
+    violating_span_or_topic?: string;
+  }>,
 ) {
   return {
     text: "",
@@ -524,6 +529,9 @@ function createCommitmentJudgeResponse(
             commitment_id: violation.commitment_id,
             reason: violation.reason,
             confidence: violation.confidence ?? 0.9,
+            ...(violation.violating_span_or_topic === undefined
+              ? {}
+              : { violating_span_or_topic: violation.violating_span_or_topic }),
           })),
         },
       },
@@ -604,9 +612,7 @@ function createCorrectivePreferenceResponse(input: {
           type: input.type ?? null,
           kind:
             input.kind ??
-            (input.classification === "corrective_preference"
-              ? "participant_preference"
-              : null),
+            (input.classification === "corrective_preference" ? "participant_preference" : null),
           directive: input.directive ?? null,
           directive_family:
             input.directive_family ??
@@ -2953,12 +2959,83 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("suppresses the turn when commitment revision still violates", async () => {
+  it("regenerates once after a critical commitment violation and preserves clean content", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_149_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "dad_boundary",
+        directive: "Do not bring up Dad in this thread.",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+
+      llm.pushResponse(
+        createEmitAnswerResponse(
+          "The birthday correction is May 7. Dad's care context stays complicated.",
+        ),
+      );
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Brings up Dad despite the thread boundary.",
+            violating_span_or_topic: "Dad's care context",
+          },
+        ]),
+      );
+      llm.pushResponse(createEmitAnswerResponse("The birthday correction is May 7."));
+      llm.pushResponse(createCommitmentJudgeResponse([]));
+      llm.pushResponse(createEmptyReflectionResponse());
+
+      const result = await borg.turn({
+        userMessage: "What did I correct the birthday to?",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+      const finalizerRequests = llm.requests.filter(
+        (request) => request.budget === "cognition-system-1",
+      );
+      const regenerationSystemPrompt = JSON.stringify(finalizerRequests[1]?.system ?? "");
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("The birthday correction is May 7.");
+      expect(borg.stream.tail(10).some((entry) => entry.kind === "agent_suppressed")).toBe(false);
+      expect(regenerationSystemPrompt).toContain("Do not bring up Dad in this thread.");
+      expect(regenerationSystemPrompt).toContain("Dad's care context");
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_requested",
+          commitmentIds: [commitment.id],
+        }),
+      );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_succeeded",
+        }),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses the turn when regenerated output still violates a critical commitment", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_150_000);
     const llm = new FakeLLMClient();
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
 
     try {
       const commitment = borg.commitments.add({
@@ -2979,18 +3056,12 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           },
         ]),
       );
-      llm.pushResponse({
-        text: "The launch is still tomorrow.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("The launch is still tomorrow."));
       llm.pushResponse(
         createCommitmentJudgeResponse([
           {
             commitment_id: commitment.id,
-            reason: "Still discloses a launch date after rewrite.",
+            reason: "Still discloses a launch date after regeneration.",
           },
         ]),
       );
@@ -3001,22 +3072,97 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const entries = borg.stream.tail(10);
       const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
       const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+      const traceEvents = readTraceEvents(tracePath);
 
       expect(result.emitted).toBe(false);
       expect(result.response).toBe("");
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "commitment_violation",
+        reason: "commitment_violation_after_regenerate",
       });
       expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
       expect(suppressionEntry?.content).toMatchObject({
-        reason: "commitment_violation",
+        reason: "commitment_violation_after_regenerate",
       });
       expect(activeStop).toMatchObject({
         provenance: "commitment_guard",
         source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_failed",
+          reason: "still_violates",
+          suppressionReason: "commitment_violation_after_regenerate",
+        }),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("records regeneration failure when the regenerated finalizer emits no output", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_151_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "dad_boundary",
+        directive: "Do not bring up Dad in this thread.",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+
+      llm.pushResponse(createEmitAnswerResponse("The birthday correction is May 7. Dad called."));
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Brings up Dad despite the thread boundary.",
+            violating_span_or_topic: "Dad called",
+          },
+        ]),
+      );
+      llm.pushResponse(createEmitNoOutputResponse("No compliant assistant message is needed."));
+
+      const result = await borg.turn({
+        userMessage: "What did I correct the birthday to?",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "finalizer_no_output",
+      });
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_requested",
+          commitmentIds: [commitment.id],
+        }),
+      );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_failed",
+          reason: "regenerated_non_message_emission",
+          regeneratedEmissionKind: "suppressed",
+          regeneratedEmissionReason: "finalizer_no_output",
+          commitmentIds: [commitment.id],
+        }),
+      );
+      expect(traceEvents).not.toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.regeneration_succeeded",
+        }),
+      );
     } finally {
       await borg.close();
     }
@@ -4454,6 +4600,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.response).toBe("Azure.");
       expect(borg.stream.tail(10).some((entry) => entry.kind === "agent_suppressed")).toBe(false);
       expect(llm.requests.map((request) => request.budget)).not.toContain("commitment-revision");
+      expect(traceEvents.map((event) => event.event)).not.toContain(
+        "commitment_guard.regeneration_requested",
+      );
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
           event: "commitment_guard.shadow_observation",

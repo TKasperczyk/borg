@@ -107,6 +107,12 @@ export type MetricsRow = {
   commitment_count_revoked: number;
   commitment_count_expired: number;
   commitment_count_canonicalized: number;
+  commitment_regeneration_attempted_count: number;
+  commitment_regeneration_succeeded_count: number;
+  commitment_regeneration_failed_count: number;
+  commitment_regeneration_attempted_total: number;
+  commitment_regeneration_succeeded_total: number;
+  commitment_regeneration_failed_total: number;
   pending_action_count: number;
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;
@@ -144,6 +150,12 @@ export type MetricsRow = {
   semantic_revision_error_count: number;
   semantic_revision_skipped_due_to_error: number;
   semantic_revision_error_total_by_reason: Record<string, number>;
+  semantic_revision_calls_total: number;
+  semantic_revision_candidates_reviewed_total: number;
+  semantic_revision_superseded_total: number;
+  semantic_revision_contradicted_total: number;
+  semantic_revision_degraded_total: number;
+  semantic_revision_skipped_over_cap_total: number;
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;

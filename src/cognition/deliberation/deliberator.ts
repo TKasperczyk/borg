@@ -132,6 +132,27 @@ type FinalizerEmission = {
   emission: PendingTurnEmission;
 };
 
+function appendFinalizerPromptSections(
+  base: readonly (string | null)[] | null,
+  extra: readonly (string | null)[],
+): readonly (string | null)[] {
+  return base === null ? [...extra] : [...base, ...extra];
+}
+
+function attachRegenerator(
+  result: DeliberationResult,
+  regenerateFinalResponse: NonNullable<DeliberationResult["regenerateFinalResponse"]>,
+): DeliberationResult {
+  Object.defineProperty(result, "regenerateFinalResponse", {
+    value: regenerateFinalResponse,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+
+  return result;
+}
+
 function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppressionReason | null {
   switch (result.decision.kind) {
     case "no_output":
@@ -326,7 +347,7 @@ export class Deliberator {
       });
       const finalized = buildFinalizerEmission(response);
 
-      return {
+      const result: DeliberationResult = {
         path: "system_1",
         response: finalized.response,
         emitted: finalized.emitted,
@@ -342,6 +363,39 @@ export class Deliberator {
         intents: [],
         thoughtsPersisted: false,
       };
+
+      return attachRegenerator(result, async (regeneration) => {
+        const regeneratedResponse = await runFinalizer({
+          llmClient: this.options.llmClient,
+          dispatcher: this.options.toolDispatcher,
+          sessionId: context.sessionId,
+          audienceEntityId: context.audienceEntityId,
+          model: this.options.cognitionModel,
+          baseSystemPrompt,
+          cacheableSystemPrompt: cacheableBaseSystemPrompt,
+          initialMessages: dialogueBlockMessages,
+          userEntryId: context.userEntryId,
+          maxTokens: systemOneMaxTokens,
+          ...(thinking === undefined ? {} : { thinking }),
+          path: "system_1",
+          additionalPromptSections: appendFinalizerPromptSections(
+            evidenceLedgerPromptSections,
+            regeneration.additionalPromptSections,
+          ),
+          tracer: this.tracer,
+          turnId: context.turnId,
+        });
+        const regeneratedFinalized = buildFinalizerEmission(regeneratedResponse);
+
+        return {
+          ...result,
+          response: regeneratedFinalized.response,
+          emitted: regeneratedFinalized.emitted,
+          emission: regeneratedFinalized.emission,
+          tool_calls: regeneratedResponse.toolCallsMade,
+          usage: aggregateUsage(result.usage, regeneratedResponse.usage),
+        };
+      });
     }
 
     // S2 staged: both calls share the full baseSystemPrompt (identity, voice,
@@ -479,7 +533,7 @@ export class Deliberator {
     finalized = buildFinalizerEmission(finalResponse);
     finalToolCallsMade = finalResponse.toolCallsMade;
 
-    return {
+    const result: DeliberationResult = {
       path: "system_2",
       response: finalized.response,
       emitted: finalized.emitted,
@@ -498,5 +552,38 @@ export class Deliberator {
       intents: plan === null ? [] : [...plan.intents],
       thoughtsPersisted,
     };
+
+    return attachRegenerator(result, async (regeneration) => {
+      const regeneratedResponse = await runFinalizer({
+        llmClient: this.options.llmClient,
+        dispatcher: this.options.toolDispatcher,
+        sessionId: context.sessionId,
+        audienceEntityId: context.audienceEntityId,
+        model: this.options.cognitionModel,
+        baseSystemPrompt,
+        cacheableSystemPrompt: cacheableBaseSystemPrompt,
+        initialMessages: dialogueBlockMessages,
+        userEntryId: context.userEntryId,
+        maxTokens: systemTwoMaxTokens,
+        ...(thinking === undefined ? {} : { thinking }),
+        path: "system_2",
+        additionalPromptSections: appendFinalizerPromptSections(
+          additionalPromptSections,
+          regeneration.additionalPromptSections,
+        ),
+        tracer: this.tracer,
+        turnId: context.turnId,
+      });
+      const regeneratedFinalized = buildFinalizerEmission(regeneratedResponse);
+
+      return {
+        ...result,
+        response: regeneratedFinalized.response,
+        emitted: regeneratedFinalized.emitted,
+        emission: regeneratedFinalized.emission,
+        tool_calls: regeneratedResponse.toolCallsMade,
+        usage: aggregateUsage(result.usage, regeneratedResponse.usage),
+      };
+    });
   }
 }

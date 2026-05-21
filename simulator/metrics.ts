@@ -85,6 +85,7 @@ const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;
 const ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
 const ACTION_INACTIVE_TURN_BUCKETS = ["0-15", "15-20", "20-30", "30+"] as const;
 const SHARED_STATE_COMPILER_LABEL = "decision_artifact_compiler";
+const SHARED_STATE_SEMANTIC_REVISION_LABEL = "decision_artifact_semantic_revision";
 const SHARED_STATE_COMPILER_OPERATION_KINDS = ["add", "update", "supersede", "prune"] as const;
 const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
   ...GOAL_PROMOTION_CLASSIFICATIONS,
@@ -191,11 +192,31 @@ type SharedStateArtifactSemanticRevisionMetricCounts = Pick<
   | "decision_artifact_semantic_revision_cache_hits"
 >;
 
+type CommitmentRegenerationMetricCounts = Pick<
+  MetricsRow,
+  | "commitment_regeneration_attempted_count"
+  | "commitment_regeneration_succeeded_count"
+  | "commitment_regeneration_failed_count"
+  | "commitment_regeneration_attempted_total"
+  | "commitment_regeneration_succeeded_total"
+  | "commitment_regeneration_failed_total"
+>;
+
 type SemanticRevisionErrorMetricCounts = Pick<
   MetricsRow,
   | "semantic_revision_error_count"
   | "semantic_revision_skipped_due_to_error"
   | "semantic_revision_error_total_by_reason"
+>;
+
+type SemanticRevisionCumulativeMetricCounts = Pick<
+  MetricsRow,
+  | "semantic_revision_calls_total"
+  | "semantic_revision_candidates_reviewed_total"
+  | "semantic_revision_superseded_total"
+  | "semantic_revision_contradicted_total"
+  | "semantic_revision_degraded_total"
+  | "semantic_revision_skipped_over_cap_total"
 >;
 
 type SharedStateCapPressureMetricCounts = Pick<
@@ -638,6 +659,39 @@ function sharedStateSemanticRevisionMetrics(
   };
 }
 
+function commitmentRegenerationMetrics(input: {
+  traceRecords: readonly TraceRecord[];
+  cumulativeTraceRecords: readonly TraceRecord[];
+}): CommitmentRegenerationMetricCounts {
+  const attempted = input.traceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_requested",
+  ).length;
+  const succeeded = input.traceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_succeeded",
+  ).length;
+  const failed = input.traceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_failed",
+  ).length;
+  const attemptedTotal = input.cumulativeTraceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_requested",
+  ).length;
+  const succeededTotal = input.cumulativeTraceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_succeeded",
+  ).length;
+  const failedTotal = input.cumulativeTraceRecords.filter(
+    (record) => record.event === "commitment_guard.regeneration_failed",
+  ).length;
+
+  return {
+    commitment_regeneration_attempted_count: attempted,
+    commitment_regeneration_succeeded_count: succeeded,
+    commitment_regeneration_failed_count: failed,
+    commitment_regeneration_attempted_total: attemptedTotal,
+    commitment_regeneration_succeeded_total: succeededTotal,
+    commitment_regeneration_failed_total: failedTotal,
+  };
+}
+
 function semanticRevisionErrorMetrics(input: {
   traceRecords: readonly TraceRecord[];
   cumulativeTraceRecords: readonly TraceRecord[];
@@ -661,6 +715,48 @@ function semanticRevisionErrorMetrics(input: {
       0,
     ),
     semantic_revision_error_total_by_reason: sortedNumberRecord(totalsByReason),
+  };
+}
+
+function isSemanticRevisionDegradedEvent(record: TraceRecord): boolean {
+  const event = canonicalTraceEventName(record.event);
+
+  return (
+    event === "semantic_revision.degraded" || event === "shared_state.semantic_revision.degraded"
+  );
+}
+
+function semanticRevisionCumulativeMetrics(
+  cumulativeTraceRecords: readonly TraceRecord[],
+): SemanticRevisionCumulativeMetricCounts {
+  const completed = cumulativeTraceRecords.filter(
+    (record) => record.event === "semantic_revision.completed",
+  );
+  const degraded = cumulativeTraceRecords.filter(isSemanticRevisionDegradedEvent);
+  const skippedOverCap = cumulativeTraceRecords.filter(
+    (record) =>
+      record.event === "semantic_revision.degraded" && traceReason(record) === "skipped_over_cap",
+  );
+
+  return {
+    semantic_revision_calls_total: llmCompletedCount(
+      cumulativeTraceRecords,
+      SHARED_STATE_SEMANTIC_REVISION_LABEL,
+    ),
+    semantic_revision_candidates_reviewed_total: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "candidates_enumerated"),
+      0,
+    ),
+    semantic_revision_superseded_total: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "superseded_count"),
+      0,
+    ),
+    semantic_revision_contradicted_total: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "contradicted_count"),
+      0,
+    ),
+    semantic_revision_degraded_total: degraded.length,
+    semantic_revision_skipped_over_cap_total: skippedOverCap.length,
   };
 }
 
@@ -1819,10 +1915,16 @@ export class MetricsCapture {
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics(traceRecords);
     const sharedStateSemanticRevisionMetricCounts =
       sharedStateSemanticRevisionMetrics(traceRecords);
+    const commitmentRegenerationMetricCounts = commitmentRegenerationMetrics({
+      traceRecords,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
     });
+    const semanticRevisionCumulativeMetricCounts =
+      semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
@@ -1937,6 +2039,18 @@ export class MetricsCapture {
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
       commitment_count_canonicalized: memoryBandMetrics.commitment_count_canonicalized,
+      commitment_regeneration_attempted_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_attempted_count,
+      commitment_regeneration_succeeded_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_count,
+      commitment_regeneration_failed_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_failed_count,
+      commitment_regeneration_attempted_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_attempted_total,
+      commitment_regeneration_succeeded_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_total,
+      commitment_regeneration_failed_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_failed_total,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
@@ -1993,6 +2107,18 @@ export class MetricsCapture {
         semanticRevisionErrorMetricCounts.semantic_revision_skipped_due_to_error,
       semantic_revision_error_total_by_reason:
         semanticRevisionErrorMetricCounts.semantic_revision_error_total_by_reason,
+      semantic_revision_calls_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_calls_total,
+      semantic_revision_candidates_reviewed_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_candidates_reviewed_total,
+      semantic_revision_superseded_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_superseded_total,
+      semantic_revision_contradicted_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_contradicted_total,
+      semantic_revision_degraded_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_degraded_total,
+      semantic_revision_skipped_over_cap_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_skipped_over_cap_total,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
@@ -2093,10 +2219,16 @@ export class MetricsCapture {
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const sharedStateActionLifecycleMetricCounts = sharedStateActionLifecycleMetrics([]);
     const sharedStateSemanticRevisionMetricCounts = sharedStateSemanticRevisionMetrics([]);
+    const commitmentRegenerationMetricCounts = commitmentRegenerationMetrics({
+      traceRecords,
+      cumulativeTraceRecords: allTraceRecords,
+    });
     const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
     });
+    const semanticRevisionCumulativeMetricCounts =
+      semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
@@ -2195,6 +2327,18 @@ export class MetricsCapture {
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
       commitment_count_canonicalized: memoryBandMetrics.commitment_count_canonicalized,
+      commitment_regeneration_attempted_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_attempted_count,
+      commitment_regeneration_succeeded_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_count,
+      commitment_regeneration_failed_count:
+        commitmentRegenerationMetricCounts.commitment_regeneration_failed_count,
+      commitment_regeneration_attempted_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_attempted_total,
+      commitment_regeneration_succeeded_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_total,
+      commitment_regeneration_failed_total:
+        commitmentRegenerationMetricCounts.commitment_regeneration_failed_total,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
@@ -2251,6 +2395,18 @@ export class MetricsCapture {
         semanticRevisionErrorMetricCounts.semantic_revision_skipped_due_to_error,
       semantic_revision_error_total_by_reason:
         semanticRevisionErrorMetricCounts.semantic_revision_error_total_by_reason,
+      semantic_revision_calls_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_calls_total,
+      semantic_revision_candidates_reviewed_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_candidates_reviewed_total,
+      semantic_revision_superseded_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_superseded_total,
+      semantic_revision_contradicted_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_contradicted_total,
+      semantic_revision_degraded_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_degraded_total,
+      semantic_revision_skipped_over_cap_total:
+        semanticRevisionCumulativeMetricCounts.semantic_revision_skipped_over_cap_total,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,

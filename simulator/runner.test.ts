@@ -430,6 +430,12 @@ function metricsRow(turnCounter: number): MetricsRow {
     commitment_count_revoked: 0,
     commitment_count_expired: 0,
     commitment_count_canonicalized: 0,
+    commitment_regeneration_attempted_count: 0,
+    commitment_regeneration_succeeded_count: 0,
+    commitment_regeneration_failed_count: 0,
+    commitment_regeneration_attempted_total: 0,
+    commitment_regeneration_succeeded_total: 0,
+    commitment_regeneration_failed_total: 0,
     pending_action_count: 0,
     pending_action_merge_count: 0,
     relational_slot_count_by_state: zeroCounts(RELATIONAL_SLOT_STATES),
@@ -478,6 +484,12 @@ function metricsRow(turnCounter: number): MetricsRow {
     semantic_revision_error_count: 0,
     semantic_revision_skipped_due_to_error: 0,
     semantic_revision_error_total_by_reason: {},
+    semantic_revision_calls_total: 0,
+    semantic_revision_candidates_reviewed_total: 0,
+    semantic_revision_superseded_total: 0,
+    semantic_revision_contradicted_total: 0,
+    semantic_revision_degraded_total: 0,
+    semantic_revision_skipped_over_cap_total: 0,
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
@@ -708,11 +720,21 @@ describe("SimulatorRunner", () => {
           prune: 2,
         },
         shared_state_add_to_update_ratio: 2.5,
+        semantic_revision_calls_total: 6,
+        semantic_revision_candidates_reviewed_total: 31,
+        semantic_revision_superseded_total: 4,
+        semantic_revision_contradicted_total: 2,
+        semantic_revision_degraded_total: 3,
+        semantic_revision_skipped_over_cap_total: 1,
+        commitment_regeneration_attempted_total: 2,
+        commitment_regeneration_succeeded_total: 1,
+        commitment_regeneration_failed_total: 1,
       },
       durationMs: 1,
     });
 
     expect(report).toContain("Capability audit: overclaims 1, ambiguities 2, boundary refusals 3");
+    expect(report).toContain("Commitment regeneration: attempted 2, succeeded 1, failed 1");
     expect(report).toContain(
       "Action archive visibility: dormant below archive threshold 3, archive-eligible still active 1, oldest inactive 24 turns, inactive buckets 0-15=4, 15-20=3, 20-30=1, 30+=0",
     );
@@ -734,6 +756,13 @@ describe("SimulatorRunner", () => {
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );
     expect(report).toContain("Shared-state compiler add/update ratio: 2.50");
+    expect(report).toContain("## Cumulative Semantic Revision Health");
+    expect(report).toContain("Revision LLM calls: 6");
+    expect(report).toContain("Candidates reviewed: 31");
+    expect(report).toContain("Nodes superseded: 4");
+    expect(report).toContain("Nodes contradicted: 2");
+    expect(report).toContain("Degraded events: 3");
+    expect(report).toContain("Skipped over cap: 1");
   });
 
   it("formats overseer checkpoint statuses as labelled fields", () => {

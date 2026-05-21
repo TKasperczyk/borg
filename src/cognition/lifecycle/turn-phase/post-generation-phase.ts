@@ -251,6 +251,7 @@ export async function runPostGenerationPhase(input: {
   });
   const actionResult = actionCoordinatorResult.actionResult;
   const actionEmission: PendingTurnEmission = actionCoordinatorResult.actionEmission;
+  const deliberation = actionCoordinatorResult.deliberation;
   input.lifecycleTracker.trackPendingActionMerges(actionResult.pending_action_merge_count ?? 0);
   const persistedAgentEntry =
     actionEmission.kind === "message"
@@ -295,7 +296,7 @@ export async function runPostGenerationPhase(input: {
       correctiveCommitment: input.correctiveCommitment,
       correctiveCommitmentSupersession: input.correctiveCommitmentSupersession,
       perceptionMode: input.perception.mode,
-      deliberation: input.deliberation,
+      deliberation,
     });
   }
 
@@ -385,9 +386,9 @@ export async function runPostGenerationPhase(input: {
     workingMood: input.workingMood,
     postActionWorkingMemory,
     selfSnapshot: input.retrievalPhase.selfSnapshot,
-    deliberation: input.deliberation,
+    deliberation,
     actionResult,
-    retrievedEpisodes: input.deliberation.retrievedEpisodes,
+    retrievedEpisodes: deliberation.retrievedEpisodes,
     retrievalConfidence: input.retrievalPhase.retrieval.confidence,
     executiveFocus: input.retrievalPhase.executiveFocusWithStep,
     selectedSkill: input.retrievalPhase.selectedSkill,
@@ -443,14 +444,14 @@ export async function runPostGenerationPhase(input: {
 
   return {
     mode: input.perception.mode,
-    path: input.deliberation.path,
+    path: deliberation.path,
     response: actionResult.response,
     emitted: actionEmission.kind === "message",
     emission: turnEmission,
-    thoughts: input.deliberation.thoughts,
-    usage: input.deliberation.usage,
-    retrievedEpisodeIds: input.deliberation.retrievedEpisodes.map((result) => result.episode.id),
-    referencedEpisodeIds: [...(input.deliberation.referencedEpisodeIds ?? [])],
+    thoughts: deliberation.thoughts,
+    usage: deliberation.usage,
+    retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),
+    referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),

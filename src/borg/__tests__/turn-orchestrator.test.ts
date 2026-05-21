@@ -782,6 +782,7 @@ describe("Borg", () => {
         },
         commitments: {
           enforce: {
+            regenerateBeforeSuppress: false,
             rewriteOnViolation: true,
           },
         },

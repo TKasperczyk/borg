@@ -80,6 +80,7 @@ const commitmentEnforceConfigSchema = z
     criticalKinds: z
       .array(commitmentKindSchema)
       .default(["boundary", "audience_rule"] satisfies CommitmentKind[]),
+    regenerateBeforeSuppress: z.boolean().default(true),
     rewriteOnViolation: z.boolean().default(false),
   })
   .strict()
@@ -847,7 +848,10 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   setConfigOverride(
     overrides,
     ["cognition", "actionLifecycle", "archiveStaleAfterInactiveTurns"],
-    readOptionalEnvNumber(env, "BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS"),
+    readOptionalEnvNumber(
+      env,
+      "BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS",
+    ),
   );
   setConfigOverride(
     overrides,

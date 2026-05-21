@@ -156,6 +156,17 @@ describe("runPostGenerationPhase", () => {
               kind: "observed",
               reason: "no_response_needed",
             },
+            deliberation: {
+              path: "system_1",
+              thoughts: [],
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                stop_reason: null,
+              },
+              retrievedEpisodes: [],
+              referencedEpisodeIds: [],
+            },
           })),
         },
         discourseStateService: {
@@ -314,6 +325,17 @@ describe("runPostGenerationPhase", () => {
             actionEmission: {
               kind: "suppressed",
               reason: "finalizer_no_output",
+            },
+            deliberation: {
+              path: "system_1",
+              thoughts: [],
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                stop_reason: "suppressed",
+              },
+              retrievedEpisodes: [],
+              referencedEpisodeIds: [],
             },
           })),
         },

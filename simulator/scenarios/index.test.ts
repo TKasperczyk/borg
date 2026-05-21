@@ -6,6 +6,11 @@ import {
   actionLifecycleScenario,
 } from "./action-lifecycle.js";
 import {
+  actionArchiveLifecycleArcKeys,
+  actionArchiveLifecycleArcs,
+  actionArchiveLifecycleScenario,
+} from "./action-archive-lifecycle.js";
+import {
   beliefRevisionDomainArcKeys,
   beliefRevisionDomainArcs,
   beliefRevisionDomainsScenario,
@@ -16,6 +21,11 @@ import {
   capabilityBoundaryScenario,
 } from "./capability-boundary.js";
 import {
+  criticalBoundaryRegenerationArcKeys,
+  criticalBoundaryRegenerationArcs,
+  criticalBoundaryRegenerationScenario,
+} from "./critical-boundary-regeneration.js";
+import {
   familyAgingParentArcKeys,
   familyAgingParentArcs,
   familyAgingParentScenario,
@@ -25,6 +35,21 @@ import {
   kinshipCorrectnessArcs,
   kinshipCorrectnessScenario,
 } from "./kinship-correctness.js";
+import {
+  kinshipHeadcountArcKeys,
+  kinshipHeadcountArcs,
+  kinshipHeadcountScenario,
+} from "./kinship-headcount.js";
+import {
+  observationSourcePrecedenceArcKeys,
+  observationSourcePrecedenceArcs,
+  observationSourcePrecedenceScenario,
+} from "./observation-source-precedence.js";
+import {
+  sharedStateCompactionArcKeys,
+  sharedStateCompactionArcs,
+  sharedStateCompactionScenario,
+} from "./shared-state-compaction.js";
 import { findSimulatorScenario, simulatorScenarios } from "./index.js";
 import type { SimulatorScenarioDefinition } from "../types.js";
 
@@ -131,6 +156,54 @@ const regressionScenarioFixtures: readonly RegressionScenarioFixture[] = [
     ],
     expectedArcKeys: ["partner-not-sibling"],
   },
+  {
+    scenario: kinshipHeadcountScenario,
+    exportedArcKeys: kinshipHeadcountArcKeys,
+    arcs: kinshipHeadcountArcs,
+    expectedPersonas: [
+      ["lara-headcount", "Lara"],
+      ["mateo-headcount", "Mateo"],
+      ["esme-headcount", "Esme"],
+    ],
+    expectedArcKeys: ["ambiguous-family-headcount"],
+  },
+  {
+    scenario: observationSourcePrecedenceScenario,
+    exportedArcKeys: observationSourcePrecedenceArcKeys,
+    arcs: observationSourcePrecedenceArcs,
+    expectedPersonas: [["nora-observation", "Nora"]],
+    expectedArcKeys: ["latest-user-observation"],
+  },
+  {
+    scenario: sharedStateCompactionScenario,
+    exportedArcKeys: sharedStateCompactionArcKeys,
+    arcs: sharedStateCompactionArcs,
+    expectedPersonas: [
+      ["iris-compaction", "Iris"],
+      ["jon-compaction", "Jon"],
+    ],
+    expectedArcKeys: ["central-plan-update-compaction"],
+  },
+  {
+    scenario: actionArchiveLifecycleScenario,
+    exportedArcKeys: actionArchiveLifecycleArcKeys,
+    arcs: actionArchiveLifecycleArcs,
+    expectedPersonas: [
+      ["rhea-archive", "Rhea"],
+      ["tomas-archive", "Tomas"],
+    ],
+    expectedArcKeys: ["inactive-action-archive-buckets"],
+  },
+  {
+    scenario: criticalBoundaryRegenerationScenario,
+    exportedArcKeys: criticalBoundaryRegenerationArcKeys,
+    arcs: criticalBoundaryRegenerationArcs,
+    expectedPersonas: [
+      ["maya-regeneration", "Maya"],
+      ["sol-regeneration", "Sol"],
+    ],
+    expectedArcKeys: ["dad-boundary-regeneration"],
+  },
 ];
 
 function expectNonEmptyText(value: string): void {
@@ -155,9 +228,14 @@ describe("simulator scenarios", () => {
       "coding-incident",
       "family-aging-parent",
       "kinship-correctness",
+      "kinship-headcount",
+      "observation-source-precedence",
+      "shared-state-compaction",
       "capability-boundary",
       "action-lifecycle",
+      "action-archive-lifecycle",
       "belief-revision-domains",
+      "critical-boundary-regeneration",
     ]);
   });
 
@@ -172,7 +250,7 @@ describe("simulator scenarios", () => {
       expectNonEmptyText(scenario.key);
       expectNonEmptyText(scenario.description);
       expectNonEmptyText(scenario.channelName);
-      expect(scenario.personas.length).toBeGreaterThanOrEqual(2);
+      expect(scenario.personas.length).toBeGreaterThanOrEqual(1);
       expect(scenario.personas.length).toBeLessThanOrEqual(4);
 
       const personaKeys = new Set(scenario.personas.map((persona) => persona.key));

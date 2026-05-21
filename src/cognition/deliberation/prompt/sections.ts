@@ -1,14 +1,12 @@
 // Renders borg-tagged prompt sections and neutralizes forged borg tags in content.
+import { escapeReservedBorgTags } from "../../../util/prompt-tags.js";
+
+export { escapeReservedBorgTags } from "../../../util/prompt-tags.js";
+
 export type TaggedPromptSection = {
   tag: string;
   content: string | null | undefined;
 };
-
-export function escapeReservedBorgTags(content: string): string {
-  // Neutralize any borg-tag-looking content inside remembered text so a
-  // retrieved record cannot close its enclosing block and forge a new one.
-  return content.replace(/<(\/?)borg_/gi, "<$1-borg_");
-}
 
 export function renderTaggedPromptSection(
   tag: string,

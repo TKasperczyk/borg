@@ -126,6 +126,12 @@ const TURN_METRICS_KEY_ORDER = [
   "commitment_count_revoked",
   "commitment_count_expired",
   "commitment_count_canonicalized",
+  "commitment_regeneration_attempted_count",
+  "commitment_regeneration_succeeded_count",
+  "commitment_regeneration_failed_count",
+  "commitment_regeneration_attempted_total",
+  "commitment_regeneration_succeeded_total",
+  "commitment_regeneration_failed_total",
   "pending_action_count",
   "pending_action_merge_count",
   "relational_slot_count_by_state",
@@ -163,6 +169,12 @@ const TURN_METRICS_KEY_ORDER = [
   "semantic_revision_error_count",
   "semantic_revision_skipped_due_to_error",
   "semantic_revision_error_total_by_reason",
+  "semantic_revision_calls_total",
+  "semantic_revision_candidates_reviewed_total",
+  "semantic_revision_superseded_total",
+  "semantic_revision_contradicted_total",
+  "semantic_revision_degraded_total",
+  "semantic_revision_skipped_over_cap_total",
   "overseer_due_on_suppressed_turn",
   "closure_loop_completed_count",
   "closure_loop_degraded_count",
@@ -524,10 +536,51 @@ describe("MetricsCapture", () => {
           stopReason: "max_tokens",
         },
         {
+          ts: 136,
+          turnId: "other-turn",
+          event: "llm_call.completed",
+          label: "decision_artifact_semantic_revision",
+          stopReason: "tool_use",
+        },
+        {
+          ts: 137,
+          turnId: "other-turn",
+          event: "semantic_revision.completed",
+          artifact_entry_id: "dart_metrics_previous",
+          candidates_enumerated: 6,
+          superseded_count: 1,
+          contradicted_count: 2,
+        },
+        {
+          ts: 138,
+          turnId: "other-turn",
+          event: "semantic_revision.degraded",
+          artifact_entry_id: "dart_metrics_over_cap",
+          reason: "skipped_over_cap",
+        },
+        {
+          ts: 139,
+          turnId: "other-turn",
+          event: "commitment_guard.regeneration_requested",
+        },
+        {
+          ts: 140,
+          turnId: "other-turn",
+          event: "commitment_guard.regeneration_failed",
+        },
+        {
+          ts: 189,
+          turnId: "other-turn",
+          event: "llm_call.completed",
+          label: "decision_artifact_semantic_revision",
+          stopReason: "tool_use",
+        },
+        {
           ts: 191,
           turnId: "turn-1",
           event: "semantic_revision.completed",
           artifact_entry_id: "dart_metrics_completed",
+          candidates_enumerated: 4,
           superseded_count: 2,
           contradicted_count: 1,
         },
@@ -553,6 +606,16 @@ describe("MetricsCapture", () => {
           candidate_node_id: "node_metrics_cached",
           cached_verdict: "keep",
           age_turns: 1,
+        },
+        {
+          ts: 195,
+          turnId: "turn-1",
+          event: "commitment_guard.regeneration_requested",
+        },
+        {
+          ts: 196,
+          turnId: "turn-1",
+          event: "commitment_guard.regeneration_succeeded",
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -633,6 +696,18 @@ describe("MetricsCapture", () => {
     expect(row.semantic_revision_error_total_by_reason).toEqual({
       "semantic vector search failed": 1,
     });
+    expect(row.commitment_regeneration_attempted_count).toBe(1);
+    expect(row.commitment_regeneration_succeeded_count).toBe(1);
+    expect(row.commitment_regeneration_failed_count).toBe(0);
+    expect(row.commitment_regeneration_attempted_total).toBe(2);
+    expect(row.commitment_regeneration_succeeded_total).toBe(1);
+    expect(row.commitment_regeneration_failed_total).toBe(1);
+    expect(row.semantic_revision_calls_total).toBe(2);
+    expect(row.semantic_revision_candidates_reviewed_total).toBe(10);
+    expect(row.semantic_revision_superseded_total).toBe(3);
+    expect(row.semantic_revision_contradicted_total).toBe(3);
+    expect(row.semantic_revision_degraded_total).toBe(4);
+    expect(row.semantic_revision_skipped_over_cap_total).toBe(1);
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);

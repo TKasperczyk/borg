@@ -183,6 +183,10 @@ export type DeliberationUsage = {
   stop_reason: string | null;
 };
 
+export type DeliberationRegenerationInput = {
+  additionalPromptSections: readonly (string | null)[];
+};
+
 export type CognitionThinkingConfig = {
   enabled: boolean;
   budget_tokens: number;
@@ -203,6 +207,7 @@ export type DeliberationResult = {
   referencedEpisodeIds: readonly string[] | null;
   intents: IntentRecord[];
   thoughtsPersisted: boolean;
+  regenerateFinalResponse?: (input: DeliberationRegenerationInput) => Promise<DeliberationResult>;
 };
 
 export type DeliberatorOptions = {

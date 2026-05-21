@@ -57,12 +57,15 @@ function verdictResponse(violations: unknown[]): LLMCompleteResult {
 function makeRunner(
   tracer: TurnTracer,
   mode?: "enforce" | "shadow",
-  options: { rewriteOnViolation?: boolean } = {},
+  options: { regenerateBeforeSuppress?: boolean; rewriteOnViolation?: boolean } = {},
 ) {
   return new CommitmentGuardRunner({
     detectionModel: "judge-model",
     rewriteModel: "rewrite-model",
     ...(mode === undefined ? {} : { mode }),
+    ...(options.regenerateBeforeSuppress === undefined
+      ? {}
+      : { regenerateBeforeSuppress: options.regenerateBeforeSuppress }),
     ...(options.rewriteOnViolation === undefined
       ? {}
       : { rewriteOnViolation: options.rewriteOnViolation }),
@@ -156,7 +159,7 @@ describe("CommitmentGuardRunner", () => {
     });
   });
 
-  it("suppresses enforce-eligible boundary violations without rewriting by default", async () => {
+  it("requests regeneration for enforce-eligible boundary violations by default", async () => {
     const violation = {
       commitment_id: commitmentId,
       reason: "Discloses launch date.",
@@ -184,16 +187,19 @@ describe("CommitmentGuardRunner", () => {
     });
 
     expect(result.emission).toEqual({
-      kind: "suppressed",
+      kind: "requires_regeneration",
       reason: "commitment_violation",
+      regeneration: expect.objectContaining({
+        violationCount: 1,
+        commitmentIds: [commitmentId],
+        promptSection: expect.stringContaining("Do not discuss launch dates."),
+      }),
     });
     expect(llm.requests.map((request) => request.budget)).toEqual(["commitment-judge"]);
-    expect(tracer.emit).toHaveBeenCalledWith("commitment_guard.enforce_suppression", {
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_guard.regeneration_requested", {
       turnId: "turn-2",
       mode: "enforce",
-      verdict: "suppressed",
-      reason: "commitment_violation",
-      rewriteTriggered: false,
+      verdict: "requires_regeneration",
       violationCount: 1,
       commitmentIds: [commitmentId],
       commitmentKinds: ["boundary"],
@@ -201,11 +207,56 @@ describe("CommitmentGuardRunner", () => {
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-2",
       mode: "enforce",
-      verdict: "suppressed",
+      verdict: "requires_regeneration",
       wouldHaveVerdict: "suppressed",
       wouldHaveSuppressionReason: "commitment_violation",
       rewriteTriggered: false,
       violationCount: 1,
+    });
+  });
+
+  it("can suppress enforce-eligible boundary violations without regeneration behind the flag", async () => {
+    const violation = {
+      commitment_id: commitmentId,
+      reason: "Discloses launch date.",
+      confidence: 0.9,
+    };
+    const llm = new FakeLLMClient({
+      responses: [verdictResponse([violation])],
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    const result = await makeRunner(tracer, "enforce", {
+      regenerateBeforeSuppress: false,
+    }).run({
+      turnId: "turn-no-regenerate",
+      llmClient: llm,
+      response: "Launch is tomorrow.",
+      userMessage: "When is launch?",
+      cognitionInput: "When is launch?",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [makeCommitment()],
+      relevantEntities: [],
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "commitment_violation",
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_guard.enforce_suppression", {
+      turnId: "turn-no-regenerate",
+      mode: "enforce",
+      verdict: "suppressed",
+      reason: "commitment_violation",
+      rewriteTriggered: false,
+      violationCount: 1,
+      commitmentIds: [commitmentId],
+      commitmentKinds: ["boundary"],
     });
   });
 
@@ -295,7 +346,10 @@ describe("CommitmentGuardRunner", () => {
       emit: vi.fn(),
     };
 
-    const result = await makeRunner(tracer, "enforce", { rewriteOnViolation: true }).run({
+    const result = await makeRunner(tracer, "enforce", {
+      regenerateBeforeSuppress: false,
+      rewriteOnViolation: true,
+    }).run({
       turnId: "turn-rewrite-enabled",
       llmClient: llm,
       response: "Launch is tomorrow.",

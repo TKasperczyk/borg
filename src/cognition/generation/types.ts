@@ -17,6 +17,7 @@ export type GenerationSuppressionReason =
   | "closure_pressure_only"
   | "closure_response_audit_failed_closed"
   | "commitment_violation"
+  | "commitment_violation_after_regenerate"
   | "commitment_revision_failed"
   | "internal_identifier_leak"
   | "rewrite_unsupported_or_empty";
