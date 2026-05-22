@@ -155,8 +155,10 @@ describe("ClosurePressureGuard", () => {
     expect(result.verdict).toBe("passed");
     expect(result.removed_spans).toEqual(["Go read."]);
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
-    expect(tracer.emit).toHaveBeenCalledWith(
-      "closure_response_guard.completed",
+    const closureGuardCompletedEvent = tracer.emit.mock.calls.find(
+      ([event]) => event === "closure_response_guard.completed",
+    )?.[1];
+    expect(closureGuardCompletedEvent).toEqual(
       expect.objectContaining({
         verdict: "passed",
         wouldHaveVerdict: "suppressed",
@@ -169,6 +171,9 @@ describe("ClosurePressureGuard", () => {
           }),
         ],
       }),
+    );
+    expect(closureGuardCompletedEvent).not.toHaveProperty(
+      "closure_pressure_history_reason",
     );
   });
 

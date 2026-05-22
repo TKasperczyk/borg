@@ -164,6 +164,20 @@ function createTraceRecorder(): TurnTracer & {
   };
 }
 
+function expectSingleSuccessfulRepair(
+  trace: Pick<ReturnType<typeof createTraceRecorder>, "events">,
+): void {
+  expect(
+    trace.events.filter((event) => event.event === "shared_state.compile.repair_attempted"),
+  ).toHaveLength(1);
+  expect(
+    trace.events.filter((event) => event.event === "shared_state.compile.repair_succeeded"),
+  ).toHaveLength(1);
+  expect(
+    trace.events.filter((event) => event.event === "shared_state.compile.repair_failed"),
+  ).toHaveLength(0);
+}
+
 function ledgerEntry(input: {
   streamEntryId: StreamEntryId;
   streamIndex: number;
@@ -2002,6 +2016,7 @@ describe("compileSharedStateArtifact", () => {
     expect(trace.events.some((event) => event.event === "shared_state.compile.repair_failed")).toBe(
       false,
     );
+    expectSingleSuccessfulRepair(trace);
   });
 
   it("repairs live adds that exceed the per-key active-entry cap", async () => {
@@ -2107,6 +2122,7 @@ describe("compileSharedStateArtifact", () => {
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
       ]),
     );
+    expectSingleSuccessfulRepair(trace);
   });
 
   it("repairs near-duplicate add state_keys by reusing the active key", async () => {
@@ -2193,6 +2209,7 @@ describe("compileSharedStateArtifact", () => {
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
       ]),
     );
+    expectSingleSuccessfulRepair(trace);
   });
 
   it("repairs never-seen add state_keys without new_key_reason", async () => {
@@ -2271,6 +2288,7 @@ describe("compileSharedStateArtifact", () => {
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
       ]),
     );
+    expectSingleSuccessfulRepair(trace);
   });
 
   it("repairs shared-state operations with ungrounded protected relationship labels", async () => {
@@ -2337,6 +2355,7 @@ describe("compileSharedStateArtifact", () => {
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
       ]),
     );
+    expectSingleSuccessfulRepair(trace);
   });
 
   it("degrades when compiler payload repair is still invalid", async () => {

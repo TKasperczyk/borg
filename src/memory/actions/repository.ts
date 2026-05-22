@@ -321,22 +321,28 @@ export class ActionRepository {
       });
     }
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO action_lifecycle_turn_counter (id, value)
-            VALUES ('global', ?)
-          ON CONFLICT (id) DO UPDATE SET
-            value = CASE
-              WHEN excluded.value > action_lifecycle_turn_counter.value
-              THEN excluded.value
-              ELSE action_lifecycle_turn_counter.value
-            END
-        `,
-      )
-      .run(normalized);
+    return this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO action_lifecycle_turn_counter (id, value)
+              VALUES ('global', ?)
+            ON CONFLICT (id) DO UPDATE SET
+              value = CASE
+                WHEN excluded.value > action_lifecycle_turn_counter.value
+                THEN excluded.value
+                ELSE action_lifecycle_turn_counter.value
+              END
+          `,
+        )
+        .run(normalized);
 
-    return normalized;
+      const row = this.db
+        .prepare("SELECT value FROM action_lifecycle_turn_counter WHERE id = 'global'")
+        .get() as { value: number } | undefined;
+
+      return Number(row?.value ?? normalized);
+    })();
   }
 
   private enqueueEmbeddingTask(task: Promise<void>): void {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createEntityId, createRelationalSlotId, createStreamEntryId } from "../util/ids.js";
 import { checkRelationshipLabelGrounding } from "./memory-write-relationship-gate.js";
 
 describe("checkRelationshipLabelGrounding", () => {
@@ -10,6 +11,54 @@ describe("checkRelationshipLabelGrounding", () => {
 
     expect(result.grounded).toBe(false);
     expect(result.protectedLabels).toEqual(["sibling"]);
+  });
+
+  it("rejects placeholder sibling assignments without relationship evidence", () => {
+    const result = checkRelationshipLabelGrounding({
+      text: "<person A> is <person B>'s sibling.",
+    });
+
+    expect(result.grounded).toBe(false);
+    expect(result.protectedLabels).toEqual(["sibling"]);
+  });
+
+  it("accepts placeholder sibling assignments grounded by relational slot evidence", () => {
+    const slotId = createRelationalSlotId();
+    const result = checkRelationshipLabelGrounding({
+      text: "<person A> is <person B>'s sibling.",
+      participantRoster: {
+        participants: [
+          {
+            entity_id: createEntityId(),
+            display_name: "<person A>",
+            known_relationships: ["sibling:<person B>"],
+            audience_role: "speaker",
+            relationship_source: `relational_slot:${slotId}`,
+          },
+        ],
+        non_chat_subjects: [],
+        unknown_or_uncertain: [],
+      },
+      relationshipEvidenceRelationalSlotIds: [slotId],
+    });
+
+    expect(result.grounded).toBe(true);
+    expect(result.protectedLabels).toEqual(["sibling"]);
+    expect(result.acceptedRelationalSlotIds).toEqual([slotId]);
+  });
+
+  it("accepts placeholder sibling assignments grounded by trusted user stream evidence", () => {
+    const streamEntryId = createStreamEntryId();
+    const result = checkRelationshipLabelGrounding({
+      text: "<person A> is <person B>'s sibling.",
+      relationshipEvidenceStreamEntryIds: [streamEntryId],
+      relationshipEvidenceStreamEntryTrust: (id) =>
+        id === streamEntryId ? { allowed: true } : { allowed: false, reason: "missing" },
+    });
+
+    expect(result.grounded).toBe(true);
+    expect(result.protectedLabels).toEqual(["sibling"]);
+    expect(result.acceptedStreamEntryIds).toEqual([streamEntryId]);
   });
 
   it("does not require grounding for medical context nouns", () => {

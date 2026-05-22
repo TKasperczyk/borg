@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { commitmentSchema, type CommitmentRecord } from "../../memory/commitments/index.js";
+import {
+  CommitmentRepository,
+  commitmentMigrations,
+  commitmentSchema,
+  type CommitmentRecord,
+} from "../../memory/commitments/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
+import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -238,6 +244,164 @@ describe("CorrectivePreferenceTurnService", () => {
       critical_domain: null,
       directive_family: "surface_durable_decisions",
     });
+  });
+
+  it.each([
+    {
+      label: "participant preference boundary explicit no-disclosure stays critical",
+      type: "boundary",
+      kind: "participant_preference",
+      enforcementClass: "critical",
+      criticalDomain: "explicit_no_disclosure",
+      directive:
+        "Do not disclose the deployment freeze discussion to the vendor channel.",
+      directiveFamily: "e2e_explicit_no_disclosure_boundary",
+      expectedEnforcementClass: "critical",
+      expectedCriticalDomain: "explicit_no_disclosure",
+      downgradeReason: null,
+    },
+    {
+      label: "participant preference no-disclosure preference downgrades",
+      type: "preference",
+      kind: "participant_preference",
+      enforcementClass: "critical",
+      criticalDomain: "explicit_no_disclosure",
+      directive:
+        "Prefer not to phrase deployment freeze details as something for the vendor channel.",
+      directiveFamily: "e2e_explicit_no_disclosure_preference",
+      expectedEnforcementClass: "advisory",
+      expectedCriticalDomain: null,
+      downgradeReason: "explicit_no_disclosure_without_boundary_type",
+    },
+    {
+      label: "process norm critical safety downgrades",
+      type: "rule",
+      kind: "process_norm",
+      enforcementClass: "critical",
+      criticalDomain: "safety",
+      directive: "Record future rollback decisions in the shared state before summarizing.",
+      directiveFamily: "e2e_process_norm_safety",
+      expectedEnforcementClass: "advisory",
+      expectedCriticalDomain: null,
+      downgradeReason: "process_norm_classified_critical",
+    },
+    {
+      label: "participant preference internal tool hygiene downgrades",
+      type: "preference",
+      kind: "participant_preference",
+      enforcementClass: "critical",
+      criticalDomain: "internal_tool_hygiene",
+      directive:
+        "Prefer concise references to prior notes without exposing internal tool mechanics.",
+      directiveFamily: "e2e_internal_tool_hygiene_preference",
+      expectedEnforcementClass: "advisory",
+      expectedCriticalDomain: null,
+      downgradeReason: "preference_with_internal_tool_hygiene",
+    },
+  ] as const)("persists normalized corrective classifications: $label", async (testCase) => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(2_000);
+    const commitmentRepository = new CommitmentRepository({
+      db,
+      clock,
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const userEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          type: testCase.type,
+          kind: testCase.kind,
+          enforcementClass: testCase.enforcementClass,
+          criticalDomain: testCase.criticalDomain,
+          directive: testCase.directive,
+          directiveFamily: testCase.directiveFamily,
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository,
+      identityService: {
+        addCommitment: (input) => commitmentRepository.add(input),
+      },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock,
+      tracer,
+    });
+    const turnId = `turn-${testCase.directiveFamily}`;
+
+    try {
+      const result = await service.extractAndApply({
+        llmClient: llm,
+        turnId,
+        userMessage: testCase.directive,
+        persistedUserEntryId: userEntryId,
+        recentHistory: [],
+        audienceEntityId: null,
+        sessionId: DEFAULT_SESSION_ID,
+        onHookFailure: vi.fn(),
+        trackAppliedSlotNegation: vi.fn(),
+      });
+
+      if (result.commitment === null) {
+        throw new Error("Expected corrective commitment fixture");
+      }
+
+      await service.persistCommitment({
+        commitment: result.commitment,
+        supersession: result.commitmentSupersession,
+        turnId,
+        onHookFailure: vi.fn(),
+      });
+
+      const persisted = commitmentRepository.get(result.commitment.id);
+
+      expect(persisted).toMatchObject({
+        id: result.commitment.id,
+        type: testCase.type,
+        kind: testCase.kind,
+        enforcement_class: testCase.expectedEnforcementClass,
+        critical_domain: testCase.expectedCriticalDomain,
+        directive_family: testCase.directiveFamily,
+        source_stream_entry_ids: [userEntryId],
+      });
+
+      if (testCase.downgradeReason === null) {
+        expect(tracer.emit).not.toHaveBeenCalledWith(
+          "commitment_classification.downgraded",
+          expect.anything(),
+        );
+      } else {
+        expect(tracer.emit).toHaveBeenCalledWith(
+          "commitment_classification.downgraded",
+          expect.objectContaining({
+            turnId,
+            reason: testCase.downgradeReason,
+            kind: testCase.kind,
+            type: testCase.type,
+            directive_family: testCase.directiveFamily,
+            new_enforcement_class: "advisory",
+            new_critical_domain: null,
+          }),
+        );
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it("keeps corrective candidates with medical context nouns without relationship evidence", async () => {

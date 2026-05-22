@@ -33,8 +33,12 @@ describe("relationship label tiers", () => {
 
   it("does not hard-gate medical or professional context nouns", () => {
     expect(protectedRelationshipLabelsInText("The doctor appointment is pending.")).toEqual([]);
+    expect(protectedRelationshipLabelsInText("Mom's doctor scheduled the appointment.")).toEqual(
+      [],
+    );
     expect(protectedRelationshipLabelsInText("No doctor calls this week.")).toEqual([]);
     expect(protectedRelationshipLabelsInText("The patient portal is down.")).toEqual([]);
+    expect(protectedRelationshipLabelsInText("Patient portal is broken.")).toEqual([]);
     expect(protectedRelationshipLabelsInText("Patient paperwork is waiting.")).toEqual([]);
     expect(
       protectedRelationshipLabelsInText("I haven't booked the dentist appointment yet."),

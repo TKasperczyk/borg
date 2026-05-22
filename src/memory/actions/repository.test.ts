@@ -236,6 +236,45 @@ describe("ActionRepository", () => {
     }
   });
 
+  it("returns the effective stored lifecycle counter when ensuring global turn values", () => {
+    const db = openDatabase(":memory:", {
+      migrations: actionMigrations,
+    });
+    const repository = new ActionRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    const setCounter = (value: number) => {
+      db.prepare(
+        `
+          INSERT INTO action_lifecycle_turn_counter (id, value)
+            VALUES ('global', ?)
+          ON CONFLICT (id) DO UPDATE SET value = excluded.value
+        `,
+      ).run(value);
+    };
+    const counterValue = () =>
+      (
+        db
+          .prepare("SELECT value FROM action_lifecycle_turn_counter WHERE id = 'global'")
+          .get() as { value: number }
+      ).value;
+
+    try {
+      setCounter(100);
+
+      expect(repository.ensureLifecycleTurnGlobal(10)).toBe(100);
+      expect(counterValue()).toBe(100);
+
+      setCounter(50);
+
+      expect(repository.ensureLifecycleTurnGlobal(200)).toBe(200);
+      expect(counterValue()).toBe(200);
+    } finally {
+      db.close();
+    }
+  });
+
   it("adds, gets, updates, and lists action records by state actor and audience", async () => {
     const repository = await openFixture();
     const audienceEntityId = createEntityId();
