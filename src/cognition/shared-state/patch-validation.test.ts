@@ -129,7 +129,7 @@ describe("normalizePatch state_key validation", () => {
             stateKey: "plan.attendees",
             sourceStreamEntryId,
           }),
-          text: "Priya is Avery's partner for care-planning context.",
+          text: "Priya is Avery's spouse for care-planning context.",
         },
       ],
     });
@@ -140,9 +140,36 @@ describe("normalizePatch state_key validation", () => {
         reason: "relationship_label_ungrounded",
         operationType: "add",
         operationIndex: 0,
-        protectedRelationshipLabels: ["partner"],
+        protectedRelationshipLabels: ["spouse"],
         relationshipEvidenceRelationalSlotIds: [],
         relationshipEvidenceStreamEntryIds: [],
+      }),
+    ]);
+  });
+
+  it("accepts contextual role labels without relationship grounding evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.rollout",
+            sourceStreamEntryId,
+          }),
+          text: "The design partner and rollout owner are tracked for this project.",
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "The design partner and rollout owner are tracked for this project.",
       }),
     ]);
   });
@@ -160,7 +187,7 @@ describe("normalizePatch state_key validation", () => {
           {
             entity_id: audienceEntityId,
             display_name: "Avery",
-            known_relationships: ["partner.name:Priya"],
+            known_relationships: ["spouse.name:Priya"],
             audience_role: "audience",
             relationship_source: `relational_slot:${slotId}`,
           },
@@ -174,7 +201,7 @@ describe("normalizePatch state_key validation", () => {
             stateKey: "plan.attendees",
             sourceStreamEntryId,
           }),
-          text: "Priya is Avery's partner for care-planning context.",
+          text: "Priya is Avery's spouse for care-planning context.",
           relationship_evidence_relational_slot_ids: [slotId],
         },
       ],
@@ -184,7 +211,7 @@ describe("normalizePatch state_key validation", () => {
     expect(result.operations).toEqual([
       expect.objectContaining({
         type: "add",
-        text: "Priya is Avery's partner for care-planning context.",
+        text: "Priya is Avery's spouse for care-planning context.",
       }),
     ]);
   });
@@ -519,13 +546,83 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("rejects a never-seen state key without new_key_reason", () => {
+  it("rejects a near-duplicate key accumulated within an empty-registry patch", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const result = normalizeKeyedPatch({
       audienceEntityId,
       sourceStreamEntryId,
       previousEntries: [],
+      operations: [
+        addOperation({
+          stateKey: "observation.nora.video_call_repeated_question",
+          sourceStreamEntryId,
+          newKeyReason: null,
+        }),
+        addOperation({
+          stateKey: "observation.nora.video_call_repeated_question_reconfirm",
+          sourceStreamEntryId,
+          newKeyReason: null,
+        }),
+      ],
+    });
+
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "observation.nora.video_call_repeated_question",
+      }),
+    ]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "near_duplicate_state_key",
+        operationType: "add",
+        operationIndex: 1,
+        stateKey: "observation.nora.video_call_repeated_question_reconfirm",
+        similarStateKeys: ["observation.nora.video_call_repeated_question"],
+      }),
+    ]);
+  });
+
+  it("accepts a never-seen state key without new_key_reason when the active registry is empty", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        addOperation({
+          stateKey: "decision.architecture",
+          sourceStreamEntryId,
+          newKeyReason: null,
+        }),
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "decision.architecture",
+      }),
+    ]);
+  });
+
+  it("rejects a never-seen state key without new_key_reason when the active registry is populated", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [
+        makeEntry({
+          audienceEntityId,
+          sourceStreamEntryId,
+          stateKey: "plan.attendees",
+          rank: 0,
+        }),
+      ],
       operations: [
         addOperation({
           stateKey: "decision.architecture",

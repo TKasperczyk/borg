@@ -27,7 +27,8 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
 
   it("includes relationship-label grounding guidance", () => {
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("Relationship label grounding");
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("sibling, partner, spouse");
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("direct evidence supports it");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("sibling, spouse, parent");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("partner, manager, owner");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("direct evidence supports");
   });
 });

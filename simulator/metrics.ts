@@ -275,6 +275,7 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_compiler_repair_attempted_total"
   | "shared_state_compiler_repair_succeeded_total"
   | "shared_state_compiler_repair_failed_total"
+  | "shared_state_compiler_repair_failed_by_rejection_reason"
   | "shared_state_compiler_operations_total_by_kind"
   | "shared_state_add_to_update_ratio"
   | "shared_state_entries_by_key"
@@ -1137,6 +1138,44 @@ function latestSharedStateTraceNumber(traceRecords: readonly TraceRecord[], key:
   return latest === undefined ? 0 : traceNumber(latest, key);
 }
 
+function sharedStateCompilerRepairFailedReasons(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const failedTurnIds = new Set(
+    traceRecords
+      .filter((record) => record.event === "shared_state.compile.repair_failed")
+      .map((record) => traceString(record, "turnId"))
+      .filter((turnId): turnId is string => turnId !== null),
+  );
+  const counts: Record<string, number> = {};
+
+  for (const record of traceRecords) {
+    if (
+      record.event !== "shared_state.compile.completed" ||
+      record.applied !== false ||
+      failedTurnIds.size === 0
+    ) {
+      continue;
+    }
+
+    const turnId = traceString(record, "turnId");
+
+    if (turnId === null || !failedTurnIds.has(turnId)) {
+      continue;
+    }
+
+    const reasons = traceStringArray(record, "rejectionReasons");
+
+    for (const reason of reasons.length === 0 ? ["unknown"] : reasons) {
+      counts[reason] = (counts[reason] ?? 0) + 1;
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 function sharedStateCompilerHealthMetrics(
   traceRecords: readonly TraceRecord[],
   turnId: string,
@@ -1163,6 +1202,8 @@ function sharedStateCompilerHealthMetrics(
     shared_state_compiler_repair_failed_total: traceRecords.filter(
       (record) => record.event === "shared_state.compile.repair_failed",
     ).length,
+    shared_state_compiler_repair_failed_by_rejection_reason:
+      sharedStateCompilerRepairFailedReasons(traceRecords),
     shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
     shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
     shared_state_entries_by_key: latestSharedStateEntriesByKey(traceRecords),
@@ -2760,6 +2801,8 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_succeeded_total,
       shared_state_compiler_repair_failed_total:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
+      shared_state_compiler_repair_failed_by_rejection_reason:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -3127,6 +3170,8 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_succeeded_total,
       shared_state_compiler_repair_failed_total:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
+      shared_state_compiler_repair_failed_by_rejection_reason:
+        sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,

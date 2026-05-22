@@ -304,6 +304,7 @@ function metricsRow(turn: number): MetricsRow {
     shared_state_compiler_repair_attempted_total: 0,
     shared_state_compiler_repair_succeeded_total: 0,
     shared_state_compiler_repair_failed_total: 0,
+    shared_state_compiler_repair_failed_by_rejection_reason: {},
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,

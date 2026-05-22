@@ -57,14 +57,14 @@ const relationshipEvidenceRelationalSlotIdsSchema = z
   .array(z.string().trim().min(1))
   .default([])
   .describe(
-    "Grounded relational slot ids supporting any protected relationship label in the directive.",
+    "Grounded relational slot ids supporting any strict relationship label in the directive.",
   );
 
 const relationshipEvidenceStreamEntryIdsSchema = z
   .array(correctivePreferenceStreamEntryIdSchema)
   .default([])
   .describe(
-    "Trusted user-message stream entry ids supporting any protected relationship label in the directive.",
+    "Trusted user-message stream entry ids supporting any strict relationship label in the directive.",
   );
 
 const slotNegationSchema = z

@@ -65,13 +65,13 @@ const relationshipEvidenceRelationalSlotIdsSchema = z
   .array(z.string().trim().min(1))
   .optional()
   .describe(
-    "Grounded relational slot ids supporting any protected relationship label in this operation text.",
+    "Grounded relational slot ids supporting any strict relationship label in this operation text.",
   );
 const relationshipEvidenceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .optional()
   .describe(
-    "Trusted user-message stream entry ids supporting any protected relationship label in this operation text.",
+    "Trusted user-message stream entry ids supporting any strict relationship label in this operation text.",
   );
 const stateKeySchema = z
   .string()

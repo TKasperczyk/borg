@@ -528,6 +528,7 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_compiler_repair_attempted_total: 0,
     shared_state_compiler_repair_succeeded_total: 0,
     shared_state_compiler_repair_failed_total: 0,
+    shared_state_compiler_repair_failed_by_rejection_reason: {},
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
@@ -768,6 +769,10 @@ describe("SimulatorRunner", () => {
         shared_state_compiler_repair_attempted_total: 3,
         shared_state_compiler_repair_succeeded_total: 2,
         shared_state_compiler_repair_failed_total: 1,
+        shared_state_compiler_repair_failed_by_rejection_reason: {
+          missing_new_key_reason: 1,
+          relationship_label_ungrounded: 2,
+        },
         shared_state_compiler_operations_total_by_kind: {
           add: 5,
           update: 1,
@@ -828,6 +833,9 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Shared-state compiler max-token stops: 1");
     expect(report).toContain("Shared-state compiler degraded events: 2");
     expect(report).toContain("Shared-state compiler repair: attempted 3, succeeded 2, failed 1");
+    expect(report).toContain(
+      "Shared-state repair failures by reason: missing_new_key_reason=1, relationship_label_ungrounded=2",
+    );
     expect(report).toContain(
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );

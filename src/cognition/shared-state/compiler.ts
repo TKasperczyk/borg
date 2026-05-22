@@ -278,7 +278,7 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
       if (rejection.reason === "relationship_label_ungrounded") {
         return [
           `operation ${rejection.operationIndex} ${rejection.operationType}`,
-          `uses protected relationship label ${rejection.protectedRelationshipLabels?.join(", ") || "unknown"}`,
+          `uses strict relationship label ${rejection.protectedRelationshipLabels?.join(", ") || "unknown"}`,
           "include relationship_evidence_relational_slot_ids or relationship_evidence_stream_entry_ids, or rewrite the entry neutrally",
         ].join("; ");
       }

@@ -39,6 +39,7 @@ import type {
 import { parseSourceStreamEntryIds } from "./source-trust.js";
 import { sharedStateKeyTokens, stateKeysAreNearDuplicate } from "./state-key.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
+import { buildExistingStateKeyRegistry } from "./summary.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
 
@@ -405,6 +406,7 @@ export function normalizePatch(input: {
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const baseRank = input.previousArtifact?.entries.length ?? 0;
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
+  const initialActiveStateKeyCount = buildExistingStateKeyRegistry(input.previousArtifact).length;
 
   const relationshipLabelRejection = (
     operation: Extract<ParsedPatchOperation, { type: "add" | "update" | "supersede" }>,
@@ -510,7 +512,7 @@ export function normalizePatch(input: {
         });
       }
 
-      if (operation.new_key_reason === undefined) {
+      if (initialActiveStateKeyCount > 0 && operation.new_key_reason === undefined) {
         return rejection(operation, operationIndex, "missing_new_key_reason", {
           stateKey: operation.state_key,
         });

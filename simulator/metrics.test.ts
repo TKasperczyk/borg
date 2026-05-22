@@ -216,6 +216,7 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_compiler_repair_attempted_total",
   "shared_state_compiler_repair_succeeded_total",
   "shared_state_compiler_repair_failed_total",
+  "shared_state_compiler_repair_failed_by_rejection_reason",
   "capability_overclaim_count",
   "capability_ambiguity_count",
   "capability_boundary_refusal_count",
@@ -1044,6 +1045,11 @@ describe("MetricsCapture", () => {
           event: "shared_state.compile.repair_succeeded",
         },
         {
+          ts: 101.3,
+          turnId: "turn-compiler-failed",
+          event: "shared_state.compile.repair_failed",
+        },
+        {
           ts: 102,
           turnId: "turn-compiler-1",
           event: "shared_state.compile.completed",
@@ -1104,6 +1110,12 @@ describe("MetricsCapture", () => {
           turnId: "turn-compiler-failed",
           event: "shared_state.compile.completed",
           applied: false,
+          rejectedCount: 3,
+          rejectionReasons: [
+            "missing_new_key_reason",
+            "relationship_label_ungrounded",
+            "relationship_label_ungrounded",
+          ],
           operation_counts_by_kind: {
             add: 9,
             update: 0,
@@ -1168,7 +1180,11 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_compiler_degraded_total).toBe(1);
     expect(row.shared_state_compiler_repair_attempted_total).toBe(1);
     expect(row.shared_state_compiler_repair_succeeded_total).toBe(1);
-    expect(row.shared_state_compiler_repair_failed_total).toBe(0);
+    expect(row.shared_state_compiler_repair_failed_total).toBe(1);
+    expect(row.shared_state_compiler_repair_failed_by_rejection_reason).toEqual({
+      missing_new_key_reason: 1,
+      relationship_label_ungrounded: 2,
+    });
     expect(row.shared_state_compiler_operations_total_by_kind).toEqual({
       add: 5,
       update: 1,

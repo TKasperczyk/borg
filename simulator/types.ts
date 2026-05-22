@@ -202,6 +202,7 @@ export type MetricsRow = {
   shared_state_compiler_repair_attempted_total: number;
   shared_state_compiler_repair_succeeded_total: number;
   shared_state_compiler_repair_failed_total: number;
+  shared_state_compiler_repair_failed_by_rejection_reason: Record<string, number>;
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
   capability_boundary_refusal_count: number;

@@ -2197,6 +2197,21 @@ describe("compileSharedStateArtifact", () => {
 
   it("repairs never-seen add state_keys without new_key_reason", async () => {
     const trace = createTraceRecorder();
+    repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "decision.existing",
+          kind: "locked",
+          text: "Existing shared-state key.",
+          provenance_stream_entry_ids: [currentStreamEntryId],
+        },
+      ],
+      {
+        lastCompiledStreamEntryId: currentStreamEntryId,
+      },
+    );
     const llmClient = new FakeLLMClient({
       responses: [
         emitRawSharedStateArtifactPatchResponse({
