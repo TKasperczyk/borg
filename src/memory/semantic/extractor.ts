@@ -163,7 +163,7 @@ function buildPrompt(input: {
     RELATIONSHIP_LABELS_PROMPT,
     RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
     HEADCOUNT_SET_GROUNDING_PROMPT,
-    "When a node label or description uses a strict relationship label, fill relationship_evidence_relational_slot_ids with a supplied grounded relational slot id, or relationship_evidence_stream_entry_ids with a supplied direct user-message stream entry id. Do not cite assistant output as relationship evidence. If neither supplied evidence type grounds it, rewrite the node neutrally before emitting it.",
+    "When a node label or description assigns a strict kinship or caregiver role, fill relationship_evidence_relational_slot_ids with a supplied grounded relational slot id, or relationship_evidence_stream_entry_ids with a supplied direct user-message stream entry id. Do not cite assistant output as relationship evidence. If neither supplied evidence type grounds it, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",

@@ -240,6 +240,54 @@ describe("CorrectivePreferenceTurnService", () => {
     });
   });
 
+  it("keeps corrective candidates with medical context nouns without relationship evidence", async () => {
+    const userEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          directive:
+            "Do not mark the doctor appointment as booked until the user confirms it, and mention patient portal issues as administrative status.",
+          directiveFamily: "appointment_status_confirmation",
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-medical-context-noun-commitment",
+      userMessage: "Keep appointment status precise.",
+      persistedUserEntryId: userEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      directive_family: "appointment_status_confirmation",
+    });
+  });
+
   it("skips corrective candidates with ungrounded protected relationship labels", async () => {
     const userEntryId = createStreamEntryId();
     const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };

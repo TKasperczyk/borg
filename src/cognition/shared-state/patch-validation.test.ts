@@ -129,7 +129,7 @@ describe("normalizePatch state_key validation", () => {
             stateKey: "plan.attendees",
             sourceStreamEntryId,
           }),
-          text: "Priya is Avery's spouse for care-planning context.",
+          text: "Mom's spouse is asleep.",
         },
       ],
     });
@@ -170,6 +170,33 @@ describe("normalizePatch state_key validation", () => {
       expect.objectContaining({
         type: "add",
         text: "The design partner and rollout owner are tracked for this project.",
+      }),
+    ]);
+  });
+
+  it("accepts medical and professional context nouns without relationship grounding evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        {
+          ...addOperation({
+            stateKey: "plan.appointments",
+            sourceStreamEntryId,
+          }),
+          text: "Doctor appointment is pending; patient portal is down; dentist appointment is not booked.",
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        text: "Doctor appointment is pending; patient portal is down; dentist appointment is not booked.",
       }),
     ]);
   });

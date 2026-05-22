@@ -572,9 +572,9 @@ describe("semantic extractor", () => {
     );
   });
 
-  it("inserts semantic nodes without protected relationship labels as before", async () => {
+  it("inserts semantic nodes without protected relationship labels, including service context nouns", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
-    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Rollback plan");
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Appointment logistics");
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
       nodeRepository,
@@ -587,8 +587,8 @@ describe("semantic extractor", () => {
             nodes: [
               {
                 kind: "concept",
-                label: "Rollback",
-                description: "Rollback plan",
+                label: "Doctor appointment",
+                description: "Patient portal paperwork is pending.",
                 aliases: [],
                 confidence: 0.6,
                 source_episode_ids: [episode.id],
@@ -610,7 +610,7 @@ describe("semantic extractor", () => {
       insertedNodes: 1,
       skippedNodes: 0,
     });
-    expect(nodes.map((node) => node.label)).toContain("Rollback");
+    expect(nodes.map((node) => node.label)).toContain("Doctor appointment");
     expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 

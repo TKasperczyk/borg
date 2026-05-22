@@ -8,6 +8,7 @@ import type {
 } from "../../memory/decision-artifacts/index.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
+import { PROTECTED_RELATIONSHIP_LABELS } from "../prompts/relationship-labels.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import {
   mergeSemanticBeliefRevisionResult,
@@ -54,10 +55,7 @@ import {
 import { errorMessage } from "./reconciliation-summary.js";
 import { applySharedStateArtifactLifecycleCap, expandPruneDependencies } from "./lifecycle-cap.js";
 import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candidates.js";
-import {
-  buildExistingStateKeyRegistry,
-  buildSharedStateArtifactPromptSummary,
-} from "./summary.js";
+import { buildExistingStateKeyRegistry, buildSharedStateArtifactPromptSummary } from "./summary.js";
 
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
@@ -276,10 +274,14 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
       }
 
       if (rejection.reason === "relationship_label_ungrounded") {
+        const strictLabels = PROTECTED_RELATIONSHIP_LABELS.join(", ");
         return [
           `operation ${rejection.operationIndex} ${rejection.operationType}`,
           `uses strict relationship label ${rejection.protectedRelationshipLabels?.join(", ") || "unknown"}`,
-          "include relationship_evidence_relational_slot_ids or relationship_evidence_stream_entry_ids, or rewrite the entry neutrally",
+          `strict labels are ${strictLabels}`,
+          "if the label refers to a person-to-person role assignment, add relationship_evidence_relational_slot_ids citing a supplied relational slot, or relationship_evidence_stream_entry_ids citing a supplied trusted user message",
+          "if the strict label appears incidental or as part of a context noun phrase, rewrite the operation to remove or replace the strict term with a generic noun such as family member, partner, or helper",
+          "if the meaning belongs in another operation shape, re-emit it as a different operation kind that does not carry the strict assignment",
         ].join("; ");
       }
 
