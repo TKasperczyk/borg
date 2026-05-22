@@ -79,6 +79,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "extraction.commitments.degraded",
     "extraction.commitments.rejected",
     "extraction.commitments.transitioned",
+    "commitment_classification.downgraded",
     "corrective_preference.candidate_rejected_ungrounded",
     "extraction.actions.rejected",
     "extraction.actions.completed",

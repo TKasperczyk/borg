@@ -209,8 +209,14 @@ function metricsRow(turn: number): MetricsRow {
       critical: 0,
       advisory: 0,
     },
+    critical_commitments_by_kind_type_domain:
+      {} as MetricsRow["critical_commitments_by_kind_type_domain"],
     commitments_advisory_count: 0,
     commitments_critical_count: 0,
+    commitments_critical_classification_downgraded_total: 0,
+    commitments_critical_classification_downgraded_by_reason:
+      {} as MetricsRow["commitments_critical_classification_downgraded_by_reason"],
+    commitments_critical_classification_downgraded_by_kind_type_from_domain: {},
     commitment_count_superseded: 0,
     commitment_count_revoked: 0,
     commitment_count_expired: 0,

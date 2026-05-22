@@ -265,6 +265,7 @@ export {
   COMMITMENT_CRITICAL_DOMAINS,
   COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
+  COMMITMENT_TYPES,
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
   type CommitmentCriticalDomain,

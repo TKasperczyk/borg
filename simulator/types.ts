@@ -8,9 +8,12 @@ import type {
   ReviewKind,
   SemanticNodeStatus,
   SessionId,
+  CommitmentCriticalDomain,
   CommitmentEnforcementClass,
   CommitmentKind,
+  CommitmentType,
 } from "../src/index.js";
+import type { ClassificationDowngradeReason } from "../src/cognition/commitments/classification-normalizer.js";
 
 export type GoalPromotionClassificationMetricKey =
   | GoalPromotionClassification
@@ -115,8 +118,18 @@ export type MetricsRow = {
   commitment_count_active: number;
   commitment_count_active_by_kind: Record<CommitmentKind, number>;
   commitments_by_enforcement_class: Record<CommitmentEnforcementClass, number>;
+  critical_commitments_by_kind_type_domain: Record<
+    CommitmentKind,
+    Record<CommitmentType, Record<CommitmentCriticalDomain, number>>
+  >;
   commitments_advisory_count: number;
   commitments_critical_count: number;
+  commitments_critical_classification_downgraded_total: number;
+  commitments_critical_classification_downgraded_by_reason: Record<
+    ClassificationDowngradeReason,
+    number
+  >;
+  commitments_critical_classification_downgraded_by_kind_type_from_domain: Record<string, number>;
   commitment_count_superseded: number;
   // These lifecycle counts are not mutually exclusive: commitments canonicalized
   // through the shared state are revoked by design.

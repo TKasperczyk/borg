@@ -7,16 +7,22 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_CRITICAL_DOMAINS,
   COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
+  COMMITMENT_TYPES,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   ManualClock,
   createSessionId,
   type ActionRecord,
   type Borg,
+  type CommitmentCriticalDomain,
+  type CommitmentKind,
+  type CommitmentType,
   type SessionId,
 } from "../src/index.js";
+import { CLASSIFICATION_DOWNGRADE_REASONS } from "../src/cognition/commitments/classification-normalizer.js";
 import type { EmbeddingClient } from "../src/embeddings/index.js";
 import { ActionRepository } from "../src/memory/actions/index.js";
 import { actionMigrations } from "../src/memory/actions/migrations.js";
@@ -136,8 +142,12 @@ const TURN_METRICS_KEY_ORDER = [
   "commitment_count_active",
   "commitment_count_active_by_kind",
   "commitments_by_enforcement_class",
+  "critical_commitments_by_kind_type_domain",
   "commitments_advisory_count",
   "commitments_critical_count",
+  "commitments_critical_classification_downgraded_total",
+  "commitments_critical_classification_downgraded_by_reason",
+  "commitments_critical_classification_downgraded_by_kind_type_from_domain",
   "commitment_count_superseded",
   "commitment_count_revoked",
   "commitment_count_expired",
@@ -258,6 +268,20 @@ function tempDir(): string {
 
 function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
   return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
+}
+
+function zeroCriticalCommitmentsByKindTypeDomain(): Record<
+  CommitmentKind,
+  Record<CommitmentType, Record<CommitmentCriticalDomain, number>>
+> {
+  return Object.fromEntries(
+    COMMITMENT_KINDS.map((kind) => [
+      kind,
+      Object.fromEntries(
+        COMMITMENT_TYPES.map((type) => [type, zeroCounts(COMMITMENT_CRITICAL_DOMAINS)]),
+      ),
+    ]),
+  ) as Record<CommitmentKind, Record<CommitmentType, Record<CommitmentCriticalDomain, number>>>;
 }
 
 function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
@@ -2570,8 +2594,18 @@ describe("MetricsCapture", () => {
         advisory: 1,
         critical: 1,
       });
+      const criticalCommitmentBreakdown = zeroCriticalCommitmentsByKindTypeDomain();
+      criticalCommitmentBreakdown.audience_rule.rule.audience_scope = 1;
+      expect(row.critical_commitments_by_kind_type_domain).toEqual(criticalCommitmentBreakdown);
       expect(row.commitments_advisory_count).toBe(1);
       expect(row.commitments_critical_count).toBe(1);
+      expect(row.commitments_critical_classification_downgraded_total).toBe(0);
+      expect(row.commitments_critical_classification_downgraded_by_reason).toEqual(
+        zeroCounts(CLASSIFICATION_DOWNGRADE_REASONS),
+      );
+      expect(row.commitments_critical_classification_downgraded_by_kind_type_from_domain).toEqual(
+        {},
+      );
       expect(row.commitment_count_superseded).toBe(1);
       expect(row.commitment_count_revoked).toBe(2);
       expect(row.commitment_count_expired).toBe(1);
@@ -2594,6 +2628,69 @@ describe("MetricsCapture", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("counts commitment classification downgrade trace events", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-downgrade-1",
+          event: "commitment_classification.downgraded",
+          original_enforcement_class: "critical",
+          original_critical_domain: "internal_tool_hygiene",
+          new_enforcement_class: "advisory",
+          new_critical_domain: null,
+          reason: "preference_with_internal_tool_hygiene",
+          kind: "participant_preference",
+          type: "preference",
+          directive_family: "surface_durable_decisions",
+        },
+        {
+          ts: 101,
+          turnId: "turn-downgrade-2",
+          event: "commitment_classification.downgraded",
+          original_enforcement_class: "critical",
+          original_critical_domain: "explicit_no_disclosure",
+          new_enforcement_class: "advisory",
+          new_critical_domain: null,
+          reason: "explicit_no_disclosure_without_boundary_kind",
+          kind: "participant_preference",
+          type: "preference",
+          directive_family: "owner_decides_wording",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-downgrade-2",
+      2,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.commitments_critical_classification_downgraded_total).toBe(2);
+    expect(row.commitments_critical_classification_downgraded_by_reason).toEqual({
+      ...zeroCounts(CLASSIFICATION_DOWNGRADE_REASONS),
+      preference_with_internal_tool_hygiene: 1,
+      explicit_no_disclosure_without_boundary_kind: 1,
+    });
+    expect(row.commitments_critical_classification_downgraded_by_kind_type_from_domain).toEqual({
+      "participant_preference/preference/explicit_no_disclosure": 1,
+      "participant_preference/preference/internal_tool_hygiene": 1,
+    });
   });
 
   it("emits checkpoint duplicate-pressure traces without merging action records", async () => {

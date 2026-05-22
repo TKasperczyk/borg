@@ -194,6 +194,104 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(llm.requests).toHaveLength(1);
   });
 
+  it("normalizes suspicious critical classifications before emitting a candidate", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          kind: "participant_preference",
+          enforcement_class: "critical",
+          critical_domain: "internal_tool_hygiene",
+          directive:
+            "Surface durable decisions and held context in explicit language at natural wrap points.",
+          directive_family: "surface_durable_decisions",
+          closure_pressure_relevance: "neutral",
+          priority: 8,
+          reason: "The user gave durable process presentation guidance.",
+          confidence: 0.91,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await expect(
+      extractor.extract({
+        userMessage:
+          "From now on, surface durable decisions and held context explicitly at wrap points.",
+        recentHistory: [],
+        audienceEntityId: createEntityId(),
+        activeCommitments: [],
+      }),
+    ).resolves.toMatchObject({
+      type: "preference",
+      kind: "participant_preference",
+      enforcement_class: "advisory",
+      critical_domain: null,
+      directive_family: "surface_durable_decisions",
+    });
+  });
+
+  it("traces classification downgrades without directive text", async () => {
+    const emit = vi.fn();
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit,
+    } satisfies TurnTracer;
+    const directive = "Hold working decisions as durable log entries.";
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          kind: "process_norm",
+          enforcement_class: "critical",
+          critical_domain: "internal_tool_hygiene",
+          directive,
+          directive_family: "hold_working_decisions",
+          closure_pressure_relevance: "neutral",
+          priority: 8,
+          reason: "The user gave durable state-management guidance.",
+          confidence: 0.9,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-classification-downgrade",
+    });
+
+    await extractor.extract({
+      userMessage: "Hold these working decisions as durable log entries.",
+      recentHistory: [],
+      audienceEntityId: createEntityId(),
+      activeCommitments: [],
+    });
+
+    expect(emit).toHaveBeenCalledWith("commitment_classification.downgraded", {
+      turnId: "turn-classification-downgrade",
+      original_enforcement_class: "critical",
+      original_critical_domain: "internal_tool_hygiene",
+      new_enforcement_class: "advisory",
+      new_critical_domain: null,
+      reason: "process_norm_classified_critical",
+      kind: "process_norm",
+      type: "rule",
+      directive_family: "hold_working_decisions",
+    });
+    const downgradePayload = emit.mock.calls.find(
+      ([event]) => event === "commitment_classification.downgraded",
+    )?.[1];
+    expect(downgradePayload).not.toHaveProperty("directive");
+    expect(JSON.stringify(downgradePayload)).not.toContain(directive);
+  });
+
   it("traces corrective preference extractor LLM calls on success", async () => {
     const emit = vi.fn();
     const tracer = {

@@ -20,6 +20,16 @@ type AddCommitmentInput = Parameters<IdentityService["addCommitment"]>[0];
 function correctivePreferenceResponse(
   input: {
     supersedesCommitmentId?: CommitmentId | null;
+    type?: "preference" | "rule" | "boundary";
+    kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm";
+    enforcementClass?: "critical" | "advisory";
+    criticalDomain?:
+      | "privacy"
+      | "audience_scope"
+      | "safety"
+      | "explicit_no_disclosure"
+      | "internal_tool_hygiene"
+      | null;
     directive?: string;
     directiveFamily?: string;
     relationshipEvidenceRelationalSlotIds?: string[];
@@ -37,10 +47,10 @@ function correctivePreferenceResponse(
         name: "EmitCorrectivePreference",
         input: {
           classification: "corrective_preference",
-          type: "preference",
-          kind: "participant_preference",
-          enforcement_class: "advisory",
-          critical_domain: null,
+          type: input.type ?? "preference",
+          kind: input.kind ?? "participant_preference",
+          enforcement_class: input.enforcementClass ?? "advisory",
+          critical_domain: input.criticalDomain ?? null,
           directive: input.directive ?? "Keep Alice's trip tasks separate from the group channel.",
           directive_family: input.directiveFamily ?? "separate_trip_tasks",
           closure_pressure_relevance: "neutral",
@@ -171,6 +181,63 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
+  });
+
+  it("applies classification normalization before building a corrective commitment", async () => {
+    const userEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          type: "preference",
+          kind: "participant_preference",
+          enforcementClass: "critical",
+          criticalDomain: "internal_tool_hygiene",
+          directive:
+            "Surface durable decisions and held context in explicit language at natural wrap points.",
+          directiveFamily: "surface_durable_decisions",
+        }),
+      ],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-compaction-style-commitment",
+      userMessage:
+        "From now on, surface durable decisions and held context explicitly at wrap points.",
+      persistedUserEntryId: userEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      kind: "participant_preference",
+      type: "preference",
+      enforcement_class: "advisory",
+      critical_domain: null,
+      directive_family: "surface_durable_decisions",
+    });
   });
 
   it("skips corrective candidates with ungrounded protected relationship labels", async () => {

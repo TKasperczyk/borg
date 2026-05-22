@@ -59,6 +59,7 @@ export type TurnTraceEventName =
   | "extraction.commitments.degraded"
   | "extraction.commitments.rejected"
   | "extraction.commitments.transitioned"
+  | "commitment_classification.downgraded"
   | "corrective_preference.candidate_rejected_ungrounded"
   | "extraction.actions.rejected"
   | "action_persistence.dedup.skipped"

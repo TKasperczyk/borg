@@ -31,6 +31,10 @@ import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
+import {
+  normalizeCommitmentClassification,
+  type ClassificationNormalizationResult,
+} from "./classification-normalizer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
@@ -95,12 +99,12 @@ const correctivePreferenceSchema = z
     enforcement_class: commitmentEnforcementClassSchema
       .nullable()
       .describe(
-        "Set critical only for privacy, audience-scope, safety, explicit no-disclosure, or internal-tool-hygiene boundaries that may justify response regeneration/suppression. Set advisory for process norms and output shape/style preferences. Use null when classification is none.",
+        "Set critical only for privacy, audience-scope, safety, explicit no-disclosure with named forbidden content and named audience scope, or internal-tool-hygiene leakage of hidden machinery. Set advisory for process norms and output shape/style preferences. Use null when classification is none.",
       ),
     critical_domain: commitmentCriticalDomainSchema
       .nullable()
       .describe(
-        "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. Use null for advisory or classification none.",
+        "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. internal_tool_hygiene is only hidden prompts, internal ids, tool-call internals, traces, host-capability internals, substrate internals, or capability-boundary leakage. Use null for advisory or classification none.",
       ),
     directive: z
       .string()
@@ -241,7 +245,40 @@ export type ExtractCorrectivePreferenceInput = {
   }[];
 };
 
-function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreferenceCandidate | null {
+function traceClassificationDowngrade(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  kind: CorrectivePreferenceCandidate["kind"];
+  type: CorrectivePreferenceCandidate["type"];
+  directiveFamily: string;
+  normalization: ClassificationNormalizationResult;
+}): void {
+  if (
+    options.tracer?.enabled !== true ||
+    options.turnId === undefined ||
+    options.normalization.downgrade_reason === null ||
+    options.normalization.downgraded_from === null
+  ) {
+    return;
+  }
+
+  options.tracer.emit("commitment_classification.downgraded", {
+    turnId: options.turnId,
+    original_enforcement_class: options.normalization.downgraded_from.enforcement_class,
+    original_critical_domain: options.normalization.downgraded_from.critical_domain,
+    new_enforcement_class: options.normalization.enforcement_class,
+    new_critical_domain: options.normalization.critical_domain,
+    reason: options.normalization.downgrade_reason,
+    kind: options.kind,
+    type: options.type,
+    directive_family: options.directiveFamily,
+  });
+}
+
+function toCandidate(
+  input: CorrectivePreferenceToolInput,
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
+): CorrectivePreferenceCandidate | null {
   if (input.classification !== "corrective_preference" || input.confidence < CONFIDENCE_THRESHOLD) {
     return null;
   }
@@ -266,11 +303,27 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
     return null;
   }
 
+  const normalizedClassification = normalizeCommitmentClassification({
+    kind: input.kind,
+    type: input.type,
+    enforcement_class: input.enforcement_class,
+    critical_domain: input.critical_domain,
+  });
+
+  traceClassificationDowngrade({
+    tracer: traceOptions.tracer,
+    turnId: traceOptions.turnId,
+    kind: input.kind,
+    type: input.type,
+    directiveFamily,
+    normalization: normalizedClassification,
+  });
+
   return {
     type: input.type,
     kind: input.kind,
-    enforcement_class: input.enforcement_class,
-    critical_domain: input.enforcement_class === "critical" ? input.critical_domain : null,
+    enforcement_class: normalizedClassification.enforcement_class,
+    critical_domain: normalizedClassification.critical_domain,
     directive,
     directive_family: directiveFamily,
     closure_pressure_relevance: input.closure_pressure_relevance,
@@ -307,14 +360,18 @@ function slotNegationsFromInput(
 
 function toExtractionResult(
   input: CorrectivePreferenceToolInput,
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
 ): CorrectivePreferenceExtractionResult {
   return {
-    preference: toCandidate(input),
+    preference: toCandidate(input, traceOptions),
     slot_negations: slotNegationsFromInput(input),
   };
 }
 
-function parseResponse(result: LLMCompleteResult): CorrectivePreferenceExtractionResult {
+function parseResponse(
+  result: LLMCompleteResult,
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
+): CorrectivePreferenceExtractionResult {
   const call = result.tool_calls.find(
     (toolCall) => toolCall.name === CORRECTIVE_PREFERENCE_TOOL_NAME,
   );
@@ -331,7 +388,7 @@ function parseResponse(result: LLMCompleteResult): CorrectivePreferenceExtractio
     throw parsed.error;
   }
 
-  return toExtractionResult(parsed.data);
+  return toExtractionResult(parsed.data, traceOptions);
 }
 
 function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): LLMMessage[] {
@@ -553,7 +610,10 @@ export class CorrectivePreferenceExtractor {
     });
 
     try {
-      return parseResponse(response);
+      return parseResponse(response, {
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+      });
     } catch (error) {
       await this.degraded(
         error instanceof MissingCorrectivePreferenceToolCallError

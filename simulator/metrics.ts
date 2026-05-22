@@ -5,20 +5,28 @@ import {
   QUARANTINED_USER_ENTRY_EVENT,
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_CRITICAL_DOMAINS,
   COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
+  COMMITMENT_TYPES,
   GOAL_PROMOTION_CLASSIFICATIONS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   SEMANTIC_NODE_STATUSES,
   OPEN_QUESTION_STATUSES,
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
   type ActionCandidateClassification,
   type ActionRecord,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
+  type CommitmentCriticalDomain,
   type CommitmentEnforcementClass,
   type GoalPromotionClassification,
+  type CommitmentKind,
+  type CommitmentRecord,
+  type CommitmentType,
   type OpenQuestion,
   type OpenQuestionSource,
   type OpenQuestionStatus,
@@ -28,6 +36,8 @@ import {
   type SemanticNodeStatus,
   type SessionId,
 } from "../src/index.js";
+import { CLASSIFICATION_DOWNGRADE_REASONS } from "../src/cognition/commitments/classification-normalizer.js";
+import type { ClassificationDowngradeReason } from "../src/cognition/commitments/classification-normalizer.js";
 import {
   DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
@@ -142,6 +152,7 @@ type MemoryBandMetricCounts = Pick<
   | "commitment_count_active"
   | "commitment_count_active_by_kind"
   | "commitments_by_enforcement_class"
+  | "critical_commitments_by_kind_type_domain"
   | "commitments_advisory_count"
   | "commitments_critical_count"
   | "commitment_count_superseded"
@@ -219,6 +230,13 @@ type CommitmentRegenerationMetricCounts = Pick<
   | "commitment_regeneration_failed_total"
   | "commitment_guard_advisory_violations_total"
   | "commitment_guard_advisory_violations_by_class"
+>;
+
+type CommitmentClassificationDowngradeMetricCounts = Pick<
+  MetricsRow,
+  | "commitments_critical_classification_downgraded_total"
+  | "commitments_critical_classification_downgraded_by_reason"
+  | "commitments_critical_classification_downgraded_by_kind_type_from_domain"
 >;
 
 type SemanticRevisionErrorMetricCounts = Pick<
@@ -777,6 +795,48 @@ function commitmentRegenerationMetrics(input: {
   };
 }
 
+function classificationDowngradeReason(value: string | null): ClassificationDowngradeReason | null {
+  for (const reason of CLASSIFICATION_DOWNGRADE_REASONS) {
+    if (value === reason) {
+      return reason;
+    }
+  }
+
+  return null;
+}
+
+function commitmentClassificationDowngradeMetrics(
+  cumulativeTraceRecords: readonly TraceRecord[],
+): CommitmentClassificationDowngradeMetricCounts {
+  const downgraded = cumulativeTraceRecords.filter(
+    (record) => record.event === "commitment_classification.downgraded",
+  );
+  const byReason = zeroCounts(CLASSIFICATION_DOWNGRADE_REASONS);
+  const byKindTypeFromDomain = new Map<string, number>();
+
+  for (const record of downgraded) {
+    const reason = classificationDowngradeReason(traceReason(record));
+
+    if (reason !== null) {
+      byReason[reason] += 1;
+    }
+
+    const kind = traceString(record, "kind") ?? "unknown";
+    const type = traceString(record, "type") ?? "unknown";
+    const fromDomain = traceString(record, "original_critical_domain") ?? "none";
+    const key = `${kind}/${type}/${fromDomain}`;
+
+    byKindTypeFromDomain.set(key, (byKindTypeFromDomain.get(key) ?? 0) + 1);
+  }
+
+  return {
+    commitments_critical_classification_downgraded_total: downgraded.length,
+    commitments_critical_classification_downgraded_by_reason: byReason,
+    commitments_critical_classification_downgraded_by_kind_type_from_domain:
+      sortedNumberRecord(byKindTypeFromDomain),
+  };
+}
+
 function semanticRevisionErrorMetrics(input: {
   traceRecords: readonly TraceRecord[];
   cumulativeTraceRecords: readonly TraceRecord[];
@@ -1061,19 +1121,15 @@ function sharedStateNewKeysPerCompile(
   return sortedNumberRecord(counts);
 }
 
-function sharedStateNewKeysForTurn(
-  traceRecords: readonly TraceRecord[],
-  turnId: string,
-): number {
+function sharedStateNewKeysForTurn(traceRecords: readonly TraceRecord[], turnId: string): number {
   return traceRecords
-    .filter((record) => record.event === "shared_state.compile.completed" && record.turnId === turnId)
+    .filter(
+      (record) => record.event === "shared_state.compile.completed" && record.turnId === turnId,
+    )
     .reduce((sum, record) => sum + traceNumber(record, "new_state_key_count"), 0);
 }
 
-function latestSharedStateTraceNumber(
-  traceRecords: readonly TraceRecord[],
-  key: string,
-): number {
+function latestSharedStateTraceNumber(traceRecords: readonly TraceRecord[], key: string): number {
   const latest = [...traceRecords]
     .reverse()
     .find((record) => record.event === "shared_state.compile.completed");
@@ -1441,6 +1497,42 @@ function semanticMemoryWriteGateMetrics(input: {
 
 function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
   return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
+}
+
+function zeroCriticalCommitmentsByKindTypeDomain(): Record<
+  CommitmentKind,
+  Record<CommitmentType, Record<CommitmentCriticalDomain, number>>
+> {
+  return Object.fromEntries(
+    COMMITMENT_KINDS.map((kind) => [
+      kind,
+      Object.fromEntries(
+        COMMITMENT_TYPES.map((type) => [type, zeroCounts(COMMITMENT_CRITICAL_DOMAINS)]),
+      ),
+    ]),
+  ) as Record<CommitmentKind, Record<CommitmentType, Record<CommitmentCriticalDomain, number>>>;
+}
+
+function criticalCommitmentsByKindTypeDomain(
+  commitments: readonly CommitmentRecord[],
+): Record<CommitmentKind, Record<CommitmentType, Record<CommitmentCriticalDomain, number>>> {
+  const counts = zeroCriticalCommitmentsByKindTypeDomain();
+
+  for (const commitment of commitments) {
+    if (effectiveCommitmentEnforcementClass(commitment) !== "critical") {
+      continue;
+    }
+
+    const criticalDomain = effectiveCommitmentCriticalDomain(commitment);
+
+    if (criticalDomain === null) {
+      continue;
+    }
+
+    counts[commitment.kind][commitment.type][criticalDomain] += 1;
+  }
+
+  return counts;
 }
 
 function zeroActionCreationCounts(): Record<ActionRecordCreationSource, number> {
@@ -2192,6 +2284,7 @@ export class MetricsCapture {
       actionRecordCountByState,
       TERMINAL_ACTION_STATES,
     );
+    const activeCommitments = borg.commitments.list({ activeOnly: true });
     const commitmentsByEnforcementClass = {
       ...zeroCounts(COMMITMENT_ENFORCEMENT_CLASSES),
       ...borg.commitments.countActiveByEnforcementClass(),
@@ -2251,6 +2344,8 @@ export class MetricsCapture {
       commitments_by_enforcement_class: {
         ...commitmentsByEnforcementClass,
       },
+      critical_commitments_by_kind_type_domain:
+        criticalCommitmentsByKindTypeDomain(activeCommitments),
       commitments_advisory_count: commitmentsByEnforcementClass.advisory,
       commitments_critical_count: commitmentsByEnforcementClass.critical,
       commitment_count_superseded: borg.commitments.countSuperseded(),
@@ -2402,6 +2497,8 @@ export class MetricsCapture {
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
     });
+    const commitmentClassificationDowngradeMetricCounts =
+      commitmentClassificationDowngradeMetrics(allTraceRecords);
     const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
@@ -2543,8 +2640,16 @@ export class MetricsCapture {
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
       commitments_by_enforcement_class: memoryBandMetrics.commitments_by_enforcement_class,
+      critical_commitments_by_kind_type_domain:
+        memoryBandMetrics.critical_commitments_by_kind_type_domain,
       commitments_advisory_count: memoryBandMetrics.commitments_advisory_count,
       commitments_critical_count: memoryBandMetrics.commitments_critical_count,
+      commitments_critical_classification_downgraded_total:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_total,
+      commitments_critical_classification_downgraded_by_reason:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_by_reason,
+      commitments_critical_classification_downgraded_by_kind_type_from_domain:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_by_kind_type_from_domain,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
@@ -2772,6 +2877,8 @@ export class MetricsCapture {
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
     });
+    const commitmentClassificationDowngradeMetricCounts =
+      commitmentClassificationDowngradeMetrics(allTraceRecords);
     const semanticRevisionErrorMetricCounts = semanticRevisionErrorMetrics({
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
@@ -2900,8 +3007,16 @@ export class MetricsCapture {
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
       commitments_by_enforcement_class: memoryBandMetrics.commitments_by_enforcement_class,
+      critical_commitments_by_kind_type_domain:
+        memoryBandMetrics.critical_commitments_by_kind_type_domain,
       commitments_advisory_count: memoryBandMetrics.commitments_advisory_count,
       commitments_critical_count: memoryBandMetrics.commitments_critical_count,
+      commitments_critical_classification_downgraded_total:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_total,
+      commitments_critical_classification_downgraded_by_reason:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_by_reason,
+      commitments_critical_classification_downgraded_by_kind_type_from_domain:
+        commitmentClassificationDowngradeMetricCounts.commitments_critical_classification_downgraded_by_kind_type_from_domain,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
