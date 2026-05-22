@@ -37,6 +37,7 @@ import type {
   SharedStateCanonicalizationCandidates,
 } from "./schema.js";
 import { parseSourceStreamEntryIds } from "./source-trust.js";
+import { sharedStateKeyTokens, stateKeysAreNearDuplicate } from "./state-key.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
@@ -348,6 +349,8 @@ function rejection(
     | "maxLiveEntriesPerKey"
     | "targetEntryId"
     | "lockedEntryIds"
+    | "similarStateKeys"
+    | "sharedStateKeyTokens"
     | "protectedRelationshipLabels"
     | "relationshipEvidenceRelationalSlotIds"
     | "relationshipEvidenceStreamEntryIds"
@@ -471,6 +474,14 @@ export function normalizePatch(input: {
     operation: Extract<ParsedPatchOperation, { type: "add" }>,
     operationIndex: number,
   ): PatchRejection | null => {
+    const activeStateKeys = [
+      ...new Set(
+        [...activeEntriesByStateKey.values()]
+          .map((entry) => entry.state_key)
+          .filter((stateKey): stateKey is string => stateKey !== null),
+      ),
+    ].sort((left, right) => left.localeCompare(right));
+    const exactStateKeyExists = activeStateKeys.some((stateKey) => stateKey === operation.state_key);
     const lockedEntries = lockedEntriesForStateKey(activeEntriesByStateKey, operation.state_key);
 
     if ((operation.kind === "locked" || operation.kind === "live") && lockedEntries.length > 0) {
@@ -484,6 +495,26 @@ export function normalizePatch(input: {
           .filter((entry) => entry.fromPreviousArtifact)
           .map((entry) => entry.id),
       });
+    }
+
+    if (!exactStateKeyExists) {
+      const similarStateKeys = activeStateKeys.filter((stateKey) =>
+        stateKeysAreNearDuplicate(operation.state_key, stateKey),
+      );
+
+      if (similarStateKeys.length > 0) {
+        return rejection(operation, operationIndex, "near_duplicate_state_key", {
+          stateKey: operation.state_key,
+          similarStateKeys,
+          sharedStateKeyTokens: sharedStateKeyTokens(operation.state_key, similarStateKeys[0] ?? ""),
+        });
+      }
+
+      if (operation.new_key_reason === undefined) {
+        return rejection(operation, operationIndex, "missing_new_key_reason", {
+          stateKey: operation.state_key,
+        });
+      }
     }
 
     if (operation.kind !== "live") {

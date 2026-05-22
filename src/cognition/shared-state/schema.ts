@@ -97,11 +97,20 @@ const ownerEntityIdSchema = z
   .nullable()
   .optional()
   .describe("Entity id for the owner of the decision, or null when there is no specific owner.");
+const newKeyReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe(
+    "For add operations using a never-seen state_key, a brief explanation of what distinct object or thread this new key represents.",
+  );
 
 const addOperationSchema = z
   .object({
     type: z.literal("add"),
     state_key: stateKeySchema,
+    new_key_reason: newKeyReasonSchema,
     kind: sharedStateToolKindSchema,
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
@@ -304,6 +313,8 @@ export type PatchRejection = {
     | "empty_update"
     | "live_entry_cap_exceeded_for_key"
     | "locked_state_key_collision"
+    | "near_duplicate_state_key"
+    | "missing_new_key_reason"
     | "relationship_label_ungrounded";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
@@ -315,6 +326,8 @@ export type PatchRejection = {
   maxLiveEntriesPerKey?: number;
   targetEntryId?: string;
   lockedEntryIds?: string[];
+  similarStateKeys?: string[];
+  sharedStateKeyTokens?: string[];
   protectedRelationshipLabels?: string[];
   relationshipEvidenceRelationalSlotIds?: string[];
   relationshipEvidenceStreamEntryIds?: string[];

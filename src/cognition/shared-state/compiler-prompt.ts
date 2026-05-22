@@ -3,7 +3,7 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
-import type { SharedStatePromptSummary } from "./summary.js";
+import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactParticipantContext,
   SharedStateActionCanonicalizationCandidate,
@@ -38,6 +38,7 @@ export function buildSharedStateArtifactMessages(input: {
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;
+  existingStateKeyRegistry: readonly ExistingStateKeyRegistryEntry[];
   previousArtifactSummary: SharedStatePromptSummary | null;
   canonicalizationCandidates: SharedStateCanonicalizationCandidates;
   relationalSlotsContext?: readonly SharedStateRelationalSlotContext[];
@@ -74,6 +75,7 @@ export function buildSharedStateArtifactMessages(input: {
         input.additionalPromptSections.length === 0
           ? {}
           : { additional_prompt_sections: input.additionalPromptSections }),
+        existing_state_key_registry: input.existingStateKeyRegistry,
         previous_artifact_summary: input.previousArtifactSummary,
         canonicalization_candidates: canonicalizationCandidates,
         relational_slots_context: (input.relationalSlotsContext ?? []).map((slot) => ({
@@ -104,6 +106,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
   messages: readonly LLMMessage[];
   tools: readonly LLMToolDefinition[];
   previousArtifactSummary: SharedStatePromptSummary | null;
+  existingStateKeyRegistry: readonly ExistingStateKeyRegistryEntry[];
   promptVisibleLedger: string;
   currentUserMessage: string;
   canonicalizationCandidates: SharedStateCanonicalizationCandidates;
@@ -112,6 +115,9 @@ export function estimateSharedStateArtifactPromptBudget(input: {
   const toolSchema = estimatePromptTokens(JSON.stringify(input.tools));
   const previousArtifactSummary = estimatePromptTokens(
     JSON.stringify(input.previousArtifactSummary),
+  );
+  const existingStateKeyRegistry = estimatePromptTokens(
+    JSON.stringify(input.existingStateKeyRegistry),
   );
   const promptVisibleLedger = estimatePromptTokens(input.promptVisibleLedger);
   const currentUserTurn = estimatePromptTokens(input.currentUserMessage);
@@ -126,6 +132,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
     system +
     toolSchema +
     previousArtifactSummary +
+    existingStateKeyRegistry +
     promptVisibleLedger +
     currentUserTurn +
     canonicalizationCandidates;
@@ -136,6 +143,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
       system,
       tool_schema: toolSchema,
       previous_artifact_summary: previousArtifactSummary,
+      existing_state_key_registry: existingStateKeyRegistry,
       prompt_visible_ledger: promptVisibleLedger,
       current_user_turn: currentUserTurn,
       canonicalization_candidates: canonicalizationCandidates,

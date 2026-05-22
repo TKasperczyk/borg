@@ -206,6 +206,12 @@ export type MetricsRow = {
   shared_state_add_to_update_ratio_by_key: Record<string, number>;
   shared_state_top_keys_by_entry_count: Record<string, number>;
   shared_state_add_rejected_cap_exceeded_total: number;
+  shared_state_new_keys_per_compile: Record<string, number>;
+  shared_state_new_keys_per_turn: number;
+  shared_state_keys_with_single_entry_only: number;
+  shared_state_similar_key_cluster_count: number;
+  shared_state_add_rejected_near_duplicate_state_key_total: number;
+  shared_state_add_rejected_missing_new_key_reason_total: number;
   session_reentry_card_rendered_total: number;
   session_reentry_card_rendered_by_audience: Record<string, number>;
   session_reentry_first_turn_with_existing_state_total: number;

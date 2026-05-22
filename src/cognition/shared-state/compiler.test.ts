@@ -81,6 +81,7 @@ function withDefaultStateKeys(input: unknown): unknown {
       if (typedOperation.type === "add" || typedOperation.type === "update") {
         return {
           state_key: `decision.fixture_${defaultStateKeyCounter++}`,
+          ...(typedOperation.type === "add" ? { new_key_reason: "test fixture new key" } : {}),
           ...typedOperation,
         };
       }
@@ -1837,6 +1838,83 @@ describe("compileSharedStateArtifact", () => {
     });
   });
 
+  it("renders every active state_key in a prominent registry before the artifact summary", async () => {
+    repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "observation.nora.video_call_repeated_question",
+        kind: "live",
+        text: "The active observation thread is preserved.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+      {
+        type: "add",
+        state_key: "decision.architecture.api_boundary",
+        kind: "pending",
+        text: "The active pending decision is preserved.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      previousArtifactSummaryOptions: {
+        maxEntries: {
+          live: 0,
+          pending: 0,
+        },
+      },
+    });
+
+    const promptContent = llmClient.requests[0]?.messages[0]?.content ?? "{}";
+    const prompt = JSON.parse(promptContent) as {
+      existing_state_key_registry?: Array<{
+        state_key: string;
+        bucket: string;
+        active_entry_ids: string[];
+        active_entry_count: number;
+        kinds: SharedStateEntryKind[];
+        most_recent_update_at: number;
+        most_recent_stream_entry_id: string | null;
+      }>;
+      previous_artifact_summary?: {
+        active_entries?: {
+          live?: Array<{ text: string }>;
+          pending?: Array<{ text: string }>;
+        };
+      };
+    };
+
+    expect(promptContent.indexOf('"existing_state_key_registry"')).toBeLessThan(
+      promptContent.indexOf('"previous_artifact_summary"'),
+    );
+    expect(prompt.existing_state_key_registry).toEqual([
+      expect.objectContaining({
+        state_key: "decision.architecture.api_boundary",
+        bucket: "decision.architecture",
+        active_entry_count: 1,
+        kinds: ["pending"],
+        active_entry_ids: [expect.any(String)],
+        most_recent_update_at: expect.any(Number),
+        most_recent_stream_entry_id: currentStreamEntryId,
+      }),
+      expect.objectContaining({
+        state_key: "observation.nora.video_call_repeated_question",
+        bucket: "observation.nora",
+        active_entry_count: 1,
+        kinds: ["live"],
+        active_entry_ids: [expect.any(String)],
+        most_recent_update_at: expect.any(Number),
+        most_recent_stream_entry_id: currentStreamEntryId,
+      }),
+    ]);
+    expect(prompt.previous_artifact_summary?.active_entries?.live).toEqual([]);
+    expect(prompt.previous_artifact_summary?.active_entries?.pending).toEqual([]);
+  });
+
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
@@ -2024,6 +2102,155 @@ describe("compileSharedStateArtifact", () => {
             proposed_count: 3,
             max_live_entries_per_key: 2,
             target_entry_id: targetEntryId,
+          }),
+        }),
+        expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
+      ]),
+    );
+  });
+
+  it("repairs near-duplicate add state_keys by reusing the active key", async () => {
+    repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "observation.nora.video_call_repeated_question",
+        kind: "live",
+        text: "Existing repeated-question video call observation.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const targetEntryId = activeEntries()[0]?.id;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitRawSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "observation.nora.video_call_repeated_question_reconfirm",
+              kind: "live",
+              text: "Reconfirmed repeated-question video call observation.",
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: targetEntryId,
+              state_key: "observation.nora.video_call_repeated_question",
+              text: "Merged repeated-question video call observation.",
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
+      additional_prompt_sections?: string[];
+    };
+
+    expect(targetEntryId).toBeDefined();
+    expect(llmClient.requests).toHaveLength(2);
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "appears to cover the same thread",
+    );
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "observation.nora.video_call_repeated_question_reconfirm",
+    );
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "observation.nora.video_call_repeated_question",
+    );
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: targetEntryId,
+        state_key: "observation.nora.video_call_repeated_question",
+        text: "Merged repeated-question video call observation.",
+      }),
+    ]);
+    expect(
+      activeEntries().filter(
+        (entry) => entry.state_key === "observation.nora.video_call_repeated_question",
+      ),
+    ).toHaveLength(1);
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "shared_state.compile.add_rejected_near_duplicate_state_key",
+          data: expect.objectContaining({
+            state_key: "observation.nora.video_call_repeated_question_reconfirm",
+            similar_state_keys: ["observation.nora.video_call_repeated_question"],
+            shared_state_key_tokens: expect.arrayContaining(["observation", "nora", "video"]),
+          }),
+        }),
+        expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
+      ]),
+    );
+  });
+
+  it("repairs never-seen add state_keys without new_key_reason", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitRawSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "decision.architecture.api_boundary",
+              kind: "live",
+              text: "New architecture decision boundary.",
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "decision.architecture.api_boundary",
+              kind: "live",
+              text: "New architecture decision boundary.",
+              source_stream_entry_ids: [currentStreamEntryId],
+              new_key_reason: "Represents a new architecture boundary thread.",
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
+      additional_prompt_sections?: string[];
+    };
+
+    expect(llmClient.requests).toHaveLength(2);
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain("new_key_reason");
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
+      "decision.architecture.api_boundary",
+    );
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "decision.architecture.api_boundary",
+        text: "New architecture decision boundary.",
+      }),
+    ]);
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "shared_state.compile.add_rejected_missing_new_key_reason",
+          data: expect.objectContaining({
+            state_key: "decision.architecture.api_boundary",
           }),
         }),
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),

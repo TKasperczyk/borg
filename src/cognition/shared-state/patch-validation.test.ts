@@ -101,10 +101,14 @@ function addOperation(input: {
   stateKey: string;
   kind?: SharedStateEntry["kind"];
   sourceStreamEntryId: StreamEntryId;
+  newKeyReason?: string | null;
 }): Extract<EmitSharedStatePatch["operations"][number], { type: "add" }> {
   return {
     type: "add",
     state_key: input.stateKey,
+    ...(input.newKeyReason === null
+      ? {}
+      : { new_key_reason: input.newKeyReason ?? "test fixture new key" }),
     kind: input.kind ?? "live",
     text: "New keyed entry",
     source_stream_entry_ids: [input.sourceStreamEntryId],
@@ -469,6 +473,107 @@ describe("normalizePatch state_key validation", () => {
         type: "add",
         state_key: "plan.attendees",
         kind: "live",
+      }),
+    ]);
+  });
+
+  it("rejects a near-duplicate never-seen state key", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [
+        makeEntry({
+          audienceEntityId,
+          sourceStreamEntryId,
+          stateKey: "observation.nora.video_call_repeated_question",
+          rank: 0,
+        }),
+      ],
+      operations: [
+        addOperation({
+          stateKey: "observation.nora.video_call_repeated_question_reconfirm",
+          sourceStreamEntryId,
+        }),
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "near_duplicate_state_key",
+        operationType: "add",
+        operationIndex: 0,
+        stateKey: "observation.nora.video_call_repeated_question_reconfirm",
+        similarStateKeys: ["observation.nora.video_call_repeated_question"],
+        sharedStateKeyTokens: expect.arrayContaining([
+          "observation",
+          "nora",
+          "video",
+          "call",
+          "repeated",
+          "question",
+        ]),
+      }),
+    ]);
+  });
+
+  it("rejects a never-seen state key without new_key_reason", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [],
+      operations: [
+        addOperation({
+          stateKey: "decision.architecture",
+          sourceStreamEntryId,
+          newKeyReason: null,
+        }),
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "missing_new_key_reason",
+        operationType: "add",
+        operationIndex: 0,
+        stateKey: "decision.architecture",
+      }),
+    ]);
+  });
+
+  it("does not require new_key_reason for an exact existing state key", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [
+        makeEntry({
+          audienceEntityId,
+          sourceStreamEntryId,
+          stateKey: "plan.attendees",
+          rank: 0,
+        }),
+      ],
+      operations: [
+        addOperation({
+          stateKey: "plan.attendees",
+          sourceStreamEntryId,
+          newKeyReason: null,
+        }),
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "plan.attendees",
       }),
     ]);
   });

@@ -263,6 +263,12 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_add_to_update_ratio_by_key"
   | "shared_state_top_keys_by_entry_count"
   | "shared_state_add_rejected_cap_exceeded_total"
+  | "shared_state_new_keys_per_compile"
+  | "shared_state_new_keys_per_turn"
+  | "shared_state_keys_with_single_entry_only"
+  | "shared_state_similar_key_cluster_count"
+  | "shared_state_add_rejected_near_duplicate_state_key_total"
+  | "shared_state_add_rejected_missing_new_key_reason_total"
 >;
 
 type SessionReentryContinuityMetricCounts = Pick<
@@ -1037,8 +1043,47 @@ function latestSharedStateTopKeysByEntryCount(
     : traceObjectNumberEntries(latest, "shared_state_top_keys_by_entry_count");
 }
 
+function sharedStateNewKeysPerCompile(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of traceRecords) {
+    if (record.event !== "shared_state.compile.completed") {
+      continue;
+    }
+
+    const newKeyCount = traceNumber(record, "new_state_key_count");
+    const bucket = String(newKeyCount);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function sharedStateNewKeysForTurn(
+  traceRecords: readonly TraceRecord[],
+  turnId: string,
+): number {
+  return traceRecords
+    .filter((record) => record.event === "shared_state.compile.completed" && record.turnId === turnId)
+    .reduce((sum, record) => sum + traceNumber(record, "new_state_key_count"), 0);
+}
+
+function latestSharedStateTraceNumber(
+  traceRecords: readonly TraceRecord[],
+  key: string,
+): number {
+  const latest = [...traceRecords]
+    .reverse()
+    .find((record) => record.event === "shared_state.compile.completed");
+
+  return latest === undefined ? 0 : traceNumber(latest, key);
+}
+
 function sharedStateCompilerHealthMetrics(
   traceRecords: readonly TraceRecord[],
+  turnId: string,
 ): SharedStateCompilerHealthMetricCounts {
   const operationsTotalByKind = sharedStateCompilerOperationCountsByKind(traceRecords);
   const operationsByKey = sharedStateOperationCountsByKey(traceRecords);
@@ -1069,6 +1114,22 @@ function sharedStateCompilerHealthMetrics(
     shared_state_top_keys_by_entry_count: latestSharedStateTopKeysByEntryCount(traceRecords),
     shared_state_add_rejected_cap_exceeded_total: traceRecords.filter(
       (record) => record.event === "shared_state.compile.add_rejected_cap_exceeded",
+    ).length,
+    shared_state_new_keys_per_compile: sharedStateNewKeysPerCompile(traceRecords),
+    shared_state_new_keys_per_turn: sharedStateNewKeysForTurn(traceRecords, turnId),
+    shared_state_keys_with_single_entry_only: latestSharedStateTraceNumber(
+      traceRecords,
+      "keys_with_single_entry_only",
+    ),
+    shared_state_similar_key_cluster_count: latestSharedStateTraceNumber(
+      traceRecords,
+      "similar_key_cluster_count",
+    ),
+    shared_state_add_rejected_near_duplicate_state_key_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.add_rejected_near_duplicate_state_key",
+    ).length,
+    shared_state_add_rejected_missing_new_key_reason_total: traceRecords.filter(
+      (record) => record.event === "shared_state.compile.add_rejected_missing_new_key_reason",
     ).length,
   };
 }
@@ -2348,7 +2409,10 @@ export class MetricsCapture {
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
-    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
+    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
+      allTraceRecords,
+      turnId,
+    );
     const sessionReentryContinuityMetricCounts = sessionReentryContinuityMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics({
@@ -2621,6 +2685,18 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
       shared_state_add_rejected_cap_exceeded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
+      shared_state_new_keys_per_compile:
+        sharedStateCompilerHealthMetricCounts.shared_state_new_keys_per_compile,
+      shared_state_new_keys_per_turn:
+        sharedStateCompilerHealthMetricCounts.shared_state_new_keys_per_turn,
+      shared_state_keys_with_single_entry_only:
+        sharedStateCompilerHealthMetricCounts.shared_state_keys_with_single_entry_only,
+      shared_state_similar_key_cluster_count:
+        sharedStateCompilerHealthMetricCounts.shared_state_similar_key_cluster_count,
+      shared_state_add_rejected_near_duplicate_state_key_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_near_duplicate_state_key_total,
+      shared_state_add_rejected_missing_new_key_reason_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_missing_new_key_reason_total,
       session_reentry_card_rendered_total:
         sessionReentryContinuityMetricCounts.session_reentry_card_rendered_total,
       session_reentry_card_rendered_by_audience:
@@ -2703,7 +2779,10 @@ export class MetricsCapture {
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
-    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
+    const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
+      allTraceRecords,
+      turnId,
+    );
     const sessionReentryContinuityMetricCounts = sessionReentryContinuityMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const extractorHealthMetricCounts = extractorHealthMetrics({
@@ -2963,6 +3042,18 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
       shared_state_add_rejected_cap_exceeded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
+      shared_state_new_keys_per_compile:
+        sharedStateCompilerHealthMetricCounts.shared_state_new_keys_per_compile,
+      shared_state_new_keys_per_turn:
+        sharedStateCompilerHealthMetricCounts.shared_state_new_keys_per_turn,
+      shared_state_keys_with_single_entry_only:
+        sharedStateCompilerHealthMetricCounts.shared_state_keys_with_single_entry_only,
+      shared_state_similar_key_cluster_count:
+        sharedStateCompilerHealthMetricCounts.shared_state_similar_key_cluster_count,
+      shared_state_add_rejected_near_duplicate_state_key_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_near_duplicate_state_key_total,
+      shared_state_add_rejected_missing_new_key_reason_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_missing_new_key_reason_total,
       session_reentry_card_rendered_total:
         sessionReentryContinuityMetricCounts.session_reentry_card_rendered_total,
       session_reentry_card_rendered_by_audience:

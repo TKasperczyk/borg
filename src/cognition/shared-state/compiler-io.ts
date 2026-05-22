@@ -8,6 +8,7 @@ import type { JsonValue } from "../../util/json-value.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
+import { similarStateKeyClusterCount } from "./state-key.js";
 import type {
   SharedStateReconciliationResult,
   SharedStateUnsettledReconciliationSummary,
@@ -140,6 +141,7 @@ export function traceCompileCompleted(options: {
   supersededEntryCountThisTurn: number;
   operationCountsByKind?: Record<SharedStateOperation["type"], number>;
   operationCountsByStateKey?: Record<string, Record<SharedStateOperation["type"], number>>;
+  newStateKeys?: readonly string[];
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
@@ -148,6 +150,11 @@ export function traceCompileCompleted(options: {
     options.artifact,
     options.renderOptions,
   );
+  const activeEntryCountsByKey = artifactSummary.activeEntriesByKey;
+  const keysWithSingleEntryOnly = Object.values(activeEntryCountsByKey).filter(
+    (count) => count === 1,
+  ).length;
+  const similarKeyClusterCount = similarStateKeyClusterCount(Object.keys(activeEntryCountsByKey));
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("shared_state.compile.completed", {
@@ -189,6 +196,10 @@ export function traceCompileCompleted(options: {
         },
       ),
       operation_counts_by_state_key: toTraceJsonValue(options.operationCountsByStateKey ?? {}),
+      new_state_key_count: options.newStateKeys?.length ?? 0,
+      new_state_keys: toTraceJsonValue(options.newStateKeys ?? []),
+      keys_with_single_entry_only: keysWithSingleEntryOnly,
+      similar_key_cluster_count: similarKeyClusterCount,
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
       omitted_by_kind: toTraceJsonValue(artifactSummary.omittedByKind),
       shared_state_entries_by_key: toTraceJsonValue(artifactSummary.activeEntriesByKey),
@@ -223,6 +234,46 @@ export function traceAddRejectedCapExceeded(options: {
     proposed_count: options.rejection.proposedCount ?? null,
     max_live_entries_per_key: options.rejection.maxLiveEntriesPerKey ?? null,
     target_entry_id: options.rejection.targetEntryId ?? null,
+  });
+}
+
+export function traceAddRejectedNearDuplicateStateKey(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  rejection: PatchRejection;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.add_rejected_near_duplicate_state_key", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    operation_index: options.rejection.operationIndex,
+    operation_type: options.rejection.operationType,
+    state_key: options.rejection.stateKey ?? null,
+    similar_state_keys: options.rejection.similarStateKeys ?? [],
+    shared_state_key_tokens: options.rejection.sharedStateKeyTokens ?? [],
+  });
+}
+
+export function traceAddRejectedMissingNewKeyReason(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  rejection: PatchRejection;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.add_rejected_missing_new_key_reason", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    operation_index: options.rejection.operationIndex,
+    operation_type: options.rejection.operationType,
+    state_key: options.rejection.stateKey ?? null,
   });
 }
 

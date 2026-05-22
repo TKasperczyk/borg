@@ -31,7 +31,9 @@ import {
 } from "./schema.js";
 import {
   parseResponse,
+  traceAddRejectedMissingNewKeyReason,
   traceAddRejectedCapExceeded,
+  traceAddRejectedNearDuplicateStateKey,
   traceCompileCompleted,
   traceCompileDegraded,
   traceCompileOverBudget,
@@ -52,7 +54,10 @@ import {
 import { errorMessage } from "./reconciliation-summary.js";
 import { applySharedStateArtifactLifecycleCap, expandPruneDependencies } from "./lifecycle-cap.js";
 import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candidates.js";
-import { buildSharedStateArtifactPromptSummary } from "./summary.js";
+import {
+  buildExistingStateKeyRegistry,
+  buildSharedStateArtifactPromptSummary,
+} from "./summary.js";
 
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
@@ -175,11 +180,53 @@ function operationCountsByStateKey(
   );
 }
 
+function activeStateKeys(artifact: SharedStateArtifact | null): Set<string> {
+  return new Set(
+    (artifact?.entries ?? []).flatMap((entry) => {
+      if (entry.superseded_by_id !== null || entry.state_key === null) {
+        return [];
+      }
+
+      return [entry.state_key];
+    }),
+  );
+}
+
+function introducedStateKeys(
+  operations: readonly SharedStateOperation[],
+  previousArtifact: SharedStateArtifact | null,
+): string[] {
+  const seen = activeStateKeys(previousArtifact);
+  const introduced: string[] = [];
+
+  for (const operation of operations) {
+    const stateKey =
+      operation.type === "add"
+        ? operation.state_key
+        : operation.type === "update"
+          ? operation.state_key
+          : operation.type === "supersede"
+            ? operation.replacement.state_key
+            : null;
+
+    if (stateKey === null || seen.has(stateKey)) {
+      continue;
+    }
+
+    seen.add(stateKey);
+    introduced.push(stateKey);
+  }
+
+  return introduced.sort((left, right) => left.localeCompare(right));
+}
+
 function repairablePatchRejections(rejections: readonly PatchRejection[]): PatchRejection[] {
   return rejections.filter(
     (rejection) =>
       rejection.reason === "live_entry_cap_exceeded_for_key" ||
       rejection.reason === "locked_state_key_collision" ||
+      rejection.reason === "near_duplicate_state_key" ||
+      rejection.reason === "missing_new_key_reason" ||
       rejection.reason === "relationship_label_ungrounded",
   );
 }
@@ -208,6 +255,26 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
         ].join("; ");
       }
 
+      if (rejection.reason === "near_duplicate_state_key") {
+        const similarStateKey = rejection.similarStateKeys?.[0] ?? "an active state_key";
+        const sharedTokens = rejection.sharedStateKeyTokens?.join(", ") || "unknown";
+
+        return [
+          `operation ${rejection.operationIndex} add used state_key=${rejection.stateKey ?? "unknown"}`,
+          `but active state_key=${similarStateKey} already exists for the same audience and appears to cover the same thread`,
+          `shared tokens: ${sharedTokens}`,
+          "reuse the existing key with update or supersede, or emit a genuinely distinct key with new_key_reason explaining what makes it different",
+        ].join("; ");
+      }
+
+      if (rejection.reason === "missing_new_key_reason") {
+        return [
+          `operation ${rejection.operationIndex} add used never-seen state_key=${rejection.stateKey ?? "unknown"}`,
+          "with no new_key_reason",
+          "add a brief new_key_reason explaining what new object/thread this represents, or reuse an existing key from the registry",
+        ].join("; ");
+      }
+
       if (rejection.reason === "relationship_label_ungrounded") {
         return [
           `operation ${rejection.operationIndex} ${rejection.operationType}`,
@@ -221,6 +288,50 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
     .join(" | ");
 
   return `Your previous patch violated structural shared-state key compaction: ${details}. Emit a corrected patch.`;
+}
+
+function traceRepairablePatchRejection(
+  input: CompileSharedStateArtifactInput,
+  rejection: PatchRejection,
+): void {
+  if (rejection.reason === "live_entry_cap_exceeded_for_key") {
+    traceAddRejectedCapExceeded({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      rejection,
+    });
+    return;
+  }
+
+  if (rejection.reason === "near_duplicate_state_key") {
+    traceAddRejectedNearDuplicateStateKey({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      rejection,
+    });
+    return;
+  }
+
+  if (rejection.reason === "missing_new_key_reason") {
+    traceAddRejectedMissingNewKeyReason({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      rejection,
+    });
+    return;
+  }
+
+  if (rejection.reason === "relationship_label_ungrounded") {
+    traceLabelUngrounded({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      rejection,
+    });
+  }
 }
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
@@ -312,6 +423,7 @@ export async function compileSharedStateArtifact(
     previousArtifact,
     input.previousArtifactSummaryOptions,
   );
+  const existingStateKeyRegistry = buildExistingStateKeyRegistry(previousArtifact);
   const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
   const relationalSlotSourceStreamEntryIds = relationalSlotEvidenceStreamEntryIds(input);
   const allowedSourceStreamEntryIdsForPrompt =
@@ -334,6 +446,7 @@ export async function compileSharedStateArtifact(
     currentUserMessage: input.currentUserMessage,
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     promptVisibleLedger: input.promptVisibleLedger,
+    existingStateKeyRegistry,
     previousArtifactSummary,
     canonicalizationCandidates,
     relationalSlotsContext: input.relationalSlotsContext,
@@ -347,6 +460,7 @@ export async function compileSharedStateArtifact(
     messages,
     tools,
     previousArtifactSummary,
+    existingStateKeyRegistry,
     promptVisibleLedger: input.promptVisibleLedger,
     currentUserMessage: input.currentUserMessage,
     canonicalizationCandidates,
@@ -591,24 +705,7 @@ export async function compileSharedStateArtifact(
 
   let repairableRejections = repairablePatchRejections(normalized.rejected);
   for (const rejection of repairableRejections) {
-    if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
-      if (rejection.reason === "relationship_label_ungrounded") {
-        traceLabelUngrounded({
-          tracer: input.tracer,
-          turnId: input.turnId,
-          audienceEntityId: input.audienceEntityId,
-          rejection,
-        });
-      }
-      continue;
-    }
-
-    traceAddRejectedCapExceeded({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      rejection,
-    });
+    traceRepairablePatchRejection(input, rejection);
   }
 
   if (repairableRejections.length > 0) {
@@ -749,24 +846,7 @@ export async function compileSharedStateArtifact(
     });
     repairableRejections = repairablePatchRejections(normalized.rejected);
     for (const rejection of repairableRejections) {
-      if (rejection.reason !== "live_entry_cap_exceeded_for_key") {
-        if (rejection.reason === "relationship_label_ungrounded") {
-          traceLabelUngrounded({
-            tracer: input.tracer,
-            turnId: input.turnId,
-            audienceEntityId: input.audienceEntityId,
-            rejection,
-          });
-        }
-        continue;
-      }
-
-      traceAddRejectedCapExceeded({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        audienceEntityId: input.audienceEntityId,
-        rejection,
-      });
+      traceRepairablePatchRejection(input, rejection);
     }
 
     if (repairableRejections.length > 0) {
@@ -843,6 +923,7 @@ export async function compileSharedStateArtifact(
   const operations = dedupedCanonicalizations.operations;
   const operationCounts = operationCountsByKind(operations);
   const operationCountsByStateKeyForTrace = operationCountsByStateKey(operations, previousArtifact);
+  const newStateKeysForTrace = introducedStateKeys(operations, previousArtifact);
   const prunedEntryCountThisTurn = operations.filter(
     (operation) => operation.type === "prune",
   ).length;
@@ -872,6 +953,7 @@ export async function compileSharedStateArtifact(
         supersededEntryCountThisTurn,
         operationCountsByKind: operationCounts,
         operationCountsByStateKey: operationCountsByStateKeyForTrace,
+        newStateKeys: newStateKeysForTrace,
         nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
       });
 
@@ -928,6 +1010,7 @@ export async function compileSharedStateArtifact(
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
+      newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
@@ -993,6 +1076,7 @@ export async function compileSharedStateArtifact(
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
+      newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
   } catch (error) {
@@ -1006,6 +1090,7 @@ export async function compileSharedStateArtifact(
       supersededEntryCountThisTurn,
       operationCountsByKind: operationCounts,
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
+      newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 

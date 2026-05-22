@@ -17,7 +17,7 @@ import {
   tokenDropIndexForKinds,
   type SharedStateKindCounts,
 } from "./selection.js";
-import { sharedStateKeyBucket } from "./state-key.js";
+import { sharedStateKeyBucket, tokenizeStateKey } from "./state-key.js";
 import { truncateSharedStateArtifactText } from "./render.js";
 
 const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES = {
@@ -59,6 +59,16 @@ export type SharedStatePromptSummary = {
   active_entries_by_state_key: Record<string, SharedStatePromptSummaryEntry[]>;
   omitted_counts_by_kind: SharedStateKindCounts;
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
+};
+
+export type ExistingStateKeyRegistryEntry = {
+  state_key: string;
+  bucket: string;
+  active_entry_ids: SharedStateEntry["id"][];
+  active_entry_count: number;
+  kinds: SharedStateEntryKind[];
+  most_recent_update_at: number;
+  most_recent_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
 };
 
 function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOptions = {}): {
@@ -119,6 +129,51 @@ function lastUpdatedStreamEntryId(
   return (
     entry.last_updated_stream_entry_ids[entry.last_updated_stream_entry_ids.length - 1] ?? null
   );
+}
+
+function stateKeyRegistryBucket(stateKey: string): string {
+  const tokens = tokenizeStateKey(stateKey);
+
+  if (tokens.length === 0) {
+    return stateKey;
+  }
+
+  return tokens.slice(0, 2).join(".");
+}
+
+function stateKeyRegistryKinds(entries: readonly SharedStateEntry[]): SharedStateEntryKind[] {
+  return SHARED_STATE_ENTRY_KINDS.filter((kind) => entries.some((entry) => entry.kind === kind));
+}
+
+export function buildExistingStateKeyRegistry(
+  artifact: SharedStateArtifact | null | undefined,
+): ExistingStateKeyRegistryEntry[] {
+  const groups = new Map<string, SharedStateEntry[]>();
+
+  for (const entry of activeSharedStateArtifactEntries(artifact)) {
+    if (entry.state_key === null) {
+      continue;
+    }
+
+    groups.set(entry.state_key, [...(groups.get(entry.state_key) ?? []), entry]);
+  }
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([stateKey, entries]) => {
+      const entriesByRecency = [...entries].sort(compareSharedStateArtifactEntriesByRecency);
+      const mostRecent = entriesByRecency[0]!;
+
+      return {
+        state_key: stateKey,
+        bucket: stateKeyRegistryBucket(stateKey),
+        active_entry_ids: entriesByRecency.map((entry) => entry.id),
+        active_entry_count: entries.length,
+        kinds: stateKeyRegistryKinds(entries),
+        most_recent_update_at: mostRecent.last_updated_at,
+        most_recent_stream_entry_id: lastUpdatedStreamEntryId(mostRecent),
+      };
+    });
 }
 
 function toSharedStatePromptSummaryEntry(

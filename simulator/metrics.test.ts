@@ -223,6 +223,12 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_add_to_update_ratio_by_key",
   "shared_state_top_keys_by_entry_count",
   "shared_state_add_rejected_cap_exceeded_total",
+  "shared_state_new_keys_per_compile",
+  "shared_state_new_keys_per_turn",
+  "shared_state_keys_with_single_entry_only",
+  "shared_state_similar_key_cluster_count",
+  "shared_state_add_rejected_near_duplicate_state_key_total",
+  "shared_state_add_rejected_missing_new_key_reason_total",
   "session_reentry_card_rendered_total",
   "session_reentry_card_rendered_by_audience",
   "session_reentry_first_turn_with_existing_state_total",
@@ -1046,12 +1052,28 @@ describe("MetricsCapture", () => {
             "plan.attendees": 2,
             "decision.architecture": 1,
           },
+          new_state_key_count: 2,
+          keys_with_single_entry_only: 1,
+          similar_key_cluster_count: 0,
         },
         {
           ts: 102.5,
           turnId: "turn-compiler-1",
           event: "shared_state.compile.add_rejected_cap_exceeded",
           state_key: "plan.attendees",
+        },
+        {
+          ts: 102.6,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.add_rejected_near_duplicate_state_key",
+          state_key: "observation.nora.video_call_repeated_question_reconfirm",
+          similar_state_keys: ["observation.nora.video_call_repeated_question"],
+        },
+        {
+          ts: 102.7,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.add_rejected_missing_new_key_reason",
+          state_key: "decision.architecture.api_boundary",
         },
         {
           ts: 103,
@@ -1064,6 +1086,9 @@ describe("MetricsCapture", () => {
             supersede: 0,
             prune: 0,
           },
+          new_state_key_count: 0,
+          keys_with_single_entry_only: 0,
+          similar_key_cluster_count: 0,
         },
         {
           ts: 200,
@@ -1099,6 +1124,9 @@ describe("MetricsCapture", () => {
             "plan.attendees": 3,
             "decision.architecture": 1,
           },
+          new_state_key_count: 1,
+          keys_with_single_entry_only: 1,
+          similar_key_cluster_count: 0,
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -1137,6 +1165,16 @@ describe("MetricsCapture", () => {
       "decision.architecture": 1,
     });
     expect(row.shared_state_add_rejected_cap_exceeded_total).toBe(1);
+    expect(row.shared_state_new_keys_per_compile).toEqual({
+      "0": 1,
+      "1": 1,
+      "2": 1,
+    });
+    expect(row.shared_state_new_keys_per_turn).toBe(1);
+    expect(row.shared_state_keys_with_single_entry_only).toBe(1);
+    expect(row.shared_state_similar_key_cluster_count).toBe(0);
+    expect(row.shared_state_add_rejected_near_duplicate_state_key_total).toBe(1);
+    expect(row.shared_state_add_rejected_missing_new_key_reason_total).toBe(1);
     expect(capture.listHealthWarnings()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: "shared_state_compiler_max_tokens_high" }),
