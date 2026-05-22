@@ -421,10 +421,6 @@ function emitSessionReentryContinuityTrace(input: {
 
   const summary = input.continuity.summary;
 
-  if (summary.status !== "rendered" && summary.status !== "blank_audience") {
-    return;
-  }
-
   const traceData = {
     turnId: input.turnId,
     status: summary.status,
