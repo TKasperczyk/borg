@@ -7,7 +7,7 @@ import type {
 
 export const CLASSIFICATION_DOWNGRADE_REASONS = [
   "internal_tool_hygiene_with_preference_type",
-  "explicit_no_disclosure_without_boundary_kind",
+  "explicit_no_disclosure_without_boundary_type",
   "process_norm_classified_critical",
   "preference_with_internal_tool_hygiene",
   "critical_without_domain",
@@ -80,7 +80,7 @@ export function normalizeCommitmentClassification(
   }
 
   if (input.critical_domain === "explicit_no_disclosure" && input.type !== "boundary") {
-    return downgrade(input, "explicit_no_disclosure_without_boundary_kind");
+    return downgrade(input, "explicit_no_disclosure_without_boundary_type");
   }
 
   return {

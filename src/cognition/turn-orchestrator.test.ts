@@ -4557,7 +4557,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("shadows corrective-preference violations before closure pressure handles no-closure directives", async () => {
+  it("observes mixed closure pressure without suppressing no-closure directives", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_176_000);
@@ -4585,11 +4585,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         audience: "Sam",
       });
 
-      expect(result.emitted).toBe(false);
-      expect(result.response).toBe("");
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Sleep well.");
       expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "closure_pressure_only",
+        kind: "message",
+        content: "Sleep well.",
       });
       expect(llm.requests.map((request) => request.budget)).not.toContain("commitment-revision");
     } finally {
@@ -4597,7 +4597,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("records closure-pressure history when a mixed closure response is rewritten", async () => {
+  it("does not record closure-pressure history when a mixed closure response is observed", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_176_500);
@@ -4630,12 +4630,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const history = borg.workmem.load().discourse_state?.closure_pressure_history ?? [];
 
       expect(result.emitted).toBe(true);
-      expect(result.response).toBe("Here is the actual answer.");
-      expect(history).toHaveLength(1);
-      expect(history[0]).toMatchObject({
-        reason: "span_removed",
-      });
-      expect(history[0]?.turn_id).toEqual(expect.any(String));
+      expect(result.response).toBe("Here is the actual answer. Sleep.");
+      expect(history).toHaveLength(0);
     } finally {
       await borg.close();
     }
@@ -4735,11 +4731,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         audience: "Sam",
       });
 
-      expect(result.emitted).toBe(false);
-      expect(result.response).toBe("");
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Sleep well.");
       expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "closure_pressure_only",
+        kind: "message",
+        content: "Sleep well.",
       });
       expect(llm.requests.filter((request) => request.budget === "commitment-judge")).toHaveLength(
         2,

@@ -195,7 +195,8 @@ describe("post-generation guard shadow chain", () => {
           expect.objectContaining({
             mode: "shadow",
             verdict: "passed",
-            wouldHaveVerdict: "rewritten",
+            wouldHaveVerdict: "suppressed",
+            reason: "mixed_closure_observed",
           }),
         ],
       ]),

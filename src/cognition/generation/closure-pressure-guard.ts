@@ -9,7 +9,6 @@ import {
 } from "../../llm/index.js";
 import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import { deleteSpansSentenceAware } from "../../util/span-deletion.js";
 import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
@@ -207,8 +206,12 @@ function traceClosureGuard(input: {
       : { wouldHaveSuppressionReason: input.wouldHaveSuppressionReason }),
   };
 
-  if (includePayloads && input.audit !== null) {
-    payload.spans = input.audit.spans.map((span) => ({
+  const audit = input.audit;
+  const includeSpans =
+    audit !== null && (includePayloads || input.reason === "mixed_closure_observed");
+
+  if (includeSpans) {
+    payload.spans = audit.spans.map((span) => ({
       text: span.text,
       kind: span.kind,
       rationale: span.rationale,
@@ -231,6 +234,7 @@ function traceClosureAuditInconsistent(input: {
   turnId: string;
   reason: string;
   audit: ClosureResponseAudit;
+  activeClosureCommitments: readonly string[];
 }): void {
   if (input.tracer?.enabled !== true) {
     return;
@@ -241,6 +245,12 @@ function traceClosureAuditInconsistent(input: {
     reason: input.reason,
     spans_detected: input.audit.spans.length,
     response_shape: input.audit.response_shape,
+    active_closure_commitments: [...input.activeClosureCommitments],
+    spans: input.audit.spans.map((span) => ({
+      text: span.text,
+      kind: span.kind,
+      rationale: span.rationale,
+    })),
   });
 }
 
@@ -413,6 +423,7 @@ export class ClosurePressureGuard {
         turnId: input.turnId,
         reason,
         audit,
+        activeClosureCommitments: activeCommitmentLabels,
       });
 
       traceClosureGuard({
@@ -440,12 +451,41 @@ export class ClosurePressureGuard {
     }
 
     if (audit.response_shape === "no_closure") {
+      const reason = "closure_pressure_audit.degraded_with_spans";
+
+      // A no_closure shape with non-empty spans is self-inconsistent. Trace the audit as
+      // degraded, but do not enforce: as with mixed responses, a non-critical ambiguous
+      // LLM signal must not decide what reaches the user.
       traceClosureAuditInconsistent({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        reason: "closure_pressure_audit.degraded_with_spans",
+        reason,
+        audit,
+        activeClosureCommitments: activeCommitmentLabels,
+      });
+
+      traceClosureGuard({
+        tracer: this.options.tracer,
+        turnId: input.turnId,
+        mode: effectiveMode,
+        verdict: "passed",
+        removedSpans: [],
+        activeClosureCommitments: activeCommitmentLabels,
+        reason,
         audit,
       });
+
+      return this.applyMode(input, {
+        emission: {
+          kind: "message",
+          content: input.response,
+        },
+        verdict: "passed",
+        removed_spans: [],
+        active_closure_commitments: activeCommitmentLabels,
+        reason,
+        audit,
+      }, effectiveMode);
     }
 
     if (activeCommitments.length === 0 && !closureLoopNamed && !closureHistoryActive) {
@@ -506,63 +546,26 @@ export class ClosurePressureGuard {
       }, effectiveMode);
     }
 
-    // Auditor spans can be phrase-only, so sentence-aware deletion prevents closure gap residue.
-    const deletion = deleteSpansSentenceAware(
-      input.response,
-      audit.spans.map((span) => span.text),
-    );
-
-    if (deletion.outcome !== "clean") {
-      const reason = "closure_pressure_only";
-
-      traceClosureGuard({
-        tracer: this.options.tracer,
-        turnId: input.turnId,
-        mode: effectiveMode,
-        verdict: "suppressed",
-        wouldHaveSuppressionReason: reason,
-        removedSpans,
-        activeClosureCommitments: activeCommitmentLabels,
-        reason,
-        audit,
-      });
-
-      return this.applyMode(input, {
-        emission: {
-          kind: "suppressed",
-          reason,
-          closure_pressure_history_reason: "span_removed",
-        },
-        verdict: "suppressed",
-        removed_spans: removedSpans,
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      }, effectiveMode);
-    }
-
-    const reason = "closure_spans_removed";
+    const reason = "mixed_closure_observed";
 
     traceClosureGuard({
       tracer: this.options.tracer,
       turnId: input.turnId,
       mode: effectiveMode,
-      verdict: "rewritten",
+      verdict: "passed",
+      wouldHaveVerdict: "suppressed",
       removedSpans,
       activeClosureCommitments: activeCommitmentLabels,
       reason,
       audit,
-      originalResponse: input.response,
-      rewrittenResponse: deletion.rewrittenText,
     });
 
     return this.applyMode(input, {
       emission: {
         kind: "message",
-        content: deletion.rewrittenText,
-        closure_pressure_history_reason: "span_removed",
+        content: input.response,
       },
-      verdict: "rewritten",
+      verdict: "passed",
       removed_spans: removedSpans,
       active_closure_commitments: activeCommitmentLabels,
       reason,

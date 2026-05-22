@@ -338,6 +338,14 @@ type ExtractorHealthMetricCounts = Pick<
   | "extractor_degraded_total_by_label"
 >;
 
+type ClosurePressureMetricCounts = Pick<
+  MetricsRow,
+  | "closure_pressure_mixed_observed_total"
+  | "closure_pressure_closure_only_suppressed_total"
+  | "closure_pressure_mixed_passed_no_active_preference_total"
+  | "closure_pressure_mixed_by_span_kind"
+>;
+
 type SemanticMemoryWriteGateMetricCounts = Pick<
   MetricsRow,
   | "semantic_nodes_rejected_ungrounded_label_count"
@@ -1247,6 +1255,23 @@ function traceStringArray(record: TraceRecord, key: string): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function traceClosureSpanKinds(record: TraceRecord): string[] {
+  const spans = record.spans;
+
+  if (!Array.isArray(spans)) {
+    return [];
+  }
+
+  return spans.flatMap((span) => {
+    if (span === null || typeof span !== "object" || Array.isArray(span)) {
+      return [];
+    }
+
+    const kind = (span as { kind?: unknown }).kind;
+    return typeof kind === "string" ? [kind] : [];
+  });
+}
+
 function sessionReentryContinuityMetrics(
   traceRecords: readonly TraceRecord[],
 ): SessionReentryContinuityMetricCounts {
@@ -1438,6 +1463,44 @@ function extractorHealthMetrics(input: {
       input.cumulativeTraceRecords,
     ),
     extractor_degraded_total_by_label: extractorDegradedTotalsByLabel(input.cumulativeTraceRecords),
+  };
+}
+
+function closurePressureMetrics(
+  traceRecords: readonly TraceRecord[],
+): ClosurePressureMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "closure_response_guard.completed",
+  );
+  const mixedBySpanKind = new Map<string, number>();
+
+  for (const record of completed) {
+    if (traceString(record, "response_shape") !== "mixed") {
+      continue;
+    }
+
+    for (const kind of traceClosureSpanKinds(record)) {
+      incrementLabelCount(mixedBySpanKind, kind);
+    }
+  }
+
+  return {
+    closure_pressure_mixed_observed_total: completed.filter(
+      (record) => traceReason(record) === "mixed_closure_observed",
+    ).length,
+    closure_pressure_closure_only_suppressed_total: completed.filter(
+      (record) =>
+        traceString(record, "mode") === "enforce" &&
+        traceString(record, "verdict") === "suppressed" &&
+        traceString(record, "response_shape") === "closure_only" &&
+        traceReason(record) === "closure_pressure_only",
+    ).length,
+    closure_pressure_mixed_passed_no_active_preference_total: completed.filter(
+      (record) =>
+        traceString(record, "response_shape") === "mixed" &&
+        traceReason(record) === "no_active_closure_preference",
+    ).length,
+    closure_pressure_mixed_by_span_kind: sortedNumberRecord(mixedBySpanKind),
   };
 }
 
@@ -2561,6 +2624,7 @@ export class MetricsCapture {
       traceRecords,
       cumulativeTraceRecords: allTraceRecords,
     });
+    const closurePressureMetricCounts = closurePressureMetrics(allTraceRecords);
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -2782,6 +2846,14 @@ export class MetricsCapture {
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      closure_pressure_mixed_observed_total:
+        closurePressureMetricCounts.closure_pressure_mixed_observed_total,
+      closure_pressure_closure_only_suppressed_total:
+        closurePressureMetricCounts.closure_pressure_closure_only_suppressed_total,
+      closure_pressure_mixed_passed_no_active_preference_total:
+        closurePressureMetricCounts.closure_pressure_mixed_passed_no_active_preference_total,
+      closure_pressure_mixed_by_span_kind:
+        closurePressureMetricCounts.closure_pressure_mixed_by_span_kind,
       corrective_preference_completed_count:
         extractorHealthMetricCounts.corrective_preference_completed_count,
       corrective_preference_degraded_count:
@@ -2943,6 +3015,7 @@ export class MetricsCapture {
       traceRecords: [],
       cumulativeTraceRecords: allTraceRecords,
     });
+    const closurePressureMetricCounts = closurePressureMetrics(allTraceRecords);
     const rowTs = Date.now();
     const row: MetricsRow = {
       event,
@@ -3151,6 +3224,14 @@ export class MetricsCapture {
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      closure_pressure_mixed_observed_total:
+        closurePressureMetricCounts.closure_pressure_mixed_observed_total,
+      closure_pressure_closure_only_suppressed_total:
+        closurePressureMetricCounts.closure_pressure_closure_only_suppressed_total,
+      closure_pressure_mixed_passed_no_active_preference_total:
+        closurePressureMetricCounts.closure_pressure_mixed_passed_no_active_preference_total,
+      closure_pressure_mixed_by_span_kind:
+        closurePressureMetricCounts.closure_pressure_mixed_by_span_kind,
       corrective_preference_completed_count:
         extractorHealthMetricCounts.corrective_preference_completed_count,
       corrective_preference_degraded_count:

@@ -192,6 +192,10 @@ export type MetricsRow = {
   overseer_due_on_suppressed_turn: boolean;
   closure_loop_completed_count: number;
   closure_loop_degraded_count: number;
+  closure_pressure_mixed_observed_total: number;
+  closure_pressure_closure_only_suppressed_total: number;
+  closure_pressure_mixed_passed_no_active_preference_total: number;
+  closure_pressure_mixed_by_span_kind: Record<string, number>;
   corrective_preference_completed_count: number;
   corrective_preference_degraded_count: number;
   extractor_max_tokens_stop_count: number;

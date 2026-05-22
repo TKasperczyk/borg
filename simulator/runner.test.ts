@@ -518,6 +518,10 @@ function metricsRow(turnCounter: number): MetricsRow {
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
+    closure_pressure_mixed_observed_total: 0,
+    closure_pressure_closure_only_suppressed_total: 0,
+    closure_pressure_mixed_passed_no_active_preference_total: 0,
+    closure_pressure_mixed_by_span_kind: {},
     corrective_preference_completed_count: 0,
     corrective_preference_degraded_count: 0,
     extractor_max_tokens_stop_count: 0,
@@ -749,6 +753,13 @@ describe("SimulatorRunner", () => {
         shared_state_live_starvation_final: false,
         closure_loop_completed_count: 9,
         closure_loop_degraded_count: 1,
+        closure_pressure_mixed_observed_total: 3,
+        closure_pressure_closure_only_suppressed_total: 1,
+        closure_pressure_mixed_passed_no_active_preference_total: 2,
+        closure_pressure_mixed_by_span_kind: {
+          aphoristic_valediction: 2,
+          imperative_closer: 1,
+        },
         corrective_preference_completed_count: 8,
         corrective_preference_degraded_count: 2,
         extractor_max_tokens_stop_count: 4,
@@ -816,6 +827,9 @@ describe("SimulatorRunner", () => {
       "Action archive visibility: archivable 1, skipped Borg-owned 2, skipped due-date 1, skipped below threshold 3, skipped other 0, oldest archivable 24 turns, inactive buckets 0-15=4, 15-20=3, 20-30=1, 30+=0",
     );
     expect(report).toContain("live starvation ever true, live starvation final false");
+    expect(report).toContain(
+      "Closure pressure: mixed observed 3, closure-only suppressed 1, mixed/no-active-preference 2, mixed span kinds aphoristic_valediction=2, imperative_closer=1",
+    );
     expect(report).toContain(
       "Extractor health: closure loop degraded 1/9, corrective preference degraded 2/8, max-token stops 4",
     );

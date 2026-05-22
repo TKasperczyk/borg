@@ -206,6 +206,10 @@ const TURN_METRICS_KEY_ORDER = [
   "overseer_due_on_suppressed_turn",
   "closure_loop_completed_count",
   "closure_loop_degraded_count",
+  "closure_pressure_mixed_observed_total",
+  "closure_pressure_closure_only_suppressed_total",
+  "closure_pressure_mixed_passed_no_active_preference_total",
+  "closure_pressure_mixed_by_span_kind",
   "corrective_preference_completed_count",
   "corrective_preference_degraded_count",
   "extractor_max_tokens_stop_count",
@@ -700,6 +704,52 @@ describe("MetricsCapture", () => {
           violationCount: 2,
           commitmentEnforcementClasses: ["advisory"],
         },
+        {
+          ts: 198,
+          turnId: "turn-1",
+          event: "closure_response_guard.completed",
+          mode: "enforce",
+          verdict: "passed",
+          wouldHaveVerdict: "suppressed",
+          reason: "mixed_closure_observed",
+          response_shape: "mixed",
+          spans: [
+            {
+              text: "Closing line.",
+              kind: "aphoristic_valediction",
+            },
+          ],
+        },
+        {
+          ts: 199,
+          turnId: "turn-1",
+          event: "closure_response_guard.completed",
+          mode: "enforce",
+          verdict: "suppressed",
+          reason: "closure_pressure_only",
+          response_shape: "closure_only",
+          spans: [
+            {
+              text: "Goodnight.",
+              kind: "imperative_closer",
+            },
+          ],
+        },
+        {
+          ts: 200,
+          turnId: "turn-1",
+          event: "closure_response_guard.completed",
+          mode: "shadow",
+          verdict: "passed",
+          reason: "no_active_closure_preference",
+          response_shape: "mixed",
+          spans: [
+            {
+              text: "Noted.",
+              kind: "quotable_closing_tail",
+            },
+          ],
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join("\n"),
@@ -763,6 +813,13 @@ describe("MetricsCapture", () => {
     expect(row.borg_output_tokens).toBe(7);
     expect(row.closure_loop_completed_count).toBe(1);
     expect(row.closure_loop_degraded_count).toBe(1);
+    expect(row.closure_pressure_mixed_observed_total).toBe(1);
+    expect(row.closure_pressure_closure_only_suppressed_total).toBe(1);
+    expect(row.closure_pressure_mixed_passed_no_active_preference_total).toBe(1);
+    expect(row.closure_pressure_mixed_by_span_kind).toEqual({
+      aphoristic_valediction: 1,
+      quotable_closing_tail: 1,
+    });
     expect(row.corrective_preference_completed_count).toBe(1);
     expect(row.corrective_preference_degraded_count).toBe(1);
     expect(row.extractor_max_tokens_stop_count).toBe(4);
@@ -2676,7 +2733,7 @@ describe("MetricsCapture", () => {
           original_critical_domain: "explicit_no_disclosure",
           new_enforcement_class: "advisory",
           new_critical_domain: null,
-          reason: "explicit_no_disclosure_without_boundary_kind",
+          reason: "explicit_no_disclosure_without_boundary_type",
           kind: "participant_preference",
           type: "preference",
           directive_family: "owner_decides_wording",
@@ -2701,7 +2758,7 @@ describe("MetricsCapture", () => {
     expect(row.commitments_critical_classification_downgraded_by_reason).toEqual({
       ...zeroCounts(CLASSIFICATION_DOWNGRADE_REASONS),
       preference_with_internal_tool_hygiene: 1,
-      explicit_no_disclosure_without_boundary_kind: 1,
+      explicit_no_disclosure_without_boundary_type: 1,
     });
     expect(row.commitments_critical_classification_downgraded_by_kind_type_from_domain).toEqual({
       "participant_preference/preference/explicit_no_disclosure": 1,

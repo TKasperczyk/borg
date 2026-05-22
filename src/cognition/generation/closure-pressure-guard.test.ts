@@ -113,7 +113,7 @@ async function runClosureHistoryGuard(input: {
 }
 
 describe("ClosurePressureGuard", () => {
-  it("removes closure tails when a no-closure commitment is active", async () => {
+  it("observes mixed closure tails when a no-closure commitment is active", async () => {
     const llm = new FakeLLMClient({
       responses: [
         closureAuditResponse({
@@ -150,23 +150,29 @@ describe("ClosurePressureGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "message",
-      content: "The shelf test is the right move.",
-      closure_pressure_history_reason: "span_removed",
+      content: "The shelf test is the right move. Go read.",
     });
-    expect(result.verdict).toBe("rewritten");
+    expect(result.verdict).toBe("passed");
     expect(result.removed_spans).toEqual(["Go read."]);
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     expect(tracer.emit).toHaveBeenCalledWith(
       "closure_response_guard.completed",
       expect.objectContaining({
-        verdict: "rewritten",
+        verdict: "passed",
+        wouldHaveVerdict: "suppressed",
         removed_spans: ["Go read."],
-        reason: "closure_spans_removed",
+        reason: "mixed_closure_observed",
+        spans: [
+          expect.objectContaining({
+            text: "Go read.",
+            kind: "imperative_closer",
+          }),
+        ],
       }),
     );
   });
 
-  it("suppresses phrase-only closure spans instead of emitting setup-sentence gaps", async () => {
+  it("observes phrase-only mixed closure spans without suppressing the response", async () => {
     const llm = new FakeLLMClient({
       responses: [
         closureAuditResponse({
@@ -196,15 +202,14 @@ describe("ClosurePressureGuard", () => {
     });
 
     expect(result.emission).toEqual({
-      kind: "suppressed",
-      reason: "closure_pressure_only",
-      closure_pressure_history_reason: "span_removed",
+      kind: "message",
+      content: "Anyway, go read.",
     });
-    expect(result.verdict).toBe("suppressed");
+    expect(result.verdict).toBe("passed");
     expect(result.removed_spans).toEqual(["go read"]);
   });
 
-  it("audits and computes deletion but emits the original response in shadow mode", async () => {
+  it("audits mixed closure spans and emits the original response in shadow mode", async () => {
     const original = "The shelf test is the right move. Go read.";
     const llm = new FakeLLMClient({
       responses: [
@@ -253,8 +258,15 @@ describe("ClosurePressureGuard", () => {
       expect.objectContaining({
         mode: "shadow",
         verdict: "passed",
-        wouldHaveVerdict: "rewritten",
+        wouldHaveVerdict: "suppressed",
         removed_spans: ["Go read."],
+        reason: "mixed_closure_observed",
+        spans: [
+          expect.objectContaining({
+            text: "Go read.",
+            kind: "imperative_closer",
+          }),
+        ],
       }),
     );
   });
@@ -392,8 +404,7 @@ describe("ClosurePressureGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "message",
-      content: "The shelf test is the right move.",
-      closure_pressure_history_reason: "span_removed",
+      content: "The shelf test is the right move. Go read.",
     });
     expect(result.active_closure_commitments).toContain("closure_pressure_history");
   });
@@ -518,14 +529,13 @@ describe("ClosurePressureGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "message",
-      content: "The result is still the same: use the current shelf.",
-      closure_pressure_history_reason: "span_removed",
+      content: "The result is still the same: use the current shelf. Standing by.",
     });
-    expect(result.verdict).toBe("rewritten");
+    expect(result.verdict).toBe("passed");
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
   });
 
-  it("enforces non-empty spans when the audit shape is contradictory", async () => {
+  it("passes through when audit returns no_closure with non-empty spans and emits degraded trace", async () => {
     const tracer = {
       enabled: true,
       includePayloads: false,
@@ -562,14 +572,25 @@ describe("ClosurePressureGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "message",
-      content: "The shelf test is the right move.",
-      closure_pressure_history_reason: "span_removed",
+      content: "The shelf test is the right move. Go read.",
     });
-    expect(result.verdict).toBe("rewritten");
+    expect(result.verdict).toBe("passed");
     expect(tracer.emit).toHaveBeenCalledWith(
       "closure_pressure_audit.degraded",
       expect.objectContaining({
         reason: "closure_pressure_audit.degraded_with_spans",
+        response_shape: "no_closure",
+        spans_detected: 1,
+        active_closure_commitments: [
+          expect.stringContaining("honor_pause_not_closure"),
+        ],
+        spans: [
+          expect.objectContaining({
+            text: "Go read.",
+            kind: "imperative_closer",
+            rationale: "Imperative closer despite contradictory shape.",
+          }),
+        ],
       }),
     );
   });
@@ -617,7 +638,7 @@ describe("ClosurePressureGuard", () => {
   });
 
   it.each([".", "...", "  ", "?!"])(
-    "suppresses structurally empty output after removing closure spans: %j",
+    "suppresses closure-only output with structural residue: %j",
     async (prefix) => {
       const response = `${prefix} Go read.`;
       const llm = new FakeLLMClient({
@@ -630,7 +651,7 @@ describe("ClosurePressureGuard", () => {
                 rationale: "Imperative closer leaves no content.",
               },
             ],
-            response_shape: "mixed",
+            response_shape: "closure_only",
             reason: "Only punctuation or whitespace remains after removal.",
           }),
         ],
@@ -688,8 +709,7 @@ describe("ClosurePressureGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "message",
-      content: "The shelf test is the right move.",
-      closure_pressure_history_reason: "span_removed",
+      content: "The shelf test is the right move. Go read.",
     });
     expect(result.active_closure_commitments[0]).toContain("avoid_closure_pressure");
   });

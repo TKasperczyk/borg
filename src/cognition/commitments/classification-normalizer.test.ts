@@ -48,7 +48,7 @@ describe("normalizeCommitmentClassification", () => {
     ).toMatchObject({
       enforcement_class: "advisory",
       critical_domain: null,
-      downgrade_reason: "explicit_no_disclosure_without_boundary_kind",
+      downgrade_reason: "explicit_no_disclosure_without_boundary_type",
     });
   });
 
