@@ -157,6 +157,18 @@ describe("normalizeCommitmentClassification", () => {
       type: "rule",
       critical_domain: "safety",
     },
+    {
+      label: "participant-preference explicit no-disclosure boundary",
+      kind: "participant_preference",
+      type: "boundary",
+      critical_domain: "explicit_no_disclosure",
+    },
+    {
+      label: "participant-preference privacy boundary",
+      kind: "participant_preference",
+      type: "boundary",
+      critical_domain: "privacy",
+    },
   ] as const)("keeps legitimate critical classification: $label", (input) => {
     expect(
       normalizeCommitmentClassification({

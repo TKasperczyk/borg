@@ -79,11 +79,7 @@ export function normalizeCommitmentClassification(
     return downgrade(input, "internal_tool_hygiene_with_preference_type");
   }
 
-  if (
-    input.critical_domain === "explicit_no_disclosure" &&
-    input.kind !== "boundary" &&
-    input.kind !== "audience_rule"
-  ) {
+  if (input.critical_domain === "explicit_no_disclosure" && input.type !== "boundary") {
     return downgrade(input, "explicit_no_disclosure_without_boundary_kind");
   }
 
