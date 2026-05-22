@@ -9,9 +9,13 @@ import {
 } from "../../llm/index.js";
 import {
   closurePressureRelevanceSchema,
+  commitmentCriticalDomainSchema,
+  commitmentEnforcementClassSchema,
   commitmentIdSchema,
   commitmentKindSchema,
   commitmentTypeSchema,
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
   normalizeDirectiveFamily,
 } from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
@@ -88,6 +92,16 @@ const correctivePreferenceSchema = z
       .describe(
         "Classify the durable correction as audience_rule, participant_preference, boundary, or process_norm. Use null when classification is none.",
       ),
+    enforcement_class: commitmentEnforcementClassSchema
+      .nullable()
+      .describe(
+        "Set critical only for privacy, audience-scope, safety, explicit no-disclosure, or internal-tool-hygiene boundaries that may justify response regeneration/suppression. Set advisory for process norms and output shape/style preferences. Use null when classification is none.",
+      ),
+    critical_domain: commitmentCriticalDomainSchema
+      .nullable()
+      .describe(
+        "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. Use null for advisory or classification none.",
+      ),
     directive: z
       .string()
       .nullable()
@@ -157,6 +171,8 @@ export type CorrectivePreferenceCandidate = {
   directive: string;
   directive_family: string;
   closure_pressure_relevance: z.infer<typeof closurePressureRelevanceSchema>;
+  enforcement_class: z.infer<typeof commitmentEnforcementClassSchema>;
+  critical_domain: z.infer<typeof commitmentCriticalDomainSchema> | null;
   priority: number;
   reason: string;
   confidence: number;
@@ -207,7 +223,9 @@ export type ExtractCorrectivePreferenceInput = {
   activeCommitments: readonly {
     id: CommitmentId;
     type: string;
-    kind?: string | null;
+    kind?: z.infer<typeof commitmentKindSchema> | null;
+    enforcement_class?: z.infer<typeof commitmentEnforcementClassSchema> | null;
+    critical_domain?: z.infer<typeof commitmentCriticalDomainSchema> | null;
     directive: string;
     directive_family?: string | null;
     closure_pressure_relevance?: z.infer<typeof closurePressureRelevanceSchema> | null;
@@ -231,6 +249,7 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
   if (
     input.type === null ||
     input.kind === null ||
+    input.enforcement_class === null ||
     input.directive === null ||
     input.directive_family === null ||
     input.closure_pressure_relevance === null ||
@@ -250,6 +269,8 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
   return {
     type: input.type,
     kind: input.kind,
+    enforcement_class: input.enforcement_class,
+    critical_domain: input.enforcement_class === "critical" ? input.critical_domain : null,
     directive,
     directive_family: directiveFamily,
     closure_pressure_relevance: input.closure_pressure_relevance,
@@ -328,15 +349,34 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
         speaker_entity_id: input.speakerEntityId ?? null,
         speaker_display_name: input.speakerDisplayName ?? null,
         participant_roster: renderParticipantRoster(input.participantRoster),
-        active_commitments: input.activeCommitments.map((commitment) => ({
-          id: commitment.id,
-          type: commitment.type,
-          kind: commitment.kind ?? null,
-          directive_family: commitment.directive_family ?? null,
-          closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
-          directive: commitment.directive,
-          priority: commitment.priority,
-        })),
+        active_commitments: input.activeCommitments.map((commitment) => {
+          const enforcementFields =
+            commitment.kind === null || commitment.kind === undefined
+              ? null
+              : {
+                  kind: commitment.kind,
+                  enforcement_class: commitment.enforcement_class ?? undefined,
+                  critical_domain: commitment.critical_domain ?? undefined,
+                };
+
+          return {
+            id: commitment.id,
+            type: commitment.type,
+            kind: commitment.kind ?? null,
+            enforcement_class:
+              enforcementFields === null
+                ? null
+                : effectiveCommitmentEnforcementClass(enforcementFields),
+            critical_domain:
+              enforcementFields === null
+                ? null
+                : effectiveCommitmentCriticalDomain(enforcementFields),
+            directive_family: commitment.directive_family ?? null,
+            closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
+            directive: commitment.directive,
+            priority: commitment.priority,
+          };
+        }),
         relational_slots: (input.relationalSlots ?? []).map((slot) => ({
           id: slot.id ?? null,
           subject_entity_id: slot.subject_entity_id,

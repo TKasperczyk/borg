@@ -407,6 +407,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         deps.identityService.addCommitment({
           type: input.type,
           kind: input.kind,
+          enforcementClass: input.enforcementClass,
+          criticalDomain: input.criticalDomain,
           directiveFamily: input.directiveFamily,
           directive: input.directive,
           priority: input.priority,
@@ -444,6 +446,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }),
       countActive: () => deps.commitmentRepository.countActive(),
       countActiveByKind: () => deps.commitmentRepository.countActiveByKind(),
+      countActiveByEnforcementClass: () =>
+        deps.commitmentRepository.countActiveByEnforcementClass(),
       countSuperseded: () => deps.commitmentRepository.countSuperseded(),
       countRevoked: () => deps.commitmentRepository.countRevoked(),
       countExpired: () => deps.commitmentRepository.countExpired(),

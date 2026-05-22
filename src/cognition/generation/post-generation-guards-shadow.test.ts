@@ -53,6 +53,8 @@ function makeCommitment(): CommitmentRecord {
     id: createCommitmentId(),
     type: "boundary",
     kind: "boundary",
+    enforcement_class: "critical",
+    critical_domain: "audience_scope",
     directive_family: "launch_date_boundary",
     closure_pressure_relevance: "no_closure",
     directive: "Do not discuss launch dates, and do not convert open pauses into closure.",

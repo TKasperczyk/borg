@@ -1,6 +1,8 @@
 import type { LLMClient } from "../../llm/index.js";
 import {
   commitmentSchema,
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
   type CommitmentRecord,
   type CommitmentRepository,
 } from "../../memory/commitments/index.js";
@@ -78,6 +80,8 @@ function buildCorrectivePreferenceCommitment(input: {
     id: createCommitmentId(),
     type: input.candidate.type,
     kind: input.candidate.kind,
+    enforcement_class: input.candidate.enforcement_class,
+    critical_domain: input.candidate.critical_domain,
     directive_family: input.candidate.directive_family,
     closure_pressure_relevance: input.candidate.closure_pressure_relevance,
     directive: input.candidate.directive,
@@ -336,6 +340,8 @@ export class CorrectivePreferenceTurnService {
         id: commitment.id,
         type: commitment.type,
         kind: commitment.kind,
+        enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+        critical_domain: effectiveCommitmentCriticalDomain(commitment),
         directive_family: commitment.directive_family,
         closure_pressure_relevance: commitment.closure_pressure_relevance,
         directive: commitment.directive,
@@ -452,6 +458,8 @@ export class CorrectivePreferenceTurnService {
         id: commitment.id,
         type: commitment.type,
         kind: commitment.kind,
+        enforcementClass: effectiveCommitmentEnforcementClass(commitment),
+        criticalDomain: effectiveCommitmentCriticalDomain(commitment),
         directiveFamily: commitment.directive_family,
         closurePressureRelevance: commitment.closure_pressure_relevance,
         directive: commitment.directive,

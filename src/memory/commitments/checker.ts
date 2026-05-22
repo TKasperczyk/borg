@@ -5,7 +5,11 @@ import { summarizeProvenanceForPrompt } from "../common/provenance.js";
 import { parseCommitmentId, type CommitmentId, type EntityId } from "../../util/ids.js";
 import { escapeReservedBorgTags } from "../../util/prompt-tags.js";
 import { EntityRepository } from "./repository.js";
-import type { CommitmentRecord } from "./types.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+  type CommitmentRecord,
+} from "./types.js";
 
 export type CommitmentViolation = {
   commitment_id: CommitmentId;
@@ -94,7 +98,13 @@ export function formatCommitmentsForPrompt(
       const audience = entityName(entityRepository, commitment.restricted_audience);
       const about = entityName(entityRepository, commitment.about_entity);
       const committedBy = entityName(entityRepository, commitment.committed_by_entity_id ?? null);
-      return `- [${commitment.kind}/${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`}${committedBy === null ? "" : ` committed_by=${committedBy}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
+      const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
+      const criticalDomain = effectiveCommitmentCriticalDomain(commitment);
+      const enforcement =
+        enforcementClass === "critical"
+          ? `CRITICAL${criticalDomain === null ? "" : `:${criticalDomain}`}`
+          : "ADVISORY guidance";
+      return `- [${enforcement} ${commitment.kind}/${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`}${committedBy === null ? "" : ` committed_by=${committedBy}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
     }),
   ].join("\n");
 }
@@ -107,6 +117,8 @@ function describeCommitmentForJudge(
   const audience = entityName(entityRepository, commitment.restricted_audience);
   const about = entityName(entityRepository, commitment.about_entity);
   const committedBy = entityName(entityRepository, commitment.committed_by_entity_id ?? null);
+  const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
+  const criticalDomain = effectiveCommitmentCriticalDomain(commitment);
   const scope = [
     madeTo === null ? null : `made_to=${madeTo}`,
     audience === null ? null : `audience=${audience}`,
@@ -116,7 +128,7 @@ function describeCommitmentForJudge(
     .filter((part): part is string => part !== null)
     .join(" ");
 
-  return `id=${commitment.id} kind=${commitment.kind} type=${commitment.type}${scope === "" ? "" : ` ${scope}`} :: ${escapeReservedBorgTags(commitment.directive)}`;
+  return `id=${commitment.id} enforcement_class=${enforcementClass} critical_domain=${criticalDomain ?? "none"} kind=${commitment.kind} type=${commitment.type}${scope === "" ? "" : ` ${scope}`} :: ${escapeReservedBorgTags(commitment.directive)}`;
 }
 
 function failClosedJudgeViolation(

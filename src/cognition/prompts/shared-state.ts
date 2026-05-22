@@ -33,7 +33,7 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
   "",
   "Canonicalization handles:",
-  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists; active_commitments also include kind, type, and directive_family.",
+  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists; active_commitments also include kind, type, directive_family, and enforcement_class.",
   "- When a locked add, update, or supersede replacement makes listed active state redundant, set canonicalizes with only those exact ids.",
   "- For Borg-owned active_actions whose work is to log, note, hold, update, or track memory inside this shared-state surface, canonicalize the action when the locked add/update/supersede replacement actually performs that memory work.",
   "- For commitments, canonicalize only supplied active promises or rules that the locked shared-state entry fully subsumes; never create an artifact entry merely to restate a commitment.",

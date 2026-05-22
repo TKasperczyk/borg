@@ -9,6 +9,10 @@ import {
   commitmentScope,
   persistenceClassFromProvenance,
 } from "../scope-resolver.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+} from "../../../memory/commitments/index.js";
 
 export function addCommitmentsAndConstraintsSection(context: BuilderSectionContext): void {
   for (const commitment of context.input.applicableCommitments) {
@@ -32,6 +36,8 @@ export function addCommitmentsAndConstraintsSection(context: BuilderSectionConte
         state_metadata: {
           commitment_kind: commitment.kind,
           commitment_type: commitment.type,
+          commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+          commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
         },
         taint: "none",
         ...persistenceClassFromProvenance(

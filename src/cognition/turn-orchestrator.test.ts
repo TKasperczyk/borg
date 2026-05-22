@@ -589,6 +589,14 @@ function createCorrectivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
   kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
+  enforcement_class?: "critical" | "advisory" | null;
+  critical_domain?:
+    | "privacy"
+    | "audience_scope"
+    | "safety"
+    | "explicit_no_disclosure"
+    | "internal_tool_hygiene"
+    | null;
   directive?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
@@ -613,6 +621,10 @@ function createCorrectivePreferenceResponse(input: {
           kind:
             input.kind ??
             (input.classification === "corrective_preference" ? "participant_preference" : null),
+          enforcement_class:
+            input.enforcement_class ??
+            (input.classification === "corrective_preference" ? "advisory" : null),
+          critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
           directive_family:
             input.directive_family ??
@@ -3020,6 +3032,73 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
           event: "commitment_guard.regeneration_succeeded",
+        }),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("lets advisory timestamped-dossier style violations through without suppressing continuity", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_149_500);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        enforcementClass: "advisory",
+        criticalDomain: null,
+        directiveFamily: "no_timestamped_dossier",
+        directive: "Do not make this a timestamped dossier.",
+        priority: 8,
+        provenance: { kind: "manual" },
+      });
+      const draft = [
+        "The three of you already built most of this.",
+        "",
+        "Chronology:",
+        "- 09:00: context gathered",
+        "- 10:00: next decision named",
+      ].join("\n");
+
+      llm.pushResponse(createEmitAnswerResponse(draft));
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Uses a timestamped dossier shape.",
+            violating_span_or_topic: "Chronology bucket list",
+          },
+        ]),
+      );
+      llm.pushResponse(createEmptyReflectionResponse());
+
+      const result = await borg.turn({
+        userMessage: "What are we carrying forward?",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe(draft);
+      expect(result.response).toContain("already built most of this");
+      expect(borg.stream.tail(10).some((entry) => entry.kind === "agent_suppressed")).toBe(false);
+      expect(llm.requests.map((request) => request.budget)).not.toContain("commitment-revision");
+      expect(traceEvents.map((event) => event.event)).not.toContain(
+        "commitment_guard.regeneration_requested",
+      );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "commitment_guard.advisory_violation_observed",
+          commitmentIds: [commitment.id],
+          commitmentKinds: ["boundary"],
+          commitmentEnforcementClasses: ["advisory"],
         }),
       );
     } finally {

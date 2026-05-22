@@ -2,7 +2,7 @@
 
 import type { Clock } from "../util/clock.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
-import { commitmentSchema } from "../memory/commitments/index.js";
+import { legacyCommitmentSchema } from "../memory/commitments/index.js";
 import { isEpisodeVisibleToAudience, type EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEvent } from "../memory/identity/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -66,7 +66,7 @@ function isIdentityEventValueVisible(
   audienceEntityId: EntityId | null | undefined,
 ): boolean {
   if (eventValueHasKey(value, "restricted_audience")) {
-    const parsed = commitmentSchema.safeParse(value);
+    const parsed = legacyCommitmentSchema.safeParse(value);
 
     return parsed.success
       ? visibleCommitmentAudience(parsed.data.restricted_audience, audienceEntityId)

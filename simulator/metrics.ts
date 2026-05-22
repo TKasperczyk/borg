@@ -5,6 +5,7 @@ import {
   QUARANTINED_USER_ENTRY_EVENT,
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
   GOAL_PROMOTION_CLASSIFICATIONS,
   RELATIONAL_SLOT_STATES,
@@ -16,6 +17,7 @@ import {
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
+  type CommitmentEnforcementClass,
   type GoalPromotionClassification,
   type OpenQuestion,
   type OpenQuestionSource,
@@ -139,6 +141,9 @@ type MemoryBandMetricCounts = Pick<
   | "recent_completed_action_count"
   | "commitment_count_active"
   | "commitment_count_active_by_kind"
+  | "commitments_by_enforcement_class"
+  | "commitments_advisory_count"
+  | "commitments_critical_count"
   | "commitment_count_superseded"
   | "commitment_count_revoked"
   | "commitment_count_expired"
@@ -212,6 +217,8 @@ type CommitmentRegenerationMetricCounts = Pick<
   | "commitment_regeneration_attempted_total"
   | "commitment_regeneration_succeeded_total"
   | "commitment_regeneration_failed_total"
+  | "commitment_guard_advisory_violations_total"
+  | "commitment_guard_advisory_violations_by_class"
 >;
 
 type SemanticRevisionErrorMetricCounts = Pick<
@@ -732,6 +739,25 @@ function commitmentRegenerationMetrics(input: {
   const failedTotal = input.cumulativeTraceRecords.filter(
     (record) => record.event === "commitment_guard.regeneration_failed",
   ).length;
+  const advisoryViolations = input.cumulativeTraceRecords.filter(
+    (record) => record.event === "commitment_guard.advisory_violation_observed",
+  );
+  const advisoryViolationsByClass = zeroCounts(COMMITMENT_ENFORCEMENT_CLASSES);
+  let advisoryViolationTotal = 0;
+
+  for (const record of advisoryViolations) {
+    const violationCount = Math.max(1, traceNumber(record, "violationCount"));
+    const classes = traceStringArray(record, "commitmentEnforcementClasses").filter(
+      (value): value is CommitmentEnforcementClass =>
+        COMMITMENT_ENFORCEMENT_CLASSES.includes(value as CommitmentEnforcementClass),
+    );
+    const countedClasses = classes.length === 0 ? ["advisory" as const] : classes;
+
+    advisoryViolationTotal += violationCount;
+    for (const enforcementClass of countedClasses) {
+      advisoryViolationsByClass[enforcementClass] += violationCount;
+    }
+  }
 
   return {
     commitment_regeneration_attempted_count: attempted,
@@ -740,6 +766,8 @@ function commitmentRegenerationMetrics(input: {
     commitment_regeneration_attempted_total: attemptedTotal,
     commitment_regeneration_succeeded_total: succeededTotal,
     commitment_regeneration_failed_total: failedTotal,
+    commitment_guard_advisory_violations_total: advisoryViolationTotal,
+    commitment_guard_advisory_violations_by_class: advisoryViolationsByClass,
   };
 }
 
@@ -1049,6 +1077,16 @@ function traceString(record: TraceRecord, key: string): string | null {
   const value = record[key];
 
   return typeof value === "string" ? value : null;
+}
+
+function traceStringArray(record: TraceRecord, key: string): string[] {
+  const value = record[key];
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function sessionReentryContinuityMetrics(
@@ -2093,6 +2131,10 @@ export class MetricsCapture {
       actionRecordCountByState,
       TERMINAL_ACTION_STATES,
     );
+    const commitmentsByEnforcementClass = {
+      ...zeroCounts(COMMITMENT_ENFORCEMENT_CLASSES),
+      ...borg.commitments.countActiveByEnforcementClass(),
+    };
 
     return {
       action_record_count_total: totalActions,
@@ -2145,6 +2187,11 @@ export class MetricsCapture {
         ...zeroCounts(COMMITMENT_KINDS),
         ...borg.commitments.countActiveByKind(),
       },
+      commitments_by_enforcement_class: {
+        ...commitmentsByEnforcementClass,
+      },
+      commitments_advisory_count: commitmentsByEnforcementClass.advisory,
+      commitments_critical_count: commitmentsByEnforcementClass.critical,
       commitment_count_superseded: borg.commitments.countSuperseded(),
       commitment_count_revoked: borg.commitments.countRevoked(),
       commitment_count_expired: borg.commitments.countExpired(),
@@ -2431,6 +2478,9 @@ export class MetricsCapture {
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
+      commitments_by_enforcement_class: memoryBandMetrics.commitments_by_enforcement_class,
+      commitments_advisory_count: memoryBandMetrics.commitments_advisory_count,
+      commitments_critical_count: memoryBandMetrics.commitments_critical_count,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
@@ -2447,6 +2497,10 @@ export class MetricsCapture {
         commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_total,
       commitment_regeneration_failed_total:
         commitmentRegenerationMetricCounts.commitment_regeneration_failed_total,
+      commitment_guard_advisory_violations_total:
+        commitmentRegenerationMetricCounts.commitment_guard_advisory_violations_total,
+      commitment_guard_advisory_violations_by_class:
+        commitmentRegenerationMetricCounts.commitment_guard_advisory_violations_by_class,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
@@ -2766,6 +2820,9 @@ export class MetricsCapture {
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_active_by_kind: memoryBandMetrics.commitment_count_active_by_kind,
+      commitments_by_enforcement_class: memoryBandMetrics.commitments_by_enforcement_class,
+      commitments_advisory_count: memoryBandMetrics.commitments_advisory_count,
+      commitments_critical_count: memoryBandMetrics.commitments_critical_count,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
       commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
       commitment_count_expired: memoryBandMetrics.commitment_count_expired,
@@ -2782,6 +2839,10 @@ export class MetricsCapture {
         commitmentRegenerationMetricCounts.commitment_regeneration_succeeded_total,
       commitment_regeneration_failed_total:
         commitmentRegenerationMetricCounts.commitment_regeneration_failed_total,
+      commitment_guard_advisory_violations_total:
+        commitmentRegenerationMetricCounts.commitment_guard_advisory_violations_total,
+      commitment_guard_advisory_violations_by_class:
+        commitmentRegenerationMetricCounts.commitment_guard_advisory_violations_by_class,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,

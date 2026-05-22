@@ -133,6 +133,9 @@ function createNoCorrectivePreferenceResponse() {
         input: {
           classification: "none",
           type: null,
+          kind: null,
+          enforcement_class: null,
+          critical_domain: null,
           directive: null,
           directive_family: null,
           closure_pressure_relevance: null,

@@ -165,6 +165,10 @@ describe("commitment repository", () => {
       });
 
       expect(commitments.get(boundary.id)?.kind).toBe("boundary");
+      expect(commitments.get(boundary.id)).toMatchObject({
+        enforcement_class: "critical",
+        critical_domain: "audience_scope",
+      });
       expect(commitments.countActiveByKind(1_000)).toEqual({
         assistant_commitment: 0,
         audience_rule: 0,
@@ -172,8 +176,102 @@ describe("commitment repository", () => {
         boundary: 1,
         process_norm: 0,
       });
+      expect(commitments.countActiveByEnforcementClass(1_000)).toEqual({
+        critical: 1,
+        advisory: 1,
+      });
     } finally {
       db.close();
+    }
+  });
+
+  it("backfills enforcement class and critical domain by commitment kind", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    const initialDb = openDatabase(dbPath, {
+      migrations: commitmentMigrations.slice(0, 10),
+    });
+
+    try {
+      const insert = initialDb.prepare(`
+        INSERT INTO commitments (
+          id, type, kind, directive_family, closure_pressure_relevance, directive, priority,
+          source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
+          created_at, last_reinforced_at
+        ) VALUES (?, ?, ?, ?, 'neutral', ?, 5, '[]', 'manual', NULL, NULL, 1, 1)
+      `);
+      insert.run(
+        createCommitmentId(),
+        "boundary",
+        "boundary",
+        "no_timestamped_dossier",
+        "Do not make this a timestamped dossier.",
+      );
+      insert.run(
+        createCommitmentId(),
+        "rule",
+        "audience_rule",
+        "channel_visibility",
+        "Keep channel-only details out of public replies.",
+      );
+      insert.run(
+        createCommitmentId(),
+        "rule",
+        "process_norm",
+        "skip_preamble",
+        "Skip preambles.",
+      );
+      insert.run(
+        createCommitmentId(),
+        "preference",
+        "participant_preference",
+        "terse_reply",
+        "Prefer terse replies.",
+      );
+      insert.run(
+        createCommitmentId(),
+        "promise",
+        "assistant_commitment",
+        "status_update",
+        "Send the status update.",
+      );
+    } finally {
+      initialDb.close();
+    }
+
+    const migratedDb = openDatabase(dbPath, {
+      migrations: commitmentMigrations,
+    });
+
+    try {
+      const rows = migratedDb
+        .prepare(
+          `
+            SELECT kind, enforcement_class, critical_domain
+            FROM commitments
+            ORDER BY kind
+          `,
+        )
+        .all();
+
+      expect(rows).toEqual([
+        {
+          kind: "assistant_commitment",
+          enforcement_class: "advisory",
+          critical_domain: null,
+        },
+        { kind: "audience_rule", enforcement_class: "critical", critical_domain: "audience_scope" },
+        { kind: "boundary", enforcement_class: "critical", critical_domain: "audience_scope" },
+        {
+          kind: "participant_preference",
+          enforcement_class: "advisory",
+          critical_domain: null,
+        },
+        { kind: "process_norm", enforcement_class: "advisory", critical_domain: null },
+      ]);
+    } finally {
+      migratedDb.close();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

@@ -230,4 +230,78 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 11,
+    name: "commitment_enforcement_class",
+    up: (db) => {
+      if (!tableExists(db, "commitments")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "commitments", "kind")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'assistant_commitment' CHECK (
+              kind IN (
+                'assistant_commitment',
+                'audience_rule',
+                'participant_preference',
+                'boundary',
+                'process_norm'
+              )
+            );
+        `);
+      }
+
+      if (!tableHasColumn(db, "commitments", "enforcement_class")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN enforcement_class TEXT NULL CHECK (
+              enforcement_class IS NULL OR enforcement_class IN ('critical', 'advisory')
+            );
+        `);
+      }
+
+      if (!tableHasColumn(db, "commitments", "critical_domain")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN critical_domain TEXT NULL CHECK (
+              critical_domain IS NULL OR critical_domain IN (
+                'privacy',
+                'audience_scope',
+                'safety',
+                'explicit_no_disclosure',
+                'internal_tool_hygiene'
+              )
+            );
+        `);
+      }
+
+      db.exec(`
+        UPDATE commitments
+        SET enforcement_class = CASE
+          WHEN kind IN ('boundary', 'audience_rule') THEN 'critical'
+          WHEN kind IN ('process_norm', 'participant_preference', 'assistant_commitment') THEN 'advisory'
+          ELSE 'advisory'
+        END
+        WHERE enforcement_class IS NULL;
+
+        UPDATE commitments
+        SET critical_domain = CASE
+          WHEN kind IN ('boundary', 'audience_rule') THEN 'audience_scope'
+          ELSE NULL
+        END
+        WHERE critical_domain IS NULL;
+
+        UPDATE commitments
+        SET critical_domain = NULL
+        WHERE enforcement_class = 'advisory';
+
+        CREATE INDEX IF NOT EXISTS commitments_enforcement_class_idx
+          ON commitments(enforcement_class);
+        CREATE INDEX IF NOT EXISTS commitments_critical_domain_idx
+          ON commitments(critical_domain);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

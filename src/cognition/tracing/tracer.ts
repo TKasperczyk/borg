@@ -104,6 +104,7 @@ export type TurnTraceEventName =
   | "semantic_node.status.transitioned"
   | "maintenance_snapshot.completed"
   | "commitment_guard.shadow_observation"
+  | "commitment_guard.advisory_violation_observed"
   | "commitment_guard.enforce_suppression"
   | "commitment_guard.enforce_rewrite"
   | "commitment_guard.regeneration_requested"

@@ -32,6 +32,8 @@ function makeCommitment(directiveFamily = "honor_pause_not_closure"): Commitment
     id: createCommitmentId(),
     type: "preference",
     kind: "participant_preference",
+    enforcement_class: "advisory",
+    critical_domain: null,
     directive_family: directiveFamily,
     closure_pressure_relevance: "no_closure",
     directive: "Do not convert open pauses into closure.",

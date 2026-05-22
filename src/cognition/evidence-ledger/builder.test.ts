@@ -209,6 +209,8 @@ function makeCommitment(streamEntryId: StreamEntry["id"]): CommitmentRecord {
     id: createCommitmentId(),
     type: "preference",
     kind: "participant_preference",
+    enforcement_class: "advisory",
+    critical_domain: null,
     directive_family: "current_session_primacy",
     closure_pressure_relevance: "neutral",
     directive: "Use the current session before prior summaries.",

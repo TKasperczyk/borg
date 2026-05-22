@@ -5,6 +5,10 @@ import type {
   CommitmentType,
 } from "../../memory/commitments/index.js";
 import { normalizeDirectiveFamily } from "../../memory/commitments/index.js";
+import {
+  defaultCommitmentCriticalDomain,
+  defaultCommitmentEnforcementClass,
+} from "../../memory/commitments/index.js";
 import { createActionId, createCommitmentId, createStreamEntryId } from "../../util/ids.js";
 
 const DEFAULT_TEST_TIMESTAMP_MS = 1_000;
@@ -92,12 +96,19 @@ export function makeCommitmentRecord(overrides: Partial<CommitmentRecord> = {}):
   const createdAt = overrides.created_at ?? DEFAULT_TEST_TIMESTAMP_MS;
   const type: CommitmentType = overrides.type ?? "promise";
   const kind: CommitmentKind = overrides.kind ?? "assistant_commitment";
+  const enforcementClass =
+    overrides.enforcement_class ?? defaultCommitmentEnforcementClass(kind);
 
   const defaults: CommitmentRecord = {
     id: overrides.id ?? createCommitmentId(),
     record_version: overrides.record_version ?? 1,
     type,
     kind,
+    enforcement_class: enforcementClass,
+    critical_domain:
+      enforcementClass === "critical"
+        ? (overrides.critical_domain ?? defaultCommitmentCriticalDomain(kind, enforcementClass))
+        : null,
     directive_family: normalizeDirectiveFamily("test commitment fixture"),
     closure_pressure_relevance: overrides.closure_pressure_relevance ?? "neutral",
     directive: overrides.directive ?? "Keep the test commitment active.",
@@ -124,6 +135,11 @@ export function makeCommitmentRecord(overrides: Partial<CommitmentRecord> = {}):
     ...definedOverrides(overrides),
     type,
     kind,
+    enforcement_class: enforcementClass,
+    critical_domain:
+      enforcementClass === "critical"
+        ? (overrides.critical_domain ?? defaultCommitmentCriticalDomain(kind, enforcementClass))
+        : null,
     created_at: createdAt,
   };
 }

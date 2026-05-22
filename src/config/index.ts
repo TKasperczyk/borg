@@ -77,6 +77,8 @@ const postGenerationGuardConfigSchema = z
   .prefault({});
 const commitmentEnforceConfigSchema = z
   .object({
+    // Deprecated compatibility setting retained for old configs. Stored/effective
+    // enforcement_class controls commitment guard enforcement.
     criticalKinds: z
       .array(commitmentKindSchema)
       .default(["boundary", "audience_rule"] satisfies CommitmentKind[]),

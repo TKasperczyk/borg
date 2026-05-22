@@ -262,7 +262,13 @@ export {
   type SocialSentimentPoint,
 } from "./memory/social/index.js";
 export {
+  COMMITMENT_CRITICAL_DOMAINS,
+  COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+  type CommitmentCriticalDomain,
+  type CommitmentEnforcementClass,
   type CommitmentRecord,
   type CommitmentKind,
   type CommitmentType,

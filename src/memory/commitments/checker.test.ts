@@ -219,6 +219,28 @@ describe("commitment checker", () => {
     db.close();
   });
 
+  it("labels advisory commitments distinctly in rendered prompts", () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const entities = new EntityRepository({ db });
+    const commitments = new CommitmentRepository({ db });
+    const advisory = commitments.add({
+      type: "boundary",
+      kind: "boundary",
+      enforcementClass: "advisory",
+      criticalDomain: null,
+      directiveFamily: "no_timestamped_dossier",
+      directive: "Do not make this a timestamped dossier.",
+      priority: 6,
+      provenance: { kind: "manual" },
+    });
+
+    expect(formatCommitmentsForPrompt([advisory], entities)).toContain(
+      "[ADVISORY guidance boundary/boundary]",
+    );
+
+    db.close();
+  });
+
   it("suppresses output when even the revised response still violates", async () => {
     const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);

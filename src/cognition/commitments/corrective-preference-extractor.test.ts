@@ -12,6 +12,14 @@ function correctivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
   kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
+  enforcement_class?: "critical" | "advisory" | null;
+  critical_domain?:
+    | "privacy"
+    | "audience_scope"
+    | "safety"
+    | "explicit_no_disclosure"
+    | "internal_tool_hygiene"
+    | null;
   directive?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
@@ -37,6 +45,10 @@ function correctivePreferenceResponse(input: {
           kind:
             input.kind ??
             (input.classification === "corrective_preference" ? "participant_preference" : null),
+          enforcement_class:
+            input.enforcement_class ??
+            (input.classification === "corrective_preference" ? "advisory" : null),
+          critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
           directive_family: input.directive_family ?? null,
           closure_pressure_relevance:
@@ -88,6 +100,8 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(result).toMatchObject({
       type: "preference",
       kind: "participant_preference",
+      enforcement_class: "advisory",
+      critical_domain: null,
       directive: "Do not add ritual closing lines when the conversation is still open.",
       directive_family: "no_terminal_valediction",
       closure_pressure_relevance: "no_closure",
@@ -139,6 +153,45 @@ describe("CorrectivePreferenceExtractor", () => {
       relationship_evidence_relational_slot_ids: ["rslot_parent"],
       relationship_evidence_stream_entry_ids: [streamEntryId],
     });
+  });
+
+  it("returns enforcement class and critical domain from the existing extractor call", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "boundary",
+          kind: "audience_rule",
+          enforcement_class: "critical",
+          critical_domain: "audience_scope",
+          directive: "Do not discuss the deployment incident in the public channel.",
+          directive_family: "deployment_incident_channel_scope",
+          closure_pressure_relevance: "neutral",
+          priority: 10,
+          reason: "The user set a durable audience-scoped disclosure boundary.",
+          confidence: 0.92,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await expect(
+      extractor.extract({
+        userMessage: "Do not discuss the deployment incident in the public channel.",
+        recentHistory: [],
+        audienceEntityId: createEntityId(),
+        activeCommitments: [],
+      }),
+    ).resolves.toMatchObject({
+      type: "boundary",
+      kind: "audience_rule",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+    });
+    expect(llm.requests).toHaveLength(1);
   });
 
   it("traces corrective preference extractor LLM calls on success", async () => {

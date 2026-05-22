@@ -274,6 +274,8 @@ export type BorgCommitmentsFacade = {
   add: (input: {
     type: Parameters<CommitmentRepository["add"]>[0]["type"];
     kind?: Parameters<CommitmentRepository["add"]>[0]["kind"];
+    enforcementClass?: Parameters<CommitmentRepository["add"]>[0]["enforcementClass"];
+    criticalDomain?: Parameters<CommitmentRepository["add"]>[0]["criticalDomain"];
     directiveFamily: string;
     directive: string;
     priority: number;
@@ -293,6 +295,9 @@ export type BorgCommitmentsFacade = {
   }) => ReturnType<CommitmentRepository["list"]>;
   countActive: () => ReturnType<CommitmentRepository["countActive"]>;
   countActiveByKind: () => ReturnType<CommitmentRepository["countActiveByKind"]>;
+  countActiveByEnforcementClass: () => ReturnType<
+    CommitmentRepository["countActiveByEnforcementClass"]
+  >;
   countSuperseded: () => ReturnType<CommitmentRepository["countSuperseded"]>;
   countRevoked: () => ReturnType<CommitmentRepository["countRevoked"]>;
   countExpired: () => ReturnType<CommitmentRepository["countExpired"]>;

@@ -8,6 +8,7 @@ import type {
   ReviewKind,
   SemanticNodeStatus,
   SessionId,
+  CommitmentEnforcementClass,
   CommitmentKind,
 } from "../src/index.js";
 
@@ -113,6 +114,9 @@ export type MetricsRow = {
   recent_completed_action_count: number;
   commitment_count_active: number;
   commitment_count_active_by_kind: Record<CommitmentKind, number>;
+  commitments_by_enforcement_class: Record<CommitmentEnforcementClass, number>;
+  commitments_advisory_count: number;
+  commitments_critical_count: number;
   commitment_count_superseded: number;
   // These lifecycle counts are not mutually exclusive: commitments canonicalized
   // through the shared state are revoked by design.
@@ -125,6 +129,8 @@ export type MetricsRow = {
   commitment_regeneration_attempted_total: number;
   commitment_regeneration_succeeded_total: number;
   commitment_regeneration_failed_total: number;
+  commitment_guard_advisory_violations_total: number;
+  commitment_guard_advisory_violations_by_class: Record<CommitmentEnforcementClass, number>;
   pending_action_count: number;
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;

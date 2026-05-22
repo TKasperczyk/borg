@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
+  COMMITMENT_ENFORCEMENT_CLASSES,
   COMMITMENT_KINDS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
@@ -134,6 +135,9 @@ const TURN_METRICS_KEY_ORDER = [
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_active_by_kind",
+  "commitments_by_enforcement_class",
+  "commitments_advisory_count",
+  "commitments_critical_count",
   "commitment_count_superseded",
   "commitment_count_revoked",
   "commitment_count_expired",
@@ -144,6 +148,8 @@ const TURN_METRICS_KEY_ORDER = [
   "commitment_regeneration_attempted_total",
   "commitment_regeneration_succeeded_total",
   "commitment_regeneration_failed_total",
+  "commitment_guard_advisory_violations_total",
+  "commitment_guard_advisory_violations_by_class",
   "pending_action_count",
   "pending_action_merge_count",
   "relational_slot_count_by_state",
@@ -359,6 +365,7 @@ function fakeBorg(
       list: () => [],
       countActive: () => 0,
       countActiveByKind: () => zeroCounts(COMMITMENT_KINDS),
+      countActiveByEnforcementClass: () => zeroCounts(COMMITMENT_ENFORCEMENT_CLASSES),
       countSuperseded: () => 0,
       countRevoked: () => 0,
       countExpired: () => 0,
@@ -655,6 +662,13 @@ describe("MetricsCapture", () => {
           turnId: "turn-1",
           event: "commitment_guard.regeneration_succeeded",
         },
+        {
+          ts: 197,
+          turnId: "turn-1",
+          event: "commitment_guard.advisory_violation_observed",
+          violationCount: 2,
+          commitmentEnforcementClasses: ["advisory"],
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join("\n"),
@@ -752,6 +766,11 @@ describe("MetricsCapture", () => {
     expect(row.commitment_regeneration_attempted_total).toBe(2);
     expect(row.commitment_regeneration_succeeded_total).toBe(1);
     expect(row.commitment_regeneration_failed_total).toBe(1);
+    expect(row.commitment_guard_advisory_violations_total).toBe(2);
+    expect(row.commitment_guard_advisory_violations_by_class).toEqual({
+      critical: 0,
+      advisory: 2,
+    });
     expect(row.semantic_revision_calls_total).toBe(2);
     expect(row.semantic_revision_candidates_reviewed_total).toBe(10);
     expect(row.semantic_revision_superseded_total).toBe(3);
@@ -2455,6 +2474,7 @@ describe("MetricsCapture", () => {
           list: (options = {}) => commitments.list(options),
           countActive: () => commitments.countActive(),
           countActiveByKind: () => commitments.countActiveByKind(),
+          countActiveByEnforcementClass: () => commitments.countActiveByEnforcementClass(),
           countSuperseded: () => commitments.countSuperseded(),
           countRevoked: () => commitments.countRevoked(),
           countExpired: () => commitments.countExpired(),
@@ -2507,6 +2527,13 @@ describe("MetricsCapture", () => {
         assistant_commitment: 1,
         audience_rule: 1,
       });
+      expect(row.commitments_by_enforcement_class).toEqual({
+        ...zeroCounts(COMMITMENT_ENFORCEMENT_CLASSES),
+        advisory: 1,
+        critical: 1,
+      });
+      expect(row.commitments_advisory_count).toBe(1);
+      expect(row.commitments_critical_count).toBe(1);
       expect(row.commitment_count_superseded).toBe(1);
       expect(row.commitment_count_revoked).toBe(2);
       expect(row.commitment_count_expired).toBe(1);

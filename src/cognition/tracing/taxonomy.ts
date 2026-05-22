@@ -61,6 +61,7 @@ export const TRACE_EVENT_TAXONOMY = {
   tools: ["tool_call.started", "tool_call.completed"],
   commitments: [
     "commitment_guard.shadow_observation",
+    "commitment_guard.advisory_violation_observed",
     "commitment_guard.enforce_suppression",
     "commitment_guard.enforce_rewrite",
     "commitment_guard.regeneration_requested",

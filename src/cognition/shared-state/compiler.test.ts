@@ -471,6 +471,7 @@ describe("compileSharedStateArtifact", () => {
             kind: "assistant_commitment",
             type: "promise",
             directive_family: "release_window",
+            enforcement_class: "advisory",
           },
         ],
         actions: [{ id: actionId, text: "Track Granada decision" }],

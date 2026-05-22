@@ -205,6 +205,12 @@ function metricsRow(turn: number): MetricsRow {
       boundary: 0,
       process_norm: 0,
     },
+    commitments_by_enforcement_class: {
+      critical: 0,
+      advisory: 0,
+    },
+    commitments_advisory_count: 0,
+    commitments_critical_count: 0,
     commitment_count_superseded: 0,
     commitment_count_revoked: 0,
     commitment_count_expired: 0,
@@ -215,6 +221,11 @@ function metricsRow(turn: number): MetricsRow {
     commitment_regeneration_attempted_total: 0,
     commitment_regeneration_succeeded_total: 0,
     commitment_regeneration_failed_total: 0,
+    commitment_guard_advisory_violations_total: 0,
+    commitment_guard_advisory_violations_by_class: {
+      critical: 0,
+      advisory: 0,
+    },
     pending_action_count: 0,
     pending_action_merge_count: 0,
     relational_slot_count_by_state: {

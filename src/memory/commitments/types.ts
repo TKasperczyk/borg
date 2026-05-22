@@ -20,6 +20,14 @@ export const COMMITMENT_KINDS = [
   "boundary",
   "process_norm",
 ] as const;
+export const COMMITMENT_ENFORCEMENT_CLASSES = ["critical", "advisory"] as const;
+export const COMMITMENT_CRITICAL_DOMAINS = [
+  "privacy",
+  "audience_scope",
+  "safety",
+  "explicit_no_disclosure",
+  "internal_tool_hygiene",
+] as const;
 export const CLOSURE_PRESSURE_RELEVANCE = ["no_closure", "neutral", "closure_seeking"] as const;
 export const ENTITY_KINDS = ["person", "group", "self", "abstract"] as const;
 export const NAME_PROVENANCES = [
@@ -90,6 +98,8 @@ export const commitmentCanonicalizedByArtifactEntryIdSchema = z
 
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
 export const commitmentKindSchema = z.enum(COMMITMENT_KINDS);
+export const commitmentEnforcementClassSchema = z.enum(COMMITMENT_ENFORCEMENT_CLASSES);
+export const commitmentCriticalDomainSchema = z.enum(COMMITMENT_CRITICAL_DOMAINS);
 export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
 export const entityKindSchema = z.enum(ENTITY_KINDS);
 export const nameProvenanceSchema = z.enum(NAME_PROVENANCES);
@@ -114,6 +124,8 @@ export const commitmentSchema = z.object({
   record_version: z.number().int().positive().optional(),
   type: commitmentTypeSchema,
   kind: commitmentKindSchema,
+  enforcement_class: commitmentEnforcementClassSchema,
+  critical_domain: commitmentCriticalDomainSchema.nullable(),
   directive_family: directiveFamilySchema,
   closure_pressure_relevance: closurePressureRelevanceSchema.default("neutral"),
   directive: z.string().min(1),
@@ -137,6 +149,63 @@ export const commitmentSchema = z.object({
   last_reinforced_at: z.number().finite(),
 });
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeLegacyCommitmentValue(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const kind = commitmentKindSchema.safeParse(value.kind ?? "assistant_commitment");
+
+  if (!kind.success) {
+    return value;
+  }
+
+  const rawEnforcementClass = value.enforcement_class;
+  const enforcementClass =
+    rawEnforcementClass === null || rawEnforcementClass === undefined
+      ? defaultCommitmentEnforcementClass(kind.data)
+      : commitmentEnforcementClassSchema.safeParse(rawEnforcementClass);
+
+  if (typeof enforcementClass !== "string" && !enforcementClass.success) {
+    return value;
+  }
+
+  const effectiveEnforcementClass =
+    typeof enforcementClass === "string" ? enforcementClass : enforcementClass.data;
+  const rawCriticalDomain = value.critical_domain;
+  const criticalDomain =
+    effectiveEnforcementClass === "critical"
+      ? rawCriticalDomain === null || rawCriticalDomain === undefined
+        ? defaultCommitmentCriticalDomain(kind.data, effectiveEnforcementClass)
+        : commitmentCriticalDomainSchema.safeParse(rawCriticalDomain)
+      : null;
+
+  if (typeof criticalDomain !== "string" && criticalDomain !== null && !criticalDomain.success) {
+    return value;
+  }
+
+  return {
+    ...value,
+    kind: kind.data,
+    enforcement_class: effectiveEnforcementClass,
+    critical_domain:
+      typeof criticalDomain === "string"
+        ? criticalDomain
+        : criticalDomain === null
+          ? null
+          : criticalDomain.data,
+  };
+}
+
+export const legacyCommitmentSchema = z.preprocess(
+  normalizeLegacyCommitmentValue,
+  commitmentSchema,
+);
+
 export const commitmentPatchSchema = commitmentSchema
   .omit({
     id: true,
@@ -151,6 +220,8 @@ export type CommitmentRecord = z.infer<typeof commitmentSchema>;
 export type CommitmentPatch = z.infer<typeof commitmentPatchSchema>;
 export type CommitmentType = z.infer<typeof commitmentTypeSchema>;
 export type CommitmentKind = z.infer<typeof commitmentKindSchema>;
+export type CommitmentEnforcementClass = z.infer<typeof commitmentEnforcementClassSchema>;
+export type CommitmentCriticalDomain = z.infer<typeof commitmentCriticalDomainSchema>;
 export type ClosurePressureRelevance = z.infer<typeof closurePressureRelevanceSchema>;
 export type EntityKind = z.infer<typeof entityKindSchema>;
 export type NameProvenance = z.infer<typeof nameProvenanceSchema>;
@@ -169,3 +240,45 @@ export type CommitmentApplicableOptions = {
   aboutEntity?: EntityId | null;
   nowMs?: number;
 };
+
+export function defaultCommitmentEnforcementClass(
+  kind: CommitmentKind,
+): CommitmentEnforcementClass {
+  return kind === "boundary" || kind === "audience_rule" ? "critical" : "advisory";
+}
+
+export function defaultCommitmentCriticalDomain(
+  kind: CommitmentKind,
+  enforcementClass = defaultCommitmentEnforcementClass(kind),
+): CommitmentCriticalDomain | null {
+  if (enforcementClass !== "critical") {
+    return null;
+  }
+
+  return kind === "boundary" || kind === "audience_rule" ? "audience_scope" : null;
+}
+
+export type LegacyCommitmentEnforcementFields = Pick<CommitmentRecord, "kind"> &
+  Partial<Pick<CommitmentRecord, "enforcement_class" | "critical_domain">>;
+
+export function effectiveCommitmentEnforcementClass(
+  commitment: LegacyCommitmentEnforcementFields,
+): CommitmentEnforcementClass {
+  if (commitment.enforcement_class === "critical" || commitment.enforcement_class === "advisory") {
+    return commitment.enforcement_class;
+  }
+
+  return defaultCommitmentEnforcementClass(commitment.kind);
+}
+
+export function effectiveCommitmentCriticalDomain(
+  commitment: LegacyCommitmentEnforcementFields,
+): CommitmentCriticalDomain | null {
+  const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
+
+  if (enforcementClass !== "critical") {
+    return null;
+  }
+
+  return commitment.critical_domain ?? defaultCommitmentCriticalDomain(commitment.kind);
+}

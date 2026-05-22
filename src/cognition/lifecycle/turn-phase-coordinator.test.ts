@@ -192,6 +192,8 @@ function commitmentRecord(input: {
     record_version: 1,
     type: input.type,
     kind: "assistant_commitment",
+    enforcement_class: "advisory",
+    critical_domain: null,
     directive_family: input.directiveFamily,
     closure_pressure_relevance: "neutral",
     directive: input.directive,
@@ -1763,6 +1765,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
           text: string;
           type: string;
           directive_family: string;
+          enforcement_class: string;
         }>;
       };
     };
@@ -1779,6 +1782,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         kind: "assistant_commitment",
         type: PROMISE_COMMITMENT_TYPE,
         directive_family: DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY,
+        enforcement_class: "advisory",
       },
       {
         id: ruleCommitment.id,
@@ -1786,6 +1790,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         kind: "assistant_commitment",
         type: RULE_COMMITMENT_TYPE,
         directive_family: RELEASE_FREEZE_DIRECTIVE_FAMILY,
+        enforcement_class: "advisory",
       },
     ]);
     expect(events).toContainEqual({

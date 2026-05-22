@@ -29,13 +29,21 @@ import { IdentityEventRepository } from "../identity/repository.js";
 import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
   COMMITMENT_KINDS,
+  COMMITMENT_ENFORCEMENT_CLASSES,
+  commitmentCriticalDomainSchema,
+  commitmentEnforcementClassSchema,
+  commitmentKindSchema,
   commitmentPatchSchema,
   commitmentSchema,
+  defaultCommitmentCriticalDomain,
+  defaultCommitmentEnforcementClass,
   entityKindSchema,
   entityRecordSchema,
   nameProvenanceSchema,
   normalizeDirectiveFamily,
   type CommitmentApplicableOptions,
+  type CommitmentCriticalDomain,
+  type CommitmentEnforcementClass,
   type CommitmentKind,
   type CommitmentListOptions,
   type CommitmentPatch,
@@ -92,6 +100,15 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
 }
 
 function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
+  const kind = commitmentKindSchema.parse(row.kind ?? "assistant_commitment");
+  const enforcementClass =
+    row.enforcement_class === null || row.enforcement_class === undefined
+      ? defaultCommitmentEnforcementClass(kind)
+      : commitmentEnforcementClassSchema.parse(row.enforcement_class);
+  const criticalDomain =
+    row.critical_domain === null || row.critical_domain === undefined
+      ? defaultCommitmentCriticalDomain(kind, enforcementClass)
+      : commitmentCriticalDomainSchema.parse(row.critical_domain);
   const sourceStreamEntryIds =
     row.source_stream_entry_ids === null || row.source_stream_entry_ids === undefined
       ? undefined
@@ -104,7 +121,9 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
     id: row.id,
     record_version: Number(row.record_version ?? 1),
     type: row.type,
-    kind: row.kind,
+    kind,
+    enforcement_class: enforcementClass,
+    critical_domain: enforcementClass === "critical" ? criticalDomain : null,
     directive_family: row.directive_family,
     closure_pressure_relevance: row.closure_pressure_relevance,
     directive: row.directive,
@@ -518,6 +537,8 @@ export class CommitmentRepository {
     const next = commitmentSchema.parse({
       ...kept,
       record_version: nextRecordVersion(keptVersion),
+      enforcement_class: incoming.enforcement_class,
+      critical_domain: incoming.critical_domain,
       priority: Math.max(kept.priority, incoming.priority),
       closure_pressure_relevance:
         kept.closure_pressure_relevance === "no_closure" ||
@@ -532,12 +553,15 @@ export class CommitmentRepository {
       .prepare(
         `
           UPDATE commitments
-          SET priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?,
+          SET enforcement_class = ?, critical_domain = ?,
+              priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?,
               last_reinforced_at = ?, record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
       )
       .run(
+        next.enforcement_class,
+        next.critical_domain,
         next.priority,
         next.closure_pressure_relevance,
         next.source_stream_entry_ids === undefined
@@ -601,6 +625,8 @@ export class CommitmentRepository {
     id?: CommitmentId;
     type: CommitmentType;
     kind?: CommitmentKind;
+    enforcementClass?: CommitmentEnforcementClass;
+    criticalDomain?: CommitmentCriticalDomain | null;
     directiveFamily: string;
     directive: string;
     priority: number;
@@ -623,12 +649,20 @@ export class CommitmentRepository {
 
     const createdAt = input.createdAt ?? this.clock.now();
     const expiresAt = input.expiresAt ?? null;
+    const kind = input.kind ?? "assistant_commitment";
+    const enforcementClass = input.enforcementClass ?? defaultCommitmentEnforcementClass(kind);
+    const criticalDomain =
+      enforcementClass === "critical"
+        ? (input.criticalDomain ?? defaultCommitmentCriticalDomain(kind, enforcementClass))
+        : null;
 
     const record = commitmentSchema.parse({
       id: input.id ?? createCommitmentId(),
       record_version: 1,
       type: input.type,
-      kind: input.kind ?? "assistant_commitment",
+      kind,
+      enforcement_class: enforcementClass,
+      critical_domain: criticalDomain,
       directive_family: normalizeDirectiveFamily(input.directiveFamily),
       closure_pressure_relevance: input.closurePressureRelevance ?? "neutral",
       directive: input.directive,
@@ -666,19 +700,22 @@ export class CommitmentRepository {
         .prepare(
           `
             INSERT INTO commitments (
-              id, type, kind, directive_family, closure_pressure_relevance, directive, priority,
+              id, type, kind, enforcement_class, critical_domain,
+              directive_family, closure_pressure_relevance, directive, priority,
               made_to_entity, restricted_audience, about_entity, committed_by_entity_id,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
               superseded_by, canonicalized_by_artifact_entry_id, last_reinforced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
           record.id,
           record.type,
           record.kind,
+          record.enforcement_class,
+          record.critical_domain,
           record.directive_family,
           record.closure_pressure_relevance,
           record.directive,
@@ -827,6 +864,44 @@ export class CommitmentRepository {
 
     for (const row of rows) {
       counts[row.kind] = Number(row.count);
+    }
+
+    return counts;
+  }
+
+  countActiveByEnforcementClass(
+    nowMs = this.clock.now(),
+  ): Record<CommitmentEnforcementClass, number> {
+    const counts = Object.fromEntries(
+      COMMITMENT_ENFORCEMENT_CLASSES.map((enforcementClass) => [enforcementClass, 0]),
+    ) as Record<CommitmentEnforcementClass, number>;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            CASE
+              WHEN enforcement_class IN ('critical', 'advisory') THEN enforcement_class
+              WHEN kind IN ('boundary', 'audience_rule') THEN 'critical'
+              ELSE 'advisory'
+            END AS enforcement_class,
+            COUNT(*) AS count
+          FROM commitments
+          WHERE revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+          GROUP BY
+            CASE
+              WHEN enforcement_class IN ('critical', 'advisory') THEN enforcement_class
+              WHEN kind IN ('boundary', 'audience_rule') THEN 'critical'
+              ELSE 'advisory'
+            END
+        `,
+      )
+      .all(nowMs) as Array<{ enforcement_class: CommitmentEnforcementClass; count: number }>;
+
+    for (const row of rows) {
+      counts[row.enforcement_class] = Number(row.count);
     }
 
     return counts;
@@ -1065,7 +1140,8 @@ export class CommitmentRepository {
         .prepare(
           `
             UPDATE commitments
-            SET type = ?, kind = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?,
+            SET type = ?, kind = ?, enforcement_class = ?, critical_domain = ?,
+                directive_family = ?, closure_pressure_relevance = ?, directive = ?,
                 priority = ?, made_to_entity = ?, restricted_audience = ?, about_entity = ?,
                 committed_by_entity_id = ?, source_episode_ids = ?, provenance_kind = ?,
                 provenance_episode_ids = ?,
@@ -1079,6 +1155,8 @@ export class CommitmentRepository {
         .run(
           next.type,
           next.kind,
+          next.enforcement_class,
+          next.critical_domain,
           next.directive_family,
           next.closure_pressure_relevance,
           next.directive,

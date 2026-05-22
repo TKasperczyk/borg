@@ -10,10 +10,13 @@ import { CommitmentGuardRunner } from "./guard-runner.js";
 const commitmentId = "cmt_abcdefghijklmnop" as CommitmentId;
 
 function makeCommitment(overrides: Partial<CommitmentRecord> = {}): CommitmentRecord {
+  const kind = overrides.kind ?? "boundary";
+  const enforcementClass =
+    overrides.enforcement_class ??
+    (kind === "boundary" || kind === "audience_rule" ? "critical" : "advisory");
   return {
     id: commitmentId,
     type: "boundary",
-    kind: "boundary",
     directive_family: "launch_date_boundary",
     closure_pressure_relevance: "neutral",
     directive: "Do not discuss launch dates.",
@@ -33,6 +36,12 @@ function makeCommitment(overrides: Partial<CommitmentRecord> = {}): CommitmentRe
     superseded_by: null,
     last_reinforced_at: 1_000,
     ...overrides,
+    kind,
+    enforcement_class: enforcementClass,
+    critical_domain:
+      enforcementClass === "critical"
+        ? (overrides.critical_domain ?? "audience_scope")
+        : null,
   };
 }
 
@@ -203,6 +212,8 @@ describe("CommitmentGuardRunner", () => {
       violationCount: 1,
       commitmentIds: [commitmentId],
       commitmentKinds: ["boundary"],
+      commitmentEnforcementClasses: ["critical"],
+      criticalDomains: ["audience_scope"],
     });
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-2",
@@ -257,6 +268,8 @@ describe("CommitmentGuardRunner", () => {
       violationCount: 1,
       commitmentIds: [commitmentId],
       commitmentKinds: ["boundary"],
+      commitmentEnforcementClasses: ["critical"],
+      criticalDomains: ["audience_scope"],
     });
   });
 
@@ -309,6 +322,17 @@ describe("CommitmentGuardRunner", () => {
       violationCount: 1,
       commitmentIds: [commitmentId],
       commitmentKinds: ["participant_preference"],
+      commitmentEnforcementClasses: ["advisory"],
+      criticalDomains: [],
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_guard.advisory_violation_observed", {
+      turnId: "turn-shadow",
+      mode: "enforce",
+      verdict: "passed",
+      violationCount: 1,
+      commitmentIds: [commitmentId],
+      commitmentKinds: ["participant_preference"],
+      commitmentEnforcementClasses: ["advisory"],
     });
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check.completed", {
       turnId: "turn-shadow",
@@ -318,6 +342,63 @@ describe("CommitmentGuardRunner", () => {
       rewriteTriggered: false,
       violationCount: 0,
       shadowViolationCount: 1,
+    });
+  });
+
+  it("does not regenerate advisory style boundaries even when the legacy kind is boundary", async () => {
+    const violation = {
+      commitment_id: commitmentId,
+      reason: "Uses a timestamped dossier shape.",
+      confidence: 0.94,
+    };
+    const original = "Timeline:\n- 09:00 request\n- 10:00 decision";
+    const llm = new FakeLLMClient({
+      responses: [verdictResponse([violation])],
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    const result = await makeRunner(tracer).run({
+      turnId: "turn-advisory-style-boundary",
+      llmClient: llm,
+      response: original,
+      userMessage: "Please answer normally.",
+      cognitionInput: "Please answer normally.",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [
+        makeCommitment({
+          type: "boundary",
+          kind: "boundary",
+          enforcement_class: "advisory",
+          critical_domain: null,
+          directive_family: "no_timestamped_dossier",
+          directive: "Do not make this a timestamped dossier.",
+        }),
+      ],
+      relevantEntities: [],
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual(["commitment-judge"]);
+    expect(tracer.emit).not.toHaveBeenCalledWith(
+      "commitment_guard.regeneration_requested",
+      expect.anything(),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_guard.advisory_violation_observed", {
+      turnId: "turn-advisory-style-boundary",
+      mode: "enforce",
+      verdict: "passed",
+      violationCount: 1,
+      commitmentIds: [commitmentId],
+      commitmentKinds: ["boundary"],
+      commitmentEnforcementClasses: ["advisory"],
     });
   });
 
@@ -379,6 +460,8 @@ describe("CommitmentGuardRunner", () => {
       violationCount: 1,
       commitmentIds: [commitmentId],
       commitmentKinds: ["boundary"],
+      commitmentEnforcementClasses: ["critical"],
+      criticalDomains: ["audience_scope"],
     });
   });
 });

@@ -3365,7 +3365,7 @@ describe("deliberator", () => {
         "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection) (from ep_aaaaaaaaaaaaaaaa)",
       );
       expect(system).toContain(
-        "- [boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+        "- [CRITICAL:audience_scope boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
       );
     } finally {
       db.close();
@@ -3538,6 +3538,14 @@ describe("deliberator", () => {
       aboutEntity: atlas,
       provenance: { kind: "manual" },
     });
+    const advisory = commitments.add({
+      type: "preference",
+      kind: "process_norm",
+      directiveFamily: "skip_preamble",
+      directive: "Skip preambles.",
+      priority: 4,
+      provenance: { kind: "manual" },
+    });
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -3564,7 +3572,7 @@ describe("deliberator", () => {
         },
         retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
         retrievalConfidence: makeRetrievalConfidence(),
-        applicableCommitments: [commitment],
+        applicableCommitments: [commitment, advisory],
         entityRepository: entities,
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
@@ -3600,7 +3608,10 @@ describe("deliberator", () => {
       expect(system).toContain("Active commitment / rule / preference / boundary records:");
       expect(system).toContain("Do not discuss Atlas with Sam");
       expect(system).toContain(
-        "- [boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+        "- [CRITICAL:audience_scope boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+      );
+      expect(system).toContain(
+        "- [ADVISORY guidance process_norm/preference] Skip preambles. (manual)",
       );
       expect(system).toContain("</borg_commitment_records>");
       expect(requestSystemText(llm.requests[0]?.system)).toContain("audience=Sam");

@@ -33,7 +33,10 @@ import {
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
-import type { CommitmentRecord } from "../../../memory/commitments/index.js";
+import {
+  effectiveCommitmentEnforcementClass,
+  type CommitmentRecord,
+} from "../../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { StreamEntry } from "../../../stream/index.js";
@@ -607,6 +610,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
         kind: commitment.kind,
         type: commitment.type,
         directive_family: commitment.directive_family,
+        enforcement_class: effectiveCommitmentEnforcementClass(commitment),
       })),
     actions: actionCanonicalizationCandidates.candidates ?? [],
     openQuestions: input.options.openQuestionsRepository
