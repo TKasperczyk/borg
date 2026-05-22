@@ -8,6 +8,7 @@ import { familyAgingParentScenario } from "./family-aging-parent.js";
 import { kinshipCorrectnessScenario } from "./kinship-correctness.js";
 import { kinshipHeadcountScenario } from "./kinship-headcount.js";
 import { observationSourcePrecedenceScenario } from "./observation-source-precedence.js";
+import { sessionReentryContinuityScenario } from "./session-reentry-continuity.js";
 import { sharedStateCompactionScenario } from "./shared-state-compaction.js";
 import { tripPlanningScenario } from "./trip-planning.js";
 import type { SimulatorScenarioDefinition } from "../types.js";
@@ -19,6 +20,7 @@ export const simulatorScenarios = [
   kinshipCorrectnessScenario,
   kinshipHeadcountScenario,
   observationSourcePrecedenceScenario,
+  sessionReentryContinuityScenario,
   sharedStateCompactionScenario,
   capabilityBoundaryScenario,
   actionLifecycleScenario,
@@ -46,6 +48,7 @@ export {
   kinshipCorrectnessScenario,
   kinshipHeadcountScenario,
   observationSourcePrecedenceScenario,
+  sessionReentryContinuityScenario,
   sharedStateCompactionScenario,
   tripPlanningScenario,
 };

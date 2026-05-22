@@ -161,6 +161,12 @@ export type DeliberationContext = {
    */
   evidenceLedgerPromptSection?: string | null;
   /**
+   * Trusted prompt guidance for first-turn session re-entry when durable
+   * audience shared state already exists. This is substrate presentation, not
+   * a post-generation output judge.
+   */
+  sessionReentryContinuityPromptSection?: string | null;
+  /**
    * Typed ledger corresponding to evidenceLedgerPromptSection. Emission-tool
    * finalization uses this to keep prompt-visible IDs tied to evidence prose.
    */

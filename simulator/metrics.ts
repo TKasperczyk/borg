@@ -258,6 +258,14 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_add_rejected_cap_exceeded_total"
 >;
 
+type SessionReentryContinuityMetricCounts = Pick<
+  MetricsRow,
+  | "session_reentry_card_rendered_total"
+  | "session_reentry_card_rendered_by_audience"
+  | "session_reentry_first_turn_with_existing_state_total"
+  | "session_reentry_first_turn_blank_audience_total"
+>;
+
 type ReviewResolverMetricCounts = {
   review_resolver_attempted: number;
   review_resolver_accepted: number;
@@ -1033,6 +1041,40 @@ function sharedStateCompilerHealthMetrics(
     shared_state_top_keys_by_entry_count: latestSharedStateTopKeysByEntryCount(traceRecords),
     shared_state_add_rejected_cap_exceeded_total: traceRecords.filter(
       (record) => record.event === "shared_state.compile.add_rejected_cap_exceeded",
+    ).length,
+  };
+}
+
+function traceString(record: TraceRecord, key: string): string | null {
+  const value = record[key];
+
+  return typeof value === "string" ? value : null;
+}
+
+function sessionReentryContinuityMetrics(
+  traceRecords: readonly TraceRecord[],
+): SessionReentryContinuityMetricCounts {
+  const rendered = traceRecords.filter(
+    (record) => record.event === "session_reentry.continuity.rendered",
+  );
+  const evaluated = traceRecords.filter(
+    (record) => record.event === "session_reentry.continuity.evaluated",
+  );
+  const renderedByAudience = new Map<string, number>();
+
+  for (const record of rendered) {
+    const audienceEntityId = traceString(record, "audience_entity_id") ?? "unknown";
+    renderedByAudience.set(audienceEntityId, (renderedByAudience.get(audienceEntityId) ?? 0) + 1);
+  }
+
+  return {
+    session_reentry_card_rendered_total: rendered.length,
+    session_reentry_card_rendered_by_audience: sortedNumberRecord(renderedByAudience),
+    session_reentry_first_turn_with_existing_state_total: evaluated.filter(
+      (record) => traceString(record, "status") === "rendered",
+    ).length,
+    session_reentry_first_turn_blank_audience_total: evaluated.filter(
+      (record) => traceString(record, "status") === "blank_audience",
     ).length,
   };
 }
@@ -2260,6 +2302,7 @@ export class MetricsCapture {
       semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
+    const sessionReentryContinuityMetricCounts = sessionReentryContinuityMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     const semanticMemoryWriteGateMetricCounts = semanticMemoryWriteGateMetrics({
       traceRecords: traceRecordsSinceLastCapture,
@@ -2524,6 +2567,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
       shared_state_add_rejected_cap_exceeded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
+      session_reentry_card_rendered_total:
+        sessionReentryContinuityMetricCounts.session_reentry_card_rendered_total,
+      session_reentry_card_rendered_by_audience:
+        sessionReentryContinuityMetricCounts.session_reentry_card_rendered_by_audience,
+      session_reentry_first_turn_with_existing_state_total:
+        sessionReentryContinuityMetricCounts.session_reentry_first_turn_with_existing_state_total,
+      session_reentry_first_turn_blank_audience_total:
+        sessionReentryContinuityMetricCounts.session_reentry_first_turn_blank_audience_total,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,
@@ -2599,6 +2650,7 @@ export class MetricsCapture {
       semanticRevisionCumulativeMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(allTraceRecords);
+    const sessionReentryContinuityMetricCounts = sessionReentryContinuityMetrics(allTraceRecords);
     const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const extractorHealthMetricCounts = extractorHealthMetrics({
       traceRecords: [],
@@ -2850,6 +2902,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_top_keys_by_entry_count,
       shared_state_add_rejected_cap_exceeded_total:
         sharedStateCompilerHealthMetricCounts.shared_state_add_rejected_cap_exceeded_total,
+      session_reentry_card_rendered_total:
+        sessionReentryContinuityMetricCounts.session_reentry_card_rendered_total,
+      session_reentry_card_rendered_by_audience:
+        sessionReentryContinuityMetricCounts.session_reentry_card_rendered_by_audience,
+      session_reentry_first_turn_with_existing_state_total:
+        sessionReentryContinuityMetricCounts.session_reentry_first_turn_with_existing_state_total,
+      session_reentry_first_turn_blank_audience_total:
+        sessionReentryContinuityMetricCounts.session_reentry_first_turn_blank_audience_total,
       simulator_persona_failures: context.simulatorPersonaFailures ?? 0,
       borg_hard_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
       borg_intentional_suppressions: context.borgIntentionalSuppressions ?? 0,

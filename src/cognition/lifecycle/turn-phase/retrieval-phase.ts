@@ -26,6 +26,10 @@ import {
   type SharedStateCanonicalizationCandidates,
   type SharedStateReconciliationRepositories,
 } from "../../shared-state/index.js";
+import {
+  buildSessionReentryContinuityPrompt,
+  type SessionReentryContinuityPrompt,
+} from "../../session-reentry-continuity.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -61,6 +65,7 @@ import type { TurnExtractionPhaseResult } from "./extraction-phase.js";
 export type EvidenceLedgerFinalizerContext = {
   ledger: EvidenceLedger | null;
   promptSection: string | null;
+  sessionReentryContinuityPromptSection: string | null;
 };
 
 export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
@@ -271,11 +276,33 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   input: EvidenceLedgerFinalizerBuildInput;
 }): Promise<EvidenceLedgerFinalizerContext> {
   const config = input.options.config.generation.evidenceLedger;
+  const previousSharedState =
+    input.input.audienceEntityId === null
+      ? null
+      : input.options.sharedStateRepository.get(input.input.audienceEntityId);
+  const priorUserTurnCount = await countPriorUserTurnsForSession({
+    options: input.options,
+    sessionId: input.input.sessionId,
+    currentUserEntryId: input.input.currentUserEntry?.id,
+  });
+  const sessionReentryContinuity = buildSessionReentryContinuityPrompt({
+    isUserTurn: input.input.isUserTurn,
+    priorUserTurnCount,
+    audienceEntityId: input.input.audienceEntityId,
+    artifact: previousSharedState,
+  });
+
+  emitSessionReentryContinuityTrace({
+    options: input.options,
+    turnId: input.input.turnId,
+    continuity: sessionReentryContinuity,
+  });
 
   if (!config.enabled) {
     return {
       ledger: null,
       promptSection: null,
+      sessionReentryContinuityPromptSection: sessionReentryContinuity.promptSection,
     };
   }
 
@@ -304,6 +331,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   const sharedState = await compileSharedStateArtifactForEvidenceLedger({
     options: input.options,
     input: input.input,
+    previousArtifact: previousSharedState,
     ledger: ledgerWithoutSharedState,
     promptVisibleLedger: renderedWithoutSharedState ?? "",
   });
@@ -363,12 +391,62 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   return {
     ledger,
     promptSection: rendered,
+    sessionReentryContinuityPromptSection: sessionReentryContinuity.promptSection,
   };
+}
+
+async function countPriorUserTurnsForSession(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  currentUserEntryId?: StreamEntryId;
+}): Promise<number> {
+  const entries = await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId));
+
+  return entries.filter(
+    (entry) => entry.kind === "user_msg" && entry.id !== input.currentUserEntryId,
+  ).length;
+}
+
+function emitSessionReentryContinuityTrace(input: {
+  options: TurnPhaseCoordinatorOptions;
+  turnId: string | undefined;
+  continuity: SessionReentryContinuityPrompt;
+}): void {
+  if (!input.options.tracer.enabled || input.turnId === undefined) {
+    return;
+  }
+
+  const summary = input.continuity.summary;
+
+  if (summary.status !== "rendered" && summary.status !== "blank_audience") {
+    return;
+  }
+
+  const traceData = {
+    turnId: input.turnId,
+    status: summary.status,
+    audience_entity_id: summary.audienceEntityId,
+    active_entry_count: summary.activeEntryCount,
+    active_keyed_entry_count: summary.activeKeyedEntryCount,
+    active_legacy_entry_count: summary.activeLegacyEntryCount,
+    active_state_key_count: summary.activeStateKeyCount,
+    active_counts_by_kind: toTraceJsonValue(summary.activeCountsByKind),
+    active_entries_by_key: toTraceJsonValue(summary.activeEntriesByKey),
+    most_recent_update:
+      summary.mostRecentUpdate === null ? null : toTraceJsonValue(summary.mostRecentUpdate),
+  };
+
+  input.options.tracer.emit("session_reentry.continuity.evaluated", traceData);
+
+  if (summary.status === "rendered") {
+    input.options.tracer.emit("session_reentry.continuity.rendered", traceData);
+  }
 }
 
 export async function compileSharedStateArtifactForEvidenceLedger(input: {
   options: TurnPhaseCoordinatorOptions;
   input: EvidenceLedgerFinalizerBuildInput;
+  previousArtifact?: SharedStateArtifact | null;
   ledger: EvidenceLedger;
   promptVisibleLedger: string;
 }): Promise<SharedStateArtifact | null> {
@@ -378,7 +456,8 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     return null;
   }
 
-  const previousArtifact = input.options.sharedStateRepository.get(audienceEntityId);
+  const previousArtifact =
+    input.previousArtifact ?? input.options.sharedStateRepository.get(audienceEntityId);
 
   if (!input.input.isUserTurn || input.input.currentUserEntry === undefined) {
     return previousArtifact;

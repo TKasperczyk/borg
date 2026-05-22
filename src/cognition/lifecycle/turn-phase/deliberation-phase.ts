@@ -85,6 +85,8 @@ export async function runDeliberationPhase(input: {
       recencyMessages: input.recencyMessages,
       frameAnomaly: input.currentTurnFrameAnomaly,
       evidenceLedgerPromptSection: input.retrievalPhase.evidenceLedgerContext.promptSection,
+      sessionReentryContinuityPromptSection:
+        input.retrievalPhase.evidenceLedgerContext.sessionReentryContinuityPromptSection,
       evidenceLedger: input.retrievalPhase.evidenceLedgerContext.ledger,
       routingOverride: input.retrievalPhase.routingOverride,
       contradictionRoutingCooldown: input.contradictionRoutingCooldown,

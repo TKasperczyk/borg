@@ -19,9 +19,17 @@ import {
 } from "../../../util/ids.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { StreamEntry, StreamReader } from "../../../stream/index.js";
+import {
+  makeLockedSharedStateEntry,
+  makeSharedStateArtifact,
+} from "../../../test-support/factories/shared-state.js";
 import type { PerceptionResult } from "../../types.js";
 import { SHARED_STATE_TOOL_NAME } from "../../shared-state/schema.js";
-import { compileSharedStateArtifactForEvidenceLedger } from "./retrieval-phase.js";
+import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity.js";
+import {
+  compileSharedStateArtifactForEvidenceLedger,
+  runRetrievalPhase,
+} from "./retrieval-phase.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
 
 describe("compileSharedStateArtifactForEvidenceLedger", () => {
@@ -219,6 +227,180 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         last_referenced_turn_global: 42,
       }),
       { skipSideEffects: true },
+    );
+  });
+});
+
+describe("runRetrievalPhase session re-entry continuity", () => {
+  it("renders when an autonomous turn precedes the first user-origin turn", async () => {
+    const audienceEntityId = createEntityId();
+    const currentUserEntryId = createStreamEntryId();
+    const priorAutonomousEntryId = createStreamEntryId();
+    const artifact = makeSharedStateArtifact([
+      makeLockedSharedStateEntry({
+        audience_entity_id: audienceEntityId,
+        state_key: "project.decision",
+      }),
+    ]);
+    const currentUserEntry = {
+      id: currentUserEntryId,
+      kind: "user_msg",
+      content: "Start a decision log for the project.",
+      timestamp: 11_000,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const priorAutonomousEntry = {
+      id: priorAutonomousEntryId,
+      kind: "perception",
+      content: {
+        mode: "problem_solving",
+        entities: [],
+      },
+      timestamp: 10_000,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+    } as StreamEntry;
+    const retrieval = {
+      evidence: [],
+      episodes: [],
+      semantic: null,
+      open_questions: [],
+      recall_intents: [],
+      contradiction_present: false,
+      contradictionRouting: {
+        contradictions: [],
+      },
+      confidence: null,
+    } as never;
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            enabled: false,
+          },
+        },
+      },
+      sharedStateRepository: {
+        get: () => artifact,
+      },
+      selfContextBuilder: {
+        build: vi.fn(async () => ({
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+          },
+          activeScoringValues: [],
+          selfScoringFeatures: {
+            goalVectors: [],
+            valueVectors: [],
+          },
+          retrievalScoringFeatures: {
+            goalVectors: [],
+            valueVectors: [],
+          },
+          executiveFocus: {
+            selected_goal: null,
+            selected_score: null,
+            candidates: [],
+            threshold: 0,
+          },
+        })),
+      },
+      turnRetrievalCoordinator: {
+        coordinate: vi.fn(async () => ({
+          applicableCommitments: [],
+          pendingCorrections: [],
+          affectiveTrajectory: [],
+          retrieval,
+          retrievedEpisodes: [],
+          retrievedSemantic: null,
+          proceduralContext: null,
+          selectedSkill: null,
+          retrievalOptions: {},
+          reRetrieve: vi.fn(async () => retrieval),
+        })),
+      },
+      relationalSlotRepository: {
+        list: () => [],
+        listConstrained: () => [],
+      },
+      openQuestionsRepository: {
+        get: () => null,
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            yield priorAutonomousEntry;
+            yield currentUserEntry;
+          },
+        }) as StreamReader,
+      clock: new FixedClock(11_000),
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        findByName: () => null,
+      },
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await runRetrievalPhase({
+      options,
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-first-user-after-autonomous",
+      turnInput: {
+        userMessage: "Start a decision log for the project.",
+        audience: "project-team",
+        origin: "user",
+      },
+      isSelfAudience: false,
+      isUserTurn: true,
+      cognitionInput: "Start a decision log for the project.",
+      llmClient: new FakeLLMClient({ responses: [] }),
+      recencyMessages: [],
+      audienceEntityId,
+      audienceEntity: null,
+      audienceProfile: null,
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: {
+          valence: 0,
+          arousal: 0,
+          dominant_emotion: null,
+        },
+        temporalCue: null,
+      } satisfies PerceptionResult,
+      workingMemory: {
+        turn_counter: 2,
+      } as never,
+      suppressionSet: {} as never,
+      actionLinkSelfContext: null,
+      persistedPromotions: {
+        goalIds: [],
+        executiveStepIds: [],
+      },
+      correctiveCommitment: null,
+      activeParticipants: [],
+      participantRoster: null,
+      participantProfiles: [],
+      persistedUserEntry: currentUserEntry,
+      currentTurnFrameAnomaly: null,
+      closureLoopAssessment: null,
+    });
+
+    expect(result.evidenceLedgerContext.sessionReentryContinuityPromptSection).toContain(
+      `<${SESSION_REENTRY_CONTINUITY_TAG}>`,
+    );
+    expect(result.evidenceLedgerContext.sessionReentryContinuityPromptSection).toContain(
+      "active_entry_count=1",
     );
   });
 });

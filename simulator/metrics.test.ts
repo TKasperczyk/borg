@@ -217,6 +217,10 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_add_to_update_ratio_by_key",
   "shared_state_top_keys_by_entry_count",
   "shared_state_add_rejected_cap_exceeded_total",
+  "session_reentry_card_rendered_total",
+  "session_reentry_card_rendered_by_audience",
+  "session_reentry_first_turn_with_existing_state_total",
+  "session_reentry_first_turn_blank_audience_total",
   "simulator_persona_failures",
   "borg_hard_aborted_turns",
   "borg_intentional_suppressions",
@@ -773,6 +777,76 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("captures session re-entry continuity counters from trace events", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const firstAudience = createEntityId();
+    const secondAudience = createEntityId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-reentry-1",
+          event: "session_reentry.continuity.evaluated",
+          status: "rendered",
+          audience_entity_id: firstAudience,
+        },
+        {
+          ts: 101,
+          turnId: "turn-reentry-1",
+          event: "session_reentry.continuity.rendered",
+          status: "rendered",
+          audience_entity_id: firstAudience,
+        },
+        {
+          ts: 102,
+          turnId: "turn-reentry-2",
+          event: "session_reentry.continuity.evaluated",
+          status: "blank_audience",
+          audience_entity_id: secondAudience,
+        },
+        {
+          ts: 103,
+          turnId: "turn-reentry-3",
+          event: "session_reentry.continuity.evaluated",
+          status: "rendered",
+          audience_entity_id: firstAudience,
+        },
+        {
+          ts: 104,
+          turnId: "turn-reentry-3",
+          event: "session_reentry.continuity.rendered",
+          status: "rendered",
+          audience_entity_id: firstAudience,
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-reentry-3",
+      3,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.session_reentry_card_rendered_total).toBe(2);
+    expect(row.session_reentry_card_rendered_by_audience).toEqual({
+      [firstAudience]: 2,
+    });
+    expect(row.session_reentry_first_turn_with_existing_state_total).toBe(2);
+    expect(row.session_reentry_first_turn_blank_audience_total).toBe(1);
   });
 
   it("carries cumulative extractor health totals onto a clean final turn", async () => {

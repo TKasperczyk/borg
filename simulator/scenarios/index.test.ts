@@ -46,6 +46,11 @@ import {
   observationSourcePrecedenceScenario,
 } from "./observation-source-precedence.js";
 import {
+  sessionReentryContinuityArcKeys,
+  sessionReentryContinuityArcs,
+  sessionReentryContinuityScenario,
+} from "./session-reentry-continuity.js";
+import {
   sharedStateCompactionArcKeys,
   sharedStateCompactionArcs,
   sharedStateCompactionScenario,
@@ -175,6 +180,16 @@ const regressionScenarioFixtures: readonly RegressionScenarioFixture[] = [
     expectedArcKeys: ["latest-user-observation"],
   },
   {
+    scenario: sessionReentryContinuityScenario,
+    exportedArcKeys: sessionReentryContinuityArcKeys,
+    arcs: sessionReentryContinuityArcs,
+    expectedPersonas: [
+      ["mira-reentry", "Mira"],
+      ["theo-reentry", "Theo"],
+    ],
+    expectedArcKeys: ["existing-thread-new-session"],
+  },
+  {
     scenario: sharedStateCompactionScenario,
     exportedArcKeys: sharedStateCompactionArcKeys,
     arcs: sharedStateCompactionArcs,
@@ -230,6 +245,7 @@ describe("simulator scenarios", () => {
       "kinship-correctness",
       "kinship-headcount",
       "observation-source-precedence",
+      "session-reentry-continuity",
       "shared-state-compaction",
       "capability-boundary",
       "action-lifecycle",

@@ -1484,6 +1484,63 @@ describe("deliberator", () => {
     });
   });
 
+  it("surfaces session re-entry continuity guidance to both S2 planner and finalizer", async () => {
+    const continuityPrompt =
+      "The following tagged blocks mix substrate-owned guidance with memory-derived self-model records.\n\n<borg_session_reentry_continuity>\nSessionReentryContinuity: this is the first user-origin turn of a new session for this audience.\nInstruction: the audience state is not blank; surface existing state before accepting fresh-start framing; only treat as blank if the user explicitly requests a reset.\nstate_keys:\n- state_key=incident.rollback entries=2 kinds=locked=1 live=1 tentative=0 invalidated=0 pending=0 most_recent_update_at=2000 most_recent_ref=strm_reentry_ref\n</borg_session_reentry_continuity>";
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 20,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_reentry",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: ["use the surfaced continuity state before answering"],
+                tensions: [],
+                voice_note: "Start from existing state.",
+                intents: [],
+              },
+            },
+          ],
+        },
+        emitFinalizerToolResponse(
+          {
+            id: "toolu_emit_reentry",
+            name: "EmitAnswer",
+            input: { text: "I see the existing thread first." },
+          },
+          { inputTokens: 12, outputTokens: 6 },
+        ),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    await deliberator.run({
+      ...simpleDeliberationContext({
+        turnId: "turn-session-reentry-continuity",
+        userMessage: "Let's start a fresh rollback log.",
+        retrievalConfidence: makeRetrievalConfidence(),
+        sessionReentryContinuityPromptSection: continuityPrompt,
+        options: { stakes: "high" },
+      }),
+    });
+
+    const plannerSystem = requestSystemText(llm.requests[0]?.system);
+    const finalizerSystem = requestSystemText(llm.requests[1]?.system);
+
+    expect(plannerSystem).toContain("<borg_session_reentry_continuity>");
+    expect(finalizerSystem).toContain("<borg_session_reentry_continuity>");
+    expect(plannerSystem).toContain("the audience state is not blank");
+    expect(finalizerSystem).toContain("the audience state is not blank");
+    expect(plannerSystem).toContain("state_key=incident.rollback");
+    expect(finalizerSystem).toContain("state_key=incident.rollback");
+  });
+
   it("surfaces both conflicting Granada date constraints to planner and finalizer context", async () => {
     const llm = new FakeLLMClient({
       responses: [

@@ -320,6 +320,15 @@ export class Deliberator {
       context.evidenceLedgerPromptSection === null
         ? null
         : [context.evidenceLedgerPromptSection];
+    const sessionReentryContinuityPromptSections =
+      context.sessionReentryContinuityPromptSection === undefined ||
+      context.sessionReentryContinuityPromptSection === null
+        ? []
+        : [context.sessionReentryContinuityPromptSection];
+    const finalizerGroundingPromptSections = [
+      ...sessionReentryContinuityPromptSections,
+      ...(evidenceLedgerPromptSections ?? []),
+    ];
 
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
     const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
@@ -339,9 +348,9 @@ export class Deliberator {
         maxTokens: systemOneMaxTokens,
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_1",
-        ...(evidenceLedgerPromptSections === null
+        ...(finalizerGroundingPromptSections.length === 0
           ? {}
-          : { additionalPromptSections: evidenceLedgerPromptSections }),
+          : { additionalPromptSections: finalizerGroundingPromptSections }),
         tracer: this.tracer,
         turnId: context.turnId,
       });
@@ -379,7 +388,7 @@ export class Deliberator {
           ...(thinking === undefined ? {} : { thinking }),
           path: "system_1",
           additionalPromptSections: appendFinalizerPromptSections(
-            evidenceLedgerPromptSections,
+            finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
             regeneration.additionalPromptSections,
           ),
           tracer: this.tracer,
@@ -413,6 +422,7 @@ export class Deliberator {
     const forcedContradictionOpenQuestionsPrompt =
       renderForcedContradictionOpenQuestionsPrompt(context);
     const plannerAdditionalPromptSections = [
+      ...sessionReentryContinuityPromptSections,
       compactPlannerLedger?.promptSection ?? null,
       forcedContradictionOpenQuestionsPrompt,
     ];
@@ -505,9 +515,9 @@ export class Deliberator {
     ]);
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
     const additionalPromptSections =
-      evidenceLedgerPromptSections === null
+      finalizerGroundingPromptSections.length === 0
         ? [additionalRetrievalBlock, planSection]
-        : [...evidenceLedgerPromptSections, additionalRetrievalBlock, planSection];
+        : [...finalizerGroundingPromptSections, additionalRetrievalBlock, planSection];
     let usage = planner.usage;
     let finalized: FinalizerEmission;
     let finalToolCallsMade: FinalizerResult["toolCallsMade"] = [];

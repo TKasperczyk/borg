@@ -18,6 +18,8 @@ export type TurnTraceEventName =
   | "retrieval.completed"
   | "evidence_ledger.completed"
   | "evidence_ledger.compaction.completed"
+  | "session_reentry.continuity.evaluated"
+  | "session_reentry.continuity.rendered"
   | "shared_state.compile.skipped"
   | "shared_state.compile.transitioned"
   | "shared_state.compile.completed"

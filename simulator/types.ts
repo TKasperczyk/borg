@@ -200,6 +200,10 @@ export type MetricsRow = {
   shared_state_add_to_update_ratio_by_key: Record<string, number>;
   shared_state_top_keys_by_entry_count: Record<string, number>;
   shared_state_add_rejected_cap_exceeded_total: number;
+  session_reentry_card_rendered_total: number;
+  session_reentry_card_rendered_by_audience: Record<string, number>;
+  session_reentry_first_turn_with_existing_state_total: number;
+  session_reentry_first_turn_blank_audience_total: number;
   simulator_persona_failures: number;
   borg_hard_aborted_turns: number;
   borg_intentional_suppressions: number;
