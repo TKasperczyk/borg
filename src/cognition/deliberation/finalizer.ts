@@ -7,9 +7,13 @@ import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
 import {
+  FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+  deriveFinalizerNoOutputPrimaryReason,
   replyTargetSchema,
+  type FinalizerNoOutputPrimaryReason,
   type FinalizerNoOutputSemanticCategory,
+  type FinalizerNoOutputStructuralFlag,
   type ReplyTarget,
 } from "../generation/types.js";
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
@@ -27,10 +31,12 @@ const emitTextToolInputSchema = z
   .strict();
 
 const finalizerNoOutputSemanticCategorySchema = z.enum(FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES);
+const finalizerNoOutputPrimaryReasonSchema = z.enum(FINALIZER_NO_OUTPUT_PRIMARY_REASONS);
 
 const emitNoOutputToolInputSchema = z
   .object({
     reason: z.string().min(1),
+    primary_no_output_reason: finalizerNoOutputPrimaryReasonSchema.optional(),
     no_output_categories: z.array(finalizerNoOutputSemanticCategorySchema).optional(),
   })
   .strict();
@@ -65,7 +71,7 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
-    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue. When using this tool, classify the silence in no_output_categories using the provided enum; use [] when uncertain.",
+    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue. When using this tool, choose one primary_no_output_reason and classify the silence in no_output_categories using the provided enum; use [] when uncertain.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
@@ -121,6 +127,7 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.",
   "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal. In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.",
   "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
+  'When emitting EmitNoOutput, choose ONE primary_no_output_reason that best captures why silence is the right output: "closure" when the message is a closure-shaped wrap-up, goodbye, sign-off, or terminal beat; "user_to_user" when the current message is between two human participants and Borg was not addressed; "when_borg_addressed" when Borg was explicitly addressed but no useful response is warranted (rare); "low_value_echo" when any visible response would only acknowledge or echo with no new content; "other" for any other principled reason for silence.',
   'When emitting EmitNoOutput, classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and Borg was not addressed; "when_borg_addressed" if Borg was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, list all. Use [] if uncertain.',
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
@@ -160,6 +167,7 @@ export type RunFinalizerOptions = {
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
+  structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
   tracer?: TurnTracer;
   turnId?: string;
 };
@@ -179,6 +187,7 @@ export type EmissionDecision =
   | {
       kind: "no_output";
       reason: string;
+      primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
       no_output_categories: FinalizerNoOutputSemanticCategory[];
     }
   | {
@@ -298,6 +307,9 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
       ? {
           kind: "no_output",
           reason: parsed.data.reason,
+          ...(parsed.data.primary_no_output_reason === undefined
+            ? {}
+            : { primary_no_output_reason: parsed.data.primary_no_output_reason }),
           no_output_categories: parsed.data.no_output_categories ?? [],
         }
       : invalidToolDecision(terminalCall.name, parsed.error.message);
@@ -314,10 +326,35 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
   return invalidToolDecision(terminalCall.name, "unknown terminal emission tool");
 }
 
+function structuralNoOutputFlagsForTrace(
+  options: RunFinalizerOptions,
+  decision: EmissionDecision,
+): FinalizerNoOutputStructuralFlag[] | undefined {
+  if (decision.kind !== "no_output") {
+    return undefined;
+  }
+
+  return [
+    ...new Set<FinalizerNoOutputStructuralFlag>([
+      ...(options.structuralNoOutputFlags ?? []),
+      ...(decision.no_output_categories.includes("when_borg_addressed")
+        ? (["borg_directly_addressed"] as const)
+        : []),
+    ]),
+  ];
+}
+
 function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDecision): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
   }
+
+  const structuralNoOutputFlags = structuralNoOutputFlagsForTrace(options, decision);
+  const primaryNoOutputReason =
+    decision.kind === "no_output"
+      ? decision.primary_no_output_reason ??
+        deriveFinalizerNoOutputPrimaryReason(decision.no_output_categories)
+      : undefined;
 
   options.tracer.emit("finalizer.completed", {
     turnId: options.turnId,
@@ -331,7 +368,14 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
       ? { reply_target: decision.reply_target }
       : {}),
     ...(decision.kind === "no_output"
-      ? { reason: decision.reason, no_output_categories: [...decision.no_output_categories] }
+      ? {
+          reason: decision.reason,
+          primary_no_output_reason: primaryNoOutputReason,
+          no_output_categories: [...decision.no_output_categories],
+          ...(structuralNoOutputFlags === undefined
+            ? {}
+            : { structural_no_output_flags: structuralNoOutputFlags }),
+        }
       : {}),
     ...(decision.kind === "observe" ? { reason: decision.reason } : {}),
     ...(decision.kind === "self_report" ? { persistence_class: decision.persistence_class } : {}),

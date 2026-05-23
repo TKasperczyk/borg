@@ -1191,6 +1191,13 @@ describe("deliberator", () => {
       kind: "suppressed",
       reason: "finalizer_no_output",
       no_output_categories: ["closure", "with_state_delta", "with_open_question"],
+      primary_no_output_reason: "closure",
+      structural_no_output_flags: [
+        "with_state_delta",
+        "current_turn_state_delta",
+        "with_open_question",
+        "open_question_rendered",
+      ],
     });
     const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
     expect(emittedEvent?.data).toMatchObject({
@@ -1229,6 +1236,41 @@ describe("deliberator", () => {
       kind: "suppressed",
       reason: "finalizer_no_output",
       no_output_categories: ["with_state_delta"],
+      primary_no_output_reason: "other",
+      structural_no_output_flags: ["with_state_delta", "current_turn_state_delta"],
+    });
+  });
+
+  it("derives when_borg_addressed primary and direct-address flag from semantic category", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse(
+          {
+            id: "toolu_emit_no_output_addressed",
+            name: "EmitNoOutput",
+            input: {
+              reason: "addressed_but_no_useful_reply",
+              no_output_categories: ["when_borg_addressed"],
+            },
+          },
+          { inputTokens: 10, outputTokens: 3 },
+        ),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-addressed-no-output",
+      }),
+    );
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_no_output",
+      no_output_categories: ["when_borg_addressed"],
+      primary_no_output_reason: "when_borg_addressed",
+      structural_no_output_flags: ["borg_directly_addressed"],
     });
   });
 
@@ -1260,6 +1302,8 @@ describe("deliberator", () => {
       kind: "suppressed",
       reason: "finalizer_no_output",
       no_output_categories: [],
+      primary_no_output_reason: "other",
+      structural_no_output_flags: [],
     });
   });
 
@@ -1831,6 +1875,8 @@ describe("deliberator", () => {
         kind: "suppressed",
         reason: "finalizer_no_output",
         no_output_categories: [],
+        primary_no_output_reason: "other",
+        structural_no_output_flags: [],
       });
       expect(result.emissionRecommendation).toBe("emit");
       expect(result.response).toBe("");
@@ -1939,6 +1985,8 @@ describe("deliberator", () => {
         kind: "suppressed",
         reason: "finalizer_no_output",
         no_output_categories: [],
+        primary_no_output_reason: "other",
+        structural_no_output_flags: [],
       });
       expect(result.thoughtsPersisted).toBe(true);
       expect(result.thoughtStreamEntryIds).toHaveLength(1);

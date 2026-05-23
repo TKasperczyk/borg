@@ -179,10 +179,66 @@ function incrementFinalizerNoOutputCategories(
   }
 }
 
+function primaryNoOutputReasonFromCategories(categories: readonly string[]): string {
+  if (categories.includes("when_borg_addressed")) {
+    return "when_borg_addressed";
+  }
+
+  if (categories.includes("user_to_user")) {
+    return "user_to_user";
+  }
+
+  if (categories.includes("closure")) {
+    return "closure";
+  }
+
+  return "other";
+}
+
+function structuralNoOutputFlagsFromCategories(categories: readonly string[]): string[] {
+  const flags: string[] = [];
+
+  if (categories.includes("with_state_delta")) {
+    flags.push("with_state_delta", "current_turn_state_delta");
+  }
+
+  if (categories.includes("with_open_question")) {
+    flags.push("with_open_question", "open_question_rendered");
+  }
+
+  if (categories.includes("when_borg_addressed")) {
+    flags.push("borg_directly_addressed");
+  }
+
+  return [...new Set(flags)];
+}
+
+function incrementStringCounts(counts: Record<string, number>, labels: readonly string[]): void {
+  for (const label of labels) {
+    counts[label] = (counts[label] ?? 0) + 1;
+  }
+}
+
+function incrementNestedStringCounts(
+  counts: Record<string, Record<string, number>>,
+  key: string,
+  labels: readonly string[],
+): void {
+  const nested = counts[key] ?? {};
+
+  incrementStringCounts(nested, labels);
+  counts[key] = nested;
+}
+
 function postGenerationRejectedForTurn(
   tracePath: string,
   turnId: string,
-): { reason?: GenerationSuppressionReason; noOutputCategories: string[] } {
+): {
+  reason?: GenerationSuppressionReason;
+  noOutputCategories: string[];
+  primaryNoOutputReason: string;
+  structuralNoOutputFlags: string[];
+} {
   const record = [...readTraceEvents(tracePath)]
     .reverse()
     .find((event) => event.turnId === turnId && event.event === "post_generation.rejected");
@@ -192,10 +248,21 @@ function postGenerationRejectedForTurn(
         (category): category is string => typeof category === "string",
       )
     : [];
+  const explicitPrimaryNoOutputReason =
+    typeof record?.primary_no_output_reason === "string" ? record.primary_no_output_reason : null;
+  const explicitStructuralNoOutputFlags = Array.isArray(record?.structural_no_output_flags)
+    ? record.structural_no_output_flags.filter((flag): flag is string => typeof flag === "string")
+    : [];
 
   return {
     ...(typeof reason === "string" ? { reason: reason as GenerationSuppressionReason } : {}),
     noOutputCategories,
+    primaryNoOutputReason:
+      explicitPrimaryNoOutputReason ?? primaryNoOutputReasonFromCategories(noOutputCategories),
+    structuralNoOutputFlags:
+      explicitStructuralNoOutputFlags.length > 0
+        ? [...new Set(explicitStructuralNoOutputFlags)]
+        : structuralNoOutputFlagsFromCategories(noOutputCategories),
   };
 }
 
@@ -710,6 +777,19 @@ export class SimulatorRunner {
       let borgIntentionalSuppressionCount = 0;
       const borgIntentionalSuppressionsByReason: Record<string, number> = {};
       const finalizerNoOutputByCategory: Record<string, number> = {};
+      const finalizerNoOutputPrimaryByReason: Record<string, number> = {};
+      const finalizerNoOutputFlagsByFlag: Record<string, number> = {};
+      const finalizerNoOutputFlagsByPrimaryReason: Record<string, Record<string, number>> = {};
+      let finalizerNoOutputWhenBorgAddressedWithStateDeltaTotal = 0;
+      let finalizerNoOutputClosureWithOpenQuestionTotal = 0;
+      const finalizerNoOutputMetricContext = () => ({
+        finalizerNoOutputByCategory,
+        finalizerNoOutputPrimaryByReason,
+        finalizerNoOutputFlagsByFlag,
+        finalizerNoOutputFlagsByPrimaryReason,
+        finalizerNoOutputWhenBorgAddressedWithStateDeltaTotal,
+        finalizerNoOutputClosureWithOpenQuestionTotal,
+      });
 
       const attemptTurn = async (
         turn: number,
@@ -808,7 +888,7 @@ export class SimulatorRunner {
             borgHardAbortedTurns: borgHardAbortedTurnCount,
             borgIntentionalSuppressions: borgIntentionalSuppressionCount,
             borgIntentionalSuppressionsByReason,
-            finalizerNoOutputByCategory,
+            ...finalizerNoOutputMetricContext(),
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -870,7 +950,7 @@ export class SimulatorRunner {
               borgHardAbortedTurns: borgHardAbortedTurnCount,
               borgIntentionalSuppressions: borgIntentionalSuppressionCount,
               borgIntentionalSuppressionsByReason,
-              finalizerNoOutputByCategory,
+              ...finalizerNoOutputMetricContext(),
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -901,7 +981,7 @@ export class SimulatorRunner {
               borgHardAbortedTurns: borgHardAbortedTurnCount,
               borgIntentionalSuppressions: borgIntentionalSuppressionCount,
               borgIntentionalSuppressionsByReason,
-              finalizerNoOutputByCategory,
+              ...finalizerNoOutputMetricContext(),
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -950,7 +1030,7 @@ export class SimulatorRunner {
                 borgHardAbortedTurns: borgHardAbortedTurnCount,
                 borgIntentionalSuppressions: borgIntentionalSuppressionCount,
                 borgIntentionalSuppressionsByReason,
-                finalizerNoOutputByCategory,
+                ...finalizerNoOutputMetricContext(),
               });
             }
 
@@ -976,7 +1056,7 @@ export class SimulatorRunner {
             borgHardAbortedTurns: borgHardAbortedTurnCount,
             borgIntentionalSuppressions: borgIntentionalSuppressionCount,
             borgIntentionalSuppressionsByReason,
-            finalizerNoOutputByCategory,
+            ...finalizerNoOutputMetricContext(),
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -1011,7 +1091,11 @@ export class SimulatorRunner {
         const postGenerationRejection =
           !success.emitted && !isObserveTurn
             ? postGenerationRejectedForTurn(transport.tracePath, success.turnId)
-            : { noOutputCategories: [] };
+            : {
+                noOutputCategories: [],
+                primaryNoOutputReason: "other",
+                structuralNoOutputFlags: [],
+              };
         const suppressionReason =
           !success.emitted && !isObserveTurn
             ? (postGenerationRejection.reason ?? success.suppressionReason)
@@ -1030,6 +1114,30 @@ export class SimulatorRunner {
               finalizerNoOutputByCategory,
               postGenerationRejection.noOutputCategories,
             );
+            incrementStringCounts(finalizerNoOutputPrimaryByReason, [
+              postGenerationRejection.primaryNoOutputReason,
+            ]);
+            incrementStringCounts(
+              finalizerNoOutputFlagsByFlag,
+              postGenerationRejection.structuralNoOutputFlags,
+            );
+            incrementNestedStringCounts(
+              finalizerNoOutputFlagsByPrimaryReason,
+              postGenerationRejection.primaryNoOutputReason,
+              postGenerationRejection.structuralNoOutputFlags,
+            );
+            if (
+              postGenerationRejection.primaryNoOutputReason === "when_borg_addressed" &&
+              postGenerationRejection.structuralNoOutputFlags.includes("with_state_delta")
+            ) {
+              finalizerNoOutputWhenBorgAddressedWithStateDeltaTotal += 1;
+            }
+            if (
+              postGenerationRejection.primaryNoOutputReason === "closure" &&
+              postGenerationRejection.structuralNoOutputFlags.includes("with_open_question")
+            ) {
+              finalizerNoOutputClosureWithOpenQuestionTotal += 1;
+            }
           }
           borgBehavioralSuppressions.push({
             sessionIndex: sessions.length,
@@ -1097,7 +1205,7 @@ export class SimulatorRunner {
           borgHardAbortedTurns: borgHardAbortedTurnCount,
           borgIntentionalSuppressions: borgIntentionalSuppressionCount,
           borgIntentionalSuppressionsByReason,
-          finalizerNoOutputByCategory,
+          ...finalizerNoOutputMetricContext(),
         });
 
         if (overseerDue) {
@@ -1518,6 +1626,23 @@ function reportCountMap(counts: Record<string, number>): string {
   return entries.map(([label, count]) => `${label}=${count}`).join(", ");
 }
 
+function reportNestedCountMap(counts: Record<string, Record<string, number>>): string {
+  const entries = Object.entries(counts)
+    .map(([label, nested]) => [label, reportCountMap(nested)] as const)
+    .filter(([, nested]) => nested !== "none")
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  if (entries.length === 0) {
+    return "none";
+  }
+
+  return entries.map(([label, nested]) => `${label}=[${nested}]`).join("; ");
+}
+
+function reportPercent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 export function formatSimulatorReport(report: SimulatorRunReport): string {
   const participantLine =
     report.personas.length <= 1
@@ -1532,6 +1657,18 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   const finalizerNoOutputCategories = reportCountMap(
     report.finalMetrics.finalizer_no_output_by_category,
   );
+  const finalizerNoOutputPrimaryByReason = reportCountMap(
+    report.finalMetrics.finalizer_no_output_primary_by_reason,
+  );
+  const finalizerNoOutputFlagsByFlag = reportCountMap(
+    report.finalMetrics.finalizer_no_output_flags_by_flag,
+  );
+  const finalizerNoOutputFlagsByPrimaryReason = reportNestedCountMap(
+    report.finalMetrics.finalizer_no_output_flags_by_primary_reason,
+  );
+  const finalizerNoOutputTotal = Object.values(
+    report.finalMetrics.finalizer_no_output_primary_by_reason,
+  ).reduce((sum, count) => sum + count, 0);
   const lines = [
     `# Borg Simulator Run ${report.runId}`,
     "",
@@ -1592,7 +1729,14 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `  - at cap with cap rejection: ${report.finalMetrics.shared_state_at_cap_with_cap_rejection_compiles_total}`,
     `- Shared-state lifecycle: active low-salience ${report.finalMetrics.shared_state_active_low_salience_live_final_compile}, active dormant ${report.finalMetrics.shared_state_active_dormant_live_final_compile}, demoted live->low ${report.finalMetrics.shared_state_demoted_live_to_low_salience_total}, demoted low->dormant ${report.finalMetrics.shared_state_demoted_low_salience_to_dormant_total}, reactivated low ${report.finalMetrics.shared_state_reactivated_low_salience_live_total}, reactivated dormant ${report.finalMetrics.shared_state_reactivated_dormant_live_total}`,
     `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, hard aborts ${report.finalMetrics.borg_hard_aborted_turns}, intentional suppressions ${report.finalMetrics.borg_intentional_suppressions} (by reason: ${intentionalSuppressionReasons})`,
-    `- Finalizer no-output categories: ${finalizerNoOutputCategories}`,
+    `- Finalizer no-output (${finalizerNoOutputTotal} total):`,
+    `  - Primary by reason: ${finalizerNoOutputPrimaryByReason}`,
+    `  - Structural flags by flag: ${finalizerNoOutputFlagsByFlag}`,
+    `  - Flags by primary reason: ${finalizerNoOutputFlagsByPrimaryReason}`,
+    "  - Triage combinations:",
+    `    - when_borg_addressed + with_state_delta: ${report.finalMetrics.finalizer_no_output_when_borg_addressed_with_state_delta_total}`,
+    `    - closure + with_open_question: ${report.finalMetrics.finalizer_no_output_closure_with_open_question_total}`,
+    `  - Compatibility categories: ${finalizerNoOutputCategories}`,
     `- Closure pressure: audit failed open ${report.finalMetrics.closure_response_audit_failed_open_total}, mixed observed ${report.finalMetrics.closure_pressure_mixed_observed_total}, closure-only observed ${report.finalMetrics.closure_pressure_closure_only_observed_total}, closure-only suppressed ${report.finalMetrics.closure_pressure_closure_only_suppressed_total}, mixed/no-active-preference ${report.finalMetrics.closure_pressure_mixed_passed_no_active_preference_total}, mixed span kinds ${reportCountMap(report.finalMetrics.closure_pressure_mixed_by_span_kind)}`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
@@ -1610,7 +1754,11 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Shared-state compiler degraded events: ${report.finalMetrics.shared_state_compiler_degraded_total}`,
     `- Shared-state compiler repair: attempted ${report.finalMetrics.shared_state_compiler_repair_attempted_total}, succeeded ${report.finalMetrics.shared_state_compiler_repair_succeeded_total}, failed ${report.finalMetrics.shared_state_compiler_repair_failed_total}`,
     `- Shared-state repair failures by reason: ${reportCountMap(report.finalMetrics.shared_state_compiler_repair_failed_by_rejection_reason)}`,
-    `- Shared-state empty updates: attempted ${report.finalMetrics.shared_state_empty_update_attempted_total}, dropped ${report.finalMetrics.shared_state_empty_update_dropped_total}, repaired ${report.finalMetrics.shared_state_empty_update_repaired_total}`,
+    "- Shared-state empty-update:",
+    `  - update operations checked: ${report.finalMetrics.shared_state_update_checked_for_empty_total}`,
+    `  - empty updates dropped: ${report.finalMetrics.shared_state_empty_update_dropped_total}`,
+    `  - drop rate: ${reportPercent(report.finalMetrics.shared_state_empty_update_drop_rate)}`,
+    `  - repaired: ${report.finalMetrics.shared_state_empty_update_repaired_total}`,
     `- Shared-state compiler operations by kind: ${reportCountMap(report.finalMetrics.shared_state_compiler_operations_total_by_kind)}`,
     `- Shared-state compiler add/update ratio: ${report.finalMetrics.shared_state_add_to_update_ratio.toFixed(2)}`,
     `- Shared-state entries by key: ${reportCountMap(report.finalMetrics.shared_state_entries_by_key)}`,

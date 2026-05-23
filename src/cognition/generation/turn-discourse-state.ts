@@ -15,6 +15,8 @@ import {
 import {
   type AgentObservedStreamContent,
   type FinalizerNoOutputCategory,
+  type FinalizerNoOutputPrimaryReason,
+  type FinalizerNoOutputStructuralFlag,
   isNaturalSilenceSuppressionReason,
   type AgentSuppressedStreamContent,
   type PendingTurnEmission,
@@ -64,6 +66,8 @@ export type AppendSuppressionMarkerInput = {
   turnId: string;
   audience?: string;
   noOutputCategories?: readonly FinalizerNoOutputCategory[];
+  primaryNoOutputReason?: FinalizerNoOutputPrimaryReason;
+  structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
 };
 
 export type AppendObservationMarkerInput = {
@@ -262,6 +266,12 @@ export class TurnDiscourseStateService {
         ...(input.noOutputCategories === undefined
           ? {}
           : { no_output_categories: [...input.noOutputCategories] }),
+        ...(input.primaryNoOutputReason === undefined
+          ? {}
+          : { primary_no_output_reason: input.primaryNoOutputReason }),
+        ...(input.structuralNoOutputFlags === undefined
+          ? {}
+          : { structural_no_output_flags: [...input.structuralNoOutputFlags] }),
       } satisfies AgentSuppressedStreamContent,
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });

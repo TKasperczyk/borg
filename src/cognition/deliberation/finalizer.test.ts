@@ -35,6 +35,7 @@ async function runEmissionFinalizer(
     additionalPromptSections?: readonly (string | null)[];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
+    structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
   } = {},
 ) {
   return runFinalizer({
@@ -64,6 +65,9 @@ async function runEmissionFinalizer(
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),
+    ...(options.structuralNoOutputFlags === undefined
+      ? {}
+      : { structuralNoOutputFlags: options.structuralNoOutputFlags }),
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
@@ -333,6 +337,7 @@ describe("runFinalizer emission tools", () => {
               name: "EmitNoOutput",
               input: {
                 reason: "natural_close",
+                primary_no_output_reason: "closure",
                 no_output_categories: ["closure", "when_borg_addressed"],
               },
             },
@@ -352,6 +357,7 @@ describe("runFinalizer emission tools", () => {
     expect(result.decision).toEqual({
       kind: "no_output",
       reason: "natural_close",
+      primary_no_output_reason: "closure",
       no_output_categories: ["closure", "when_borg_addressed"],
     });
     expect(tracer.emit).toHaveBeenCalledWith(
@@ -360,10 +366,93 @@ describe("runFinalizer emission tools", () => {
         turnId: "turn-no-output-categories",
         decision: "no_output",
         reason: "natural_close",
+        primary_no_output_reason: "closure",
         no_output_categories: ["closure", "when_borg_addressed"],
+        structural_no_output_flags: ["borg_directly_addressed"],
       }),
     );
   });
+
+  it("derives the traced primary no-output reason when the LLM omits it", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_no_output_derived_primary",
+              name: "EmitNoOutput",
+              input: {
+                reason: "addressed_but_no_useful_reply",
+                no_output_categories: ["when_borg_addressed"],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      tracer,
+      turnId: "turn-no-output-derived-primary",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "finalizer.completed",
+      expect.objectContaining({
+        turnId: "turn-no-output-derived-primary",
+        decision: "no_output",
+        reason: "addressed_but_no_useful_reply",
+        primary_no_output_reason: "when_borg_addressed",
+        no_output_categories: ["when_borg_addressed"],
+        structural_no_output_flags: ["borg_directly_addressed"],
+      }),
+    );
+  });
+
+  it.each(["closure", "user_to_user", "when_borg_addressed", "low_value_echo", "other"] as const)(
+    "accepts EmitNoOutput primary reason %s",
+    async (primaryNoOutputReason) => {
+      const llm = new FakeLLMClient({
+        responses: [
+          {
+            messageBlocks: [
+              {
+                type: "tool_use",
+                id: "toolu_no_output_primary",
+                name: "EmitNoOutput",
+                input: {
+                  reason: "no_visible_reply_needed",
+                  primary_no_output_reason: primaryNoOutputReason,
+                  no_output_categories: [],
+                },
+              },
+            ],
+            input_tokens: 4,
+            output_tokens: 2,
+            stop_reason: "tool_use",
+          },
+        ],
+      });
+
+      const result = await runEmissionFinalizer(llm, tempDirs);
+
+      expect(result.decision).toEqual({
+        kind: "no_output",
+        reason: "no_visible_reply_needed",
+        primary_no_output_reason: primaryNoOutputReason,
+        no_output_categories: [],
+      });
+    },
+  );
 
   it("rejects malformed EmitSelfReport payloads", async () => {
     const llm = new FakeLLMClient({

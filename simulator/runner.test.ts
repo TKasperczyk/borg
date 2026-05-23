@@ -535,8 +535,10 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_compiler_repair_succeeded_total: 0,
     shared_state_compiler_repair_failed_total: 0,
     shared_state_compiler_repair_failed_by_rejection_reason: {},
+    shared_state_update_checked_for_empty_total: 0,
     shared_state_empty_update_attempted_total: 0,
     shared_state_empty_update_dropped_total: 0,
+    shared_state_empty_update_drop_rate: 0,
     shared_state_empty_update_repaired_total: 0,
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
@@ -619,6 +621,11 @@ function metricsRow(turnCounter: number): MetricsRow {
     borg_intentional_suppressions: 0,
     borg_intentional_suppressions_by_reason: {},
     finalizer_no_output_by_category: {},
+    finalizer_no_output_primary_by_reason: {},
+    finalizer_no_output_flags_by_flag: {},
+    finalizer_no_output_flags_by_primary_reason: {},
+    finalizer_no_output_when_borg_addressed_with_state_delta_total: 0,
+    finalizer_no_output_closure_with_open_question_total: 0,
     borg_aborted_turns: 0,
   };
 }
@@ -750,6 +757,9 @@ describe("SimulatorRunner", () => {
         finalizer_no_output_by_category: {
           closure: 1,
         },
+        finalizer_no_output_primary_by_reason: {
+          closure: 1,
+        },
       },
       durationMs: 1,
     });
@@ -762,7 +772,9 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Simulator aborts: persona failures 1, hard aborts 0, intentional suppressions 1 (by reason: finalizer_no_output=1)",
     );
-    expect(report).toContain("Finalizer no-output categories: closure=1");
+    expect(report).toContain("Finalizer no-output (1 total):");
+    expect(report).toContain("Primary by reason: closure=1");
+    expect(report).toContain("Compatibility categories: closure=1");
     expect(report).toContain("## Simulator Persona Failures");
     expect(report).toContain("persona_role_bleed: assistant_self_claim");
     expect(report).toContain("## Borg Behavioral Suppressions");
@@ -868,8 +880,10 @@ describe("SimulatorRunner", () => {
           missing_new_key_reason: 1,
           relationship_label_ungrounded: 2,
         },
+        shared_state_update_checked_for_empty_total: 4,
         shared_state_empty_update_attempted_total: 4,
         shared_state_empty_update_dropped_total: 4,
+        shared_state_empty_update_drop_rate: 1,
         shared_state_empty_update_repaired_total: 0,
         shared_state_compiler_operations_total_by_kind: {
           add: 5,
@@ -944,7 +958,10 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Shared-state repair failures by reason: missing_new_key_reason=1, relationship_label_ungrounded=2",
     );
-    expect(report).toContain("Shared-state empty updates: attempted 4, dropped 4, repaired 0");
+    expect(report).toContain("Shared-state empty-update:");
+    expect(report).toContain("update operations checked: 4");
+    expect(report).toContain("empty updates dropped: 4");
+    expect(report).toContain("drop rate: 100.0%");
     expect(report).toContain(
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );

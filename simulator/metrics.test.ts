@@ -223,8 +223,10 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_compiler_repair_succeeded_total",
   "shared_state_compiler_repair_failed_total",
   "shared_state_compiler_repair_failed_by_rejection_reason",
+  "shared_state_update_checked_for_empty_total",
   "shared_state_empty_update_attempted_total",
   "shared_state_empty_update_dropped_total",
+  "shared_state_empty_update_drop_rate",
   "shared_state_empty_update_repaired_total",
   "capability_overclaim_count",
   "capability_ambiguity_count",
@@ -302,6 +304,11 @@ const TURN_METRICS_KEY_ORDER = [
   "borg_intentional_suppressions",
   "borg_intentional_suppressions_by_reason",
   "finalizer_no_output_by_category",
+  "finalizer_no_output_primary_by_reason",
+  "finalizer_no_output_flags_by_flag",
+  "finalizer_no_output_flags_by_primary_reason",
+  "finalizer_no_output_when_borg_addressed_with_state_delta_total",
+  "finalizer_no_output_closure_with_open_question_total",
   "borg_aborted_turns",
 ] as const;
 
@@ -824,7 +831,9 @@ describe("MetricsCapture", () => {
           turnId: "turn-1",
           event: "post_generation.rejected",
           reason: "finalizer_no_output",
+          primary_no_output_reason: "closure",
           no_output_categories: ["closure", "with_open_question"],
+          structural_no_output_flags: ["with_open_question", "open_question_rendered"],
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -947,9 +956,83 @@ describe("MetricsCapture", () => {
       closure: 1,
       with_open_question: 1,
     });
+    expect(row.finalizer_no_output_primary_by_reason).toEqual({
+      closure: 1,
+    });
+    expect(row.finalizer_no_output_flags_by_flag).toEqual({
+      open_question_rendered: 1,
+      with_open_question: 1,
+    });
+    expect(row.finalizer_no_output_flags_by_primary_reason).toEqual({
+      closure: {
+        open_question_rendered: 1,
+        with_open_question: 1,
+      },
+    });
+    expect(row.finalizer_no_output_when_borg_addressed_with_state_delta_total).toBe(0);
+    expect(row.finalizer_no_output_closure_with_open_question_total).toBe(1);
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);
+  });
+
+  it("derives no-output primary and structural flags from compatibility categories", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-addressed-state",
+          event: "post_generation.rejected",
+          reason: "finalizer_no_output",
+          no_output_categories: ["when_borg_addressed", "with_state_delta"],
+        },
+        {
+          ts: 101,
+          turnId: "turn-other",
+          event: "post_generation.rejected",
+          reason: "finalizer_no_output",
+          no_output_categories: [],
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-other",
+      2,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.finalizer_no_output_primary_by_reason).toEqual({
+      other: 1,
+      when_borg_addressed: 1,
+    });
+    expect(row.finalizer_no_output_flags_by_flag).toEqual({
+      borg_directly_addressed: 1,
+      current_turn_state_delta: 1,
+      with_state_delta: 1,
+    });
+    expect(row.finalizer_no_output_flags_by_primary_reason).toEqual({
+      when_borg_addressed: {
+        borg_directly_addressed: 1,
+        current_turn_state_delta: 1,
+        with_state_delta: 1,
+      },
+    });
+    expect(row.finalizer_no_output_when_borg_addressed_with_state_delta_total).toBe(1);
+    expect(row.finalizer_no_output_closure_with_open_question_total).toBe(0);
   });
 
   it("writes turn metric keys in v21 order with new fields appended", async () => {
@@ -1224,6 +1307,7 @@ describe("MetricsCapture", () => {
           new_state_key_count: 2,
           keys_with_single_entry_only: 1,
           similar_key_cluster_count: 0,
+          update_checked_for_empty_count: 3,
           empty_update_attempted_count: 3,
           empty_update_dropped_count: 2,
           empty_update_repaired_count: 0,
@@ -1355,8 +1439,10 @@ describe("MetricsCapture", () => {
       missing_new_key_reason: 1,
       relationship_label_ungrounded: 2,
     });
+    expect(row.shared_state_update_checked_for_empty_total).toBe(3);
     expect(row.shared_state_empty_update_attempted_total).toBe(3);
     expect(row.shared_state_empty_update_dropped_total).toBe(2);
+    expect(row.shared_state_empty_update_drop_rate).toBe(2 / 3);
     expect(row.shared_state_empty_update_repaired_total).toBe(0);
     expect(row.shared_state_compiler_operations_total_by_kind).toEqual({
       add: 5,
@@ -1394,6 +1480,41 @@ describe("MetricsCapture", () => {
         expect.objectContaining({ kind: "shared_state_compiler_add_dominant" }),
       ]),
     );
+  });
+
+  it("reports zero empty-update drop rate when no updates were checked", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      JSON.stringify({
+        ts: 100,
+        turnId: "turn-empty-update-zero",
+        event: "shared_state.compile.completed",
+        applied: true,
+        update_checked_for_empty_count: 0,
+        empty_update_dropped_count: 0,
+      }),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-empty-update-zero",
+      1,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.shared_state_update_checked_for_empty_total).toBe(0);
+    expect(row.shared_state_empty_update_attempted_total).toBe(0);
+    expect(row.shared_state_empty_update_dropped_total).toBe(0);
+    expect(row.shared_state_empty_update_drop_rate).toBe(0);
   });
 
   it("counts action candidate classification and embedding-dedup traces", async () => {

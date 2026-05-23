@@ -311,8 +311,10 @@ function metricsRow(turn: number): MetricsRow {
     shared_state_compiler_repair_succeeded_total: 0,
     shared_state_compiler_repair_failed_total: 0,
     shared_state_compiler_repair_failed_by_rejection_reason: {},
+    shared_state_update_checked_for_empty_total: 0,
     shared_state_empty_update_attempted_total: 0,
     shared_state_empty_update_dropped_total: 0,
+    shared_state_empty_update_drop_rate: 0,
     shared_state_empty_update_repaired_total: 0,
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
@@ -395,6 +397,11 @@ function metricsRow(turn: number): MetricsRow {
     borg_intentional_suppressions: 0,
     borg_intentional_suppressions_by_reason: {},
     finalizer_no_output_by_category: {},
+    finalizer_no_output_primary_by_reason: {},
+    finalizer_no_output_flags_by_flag: {},
+    finalizer_no_output_flags_by_primary_reason: {},
+    finalizer_no_output_when_borg_addressed_with_state_delta_total: 0,
+    finalizer_no_output_closure_with_open_question_total: 0,
     borg_aborted_turns: 0,
   };
 }

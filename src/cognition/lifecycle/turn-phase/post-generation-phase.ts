@@ -269,6 +269,8 @@ export async function runPostGenerationPhase(input: {
             turnId: input.turnId,
             audience: input.turnInput.audience,
             noOutputCategories: actionEmission.no_output_categories,
+            primaryNoOutputReason: actionEmission.primary_no_output_reason,
+            structuralNoOutputFlags: actionEmission.structural_no_output_flags,
           });
 
   if (actionEmission.kind === "suppressed") {
@@ -671,6 +673,12 @@ async function suppressFromActionPhase(input: {
     ...(input.actionEmission.no_output_categories === undefined
       ? {}
       : { no_output_categories: [...input.actionEmission.no_output_categories] }),
+    ...(input.actionEmission.primary_no_output_reason === undefined
+      ? {}
+      : { primary_no_output_reason: input.actionEmission.primary_no_output_reason }),
+    ...(input.actionEmission.structural_no_output_flags === undefined
+      ? {}
+      : { structural_no_output_flags: [...input.actionEmission.structural_no_output_flags] }),
   };
   let suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: input.actionResult.workingMemory,
@@ -698,6 +706,12 @@ async function suppressFromActionPhase(input: {
       ...(input.actionEmission.no_output_categories === undefined
         ? {}
         : { no_output_categories: [...input.actionEmission.no_output_categories] }),
+      ...(input.actionEmission.primary_no_output_reason === undefined
+        ? {}
+        : { primary_no_output_reason: input.actionEmission.primary_no_output_reason }),
+      ...(input.actionEmission.structural_no_output_flags === undefined
+        ? {}
+        : { structural_no_output_flags: [...input.actionEmission.structural_no_output_flags] }),
     });
   }
 

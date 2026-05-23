@@ -29,10 +29,13 @@ import {
 } from "../evidence-ledger/index.js";
 import type {
   FinalizerNoOutputCategory,
+  FinalizerNoOutputSemanticCategory,
   FinalizerNoOutputStructuralCategory,
+  FinalizerNoOutputStructuralFlag,
   GenerationSuppressionReason,
   PendingTurnEmission,
 } from "../generation/types.js";
+import { deriveFinalizerNoOutputPrimaryReason } from "../generation/types.js";
 import type {
   DeliberationContext,
   DeliberationResult,
@@ -173,14 +176,14 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
   }
 }
 
-function structuralNoOutputCategories(
+function structuralNoOutputFlags(
   context: DeliberationContext,
   input: { additionalOpenQuestionsRenderedCount?: number } = {},
-): FinalizerNoOutputStructuralCategory[] {
-  const categories: FinalizerNoOutputStructuralCategory[] = [];
+): FinalizerNoOutputStructuralFlag[] {
+  const flags: FinalizerNoOutputStructuralFlag[] = [];
 
   if ((context.sharedStateAppliedOperationCount ?? 0) > 0) {
-    categories.push("with_state_delta");
+    flags.push("with_state_delta", "current_turn_state_delta");
   }
 
   const renderedOpenQuestionCount =
@@ -188,10 +191,10 @@ function structuralNoOutputCategories(
     (input.additionalOpenQuestionsRenderedCount ?? 0);
 
   if (renderedOpenQuestionCount > 0) {
-    categories.push("with_open_question");
+    flags.push("with_open_question", "open_question_rendered");
   }
 
-  return categories;
+  return flags;
 }
 
 function uniqueNoOutputCategories(
@@ -200,20 +203,59 @@ function uniqueNoOutputCategories(
   return [...new Set(categories)];
 }
 
+function uniqueNoOutputStructuralFlags(
+  flags: readonly FinalizerNoOutputStructuralFlag[],
+): FinalizerNoOutputStructuralFlag[] {
+  return [...new Set(flags)];
+}
+
+function legacyStructuralCategoriesFromFlags(
+  flags: readonly FinalizerNoOutputStructuralFlag[],
+): FinalizerNoOutputStructuralCategory[] {
+  const categories: FinalizerNoOutputStructuralCategory[] = [];
+
+  if (flags.includes("with_state_delta")) {
+    categories.push("with_state_delta");
+  }
+
+  if (flags.includes("with_open_question")) {
+    categories.push("with_open_question");
+  }
+
+  return categories;
+}
+
 function buildFinalizerEmission(
   result: FinalizerResult,
-  structuralCategories: readonly FinalizerNoOutputStructuralCategory[] = [],
+  structuralFlags: readonly FinalizerNoOutputStructuralFlag[] = [],
 ): FinalizerEmission {
   const suppressionReason = finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
+    const noOutputSemanticCategories =
+      result.decision.kind === "no_output" ? result.decision.no_output_categories : undefined;
+    const noOutputStructuralFlags =
+      noOutputSemanticCategories === undefined
+        ? undefined
+        : uniqueNoOutputStructuralFlags([
+            ...structuralFlags,
+            ...(noOutputSemanticCategories.includes("when_borg_addressed")
+              ? (["borg_directly_addressed"] as const)
+              : []),
+          ]);
     const noOutputCategories =
-      result.decision.kind === "no_output"
-        ? uniqueNoOutputCategories([
-            ...result.decision.no_output_categories,
-            ...structuralCategories,
-          ])
-        : undefined;
+      noOutputSemanticCategories === undefined || noOutputStructuralFlags === undefined
+        ? undefined
+        : uniqueNoOutputCategories([
+            ...noOutputSemanticCategories,
+            ...legacyStructuralCategoriesFromFlags(noOutputStructuralFlags),
+          ]);
+    const primaryNoOutputReason =
+      noOutputSemanticCategories === undefined
+        ? undefined
+        : ((result.decision.kind === "no_output"
+            ? result.decision.primary_no_output_reason
+            : undefined) ?? deriveFinalizerNoOutputPrimaryReason(noOutputSemanticCategories));
 
     return {
       response: "",
@@ -222,6 +264,12 @@ function buildFinalizerEmission(
         kind: "suppressed",
         reason: suppressionReason,
         ...(noOutputCategories === undefined ? {} : { no_output_categories: noOutputCategories }),
+        ...(primaryNoOutputReason === undefined
+          ? {}
+          : { primary_no_output_reason: primaryNoOutputReason }),
+        ...(noOutputStructuralFlags === undefined
+          ? {}
+          : { structural_no_output_flags: noOutputStructuralFlags }),
       },
     };
   }
@@ -379,6 +427,7 @@ export class Deliberator {
     const thinking = cognitionThinkingOption(this.options);
 
     if (decision.path === "system_1") {
+      const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext);
       const response = await runFinalizer({
         llmClient: this.options.llmClient,
         dispatcher: this.options.toolDispatcher,
@@ -395,13 +444,11 @@ export class Deliberator {
         ...(finalizerGroundingPromptSections.length === 0
           ? {}
           : { additionalPromptSections: finalizerGroundingPromptSections }),
+        structuralNoOutputFlags: finalizerStructuralFlags,
         tracer: this.tracer,
         turnId: context.turnId,
       });
-      const finalized = buildFinalizerEmission(
-        response,
-        structuralNoOutputCategories(effectiveContext),
-      );
+      const finalized = buildFinalizerEmission(response, finalizerStructuralFlags);
 
       const result: DeliberationResult = {
         path: "system_1",
@@ -438,12 +485,13 @@ export class Deliberator {
             finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
             regeneration.additionalPromptSections,
           ),
+          structuralNoOutputFlags: finalizerStructuralFlags,
           tracer: this.tracer,
           turnId: context.turnId,
         });
         const regeneratedFinalized = buildFinalizerEmission(
           regeneratedResponse,
-          structuralNoOutputCategories(effectiveContext),
+          finalizerStructuralFlags,
         );
 
         return {
@@ -571,6 +619,9 @@ export class Deliberator {
     let usage = planner.usage;
     let finalized: FinalizerEmission;
     let finalToolCallsMade: FinalizerResult["toolCallsMade"] = [];
+    const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext, {
+      additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
+    });
 
     const finalResponse = await runFinalizer({
       llmClient: this.options.llmClient,
@@ -586,16 +637,12 @@ export class Deliberator {
       ...(thinking === undefined ? {} : { thinking }),
       path: "system_2",
       additionalPromptSections,
+      structuralNoOutputFlags: finalizerStructuralFlags,
       tracer: this.tracer,
       turnId: context.turnId,
     });
     usage = aggregateUsage(usage, finalResponse.usage);
-    finalized = buildFinalizerEmission(
-      finalResponse,
-      structuralNoOutputCategories(effectiveContext, {
-        additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
-      }),
-    );
+    finalized = buildFinalizerEmission(finalResponse, finalizerStructuralFlags);
     finalToolCallsMade = finalResponse.toolCallsMade;
 
     const result: DeliberationResult = {
@@ -636,14 +683,13 @@ export class Deliberator {
           additionalPromptSections,
           regeneration.additionalPromptSections,
         ),
+        structuralNoOutputFlags: finalizerStructuralFlags,
         tracer: this.tracer,
         turnId: context.turnId,
       });
       const regeneratedFinalized = buildFinalizerEmission(
         regeneratedResponse,
-        structuralNoOutputCategories(effectiveContext, {
-          additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
-        }),
+        finalizerStructuralFlags,
       );
 
       return {

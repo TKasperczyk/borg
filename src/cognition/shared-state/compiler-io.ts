@@ -249,6 +249,7 @@ export function traceCompileCompleted(options: {
       canonicalizes_rejected_non_locked: toTraceJsonValue(
         options.nonLockedCanonicalizesDrops ?? [],
       ),
+      update_checked_for_empty_count: options.emptyUpdateAttemptedCount ?? 0,
       empty_update_attempted_count: options.emptyUpdateAttemptedCount ?? 0,
       empty_update_dropped_count: options.emptyUpdateDroppedCount ?? 0,
       empty_update_repaired_count: options.emptyUpdateRepairedCount ?? 0,

@@ -182,6 +182,11 @@ export type MetricsCaptureContext = {
   borgIntentionalSuppressions?: number;
   borgIntentionalSuppressionsByReason?: Record<string, number>;
   finalizerNoOutputByCategory?: Record<string, number>;
+  finalizerNoOutputPrimaryByReason?: Record<string, number>;
+  finalizerNoOutputFlagsByFlag?: Record<string, number>;
+  finalizerNoOutputFlagsByPrimaryReason?: Record<string, Record<string, number>>;
+  finalizerNoOutputWhenBorgAddressedWithStateDeltaTotal?: number;
+  finalizerNoOutputClosureWithOpenQuestionTotal?: number;
   /**
    * Deprecated compatibility input; use borgHardAbortedTurns.
    */
@@ -321,8 +326,10 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_compiler_repair_succeeded_total"
   | "shared_state_compiler_repair_failed_total"
   | "shared_state_compiler_repair_failed_by_rejection_reason"
+  | "shared_state_update_checked_for_empty_total"
   | "shared_state_empty_update_attempted_total"
   | "shared_state_empty_update_dropped_total"
+  | "shared_state_empty_update_drop_rate"
   | "shared_state_empty_update_repaired_total"
   | "shared_state_compiler_operations_total_by_kind"
   | "shared_state_add_to_update_ratio"
@@ -1407,6 +1414,10 @@ function sharedStateCompilerHealthMetrics(
   const completedRecords = traceRecords.filter(
     (record) => record.event === "shared_state.compile.completed",
   );
+  const updateCheckedForEmptyCompletedCount = completedRecords.reduce(
+    (sum, record) => sum + traceNumber(record, "update_checked_for_empty_count"),
+    0,
+  );
   const emptyUpdateAttemptedCompletedCount = completedRecords.reduce(
     (sum, record) => sum + traceNumber(record, "empty_update_attempted_count"),
     0,
@@ -1419,14 +1430,18 @@ function sharedStateCompilerHealthMetrics(
     (sum, record) => sum + traceNumber(record, "empty_update_repaired_count"),
     0,
   );
-  const emptyUpdateAttemptedCount =
-    emptyUpdateAttemptedCompletedCount > 0
-      ? emptyUpdateAttemptedCompletedCount
-      : emptyUpdateDroppedEventCount;
+  const updateCheckedForEmptyCount =
+    updateCheckedForEmptyCompletedCount > 0
+      ? updateCheckedForEmptyCompletedCount
+      : emptyUpdateAttemptedCompletedCount > 0
+        ? emptyUpdateAttemptedCompletedCount
+        : emptyUpdateDroppedEventCount;
   const emptyUpdateDroppedCount =
     emptyUpdateDroppedCompletedCount > 0
       ? emptyUpdateDroppedCompletedCount
       : emptyUpdateDroppedEventCount;
+  const emptyUpdateDropRate =
+    updateCheckedForEmptyCount === 0 ? 0 : emptyUpdateDroppedCount / updateCheckedForEmptyCount;
 
   return {
     shared_state_compiler_max_tokens_total: traceRecords.filter(
@@ -1449,8 +1464,10 @@ function sharedStateCompilerHealthMetrics(
     ).length,
     shared_state_compiler_repair_failed_by_rejection_reason:
       sharedStateCompilerRepairFailedReasons(traceRecords),
-    shared_state_empty_update_attempted_total: emptyUpdateAttemptedCount,
+    shared_state_update_checked_for_empty_total: updateCheckedForEmptyCount,
+    shared_state_empty_update_attempted_total: updateCheckedForEmptyCount,
     shared_state_empty_update_dropped_total: emptyUpdateDroppedCount,
+    shared_state_empty_update_drop_rate: emptyUpdateDropRate,
     shared_state_empty_update_repaired_total: emptyUpdateRepairedCount,
     shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
     shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
@@ -1756,20 +1773,151 @@ function finalizerNoOutputCategoryMetrics(
 ): Record<string, number> {
   const counts = new Map<string, number>();
 
-  for (const record of traceRecords) {
-    if (
-      record.event !== "post_generation.rejected" ||
-      traceReason(record) !== "finalizer_no_output"
-    ) {
-      continue;
-    }
-
+  for (const record of finalizerNoOutputRecords(traceRecords)) {
     for (const category of traceStringArray(record, "no_output_categories")) {
       incrementLabelCount(counts, category);
     }
   }
 
   return sortedNumberRecord(counts);
+}
+
+function finalizerNoOutputRecords(traceRecords: readonly TraceRecord[]): TraceRecord[] {
+  return traceRecords.filter(
+    (record) =>
+      record.event === "post_generation.rejected" && traceReason(record) === "finalizer_no_output",
+  );
+}
+
+function primaryNoOutputReasonForRecord(record: TraceRecord): string {
+  const primaryReason = traceString(record, "primary_no_output_reason");
+
+  if (primaryReason !== null) {
+    return primaryReason;
+  }
+
+  const categories = traceStringArray(record, "no_output_categories");
+
+  if (categories.includes("when_borg_addressed")) {
+    return "when_borg_addressed";
+  }
+
+  if (categories.includes("user_to_user")) {
+    return "user_to_user";
+  }
+
+  if (categories.includes("closure")) {
+    return "closure";
+  }
+
+  return "other";
+}
+
+function structuralNoOutputFlagsForRecord(record: TraceRecord): string[] {
+  const explicitFlags = traceStringArray(record, "structural_no_output_flags");
+
+  if (explicitFlags.length > 0) {
+    return [...new Set(explicitFlags)];
+  }
+
+  const categories = traceStringArray(record, "no_output_categories");
+  const flags: string[] = [];
+
+  if (categories.includes("with_state_delta")) {
+    flags.push("with_state_delta", "current_turn_state_delta");
+  }
+
+  if (categories.includes("with_open_question")) {
+    flags.push("with_open_question", "open_question_rendered");
+  }
+
+  if (categories.includes("when_borg_addressed")) {
+    flags.push("borg_directly_addressed");
+  }
+
+  return [...new Set(flags)];
+}
+
+function finalizerNoOutputPrimaryByReasonMetrics(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of finalizerNoOutputRecords(traceRecords)) {
+    incrementLabelCount(counts, primaryNoOutputReasonForRecord(record));
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function finalizerNoOutputFlagsByFlagMetrics(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of finalizerNoOutputRecords(traceRecords)) {
+    for (const flag of structuralNoOutputFlagsForRecord(record)) {
+      incrementLabelCount(counts, flag);
+    }
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function sortedNestedNumberRecord(
+  counts: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): Record<string, Record<string, number>> {
+  return Object.fromEntries(
+    [...counts.entries()]
+      .map(([key, nested]) => [key, sortedNumberRecord(nested)] as const)
+      .filter(([, nested]) => Object.keys(nested).length > 0)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function sortedNestedContextCounts(
+  counts: Record<string, Record<string, number>> | undefined,
+): Record<string, Record<string, number>> {
+  if (counts === undefined) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(counts)
+      .map(([key, nested]) => [key, sortedContextCounts(nested)] as const)
+      .filter(([, nested]) => Object.keys(nested).length > 0)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function finalizerNoOutputFlagsByPrimaryReasonMetrics(
+  traceRecords: readonly TraceRecord[],
+): Record<string, Record<string, number>> {
+  const counts = new Map<string, Map<string, number>>();
+
+  for (const record of finalizerNoOutputRecords(traceRecords)) {
+    const primaryReason = primaryNoOutputReasonForRecord(record);
+    const reasonCounts = counts.get(primaryReason) ?? new Map<string, number>();
+
+    for (const flag of structuralNoOutputFlagsForRecord(record)) {
+      incrementLabelCount(reasonCounts, flag);
+    }
+
+    counts.set(primaryReason, reasonCounts);
+  }
+
+  return sortedNestedNumberRecord(counts);
+}
+
+function finalizerNoOutputCombinationCount(
+  traceRecords: readonly TraceRecord[],
+  input: { primaryReason: string; flag: string },
+): number {
+  return finalizerNoOutputRecords(traceRecords).filter(
+    (record) =>
+      primaryNoOutputReasonForRecord(record) === input.primaryReason &&
+      structuralNoOutputFlagsForRecord(record).includes(input.flag),
+  ).length;
 }
 
 function finalizerNoOutputByCategory(input: {
@@ -1781,6 +1929,67 @@ function finalizerNoOutputByCategory(input: {
   return Object.keys(contextCounts).length > 0
     ? contextCounts
     : finalizerNoOutputCategoryMetrics(input.traceRecords);
+}
+
+function finalizerNoOutputPrimaryByReason(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): Record<string, number> {
+  const contextCounts = sortedContextCounts(input.context.finalizerNoOutputPrimaryByReason);
+
+  return Object.keys(contextCounts).length > 0
+    ? contextCounts
+    : finalizerNoOutputPrimaryByReasonMetrics(input.traceRecords);
+}
+
+function finalizerNoOutputFlagsByFlag(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): Record<string, number> {
+  const contextCounts = sortedContextCounts(input.context.finalizerNoOutputFlagsByFlag);
+
+  return Object.keys(contextCounts).length > 0
+    ? contextCounts
+    : finalizerNoOutputFlagsByFlagMetrics(input.traceRecords);
+}
+
+function finalizerNoOutputFlagsByPrimaryReason(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): Record<string, Record<string, number>> {
+  const contextCounts = sortedNestedContextCounts(
+    input.context.finalizerNoOutputFlagsByPrimaryReason,
+  );
+
+  return Object.keys(contextCounts).length > 0
+    ? contextCounts
+    : finalizerNoOutputFlagsByPrimaryReasonMetrics(input.traceRecords);
+}
+
+function finalizerNoOutputWhenBorgAddressedWithStateDelta(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): number {
+  return (
+    input.context.finalizerNoOutputWhenBorgAddressedWithStateDeltaTotal ??
+    finalizerNoOutputCombinationCount(input.traceRecords, {
+      primaryReason: "when_borg_addressed",
+      flag: "with_state_delta",
+    })
+  );
+}
+
+function finalizerNoOutputClosureWithOpenQuestion(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): number {
+  return (
+    input.context.finalizerNoOutputClosureWithOpenQuestionTotal ??
+    finalizerNoOutputCombinationCount(input.traceRecords, {
+      primaryReason: "closure",
+      flag: "with_open_question",
+    })
+  );
 }
 
 function semanticRelationshipLabelRejectionRecords(
@@ -3158,10 +3367,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       shared_state_compiler_repair_failed_by_rejection_reason:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
+      shared_state_update_checked_for_empty_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_update_checked_for_empty_total,
       shared_state_empty_update_attempted_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_attempted_total,
       shared_state_empty_update_dropped_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_dropped_total,
+      shared_state_empty_update_drop_rate:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_drop_rate,
       shared_state_empty_update_repaired_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_repaired_total,
       capability_overclaim_count: 0,
@@ -3310,6 +3523,28 @@ export class MetricsCapture {
         context,
         traceRecords: allTraceRecords,
       }),
+      finalizer_no_output_primary_by_reason: finalizerNoOutputPrimaryByReason({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_flags_by_flag: finalizerNoOutputFlagsByFlag({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_flags_by_primary_reason: finalizerNoOutputFlagsByPrimaryReason({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_when_borg_addressed_with_state_delta_total:
+        finalizerNoOutputWhenBorgAddressedWithStateDelta({
+          context,
+          traceRecords: allTraceRecords,
+        }),
+      finalizer_no_output_closure_with_open_question_total:
+        finalizerNoOutputClosureWithOpenQuestion({
+          context,
+          traceRecords: allTraceRecords,
+        }),
       borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 
@@ -3636,10 +3871,14 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       shared_state_compiler_repair_failed_by_rejection_reason:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
+      shared_state_update_checked_for_empty_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_update_checked_for_empty_total,
       shared_state_empty_update_attempted_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_attempted_total,
       shared_state_empty_update_dropped_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_dropped_total,
+      shared_state_empty_update_drop_rate:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_drop_rate,
       shared_state_empty_update_repaired_total:
         sharedStateCompilerHealthMetricCounts.shared_state_empty_update_repaired_total,
       capability_overclaim_count: 0,
@@ -3788,6 +4027,28 @@ export class MetricsCapture {
         context,
         traceRecords: allTraceRecords,
       }),
+      finalizer_no_output_primary_by_reason: finalizerNoOutputPrimaryByReason({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_flags_by_flag: finalizerNoOutputFlagsByFlag({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_flags_by_primary_reason: finalizerNoOutputFlagsByPrimaryReason({
+        context,
+        traceRecords: allTraceRecords,
+      }),
+      finalizer_no_output_when_borg_addressed_with_state_delta_total:
+        finalizerNoOutputWhenBorgAddressedWithStateDelta({
+          context,
+          traceRecords: allTraceRecords,
+        }),
+      finalizer_no_output_closure_with_open_question_total:
+        finalizerNoOutputClosureWithOpenQuestion({
+          context,
+          traceRecords: allTraceRecords,
+        }),
       borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 

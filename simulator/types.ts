@@ -209,8 +209,13 @@ export type MetricsRow = {
   shared_state_compiler_repair_succeeded_total: number;
   shared_state_compiler_repair_failed_total: number;
   shared_state_compiler_repair_failed_by_rejection_reason: Record<string, number>;
+  shared_state_update_checked_for_empty_total: number;
+  /**
+   * Deprecated compatibility alias for shared_state_update_checked_for_empty_total.
+   */
   shared_state_empty_update_attempted_total: number;
   shared_state_empty_update_dropped_total: number;
+  shared_state_empty_update_drop_rate: number;
   shared_state_empty_update_repaired_total: number;
   capability_overclaim_count: number;
   capability_ambiguity_count: number;
@@ -288,6 +293,11 @@ export type MetricsRow = {
   borg_intentional_suppressions: number;
   borg_intentional_suppressions_by_reason: Record<string, number>;
   finalizer_no_output_by_category: Record<string, number>;
+  finalizer_no_output_primary_by_reason: Record<string, number>;
+  finalizer_no_output_flags_by_flag: Record<string, number>;
+  finalizer_no_output_flags_by_primary_reason: Record<string, Record<string, number>>;
+  finalizer_no_output_when_borg_addressed_with_state_delta_total: number;
+  finalizer_no_output_closure_with_open_question_total: number;
   /**
    * Deprecated compatibility alias for borg_hard_aborted_turns.
    */

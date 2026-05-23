@@ -28,9 +28,25 @@ export const FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES = [
   "closure",
 ] as const;
 
+export const FINALIZER_NO_OUTPUT_PRIMARY_REASONS = [
+  "closure",
+  "user_to_user",
+  "when_borg_addressed",
+  "low_value_echo",
+  "other",
+] as const;
+
 export const FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES = [
   "with_state_delta",
   "with_open_question",
+] as const;
+
+export const FINALIZER_NO_OUTPUT_STRUCTURAL_FLAGS = [
+  "with_state_delta",
+  "current_turn_state_delta",
+  "with_open_question",
+  "open_question_rendered",
+  "borg_directly_addressed",
 ] as const;
 
 export const FINALIZER_NO_OUTPUT_CATEGORIES = [
@@ -38,10 +54,12 @@ export const FINALIZER_NO_OUTPUT_CATEGORIES = [
   ...FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
 ] as const;
 
+export type FinalizerNoOutputPrimaryReason = (typeof FINALIZER_NO_OUTPUT_PRIMARY_REASONS)[number];
 export type FinalizerNoOutputSemanticCategory =
   (typeof FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES)[number];
 export type FinalizerNoOutputStructuralCategory =
   (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES)[number];
+export type FinalizerNoOutputStructuralFlag = (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_FLAGS)[number];
 export type FinalizerNoOutputCategory = (typeof FINALIZER_NO_OUTPUT_CATEGORIES)[number];
 
 export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
@@ -61,6 +79,24 @@ const NATURAL_SILENCE_SUPPRESSION_REASON_SET: ReadonlySet<GenerationSuppressionR
 
 export function isNaturalSilenceSuppressionReason(reason: GenerationSuppressionReason): boolean {
   return NATURAL_SILENCE_SUPPRESSION_REASON_SET.has(reason);
+}
+
+export function deriveFinalizerNoOutputPrimaryReason(
+  semanticCategories: readonly FinalizerNoOutputSemanticCategory[],
+): FinalizerNoOutputPrimaryReason {
+  if (semanticCategories.includes("when_borg_addressed")) {
+    return "when_borg_addressed";
+  }
+
+  if (semanticCategories.includes("user_to_user")) {
+    return "user_to_user";
+  }
+
+  if (semanticCategories.includes("closure")) {
+    return "closure";
+  }
+
+  return "other";
 }
 
 const replyTargetEntityIdSchema = z
@@ -109,6 +145,8 @@ export type PendingTurnEmission =
       markerEntryId?: StreamEntryId;
       closure_pressure_history_reason?: ClosurePressureHistoryReason;
       no_output_categories?: FinalizerNoOutputCategory[];
+      primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
+      structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
     };
 
 export type TurnEmission =
@@ -129,6 +167,8 @@ export type TurnEmission =
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
       no_output_categories?: FinalizerNoOutputCategory[];
+      primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
+      structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
     };
 
 export type AgentSuppressedStreamContent = {
@@ -136,6 +176,8 @@ export type AgentSuppressedStreamContent = {
   user_entry_id?: StreamEntryId;
   turn_id?: string;
   no_output_categories?: FinalizerNoOutputCategory[];
+  primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
+  structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
 };
 
 export type AgentObservedStreamContent = {

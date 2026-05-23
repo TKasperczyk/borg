@@ -326,6 +326,8 @@ describe("runPostGenerationPhase", () => {
               kind: "suppressed",
               reason: "finalizer_no_output",
               no_output_categories: ["closure", "with_open_question"],
+              primary_no_output_reason: "closure",
+              structural_no_output_flags: ["with_open_question", "open_question_rendered"],
             },
             deliberation: {
               path: "system_1",
@@ -430,6 +432,8 @@ describe("runPostGenerationPhase", () => {
       data: expect.objectContaining({
         reason: "finalizer_no_output",
         no_output_categories: ["closure", "with_open_question"],
+        primary_no_output_reason: "closure",
+        structural_no_output_flags: ["with_open_question", "open_question_rendered"],
       }),
     });
   });
