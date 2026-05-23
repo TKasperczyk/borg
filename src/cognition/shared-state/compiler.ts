@@ -481,6 +481,8 @@ export async function compileSharedStateArtifact(
     audienceEntityId: input.audienceEntityId,
     previousEntryCount,
     renderOptions: input.renderOptions,
+    currentTurnCounter: input.turnCounter,
+    currentUserStreamEntryId: input.currentUserStreamEntryId,
     ledgerMode,
     promptBudget,
   };

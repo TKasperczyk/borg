@@ -41,7 +41,15 @@ import type { SharedStateArtifact } from "../../../memory/decision-artifacts/ind
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
-import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
+import type {
+  ActionId,
+  CommitmentId,
+  EntityId,
+  GoalId,
+  OpenQuestionId,
+  SessionId,
+  StreamEntryId,
+} from "../../../util/ids.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
@@ -73,9 +81,10 @@ export type EvidenceLedgerFinalizerContext = {
   openQuestionsRenderedToFinalizerCount: number;
 };
 
-type SharedStateArtifactForEvidenceLedgerResult = {
+export type SharedStateArtifactForEvidenceLedgerResult = {
   artifact: SharedStateArtifact | null;
   appliedOperationCount: number;
+  renderOptions?: ReturnType<typeof sharedStateRenderOptions>;
 };
 
 export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
@@ -347,7 +356,8 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     ledger: ledgerWithoutSharedState,
     promptVisibleLedger: renderedWithoutSharedState ?? "",
   });
-  const renderOptions = sharedStateRenderOptions(input.options.config);
+  const renderOptions =
+    sharedStateResult.renderOptions ?? sharedStateRenderOptions(input.options.config);
   const ledger = withSharedStateArtifact(
     ledgerWithoutSharedState,
     sharedStateResult.artifact,
@@ -425,6 +435,68 @@ async function countPriorUserTurnsForSession(input: {
   ).length;
 }
 
+function sharedStateLastUpdatedTurnByStreamEntryId(input: {
+  entries: readonly StreamEntry[];
+  currentUserEntry: StreamEntry;
+  currentTurnId?: string;
+  currentTurnCounter?: number;
+}): Record<string, number> {
+  if (input.currentTurnCounter === undefined) {
+    return {};
+  }
+
+  const turnIds: string[] = [];
+  const observedTurnIds = new Set<string>();
+
+  for (const entry of input.entries) {
+    if (entry.turn_id !== undefined && !observedTurnIds.has(entry.turn_id)) {
+      turnIds.push(entry.turn_id);
+      observedTurnIds.add(entry.turn_id);
+    }
+  }
+
+  const currentTurnId = input.currentUserEntry.turn_id ?? input.currentTurnId;
+
+  if (currentTurnId !== undefined && !observedTurnIds.has(currentTurnId)) {
+    turnIds.push(currentTurnId);
+    observedTurnIds.add(currentTurnId);
+  }
+
+  const turnCounterByTurnId = new Map<string, number>();
+  const currentTurnIndex = currentTurnId === undefined ? -1 : turnIds.lastIndexOf(currentTurnId);
+
+  if (currentTurnIndex >= 0) {
+    for (let index = 0; index < turnIds.length; index += 1) {
+      turnCounterByTurnId.set(
+        turnIds[index]!,
+        input.currentTurnCounter - (currentTurnIndex - index),
+      );
+    }
+  } else {
+    for (let index = 0; index < turnIds.length; index += 1) {
+      turnCounterByTurnId.set(turnIds[index]!, input.currentTurnCounter - (turnIds.length - index));
+    }
+  }
+
+  const turnCounterByStreamEntryId: Record<string, number> = {
+    [input.currentUserEntry.id]: input.currentTurnCounter,
+  };
+
+  for (const entry of input.entries) {
+    if (entry.turn_id === undefined) {
+      continue;
+    }
+
+    const turnCounter = turnCounterByTurnId.get(entry.turn_id);
+
+    if (turnCounter !== undefined) {
+      turnCounterByStreamEntryId[entry.id] = turnCounter;
+    }
+  }
+
+  return turnCounterByStreamEntryId;
+}
+
 function emitSessionReentryContinuityTrace(input: {
   options: TurnPhaseCoordinatorOptions;
   turnId: string | undefined;
@@ -467,7 +539,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
   return (await compileSharedStateArtifactForEvidenceLedgerResult(input)).artifact;
 }
 
-async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
+export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
   options: TurnPhaseCoordinatorOptions;
   input: EvidenceLedgerFinalizerBuildInput;
   previousArtifact?: SharedStateArtifact | null;
@@ -505,6 +577,57 @@ async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     quarantinedStreamEntryIds,
   });
   const sharedStateConfig = input.options.config.generation.evidenceLedger.decisionArtifact;
+  const turnCounter = input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter;
+  const ledgerPromptContext = buildSharedStateLedgerPromptContext({
+    ledger: input.ledger,
+    previousArtifact,
+    fullPromptVisibleLedger: input.promptVisibleLedger,
+    enabled: sharedStateConfig.ledgerDelta.enabled,
+    minTailPerSection: sharedStateConfig.ledgerDelta.minTailPerSection,
+    sourceTrustValidator,
+  });
+  const actionCanonicalizationCandidates = selectSharedStateArtifactActionCandidates({
+    actionRepository: input.options.actionRepository,
+    audienceEntityId,
+    activeParticipants: input.input.activeParticipants,
+  });
+  const activeGoals = input.options.goalsRepository.list({
+    status: "active",
+    visibleToAudienceEntityId: audienceEntityId,
+  });
+  const activeCommitments = input.options.commitmentRepository.list({
+    activeOnly: true,
+    audience: audienceEntityId,
+  });
+  const activeCommitmentCanonicalizationRecords = activeCommitments.filter(
+    isSharedStateCommitmentCanonicalizationRecord,
+  );
+  const activeOpenQuestions = input.options.openQuestionsRepository.list({
+    status: "open",
+    visibleToAudienceEntityId: audienceEntityId,
+    limit: 80,
+  });
+  const lastUpdatedTurnByStreamEntryId = sharedStateLastUpdatedTurnByStreamEntryId({
+    entries: currentSessionTrustEntries,
+    currentUserEntry: input.input.currentUserEntry,
+    currentTurnId: input.input.turnId,
+    currentTurnCounter: turnCounter,
+  });
+  const renderOptions = {
+    ...sharedStateRenderOptions(input.options.config),
+    currentUserStreamEntryId: input.input.currentUserEntry.id,
+    ledgerStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
+    activeOpenQuestionIds: activeOpenQuestions.map((question) => question.id as OpenQuestionId),
+    activeActionIds: (actionCanonicalizationCandidates.candidates ?? []).map(
+      (action) => action.id as ActionId,
+    ),
+    activeGoalIds: activeGoals.map((goal) => goal.id as GoalId),
+    activeCriticalCommitmentIds: activeCommitmentCanonicalizationRecords
+      .filter((commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical")
+      .map((commitment) => commitment.id as CommitmentId),
+    currentTurnCounter: turnCounter,
+    lastUpdatedTurnByStreamEntryId,
+  };
   const currentTurnIsFrameAnomaly = isFrameAnomaly(input.input.frameAnomaly);
   const reconciliationRepositories: SharedStateReconciliationRepositories = {
     goalsRepository: input.options.goalsRepository,
@@ -576,7 +699,11 @@ async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
       });
     }
 
-    return { artifact: skippedArtifact, appliedOperationCount: 0 };
+    return {
+      artifact: skippedArtifact,
+      appliedOperationCount: 0,
+      renderOptions,
+    };
   }
 
   if (
@@ -592,60 +719,29 @@ async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     });
   }
 
-  const ledgerPromptContext = buildSharedStateLedgerPromptContext({
-    ledger: input.ledger,
-    previousArtifact,
-    fullPromptVisibleLedger: input.promptVisibleLedger,
-    enabled: sharedStateConfig.ledgerDelta.enabled,
-    minTailPerSection: sharedStateConfig.ledgerDelta.minTailPerSection,
-    sourceTrustValidator,
-  });
   const selfEntityId = input.options.entityRepository.resolve("self", {
     kind: "self",
     provenance: "assistant_seeded",
   });
-  const actionCanonicalizationCandidates = selectSharedStateArtifactActionCandidates({
-    actionRepository: input.options.actionRepository,
-    audienceEntityId,
-    activeParticipants: input.input.activeParticipants,
-  });
   const canonicalizationCandidates: SharedStateCanonicalizationCandidates = {
-    goals: input.options.goalsRepository
-      .list({
-        status: "active",
-        visibleToAudienceEntityId: audienceEntityId,
-      })
-      .map((goal) => ({
-        id: goal.id,
-        text: compactSharedStateArtifactCandidateText(goal.description),
-      })),
-    commitments: input.options.commitmentRepository
-      .list({
-        activeOnly: true,
-        audience: audienceEntityId,
-      })
-      .filter(isSharedStateCommitmentCanonicalizationRecord)
-      .map((commitment) => ({
-        id: commitment.id,
-        text: compactSharedStateArtifactCandidateText(commitment.directive),
-        kind: commitment.kind,
-        type: commitment.type,
-        directive_family: commitment.directive_family,
-        enforcement_class: effectiveCommitmentEnforcementClass(commitment),
-      })),
+    goals: activeGoals.map((goal) => ({
+      id: goal.id,
+      text: compactSharedStateArtifactCandidateText(goal.description),
+    })),
+    commitments: activeCommitmentCanonicalizationRecords.map((commitment) => ({
+      id: commitment.id,
+      text: compactSharedStateArtifactCandidateText(commitment.directive),
+      kind: commitment.kind,
+      type: commitment.type,
+      directive_family: commitment.directive_family,
+      enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+    })),
     actions: actionCanonicalizationCandidates.candidates ?? [],
-    openQuestions: input.options.openQuestionsRepository
-      .list({
-        status: "open",
-        visibleToAudienceEntityId: audienceEntityId,
-        limit: 80,
-      })
-      .map((question) => ({
-        id: question.id,
-        text: compactSharedStateArtifactCandidateText(question.question),
-      })),
+    openQuestions: activeOpenQuestions.map((question) => ({
+      id: question.id,
+      text: compactSharedStateArtifactCandidateText(question.question),
+    })),
   };
-
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {
     input.options.tracer.emit("shared_state.canonicalization.completed", {
       turnId: input.input.turnId,
@@ -716,14 +812,14 @@ async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     clock: input.options.clock,
     tracer: input.options.tracer,
     turnId: input.input.turnId,
-    turnCounter: input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter,
+    turnCounter,
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,
       maxLiveEntriesPerKey: sharedStateConfig.maxLiveEntriesPerKey,
       kindSoftCaps: sharedStateConfig.kindSoftCaps,
       newestStateChangeReservedSlots: sharedStateConfig.newestStateChangeReservedSlots,
     },
-    renderOptions: sharedStateRenderOptions(input.options.config),
+    renderOptions,
     previousArtifactSummaryOptions: {
       maxEntries: sharedStateConfig.previousArtifactSummary.maxEntries,
       summaryTokenBudget: sharedStateConfig.previousArtifactSummary.summaryTokenBudget,
@@ -735,6 +831,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
   return {
     artifact: input.options.sharedStateRepository.get(audienceEntityId),
     appliedOperationCount: compileResult.operations.length,
+    renderOptions,
   };
 }
 

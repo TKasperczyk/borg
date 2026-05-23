@@ -3,7 +3,7 @@ import type {
   SharedStateArtifact,
   SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -136,6 +136,8 @@ export function traceCompileCompleted(options: {
   applied: boolean;
   artifact: SharedStateArtifact | null;
   renderOptions?: SharedStateRenderOptions;
+  currentTurnCounter?: number;
+  currentUserStreamEntryId?: StreamEntryId;
   maxActiveEntries?: number;
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
@@ -146,10 +148,21 @@ export function traceCompileCompleted(options: {
   promptBudget: SharedStateArtifactPromptBudget;
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
 }): void {
-  const artifactSummary = summarizeSharedStateArtifactRender(
-    options.artifact,
-    options.renderOptions,
-  );
+  const renderOptions =
+    options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
+      ? options.renderOptions
+      : {
+          ...(options.renderOptions ?? {}),
+          currentTurnCounter:
+            options.renderOptions?.currentTurnCounter ?? options.currentTurnCounter,
+          currentUserStreamEntryId:
+            options.renderOptions?.currentUserStreamEntryId ?? options.currentUserStreamEntryId,
+          lastUpdatedTurnByStreamEntryId: {
+            ...(options.renderOptions?.lastUpdatedTurnByStreamEntryId ?? {}),
+            [options.currentUserStreamEntryId]: options.currentTurnCounter,
+          },
+        };
+  const artifactSummary = summarizeSharedStateArtifactRender(options.artifact, renderOptions);
   const activeEntryCountsByKey = artifactSummary.activeEntriesByKey;
   const keysWithSingleEntryOnly = Object.values(activeEntryCountsByKey).filter(
     (count) => count === 1,
@@ -182,6 +195,12 @@ export function traceCompileCompleted(options: {
       artifact_active_entry_count: artifactSummary.activeEntryCount,
       artifact_max_active_entries: options.maxActiveEntries ?? null,
       artifact_omitted_entry_count: artifactSummary.omittedEntryCount,
+      omitted_live_recent_operational: artifactSummary.omittedLiveRecentOperational,
+      omitted_live_recent_low_salience: artifactSummary.omittedLiveRecentLowSalience,
+      omitted_live_old: artifactSummary.omittedLiveOld,
+      omitted_locked: artifactSummary.omittedLocked,
+      omitted_pending: artifactSummary.omittedPending,
+      all_active_keys_indexed: artifactSummary.allActiveKeysIndexed,
       newest_entries_reserved: artifactSummary.newestReservedEntryCount,
       live_starvation_with_reserved:
         artifactSummary.omittedByKind.live > 0 && artifactSummary.renderedByKind.locked > 0,

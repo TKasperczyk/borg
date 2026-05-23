@@ -4,6 +4,13 @@ import {
   type SharedStateEntry,
   type SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
+import type {
+  ActionId,
+  CommitmentId,
+  GoalId,
+  OpenQuestionId,
+  StreamEntryId,
+} from "../../util/ids.js";
 
 export const SHARED_STATE_RESERVED_KINDS = [
   "live",
@@ -99,10 +106,246 @@ function newestStateChangeReservedIds(input: {
   );
 }
 
+export type SharedStateRenderSalienceOptions = {
+  currentUserStreamEntryId?: StreamEntryId;
+  ledgerStreamEntryIds?: readonly StreamEntryId[];
+  activeOpenQuestionIds?: readonly OpenQuestionId[];
+  activeActionIds?: readonly ActionId[];
+  activeGoalIds?: readonly GoalId[];
+  activeCriticalCommitmentIds?: readonly CommitmentId[];
+};
+
 export type SharedStateRenderSelection = {
   entries: SharedStateEntry[];
   newestReservedIds: Set<SharedStateEntry["id"]>;
+  salienceReservedIds: Set<SharedStateEntry["id"]>;
+  dropTiers: Map<SharedStateEntry["id"], SharedStateTokenDropTier>;
 };
+
+export type SharedStateTokenDropTier = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+function idSet<TId extends string>(values: readonly TId[] | undefined): Set<TId> {
+  return new Set(values ?? []);
+}
+
+function hasAnyIdOverlap<TId extends string>(
+  values: readonly TId[],
+  candidates: ReadonlySet<TId>,
+): boolean {
+  if (values.length === 0 || candidates.size === 0) {
+    return false;
+  }
+
+  return values.some((value) => candidates.has(value));
+}
+
+export function sharedStateEntryHasCurrentTurnUpdate(
+  entry: SharedStateEntry,
+  currentUserStreamEntryId: StreamEntryId | undefined,
+): boolean {
+  return (
+    currentUserStreamEntryId !== undefined &&
+    entry.last_updated_stream_entry_ids.includes(currentUserStreamEntryId)
+  );
+}
+
+export function sharedStateEntryHasLedgerOverlap(
+  entry: SharedStateEntry,
+  ledgerStreamEntryIds: readonly StreamEntryId[] | undefined,
+): boolean {
+  const ledgerIds = idSet(ledgerStreamEntryIds);
+
+  return (
+    hasAnyIdOverlap(entry.provenance_stream_entry_ids, ledgerIds) ||
+    hasAnyIdOverlap(entry.last_updated_stream_entry_ids, ledgerIds)
+  );
+}
+
+export function sharedStateEntryHasOperationalCanonicalizer(
+  entry: SharedStateEntry,
+  options: Pick<
+    SharedStateRenderSalienceOptions,
+    "activeOpenQuestionIds" | "activeActionIds" | "activeGoalIds"
+  >,
+): boolean {
+  return (
+    hasAnyIdOverlap(entry.canonicalizes.open_question_ids, idSet(options.activeOpenQuestionIds)) ||
+    hasAnyIdOverlap(entry.canonicalizes.action_ids, idSet(options.activeActionIds)) ||
+    hasAnyIdOverlap(entry.canonicalizes.goal_ids, idSet(options.activeGoalIds))
+  );
+}
+
+export function sharedStateEntryHasAnyOperationalCanonicalizer(entry: SharedStateEntry): boolean {
+  return (
+    entry.canonicalizes.open_question_ids.length > 0 ||
+    entry.canonicalizes.action_ids.length > 0 ||
+    entry.canonicalizes.goal_ids.length > 0
+  );
+}
+
+export function sharedStateEntryHasCriticalCommitmentCanonicalizer(
+  entry: SharedStateEntry,
+  activeCriticalCommitmentIds: readonly CommitmentId[] | undefined,
+): boolean {
+  return (
+    entry.kind === "locked" &&
+    hasAnyIdOverlap(entry.canonicalizes.commitment_ids, idSet(activeCriticalCommitmentIds))
+  );
+}
+
+function sharedStateEntrySalienceScore(
+  entry: SharedStateEntry,
+  options: SharedStateRenderSalienceOptions,
+  newestReservedIds: ReadonlySet<SharedStateEntry["id"]> = new Set(),
+): number {
+  if (sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId)) {
+    return 600;
+  }
+
+  if (sharedStateEntryHasLedgerOverlap(entry, options.ledgerStreamEntryIds)) {
+    return 500;
+  }
+
+  if (newestReservedIds.has(entry.id)) {
+    return 400;
+  }
+
+  if (entry.kind === "pending" || entry.kind === "invalidated") {
+    return 300;
+  }
+
+  if (
+    sharedStateEntryHasCriticalCommitmentCanonicalizer(entry, options.activeCriticalCommitmentIds)
+  ) {
+    return 250;
+  }
+
+  if (sharedStateEntryHasOperationalCanonicalizer(entry, options)) {
+    return 200;
+  }
+
+  return 0;
+}
+
+function salienceReservedIds(input: {
+  entries: readonly SharedStateEntry[];
+  options: SharedStateRenderSalienceOptions;
+  newestReservedIds?: ReadonlySet<SharedStateEntry["id"]>;
+}): Set<SharedStateEntry["id"]> {
+  return new Set(
+    input.entries
+      .map((entry) => ({
+        entry,
+        score: sharedStateEntrySalienceScore(entry, input.options, input.newestReservedIds),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          compareSharedStateArtifactEntriesByRecency(left.entry, right.entry),
+      )
+      .map((candidate) => candidate.entry.id),
+  );
+}
+
+function reservedKindSlotIds(input: {
+  entries: readonly SharedStateEntry[];
+  reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
+}): Set<SharedStateEntry["id"]> {
+  const ids = new Set<SharedStateEntry["id"]>();
+
+  for (const kind of SHARED_STATE_RESERVED_KINDS) {
+    const limit = input.reservedSlots[kind] ?? 0;
+
+    if (limit <= 0) {
+      continue;
+    }
+
+    for (const entry of input.entries
+      .filter((candidate) => candidate.kind === kind)
+      .sort(compareSharedStateArtifactEntriesByRecency)
+      .slice(0, Math.floor(limit))) {
+      ids.add(entry.id);
+    }
+  }
+
+  return ids;
+}
+
+function sharedStateEntryTokenDropTier(input: {
+  entry: SharedStateEntry;
+  options: SharedStateRenderSalienceOptions;
+  newestReservedIds: ReadonlySet<SharedStateEntry["id"]>;
+  reservedKindSlotIds: ReadonlySet<SharedStateEntry["id"]>;
+}): SharedStateTokenDropTier {
+  if (sharedStateEntryHasCurrentTurnUpdate(input.entry, input.options.currentUserStreamEntryId)) {
+    return 1;
+  }
+
+  if (sharedStateEntryHasLedgerOverlap(input.entry, input.options.ledgerStreamEntryIds)) {
+    return 2;
+  }
+
+  if (input.newestReservedIds.has(input.entry.id)) {
+    return 3;
+  }
+
+  if (input.reservedKindSlotIds.has(input.entry.id)) {
+    return 4;
+  }
+
+  if (
+    sharedStateEntryHasCriticalCommitmentCanonicalizer(
+      input.entry,
+      input.options.activeCriticalCommitmentIds,
+    )
+  ) {
+    return 5;
+  }
+
+  if (sharedStateEntryHasOperationalCanonicalizer(input.entry, input.options)) {
+    return 6;
+  }
+
+  return 7;
+}
+
+function sharedStateEntryTokenDropTiers(input: {
+  entries: readonly SharedStateEntry[];
+  options: SharedStateRenderSalienceOptions;
+  newestReservedIds: ReadonlySet<SharedStateEntry["id"]>;
+  reservedKindSlotIds: ReadonlySet<SharedStateEntry["id"]>;
+}): Map<SharedStateEntry["id"], SharedStateTokenDropTier> {
+  return new Map(
+    input.entries.map((entry) => [
+      entry.id,
+      sharedStateEntryTokenDropTier({
+        entry,
+        options: input.options,
+        newestReservedIds: input.newestReservedIds,
+        reservedKindSlotIds: input.reservedKindSlotIds,
+      }),
+    ]),
+  );
+}
+
+function tokenDropTier(
+  entry: SharedStateEntry,
+  dropTiers: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier> | undefined,
+): SharedStateTokenDropTier {
+  return dropTiers?.get(entry.id) ?? 7;
+}
+
+function sharedStateTokenDropTierOrder(
+  entries: readonly SharedStateEntry[],
+  dropTiers: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier> | undefined,
+): SharedStateTokenDropTier[] {
+  return [
+    ...new Set(
+      entries.map((entry) => tokenDropTier(entry, dropTiers)).sort((left, right) => right - left),
+    ),
+  ];
+}
 
 export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
   entries: readonly SharedStateEntry[];
@@ -110,6 +353,7 @@ export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
   reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
   newestStateChangeReservedSlots?: number;
+  salience?: SharedStateRenderSalienceOptions;
 }): SharedStateRenderSelection {
   const byKind = new Map<SharedStateEntryKind, SharedStateEntry[]>();
 
@@ -128,6 +372,21 @@ export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
   const newestReservedIds = newestStateChangeReservedIds({
     entries: input.entries,
     limit: input.newestStateChangeReservedSlots ?? 0,
+  });
+  const salienceIds = salienceReservedIds({
+    entries: input.entries,
+    options: input.salience ?? {},
+    newestReservedIds,
+  });
+  const reservedSlotIds = reservedKindSlotIds({
+    entries: input.entries,
+    reservedSlots: input.reservedSlots,
+  });
+  const dropTiers = sharedStateEntryTokenDropTiers({
+    entries: input.entries,
+    options: input.salience ?? {},
+    newestReservedIds,
+    reservedKindSlotIds: reservedSlotIds,
   });
 
   const takeEntry = (entry: SharedStateEntry, options: { countBudget: boolean }): void => {
@@ -168,6 +427,24 @@ export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
   };
 
   for (const candidate of input.entries
+    .filter((entry) => salienceIds.has(entry.id))
+    .sort((left, right) => {
+      const salience = input.salience ?? {};
+      const leftScore = sharedStateEntrySalienceScore(left, salience, newestReservedIds);
+      const rightScore = sharedStateEntrySalienceScore(right, salience, newestReservedIds);
+
+      return rightScore - leftScore || compareSharedStateArtifactEntriesByRecency(left, right);
+    })) {
+    if (selected.length >= input.maxEntries) {
+      break;
+    }
+
+    if (!selectedIds.has(candidate.id)) {
+      takeEntry(candidate, { countBudget: false });
+    }
+  }
+
+  for (const candidate of input.entries
     .filter((entry) => newestReservedIds.has(entry.id))
     .sort(compareSharedStateArtifactEntriesByNewestStateChange)) {
     if (selected.length >= input.maxEntries) {
@@ -198,6 +475,8 @@ export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
         compareSharedStateArtifactEntriesByRecency(left, right),
     ),
     newestReservedIds,
+    salienceReservedIds: salienceIds,
+    dropTiers,
   };
 }
 
@@ -207,6 +486,7 @@ export function selectSharedStateArtifactEntriesForRender(input: {
   reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
   newestStateChangeReservedSlots?: number;
+  salience?: SharedStateRenderSalienceOptions;
 }): SharedStateEntry[] {
   return selectSharedStateArtifactEntriesForRenderWithSummary(input).entries;
 }
@@ -244,9 +524,16 @@ export function reservedTokenDropMinimum(input: {
 export function latestSharedStateArtifactDropIndex(
   entries: readonly SharedStateEntry[],
   kind: SharedStateEntryKind,
+  dropTier?: SharedStateTokenDropTier,
+  dropTiers?: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier>,
 ): number | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index]?.kind === kind) {
+    const entry = entries[index];
+
+    if (
+      entry?.kind === kind &&
+      (dropTier === undefined || tokenDropTier(entry, dropTiers) === dropTier)
+    ) {
       return index;
     }
   }
@@ -258,23 +545,50 @@ export function tokenDropIndexForKinds(input: {
   entries: readonly SharedStateEntry[];
   kinds: readonly SharedStateEntryKind[];
   minimumForKind: (kind: SharedStateEntryKind) => number;
+  dropTier?: SharedStateTokenDropTier;
+  dropTiers?: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier>;
 }): number | null {
   const renderedCounts = countSharedStateArtifactEntriesByKind(input.entries);
-  let selectedKind: SharedStateEntryKind | null = null;
+  let selectedIndex: number | null = null;
   let selectedSurplus = 0;
 
   for (const kind of input.kinds) {
     const surplus = renderedCounts[kind] - input.minimumForKind(kind);
 
     if (surplus > selectedSurplus) {
-      selectedKind = kind;
+      const dropIndex = latestSharedStateArtifactDropIndex(
+        input.entries,
+        kind,
+        input.dropTier,
+        input.dropTiers,
+      );
+
+      if (dropIndex === null) {
+        continue;
+      }
+
+      selectedIndex = dropIndex;
       selectedSurplus = surplus;
     }
   }
 
-  return selectedKind === null
-    ? null
-    : latestSharedStateArtifactDropIndex(input.entries, selectedKind);
+  return selectedIndex;
+}
+
+function latestSharedStateArtifactDropIndexForTier(
+  entries: readonly SharedStateEntry[],
+  dropTier: SharedStateTokenDropTier,
+  dropTiers: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier> | undefined,
+): number | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+
+    if (entry !== undefined && tokenDropTier(entry, dropTiers) === dropTier) {
+      return index;
+    }
+  }
+
+  return null;
 }
 
 export function tokenDropIndex(input: {
@@ -282,67 +596,95 @@ export function tokenDropIndex(input: {
   activeCounts: SharedStateKindCounts;
   reservedSlots: Partial<Record<SharedStateEntryKind, number>>;
   lockedMaxEntries: number;
-}): number {
-  const dropTentative = tokenDropIndexForKinds({
-    entries: input.entries,
-    kinds: ["tentative"],
-    minimumForKind: () => 0,
-  });
+  dropTiers?: ReadonlyMap<SharedStateEntry["id"], SharedStateTokenDropTier>;
+}): number | null {
+  for (const dropTier of sharedStateTokenDropTierOrder(input.entries, input.dropTiers)) {
+    const dropTentative = tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: ["tentative"],
+      minimumForKind: () => 0,
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
 
-  if (dropTentative !== null) {
-    return dropTentative;
-  }
+    if (dropTentative !== null) {
+      return dropTentative;
+    }
 
-  const dropLockedAboveCap = tokenDropIndexForKinds({
-    entries: input.entries,
-    kinds: ["locked"],
-    minimumForKind: () => input.lockedMaxEntries,
-  });
+    const dropLockedAboveCap = tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: ["locked"],
+      minimumForKind: () => input.lockedMaxEntries,
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
 
-  if (dropLockedAboveCap !== null) {
-    return dropLockedAboveCap;
-  }
+    if (dropLockedAboveCap !== null) {
+      return dropLockedAboveCap;
+    }
 
-  const dropReservedAboveMinimum = tokenDropIndexForKinds({
-    entries: input.entries,
-    kinds: SHARED_STATE_RESERVED_KINDS,
-    minimumForKind: (kind) =>
-      reservedTokenDropMinimum({
-        kind,
-        activeCounts: input.activeCounts,
-        reservedSlots: input.reservedSlots,
-      }),
-  });
+    const dropReservedAboveMinimum = tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: SHARED_STATE_RESERVED_KINDS,
+      minimumForKind: (kind) =>
+        reservedTokenDropMinimum({
+          kind,
+          activeCounts: input.activeCounts,
+          reservedSlots: input.reservedSlots,
+        }),
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
 
-  if (dropReservedAboveMinimum !== null) {
-    return dropReservedAboveMinimum;
-  }
+    if (dropReservedAboveMinimum !== null) {
+      return dropReservedAboveMinimum;
+    }
 
-  const dropLockedAboveFloor = tokenDropIndexForKinds({
-    entries: input.entries,
-    kinds: ["locked"],
-    minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
-  });
+    const dropLockedAboveFloor = tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: ["locked"],
+      minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
 
-  if (dropLockedAboveFloor !== null) {
-    return dropLockedAboveFloor;
-  }
+    if (dropLockedAboveFloor !== null) {
+      return dropLockedAboveFloor;
+    }
 
-  const dropReservedAboveFloor = tokenDropIndexForKinds({
-    entries: input.entries,
-    kinds: SHARED_STATE_RESERVED_KINDS,
-    minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
-  });
+    const dropReservedAboveFloor = tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: SHARED_STATE_RESERVED_KINDS,
+      minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
 
-  if (dropReservedAboveFloor !== null) {
-    return dropReservedAboveFloor;
-  }
+    if (dropReservedAboveFloor !== null) {
+      return dropReservedAboveFloor;
+    }
 
-  return (
-    tokenDropIndexForKinds({
+    const dropAnyAboveFloor = tokenDropIndexForKinds({
       entries: input.entries,
       kinds: SHARED_STATE_ENTRY_KINDS,
       minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
-    }) ?? Math.max(0, input.entries.length - 1)
-  );
+      dropTier,
+      dropTiers: input.dropTiers,
+    });
+
+    if (dropAnyAboveFloor !== null) {
+      return dropAnyAboveFloor;
+    }
+
+    const dropAnyInTier =
+      dropTier >= 5
+        ? latestSharedStateArtifactDropIndexForTier(input.entries, dropTier, input.dropTiers)
+        : null;
+
+    if (dropAnyInTier !== null) {
+      return dropAnyInTier;
+    }
+  }
+
+  return null;
 }

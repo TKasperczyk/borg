@@ -229,6 +229,12 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_at_cap_turns",
   "shared_state_compile_evaluated_turns",
   "shared_state_omitted_recent_entries",
+  "shared_state_omitted_live_recent_operational",
+  "shared_state_omitted_live_recent_low_salience",
+  "shared_state_omitted_live_old",
+  "shared_state_omitted_locked",
+  "shared_state_omitted_pending",
+  "shared_state_all_active_keys_indexed",
   "shared_state_live_entry_starvation",
   "shared_state_newest_entries_reserved",
   "shared_state_live_starvation_with_reserved",
@@ -1485,6 +1491,12 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 40,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 3,
+          omitted_live_recent_operational: 1,
+          omitted_live_recent_low_salience: 2,
+          omitted_live_old: 3,
+          omitted_locked: 4,
+          omitted_pending: 5,
+          all_active_keys_indexed: true,
           newest_entries_reserved: 2,
           rendered_by_kind: {
             locked: 14,
@@ -1509,6 +1521,12 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 39,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 0,
+          omitted_live_recent_operational: 6,
+          omitted_live_recent_low_salience: 7,
+          omitted_live_old: 8,
+          omitted_locked: 9,
+          omitted_pending: 10,
+          all_active_keys_indexed: false,
           newest_entries_reserved: 1,
           rendered_by_kind: {},
           omitted_by_kind: {},
@@ -1520,6 +1538,12 @@ describe("MetricsCapture", () => {
           artifact_active_entry_count: 40,
           artifact_max_active_entries: 40,
           artifact_omitted_entry_count: 3,
+          omitted_live_recent_operational: 11,
+          omitted_live_recent_low_salience: 13,
+          omitted_live_old: 17,
+          omitted_locked: 19,
+          omitted_pending: 23,
+          all_active_keys_indexed: true,
           newest_entries_reserved: 3,
           rendered_by_kind: {
             locked: 10,
@@ -1547,6 +1571,12 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_at_cap_turns).toBe(2);
     expect(row.shared_state_compile_evaluated_turns).toBe(3);
     expect(row.shared_state_omitted_recent_entries).toBe(6);
+    expect(row.shared_state_omitted_live_recent_operational).toBe(18);
+    expect(row.shared_state_omitted_live_recent_low_salience).toBe(22);
+    expect(row.shared_state_omitted_live_old).toBe(28);
+    expect(row.shared_state_omitted_locked).toBe(32);
+    expect(row.shared_state_omitted_pending).toBe(38);
+    expect(row.shared_state_all_active_keys_indexed).toBe(false);
     expect(row.shared_state_live_entry_starvation).toBe(true);
     expect(row.shared_state_newest_entries_reserved).toBe(6);
     expect(row.shared_state_live_starvation_with_reserved).toBe(true);

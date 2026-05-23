@@ -13,7 +13,10 @@ import { FixedClock } from "../../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createActionId,
+  createCommitmentId,
   createEntityId,
+  createGoalId,
+  createOpenQuestionId,
   createStreamEntryId,
   type EntityId,
 } from "../../../util/ids.js";
@@ -28,6 +31,7 @@ import { SHARED_STATE_TOOL_NAME } from "../../shared-state/schema.js";
 import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity.js";
 import {
   compileSharedStateArtifactForEvidenceLedger,
+  compileSharedStateArtifactForEvidenceLedgerResult,
   runRetrievalPhase,
 } from "./retrieval-phase.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
@@ -228,6 +232,167 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       }),
       { skipSideEffects: true },
     );
+  });
+
+  it("uses the same structural render salience signals when compile is skipped", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-skip-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(20_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const actionId = createActionId();
+    const goalId = createGoalId();
+    const openQuestionId = createOpenQuestionId();
+    const commitmentId = createCommitmentId();
+    const streamEntryId = createStreamEntryId();
+    const currentUserEntry = {
+      id: streamEntryId,
+      kind: "user_msg",
+      content: "Thanks, that closes it.",
+      timestamp: 20_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-skipped-render-signals",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const action = {
+      id: actionId,
+      description: "Send the project note",
+      actor: "user",
+      audience_entity_id: audienceEntityId,
+      state: "committed_to_do",
+      updated_at: 19_000,
+      session_scope: null,
+      scheduled_at: null,
+      last_referenced_turn_counter: null,
+      last_referenced_turn_global: null,
+    } as ActionRecord;
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: true,
+              },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => new FakeLLMClient({ responses: [] }),
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [action],
+        get: () => action,
+      },
+      goalsRepository: {
+        list: () => [
+          {
+            id: goalId,
+            description: "Keep project notes current",
+          },
+        ],
+      },
+      commitmentRepository: {
+        list: () => [
+          {
+            id: commitmentId,
+            directive: "Do not reveal private project notes.",
+            kind: "boundary",
+            type: "rule",
+            directive_family: "privacy",
+            enforcement_class: "critical",
+            critical_domain: "privacy",
+          },
+        ],
+      },
+      openQuestionsRepository: {
+        list: () => [
+          {
+            id: openQuestionId,
+            question: "Which project note is current?",
+          },
+        ],
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            yield currentUserEntry;
+          },
+        }) as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-skipped-render-signals",
+        audienceEntityId,
+        currentUserMessage: "Thanks, that closes it.",
+        currentUserEntry,
+        globalTurnCounter: 12,
+        workingMemory: {
+          turn_counter: 12,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "idle",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "",
+    });
+
+    expect(result.appliedOperationCount).toBe(0);
+    expect(result.renderOptions?.activeOpenQuestionIds).toEqual([openQuestionId]);
+    expect(result.renderOptions?.activeActionIds).toEqual([actionId]);
+    expect(result.renderOptions?.activeGoalIds).toEqual([goalId]);
+    expect(result.renderOptions?.activeCriticalCommitmentIds).toEqual([commitmentId]);
   });
 });
 

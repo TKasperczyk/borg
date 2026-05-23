@@ -215,6 +215,12 @@ export type MetricsRow = {
   shared_state_at_cap_turns: number;
   shared_state_compile_evaluated_turns: number;
   shared_state_omitted_recent_entries: number;
+  shared_state_omitted_live_recent_operational: number;
+  shared_state_omitted_live_recent_low_salience: number;
+  shared_state_omitted_live_old: number;
+  shared_state_omitted_locked: number;
+  shared_state_omitted_pending: number;
+  shared_state_all_active_keys_indexed: boolean;
   shared_state_live_entry_starvation: boolean;
   shared_state_newest_entries_reserved: number;
   shared_state_live_starvation_with_reserved: boolean;

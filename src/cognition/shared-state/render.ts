@@ -8,12 +8,17 @@ import {
 import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
   activeSharedStateArtifactEntries,
+  compareSharedStateArtifactEntriesByRecency,
   countSharedStateArtifactEntriesByKind,
   emptySharedStateKindCounts,
   selectSharedStateArtifactEntriesForRenderWithSummary,
+  sharedStateEntryHasAnyOperationalCanonicalizer,
+  sharedStateEntryHasCurrentTurnUpdate,
+  sharedStateEntryHasOperationalCanonicalizer,
   subtractSharedStateKindCounts,
   tokenDropIndex,
   type SharedStateKindCounts,
+  type SharedStateRenderSalienceOptions,
 } from "./selection.js";
 import {
   countSharedStateEntriesByKey,
@@ -32,6 +37,8 @@ const DEFAULT_SHARED_STATE_LOCKED_CAP = 14;
 const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
 const SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS = 200;
 const SHARED_STATE_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
+export const SHARED_STATE_COMPACT_INDEX_EXCERPT_CHAR_LIMIT = 80;
+export const SHARED_STATE_RECENT_TURN_THRESHOLD = 5;
 
 export type SharedStateArtifactRenderSummary = {
   totalEntryCount: number;
@@ -44,9 +51,17 @@ export type SharedStateArtifactRenderSummary = {
   omittedByKind: SharedStateKindCounts;
   activeEntriesByKey: Record<string, number>;
   topKeysByEntryCount: Record<string, number>;
+  compactIndexEstimatedTokens: number;
+  compactIndexLineCount: number;
+  allActiveKeysIndexed: boolean;
+  omittedLiveRecentOperational: number;
+  omittedLiveRecentLowSalience: number;
+  omittedLiveOld: number;
+  omittedLocked: number;
+  omittedPending: number;
 };
 
-export type SharedStateRenderOptions = {
+type SharedStateRenderBudgetOptions = {
   maxEntries?: number;
   maxTokens?: number;
   reservedSlots?: Partial<Record<SharedStateEntryKind, number>>;
@@ -54,9 +69,23 @@ export type SharedStateRenderOptions = {
   newestStateChangeReservedSlots?: number;
 };
 
+export type SharedStateRenderOptions = SharedStateRenderBudgetOptions &
+  SharedStateRenderSalienceOptions & {
+    currentTurnCounter?: number;
+    lastUpdatedTurnByStreamEntryId?: Readonly<Record<string, number>>;
+    recentTurnThreshold?: number;
+  };
+
+type NormalizedSharedStateRenderOptions = Required<SharedStateRenderBudgetOptions> &
+  SharedStateRenderSalienceOptions & {
+    currentTurnCounter?: number;
+    lastUpdatedTurnByStreamEntryId: Readonly<Record<string, number>>;
+    recentTurnThreshold: number;
+  };
+
 function sharedStateRenderOptions(
   options: SharedStateRenderOptions = {},
-): Required<SharedStateRenderOptions> {
+): NormalizedSharedStateRenderOptions {
   return {
     maxEntries: normalizePositiveInteger(options.maxEntries, DEFAULT_SHARED_STATE_MAX_ENTRIES),
     maxTokens: normalizePositiveInteger(options.maxTokens, DEFAULT_SHARED_STATE_MAX_TOKENS),
@@ -73,6 +102,18 @@ function sharedStateRenderOptions(
       !Number.isFinite(options.newestStateChangeReservedSlots)
         ? DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS
         : Math.max(0, Math.floor(options.newestStateChangeReservedSlots)),
+    currentUserStreamEntryId: options.currentUserStreamEntryId,
+    ledgerStreamEntryIds: options.ledgerStreamEntryIds ?? [],
+    activeOpenQuestionIds: options.activeOpenQuestionIds ?? [],
+    activeActionIds: options.activeActionIds ?? [],
+    activeGoalIds: options.activeGoalIds ?? [],
+    activeCriticalCommitmentIds: options.activeCriticalCommitmentIds ?? [],
+    currentTurnCounter: options.currentTurnCounter,
+    lastUpdatedTurnByStreamEntryId: options.lastUpdatedTurnByStreamEntryId ?? {},
+    recentTurnThreshold: normalizePositiveInteger(
+      options.recentTurnThreshold,
+      SHARED_STATE_RECENT_TURN_THRESHOLD,
+    ),
   };
 }
 
@@ -136,13 +177,94 @@ function entriesGroupedByStateKey(entries: readonly SharedStateEntry[]): Array<{
     }));
 }
 
+function sharedStateCompactExcerpt(
+  value: string,
+  limit: number = SHARED_STATE_COMPACT_INDEX_EXCERPT_CHAR_LIMIT,
+): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}...`;
+}
+
+function latestSharedStateEntry(entries: readonly SharedStateEntry[]): SharedStateEntry {
+  return [...entries].sort(compareSharedStateArtifactEntriesByRecency)[0]!;
+}
+
+type SharedStateCompactIndexRow = {
+  stateKey: string;
+  kinds: SharedStateEntryKind[];
+  lastUpdatedAt: number;
+  activeCount: number;
+  excerpt: string;
+  expanded: boolean;
+};
+
+function buildSharedStateCompactIndexRows(input: {
+  activeEntries: readonly SharedStateEntry[];
+  expandedBuckets: ReadonlySet<string>;
+}): SharedStateCompactIndexRow[] {
+  return entriesGroupedByStateKey(input.activeEntries).map((group) => {
+    const latestEntry = latestSharedStateEntry(group.entries);
+    const kinds = SHARED_STATE_ENTRY_KINDS.filter((kind) =>
+      group.entries.some((entry) => entry.kind === kind),
+    );
+
+    return {
+      stateKey: group.stateKey,
+      kinds,
+      lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
+      activeCount: group.entries.length,
+      excerpt: sharedStateCompactExcerpt(latestEntry.text),
+      expanded: input.expandedBuckets.has(group.stateKey),
+    };
+  });
+}
+
+function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactIndexRow[]): string {
+  const lines = rows.map((row) =>
+    [
+      `- ${row.stateKey}`,
+      `kinds=${row.kinds.join(",")}`,
+      `last_updated_at=${row.lastUpdatedAt}`,
+      `active_count=${row.activeCount}`,
+      `excerpt=${JSON.stringify(row.excerpt)}`,
+      row.expanded ? "expanded" : "omitted",
+    ].join(" | "),
+  );
+
+  return ["SharedStateArtifact compact active-key index:", ...lines].join("\n");
+}
+
+function renderSharedStateCompactIndex(input: {
+  activeEntries: readonly SharedStateEntry[];
+  expandedBuckets: ReadonlySet<string>;
+}): string {
+  return renderSharedStateCompactIndexRows(buildSharedStateCompactIndexRows(input));
+}
+
+function allActiveSharedStateKeysIndexed(input: {
+  activeEntries: readonly SharedStateEntry[];
+  rows: readonly SharedStateCompactIndexRow[];
+}): boolean {
+  const activeKeys = new Set(
+    entriesGroupedByStateKey(input.activeEntries).map((group) => group.stateKey),
+  );
+  const indexedKeys = new Set(input.rows.map((row) => row.stateKey));
+
+  return (
+    activeKeys.size === indexedKeys.size && [...activeKeys].every((key) => indexedKeys.has(key))
+  );
+}
+
 function renderSharedStateArtifactContent(input: {
   artifact: SharedStateArtifact;
+  activeEntries: readonly SharedStateEntry[];
   entries: readonly SharedStateEntry[];
   omittedByKind: SharedStateKindCounts;
   renderedByKind: SharedStateKindCounts;
 }): string {
   const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
+  const expandedBuckets = new Set(
+    input.entries.map((entry) => sharedStateKeyBucket(entry.state_key)),
+  );
   const omission =
     omittedCount <= 0
       ? null
@@ -156,6 +278,10 @@ function renderSharedStateArtifactContent(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    renderSharedStateCompactIndex({
+      activeEntries: input.activeEntries,
+      expandedBuckets,
+    }),
     ...entriesGroupedByStateKey(input.entries).flatMap((group) => [
       `state_key_bucket=${group.stateKey}`,
       ...group.entries.map(renderSharedStateEntry),
@@ -168,6 +294,7 @@ function renderSharedStateArtifactContent(input: {
 
 function renderSharedStateArtifactOmissionOnly(input: {
   artifact: SharedStateArtifact;
+  activeEntries: readonly SharedStateEntry[];
   omittedByKind: SharedStateKindCounts;
   reason: string;
 }): string {
@@ -176,6 +303,10 @@ function renderSharedStateArtifactOmissionOnly(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    renderSharedStateCompactIndex({
+      activeEntries: input.activeEntries,
+      expandedBuckets: new Set(),
+    }),
     `SharedStateArtifact omitted: ${formatSharedStateKindCounts(
       input.omittedByKind,
     )}. Reason: ${input.reason}.`,
@@ -203,6 +334,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
   });
   const emptyEntryContent = renderSharedStateArtifactContent({
     artifact: input.artifact,
+    activeEntries: input.activeEntries,
     entries: [
       {
         ...input.entry,
@@ -218,6 +350,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
     return {
       content: renderSharedStateArtifactOmissionOnly({
         artifact: input.artifact,
+        activeEntries: input.activeEntries,
         omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
         reason: "artifact entry too large to render",
       }),
@@ -228,6 +361,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
 
   const content = renderSharedStateArtifactContent({
     artifact: input.artifact,
+    activeEntries: input.activeEntries,
     entries: [
       {
         ...input.entry,
@@ -249,11 +383,176 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
   return {
     content: renderSharedStateArtifactOmissionOnly({
       artifact: input.artifact,
+      activeEntries: input.activeEntries,
       omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
       reason: "artifact entry too large to render",
     }),
     renderedEntryCount: 0,
     omittedEntryCount: input.activeEntries.length,
+  };
+}
+
+function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
+  artifact: SharedStateArtifact;
+  entries: readonly SharedStateEntry[];
+  activeEntries: readonly SharedStateEntry[];
+  maxTokens: number;
+}): { content: string; entries: SharedStateEntry[] } {
+  const counts = sharedStateRenderedCounts({
+    activeEntries: input.activeEntries,
+    renderedEntries: input.entries,
+  });
+  const emptyEntryContent = renderSharedStateArtifactContent({
+    artifact: input.artifact,
+    activeEntries: input.activeEntries,
+    entries: input.entries.map((entry) => ({
+      ...entry,
+      text: "",
+    })),
+    omittedByKind: counts.omittedByKind,
+    renderedByKind: counts.renderedByKind,
+  });
+  const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
+
+  if (remainingTokens <= 0) {
+    return {
+      content: renderSharedStateArtifactContent({
+        artifact: input.artifact,
+        activeEntries: input.activeEntries,
+        entries: [],
+        omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
+        renderedByKind: emptySharedStateKindCounts(),
+      }),
+      entries: [],
+    };
+  }
+
+  const entryTextTokens = Math.max(1, Math.floor(remainingTokens / input.entries.length));
+  const truncatedEntries = input.entries.map((entry) => ({
+    ...entry,
+    text: truncateSharedStateArtifactText(entry.text, entryTextTokens),
+  }));
+
+  return {
+    content: renderSharedStateArtifactContent({
+      artifact: input.artifact,
+      activeEntries: input.activeEntries,
+      entries: truncatedEntries,
+      omittedByKind: counts.omittedByKind,
+      renderedByKind: counts.renderedByKind,
+    }),
+    entries: truncatedEntries,
+  };
+}
+
+function sharedStateEntryLastUpdatedTurn(
+  entry: SharedStateEntry,
+  lastUpdatedTurnByStreamEntryId: Readonly<Record<string, number>>,
+): number | null {
+  let lastTurn: number | null = null;
+
+  for (const streamEntryId of entry.last_updated_stream_entry_ids) {
+    const turn = lastUpdatedTurnByStreamEntryId[streamEntryId];
+
+    if (turn !== undefined && Number.isFinite(turn)) {
+      lastTurn = lastTurn === null ? turn : Math.max(lastTurn, turn);
+    }
+  }
+
+  return lastTurn;
+}
+
+function sharedStateEntryIsRecent(
+  entry: SharedStateEntry,
+  options: NormalizedSharedStateRenderOptions,
+): boolean {
+  if (sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId)) {
+    return true;
+  }
+
+  if (options.currentTurnCounter === undefined) {
+    return false;
+  }
+
+  const lastUpdatedTurn = sharedStateEntryLastUpdatedTurn(
+    entry,
+    options.lastUpdatedTurnByStreamEntryId,
+  );
+
+  if (lastUpdatedTurn === null) {
+    return false;
+  }
+
+  return options.currentTurnCounter - lastUpdatedTurn <= options.recentTurnThreshold;
+}
+
+function sharedStateEntryIsOperational(
+  entry: SharedStateEntry,
+  options: NormalizedSharedStateRenderOptions,
+): boolean {
+  return (
+    sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId) ||
+    sharedStateEntryHasOperationalCanonicalizer(entry, options) ||
+    sharedStateEntryHasAnyOperationalCanonicalizer(entry)
+  );
+}
+
+function sharedStateOmissionSeverity(input: {
+  activeEntries: readonly SharedStateEntry[];
+  renderedEntries: readonly SharedStateEntry[];
+  options: NormalizedSharedStateRenderOptions;
+}): Pick<
+  SharedStateArtifactRenderSummary,
+  | "omittedLiveRecentOperational"
+  | "omittedLiveRecentLowSalience"
+  | "omittedLiveOld"
+  | "omittedLocked"
+  | "omittedPending"
+> {
+  const renderedIds = new Set(input.renderedEntries.map((entry) => entry.id));
+  let omittedLiveRecentOperational = 0;
+  let omittedLiveRecentLowSalience = 0;
+  let omittedLiveOld = 0;
+  let omittedLocked = 0;
+  let omittedPending = 0;
+
+  for (const entry of input.activeEntries) {
+    if (renderedIds.has(entry.id)) {
+      continue;
+    }
+
+    if (entry.kind === "locked") {
+      omittedLocked += 1;
+    }
+
+    if (entry.kind === "pending") {
+      omittedPending += 1;
+    }
+
+    if (entry.kind !== "live") {
+      continue;
+    }
+
+    const recent = sharedStateEntryIsRecent(entry, input.options);
+
+    if (!recent) {
+      omittedLiveOld += 1;
+      continue;
+    }
+
+    if (sharedStateEntryIsOperational(entry, input.options)) {
+      omittedLiveRecentOperational += 1;
+    } else {
+      omittedLiveRecentLowSalience += 1;
+    }
+  }
+
+  return {
+    omittedLiveRecentOperational,
+    omittedLiveRecentLowSalience,
+    omittedLiveOld,
+    omittedLocked,
+    omittedPending,
   };
 }
 
@@ -278,6 +577,14 @@ function cappedSharedStateArtifactRender(input: {
         omittedByKind: emptySharedStateKindCounts(),
         activeEntriesByKey: {},
         topKeysByEntryCount: {},
+        compactIndexEstimatedTokens: 0,
+        compactIndexLineCount: 0,
+        allActiveKeysIndexed: true,
+        omittedLiveRecentOperational: 0,
+        omittedLiveRecentLowSalience: 0,
+        omittedLiveOld: 0,
+        omittedLocked: 0,
+        omittedPending: 0,
       },
     };
   }
@@ -289,6 +596,7 @@ function cappedSharedStateArtifactRender(input: {
     reservedSlots: options.reservedSlots,
     lockedMaxEntries: options.lockedMaxEntries,
     newestStateChangeReservedSlots: options.newestStateChangeReservedSlots,
+    salience: options,
   });
   const newestReservedIds = selection.newestReservedIds;
   let entries = selection.entries;
@@ -298,6 +606,7 @@ function cappedSharedStateArtifactRender(input: {
   });
   let content = renderSharedStateArtifactContent({
     artifact: input.artifact,
+    activeEntries,
     entries,
     omittedByKind: counts.omittedByKind,
     renderedByKind: counts.renderedByKind,
@@ -309,7 +618,12 @@ function cappedSharedStateArtifactRender(input: {
       activeCounts,
       reservedSlots: options.reservedSlots,
       lockedMaxEntries: options.lockedMaxEntries,
+      dropTiers: selection.dropTiers,
     });
+    if (dropIndex === null) {
+      break;
+    }
+
     entries = [...entries.slice(0, dropIndex), ...entries.slice(dropIndex + 1)];
     counts = sharedStateRenderedCounts({
       activeEntries,
@@ -317,9 +631,43 @@ function cappedSharedStateArtifactRender(input: {
     });
     content = renderSharedStateArtifactContent({
       artifact: input.artifact,
+      activeEntries,
       entries,
       omittedByKind: counts.omittedByKind,
       renderedByKind: counts.renderedByKind,
+    });
+  }
+
+  if (estimatePromptTokens(content) > options.maxTokens && entries.length > 1) {
+    const truncatedRender = renderTruncatedEntriesWithinSharedStateArtifactCap({
+      artifact: input.artifact,
+      entries,
+      activeEntries,
+      maxTokens: options.maxTokens,
+    });
+
+    content = truncatedRender.content;
+    entries = truncatedRender.entries;
+    counts = sharedStateRenderedCounts({
+      activeEntries,
+      renderedEntries: entries,
+    });
+  }
+
+  while (estimatePromptTokens(content) > options.maxTokens && entries.length > 1) {
+    entries = entries.slice(0, -1);
+    const truncatedRender = renderTruncatedEntriesWithinSharedStateArtifactCap({
+      artifact: input.artifact,
+      entries,
+      activeEntries,
+      maxTokens: options.maxTokens,
+    });
+
+    content = truncatedRender.content;
+    entries = truncatedRender.entries;
+    counts = sharedStateRenderedCounts({
+      activeEntries,
+      renderedEntries: entries,
     });
   }
 
@@ -339,6 +687,12 @@ function cappedSharedStateArtifactRender(input: {
     });
   }
 
+  const expandedBuckets = new Set(entries.map((entry) => sharedStateKeyBucket(entry.state_key)));
+  const compactIndexRows = buildSharedStateCompactIndexRows({
+    activeEntries,
+    expandedBuckets,
+  });
+
   return {
     content,
     summary: {
@@ -355,6 +709,19 @@ function cappedSharedStateArtifactRender(input: {
         countSharedStateEntriesByKey(activeEntries),
         5,
       ),
+      compactIndexEstimatedTokens: estimatePromptTokens(
+        renderSharedStateCompactIndexRows(compactIndexRows),
+      ),
+      compactIndexLineCount: compactIndexRows.length,
+      allActiveKeysIndexed: allActiveSharedStateKeysIndexed({
+        activeEntries,
+        rows: compactIndexRows,
+      }),
+      ...sharedStateOmissionSeverity({
+        activeEntries,
+        renderedEntries: entries,
+        options,
+      }),
     },
   };
 }
@@ -389,6 +756,14 @@ export function summarizeSharedStateArtifactRender(
       omittedByKind: emptySharedStateKindCounts(),
       activeEntriesByKey: {},
       topKeysByEntryCount: {},
+      compactIndexEstimatedTokens: 0,
+      compactIndexLineCount: 0,
+      allActiveKeysIndexed: true,
+      omittedLiveRecentOperational: 0,
+      omittedLiveRecentLowSalience: 0,
+      omittedLiveOld: 0,
+      omittedLocked: 0,
+      omittedPending: 0,
     };
   }
 
