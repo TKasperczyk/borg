@@ -172,9 +172,7 @@ describe("ClosurePressureGuard", () => {
         ],
       }),
     );
-    expect(closureGuardCompletedEvent).not.toHaveProperty(
-      "closure_pressure_history_reason",
-    );
+    expect(closureGuardCompletedEvent).not.toHaveProperty("closure_pressure_history_reason");
   });
 
   it("observes phrase-only mixed closure spans without suppressing the response", async () => {
@@ -276,7 +274,63 @@ describe("ClosurePressureGuard", () => {
     );
   });
 
-  it("suppresses closure-only responses under an active no-closure commitment", async () => {
+  it("passes closure-only responses under an advisory no-closure commitment without a named loop", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [
+            {
+              text: "Held. Book.",
+              kind: "quotable_closing_tail",
+              rationale: "The entire response is a closing tag.",
+            },
+          ],
+          response_shape: "closure_only",
+          reason: "Only closure pressure remains.",
+        }),
+      ],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-closure-only",
+      response: "Held. Book.",
+      activeCommitments: [makeCommitment("no_sleep_closure")],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Held. Book.",
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.reason).toBe("closure_only_observed");
+    expect(result.removed_spans).toEqual(["Held. Book."]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_response_guard.completed",
+      expect.objectContaining({
+        mode: "enforce",
+        verdict: "passed",
+        wouldHaveVerdict: "suppressed",
+        wouldHaveSuppressionReason: "closure_pressure_only",
+        reason: "closure_only_observed",
+        response_shape: "closure_only",
+      }),
+    );
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+  });
+
+  it("suppresses closure-only responses when the closure loop is named", async () => {
     const llm = new FakeLLMClient({
       responses: [
         closureAuditResponse({
@@ -299,10 +353,10 @@ describe("ClosurePressureGuard", () => {
     });
 
     const result = await guard.run({
-      turnId: "turn-closure-only",
+      turnId: "turn-closure-only-named-loop",
       response: "Held. Book.",
       activeCommitments: [makeCommitment("no_sleep_closure")],
-      closureLoop: null,
+      closureLoop: namedClosureLoop(),
     });
 
     expect(result.emission).toEqual({
@@ -458,7 +512,7 @@ describe("ClosurePressureGuard", () => {
     });
   });
 
-  it("fails closed when the auditor throws under an active no-closure commitment in enforce mode", async () => {
+  it("fails open when the auditor throws under an active no-closure commitment in enforce mode", async () => {
     const throwingAudit = Object.assign(
       () => {
         throw new Error("auditor unavailable");
@@ -488,16 +542,16 @@ describe("ClosurePressureGuard", () => {
     });
 
     expect(result.emission).toEqual({
-      kind: "suppressed",
-      reason: "closure_response_audit_failed_closed",
-      closure_pressure_history_reason: "audit_caught",
+      kind: "message",
+      content: "The shelf test is the right move. Go read.",
     });
-    expect(result.verdict).toBe("suppressed");
+    expect(result.verdict).toBe("passed");
     expect(tracer.emit).toHaveBeenCalledWith(
       "closure_response_guard.completed",
       expect.objectContaining({
-        verdict: "suppressed",
-        reason: "closure_response_audit_failed_closed",
+        mode: "enforce",
+        verdict: "passed",
+        reason: "closure_response_audit_failed_open",
         audit_error: "Error: auditor unavailable",
       }),
     );
@@ -586,9 +640,7 @@ describe("ClosurePressureGuard", () => {
         reason: "closure_pressure_audit.degraded_with_spans",
         response_shape: "no_closure",
         spans_detected: 1,
-        active_closure_commitments: [
-          expect.stringContaining("honor_pause_not_closure"),
-        ],
+        active_closure_commitments: [expect.stringContaining("honor_pause_not_closure")],
         spans: [
           expect.objectContaining({
             text: "Go read.",
@@ -643,7 +695,7 @@ describe("ClosurePressureGuard", () => {
   });
 
   it.each([".", "...", "  ", "?!"])(
-    "suppresses closure-only output with structural residue: %j",
+    "suppresses closure-only output with structural residue after a named closure loop: %j",
     async (prefix) => {
       const response = `${prefix} Go read.`;
       const llm = new FakeLLMClient({
@@ -670,8 +722,8 @@ describe("ClosurePressureGuard", () => {
       const result = await guard.run({
         turnId: "turn-structurally-empty",
         response,
-        activeCommitments: [makeCommitment()],
-        closureLoop: null,
+        activeCommitments: [],
+        closureLoop: namedClosureLoop(),
       });
 
       expect(result.emission).toEqual({

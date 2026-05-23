@@ -171,6 +171,16 @@ export type DeliberationContext = {
    * finalization uses this to keep prompt-visible IDs tied to evidence prose.
    */
   evidenceLedger?: EvidenceLedger | null;
+  /**
+   * Count of shared-state compiler operations applied for the current turn.
+   * This is compiler-emitted structure, not inferred from artifact text.
+   */
+  sharedStateAppliedOperationCount?: number;
+  /**
+   * Count of open-question entries actually rendered to the finalizer prompt.
+   * Available-but-omitted open questions do not count.
+   */
+  openQuestionsRenderedToFinalizerCount?: number;
   routingOverride?: DeliberationRoutingOverride | null;
   contradictionRoutingCooldown?: ContradictionRoutingCooldown;
   contradictionRoutingConfig?: DeliberationContradictionRoutingConfig;

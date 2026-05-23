@@ -518,7 +518,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
+    closure_response_audit_failed_open_total: 0,
     closure_pressure_mixed_observed_total: 0,
+    closure_pressure_closure_only_observed_total: 0,
     closure_pressure_closure_only_suppressed_total: 0,
     closure_pressure_mixed_passed_no_active_preference_total: 0,
     closure_pressure_mixed_by_span_kind: {},
@@ -569,6 +571,7 @@ function metricsRow(turnCounter: number): MetricsRow {
     borg_hard_aborted_turns: 0,
     borg_intentional_suppressions: 0,
     borg_intentional_suppressions_by_reason: {},
+    finalizer_no_output_by_category: {},
     borg_aborted_turns: 0,
   };
 }
@@ -697,6 +700,9 @@ describe("SimulatorRunner", () => {
         borg_intentional_suppressions_by_reason: {
           finalizer_no_output: 1,
         },
+        finalizer_no_output_by_category: {
+          closure: 1,
+        },
       },
       durationMs: 1,
     });
@@ -709,6 +715,7 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Simulator aborts: persona failures 1, hard aborts 0, intentional suppressions 1 (by reason: finalizer_no_output=1)",
     );
+    expect(report).toContain("Finalizer no-output categories: closure=1");
     expect(report).toContain("## Simulator Persona Failures");
     expect(report).toContain("persona_role_bleed: assistant_self_claim");
     expect(report).toContain("## Borg Behavioral Suppressions");
@@ -753,7 +760,9 @@ describe("SimulatorRunner", () => {
         shared_state_live_starvation_final: false,
         closure_loop_completed_count: 9,
         closure_loop_degraded_count: 1,
+        closure_response_audit_failed_open_total: 1,
         closure_pressure_mixed_observed_total: 3,
+        closure_pressure_closure_only_observed_total: 2,
         closure_pressure_closure_only_suppressed_total: 1,
         closure_pressure_mixed_passed_no_active_preference_total: 2,
         closure_pressure_mixed_by_span_kind: {
@@ -828,7 +837,7 @@ describe("SimulatorRunner", () => {
     );
     expect(report).toContain("live starvation ever true, live starvation final false");
     expect(report).toContain(
-      "Closure pressure: mixed observed 3, closure-only suppressed 1, mixed/no-active-preference 2, mixed span kinds aphoristic_valediction=2, imperative_closer=1",
+      "Closure pressure: audit failed open 1, mixed observed 3, closure-only observed 2, closure-only suppressed 1, mixed/no-active-preference 2, mixed span kinds aphoristic_valediction=2, imperative_closer=1",
     );
     expect(report).toContain(
       "Extractor health: closure loop degraded 1/9, corrective preference degraded 2/8, max-token stops 4",

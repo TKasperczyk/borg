@@ -325,6 +325,7 @@ describe("runPostGenerationPhase", () => {
             actionEmission: {
               kind: "suppressed",
               reason: "finalizer_no_output",
+              no_output_categories: ["closure", "with_open_question"],
             },
             deliberation: {
               path: "system_1",
@@ -422,6 +423,13 @@ describe("runPostGenerationPhase", () => {
         eligible_count: 1,
         archived_count: 1,
         skipped_by_reason: {},
+      }),
+    });
+    expect(events).toContainEqual({
+      event: "post_generation.rejected",
+      data: expect.objectContaining({
+        reason: "finalizer_no_output",
+        no_output_categories: ["closure", "with_open_question"],
       }),
     });
   });

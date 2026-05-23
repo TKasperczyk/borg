@@ -268,6 +268,7 @@ export async function runPostGenerationPhase(input: {
             userEntryId: input.persistedUserEntryId,
             turnId: input.turnId,
             audience: input.turnInput.audience,
+            noOutputCategories: actionEmission.no_output_categories,
           });
 
   if (actionEmission.kind === "suppressed") {
@@ -667,6 +668,9 @@ async function suppressFromActionPhase(input: {
     kind: "suppressed",
     reason: input.actionEmission.reason,
     markerEntryId: input.persistedAgentEntry.id,
+    ...(input.actionEmission.no_output_categories === undefined
+      ? {}
+      : { no_output_categories: [...input.actionEmission.no_output_categories] }),
   };
   let suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: input.actionResult.workingMemory,
@@ -691,6 +695,9 @@ async function suppressFromActionPhase(input: {
       turnId: input.turnId,
       reason: input.actionEmission.reason,
       streamEntryId: input.persistedAgentEntry.id,
+      ...(input.actionEmission.no_output_categories === undefined
+        ? {}
+        : { no_output_categories: [...input.actionEmission.no_output_categories] }),
     });
   }
 

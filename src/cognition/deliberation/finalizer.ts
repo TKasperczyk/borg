@@ -6,7 +6,12 @@ import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
-import { replyTargetSchema, type ReplyTarget } from "../generation/types.js";
+import {
+  FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+  replyTargetSchema,
+  type FinalizerNoOutputSemanticCategory,
+  type ReplyTarget,
+} from "../generation/types.js";
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
@@ -21,9 +26,12 @@ const emitTextToolInputSchema = z
   })
   .strict();
 
+const finalizerNoOutputSemanticCategorySchema = z.enum(FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES);
+
 const emitNoOutputToolInputSchema = z
   .object({
     reason: z.string().min(1),
+    no_output_categories: z.array(finalizerNoOutputSemanticCategorySchema).optional(),
   })
   .strict();
 
@@ -57,7 +65,7 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
-    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue.",
+    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue. When using this tool, classify the silence in no_output_categories using the provided enum; use [] when uncertain.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
@@ -113,6 +121,7 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.",
   "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal. In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.",
   "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
+  'When emitting EmitNoOutput, classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and Borg was not addressed; "when_borg_addressed" if Borg was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, list all. Use [] if uncertain.',
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
   "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
@@ -170,6 +179,7 @@ export type EmissionDecision =
   | {
       kind: "no_output";
       reason: string;
+      no_output_categories: FinalizerNoOutputSemanticCategory[];
     }
   | {
       kind: "observe";
@@ -285,7 +295,11 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
     const parsed = emitNoOutputToolInputSchema.safeParse(terminalCall.input);
 
     return parsed.success
-      ? { kind: "no_output", reason: parsed.data.reason }
+      ? {
+          kind: "no_output",
+          reason: parsed.data.reason,
+          no_output_categories: parsed.data.no_output_categories ?? [],
+        }
       : invalidToolDecision(terminalCall.name, parsed.error.message);
   }
 
@@ -316,7 +330,9 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
     ...(decision.kind === "answer" && decision.reply_target !== undefined
       ? { reply_target: decision.reply_target }
       : {}),
-    ...(decision.kind === "no_output" ? { reason: decision.reason } : {}),
+    ...(decision.kind === "no_output"
+      ? { reason: decision.reason, no_output_categories: [...decision.no_output_categories] }
+      : {}),
     ...(decision.kind === "observe" ? { reason: decision.reason } : {}),
     ...(decision.kind === "self_report" ? { persistence_class: decision.persistence_class } : {}),
     ...(decision.kind === "invalid_tool"

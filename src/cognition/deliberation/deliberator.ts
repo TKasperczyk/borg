@@ -27,7 +27,12 @@ import {
   buildCompactPlannerLedgerPrompt,
   truncateTextForCompactPlannerLedger,
 } from "../evidence-ledger/index.js";
-import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
+import type {
+  FinalizerNoOutputCategory,
+  FinalizerNoOutputStructuralCategory,
+  GenerationSuppressionReason,
+  PendingTurnEmission,
+} from "../generation/types.js";
 import type {
   DeliberationContext,
   DeliberationResult,
@@ -168,16 +173,55 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
   }
 }
 
-function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
+function structuralNoOutputCategories(
+  context: DeliberationContext,
+  input: { additionalOpenQuestionsRenderedCount?: number } = {},
+): FinalizerNoOutputStructuralCategory[] {
+  const categories: FinalizerNoOutputStructuralCategory[] = [];
+
+  if ((context.sharedStateAppliedOperationCount ?? 0) > 0) {
+    categories.push("with_state_delta");
+  }
+
+  const renderedOpenQuestionCount =
+    (context.openQuestionsRenderedToFinalizerCount ?? 0) +
+    (input.additionalOpenQuestionsRenderedCount ?? 0);
+
+  if (renderedOpenQuestionCount > 0) {
+    categories.push("with_open_question");
+  }
+
+  return categories;
+}
+
+function uniqueNoOutputCategories(
+  categories: readonly FinalizerNoOutputCategory[],
+): FinalizerNoOutputCategory[] {
+  return [...new Set(categories)];
+}
+
+function buildFinalizerEmission(
+  result: FinalizerResult,
+  structuralCategories: readonly FinalizerNoOutputStructuralCategory[] = [],
+): FinalizerEmission {
   const suppressionReason = finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
+    const noOutputCategories =
+      result.decision.kind === "no_output"
+        ? uniqueNoOutputCategories([
+            ...result.decision.no_output_categories,
+            ...structuralCategories,
+          ])
+        : undefined;
+
     return {
       response: "",
       emitted: false,
       emission: {
         kind: "suppressed",
         reason: suppressionReason,
+        ...(noOutputCategories === undefined ? {} : { no_output_categories: noOutputCategories }),
       },
     };
   }
@@ -354,7 +398,10 @@ export class Deliberator {
         tracer: this.tracer,
         turnId: context.turnId,
       });
-      const finalized = buildFinalizerEmission(response);
+      const finalized = buildFinalizerEmission(
+        response,
+        structuralNoOutputCategories(effectiveContext),
+      );
 
       const result: DeliberationResult = {
         path: "system_1",
@@ -394,7 +441,10 @@ export class Deliberator {
           tracer: this.tracer,
           turnId: context.turnId,
         });
-        const regeneratedFinalized = buildFinalizerEmission(regeneratedResponse);
+        const regeneratedFinalized = buildFinalizerEmission(
+          regeneratedResponse,
+          structuralNoOutputCategories(effectiveContext),
+        );
 
         return {
           ...result,
@@ -540,7 +590,12 @@ export class Deliberator {
       turnId: context.turnId,
     });
     usage = aggregateUsage(usage, finalResponse.usage);
-    finalized = buildFinalizerEmission(finalResponse);
+    finalized = buildFinalizerEmission(
+      finalResponse,
+      structuralNoOutputCategories(effectiveContext, {
+        additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
+      }),
+    );
     finalToolCallsMade = finalResponse.toolCallsMade;
 
     const result: DeliberationResult = {
@@ -584,7 +639,12 @@ export class Deliberator {
         tracer: this.tracer,
         turnId: context.turnId,
       });
-      const regeneratedFinalized = buildFinalizerEmission(regeneratedResponse);
+      const regeneratedFinalized = buildFinalizerEmission(
+        regeneratedResponse,
+        structuralNoOutputCategories(effectiveContext, {
+          additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
+        }),
+      );
 
       return {
         ...result,

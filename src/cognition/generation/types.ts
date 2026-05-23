@@ -22,6 +22,28 @@ export type GenerationSuppressionReason =
   | "internal_identifier_leak"
   | "rewrite_unsupported_or_empty";
 
+export const FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES = [
+  "user_to_user",
+  "when_borg_addressed",
+  "closure",
+] as const;
+
+export const FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES = [
+  "with_state_delta",
+  "with_open_question",
+] as const;
+
+export const FINALIZER_NO_OUTPUT_CATEGORIES = [
+  ...FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+  ...FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
+] as const;
+
+export type FinalizerNoOutputSemanticCategory =
+  (typeof FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES)[number];
+export type FinalizerNoOutputStructuralCategory =
+  (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES)[number];
+export type FinalizerNoOutputCategory = (typeof FINALIZER_NO_OUTPUT_CATEGORIES)[number];
+
 export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
   "generation_gate",
   "active_discourse_stop",
@@ -86,6 +108,7 @@ export type PendingTurnEmission =
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
       closure_pressure_history_reason?: ClosurePressureHistoryReason;
+      no_output_categories?: FinalizerNoOutputCategory[];
     };
 
 export type TurnEmission =
@@ -105,12 +128,14 @@ export type TurnEmission =
       kind: "suppressed";
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
+      no_output_categories?: FinalizerNoOutputCategory[];
     };
 
 export type AgentSuppressedStreamContent = {
   reason: GenerationSuppressionReason;
   user_entry_id?: StreamEntryId;
   turn_id?: string;
+  no_output_categories?: FinalizerNoOutputCategory[];
 };
 
 export type AgentObservedStreamContent = {

@@ -88,6 +88,10 @@ export async function runDeliberationPhase(input: {
       sessionReentryContinuityPromptSection:
         input.retrievalPhase.evidenceLedgerContext.sessionReentryContinuityPromptSection,
       evidenceLedger: input.retrievalPhase.evidenceLedgerContext.ledger,
+      sharedStateAppliedOperationCount:
+        input.retrievalPhase.evidenceLedgerContext.sharedStateAppliedOperationCount,
+      openQuestionsRenderedToFinalizerCount:
+        input.retrievalPhase.evidenceLedgerContext.openQuestionsRenderedToFinalizerCount,
       routingOverride: input.retrievalPhase.routingOverride,
       contradictionRoutingCooldown: input.contradictionRoutingCooldown,
       contradictionRoutingConfig: input.options.config.deliberation.contradictionRouting,

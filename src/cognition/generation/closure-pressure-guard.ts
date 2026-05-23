@@ -329,38 +329,6 @@ export class ClosurePressureGuard {
       audit = await this.audit(input.response);
     } catch (error) {
       const auditError = formatAuditError(error);
-      const failClosed = effectiveMode === "enforce";
-
-      if (failClosed) {
-        const reason = "closure_response_audit_failed_closed";
-
-        traceClosureGuard({
-          tracer: this.options.tracer,
-          turnId: input.turnId,
-          mode: effectiveMode,
-          verdict: "suppressed",
-          wouldHaveSuppressionReason: reason,
-          removedSpans: [],
-          activeClosureCommitments: activeCommitmentLabels,
-          reason,
-          audit: null,
-          auditError,
-        });
-
-        return {
-          emission: {
-            kind: "suppressed",
-            reason,
-            closure_pressure_history_reason: "audit_caught",
-          },
-          verdict: "suppressed",
-          removed_spans: [],
-          active_closure_commitments: activeCommitmentLabels,
-          reason,
-          audit: null,
-        };
-      }
-
       const reason = "closure_response_audit_failed_open";
 
       traceClosureGuard({
@@ -375,17 +343,21 @@ export class ClosurePressureGuard {
         auditError,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "message",
-          content: input.response,
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit: null,
         },
-        verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit: null,
-      }, effectiveMode);
+        effectiveMode,
+      );
     }
 
     if (audit.spans.length === 0 && audit.response_shape === "no_closure") {
@@ -402,17 +374,21 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "message",
-          content: input.response,
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit,
         },
-        verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      }, effectiveMode);
+        effectiveMode,
+      );
     }
 
     if (audit.spans.length === 0) {
@@ -437,17 +413,21 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "message",
-          content: input.response,
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit,
         },
-        verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      }, effectiveMode);
+        effectiveMode,
+      );
     }
 
     if (audit.response_shape === "no_closure") {
@@ -475,17 +455,56 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "message",
-          content: input.response,
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit,
         },
+        effectiveMode,
+      );
+    }
+
+    const removedSpans = audit.spans.map((span) => span.text);
+
+    if (audit.response_shape === "closure_only" && !closureLoopNamed) {
+      const reason = "closure_only_observed";
+
+      traceClosureGuard({
+        tracer: this.options.tracer,
+        turnId: input.turnId,
+        mode: effectiveMode,
         verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
+        wouldHaveVerdict: "suppressed",
+        wouldHaveSuppressionReason: "closure_pressure_only",
+        removedSpans,
+        activeClosureCommitments: activeCommitmentLabels,
         reason,
         audit,
-      }, effectiveMode);
+      });
+
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: removedSpans,
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit,
+        },
+        effectiveMode,
+      );
     }
 
     if (activeCommitments.length === 0 && !closureLoopNamed && !closureHistoryActive) {
@@ -502,22 +521,24 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "message",
-          content: input.response,
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          verdict: "passed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit,
         },
-        verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      }, effectiveMode);
+        effectiveMode,
+      );
     }
 
-    const removedSpans = audit.spans.map((span) => span.text);
-
-    if (audit.response_shape === "closure_only") {
+    if (audit.response_shape === "closure_only" && closureLoopNamed) {
       const reason = "closure_pressure_only";
 
       traceClosureGuard({
@@ -532,18 +553,22 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return this.applyMode(input, {
-        emission: {
-          kind: "suppressed",
+      return this.applyMode(
+        input,
+        {
+          emission: {
+            kind: "suppressed",
+            reason,
+            closure_pressure_history_reason: "span_removed",
+          },
+          verdict: "suppressed",
+          removed_spans: removedSpans,
+          active_closure_commitments: activeCommitmentLabels,
           reason,
-          closure_pressure_history_reason: "span_removed",
+          audit,
         },
-        verdict: "suppressed",
-        removed_spans: removedSpans,
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      }, effectiveMode);
+        effectiveMode,
+      );
     }
 
     const reason = "mixed_closure_observed";
@@ -560,16 +585,20 @@ export class ClosurePressureGuard {
       audit,
     });
 
-    return this.applyMode(input, {
-      emission: {
-        kind: "message",
-        content: input.response,
+    return this.applyMode(
+      input,
+      {
+        emission: {
+          kind: "message",
+          content: input.response,
+        },
+        verdict: "passed",
+        removed_spans: removedSpans,
+        active_closure_commitments: activeCommitmentLabels,
+        reason,
+        audit,
       },
-      verdict: "passed",
-      removed_spans: removedSpans,
-      active_closure_commitments: activeCommitmentLabels,
-      reason,
-      audit,
-    }, effectiveMode);
+      effectiveMode,
+    );
   }
 }

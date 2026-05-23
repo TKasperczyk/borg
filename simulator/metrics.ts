@@ -181,6 +181,7 @@ export type MetricsCaptureContext = {
   borgHardAbortedTurns?: number;
   borgIntentionalSuppressions?: number;
   borgIntentionalSuppressionsByReason?: Record<string, number>;
+  finalizerNoOutputByCategory?: Record<string, number>;
   /**
    * Deprecated compatibility input; use borgHardAbortedTurns.
    */
@@ -340,7 +341,9 @@ type ExtractorHealthMetricCounts = Pick<
 
 type ClosurePressureMetricCounts = Pick<
   MetricsRow,
+  | "closure_response_audit_failed_open_total"
   | "closure_pressure_mixed_observed_total"
+  | "closure_pressure_closure_only_observed_total"
   | "closure_pressure_closure_only_suppressed_total"
   | "closure_pressure_mixed_passed_no_active_preference_total"
   | "closure_pressure_mixed_by_span_kind"
@@ -1466,9 +1469,7 @@ function extractorHealthMetrics(input: {
   };
 }
 
-function closurePressureMetrics(
-  traceRecords: readonly TraceRecord[],
-): ClosurePressureMetricCounts {
+function closurePressureMetrics(traceRecords: readonly TraceRecord[]): ClosurePressureMetricCounts {
   const completed = traceRecords.filter(
     (record) => record.event === "closure_response_guard.completed",
   );
@@ -1485,8 +1486,17 @@ function closurePressureMetrics(
   }
 
   return {
+    closure_response_audit_failed_open_total: completed.filter(
+      (record) => traceReason(record) === "closure_response_audit_failed_open",
+    ).length,
     closure_pressure_mixed_observed_total: completed.filter(
       (record) => traceReason(record) === "mixed_closure_observed",
+    ).length,
+    closure_pressure_closure_only_observed_total: completed.filter(
+      (record) =>
+        traceString(record, "verdict") === "passed" &&
+        traceString(record, "response_shape") === "closure_only" &&
+        traceReason(record) === "closure_only_observed",
     ).length,
     closure_pressure_closure_only_suppressed_total: completed.filter(
       (record) =>
@@ -1502,6 +1512,38 @@ function closurePressureMetrics(
     ).length,
     closure_pressure_mixed_by_span_kind: sortedNumberRecord(mixedBySpanKind),
   };
+}
+
+function finalizerNoOutputCategoryMetrics(
+  traceRecords: readonly TraceRecord[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const record of traceRecords) {
+    if (
+      record.event !== "post_generation.rejected" ||
+      traceReason(record) !== "finalizer_no_output"
+    ) {
+      continue;
+    }
+
+    for (const category of traceStringArray(record, "no_output_categories")) {
+      incrementLabelCount(counts, category);
+    }
+  }
+
+  return sortedNumberRecord(counts);
+}
+
+function finalizerNoOutputByCategory(input: {
+  context: MetricsCaptureContext;
+  traceRecords: readonly TraceRecord[];
+}): Record<string, number> {
+  const contextCounts = sortedContextCounts(input.context.finalizerNoOutputByCategory);
+
+  return Object.keys(contextCounts).length > 0
+    ? contextCounts
+    : finalizerNoOutputCategoryMetrics(input.traceRecords);
 }
 
 function semanticRelationshipLabelRejectionRecords(
@@ -2846,8 +2888,12 @@ export class MetricsCapture {
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      closure_response_audit_failed_open_total:
+        closurePressureMetricCounts.closure_response_audit_failed_open_total,
       closure_pressure_mixed_observed_total:
         closurePressureMetricCounts.closure_pressure_mixed_observed_total,
+      closure_pressure_closure_only_observed_total:
+        closurePressureMetricCounts.closure_pressure_closure_only_observed_total,
       closure_pressure_closure_only_suppressed_total:
         closurePressureMetricCounts.closure_pressure_closure_only_suppressed_total,
       closure_pressure_mixed_passed_no_active_preference_total:
@@ -2931,6 +2977,10 @@ export class MetricsCapture {
       borg_intentional_suppressions_by_reason: sortedContextCounts(
         context.borgIntentionalSuppressionsByReason,
       ),
+      finalizer_no_output_by_category: finalizerNoOutputByCategory({
+        context,
+        traceRecords: allTraceRecords,
+      }),
       borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 
@@ -3224,8 +3274,12 @@ export class MetricsCapture {
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
       closure_loop_completed_count: extractorHealthMetricCounts.closure_loop_completed_count,
       closure_loop_degraded_count: extractorHealthMetricCounts.closure_loop_degraded_count,
+      closure_response_audit_failed_open_total:
+        closurePressureMetricCounts.closure_response_audit_failed_open_total,
       closure_pressure_mixed_observed_total:
         closurePressureMetricCounts.closure_pressure_mixed_observed_total,
+      closure_pressure_closure_only_observed_total:
+        closurePressureMetricCounts.closure_pressure_closure_only_observed_total,
       closure_pressure_closure_only_suppressed_total:
         closurePressureMetricCounts.closure_pressure_closure_only_suppressed_total,
       closure_pressure_mixed_passed_no_active_preference_total:
@@ -3309,6 +3363,10 @@ export class MetricsCapture {
       borg_intentional_suppressions_by_reason: sortedContextCounts(
         context.borgIntentionalSuppressionsByReason,
       ),
+      finalizer_no_output_by_category: finalizerNoOutputByCategory({
+        context,
+        traceRecords: allTraceRecords,
+      }),
       borg_aborted_turns: context.borgHardAbortedTurns ?? context.borgAbortedTurns ?? 0,
     };
 

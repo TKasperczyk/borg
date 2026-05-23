@@ -120,8 +120,14 @@ export {
   type StopCommitmentExtractorOptions,
 } from "./generation/self-stop-commitment.js";
 export {
+  FINALIZER_NO_OUTPUT_CATEGORIES,
+  FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+  FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
   type AgentSuppressedStreamContent,
   type EmissionRecommendation,
+  type FinalizerNoOutputCategory,
+  type FinalizerNoOutputSemanticCategory,
+  type FinalizerNoOutputStructuralCategory,
   type GenerationSuppressionReason,
   type PendingTurnEmission,
   type ReplyTarget,

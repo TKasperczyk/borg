@@ -294,7 +294,9 @@ function metricsRow(turn: number): MetricsRow {
     overseer_due_on_suppressed_turn: false,
     closure_loop_completed_count: 0,
     closure_loop_degraded_count: 0,
+    closure_response_audit_failed_open_total: 0,
     closure_pressure_mixed_observed_total: 0,
+    closure_pressure_closure_only_observed_total: 0,
     closure_pressure_closure_only_suppressed_total: 0,
     closure_pressure_mixed_passed_no_active_preference_total: 0,
     closure_pressure_mixed_by_span_kind: {},
@@ -345,6 +347,7 @@ function metricsRow(turn: number): MetricsRow {
     borg_hard_aborted_turns: 0,
     borg_intentional_suppressions: 0,
     borg_intentional_suppressions_by_reason: {},
+    finalizer_no_output_by_category: {},
     borg_aborted_turns: 0,
   };
 }

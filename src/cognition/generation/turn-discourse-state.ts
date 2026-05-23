@@ -14,6 +14,7 @@ import {
 } from "./discourse-state.js";
 import {
   type AgentObservedStreamContent,
+  type FinalizerNoOutputCategory,
   isNaturalSilenceSuppressionReason,
   type AgentSuppressedStreamContent,
   type PendingTurnEmission,
@@ -62,6 +63,7 @@ export type AppendSuppressionMarkerInput = {
   userEntryId?: AgentSuppressedStreamContent["user_entry_id"];
   turnId: string;
   audience?: string;
+  noOutputCategories?: readonly FinalizerNoOutputCategory[];
 };
 
 export type AppendObservationMarkerInput = {
@@ -257,6 +259,9 @@ export class TurnDiscourseStateService {
         reason: input.reason,
         user_entry_id: input.userEntryId,
         turn_id: input.turnId,
+        ...(input.noOutputCategories === undefined
+          ? {}
+          : { no_output_categories: [...input.noOutputCategories] }),
       } satisfies AgentSuppressedStreamContent,
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });

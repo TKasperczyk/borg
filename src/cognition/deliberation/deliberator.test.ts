@@ -12,12 +12,14 @@ import {
   commitmentMigrations,
 } from "../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
+import type { OpenQuestion } from "../../memory/self/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createOpenQuestionId,
   createSharedStateEntryId,
   createEntityId,
   createStreamEntryId,
@@ -220,6 +222,32 @@ function makeEvidenceLedger(): EvidenceLedger {
     compactedTranscriptEntryCount: 0,
     rawPreservedUserTranscriptEntryCount: 0,
     estimatedTokens: 24,
+  };
+}
+
+function makeOpenQuestion(overrides: Partial<OpenQuestion> = {}): OpenQuestion {
+  return {
+    id: createOpenQuestionId(),
+    question: "What remains unresolved?",
+    urgency: 0.5,
+    status: "open",
+    goal_id: null,
+    audience_entity_id: null,
+    related_episode_ids: [],
+    related_semantic_node_ids: [],
+    provenance: { kind: "system" },
+    source: "reflection",
+    created_at: 1_000,
+    last_touched: 1_000,
+    resolution_evidence_episode_ids: [],
+    resolution_evidence_stream_entry_ids: [],
+    resolution_note: null,
+    resolved_at: null,
+    abandoned_reason: null,
+    abandoned_at: null,
+    unresolved_rumination_ticks: 0,
+    last_ruminated_at: null,
+    ...overrides,
   };
 }
 
@@ -1067,6 +1095,8 @@ describe("deliberator", () => {
   });
 
   it("suppresses EmitNoOutput responses with finalizer_no_output", async () => {
+    const currentUserEntryId = createStreamEntryId();
+    const audienceEntityId = createEntityId();
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
@@ -1074,7 +1104,7 @@ describe("deliberator", () => {
           {
             id: "toolu_emit_no_output",
             name: "EmitNoOutput",
-            input: { reason: "natural_close" },
+            input: { reason: "natural_close", no_output_categories: ["closure"] },
           },
           { inputTokens: 10, outputTokens: 3 },
         ),
@@ -1087,6 +1117,7 @@ describe("deliberator", () => {
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-emission-no-output",
+      userEntryId: currentUserEntryId,
       userMessage: "Thanks.",
       perception: {
         entities: [],
@@ -1096,9 +1127,44 @@ describe("deliberator", () => {
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
       retrievalConfidence: makeRetrievalConfidence(),
-      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedger: {
+        ...makeEvidenceLedger(),
+        sharedState: {
+          audience_entity_id: audienceEntityId,
+          record_version: 1,
+          created_at: 1_000,
+          updated_at: 1_000,
+          last_compiled_at: 1_000,
+          last_compiled_stream_entry_id: currentUserEntryId,
+          entries: [
+            {
+              id: createSharedStateEntryId(),
+              audience_entity_id: audienceEntityId,
+              state_key: "conversation.state",
+              kind: "live",
+              text: "A current-turn shared state update exists.",
+              owner_entity_id: audienceEntityId,
+              provenance_stream_entry_ids: [currentUserEntryId],
+              last_updated_stream_entry_ids: [currentUserEntryId],
+              created_at: 1_000,
+              last_updated_at: 1_000,
+              superseded_by_id: null,
+              rank: 0,
+              canonicalizes: {
+                goal_ids: [],
+                commitment_ids: [],
+                action_ids: [],
+                open_question_ids: [],
+              },
+            },
+          ],
+        },
+      },
       evidenceLedgerPromptSection:
         "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      sharedStateAppliedOperationCount: 1,
+      openQuestionsRenderedToFinalizerCount: 1,
+      openQuestionsContext: [makeOpenQuestion()],
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -1124,6 +1190,7 @@ describe("deliberator", () => {
     expect(result.emission).toEqual({
       kind: "suppressed",
       reason: "finalizer_no_output",
+      no_output_categories: ["closure", "with_state_delta", "with_open_question"],
     });
     const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
     expect(emittedEvent?.data).toMatchObject({
@@ -1131,6 +1198,68 @@ describe("deliberator", () => {
       mode: "emission_tools",
       decision: "no_output",
       reason: "natural_close",
+      no_output_categories: ["closure"],
+    });
+  });
+
+  it("adds with_state_delta from applied shared-state operation count even when no artifact entry remains", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse(
+          {
+            id: "toolu_emit_no_output_prune",
+            name: "EmitNoOutput",
+            input: { reason: "prune_only_state_delta", no_output_categories: [] },
+          },
+          { inputTokens: 10, outputTokens: 3 },
+        ),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-prune-only-no-output",
+        sharedStateAppliedOperationCount: 1,
+        openQuestionsRenderedToFinalizerCount: 0,
+      }),
+    );
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_no_output",
+      no_output_categories: ["with_state_delta"],
+    });
+  });
+
+  it("does not add with_open_question when available open questions were not rendered", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse(
+          {
+            id: "toolu_emit_no_output_unrendered_oq",
+            name: "EmitNoOutput",
+            input: { reason: "available_open_question_not_rendered", no_output_categories: [] },
+          },
+          { inputTokens: 10, outputTokens: 3 },
+        ),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-unrendered-open-question-no-output",
+        openQuestionsContext: [makeOpenQuestion()],
+        openQuestionsRenderedToFinalizerCount: 0,
+        sharedStateAppliedOperationCount: 0,
+      }),
+    );
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_no_output",
+      no_output_categories: [],
     });
   });
 
@@ -1701,6 +1830,7 @@ describe("deliberator", () => {
       expect(result.emission).toEqual({
         kind: "suppressed",
         reason: "finalizer_no_output",
+        no_output_categories: [],
       });
       expect(result.emissionRecommendation).toBe("emit");
       expect(result.response).toBe("");
@@ -1808,6 +1938,7 @@ describe("deliberator", () => {
       expect(result.emission).toEqual({
         kind: "suppressed",
         reason: "finalizer_no_output",
+        no_output_categories: [],
       });
       expect(result.thoughtsPersisted).toBe(true);
       expect(result.thoughtStreamEntryIds).toHaveLength(1);

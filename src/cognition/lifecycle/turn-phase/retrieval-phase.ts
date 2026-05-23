@@ -69,6 +69,13 @@ export type EvidenceLedgerFinalizerContext = {
   ledger: EvidenceLedger | null;
   promptSection: string | null;
   sessionReentryContinuityPromptSection: string | null;
+  sharedStateAppliedOperationCount: number;
+  openQuestionsRenderedToFinalizerCount: number;
+};
+
+type SharedStateArtifactForEvidenceLedgerResult = {
+  artifact: SharedStateArtifact | null;
+  appliedOperationCount: number;
 };
 
 export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
@@ -306,6 +313,8 @@ async function buildEvidenceLedgerFinalizerContext(input: {
       ledger: null,
       promptSection: null,
       sessionReentryContinuityPromptSection: sessionReentryContinuity.promptSection,
+      sharedStateAppliedOperationCount: 0,
+      openQuestionsRenderedToFinalizerCount: 0,
     };
   }
 
@@ -331,7 +340,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   });
   const ledgerWithoutSharedState = compacted.ledger;
   const renderedWithoutSharedState = renderEvidenceLedger(ledgerWithoutSharedState);
-  const sharedState = await compileSharedStateArtifactForEvidenceLedger({
+  const sharedStateResult = await compileSharedStateArtifactForEvidenceLedgerResult({
     options: input.options,
     input: input.input,
     previousArtifact: previousSharedState,
@@ -339,7 +348,11 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     promptVisibleLedger: renderedWithoutSharedState ?? "",
   });
   const renderOptions = sharedStateRenderOptions(input.options.config);
-  const ledger = withSharedStateArtifact(ledgerWithoutSharedState, sharedState, renderOptions);
+  const ledger = withSharedStateArtifact(
+    ledgerWithoutSharedState,
+    sharedStateResult.artifact,
+    renderOptions,
+  );
   const rendered = renderEvidenceLedger(ledger, {
     sharedState: renderOptions,
   });
@@ -395,6 +408,8 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     ledger,
     promptSection: rendered,
     sessionReentryContinuityPromptSection: sessionReentryContinuity.promptSection,
+    sharedStateAppliedOperationCount: sharedStateResult.appliedOperationCount,
+    openQuestionsRenderedToFinalizerCount: traceSummary.entryCountsBySection.open_questions,
   };
 }
 
@@ -449,17 +464,27 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
   ledger: EvidenceLedger;
   promptVisibleLedger: string;
 }): Promise<SharedStateArtifact | null> {
+  return (await compileSharedStateArtifactForEvidenceLedgerResult(input)).artifact;
+}
+
+async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
+  options: TurnPhaseCoordinatorOptions;
+  input: EvidenceLedgerFinalizerBuildInput;
+  previousArtifact?: SharedStateArtifact | null;
+  ledger: EvidenceLedger;
+  promptVisibleLedger: string;
+}): Promise<SharedStateArtifactForEvidenceLedgerResult> {
   const audienceEntityId = input.input.audienceEntityId;
 
   if (audienceEntityId === null) {
-    return null;
+    return { artifact: null, appliedOperationCount: 0 };
   }
 
   const previousArtifact =
     input.previousArtifact ?? input.options.sharedStateRepository.get(audienceEntityId);
 
   if (!input.input.isUserTurn || input.input.currentUserEntry === undefined) {
-    return previousArtifact;
+    return { artifact: previousArtifact, appliedOperationCount: 0 };
   }
 
   const sourceTrustEntries =
@@ -551,7 +576,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
       });
     }
 
-    return skippedArtifact;
+    return { artifact: skippedArtifact, appliedOperationCount: 0 };
   }
 
   if (
@@ -654,7 +679,7 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
           model: input.options.config.anthropic.models.background,
         };
 
-  await compileSharedStateArtifact({
+  const compileResult = await compileSharedStateArtifact({
     llmClient: sharedStateLlmClient,
     model: input.options.config.anthropic.models.recallExpansion,
     repository: input.options.sharedStateRepository,
@@ -707,7 +732,10 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
     ledgerMode: ledgerPromptContext.ledgerMode,
   });
 
-  return input.options.sharedStateRepository.get(audienceEntityId);
+  return {
+    artifact: input.options.sharedStateRepository.get(audienceEntityId),
+    appliedOperationCount: compileResult.operations.length,
+  };
 }
 
 function withSharedStateArtifact(

@@ -206,7 +206,9 @@ const TURN_METRICS_KEY_ORDER = [
   "overseer_due_on_suppressed_turn",
   "closure_loop_completed_count",
   "closure_loop_degraded_count",
+  "closure_response_audit_failed_open_total",
   "closure_pressure_mixed_observed_total",
+  "closure_pressure_closure_only_observed_total",
   "closure_pressure_closure_only_suppressed_total",
   "closure_pressure_mixed_passed_no_active_preference_total",
   "closure_pressure_mixed_by_span_kind",
@@ -252,6 +254,7 @@ const TURN_METRICS_KEY_ORDER = [
   "borg_hard_aborted_turns",
   "borg_intentional_suppressions",
   "borg_intentional_suppressions_by_reason",
+  "finalizer_no_output_by_category",
   "borg_aborted_turns",
 ] as const;
 
@@ -750,6 +753,32 @@ describe("MetricsCapture", () => {
             },
           ],
         },
+        {
+          ts: 201,
+          turnId: "turn-1",
+          event: "closure_response_guard.completed",
+          mode: "enforce",
+          verdict: "passed",
+          reason: "closure_response_audit_failed_open",
+          response_shape: null,
+        },
+        {
+          ts: 202,
+          turnId: "turn-1",
+          event: "closure_response_guard.completed",
+          mode: "enforce",
+          verdict: "passed",
+          wouldHaveVerdict: "suppressed",
+          reason: "closure_only_observed",
+          response_shape: "closure_only",
+        },
+        {
+          ts: 203,
+          turnId: "turn-1",
+          event: "post_generation.rejected",
+          reason: "finalizer_no_output",
+          no_output_categories: ["closure", "with_open_question"],
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join("\n"),
@@ -813,7 +842,9 @@ describe("MetricsCapture", () => {
     expect(row.borg_output_tokens).toBe(7);
     expect(row.closure_loop_completed_count).toBe(1);
     expect(row.closure_loop_degraded_count).toBe(1);
+    expect(row.closure_response_audit_failed_open_total).toBe(1);
     expect(row.closure_pressure_mixed_observed_total).toBe(1);
+    expect(row.closure_pressure_closure_only_observed_total).toBe(1);
     expect(row.closure_pressure_closure_only_suppressed_total).toBe(1);
     expect(row.closure_pressure_mixed_passed_no_active_preference_total).toBe(1);
     expect(row.closure_pressure_mixed_by_span_kind).toEqual({
@@ -865,6 +896,10 @@ describe("MetricsCapture", () => {
     expect(row.semantic_revision_contradicted_total).toBe(3);
     expect(row.semantic_revision_degraded_total).toBe(4);
     expect(row.semantic_revision_skipped_over_cap_total).toBe(1);
+    expect(row.finalizer_no_output_by_category).toEqual({
+      closure: 1,
+      with_open_question: 1,
+    });
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);

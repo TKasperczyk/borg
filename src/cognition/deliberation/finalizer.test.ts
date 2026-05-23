@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
@@ -33,6 +33,8 @@ async function runEmissionFinalizer(
   options: {
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: readonly (string | null)[];
+    tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
+    turnId?: string;
   } = {},
 ) {
   return runFinalizer({
@@ -62,6 +64,8 @@ async function runEmissionFinalizer(
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),
+    ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
+    ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
 }
 
@@ -311,6 +315,54 @@ describe("runFinalizer emission tools", () => {
       kind: "observe",
       reason: "Alice and Bob are sorting it out.",
     });
+  });
+
+  it("accepts EmitNoOutput categories and traces them", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_no_output",
+              name: "EmitNoOutput",
+              input: {
+                reason: "natural_close",
+                no_output_categories: ["closure", "when_borg_addressed"],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      tracer,
+      turnId: "turn-no-output-categories",
+    });
+
+    expect(result.decision).toEqual({
+      kind: "no_output",
+      reason: "natural_close",
+      no_output_categories: ["closure", "when_borg_addressed"],
+    });
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "finalizer.completed",
+      expect.objectContaining({
+        turnId: "turn-no-output-categories",
+        decision: "no_output",
+        reason: "natural_close",
+        no_output_categories: ["closure", "when_borg_addressed"],
+      }),
+    );
   });
 
   it("rejects malformed EmitSelfReport payloads", async () => {

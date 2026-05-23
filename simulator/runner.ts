@@ -170,16 +170,33 @@ function incrementSuppressionReason(
   counts[reason] = (counts[reason] ?? 0) + 1;
 }
 
-function postGenerationRejectedReasonForTurn(
+function incrementFinalizerNoOutputCategories(
+  counts: Record<string, number>,
+  categories: readonly string[],
+): void {
+  for (const category of categories) {
+    counts[category] = (counts[category] ?? 0) + 1;
+  }
+}
+
+function postGenerationRejectedForTurn(
   tracePath: string,
   turnId: string,
-): GenerationSuppressionReason | undefined {
+): { reason?: GenerationSuppressionReason; noOutputCategories: string[] } {
   const record = [...readTraceEvents(tracePath)]
     .reverse()
     .find((event) => event.turnId === turnId && event.event === "post_generation.rejected");
   const reason = record?.reason;
+  const noOutputCategories = Array.isArray(record?.no_output_categories)
+    ? record.no_output_categories.filter(
+        (category): category is string => typeof category === "string",
+      )
+    : [];
 
-  return typeof reason === "string" ? (reason as GenerationSuppressionReason) : undefined;
+  return {
+    ...(typeof reason === "string" ? { reason: reason as GenerationSuppressionReason } : {}),
+    noOutputCategories,
+  };
 }
 
 export function createSimulatorScenario(
@@ -692,6 +709,7 @@ export class SimulatorRunner {
       let borgHardAbortedTurnCount = 0;
       let borgIntentionalSuppressionCount = 0;
       const borgIntentionalSuppressionsByReason: Record<string, number> = {};
+      const finalizerNoOutputByCategory: Record<string, number> = {};
 
       const attemptTurn = async (
         turn: number,
@@ -790,6 +808,7 @@ export class SimulatorRunner {
             borgHardAbortedTurns: borgHardAbortedTurnCount,
             borgIntentionalSuppressions: borgIntentionalSuppressionCount,
             borgIntentionalSuppressionsByReason,
+            finalizerNoOutputByCategory,
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -851,6 +870,7 @@ export class SimulatorRunner {
               borgHardAbortedTurns: borgHardAbortedTurnCount,
               borgIntentionalSuppressions: borgIntentionalSuppressionCount,
               borgIntentionalSuppressionsByReason,
+              finalizerNoOutputByCategory,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -881,6 +901,7 @@ export class SimulatorRunner {
               borgHardAbortedTurns: borgHardAbortedTurnCount,
               borgIntentionalSuppressions: borgIntentionalSuppressionCount,
               borgIntentionalSuppressionsByReason,
+              finalizerNoOutputByCategory,
             });
             consecutiveFailures += 1;
             // eslint-disable-next-line no-console
@@ -929,6 +950,7 @@ export class SimulatorRunner {
                 borgHardAbortedTurns: borgHardAbortedTurnCount,
                 borgIntentionalSuppressions: borgIntentionalSuppressionCount,
                 borgIntentionalSuppressionsByReason,
+                finalizerNoOutputByCategory,
               });
             }
 
@@ -954,6 +976,7 @@ export class SimulatorRunner {
             borgHardAbortedTurns: borgHardAbortedTurnCount,
             borgIntentionalSuppressions: borgIntentionalSuppressionCount,
             borgIntentionalSuppressionsByReason,
+            finalizerNoOutputByCategory,
           });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
@@ -985,10 +1008,13 @@ export class SimulatorRunner {
 
         const overseerDue = overseerSchedulingEnabled && turn % checkEvery === 0;
         const isObserveTurn = !success.emitted && success.emissionKind === "observed";
+        const postGenerationRejection =
+          !success.emitted && !isObserveTurn
+            ? postGenerationRejectedForTurn(transport.tracePath, success.turnId)
+            : { noOutputCategories: [] };
         const suppressionReason =
           !success.emitted && !isObserveTurn
-            ? (postGenerationRejectedReasonForTurn(transport.tracePath, success.turnId) ??
-              success.suppressionReason)
+            ? (postGenerationRejection.reason ?? success.suppressionReason)
             : undefined;
         const continuesSuppressedSession =
           !success.emitted &&
@@ -999,6 +1025,12 @@ export class SimulatorRunner {
         if (!success.emitted && !isObserveTurn && suppressionReason !== undefined) {
           borgIntentionalSuppressionCount += 1;
           incrementSuppressionReason(borgIntentionalSuppressionsByReason, suppressionReason);
+          if (suppressionReason === "finalizer_no_output") {
+            incrementFinalizerNoOutputCategories(
+              finalizerNoOutputByCategory,
+              postGenerationRejection.noOutputCategories,
+            );
+          }
           borgBehavioralSuppressions.push({
             sessionIndex: sessions.length,
             sessionId: currentSessionId,
@@ -1065,6 +1097,7 @@ export class SimulatorRunner {
           borgHardAbortedTurns: borgHardAbortedTurnCount,
           borgIntentionalSuppressions: borgIntentionalSuppressionCount,
           borgIntentionalSuppressionsByReason,
+          finalizerNoOutputByCategory,
         });
 
         if (overseerDue) {
@@ -1496,6 +1529,9 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   const intentionalSuppressionReasons = reportCountMap(
     report.finalMetrics.borg_intentional_suppressions_by_reason,
   );
+  const finalizerNoOutputCategories = reportCountMap(
+    report.finalMetrics.finalizer_no_output_by_category,
+  );
   const lines = [
     `# Borg Simulator Run ${report.runId}`,
     "",
@@ -1536,7 +1572,8 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Commitment regeneration: attempted ${report.finalMetrics.commitment_regeneration_attempted_total}, succeeded ${report.finalMetrics.commitment_regeneration_succeeded_total}, failed ${report.finalMetrics.commitment_regeneration_failed_total}`,
     `- Shared-state cap pressure: at cap turns ${report.finalMetrics.shared_state_at_cap_turns}/${report.finalMetrics.shared_state_compile_evaluated_turns} evaluated compiles, omitted recent entries ${report.finalMetrics.shared_state_omitted_recent_entries}, live starvation ever ${report.finalMetrics.shared_state_live_starvation_ever}, live starvation final ${report.finalMetrics.shared_state_live_starvation_final}, newest reserved ${report.finalMetrics.shared_state_newest_entries_reserved}`,
     `- Simulator aborts: persona failures ${report.finalMetrics.simulator_persona_failures}, hard aborts ${report.finalMetrics.borg_hard_aborted_turns}, intentional suppressions ${report.finalMetrics.borg_intentional_suppressions} (by reason: ${intentionalSuppressionReasons})`,
-    `- Closure pressure: mixed observed ${report.finalMetrics.closure_pressure_mixed_observed_total}, closure-only suppressed ${report.finalMetrics.closure_pressure_closure_only_suppressed_total}, mixed/no-active-preference ${report.finalMetrics.closure_pressure_mixed_passed_no_active_preference_total}, mixed span kinds ${reportCountMap(report.finalMetrics.closure_pressure_mixed_by_span_kind)}`,
+    `- Finalizer no-output categories: ${finalizerNoOutputCategories}`,
+    `- Closure pressure: audit failed open ${report.finalMetrics.closure_response_audit_failed_open_total}, mixed observed ${report.finalMetrics.closure_pressure_mixed_observed_total}, closure-only observed ${report.finalMetrics.closure_pressure_closure_only_observed_total}, closure-only suppressed ${report.finalMetrics.closure_pressure_closure_only_suppressed_total}, mixed/no-active-preference ${report.finalMetrics.closure_pressure_mixed_passed_no_active_preference_total}, mixed span kinds ${reportCountMap(report.finalMetrics.closure_pressure_mixed_by_span_kind)}`,
     `- Extractor health: closure loop degraded ${report.finalMetrics.closure_loop_degraded_count}/${report.finalMetrics.closure_loop_completed_count}, corrective preference degraded ${report.finalMetrics.corrective_preference_degraded_count}/${report.finalMetrics.corrective_preference_completed_count}, max-token stops ${report.finalMetrics.extractor_max_tokens_stop_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
