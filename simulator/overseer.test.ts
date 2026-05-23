@@ -19,6 +19,7 @@ import {
   type OverseerAuditContext,
   type RunOverseerOptions,
 } from "./overseer.js";
+import { LEGACY_METRIC_ALIAS_KEYS } from "./legacy-metric-aliases.js";
 import type { MetricsRow, RawOverseerVerdict } from "./types.js";
 
 type CapturedRequest = Parameters<
@@ -1066,6 +1067,60 @@ describe("simulator overseer", () => {
     );
     expect(auditContext.recent_user_statements).toHaveLength(12);
     expect(auditContext.recent_user_statements.at(-1)?.text).toBe("Recent null-turn detail 12");
+  });
+
+  it("filters legacy metric aliases from overseer-facing context only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-overseer-legacy-metrics-"));
+    const metricsPath = join(dir, "metrics.jsonl");
+    const rawRow = {
+      ...metricsRow(9),
+      shared_state_omitted_recent_entries: 624,
+      shared_state_omitted_recent_entries_total_across_compiles: 624,
+      shared_state_omitted_live_old: 300,
+      shared_state_omitted_live_old_total_across_compiles: 300,
+      shared_state_omitted_live_old_final_compile: 24,
+      shared_state_omitted_live_recent_operational: 58,
+      shared_state_omitted_live_recent_operational_total_across_compiles: 58,
+      shared_state_omitted_live_recent_operational_final_compile: 0,
+      shared_state_empty_update_attempted_total: 7,
+      shared_state_update_checked_for_empty_total: 7,
+      finalizer_no_output_by_category: { closure: 1 },
+      finalizer_no_output_primary_by_reason: { closure: 1 },
+      finalizer_no_output_flags_by_flag: { with_open_question: 1 },
+      borg_aborted_turns: 2,
+      borg_hard_aborted_turns: 2,
+    } satisfies MetricsRow;
+
+    try {
+      writeFileSync(metricsPath, `${JSON.stringify(rawRow)}\n`, "utf8");
+
+      const auditContext = await buildOverseerAuditContext({
+        transport: transportFor([]),
+        metricsPath,
+        turnCounter: 9,
+        totalTurns: 9,
+      });
+      const rawMetricsLine = readFileSync(metricsPath, "utf8").trim();
+      const diskRow = JSON.parse(rawMetricsLine) as Record<string, unknown>;
+      const overseerRow = auditContext.metrics_window[0] as Record<string, unknown>;
+      const promptJson = JSON.stringify(auditContext);
+
+      expect(auditContext.metrics_window).toHaveLength(1);
+      for (const alias of LEGACY_METRIC_ALIAS_KEYS) {
+        expect(diskRow).toHaveProperty(alias);
+        expect(overseerRow).not.toHaveProperty(alias);
+        expect(promptJson).not.toContain(`"${alias}":`);
+      }
+      expect(promptJson).toContain("shared_state_omitted_recent_entries_total_across_compiles");
+      expect(promptJson).toContain("shared_state_omitted_live_old_final_compile");
+      expect(promptJson).toContain("shared_state_omitted_live_recent_operational_final_compile");
+      expect(promptJson).toContain("shared_state_update_checked_for_empty_total");
+      expect(promptJson).toContain("finalizer_no_output_primary_by_reason");
+      expect(promptJson).toContain("finalizer_no_output_flags_by_flag");
+      expect(promptJson).toContain("borg_hard_aborted_turns");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects unsupported findings whose quoted span is verbatim-supported by recent user input", async () => {

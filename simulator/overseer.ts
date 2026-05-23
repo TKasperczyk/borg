@@ -20,6 +20,7 @@ import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/in
 import type { StreamEntry } from "../src/stream/index.js";
 
 import { appendJsonlLine } from "./jsonl.js";
+import { stripLegacyAliases, type OverseerMetricsRow } from "./legacy-metric-aliases.js";
 import { statusFromSeverity, statusImpactSeverity, statusSeverity } from "./status-severity.js";
 import type {
   MetricsRow,
@@ -248,7 +249,7 @@ export type OverseerAuditContext = {
     markdown: string;
     note: string;
   };
-  metrics_window: MetricsRow[];
+  metrics_window: OverseerMetricsRow[];
 };
 
 function isToolUseBlock(block: ContentBlock): block is ToolUseBlock {
@@ -484,11 +485,11 @@ export async function buildOverseerAuditContext(
       markdown: memorySnapshot,
       note: "Grounding evidence. Not emitted output. The simulator currently uses the same checkpoint memory snapshot for prompt-visible memory and snapshot-state grounding.",
     },
-    metrics_window: allRows.slice(-5),
+    metrics_window: allRows.slice(-5).map((row) => stripLegacyAliases(row)),
   };
 }
 
-function metricsWindowSummary(rows: readonly MetricsRow[]): string {
+function metricsWindowSummary(rows: readonly OverseerMetricsRow[]): string {
   const metrics = rows
     .map((row) =>
       [
