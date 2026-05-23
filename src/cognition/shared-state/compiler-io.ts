@@ -27,7 +27,11 @@ import {
   type PatchRejection,
   type SharedStateLedgerMode,
 } from "./schema.js";
-import type { SharedStateLifecycleTransition } from "./lifecycle-aging.js";
+import type {
+  LifecycleAgingBlockedSampleEntry,
+  LifecycleAgingBlockerCounts,
+  SharedStateLifecycleTransition,
+} from "./lifecycle-aging.js";
 
 type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
@@ -156,6 +160,9 @@ export function traceCompileCompleted(options: {
   emptyUpdateRepairedCount?: number;
   addRejectedCapExceededCount?: number;
   lifecycleTransitions?: readonly SharedStateLifecycleTransition[];
+  lifecycleAgingBlockerCountsLiveToLowSalience?: LifecycleAgingBlockerCounts;
+  lifecycleAgingBlockerCountsLowSalienceToDormant?: LifecycleAgingBlockerCounts;
+  lifecycleAgingBlockedSample?: readonly LifecycleAgingBlockedSampleEntry[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -172,6 +179,7 @@ export function traceCompileCompleted(options: {
           },
         };
   const artifactSummary = summarizeSharedStateArtifactRender(options.artifact, renderOptions);
+  const renderedEntryIds = new Set(artifactSummary.renderedEntryIds);
   const activeEntryCountsByKey = artifactSummary.activeEntriesByKey;
   const keysWithSingleEntryOnly = Object.values(activeEntryCountsByKey).filter(
     (count) => count === 1,
@@ -254,6 +262,18 @@ export function traceCompileCompleted(options: {
       empty_update_dropped_count: options.emptyUpdateDroppedCount ?? 0,
       empty_update_repaired_count: options.emptyUpdateRepairedCount ?? 0,
       add_rejected_cap_exceeded_count: options.addRejectedCapExceededCount ?? 0,
+      lifecycle_aging_blocker_counts_live_to_low_salience: toTraceJsonValue(
+        options.lifecycleAgingBlockerCountsLiveToLowSalience ?? null,
+      ),
+      lifecycle_aging_blocker_counts_low_salience_to_dormant: toTraceJsonValue(
+        options.lifecycleAgingBlockerCountsLowSalienceToDormant ?? null,
+      ),
+      lifecycle_aging_blocked_sample: toTraceJsonValue(
+        (options.lifecycleAgingBlockedSample ?? []).map((entry) => ({
+          ...entry,
+          rendered: renderedEntryIds.has(entry.entry_id),
+        })),
+      ),
       lifecycle_demoted_live_to_low_salience_count: (options.lifecycleTransitions ?? []).filter(
         (transition) => transition.fromKind === "live" && transition.toKind === "low_salience_live",
       ).length,

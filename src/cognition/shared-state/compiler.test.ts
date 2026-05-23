@@ -3107,6 +3107,70 @@ describe("compileSharedStateArtifact", () => {
     });
   });
 
+  it("emits lifecycle aging blocker diagnostics in compile completion trace", async () => {
+    const ledgerSource = createStreamEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "state.blocked",
+          kind: "live",
+          text: "A structurally protected shared state entry.",
+          provenance_stream_entry_ids: [ledgerSource],
+          last_updated_stream_entry_ids: [ledgerSource],
+        },
+      ],
+      { now: 100 },
+    );
+    const entryId = initial?.entries[0]?.id;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      turnCounter: 12,
+      renderOptions: {
+        ledgerStreamEntryIds: [ledgerSource],
+        currentTurnCounter: 12,
+        lastUpdatedTurnByStreamEntryId: {
+          [ledgerSource]: 1,
+        },
+      },
+      lifecycle: {
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
+      },
+    });
+
+    expect(
+      trace.events.find((event) => event.event === "shared_state.compile.completed")?.data,
+    ).toMatchObject({
+      lifecycle_aging_blocker_counts_live_to_low_salience: {
+        demotable_count: 1,
+        demoted_count: 0,
+        blocked_by_ledger_overlap: 1,
+      },
+      lifecycle_aging_blocker_counts_low_salience_to_dormant: {
+        demotable_count: 0,
+        demoted_count: 0,
+      },
+      lifecycle_aging_blocked_sample: [
+        {
+          entry_id: entryId,
+          state_key: "state.blocked",
+          age_turns: 11,
+          rendered: true,
+          block_reasons: ["ledger_overlap"],
+          active_canonicalizer_kinds: null,
+        },
+      ],
+    });
+  });
+
   it("maps omitted update kinds for demoted entries back to public live kind", async () => {
     const oldSource = createStreamEntryId();
     const initial = repository.upsert(

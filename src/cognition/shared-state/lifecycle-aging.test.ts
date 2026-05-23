@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   createActionId,
+  createCommitmentId,
   createGoalId,
+  createOpenQuestionId,
   createSharedStateEntryId,
   createStreamEntryId,
 } from "../../util/ids.js";
 import { makeSharedStateEntry } from "../../test-support/factories/shared-state.js";
-import { applyLifecycleAging } from "./lifecycle-aging.js";
+import { applyLifecycleAging, sharedStateLifecycleProtectionReasons } from "./lifecycle-aging.js";
 
 const DEMOTED_KINDS = ["low_salience_live", "dormant_live"] as const;
 
@@ -372,5 +374,159 @@ describe("applyLifecycleAging", () => {
     });
 
     expect(result.transitions).toEqual([]);
+  });
+
+  it("reports blocker counts for old live entries without changing transitions", () => {
+    const currentSource = createStreamEntryId();
+    const ledgerSource = createStreamEntryId();
+    const activeActionId = createActionId();
+    const oldProtected = makeSharedStateEntry({
+      kind: "live",
+      state_key: "protected",
+      provenance_stream_entry_ids: [ledgerSource],
+      last_updated_stream_entry_ids: [currentSource],
+    });
+    const oldMultipleProtected = makeSharedStateEntry({
+      kind: "live",
+      state_key: "multiple",
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [activeActionId],
+        open_question_ids: [],
+      },
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+    const oldDemoted = makeSharedStateEntry({
+      kind: "live",
+      state_key: "demoted",
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+    const unknownAge = makeSharedStateEntry({
+      kind: "live",
+      state_key: "unknown",
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+
+    const result = applyLifecycleAging({
+      entries: [oldProtected, oldMultipleProtected, oldDemoted, unknownAge],
+      currentUserStreamEntryId: currentSource,
+      ledgerStreamEntryIds: [ledgerSource],
+      activeActionIds: [activeActionId],
+      recentlyRetrievedEntryIds: [oldMultipleProtected.id],
+      currentTurnCounter: 30,
+      lastUpdatedTurnByEntryId: {
+        [oldProtected.id]: 1,
+        [oldMultipleProtected.id]: 2,
+        [oldDemoted.id]: 3,
+      },
+      recentTurnThreshold: 5,
+    });
+
+    expect(result.transitions).toEqual([
+      {
+        entryId: oldDemoted.id,
+        fromKind: "live",
+        toKind: "low_salience_live",
+        reason: "old_live_without_structural_pull",
+        transition: "demoted",
+      },
+    ]);
+    expect(result.blockerCountsLiveToLowSalience).toMatchObject({
+      demotable_count: 3,
+      unknown_age_count: 1,
+      demoted_count: 1,
+      blocked_by_current_turn_update: 0,
+      blocked_by_patch_touch: 0,
+      blocked_by_ledger_overlap: 0,
+      blocked_by_recent_retrieval: 0,
+      blocked_by_active_canonicalizer: 0,
+      blocked_by_multiple_reasons: 2,
+    });
+    expect(result.blockedSample.map((entry) => entry.entry_id)).toEqual([
+      oldProtected.id,
+      oldMultipleProtected.id,
+    ]);
+  });
+});
+
+describe("sharedStateLifecycleProtectionReasons", () => {
+  it("returns all applicable reasons", () => {
+    const currentSource = createStreamEntryId();
+    const ledgerSource = createStreamEntryId();
+    const activeOpenQuestionId = createOpenQuestionId();
+    const activeActionId = createActionId();
+    const activeGoalId = createGoalId();
+    const activeCommitmentId = createCommitmentId();
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      provenance_stream_entry_ids: [ledgerSource],
+      last_updated_stream_entry_ids: [currentSource],
+      canonicalizes: {
+        goal_ids: [activeGoalId],
+        commitment_ids: [activeCommitmentId],
+        action_ids: [activeActionId],
+        open_question_ids: [activeOpenQuestionId],
+      },
+    });
+
+    expect(
+      sharedStateLifecycleProtectionReasons(entry, {
+        entries: [entry],
+        touchedEntryIds: new Set([entry.id]),
+        currentUserStreamEntryId: currentSource,
+        ledgerStreamEntryIds: [ledgerSource],
+        activeOpenQuestionIds: [activeOpenQuestionId],
+        activeActionIds: [activeActionId],
+        activeGoalIds: [activeGoalId],
+        activeCriticalCommitmentIds: [activeCommitmentId],
+        recentlyRetrievedEntryIds: [entry.id],
+      }),
+    ).toEqual([
+      "touched_by_patch",
+      "current_turn_update",
+      "ledger_overlap",
+      "active_canonicalizer_overlap",
+      "recent_retrieval",
+    ]);
+  });
+
+  it("returns an empty array for unprotected entries", () => {
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+
+    expect(sharedStateLifecycleProtectionReasons(entry, { entries: [entry] })).toEqual([]);
+  });
+
+  it("returns a single reason when one protection applies", () => {
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+
+    expect(
+      sharedStateLifecycleProtectionReasons(entry, {
+        entries: [entry],
+        recentlyRetrievedEntryIds: [entry.id],
+      }),
+    ).toEqual(["recent_retrieval"]);
+  });
+
+  it("returns multiple reasons when multiple protections apply", () => {
+    const currentSource = createStreamEntryId();
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_stream_entry_ids: [currentSource],
+    });
+
+    expect(
+      sharedStateLifecycleProtectionReasons(entry, {
+        entries: [entry],
+        currentUserStreamEntryId: currentSource,
+        recentlyRetrievedEntryIds: [entry.id],
+      }),
+    ).toEqual(["current_turn_update", "recent_retrieval"]);
   });
 });

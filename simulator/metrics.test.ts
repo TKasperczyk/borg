@@ -272,6 +272,42 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_active_dormant_live_final_compile",
   "shared_state_demoted_live_to_low_salience_total",
   "shared_state_demoted_low_salience_to_dormant_total",
+  "shared_state_lifecycle_aging_demotable_total",
+  "shared_state_lifecycle_aging_demotable_final_compile",
+  "shared_state_lifecycle_aging_demoted_total",
+  "shared_state_lifecycle_aging_demoted_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_current_turn_update_total",
+  "shared_state_lifecycle_aging_blocked_by_current_turn_update_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_patch_touch_total",
+  "shared_state_lifecycle_aging_blocked_by_patch_touch_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_ledger_overlap_total",
+  "shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_recent_retrieval_total",
+  "shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile",
+  "shared_state_lifecycle_aging_unknown_age_total",
+  "shared_state_lifecycle_aging_unknown_age_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_multiple_reasons_total",
+  "shared_state_lifecycle_aging_blocked_by_multiple_reasons_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_demotable_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_demoted_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_final_compile",
   "shared_state_reactivated_low_salience_live_total",
   "shared_state_reactivated_dormant_live_total",
   "shared_state_at_cap_but_all_keys_indexed_compiles_total",
@@ -1749,6 +1785,28 @@ describe("MetricsCapture", () => {
             low_salience_live: 2,
             dormant_live: 1,
           },
+          lifecycle_aging_blocker_counts_live_to_low_salience: {
+            demotable_count: 5,
+            demoted_count: 1,
+            blocked_by_current_turn_update: 2,
+            blocked_by_patch_touch: 3,
+            blocked_by_ledger_overlap: 4,
+            blocked_by_recent_retrieval: 5,
+            blocked_by_active_canonicalizer: 6,
+            unknown_age_count: 7,
+            blocked_by_multiple_reasons: 8,
+          },
+          lifecycle_aging_blocker_counts_low_salience_to_dormant: {
+            demotable_count: 2,
+            demoted_count: 1,
+            blocked_by_current_turn_update: 1,
+            blocked_by_patch_touch: 2,
+            blocked_by_ledger_overlap: 3,
+            blocked_by_recent_retrieval: 4,
+            blocked_by_active_canonicalizer: 5,
+            unknown_age_count: 6,
+            blocked_by_multiple_reasons: 7,
+          },
           rendered_by_kind: {},
           omitted_by_kind: {},
         },
@@ -1777,6 +1835,28 @@ describe("MetricsCapture", () => {
           active_by_kind: {
             low_salience_live: 3,
             dormant_live: 2,
+          },
+          lifecycle_aging_blocker_counts_live_to_low_salience: {
+            demotable_count: 11,
+            demoted_count: 0,
+            blocked_by_current_turn_update: 13,
+            blocked_by_patch_touch: 17,
+            blocked_by_ledger_overlap: 19,
+            blocked_by_recent_retrieval: 23,
+            blocked_by_active_canonicalizer: 29,
+            unknown_age_count: 31,
+            blocked_by_multiple_reasons: 37,
+          },
+          lifecycle_aging_blocker_counts_low_salience_to_dormant: {
+            demotable_count: 3,
+            demoted_count: 0,
+            blocked_by_current_turn_update: 4,
+            blocked_by_patch_touch: 5,
+            blocked_by_ledger_overlap: 6,
+            blocked_by_recent_retrieval: 7,
+            blocked_by_active_canonicalizer: 8,
+            unknown_age_count: 9,
+            blocked_by_multiple_reasons: 10,
           },
           rendered_by_kind: {
             locked: 10,
@@ -1874,6 +1954,70 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_active_dormant_live_final_compile).toBe(2);
     expect(row.shared_state_demoted_live_to_low_salience_total).toBe(1);
     expect(row.shared_state_demoted_low_salience_to_dormant_total).toBe(1);
+    expect(row.shared_state_lifecycle_aging_demotable_total).toBe(16);
+    expect(row.shared_state_lifecycle_aging_demotable_final_compile).toBe(11);
+    expect(row.shared_state_lifecycle_aging_demoted_total).toBe(1);
+    expect(row.shared_state_lifecycle_aging_demoted_final_compile).toBe(0);
+    expect(row.shared_state_lifecycle_aging_blocked_by_current_turn_update_total).toBe(15);
+    expect(row.shared_state_lifecycle_aging_blocked_by_current_turn_update_final_compile).toBe(13);
+    expect(row.shared_state_lifecycle_aging_blocked_by_patch_touch_total).toBe(20);
+    expect(row.shared_state_lifecycle_aging_blocked_by_patch_touch_final_compile).toBe(17);
+    expect(row.shared_state_lifecycle_aging_blocked_by_ledger_overlap_total).toBe(23);
+    expect(row.shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile).toBe(19);
+    expect(row.shared_state_lifecycle_aging_blocked_by_recent_retrieval_total).toBe(28);
+    expect(row.shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile).toBe(23);
+    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total).toBe(35);
+    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile).toBe(29);
+    expect(row.shared_state_lifecycle_aging_unknown_age_total).toBe(38);
+    expect(row.shared_state_lifecycle_aging_unknown_age_final_compile).toBe(31);
+    expect(row.shared_state_lifecycle_aging_blocked_by_multiple_reasons_total).toBe(45);
+    expect(row.shared_state_lifecycle_aging_blocked_by_multiple_reasons_final_compile).toBe(37);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_demotable_total).toBe(5);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile).toBe(
+      3,
+    );
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total).toBe(1);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_demoted_final_compile).toBe(0);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_total,
+    ).toBe(5);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_final_compile,
+    ).toBe(4);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_total,
+    ).toBe(7);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_final_compile,
+    ).toBe(5);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_total,
+    ).toBe(9);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile,
+    ).toBe(6);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total,
+    ).toBe(11);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile,
+    ).toBe(7);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total,
+    ).toBe(13);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile,
+    ).toBe(8);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total).toBe(15);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile).toBe(
+      9,
+    );
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total,
+    ).toBe(17);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_final_compile,
+    ).toBe(10);
     expect(row.shared_state_reactivated_low_salience_live_total).toBe(1);
     expect(row.shared_state_reactivated_dormant_live_total).toBe(1);
     expect(row.shared_state_at_cap_but_all_keys_indexed_compiles_total).toBe(2);

@@ -45,6 +45,7 @@ export type SharedStateArtifactRenderSummary = {
   totalEntryCount: number;
   activeEntryCount: number;
   renderedEntryCount: number;
+  renderedEntryIds: SharedStateEntry["id"][];
   omittedEntryCount: number;
   estimatedTokens: number;
   newestReservedEntryCount: number;
@@ -665,6 +666,7 @@ function cappedSharedStateArtifactRender(input: {
         totalEntryCount: input.artifact.entries.length,
         activeEntryCount: 0,
         renderedEntryCount: 0,
+        renderedEntryIds: [],
         omittedEntryCount: 0,
         estimatedTokens: 0,
         newestReservedEntryCount: 0,
@@ -804,6 +806,7 @@ function cappedSharedStateArtifactRender(input: {
       totalEntryCount: input.artifact.entries.length,
       activeEntryCount: activeEntries.length,
       renderedEntryCount: entries.length,
+      renderedEntryIds: entries.map((entry) => entry.id),
       omittedEntryCount: counts.omittedEntryCount,
       estimatedTokens: estimatePromptTokens(content),
       newestReservedEntryCount: entries.filter((entry) => newestReservedIds.has(entry.id)).length,
@@ -856,6 +859,7 @@ export function summarizeSharedStateArtifactRender(
       totalEntryCount: 0,
       activeEntryCount: 0,
       renderedEntryCount: 0,
+      renderedEntryIds: [],
       omittedEntryCount: 0,
       estimatedTokens: 0,
       newestReservedEntryCount: 0,

@@ -1095,6 +1095,9 @@ export async function compileSharedStateArtifact(
   const compileCompletedTraceWithLifecycle = {
     ...compileCompletedTraceBase,
     maxActiveEntries: lifecycle.maxActiveEntries,
+    lifecycleAgingBlockerCountsLiveToLowSalience: aging.blockerCountsLiveToLowSalience,
+    lifecycleAgingBlockerCountsLowSalienceToDormant: aging.blockerCountsLowSalienceToDormant,
+    lifecycleAgingBlockedSample: aging.blockedSample,
   };
   const expandedOperations = expandPruneDependencies({
     previousArtifact,

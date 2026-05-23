@@ -41,6 +41,41 @@ export type SharedStateLifecycleTransition = {
   transition: SharedStateLifecycleTransitionKind;
 };
 
+export type LifecycleProtectionReason =
+  | "touched_by_patch"
+  | "current_turn_update"
+  | "ledger_overlap"
+  | "active_canonicalizer_overlap"
+  | "recent_retrieval";
+
+export const LIFECYCLE_PROTECTION_REASONS = [
+  "touched_by_patch",
+  "current_turn_update",
+  "ledger_overlap",
+  "active_canonicalizer_overlap",
+  "recent_retrieval",
+] as const;
+
+export type LifecycleAgingBlockerCounts = {
+  demotable_count: number;
+  unknown_age_count: number;
+  demoted_count: number;
+  blocked_by_current_turn_update: number;
+  blocked_by_patch_touch: number;
+  blocked_by_ledger_overlap: number;
+  blocked_by_recent_retrieval: number;
+  blocked_by_active_canonicalizer: number;
+  blocked_by_multiple_reasons: number;
+};
+
+export type LifecycleAgingBlockedSampleEntry = {
+  entry_id: SharedStateEntryId;
+  state_key: string | null;
+  age_turns: number | null;
+  block_reasons: LifecycleProtectionReason[];
+  active_canonicalizer_kinds: string[] | null;
+};
+
 export type ApplyLifecycleAgingInput = {
   entries: readonly SharedStateEntry[];
   currentTurnCounter?: number;
@@ -234,27 +269,109 @@ function sharedStateEntryHasActiveCanonicalizerOverlap(
   );
 }
 
+function isTouchedByPatch(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
+  return input.touchedEntryIds?.has(entry.id) === true;
+}
+
+function hasCurrentTurnUpdate(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
+  return sharedStateEntryHasCurrentTurnUpdate(entry, input.currentUserStreamEntryId);
+}
+
+function hasLedgerOverlap(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
+  return sharedStateEntryHasLedgerOverlap(entry, input.ledgerStreamEntryIds);
+}
+
+function hasActiveCanonicalizerOverlap(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): boolean {
+  return sharedStateEntryHasActiveCanonicalizerOverlap(entry, input);
+}
+
+function hasRecentRetrieval(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
+  return sharedStateEntryWasRecentlyRetrieved(entry, input.recentlyRetrievedEntryIds);
+}
+
+function activeCanonicalizerOverlapKinds(
+  entry: SharedStateEntry,
+  input: Pick<
+    ApplyLifecycleAgingInput,
+    "activeOpenQuestionIds" | "activeActionIds" | "activeGoalIds" | "activeCriticalCommitmentIds"
+  >,
+): string[] {
+  const kinds: string[] = [];
+
+  if (hasAnyIdOverlap(entry.canonicalizes.open_question_ids, idSet(input.activeOpenQuestionIds))) {
+    kinds.push("oq");
+  }
+
+  if (hasAnyIdOverlap(entry.canonicalizes.action_ids, idSet(input.activeActionIds))) {
+    kinds.push("action");
+  }
+
+  if (hasAnyIdOverlap(entry.canonicalizes.goal_ids, idSet(input.activeGoalIds))) {
+    kinds.push("goal");
+  }
+
+  if (
+    hasAnyIdOverlap(entry.canonicalizes.commitment_ids, idSet(input.activeCriticalCommitmentIds))
+  ) {
+    kinds.push("critical");
+  }
+
+  return kinds;
+}
+
+export function sharedStateLifecycleProtectionReasons(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): LifecycleProtectionReason[] {
+  const reasons: LifecycleProtectionReason[] = [];
+
+  if (isTouchedByPatch(entry, input)) {
+    reasons.push("touched_by_patch");
+  }
+
+  if (hasCurrentTurnUpdate(entry, input)) {
+    reasons.push("current_turn_update");
+  }
+
+  if (hasLedgerOverlap(entry, input)) {
+    reasons.push("ledger_overlap");
+  }
+
+  if (hasActiveCanonicalizerOverlap(entry, input)) {
+    reasons.push("active_canonicalizer_overlap");
+  }
+
+  if (hasRecentRetrieval(entry, input)) {
+    reasons.push("recent_retrieval");
+  }
+
+  return reasons;
+}
+
 function reactivationReason(
   entry: SharedStateEntry,
   input: ApplyLifecycleAgingInput,
 ): SharedStateLifecycleTransitionReason | null {
-  if (input.touchedEntryIds?.has(entry.id) === true) {
+  if (isTouchedByPatch(entry, input)) {
     return "touched_by_patch";
   }
 
-  if (sharedStateEntryHasCurrentTurnUpdate(entry, input.currentUserStreamEntryId)) {
+  if (hasCurrentTurnUpdate(entry, input)) {
     return "current_turn_update";
   }
 
-  if (sharedStateEntryHasLedgerOverlap(entry, input.ledgerStreamEntryIds)) {
+  if (hasLedgerOverlap(entry, input)) {
     return "ledger_overlap";
   }
 
-  if (sharedStateEntryHasActiveCanonicalizerOverlap(entry, input)) {
+  if (hasActiveCanonicalizerOverlap(entry, input)) {
     return "active_canonicalizer_overlap";
   }
 
-  if (sharedStateEntryWasRecentlyRetrieved(entry, input.recentlyRetrievedEntryIds)) {
+  if (hasRecentRetrieval(entry, input)) {
     return "recent_retrieval";
   }
 
@@ -279,11 +396,87 @@ function normalizedThreshold(value: number | undefined, fallback: number): numbe
   return value === undefined || !Number.isFinite(value) ? fallback : Math.max(0, Math.floor(value));
 }
 
+function emptyLifecycleAgingBlockerCounts(): LifecycleAgingBlockerCounts {
+  return {
+    demotable_count: 0,
+    unknown_age_count: 0,
+    demoted_count: 0,
+    blocked_by_current_turn_update: 0,
+    blocked_by_patch_touch: 0,
+    blocked_by_ledger_overlap: 0,
+    blocked_by_recent_retrieval: 0,
+    blocked_by_active_canonicalizer: 0,
+    blocked_by_multiple_reasons: 0,
+  };
+}
+
+function incrementBlockerCount(
+  counts: LifecycleAgingBlockerCounts,
+  reason: LifecycleProtectionReason,
+): void {
+  switch (reason) {
+    case "touched_by_patch":
+      counts.blocked_by_patch_touch += 1;
+      break;
+    case "current_turn_update":
+      counts.blocked_by_current_turn_update += 1;
+      break;
+    case "ledger_overlap":
+      counts.blocked_by_ledger_overlap += 1;
+      break;
+    case "active_canonicalizer_overlap":
+      counts.blocked_by_active_canonicalizer += 1;
+      break;
+    case "recent_retrieval":
+      counts.blocked_by_recent_retrieval += 1;
+      break;
+  }
+}
+
+function recordDemotionCandidate(input: {
+  entry: SharedStateEntry;
+  age: number;
+  reasons: LifecycleProtectionReason[];
+  counts: LifecycleAgingBlockerCounts;
+  blockedSamples: LifecycleAgingBlockedSampleEntry[];
+  demoted: boolean;
+  agingInput: ApplyLifecycleAgingInput;
+}): void {
+  input.counts.demotable_count += 1;
+
+  if (input.demoted) {
+    input.counts.demoted_count += 1;
+    return;
+  }
+
+  if (input.reasons.length > 1) {
+    input.counts.blocked_by_multiple_reasons += 1;
+  } else if (input.reasons.length === 1) {
+    incrementBlockerCount(input.counts, input.reasons[0]!);
+  }
+
+  const activeCanonicalizerKinds = activeCanonicalizerOverlapKinds(input.entry, input.agingInput);
+  input.blockedSamples.push({
+    entry_id: input.entry.id,
+    state_key: input.entry.state_key,
+    age_turns: input.age,
+    block_reasons: input.reasons,
+    active_canonicalizer_kinds:
+      activeCanonicalizerKinds.length === 0 ? null : activeCanonicalizerKinds,
+  });
+}
+
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
+  blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;
+  blockerCountsLowSalienceToDormant: LifecycleAgingBlockerCounts;
+  blockedSample: LifecycleAgingBlockedSampleEntry[];
 } {
   const transitions: SharedStateLifecycleTransition[] = [];
   const transitionedEntryIds = new Set<SharedStateEntryId>();
+  const blockerCountsLiveToLowSalience = emptyLifecycleAgingBlockerCounts();
+  const blockerCountsLowSalienceToDormant = emptyLifecycleAgingBlockerCounts();
+  const blockedSamples: LifecycleAgingBlockedSampleEntry[] = [];
   const recentTurnThreshold = normalizedThreshold(input.recentTurnThreshold, 5);
   const dormantTurnThreshold = normalizedThreshold(
     input.dormantTurnThreshold,
@@ -313,11 +506,50 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   }
 
   for (const entry of activeEntries) {
-    if (transitionedEntryIds.has(entry.id) || reactivationReason(entry, input) !== null) {
+    if (transitionedEntryIds.has(entry.id)) {
       continue;
     }
 
     const age = entryTurnAge(entry, input);
+    const reasons = sharedStateLifecycleProtectionReasons(entry, input);
+
+    if (entry.kind === "live" && age === null) {
+      blockerCountsLiveToLowSalience.unknown_age_count += 1;
+    }
+
+    if (entry.kind === "low_salience_live" && age === null) {
+      blockerCountsLowSalienceToDormant.unknown_age_count += 1;
+    }
+
+    if (entry.kind === "live" && age !== null && age > recentTurnThreshold) {
+      const demoted = reasons.length === 0;
+      recordDemotionCandidate({
+        entry,
+        age,
+        reasons,
+        counts: blockerCountsLiveToLowSalience,
+        blockedSamples,
+        demoted,
+        agingInput: input,
+      });
+    }
+
+    if (entry.kind === "low_salience_live" && age !== null && age > dormantTurnThreshold) {
+      const demoted = reasons.length === 0;
+      recordDemotionCandidate({
+        entry,
+        age,
+        reasons,
+        counts: blockerCountsLowSalienceToDormant,
+        blockedSamples,
+        demoted,
+        agingInput: input,
+      });
+    }
+
+    if (reactivationReason(entry, input) !== null) {
+      continue;
+    }
 
     if (age === null) {
       continue;
@@ -345,5 +577,13 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
     }
   }
 
-  return { transitions };
+  return {
+    transitions,
+    blockerCountsLiveToLowSalience,
+    blockerCountsLowSalienceToDormant,
+    blockedSample: blockedSamples
+      .filter((sample) => sample.block_reasons.length > 0)
+      .sort((left, right) => (right.age_turns ?? -1) - (left.age_turns ?? -1))
+      .slice(0, 10),
+  };
 }

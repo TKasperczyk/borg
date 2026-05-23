@@ -584,6 +584,42 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_active_dormant_live_final_compile: 0,
     shared_state_demoted_live_to_low_salience_total: 0,
     shared_state_demoted_low_salience_to_dormant_total: 0,
+    shared_state_lifecycle_aging_demotable_total: 0,
+    shared_state_lifecycle_aging_demotable_final_compile: 0,
+    shared_state_lifecycle_aging_demoted_total: 0,
+    shared_state_lifecycle_aging_demoted_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_current_turn_update_total: 0,
+    shared_state_lifecycle_aging_blocked_by_current_turn_update_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_patch_touch_total: 0,
+    shared_state_lifecycle_aging_blocked_by_patch_touch_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_ledger_overlap_total: 0,
+    shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_recent_retrieval_total: 0,
+    shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total: 0,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile: 0,
+    shared_state_lifecycle_aging_unknown_age_total: 0,
+    shared_state_lifecycle_aging_unknown_age_final_compile: 0,
+    shared_state_lifecycle_aging_blocked_by_multiple_reasons_total: 0,
+    shared_state_lifecycle_aging_blocked_by_multiple_reasons_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demotable_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demoted_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total: 0,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_final_compile: 0,
     shared_state_reactivated_low_salience_live_total: 0,
     shared_state_reactivated_dormant_live_total: 0,
     shared_state_at_cap_but_all_keys_indexed_compiles_total: 0,
@@ -845,6 +881,16 @@ describe("SimulatorRunner", () => {
         shared_state_at_cap_but_all_keys_indexed_compiles_total: 5,
         shared_state_at_cap_with_operational_omission_compiles_total: 2,
         shared_state_at_cap_with_cap_rejection_compiles_total: 1,
+        shared_state_lifecycle_aging_demotable_final_compile: 24,
+        shared_state_lifecycle_aging_unknown_age_final_compile: 2,
+        shared_state_lifecycle_aging_demoted_total: 1,
+        shared_state_lifecycle_aging_blocked_by_current_turn_update_total: 12,
+        shared_state_lifecycle_aging_blocked_by_ledger_overlap_total: 34,
+        shared_state_lifecycle_aging_blocked_by_recent_retrieval_total: 120,
+        shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total: 8,
+        shared_state_lifecycle_aging_blocked_by_multiple_reasons_total: 410,
+        shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile: 0,
+        shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total: 0,
         closure_loop_completed_count: 9,
         closure_loop_degraded_count: 1,
         closure_response_audit_failed_open_total: 1,
@@ -935,6 +981,13 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("with operational canonicalizer: 1 / 2");
     expect(report).toContain("Shared-state at-cap severity:");
     expect(report).toContain("at cap with cap rejection: 1");
+    expect(report).toContain("Lifecycle aging (live -> low_salience):");
+    expect(report).toContain("demotable: 24 (final compile)");
+    expect(report).toContain("unknown age: 2 (final compile)");
+    expect(report).toContain(
+      "blocked by: current_turn=12, patch_touch=0, ledger_overlap=34, recent_retrieval=120, active_canonicalizer=8, multiple=410",
+    );
+    expect(report).toContain("Lifecycle aging (low_salience -> dormant):");
     expect(report).toContain(
       "Closure pressure: audit failed open 1, mixed observed 3, closure-only observed 2, closure-only suppressed 1, mixed/no-active-preference 2, mixed span kinds aphoristic_valediction=2, imperative_closer=1",
     );

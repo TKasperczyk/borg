@@ -305,6 +305,42 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_active_dormant_live_final_compile"
   | "shared_state_demoted_live_to_low_salience_total"
   | "shared_state_demoted_low_salience_to_dormant_total"
+  | "shared_state_lifecycle_aging_demotable_total"
+  | "shared_state_lifecycle_aging_demotable_final_compile"
+  | "shared_state_lifecycle_aging_demoted_total"
+  | "shared_state_lifecycle_aging_demoted_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_current_turn_update_total"
+  | "shared_state_lifecycle_aging_blocked_by_current_turn_update_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_patch_touch_total"
+  | "shared_state_lifecycle_aging_blocked_by_patch_touch_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_ledger_overlap_total"
+  | "shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_recent_retrieval_total"
+  | "shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile"
+  | "shared_state_lifecycle_aging_unknown_age_total"
+  | "shared_state_lifecycle_aging_unknown_age_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_multiple_reasons_total"
+  | "shared_state_lifecycle_aging_blocked_by_multiple_reasons_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_demotable_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_demoted_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_final_compile"
   | "shared_state_reactivated_low_salience_live_total"
   | "shared_state_reactivated_dormant_live_total"
   | "shared_state_at_cap_but_all_keys_indexed_compiles_total"
@@ -971,11 +1007,116 @@ function semanticRevisionCumulativeMetrics(
   };
 }
 
+type LifecycleAgingBlockerMetricCounts = {
+  demotable_total: number;
+  demotable_final_compile: number;
+  demoted_total: number;
+  demoted_final_compile: number;
+  blocked_by_current_turn_update_total: number;
+  blocked_by_current_turn_update_final_compile: number;
+  blocked_by_patch_touch_total: number;
+  blocked_by_patch_touch_final_compile: number;
+  blocked_by_ledger_overlap_total: number;
+  blocked_by_ledger_overlap_final_compile: number;
+  blocked_by_recent_retrieval_total: number;
+  blocked_by_recent_retrieval_final_compile: number;
+  blocked_by_active_canonicalizer_total: number;
+  blocked_by_active_canonicalizer_final_compile: number;
+  unknown_age_total: number;
+  unknown_age_final_compile: number;
+  blocked_by_multiple_reasons_total: number;
+  blocked_by_multiple_reasons_final_compile: number;
+};
+
+function lifecycleAgingBlockerMetrics(
+  completed: readonly TraceRecord[],
+  traceKey: string,
+): LifecycleAgingBlockerMetricCounts {
+  const metrics: LifecycleAgingBlockerMetricCounts = {
+    demotable_total: 0,
+    demotable_final_compile: 0,
+    demoted_total: 0,
+    demoted_final_compile: 0,
+    blocked_by_current_turn_update_total: 0,
+    blocked_by_current_turn_update_final_compile: 0,
+    blocked_by_patch_touch_total: 0,
+    blocked_by_patch_touch_final_compile: 0,
+    blocked_by_ledger_overlap_total: 0,
+    blocked_by_ledger_overlap_final_compile: 0,
+    blocked_by_recent_retrieval_total: 0,
+    blocked_by_recent_retrieval_final_compile: 0,
+    blocked_by_active_canonicalizer_total: 0,
+    blocked_by_active_canonicalizer_final_compile: 0,
+    unknown_age_total: 0,
+    unknown_age_final_compile: 0,
+    blocked_by_multiple_reasons_total: 0,
+    blocked_by_multiple_reasons_final_compile: 0,
+  };
+
+  for (const record of completed) {
+    metrics.demotable_final_compile = traceObjectNumber(record, traceKey, "demotable_count");
+    metrics.demoted_final_compile = traceObjectNumber(record, traceKey, "demoted_count");
+    metrics.blocked_by_current_turn_update_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_current_turn_update",
+    );
+    metrics.blocked_by_patch_touch_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_patch_touch",
+    );
+    metrics.blocked_by_ledger_overlap_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_ledger_overlap",
+    );
+    metrics.blocked_by_recent_retrieval_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_recent_retrieval",
+    );
+    metrics.blocked_by_active_canonicalizer_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_active_canonicalizer",
+    );
+    metrics.unknown_age_final_compile = traceObjectNumber(record, traceKey, "unknown_age_count");
+    metrics.blocked_by_multiple_reasons_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_multiple_reasons",
+    );
+
+    metrics.demotable_total += metrics.demotable_final_compile;
+    metrics.demoted_total += metrics.demoted_final_compile;
+    metrics.blocked_by_current_turn_update_total +=
+      metrics.blocked_by_current_turn_update_final_compile;
+    metrics.blocked_by_patch_touch_total += metrics.blocked_by_patch_touch_final_compile;
+    metrics.blocked_by_ledger_overlap_total += metrics.blocked_by_ledger_overlap_final_compile;
+    metrics.blocked_by_recent_retrieval_total += metrics.blocked_by_recent_retrieval_final_compile;
+    metrics.blocked_by_active_canonicalizer_total +=
+      metrics.blocked_by_active_canonicalizer_final_compile;
+    metrics.unknown_age_total += metrics.unknown_age_final_compile;
+    metrics.blocked_by_multiple_reasons_total += metrics.blocked_by_multiple_reasons_final_compile;
+  }
+
+  return metrics;
+}
+
 function sharedStateCapPressureMetrics(
   traceRecords: readonly TraceRecord[],
 ): SharedStateCapPressureMetricCounts {
   const completed = traceRecords.filter(
     (record) => record.event === "shared_state.compile.completed",
+  );
+  const liveToLowSalienceBlockers = lifecycleAgingBlockerMetrics(
+    completed,
+    "lifecycle_aging_blocker_counts_live_to_low_salience",
+  );
+  const lowSalienceToDormantBlockers = lifecycleAgingBlockerMetrics(
+    completed,
+    "lifecycle_aging_blocker_counts_low_salience_to_dormant",
   );
   const compileEvaluatedTurnIds = new Set(completed.map((record) => record.turnId));
   const atCapTurnIds = new Set<string>();
@@ -1167,6 +1308,75 @@ function sharedStateCapPressureMetrics(
         traceString(record, "from_kind") === "low_salience_live" &&
         traceString(record, "to_kind") === "dormant_live",
     ).length,
+    shared_state_lifecycle_aging_demotable_total: liveToLowSalienceBlockers.demotable_total,
+    shared_state_lifecycle_aging_demotable_final_compile:
+      liveToLowSalienceBlockers.demotable_final_compile,
+    shared_state_lifecycle_aging_demoted_total: liveToLowSalienceBlockers.demoted_total,
+    shared_state_lifecycle_aging_demoted_final_compile:
+      liveToLowSalienceBlockers.demoted_final_compile,
+    shared_state_lifecycle_aging_blocked_by_current_turn_update_total:
+      liveToLowSalienceBlockers.blocked_by_current_turn_update_total,
+    shared_state_lifecycle_aging_blocked_by_current_turn_update_final_compile:
+      liveToLowSalienceBlockers.blocked_by_current_turn_update_final_compile,
+    shared_state_lifecycle_aging_blocked_by_patch_touch_total:
+      liveToLowSalienceBlockers.blocked_by_patch_touch_total,
+    shared_state_lifecycle_aging_blocked_by_patch_touch_final_compile:
+      liveToLowSalienceBlockers.blocked_by_patch_touch_final_compile,
+    shared_state_lifecycle_aging_blocked_by_ledger_overlap_total:
+      liveToLowSalienceBlockers.blocked_by_ledger_overlap_total,
+    shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile:
+      liveToLowSalienceBlockers.blocked_by_ledger_overlap_final_compile,
+    shared_state_lifecycle_aging_blocked_by_recent_retrieval_total:
+      liveToLowSalienceBlockers.blocked_by_recent_retrieval_total,
+    shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile:
+      liveToLowSalienceBlockers.blocked_by_recent_retrieval_final_compile,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_total,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_final_compile,
+    shared_state_lifecycle_aging_unknown_age_total: liveToLowSalienceBlockers.unknown_age_total,
+    shared_state_lifecycle_aging_unknown_age_final_compile:
+      liveToLowSalienceBlockers.unknown_age_final_compile,
+    shared_state_lifecycle_aging_blocked_by_multiple_reasons_total:
+      liveToLowSalienceBlockers.blocked_by_multiple_reasons_total,
+    shared_state_lifecycle_aging_blocked_by_multiple_reasons_final_compile:
+      liveToLowSalienceBlockers.blocked_by_multiple_reasons_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demotable_total:
+      lowSalienceToDormantBlockers.demotable_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demotable_final_compile:
+      lowSalienceToDormantBlockers.demotable_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demoted_total:
+      lowSalienceToDormantBlockers.demoted_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_demoted_final_compile:
+      lowSalienceToDormantBlockers.demoted_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_total:
+      lowSalienceToDormantBlockers.blocked_by_current_turn_update_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_current_turn_update_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_current_turn_update_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_total:
+      lowSalienceToDormantBlockers.blocked_by_patch_touch_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_patch_touch_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_patch_touch_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_total:
+      lowSalienceToDormantBlockers.blocked_by_ledger_overlap_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_ledger_overlap_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total:
+      lowSalienceToDormantBlockers.blocked_by_recent_retrieval_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_recent_retrieval_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total:
+      lowSalienceToDormantBlockers.unknown_age_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile:
+      lowSalienceToDormantBlockers.unknown_age_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total:
+      lowSalienceToDormantBlockers.blocked_by_multiple_reasons_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_multiple_reasons_final_compile,
     shared_state_reactivated_low_salience_live_total: traceRecords.filter(
       (record) =>
         record.event === "shared_state.lifecycle.reactivated" &&
@@ -3380,6 +3590,7 @@ export class MetricsCapture {
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
+      ...sharedStateCapPressureMetricCounts,
       shared_state_at_cap_turns: sharedStateCapPressureMetricCounts.shared_state_at_cap_turns,
       shared_state_compile_evaluated_turns:
         sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
@@ -3884,6 +4095,7 @@ export class MetricsCapture {
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
+      ...sharedStateCapPressureMetricCounts,
       shared_state_at_cap_turns: sharedStateCapPressureMetricCounts.shared_state_at_cap_turns,
       shared_state_compile_evaluated_turns:
         sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
