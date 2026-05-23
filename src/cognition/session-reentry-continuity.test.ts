@@ -114,7 +114,9 @@ describe("buildSessionReentryContinuityPrompt", () => {
     expect(result.promptSection).toContain("active_entry_count=4");
     expect(result.promptSection).toContain("active_keyed_entry_count=3");
     expect(result.promptSection).toContain("active_legacy_unkeyed_entry_count=1");
-    expect(result.promptSection).toContain("locked=2 live=1 tentative=0 invalidated=0 pending=1");
+    expect(result.promptSection).toContain(
+      "locked=2 live=1 low_salience_live=0 dormant_live=0 tentative=0 invalidated=0 pending=1",
+    );
     expect(result.promptSection).toContain("state_key_bucket=incident.rollback");
     expect(result.promptSection).toContain("state_key_bucket=incident.customer-note");
     expect(result.promptSection).toContain(

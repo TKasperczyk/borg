@@ -154,6 +154,7 @@ export function traceCompileCompleted(options: {
   emptyUpdateAttemptedCount?: number;
   emptyUpdateDroppedCount?: number;
   emptyUpdateRepairedCount?: number;
+  addRejectedCapExceededCount?: number;
   lifecycleTransitions?: readonly SharedStateLifecycleTransition[];
 }): void {
   const renderOptions =
@@ -207,6 +208,14 @@ export function traceCompileCompleted(options: {
       omitted_live_recent_low_salience: artifactSummary.omittedLiveRecentLowSalience,
       omitted_live_old: artifactSummary.omittedLiveOld,
       omitted_locked: artifactSummary.omittedLocked,
+      omitted_locked_recent_final_compile: artifactSummary.omittedLockedRecent,
+      omitted_locked_old_final_compile: artifactSummary.omittedLockedOld,
+      omitted_locked_unknown_age_final_compile: artifactSummary.omittedLockedUnknownAge,
+      omitted_locked_with_active_critical_commitment_final_compile:
+        artifactSummary.omittedLockedWithActiveCriticalCommitment,
+      omitted_locked_with_operational_canonicalizer_final_compile:
+        artifactSummary.omittedLockedWithOperationalCanonicalizer,
+      omitted_locked_indexed_only_final_compile: artifactSummary.omittedLockedIndexedOnly,
       omitted_pending: artifactSummary.omittedPending,
       omitted_low_salience_live: artifactSummary.omittedLowSalienceLive,
       omitted_dormant_live: artifactSummary.omittedDormantLive,
@@ -243,6 +252,7 @@ export function traceCompileCompleted(options: {
       empty_update_attempted_count: options.emptyUpdateAttemptedCount ?? 0,
       empty_update_dropped_count: options.emptyUpdateDroppedCount ?? 0,
       empty_update_repaired_count: options.emptyUpdateRepairedCount ?? 0,
+      add_rejected_cap_exceeded_count: options.addRejectedCapExceededCount ?? 0,
       lifecycle_demoted_live_to_low_salience_count: (options.lifecycleTransitions ?? []).filter(
         (transition) => transition.fromKind === "live" && transition.toKind === "low_salience_live",
       ).length,

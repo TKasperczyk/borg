@@ -13,6 +13,7 @@ import {
   emptySharedStateKindCounts,
   selectSharedStateArtifactEntriesForRenderWithSummary,
   sharedStateEntryHasAnyOperationalCanonicalizer,
+  sharedStateEntryHasCriticalCommitmentCanonicalizer,
   sharedStateEntryHasCurrentTurnUpdate,
   sharedStateEntryHasOperationalCanonicalizer,
   subtractSharedStateKindCounts,
@@ -59,6 +60,12 @@ export type SharedStateArtifactRenderSummary = {
   omittedLiveRecentLowSalience: number;
   omittedLiveOld: number;
   omittedLocked: number;
+  omittedLockedRecent: number;
+  omittedLockedOld: number;
+  omittedLockedUnknownAge: number;
+  omittedLockedWithActiveCriticalCommitment: number;
+  omittedLockedWithOperationalCanonicalizer: number;
+  omittedLockedIndexedOnly: number;
   omittedPending: number;
   omittedLowSalienceLive: number;
   omittedDormantLive: number;
@@ -490,6 +497,32 @@ function sharedStateEntryIsRecent(
   return options.currentTurnCounter - lastUpdatedTurn <= options.recentTurnThreshold;
 }
 
+function sharedStateEntryRecencyStatus(
+  entry: SharedStateEntry,
+  options: NormalizedSharedStateRenderOptions,
+): "recent" | "old" | "unknown" {
+  if (sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId)) {
+    return "recent";
+  }
+
+  if (options.currentTurnCounter === undefined) {
+    return "unknown";
+  }
+
+  const lastUpdatedTurn = sharedStateEntryLastUpdatedTurn(
+    entry,
+    options.lastUpdatedTurnByStreamEntryId,
+  );
+
+  if (lastUpdatedTurn === null) {
+    return "unknown";
+  }
+
+  return options.currentTurnCounter - lastUpdatedTurn <= options.recentTurnThreshold
+    ? "recent"
+    : "old";
+}
+
 function sharedStateEntryIsOperational(
   entry: SharedStateEntry,
   options: NormalizedSharedStateRenderOptions,
@@ -505,12 +538,19 @@ function sharedStateOmissionSeverity(input: {
   activeEntries: readonly SharedStateEntry[];
   renderedEntries: readonly SharedStateEntry[];
   options: NormalizedSharedStateRenderOptions;
+  indexedStateKeyBuckets: ReadonlySet<string>;
 }): Pick<
   SharedStateArtifactRenderSummary,
   | "omittedLiveRecentOperational"
   | "omittedLiveRecentLowSalience"
   | "omittedLiveOld"
   | "omittedLocked"
+  | "omittedLockedRecent"
+  | "omittedLockedOld"
+  | "omittedLockedUnknownAge"
+  | "omittedLockedWithActiveCriticalCommitment"
+  | "omittedLockedWithOperationalCanonicalizer"
+  | "omittedLockedIndexedOnly"
   | "omittedPending"
   | "omittedLowSalienceLive"
   | "omittedDormantLive"
@@ -520,6 +560,12 @@ function sharedStateOmissionSeverity(input: {
   let omittedLiveRecentLowSalience = 0;
   let omittedLiveOld = 0;
   let omittedLocked = 0;
+  let omittedLockedRecent = 0;
+  let omittedLockedOld = 0;
+  let omittedLockedUnknownAge = 0;
+  let omittedLockedWithActiveCriticalCommitment = 0;
+  let omittedLockedWithOperationalCanonicalizer = 0;
+  let omittedLockedIndexedOnly = 0;
   let omittedPending = 0;
   let omittedLowSalienceLive = 0;
   let omittedDormantLive = 0;
@@ -531,6 +577,31 @@ function sharedStateOmissionSeverity(input: {
 
     if (entry.kind === "locked") {
       omittedLocked += 1;
+      const recency = sharedStateEntryRecencyStatus(entry, input.options);
+      if (recency === "recent") {
+        omittedLockedRecent += 1;
+      } else if (recency === "old") {
+        omittedLockedOld += 1;
+      } else {
+        omittedLockedUnknownAge += 1;
+      }
+
+      if (
+        sharedStateEntryHasCriticalCommitmentCanonicalizer(
+          entry,
+          input.options.activeCriticalCommitmentIds,
+        )
+      ) {
+        omittedLockedWithActiveCriticalCommitment += 1;
+      }
+
+      if (sharedStateEntryHasOperationalCanonicalizer(entry, input.options)) {
+        omittedLockedWithOperationalCanonicalizer += 1;
+      }
+
+      if (input.indexedStateKeyBuckets.has(sharedStateKeyBucket(entry.state_key))) {
+        omittedLockedIndexedOnly += 1;
+      }
     }
 
     if (entry.kind === "pending") {
@@ -568,6 +639,12 @@ function sharedStateOmissionSeverity(input: {
     omittedLiveRecentLowSalience,
     omittedLiveOld,
     omittedLocked,
+    omittedLockedRecent,
+    omittedLockedOld,
+    omittedLockedUnknownAge,
+    omittedLockedWithActiveCriticalCommitment,
+    omittedLockedWithOperationalCanonicalizer,
+    omittedLockedIndexedOnly,
     omittedPending,
     omittedLowSalienceLive,
     omittedDormantLive,
@@ -603,6 +680,12 @@ function cappedSharedStateArtifactRender(input: {
         omittedLiveRecentLowSalience: 0,
         omittedLiveOld: 0,
         omittedLocked: 0,
+        omittedLockedRecent: 0,
+        omittedLockedOld: 0,
+        omittedLockedUnknownAge: 0,
+        omittedLockedWithActiveCriticalCommitment: 0,
+        omittedLockedWithOperationalCanonicalizer: 0,
+        omittedLockedIndexedOnly: 0,
         omittedPending: 0,
         omittedLowSalienceLive: 0,
         omittedDormantLive: 0,
@@ -713,6 +796,7 @@ function cappedSharedStateArtifactRender(input: {
     activeEntries,
     expandedBuckets,
   });
+  const indexedStateKeyBuckets = new Set(compactIndexRows.map((row) => row.stateKey));
 
   return {
     content,
@@ -743,6 +827,7 @@ function cappedSharedStateArtifactRender(input: {
         activeEntries,
         renderedEntries: entries,
         options,
+        indexedStateKeyBuckets,
       }),
     },
   };
@@ -786,6 +871,12 @@ export function summarizeSharedStateArtifactRender(
       omittedLiveRecentLowSalience: 0,
       omittedLiveOld: 0,
       omittedLocked: 0,
+      omittedLockedRecent: 0,
+      omittedLockedOld: 0,
+      omittedLockedUnknownAge: 0,
+      omittedLockedWithActiveCriticalCommitment: 0,
+      omittedLockedWithOperationalCanonicalizer: 0,
+      omittedLockedIndexedOnly: 0,
       omittedPending: 0,
       omittedLowSalienceLive: 0,
       omittedDormantLive: 0,

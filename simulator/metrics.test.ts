@@ -232,19 +232,49 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_at_cap_turns",
   "shared_state_compile_evaluated_turns",
   "shared_state_omitted_recent_entries",
+  "shared_state_omitted_recent_entries_total_across_compiles",
   "shared_state_omitted_live_recent_operational",
+  "shared_state_omitted_live_recent_operational_total_across_compiles",
+  "shared_state_omitted_live_recent_operational_final_compile",
   "shared_state_omitted_live_recent_low_salience",
+  "shared_state_omitted_live_recent_low_salience_total_across_compiles",
+  "shared_state_omitted_live_recent_low_salience_final_compile",
   "shared_state_omitted_live_old",
+  "shared_state_omitted_live_old_total_across_compiles",
+  "shared_state_omitted_live_old_final_compile",
   "shared_state_omitted_locked",
+  "shared_state_omitted_locked_total_across_compiles",
+  "shared_state_omitted_locked_final_compile",
+  "shared_state_omitted_locked_recent_total_across_compiles",
+  "shared_state_omitted_locked_recent_final_compile",
+  "shared_state_omitted_locked_old_total_across_compiles",
+  "shared_state_omitted_locked_old_final_compile",
+  "shared_state_omitted_locked_unknown_age_total_across_compiles",
+  "shared_state_omitted_locked_unknown_age_final_compile",
+  "shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles",
+  "shared_state_omitted_locked_with_active_critical_commitment_final_compile",
+  "shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles",
+  "shared_state_omitted_locked_with_operational_canonicalizer_final_compile",
+  "shared_state_omitted_locked_indexed_only_total_across_compiles",
+  "shared_state_omitted_locked_indexed_only_final_compile",
   "shared_state_omitted_pending",
+  "shared_state_omitted_pending_total_across_compiles",
+  "shared_state_omitted_pending_final_compile",
   "shared_state_omitted_low_salience_live",
+  "shared_state_omitted_low_salience_live_final_compile",
   "shared_state_omitted_dormant_live",
+  "shared_state_omitted_dormant_live_final_compile",
   "shared_state_active_low_salience_live",
+  "shared_state_active_low_salience_live_final_compile",
   "shared_state_active_dormant_live",
+  "shared_state_active_dormant_live_final_compile",
   "shared_state_demoted_live_to_low_salience_total",
   "shared_state_demoted_low_salience_to_dormant_total",
   "shared_state_reactivated_low_salience_live_total",
   "shared_state_reactivated_dormant_live_total",
+  "shared_state_at_cap_but_all_keys_indexed_compiles_total",
+  "shared_state_at_cap_with_operational_omission_compiles_total",
+  "shared_state_at_cap_with_cap_rejection_compiles_total",
   "shared_state_all_active_keys_indexed",
   "shared_state_live_entry_starvation",
   "shared_state_newest_entries_reserved",
@@ -1540,11 +1570,18 @@ describe("MetricsCapture", () => {
           omitted_live_recent_low_salience: 2,
           omitted_live_old: 3,
           omitted_locked: 4,
+          omitted_locked_recent_final_compile: 1,
+          omitted_locked_old_final_compile: 2,
+          omitted_locked_unknown_age_final_compile: 1,
+          omitted_locked_with_active_critical_commitment_final_compile: 1,
+          omitted_locked_with_operational_canonicalizer_final_compile: 2,
+          omitted_locked_indexed_only_final_compile: 4,
           omitted_pending: 5,
           omitted_low_salience_live: 6,
           omitted_dormant_live: 7,
           all_active_keys_indexed: true,
           newest_entries_reserved: 2,
+          add_rejected_cap_exceeded_count: 1,
           active_by_kind: {
             low_salience_live: 1,
             dormant_live: 0,
@@ -1576,6 +1613,12 @@ describe("MetricsCapture", () => {
           omitted_live_recent_low_salience: 7,
           omitted_live_old: 8,
           omitted_locked: 9,
+          omitted_locked_recent_final_compile: 2,
+          omitted_locked_old_final_compile: 3,
+          omitted_locked_unknown_age_final_compile: 4,
+          omitted_locked_with_active_critical_commitment_final_compile: 0,
+          omitted_locked_with_operational_canonicalizer_final_compile: 1,
+          omitted_locked_indexed_only_final_compile: 9,
           omitted_pending: 10,
           omitted_low_salience_live: 11,
           omitted_dormant_live: 12,
@@ -1599,6 +1642,12 @@ describe("MetricsCapture", () => {
           omitted_live_recent_low_salience: 13,
           omitted_live_old: 17,
           omitted_locked: 19,
+          omitted_locked_recent_final_compile: 5,
+          omitted_locked_old_final_compile: 10,
+          omitted_locked_unknown_age_final_compile: 4,
+          omitted_locked_with_active_critical_commitment_final_compile: 2,
+          omitted_locked_with_operational_canonicalizer_final_compile: 3,
+          omitted_locked_indexed_only_final_compile: 19,
           omitted_pending: 23,
           omitted_low_salience_live: 29,
           omitted_dormant_live: 31,
@@ -1662,19 +1711,53 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_at_cap_turns).toBe(2);
     expect(row.shared_state_compile_evaluated_turns).toBe(3);
     expect(row.shared_state_omitted_recent_entries).toBe(6);
+    expect(row.shared_state_omitted_recent_entries_total_across_compiles).toBe(6);
     expect(row.shared_state_omitted_live_recent_operational).toBe(18);
+    expect(row.shared_state_omitted_live_recent_operational_total_across_compiles).toBe(18);
+    expect(row.shared_state_omitted_live_recent_operational_final_compile).toBe(11);
     expect(row.shared_state_omitted_live_recent_low_salience).toBe(22);
+    expect(row.shared_state_omitted_live_recent_low_salience_total_across_compiles).toBe(22);
+    expect(row.shared_state_omitted_live_recent_low_salience_final_compile).toBe(13);
     expect(row.shared_state_omitted_live_old).toBe(28);
+    expect(row.shared_state_omitted_live_old_total_across_compiles).toBe(28);
+    expect(row.shared_state_omitted_live_old_final_compile).toBe(17);
     expect(row.shared_state_omitted_locked).toBe(32);
+    expect(row.shared_state_omitted_locked_total_across_compiles).toBe(32);
+    expect(row.shared_state_omitted_locked_final_compile).toBe(19);
+    expect(row.shared_state_omitted_locked_recent_total_across_compiles).toBe(8);
+    expect(row.shared_state_omitted_locked_recent_final_compile).toBe(5);
+    expect(row.shared_state_omitted_locked_old_total_across_compiles).toBe(15);
+    expect(row.shared_state_omitted_locked_old_final_compile).toBe(10);
+    expect(row.shared_state_omitted_locked_unknown_age_total_across_compiles).toBe(9);
+    expect(row.shared_state_omitted_locked_unknown_age_final_compile).toBe(4);
+    expect(
+      row.shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles,
+    ).toBe(3);
+    expect(row.shared_state_omitted_locked_with_active_critical_commitment_final_compile).toBe(2);
+    expect(
+      row.shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles,
+    ).toBe(6);
+    expect(row.shared_state_omitted_locked_with_operational_canonicalizer_final_compile).toBe(3);
+    expect(row.shared_state_omitted_locked_indexed_only_total_across_compiles).toBe(32);
+    expect(row.shared_state_omitted_locked_indexed_only_final_compile).toBe(19);
     expect(row.shared_state_omitted_pending).toBe(38);
+    expect(row.shared_state_omitted_pending_total_across_compiles).toBe(38);
+    expect(row.shared_state_omitted_pending_final_compile).toBe(23);
     expect(row.shared_state_omitted_low_salience_live).toBe(29);
+    expect(row.shared_state_omitted_low_salience_live_final_compile).toBe(29);
     expect(row.shared_state_omitted_dormant_live).toBe(31);
+    expect(row.shared_state_omitted_dormant_live_final_compile).toBe(31);
     expect(row.shared_state_active_low_salience_live).toBe(3);
+    expect(row.shared_state_active_low_salience_live_final_compile).toBe(3);
     expect(row.shared_state_active_dormant_live).toBe(2);
+    expect(row.shared_state_active_dormant_live_final_compile).toBe(2);
     expect(row.shared_state_demoted_live_to_low_salience_total).toBe(1);
     expect(row.shared_state_demoted_low_salience_to_dormant_total).toBe(1);
     expect(row.shared_state_reactivated_low_salience_live_total).toBe(1);
     expect(row.shared_state_reactivated_dormant_live_total).toBe(1);
+    expect(row.shared_state_at_cap_but_all_keys_indexed_compiles_total).toBe(2);
+    expect(row.shared_state_at_cap_with_operational_omission_compiles_total).toBe(2);
+    expect(row.shared_state_at_cap_with_cap_rejection_compiles_total).toBe(1);
     expect(row.shared_state_all_active_keys_indexed).toBe(false);
     expect(row.shared_state_live_entry_starvation).toBe(true);
     expect(row.shared_state_newest_entries_reserved).toBe(6);

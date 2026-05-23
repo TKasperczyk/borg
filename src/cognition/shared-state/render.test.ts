@@ -189,6 +189,97 @@ describe("summarizeSharedStateArtifactRender", () => {
     expect(summary.omittedPending).toBe(1);
     expect(summary.allActiveKeysIndexed).toBe(true);
   });
+
+  it("classifies omitted locked entries by structural severity subtype", () => {
+    const audience = createEntityId();
+    const currentUserStreamEntryId = createStreamEntryId();
+    const recentUpdateId = createStreamEntryId();
+    const oldUpdateId = createStreamEntryId();
+    const unknownUpdateId = createStreamEntryId();
+    const commitmentId = createCommitmentId();
+    const goalId = createGoalId();
+    const entries = [
+      entry({
+        audience,
+        kind: "locked",
+        rank: 0,
+        updatedAt: 100,
+        stateKey: "locked.rendered",
+        lastUpdatedStreamEntryIds: [currentUserStreamEntryId],
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 90,
+        stateKey: "locked.recent",
+        lastUpdatedStreamEntryIds: [recentUpdateId],
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 2,
+        updatedAt: 80,
+        stateKey: "locked.old",
+        lastUpdatedStreamEntryIds: [oldUpdateId],
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 3,
+        updatedAt: 70,
+        stateKey: "locked.unknown",
+        lastUpdatedStreamEntryIds: [unknownUpdateId],
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 4,
+        updatedAt: 60,
+        stateKey: "locked.commitment",
+        lastUpdatedStreamEntryIds: [oldUpdateId],
+        canonicalizes: { commitment_ids: [commitmentId] },
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 5,
+        updatedAt: 50,
+        stateKey: "locked.goal",
+        lastUpdatedStreamEntryIds: [recentUpdateId],
+        canonicalizes: { goal_ids: [goalId] },
+      }),
+    ];
+
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+      },
+      lockedMaxEntries: 6,
+      newestStateChangeReservedSlots: 0,
+      currentUserStreamEntryId,
+      activeGoalIds: [goalId],
+      activeCriticalCommitmentIds: [commitmentId],
+      currentTurnCounter: 20,
+      lastUpdatedTurnByStreamEntryId: {
+        [currentUserStreamEntryId]: 20,
+        [recentUpdateId]: 18,
+        [oldUpdateId]: 10,
+      },
+    });
+
+    expect(summary.omittedLocked).toBe(5);
+    expect(summary.omittedLockedRecent).toBe(2);
+    expect(summary.omittedLockedOld).toBe(2);
+    expect(summary.omittedLockedUnknownAge).toBe(1);
+    expect(summary.omittedLockedWithActiveCriticalCommitment).toBe(1);
+    expect(summary.omittedLockedWithOperationalCanonicalizer).toBe(1);
+    expect(summary.omittedLockedIndexedOnly).toBe(5);
+  });
 });
 
 describe("renderSharedStateArtifact", () => {

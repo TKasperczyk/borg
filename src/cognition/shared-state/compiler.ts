@@ -608,6 +608,7 @@ export async function compileSharedStateArtifact(
     emptyUpdateAttemptedCount: 0,
     emptyUpdateDroppedCount: 0,
     emptyUpdateRepairedCount: 0,
+    addRejectedCapExceededCount: 0,
   };
   const recordEmptyUpdateValidation = (normalizedPatch: {
     emptyUpdateAttemptedCount: number;
@@ -842,6 +843,9 @@ export async function compileSharedStateArtifact(
 
   let repairableRejections = repairablePatchRejections(normalized.rejected);
   for (const rejection of repairableRejections) {
+    if (rejection.reason === "live_entry_cap_exceeded_for_key") {
+      compileCompletedTraceBase.addRejectedCapExceededCount += 1;
+    }
     traceRepairablePatchRejection(input, rejection);
   }
 
@@ -984,6 +988,9 @@ export async function compileSharedStateArtifact(
     recordEmptyUpdateValidation(normalized);
     repairableRejections = repairablePatchRejections(normalized.rejected);
     for (const rejection of repairableRejections) {
+      if (rejection.reason === "live_entry_cap_exceeded_for_key") {
+        compileCompletedTraceBase.addRejectedCapExceededCount += 1;
+      }
       traceRepairablePatchRejection(input, rejection);
     }
 

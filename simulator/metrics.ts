@@ -262,19 +262,49 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_at_cap_turns"
   | "shared_state_compile_evaluated_turns"
   | "shared_state_omitted_recent_entries"
+  | "shared_state_omitted_recent_entries_total_across_compiles"
   | "shared_state_omitted_live_recent_operational"
+  | "shared_state_omitted_live_recent_operational_total_across_compiles"
+  | "shared_state_omitted_live_recent_operational_final_compile"
   | "shared_state_omitted_live_recent_low_salience"
+  | "shared_state_omitted_live_recent_low_salience_total_across_compiles"
+  | "shared_state_omitted_live_recent_low_salience_final_compile"
   | "shared_state_omitted_live_old"
+  | "shared_state_omitted_live_old_total_across_compiles"
+  | "shared_state_omitted_live_old_final_compile"
   | "shared_state_omitted_locked"
+  | "shared_state_omitted_locked_total_across_compiles"
+  | "shared_state_omitted_locked_final_compile"
+  | "shared_state_omitted_locked_recent_total_across_compiles"
+  | "shared_state_omitted_locked_recent_final_compile"
+  | "shared_state_omitted_locked_old_total_across_compiles"
+  | "shared_state_omitted_locked_old_final_compile"
+  | "shared_state_omitted_locked_unknown_age_total_across_compiles"
+  | "shared_state_omitted_locked_unknown_age_final_compile"
+  | "shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles"
+  | "shared_state_omitted_locked_with_active_critical_commitment_final_compile"
+  | "shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles"
+  | "shared_state_omitted_locked_with_operational_canonicalizer_final_compile"
+  | "shared_state_omitted_locked_indexed_only_total_across_compiles"
+  | "shared_state_omitted_locked_indexed_only_final_compile"
   | "shared_state_omitted_pending"
+  | "shared_state_omitted_pending_total_across_compiles"
+  | "shared_state_omitted_pending_final_compile"
   | "shared_state_omitted_low_salience_live"
+  | "shared_state_omitted_low_salience_live_final_compile"
   | "shared_state_omitted_dormant_live"
+  | "shared_state_omitted_dormant_live_final_compile"
   | "shared_state_active_low_salience_live"
+  | "shared_state_active_low_salience_live_final_compile"
   | "shared_state_active_dormant_live"
+  | "shared_state_active_dormant_live_final_compile"
   | "shared_state_demoted_live_to_low_salience_total"
   | "shared_state_demoted_low_salience_to_dormant_total"
   | "shared_state_reactivated_low_salience_live_total"
   | "shared_state_reactivated_dormant_live_total"
+  | "shared_state_at_cap_but_all_keys_indexed_compiles_total"
+  | "shared_state_at_cap_with_operational_omission_compiles_total"
+  | "shared_state_at_cap_with_cap_rejection_compiles_total"
   | "shared_state_all_active_keys_indexed"
   | "shared_state_live_entry_starvation"
   | "shared_state_newest_entries_reserved"
@@ -944,14 +974,34 @@ function sharedStateCapPressureMetrics(
   const atCapTurnIds = new Set<string>();
   let omittedRecentEntries = 0;
   let omittedLiveRecentOperational = 0;
+  let omittedLiveRecentOperationalFinalCompile = 0;
   let omittedLiveRecentLowSalience = 0;
+  let omittedLiveRecentLowSalienceFinalCompile = 0;
   let omittedLiveOld = 0;
+  let omittedLiveOldFinalCompile = 0;
   let omittedLocked = 0;
+  let omittedLockedFinalCompile = 0;
+  let omittedLockedRecent = 0;
+  let omittedLockedRecentFinalCompile = 0;
+  let omittedLockedOld = 0;
+  let omittedLockedOldFinalCompile = 0;
+  let omittedLockedUnknownAge = 0;
+  let omittedLockedUnknownAgeFinalCompile = 0;
+  let omittedLockedWithActiveCriticalCommitment = 0;
+  let omittedLockedWithActiveCriticalCommitmentFinalCompile = 0;
+  let omittedLockedWithOperationalCanonicalizer = 0;
+  let omittedLockedWithOperationalCanonicalizerFinalCompile = 0;
+  let omittedLockedIndexedOnly = 0;
+  let omittedLockedIndexedOnlyFinalCompile = 0;
   let omittedPending = 0;
+  let omittedPendingFinalCompile = 0;
   let omittedLowSalienceLive = 0;
   let omittedDormantLive = 0;
   let activeLowSalienceLive = 0;
   let activeDormantLive = 0;
+  let atCapButAllKeysIndexedCompiles = 0;
+  let atCapWithOperationalOmissionCompiles = 0;
+  let atCapWithCapRejectionCompiles = 0;
   let allActiveKeysIndexed = true;
   let liveEntryStarvation = false;
   let newestEntriesReserved = 0;
@@ -964,7 +1014,9 @@ function sharedStateCapPressureMetrics(
       traceOptionalNumber(record, "artifact_max_active_entries") ??
       DEFAULT_SHARED_STATE_MAX_ACTIVE_ENTRIES;
 
-    if (activeEntryCount !== null && activeEntryCount >= maxActiveEntries) {
+    const atCap = activeEntryCount !== null && activeEntryCount >= maxActiveEntries;
+
+    if (atCap) {
       atCapTurnIds.add(record.turnId);
     }
 
@@ -972,15 +1024,61 @@ function sharedStateCapPressureMetrics(
       omittedRecentEntries += traceObjectNumber(record, "omitted_by_kind", kind);
     }
 
-    omittedLiveRecentOperational += traceNumber(record, "omitted_live_recent_operational");
-    omittedLiveRecentLowSalience += traceNumber(record, "omitted_live_recent_low_salience");
-    omittedLiveOld += traceNumber(record, "omitted_live_old");
-    omittedLocked += traceNumber(record, "omitted_locked");
-    omittedPending += traceNumber(record, "omitted_pending");
+    omittedLiveRecentOperationalFinalCompile = traceNumber(
+      record,
+      "omitted_live_recent_operational",
+    );
+    omittedLiveRecentLowSalienceFinalCompile = traceNumber(
+      record,
+      "omitted_live_recent_low_salience",
+    );
+    omittedLiveOldFinalCompile = traceNumber(record, "omitted_live_old");
+    omittedLockedFinalCompile = traceNumber(record, "omitted_locked");
+    omittedLockedRecentFinalCompile = traceNumber(record, "omitted_locked_recent_final_compile");
+    omittedLockedOldFinalCompile = traceNumber(record, "omitted_locked_old_final_compile");
+    omittedLockedUnknownAgeFinalCompile = traceNumber(
+      record,
+      "omitted_locked_unknown_age_final_compile",
+    );
+    omittedLockedWithActiveCriticalCommitmentFinalCompile = traceNumber(
+      record,
+      "omitted_locked_with_active_critical_commitment_final_compile",
+    );
+    omittedLockedWithOperationalCanonicalizerFinalCompile = traceNumber(
+      record,
+      "omitted_locked_with_operational_canonicalizer_final_compile",
+    );
+    omittedLockedIndexedOnlyFinalCompile = traceNumber(
+      record,
+      "omitted_locked_indexed_only_final_compile",
+    );
+    omittedPendingFinalCompile = traceNumber(record, "omitted_pending");
+    omittedLiveRecentOperational += omittedLiveRecentOperationalFinalCompile;
+    omittedLiveRecentLowSalience += omittedLiveRecentLowSalienceFinalCompile;
+    omittedLiveOld += omittedLiveOldFinalCompile;
+    omittedLocked += omittedLockedFinalCompile;
+    omittedLockedRecent += omittedLockedRecentFinalCompile;
+    omittedLockedOld += omittedLockedOldFinalCompile;
+    omittedLockedUnknownAge += omittedLockedUnknownAgeFinalCompile;
+    omittedLockedWithActiveCriticalCommitment +=
+      omittedLockedWithActiveCriticalCommitmentFinalCompile;
+    omittedLockedWithOperationalCanonicalizer +=
+      omittedLockedWithOperationalCanonicalizerFinalCompile;
+    omittedLockedIndexedOnly += omittedLockedIndexedOnlyFinalCompile;
+    omittedPending += omittedPendingFinalCompile;
     omittedLowSalienceLive = traceNumber(record, "omitted_low_salience_live");
     omittedDormantLive = traceNumber(record, "omitted_dormant_live");
     activeLowSalienceLive = traceObjectNumber(record, "active_by_kind", "low_salience_live");
     activeDormantLive = traceObjectNumber(record, "active_by_kind", "dormant_live");
+    if (atCap && record.all_active_keys_indexed === true) {
+      atCapButAllKeysIndexedCompiles += 1;
+    }
+    if (atCap && omittedLiveRecentOperationalFinalCompile > 0) {
+      atCapWithOperationalOmissionCompiles += 1;
+    }
+    if (atCap && traceNumber(record, "add_rejected_cap_exceeded_count") > 0) {
+      atCapWithCapRejectionCompiles += 1;
+    }
     allActiveKeysIndexed = allActiveKeysIndexed && record.all_active_keys_indexed !== false;
     newestEntriesReserved += traceNumber(record, "newest_entries_reserved");
 
@@ -1006,15 +1104,50 @@ function sharedStateCapPressureMetrics(
     shared_state_at_cap_turns: atCapTurnIds.size,
     shared_state_compile_evaluated_turns: compileEvaluatedTurnIds.size,
     shared_state_omitted_recent_entries: omittedRecentEntries,
+    shared_state_omitted_recent_entries_total_across_compiles: omittedRecentEntries,
     shared_state_omitted_live_recent_operational: omittedLiveRecentOperational,
+    shared_state_omitted_live_recent_operational_total_across_compiles:
+      omittedLiveRecentOperational,
+    shared_state_omitted_live_recent_operational_final_compile:
+      omittedLiveRecentOperationalFinalCompile,
     shared_state_omitted_live_recent_low_salience: omittedLiveRecentLowSalience,
+    shared_state_omitted_live_recent_low_salience_total_across_compiles:
+      omittedLiveRecentLowSalience,
+    shared_state_omitted_live_recent_low_salience_final_compile:
+      omittedLiveRecentLowSalienceFinalCompile,
     shared_state_omitted_live_old: omittedLiveOld,
+    shared_state_omitted_live_old_total_across_compiles: omittedLiveOld,
+    shared_state_omitted_live_old_final_compile: omittedLiveOldFinalCompile,
     shared_state_omitted_locked: omittedLocked,
+    shared_state_omitted_locked_total_across_compiles: omittedLocked,
+    shared_state_omitted_locked_final_compile: omittedLockedFinalCompile,
+    shared_state_omitted_locked_recent_total_across_compiles: omittedLockedRecent,
+    shared_state_omitted_locked_recent_final_compile: omittedLockedRecentFinalCompile,
+    shared_state_omitted_locked_old_total_across_compiles: omittedLockedOld,
+    shared_state_omitted_locked_old_final_compile: omittedLockedOldFinalCompile,
+    shared_state_omitted_locked_unknown_age_total_across_compiles: omittedLockedUnknownAge,
+    shared_state_omitted_locked_unknown_age_final_compile: omittedLockedUnknownAgeFinalCompile,
+    shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles:
+      omittedLockedWithActiveCriticalCommitment,
+    shared_state_omitted_locked_with_active_critical_commitment_final_compile:
+      omittedLockedWithActiveCriticalCommitmentFinalCompile,
+    shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles:
+      omittedLockedWithOperationalCanonicalizer,
+    shared_state_omitted_locked_with_operational_canonicalizer_final_compile:
+      omittedLockedWithOperationalCanonicalizerFinalCompile,
+    shared_state_omitted_locked_indexed_only_total_across_compiles: omittedLockedIndexedOnly,
+    shared_state_omitted_locked_indexed_only_final_compile: omittedLockedIndexedOnlyFinalCompile,
     shared_state_omitted_pending: omittedPending,
+    shared_state_omitted_pending_total_across_compiles: omittedPending,
+    shared_state_omitted_pending_final_compile: omittedPendingFinalCompile,
     shared_state_omitted_low_salience_live: omittedLowSalienceLive,
+    shared_state_omitted_low_salience_live_final_compile: omittedLowSalienceLive,
     shared_state_omitted_dormant_live: omittedDormantLive,
+    shared_state_omitted_dormant_live_final_compile: omittedDormantLive,
     shared_state_active_low_salience_live: activeLowSalienceLive,
+    shared_state_active_low_salience_live_final_compile: activeLowSalienceLive,
     shared_state_active_dormant_live: activeDormantLive,
+    shared_state_active_dormant_live_final_compile: activeDormantLive,
     shared_state_demoted_live_to_low_salience_total: traceRecords.filter(
       (record) =>
         record.event === "shared_state.lifecycle.demoted" &&
@@ -1039,6 +1172,10 @@ function sharedStateCapPressureMetrics(
         traceString(record, "from_kind") === "dormant_live" &&
         traceString(record, "to_kind") === "live",
     ).length,
+    shared_state_at_cap_but_all_keys_indexed_compiles_total: atCapButAllKeysIndexedCompiles,
+    shared_state_at_cap_with_operational_omission_compiles_total:
+      atCapWithOperationalOmissionCompiles,
+    shared_state_at_cap_with_cap_rejection_compiles_total: atCapWithCapRejectionCompiles,
     shared_state_all_active_keys_indexed: allActiveKeysIndexed,
     shared_state_live_entry_starvation: liveEntryStarvation,
     shared_state_newest_entries_reserved: newestEntriesReserved,
@@ -3035,22 +3172,76 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
       shared_state_omitted_recent_entries:
         sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
+      shared_state_omitted_recent_entries_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries_total_across_compiles,
       shared_state_omitted_live_recent_operational:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational,
+      shared_state_omitted_live_recent_operational_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational_total_across_compiles,
+      shared_state_omitted_live_recent_operational_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational_final_compile,
       shared_state_omitted_live_recent_low_salience:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience,
+      shared_state_omitted_live_recent_low_salience_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience_total_across_compiles,
+      shared_state_omitted_live_recent_low_salience_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience_final_compile,
       shared_state_omitted_live_old:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old,
+      shared_state_omitted_live_old_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_total_across_compiles,
+      shared_state_omitted_live_old_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_final_compile,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
+      shared_state_omitted_locked_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_total_across_compiles,
+      shared_state_omitted_locked_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_final_compile,
+      shared_state_omitted_locked_recent_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_recent_total_across_compiles,
+      shared_state_omitted_locked_recent_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_recent_final_compile,
+      shared_state_omitted_locked_old_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_old_total_across_compiles,
+      shared_state_omitted_locked_old_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_old_final_compile,
+      shared_state_omitted_locked_unknown_age_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_unknown_age_total_across_compiles,
+      shared_state_omitted_locked_unknown_age_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_unknown_age_final_compile,
+      shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles,
+      shared_state_omitted_locked_with_active_critical_commitment_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_active_critical_commitment_final_compile,
+      shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles,
+      shared_state_omitted_locked_with_operational_canonicalizer_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_operational_canonicalizer_final_compile,
+      shared_state_omitted_locked_indexed_only_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_indexed_only_total_across_compiles,
+      shared_state_omitted_locked_indexed_only_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_indexed_only_final_compile,
       shared_state_omitted_pending: sharedStateCapPressureMetricCounts.shared_state_omitted_pending,
+      shared_state_omitted_pending_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_pending_total_across_compiles,
+      shared_state_omitted_pending_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_pending_final_compile,
       shared_state_omitted_low_salience_live:
         sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live,
+      shared_state_omitted_low_salience_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live_final_compile,
       shared_state_omitted_dormant_live:
         sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live,
+      shared_state_omitted_dormant_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live_final_compile,
       shared_state_active_low_salience_live:
         sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live,
+      shared_state_active_low_salience_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live_final_compile,
       shared_state_active_dormant_live:
         sharedStateCapPressureMetricCounts.shared_state_active_dormant_live,
+      shared_state_active_dormant_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_active_dormant_live_final_compile,
       shared_state_demoted_live_to_low_salience_total:
         sharedStateCapPressureMetricCounts.shared_state_demoted_live_to_low_salience_total,
       shared_state_demoted_low_salience_to_dormant_total:
@@ -3059,6 +3250,12 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_reactivated_low_salience_live_total,
       shared_state_reactivated_dormant_live_total:
         sharedStateCapPressureMetricCounts.shared_state_reactivated_dormant_live_total,
+      shared_state_at_cap_but_all_keys_indexed_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_but_all_keys_indexed_compiles_total,
+      shared_state_at_cap_with_operational_omission_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_with_operational_omission_compiles_total,
+      shared_state_at_cap_with_cap_rejection_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_with_cap_rejection_compiles_total,
       shared_state_all_active_keys_indexed:
         sharedStateCapPressureMetricCounts.shared_state_all_active_keys_indexed,
       shared_state_live_entry_starvation:
@@ -3453,22 +3650,76 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_compile_evaluated_turns,
       shared_state_omitted_recent_entries:
         sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries,
+      shared_state_omitted_recent_entries_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_recent_entries_total_across_compiles,
       shared_state_omitted_live_recent_operational:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational,
+      shared_state_omitted_live_recent_operational_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational_total_across_compiles,
+      shared_state_omitted_live_recent_operational_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_operational_final_compile,
       shared_state_omitted_live_recent_low_salience:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience,
+      shared_state_omitted_live_recent_low_salience_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience_total_across_compiles,
+      shared_state_omitted_live_recent_low_salience_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_recent_low_salience_final_compile,
       shared_state_omitted_live_old:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old,
+      shared_state_omitted_live_old_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_total_across_compiles,
+      shared_state_omitted_live_old_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_final_compile,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
+      shared_state_omitted_locked_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_total_across_compiles,
+      shared_state_omitted_locked_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_final_compile,
+      shared_state_omitted_locked_recent_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_recent_total_across_compiles,
+      shared_state_omitted_locked_recent_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_recent_final_compile,
+      shared_state_omitted_locked_old_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_old_total_across_compiles,
+      shared_state_omitted_locked_old_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_old_final_compile,
+      shared_state_omitted_locked_unknown_age_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_unknown_age_total_across_compiles,
+      shared_state_omitted_locked_unknown_age_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_unknown_age_final_compile,
+      shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_active_critical_commitment_total_across_compiles,
+      shared_state_omitted_locked_with_active_critical_commitment_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_active_critical_commitment_final_compile,
+      shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_operational_canonicalizer_total_across_compiles,
+      shared_state_omitted_locked_with_operational_canonicalizer_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_with_operational_canonicalizer_final_compile,
+      shared_state_omitted_locked_indexed_only_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_indexed_only_total_across_compiles,
+      shared_state_omitted_locked_indexed_only_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_locked_indexed_only_final_compile,
       shared_state_omitted_pending: sharedStateCapPressureMetricCounts.shared_state_omitted_pending,
+      shared_state_omitted_pending_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_pending_total_across_compiles,
+      shared_state_omitted_pending_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_pending_final_compile,
       shared_state_omitted_low_salience_live:
         sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live,
+      shared_state_omitted_low_salience_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live_final_compile,
       shared_state_omitted_dormant_live:
         sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live,
+      shared_state_omitted_dormant_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live_final_compile,
       shared_state_active_low_salience_live:
         sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live,
+      shared_state_active_low_salience_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live_final_compile,
       shared_state_active_dormant_live:
         sharedStateCapPressureMetricCounts.shared_state_active_dormant_live,
+      shared_state_active_dormant_live_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_active_dormant_live_final_compile,
       shared_state_demoted_live_to_low_salience_total:
         sharedStateCapPressureMetricCounts.shared_state_demoted_live_to_low_salience_total,
       shared_state_demoted_low_salience_to_dormant_total:
@@ -3477,6 +3728,12 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_reactivated_low_salience_live_total,
       shared_state_reactivated_dormant_live_total:
         sharedStateCapPressureMetricCounts.shared_state_reactivated_dormant_live_total,
+      shared_state_at_cap_but_all_keys_indexed_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_but_all_keys_indexed_compiles_total,
+      shared_state_at_cap_with_operational_omission_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_with_operational_omission_compiles_total,
+      shared_state_at_cap_with_cap_rejection_compiles_total:
+        sharedStateCapPressureMetricCounts.shared_state_at_cap_with_cap_rejection_compiles_total,
       shared_state_all_active_keys_indexed:
         sharedStateCapPressureMetricCounts.shared_state_all_active_keys_indexed,
       shared_state_live_entry_starvation:

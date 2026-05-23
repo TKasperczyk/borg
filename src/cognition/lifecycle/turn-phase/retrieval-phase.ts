@@ -152,12 +152,15 @@ function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
 }
 
 function retrievedStreamEntryIds(
-  input: Pick<EvidenceLedgerBuildInput, "retrievedEvidence" | "retrievedEpisodes">,
+  input: Partial<Pick<EvidenceLedgerBuildInput, "retrievedEvidence" | "retrievedEpisodes">>,
 ): StreamEntryId[] {
+  const retrievedEvidence = input.retrievedEvidence ?? [];
+  const retrievedEpisodes = input.retrievedEpisodes ?? [];
+
   return uniqueStreamEntryIds([
-    ...input.retrievedEvidence.flatMap((item) => item.provenance?.streamIds ?? []),
-    ...input.retrievedEpisodes.flatMap((result) => result.episode.source_stream_ids),
-    ...input.retrievedEpisodes.flatMap((result) => result.citationChain.map((entry) => entry.id)),
+    ...retrievedEvidence.flatMap((item) => item.provenance?.streamIds ?? []),
+    ...retrievedEpisodes.flatMap((result) => result.episode.source_stream_ids),
+    ...retrievedEpisodes.flatMap((result) => result.citationChain.map((entry) => entry.id)),
   ]);
 }
 

@@ -2276,6 +2276,12 @@ describe("compileSharedStateArtifact", () => {
           }),
         }),
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),
+        expect.objectContaining({
+          event: "shared_state.compile.completed",
+          data: expect.objectContaining({
+            add_rejected_cap_exceeded_count: 1,
+          }),
+        }),
       ]),
     );
     expectSingleSuccessfulRepair(trace);
