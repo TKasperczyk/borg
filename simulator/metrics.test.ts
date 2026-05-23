@@ -223,6 +223,9 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_compiler_repair_succeeded_total",
   "shared_state_compiler_repair_failed_total",
   "shared_state_compiler_repair_failed_by_rejection_reason",
+  "shared_state_empty_update_attempted_total",
+  "shared_state_empty_update_dropped_total",
+  "shared_state_empty_update_repaired_total",
   "capability_overclaim_count",
   "capability_ambiguity_count",
   "capability_boundary_refusal_count",
@@ -1183,6 +1186,9 @@ describe("MetricsCapture", () => {
           new_state_key_count: 2,
           keys_with_single_entry_only: 1,
           similar_key_cluster_count: 0,
+          empty_update_attempted_count: 3,
+          empty_update_dropped_count: 2,
+          empty_update_repaired_count: 0,
         },
         {
           ts: 102.5,
@@ -1202,6 +1208,34 @@ describe("MetricsCapture", () => {
           turnId: "turn-compiler-1",
           event: "shared_state.compile.add_rejected_missing_new_key_reason",
           state_key: "decision.architecture.api_boundary",
+        },
+        {
+          ts: 102.8,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.empty_update_dropped",
+          operation_index: 2,
+          operation_id: "ssa_empty_1",
+          state_key: "decision.architecture",
+          field_presence: {
+            kind: false,
+            text: false,
+            owner_entity_id: false,
+            canonicalizes: false,
+          },
+        },
+        {
+          ts: 102.9,
+          turnId: "turn-compiler-1",
+          event: "shared_state.compile.empty_update_dropped",
+          operation_index: 4,
+          operation_id: "ssa_empty_2",
+          state_key: "plan.attendees",
+          field_presence: {
+            kind: false,
+            text: true,
+            owner_entity_id: false,
+            canonicalizes: true,
+          },
         },
         {
           ts: 103,
@@ -1283,6 +1317,9 @@ describe("MetricsCapture", () => {
       missing_new_key_reason: 1,
       relationship_label_ungrounded: 2,
     });
+    expect(row.shared_state_empty_update_attempted_total).toBe(3);
+    expect(row.shared_state_empty_update_dropped_total).toBe(2);
+    expect(row.shared_state_empty_update_repaired_total).toBe(0);
     expect(row.shared_state_compiler_operations_total_by_kind).toEqual({
       add: 5,
       update: 1,

@@ -6,13 +6,14 @@ import type {
 } from "../../memory/decision-artifacts/index.js";
 import {
   createEntityId,
+  createGoalId,
   createRelationalSlotId,
   createSharedStateEntryId,
   createStreamEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import type { EmitSharedStatePatch } from "./schema.js";
+import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./schema.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
 
 const EMPTY_CANONICALIZES = {
@@ -44,6 +45,8 @@ function makeEntry(input: {
   kind?: SharedStateEntry["kind"];
   rank?: number;
   text?: string;
+  ownerEntityId?: EntityId | null;
+  canonicalizes?: SharedStateEntry["canonicalizes"];
 }): SharedStateEntry {
   const rank = input.rank ?? 0;
 
@@ -53,14 +56,14 @@ function makeEntry(input: {
     state_key: input.stateKey,
     kind: input.kind ?? "live",
     text: input.text ?? `Entry ${rank}`,
-    owner_entity_id: null,
+    owner_entity_id: input.ownerEntityId ?? null,
     provenance_stream_entry_ids: [input.sourceStreamEntryId],
     last_updated_stream_entry_ids: [input.sourceStreamEntryId],
     created_at: 1_000 + rank,
     last_updated_at: 1_000 + rank,
     superseded_by_id: null,
     rank,
-    canonicalizes: EMPTY_CANONICALIZES,
+    canonicalizes: input.canonicalizes ?? EMPTY_CANONICALIZES,
   };
 }
 
@@ -69,10 +72,12 @@ function normalizeKeyedPatch(input: {
   operations: EmitSharedStatePatch["operations"];
   audienceEntityId: EntityId;
   sourceStreamEntryId: StreamEntryId;
+  allowedSourceStreamEntryIds?: readonly StreamEntryId[];
   participantRoster?: Parameters<typeof normalizePatch>[0]["participantRoster"];
   relationshipEvidenceStreamEntryTrust?: Parameters<
     typeof normalizePatch
   >[0]["relationshipEvidenceStreamEntryTrust"];
+  canonicalizationCandidates?: SharedStateCanonicalizationCandidates;
 }) {
   const selfEntityId = createEntityId();
   const speakerEntityId = createEntityId();
@@ -91,8 +96,10 @@ function normalizeKeyedPatch(input: {
     participants: [],
     participantRoster: input.participantRoster,
     relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
-    allowedSourceStreamEntryIds: new Set([input.sourceStreamEntryId]),
-    allowedCanonicalizationIds: allowedCanonicalizationIds(undefined),
+    allowedSourceStreamEntryIds: new Set(
+      input.allowedSourceStreamEntryIds ?? [input.sourceStreamEntryId],
+    ),
+    allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: 2,
   });
 }
@@ -114,6 +121,403 @@ function addOperation(input: {
     source_stream_entry_ids: [input.sourceStreamEntryId],
   };
 }
+
+describe("normalizePatch empty update no-op handling", () => {
+  it("drops an update with no material fields", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: entry.state_key ?? "decision.route",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(1);
+    expect(result.emptyUpdateDrops).toEqual([
+      {
+        operationIndex: 0,
+        operationId: entry.id,
+        stateKey: "decision.route",
+        fieldPresence: {
+          kind: false,
+          text: false,
+          owner_entity_id: false,
+          canonicalizes: false,
+        },
+      },
+    ]);
+  });
+
+  it("drops an update with text equal to the existing entry", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          text: "Madrid 3 is locked.",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateDrops).toHaveLength(1);
+    expect(result.emptyUpdateDrops[0]?.fieldPresence.text).toBe(true);
+  });
+
+  it("applies an update with text different from the existing entry", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          text: "Madrid 4 is locked.",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.emptyUpdateDrops).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(1);
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entry.id,
+        text: "Madrid 4 is locked.",
+      }),
+    ]);
+  });
+
+  it("drops an update that repeats an existing owner outside the current allowed set", () => {
+    const audienceEntityId = createEntityId();
+    const historicalOwnerEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+      ownerEntityId: historicalOwnerEntityId,
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          owner_entity_id: historicalOwnerEntityId,
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateDrops).toEqual([
+      expect.objectContaining({
+        operationId: entry.id,
+        fieldPresence: expect.objectContaining({
+          owner_entity_id: true,
+        }),
+      }),
+    ]);
+  });
+
+  it("rejects an update that introduces a new owner outside the current allowed set", () => {
+    const audienceEntityId = createEntityId();
+    const historicalOwnerEntityId = createEntityId();
+    const disallowedOwnerEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+      ownerEntityId: historicalOwnerEntityId,
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          owner_entity_id: disallowedOwnerEntityId,
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.emptyUpdateDrops).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(0);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "invalid_owner_entity_id",
+        operationIndex: 0,
+      }),
+    ]);
+  });
+
+  it("applies a text change that repeats an existing owner outside the current allowed set", () => {
+    const audienceEntityId = createEntityId();
+    const historicalOwnerEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+      ownerEntityId: historicalOwnerEntityId,
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          owner_entity_id: historicalOwnerEntityId,
+          text: "Madrid 4 is locked.",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.emptyUpdateDrops).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entry.id,
+        owner_entity_id: historicalOwnerEntityId,
+        text: "Madrid 4 is locked.",
+      }),
+    ]);
+  });
+
+  it("applies an update with same text and a new canonicalizes id", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const goalId = createGoalId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      kind: "locked",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          text: "Madrid 3 is locked.",
+          canonicalizes: {
+            goal_ids: [goalId],
+          },
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+      canonicalizationCandidates: {
+        goals: [{ id: goalId, text: "Route goal" }],
+      },
+    });
+
+    expect(result.emptyUpdateDrops).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entry.id,
+        canonicalizes: expect.objectContaining({
+          goal_ids: [goalId],
+        }),
+      }),
+    ]);
+  });
+
+  it("drops an update with same text and only existing canonicalizes ids", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const goalId = createGoalId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      kind: "locked",
+      text: "Madrid 3 is locked.",
+      canonicalizes: {
+        ...EMPTY_CANONICALIZES,
+        goal_ids: [goalId],
+      },
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          text: "Madrid 3 is locked.",
+          canonicalizes: {
+            goal_ids: [goalId],
+          },
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+      canonicalizationCandidates: {
+        goals: [{ id: goalId, text: "Route goal" }],
+      },
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(1);
+    expect(result.emptyUpdateDrops).toHaveLength(1);
+    expect(result.emptyUpdateDrops[0]?.fieldPresence.canonicalizes).toBe(true);
+  });
+
+  it("drops a provenance-only update with new source citations", () => {
+    const audienceEntityId = createEntityId();
+    const originalSourceStreamEntryId = createStreamEntryId();
+    const citationOnlySourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId: originalSourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          source_stream_entry_ids: [citationOnlySourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId: originalSourceStreamEntryId,
+      allowedSourceStreamEntryIds: [
+        originalSourceStreamEntryId,
+        citationOnlySourceStreamEntryId,
+      ],
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(1);
+    expect(result.emptyUpdateDrops).toHaveLength(1);
+  });
+
+  it("drops empty updates while preserving valid operations in a mixed patch", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.route",
+      text: "Madrid 3 is locked.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.route",
+          text: "Madrid 4 is locked.",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.emptyUpdateAttemptedCount).toBe(2);
+    expect(result.emptyUpdateDrops).toHaveLength(1);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        text: "Madrid 4 is locked.",
+      }),
+    ]);
+  });
+});
 
 describe("normalizePatch state_key validation", () => {
   it("rejects protected relationship labels without grounding evidence", () => {

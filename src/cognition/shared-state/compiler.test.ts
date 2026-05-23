@@ -284,6 +284,7 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "third or later live entry with the same state_key",
     );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Do not emit cosmetic or provenance-only updates");
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Every add, update, and supersede replacement");
   });
 
@@ -1504,6 +1505,161 @@ describe("compileSharedStateArtifact", () => {
 
     expect(repository.get(audience)?.record_version).toBe((initial?.record_version ?? 0) + 1);
     expect(repository.get(audience)?.last_compiled_stream_entry_id).toBe(currentStreamEntryId);
+  });
+
+  it("succeeds without degradation when all operations are dropped empty updates", async () => {
+    const trace = createTraceRecorder();
+    const onDegraded = vi.fn();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "decision.route",
+        kind: "live",
+        text: "Madrid 3 is locked.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+      {
+        type: "add",
+        state_key: "decision.pacing",
+        kind: "locked",
+        text: "Keep the first leg short.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+      {
+        type: "add",
+        state_key: "decision.rooms",
+        kind: "pending",
+        text: "Room assignments are unresolved.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const entries = repository.get(audience)?.entries ?? [];
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: entries.map((entry) => ({
+            type: "update",
+            id: entry.id,
+            state_key: entry.state_key,
+            source_stream_entry_ids: [currentStreamEntryId],
+          })),
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      onDegraded,
+    });
+
+    expect(patch.operations).toEqual([]);
+    expect(onDegraded).not.toHaveBeenCalled();
+    expect(repository.get(audience)?.record_version).toBe((initial?.record_version ?? 0) + 1);
+    expect(repository.get(audience)?.entries).toHaveLength(3);
+    expect(
+      trace.events.filter((event) => event.event === "shared_state.compile.empty_update_dropped"),
+    ).toHaveLength(3);
+    expect(
+      trace.events.some(
+        (event) =>
+          event.event === "shared_state.compile.degraded" && event.data.reason === "invalid_patch",
+      ),
+    ).toBe(false);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.completed",
+        data: expect.objectContaining({
+          applied: false,
+          operationCount: 0,
+          rejectedCount: 0,
+          empty_update_attempted_count: 3,
+          empty_update_dropped_count: 3,
+          empty_update_repaired_count: 0,
+        }),
+      }),
+    );
+  });
+
+  it("drops empty updates while applying other valid operations", async () => {
+    const trace = createTraceRecorder();
+    repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "decision.route",
+        kind: "live",
+        text: "Madrid 3 is locked.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const existing = repository.get(audience)?.entries[0];
+    expect(existing).toBeDefined();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: existing?.id,
+              state_key: existing?.state_key,
+              text: existing?.text,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+            {
+              type: "add",
+              state_key: "decision.hotel",
+              new_key_reason: "test fixture hotel decision",
+              kind: "live",
+              text: "Hotel selection is still open.",
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "decision.hotel",
+      }),
+    ]);
+    expect(activeEntries()).toHaveLength(2);
+    expect(
+      trace.events.filter((event) => event.event === "shared_state.compile.empty_update_dropped"),
+    ).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          operation_index: 0,
+          operation_id: existing?.id,
+          state_key: "decision.route",
+          field_presence: {
+            kind: false,
+            text: true,
+            owner_entity_id: false,
+            canonicalizes: false,
+          },
+        }),
+      }),
+    ]);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.completed",
+        data: expect.objectContaining({
+          applied: true,
+          operationCount: 1,
+          rejectedCount: 0,
+          empty_update_attempted_count: 1,
+          empty_update_dropped_count: 1,
+          empty_update_repaired_count: 0,
+        }),
+      }),
+    );
   });
 
   it("creates an empty artifact on a first no-op compile so later turns can delta from it", async () => {

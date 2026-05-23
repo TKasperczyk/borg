@@ -535,6 +535,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     shared_state_compiler_repair_succeeded_total: 0,
     shared_state_compiler_repair_failed_total: 0,
     shared_state_compiler_repair_failed_by_rejection_reason: {},
+    shared_state_empty_update_attempted_total: 0,
+    shared_state_empty_update_dropped_total: 0,
+    shared_state_empty_update_repaired_total: 0,
     capability_overclaim_count: 0,
     capability_ambiguity_count: 0,
     capability_boundary_refusal_count: 0,
@@ -799,6 +802,9 @@ describe("SimulatorRunner", () => {
           missing_new_key_reason: 1,
           relationship_label_ungrounded: 2,
         },
+        shared_state_empty_update_attempted_total: 4,
+        shared_state_empty_update_dropped_total: 4,
+        shared_state_empty_update_repaired_total: 0,
         shared_state_compiler_operations_total_by_kind: {
           add: 5,
           update: 1,
@@ -865,6 +871,7 @@ describe("SimulatorRunner", () => {
     expect(report).toContain(
       "Shared-state repair failures by reason: missing_new_key_reason=1, relationship_label_ungrounded=2",
     );
+    expect(report).toContain("Shared-state empty updates: attempted 4, dropped 4, repaired 0");
     expect(report).toContain(
       "Shared-state compiler operations by kind: add=5, prune=2, supersede=1, update=1",
     );

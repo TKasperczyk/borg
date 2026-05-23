@@ -283,6 +283,9 @@ type SharedStateCompilerHealthMetricCounts = Pick<
   | "shared_state_compiler_repair_succeeded_total"
   | "shared_state_compiler_repair_failed_total"
   | "shared_state_compiler_repair_failed_by_rejection_reason"
+  | "shared_state_empty_update_attempted_total"
+  | "shared_state_empty_update_dropped_total"
+  | "shared_state_empty_update_repaired_total"
   | "shared_state_compiler_operations_total_by_kind"
   | "shared_state_add_to_update_ratio"
   | "shared_state_entries_by_key"
@@ -1217,6 +1220,32 @@ function sharedStateCompilerHealthMetrics(
 ): SharedStateCompilerHealthMetricCounts {
   const operationsTotalByKind = sharedStateCompilerOperationCountsByKind(traceRecords);
   const operationsByKey = sharedStateOperationCountsByKey(traceRecords);
+  const emptyUpdateDroppedEventCount = traceRecords.filter(
+    (record) => record.event === "shared_state.compile.empty_update_dropped",
+  ).length;
+  const completedRecords = traceRecords.filter(
+    (record) => record.event === "shared_state.compile.completed",
+  );
+  const emptyUpdateAttemptedCompletedCount = completedRecords.reduce(
+    (sum, record) => sum + traceNumber(record, "empty_update_attempted_count"),
+    0,
+  );
+  const emptyUpdateDroppedCompletedCount = completedRecords.reduce(
+    (sum, record) => sum + traceNumber(record, "empty_update_dropped_count"),
+    0,
+  );
+  const emptyUpdateRepairedCount = completedRecords.reduce(
+    (sum, record) => sum + traceNumber(record, "empty_update_repaired_count"),
+    0,
+  );
+  const emptyUpdateAttemptedCount =
+    emptyUpdateAttemptedCompletedCount > 0
+      ? emptyUpdateAttemptedCompletedCount
+      : emptyUpdateDroppedEventCount;
+  const emptyUpdateDroppedCount =
+    emptyUpdateDroppedCompletedCount > 0
+      ? emptyUpdateDroppedCompletedCount
+      : emptyUpdateDroppedEventCount;
 
   return {
     shared_state_compiler_max_tokens_total: traceRecords.filter(
@@ -1239,6 +1268,9 @@ function sharedStateCompilerHealthMetrics(
     ).length,
     shared_state_compiler_repair_failed_by_rejection_reason:
       sharedStateCompilerRepairFailedReasons(traceRecords),
+    shared_state_empty_update_attempted_total: emptyUpdateAttemptedCount,
+    shared_state_empty_update_dropped_total: emptyUpdateDroppedCount,
+    shared_state_empty_update_repaired_total: emptyUpdateRepairedCount,
     shared_state_compiler_operations_total_by_kind: operationsTotalByKind,
     shared_state_add_to_update_ratio: sharedStateAddToUpdateRatio(operationsTotalByKind),
     shared_state_entries_by_key: latestSharedStateEntriesByKey(traceRecords),
@@ -2945,6 +2977,12 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       shared_state_compiler_repair_failed_by_rejection_reason:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
+      shared_state_empty_update_attempted_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_attempted_total,
+      shared_state_empty_update_dropped_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_dropped_total,
+      shared_state_empty_update_repaired_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_repaired_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,
@@ -3341,6 +3379,12 @@ export class MetricsCapture {
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_total,
       shared_state_compiler_repair_failed_by_rejection_reason:
         sharedStateCompilerHealthMetricCounts.shared_state_compiler_repair_failed_by_rejection_reason,
+      shared_state_empty_update_attempted_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_attempted_total,
+      shared_state_empty_update_dropped_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_dropped_total,
+      shared_state_empty_update_repaired_total:
+        sharedStateCompilerHealthMetricCounts.shared_state_empty_update_repaired_total,
       capability_overclaim_count: 0,
       capability_ambiguity_count: 0,
       capability_boundary_refusal_count: 0,

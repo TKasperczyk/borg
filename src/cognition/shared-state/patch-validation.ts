@@ -28,6 +28,7 @@ import type {
   CanonicalizationDuplicateDrop,
   CanonicalizeIdChannel,
   DroppedCanonicalizeId,
+  EmptyUpdateDrop,
   EmitSharedStatePatch,
   NonLockedCanonicalizesDrop,
   ParsedCanonicalizes,
@@ -61,6 +62,26 @@ function normalizeOwnerEntityId(
 
   if (!entityIdHelpers.is(value)) {
     return "invalid";
+  }
+
+  return allowedOwnerEntityIds.has(value) ? value : "invalid";
+}
+
+function normalizeUpdateOwnerEntityId(
+  value: string | null | undefined,
+  entry: SharedStateEntry,
+  allowedOwnerEntityIds: ReadonlySet<EntityId>,
+): EntityId | null | "invalid" {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (!entityIdHelpers.is(value)) {
+    return "invalid";
+  }
+
+  if (value === entry.owner_entity_id) {
+    return value;
   }
 
   return allowedOwnerEntityIds.has(value) ? value : "invalid";
@@ -259,6 +280,64 @@ function previousEntryById(
   };
 }
 
+function canonicalizesAddNewIds(
+  existing: SharedStateCanonicalizes,
+  proposed: SharedStateCanonicalizes | undefined,
+): boolean {
+  if (proposed === undefined) {
+    return false;
+  }
+
+  return (
+    proposed.goal_ids.some((id) => !existing.goal_ids.some((existingId) => existingId === id)) ||
+    proposed.commitment_ids.some(
+      (id) => !existing.commitment_ids.some((existingId) => existingId === id),
+    ) ||
+    proposed.action_ids.some(
+      (id) => !existing.action_ids.some((existingId) => existingId === id),
+    ) ||
+    proposed.open_question_ids.some(
+      (id) => !existing.open_question_ids.some((existingId) => existingId === id),
+    )
+  );
+}
+
+function isMaterialNoopUpdate(input: {
+  operation: Extract<ParsedPatchOperation, { type: "update" }>;
+  entry: SharedStateEntry;
+  nextKind: SharedStateEntryKind;
+  ownerEntityId: EntityId | null;
+  canonicalizes: SharedStateCanonicalizes | undefined;
+}): boolean {
+  return (
+    input.operation.state_key === input.entry.state_key &&
+    input.nextKind === input.entry.kind &&
+    (input.operation.text === undefined || input.operation.text === input.entry.text) &&
+    (input.operation.owner_entity_id === undefined ||
+      input.ownerEntityId === input.entry.owner_entity_id) &&
+    !canonicalizesAddNewIds(input.entry.canonicalizes, input.canonicalizes)
+  );
+}
+
+function emptyUpdateDrop(input: {
+  operation: Extract<ParsedPatchOperation, { type: "update" }>;
+  operationIndex: number;
+  id: SharedStateEntryId;
+  entry: SharedStateEntry;
+}): EmptyUpdateDrop {
+  return {
+    operationIndex: input.operationIndex,
+    operationId: input.id,
+    stateKey: input.entry.state_key,
+    fieldPresence: {
+      kind: input.operation.kind !== undefined,
+      text: input.operation.text !== undefined,
+      owner_entity_id: input.operation.owner_entity_id !== undefined,
+      canonicalizes: input.operation.canonicalizes !== undefined,
+    },
+  };
+}
+
 type StateKeyTrackedEntry = Pick<
   SharedStateEntry,
   "kind" | "state_key" | "created_at" | "last_updated_at" | "rank"
@@ -385,6 +464,8 @@ export function normalizePatch(input: {
   rejected: PatchRejection[];
   droppedCanonicalizeIds: DroppedCanonicalizeId[];
   nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[];
+  emptyUpdateDrops: EmptyUpdateDrop[];
+  emptyUpdateAttemptedCount: number;
 } {
   const allowedOwnerEntityIds = new Set<EntityId>([
     input.audienceEntityId,
@@ -404,6 +485,8 @@ export function normalizePatch(input: {
   const rejected: PatchRejection[] = [];
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
+  const emptyUpdateDrops: EmptyUpdateDrop[] = [];
+  let emptyUpdateAttemptedCount = 0;
   const baseRank = input.previousArtifact?.entries.length ?? 0;
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
   const initialActiveStateKeyCount = buildExistingStateKeyRegistry(input.previousArtifact).length;
@@ -634,24 +717,40 @@ export function normalizePatch(input: {
 
         const nextKind = operation.kind ?? entry.kind;
 
-        if (
-          operation.kind === undefined &&
-          operation.text === undefined &&
-          operation.owner_entity_id === undefined &&
-          operation.canonicalizes === undefined &&
-          operation.state_key === entry.state_key
-        ) {
-          rejected.push(rejection(operation, operationIndex, "empty_update"));
-          return;
-        }
-
-        const ownerEntityId = normalizeOwnerEntityId(
+        const ownerEntityId = normalizeUpdateOwnerEntityId(
           operation.owner_entity_id,
+          entry,
           allowedOwnerEntityIds,
         );
 
         if (ownerEntityId === "invalid") {
           rejected.push(rejection(operation, operationIndex, "invalid_owner_entity_id"));
+          return;
+        }
+
+        const operationDroppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
+        const operationNonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
+        const canonicalizes = normalizeCanonicalizes({
+          value: operation.canonicalizes,
+          kind: nextKind,
+          allowedIds: input.allowedCanonicalizationIds,
+          operation,
+          operationIndex,
+          dropped: operationDroppedCanonicalizeIds,
+          nonLockedDrops: operationNonLockedCanonicalizesDrops,
+        });
+        emptyUpdateAttemptedCount += 1;
+
+        if (
+          isMaterialNoopUpdate({
+            operation,
+            entry,
+            nextKind,
+            ownerEntityId,
+            canonicalizes,
+          })
+        ) {
+          emptyUpdateDrops.push(emptyUpdateDrop({ operation, operationIndex, id, entry }));
           return;
         }
 
@@ -683,15 +782,8 @@ export function normalizePatch(input: {
           return;
         }
 
-        const canonicalizes = normalizeCanonicalizes({
-          value: operation.canonicalizes,
-          kind: nextKind,
-          allowedIds: input.allowedCanonicalizationIds,
-          operation,
-          operationIndex,
-          dropped: droppedCanonicalizeIds,
-          nonLockedDrops: nonLockedCanonicalizesDrops,
-        });
+        droppedCanonicalizeIds.push(...operationDroppedCanonicalizeIds);
+        nonLockedCanonicalizesDrops.push(...operationNonLockedCanonicalizesDrops);
 
         operations.push({
           type: "update",
@@ -850,7 +942,14 @@ export function normalizePatch(input: {
     }
   });
 
-  return { operations, rejected, droppedCanonicalizeIds, nonLockedCanonicalizesDrops };
+  return {
+    operations,
+    rejected,
+    droppedCanonicalizeIds,
+    nonLockedCanonicalizesDrops,
+    emptyUpdateDrops,
+    emptyUpdateAttemptedCount,
+  };
 }
 
 function dedupeCanonicalizeIds<TId extends string>(

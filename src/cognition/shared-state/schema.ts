@@ -362,6 +362,18 @@ export type NonLockedCanonicalizesDrop = {
   };
 };
 
+export type EmptyUpdateDrop = {
+  operationIndex: number;
+  operationId: SharedStateEntryId;
+  stateKey: string | null;
+  fieldPresence: {
+    kind: boolean;
+    text: boolean;
+    owner_entity_id: boolean;
+    canonicalizes: boolean;
+  };
+};
+
 export type AllowedCanonicalizationIds = {
   goalIds: ReadonlySet<GoalId>;
   commitmentIds: ReadonlySet<CommitmentId>;

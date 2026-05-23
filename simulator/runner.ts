@@ -1591,6 +1591,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Shared-state compiler degraded events: ${report.finalMetrics.shared_state_compiler_degraded_total}`,
     `- Shared-state compiler repair: attempted ${report.finalMetrics.shared_state_compiler_repair_attempted_total}, succeeded ${report.finalMetrics.shared_state_compiler_repair_succeeded_total}, failed ${report.finalMetrics.shared_state_compiler_repair_failed_total}`,
     `- Shared-state repair failures by reason: ${reportCountMap(report.finalMetrics.shared_state_compiler_repair_failed_by_rejection_reason)}`,
+    `- Shared-state empty updates: attempted ${report.finalMetrics.shared_state_empty_update_attempted_total}, dropped ${report.finalMetrics.shared_state_empty_update_dropped_total}, repaired ${report.finalMetrics.shared_state_empty_update_repaired_total}`,
     `- Shared-state compiler operations by kind: ${reportCountMap(report.finalMetrics.shared_state_compiler_operations_total_by_kind)}`,
     `- Shared-state compiler add/update ratio: ${report.finalMetrics.shared_state_add_to_update_ratio.toFixed(2)}`,
     `- Shared-state entries by key: ${reportCountMap(report.finalMetrics.shared_state_entries_by_key)}`,

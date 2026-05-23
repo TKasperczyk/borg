@@ -21,6 +21,7 @@ import {
   SHARED_STATE_TOOL_NAME,
   sharedStatePatchSchema,
   type CanonicalizationDuplicateDrop,
+  type EmptyUpdateDrop,
   type EmitSharedStatePatch,
   type NonLockedCanonicalizesDrop,
   type PatchRejection,
@@ -147,6 +148,9 @@ export function traceCompileCompleted(options: {
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
+  emptyUpdateAttemptedCount?: number;
+  emptyUpdateDroppedCount?: number;
+  emptyUpdateRepairedCount?: number;
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -229,6 +233,9 @@ export function traceCompileCompleted(options: {
       canonicalizes_rejected_non_locked: toTraceJsonValue(
         options.nonLockedCanonicalizesDrops ?? [],
       ),
+      empty_update_attempted_count: options.emptyUpdateAttemptedCount ?? 0,
+      empty_update_dropped_count: options.emptyUpdateDroppedCount ?? 0,
+      empty_update_repaired_count: options.emptyUpdateRepairedCount ?? 0,
     });
   }
 }
@@ -322,6 +329,26 @@ export function traceLabelUngrounded(options: {
       options.rejection.rejectedRelationshipEvidenceRelationalSlotIds ?? [],
     rejected_relationship_evidence_stream_entry_ids:
       options.rejection.rejectedRelationshipEvidenceStreamEntryIds ?? [],
+  });
+}
+
+export function traceEmptyUpdateDropped(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  drop: EmptyUpdateDrop;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("shared_state.compile.empty_update_dropped", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    operation_index: options.drop.operationIndex,
+    operation_id: options.drop.operationId,
+    state_key: options.drop.stateKey,
+    field_presence: toTraceJsonValue(options.drop.fieldPresence),
   });
 }
 

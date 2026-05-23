@@ -26,6 +26,7 @@ import {
   SHARED_STATE_TOOL_NAME,
   SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
+  type EmptyUpdateDrop,
   type EmitSharedStatePatch,
   type PatchRejection,
   type SharedStateCompileDegradedReason,
@@ -41,6 +42,7 @@ import {
   traceCompileRepairAttempted,
   traceCompileRepairFailed,
   traceCompileRepairSucceeded,
+  traceEmptyUpdateDropped,
   traceLabelUngrounded,
   traceLlmCallError,
   traceLlmCallResponse,
@@ -336,6 +338,20 @@ function traceRepairablePatchRejection(
   }
 }
 
+function traceEmptyUpdateDrops(
+  input: CompileSharedStateArtifactInput,
+  drops: readonly EmptyUpdateDrop[],
+): void {
+  for (const drop of drops) {
+    traceEmptyUpdateDropped({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      drop,
+    });
+  }
+}
+
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   const seen = new Set<string>();
   const unique: StreamEntryId[] = [];
@@ -485,6 +501,18 @@ export async function compileSharedStateArtifact(
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     ledgerMode,
     promptBudget,
+    emptyUpdateAttemptedCount: 0,
+    emptyUpdateDroppedCount: 0,
+    emptyUpdateRepairedCount: 0,
+  };
+  const recordEmptyUpdateValidation = (normalizedPatch: {
+    emptyUpdateAttemptedCount: number;
+    emptyUpdateDrops: readonly EmptyUpdateDrop[];
+  }): void => {
+    compileCompletedTraceBase.emptyUpdateAttemptedCount +=
+      normalizedPatch.emptyUpdateAttemptedCount;
+    compileCompletedTraceBase.emptyUpdateDroppedCount += normalizedPatch.emptyUpdateDrops.length;
+    traceEmptyUpdateDrops(input, normalizedPatch.emptyUpdateDrops);
   };
 
   traceLlmCallStarted({
@@ -706,6 +734,7 @@ export async function compileSharedStateArtifact(
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
   });
+  recordEmptyUpdateValidation(normalized);
 
   let repairableRejections = repairablePatchRejections(normalized.rejected);
   for (const rejection of repairableRejections) {
@@ -848,6 +877,7 @@ export async function compileSharedStateArtifact(
       allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
       maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
     });
+    recordEmptyUpdateValidation(normalized);
     repairableRejections = repairablePatchRejections(normalized.rejected);
     for (const rejection of repairableRejections) {
       traceRepairablePatchRejection(input, rejection);

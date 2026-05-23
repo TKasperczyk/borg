@@ -78,5 +78,6 @@ export const SHARED_STATE_SYSTEM_PROMPT = [
   '- Example: "User is asking about X" and an active live entry already covers X -> update that entry.',
   '- Example: "Newer observation about a repeated state type" and an active live entry covers that same state type -> supersede the older entry if the new evidence replaces it.',
   "- Prefer update, supersede, and prune over add whenever the existing shared-state artifact already carries the relevant shared state.",
+  "- If an existing entry already represents the durable state and you have no content change, kind change, owner change, state_key change, or new canonicalization to add, emit no operation. Do not emit cosmetic or provenance-only updates -- the harness will drop them.",
   "- When locking durable shared state, actively look for older live fragments about the same topic or decision and supersede or prune them instead of leaving parallel live entries to accumulate.",
 ].join("\n");
