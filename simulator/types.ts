@@ -223,6 +223,14 @@ export type MetricsRow = {
   shared_state_omitted_live_old: number;
   shared_state_omitted_locked: number;
   shared_state_omitted_pending: number;
+  shared_state_omitted_low_salience_live: number;
+  shared_state_omitted_dormant_live: number;
+  shared_state_active_low_salience_live: number;
+  shared_state_active_dormant_live: number;
+  shared_state_demoted_live_to_low_salience_total: number;
+  shared_state_demoted_low_salience_to_dormant_total: number;
+  shared_state_reactivated_low_salience_live_total: number;
+  shared_state_reactivated_dormant_live_total: number;
   shared_state_all_active_keys_indexed: boolean;
   shared_state_live_entry_starvation: boolean;
   shared_state_newest_entries_reserved: number;

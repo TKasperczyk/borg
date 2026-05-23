@@ -27,6 +27,9 @@ import {
   type PatchRejection,
   type SharedStateLedgerMode,
 } from "./schema.js";
+import type { SharedStateLifecycleTransition } from "./lifecycle-aging.js";
+
+type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
 export function parseResponse(result: LLMCompleteResult): EmitSharedStatePatch {
   const acceptedToolNames = new Set<string>(SHARED_STATE_ACCEPTED_TOOL_NAMES);
@@ -142,8 +145,8 @@ export function traceCompileCompleted(options: {
   maxActiveEntries?: number;
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
-  operationCountsByKind?: Record<SharedStateOperation["type"], number>;
-  operationCountsByStateKey?: Record<string, Record<SharedStateOperation["type"], number>>;
+  operationCountsByKind?: Record<PublicSharedStateOperation["type"], number>;
+  operationCountsByStateKey?: Record<string, Record<PublicSharedStateOperation["type"], number>>;
   newStateKeys?: readonly string[];
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
@@ -151,6 +154,7 @@ export function traceCompileCompleted(options: {
   emptyUpdateAttemptedCount?: number;
   emptyUpdateDroppedCount?: number;
   emptyUpdateRepairedCount?: number;
+  lifecycleTransitions?: readonly SharedStateLifecycleTransition[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -204,6 +208,8 @@ export function traceCompileCompleted(options: {
       omitted_live_old: artifactSummary.omittedLiveOld,
       omitted_locked: artifactSummary.omittedLocked,
       omitted_pending: artifactSummary.omittedPending,
+      omitted_low_salience_live: artifactSummary.omittedLowSalienceLive,
+      omitted_dormant_live: artifactSummary.omittedDormantLive,
       all_active_keys_indexed: artifactSummary.allActiveKeysIndexed,
       newest_entries_reserved: artifactSummary.newestReservedEntryCount,
       live_starvation_with_reserved:
@@ -225,6 +231,7 @@ export function traceCompileCompleted(options: {
       similar_key_cluster_count: similarKeyClusterCount,
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
       omitted_by_kind: toTraceJsonValue(artifactSummary.omittedByKind),
+      active_by_kind: toTraceJsonValue(artifactSummary.activeByKind),
       shared_state_entries_by_key: toTraceJsonValue(artifactSummary.activeEntriesByKey),
       shared_state_top_keys_by_entry_count: toTraceJsonValue(artifactSummary.topKeysByEntryCount),
       ledger_mode: options.ledgerMode,
@@ -236,6 +243,19 @@ export function traceCompileCompleted(options: {
       empty_update_attempted_count: options.emptyUpdateAttemptedCount ?? 0,
       empty_update_dropped_count: options.emptyUpdateDroppedCount ?? 0,
       empty_update_repaired_count: options.emptyUpdateRepairedCount ?? 0,
+      lifecycle_demoted_live_to_low_salience_count: (options.lifecycleTransitions ?? []).filter(
+        (transition) => transition.fromKind === "live" && transition.toKind === "low_salience_live",
+      ).length,
+      lifecycle_demoted_low_salience_to_dormant_count: (options.lifecycleTransitions ?? []).filter(
+        (transition) =>
+          transition.fromKind === "low_salience_live" && transition.toKind === "dormant_live",
+      ).length,
+      lifecycle_reactivated_low_salience_live_count: (options.lifecycleTransitions ?? []).filter(
+        (transition) => transition.fromKind === "low_salience_live" && transition.toKind === "live",
+      ).length,
+      lifecycle_reactivated_dormant_live_count: (options.lifecycleTransitions ?? []).filter(
+        (transition) => transition.fromKind === "dormant_live" && transition.toKind === "live",
+      ).length,
     });
   }
 }

@@ -3028,4 +3028,217 @@ describe("compileSharedStateArtifact", () => {
       }),
     );
   });
+
+  it("applies internal lifecycle demotion after patch normalization without refreshing last update metadata", async () => {
+    const oldSource = createStreamEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "state.placeholder",
+          kind: "live",
+          text: "Placeholder shared state for the fixture",
+          provenance_stream_entry_ids: [oldSource],
+          last_updated_stream_entry_ids: [oldSource],
+          created_at: 100,
+          last_updated_at: 100,
+        },
+      ],
+      {
+        now: 100,
+      },
+    );
+    const entryId = initial?.entries[0]?.id;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      turnCounter: 12,
+      renderOptions: {
+        currentTurnCounter: 12,
+        lastUpdatedTurnByStreamEntryId: {
+          [oldSource]: 1,
+        },
+      },
+      lifecycle: {
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
+      },
+    });
+
+    const entryAfterDemotion = repository
+      .get(audience)
+      ?.entries.find((entry) => entry.id === entryId);
+
+    expect(entryAfterDemotion).toMatchObject({
+      kind: "low_salience_live",
+      last_updated_at: 100,
+      last_updated_stream_entry_ids: [oldSource],
+    });
+    expect(trace.events).toContainEqual({
+      event: "shared_state.lifecycle.demoted",
+      data: expect.objectContaining({
+        entry_id: entryId,
+        from_kind: "live",
+        to_kind: "low_salience_live",
+        reason: "old_live_without_structural_pull",
+      }),
+    });
+    expect(
+      trace.events.find((event) => event.event === "shared_state.compile.completed")?.data,
+    ).toMatchObject({
+      lifecycle_demoted_live_to_low_salience_count: 1,
+      active_by_kind: expect.objectContaining({
+        low_salience_live: 1,
+      }),
+    });
+  });
+
+  it("maps omitted update kinds for demoted entries back to public live kind", async () => {
+    const oldSource = createStreamEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "state.placeholder",
+          kind: "dormant_live",
+          text: "Placeholder shared state before direct update",
+          provenance_stream_entry_ids: [oldSource],
+          last_updated_stream_entry_ids: [oldSource],
+          created_at: 100,
+          last_updated_at: 100,
+        },
+      ],
+      {
+        now: 100,
+      },
+    );
+    const entryId = initial?.entries[0]?.id;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: entryId,
+              text: "Updated placeholder shared state",
+              source_stream_entry_ids: [oldSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [currentStreamEntryId, oldSource],
+      tracer: trace,
+      turnCounter: 30,
+      renderOptions: {
+        currentTurnCounter: 30,
+        lastUpdatedTurnByStreamEntryId: {
+          [oldSource]: 1,
+        },
+      },
+      lifecycle: {
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
+      },
+    });
+
+    expect(patch.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entryId,
+        kind: "live",
+        text: "Updated placeholder shared state",
+      }),
+    ]);
+    expect(repository.get(audience)?.entries.find((entry) => entry.id === entryId)?.kind).toBe(
+      "live",
+    );
+    expect(trace.events).toContainEqual({
+      event: "shared_state.lifecycle.reactivated",
+      data: expect.objectContaining({
+        entry_id: entryId,
+        from_kind: "dormant_live",
+        to_kind: "live",
+        reason: "touched_by_patch",
+      }),
+    });
+  });
+
+  it("advances live entries through low-salience and dormant states across compiles", async () => {
+    const oldSource = createStreamEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "state.placeholder",
+          kind: "live",
+          text: "Placeholder shared state before aging",
+          provenance_stream_entry_ids: [oldSource],
+          last_updated_stream_entry_ids: [oldSource],
+          created_at: 100,
+          last_updated_at: 100,
+        },
+      ],
+      {
+        now: 100,
+      },
+    );
+    const entryId = initial?.entries[0]?.id;
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({ operations: [] }),
+        emitSharedStateArtifactPatchResponse({ operations: [] }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      turnCounter: 10,
+      renderOptions: {
+        currentTurnCounter: 10,
+        lastUpdatedTurnByStreamEntryId: {
+          [oldSource]: 1,
+        },
+      },
+      lifecycle: {
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
+      },
+    });
+
+    expect(repository.get(audience)?.entries.find((entry) => entry.id === entryId)?.kind).toBe(
+      "low_salience_live",
+    );
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      turnCounter: 20,
+      renderOptions: {
+        currentTurnCounter: 20,
+        lastUpdatedTurnByStreamEntryId: {
+          [oldSource]: 1,
+        },
+      },
+      lifecycle: {
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
+      },
+    });
+
+    expect(repository.get(audience)?.entries.find((entry) => entry.id === entryId)?.kind).toBe(
+      "dormant_live",
+    );
+  });
 });

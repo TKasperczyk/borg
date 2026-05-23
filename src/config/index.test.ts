@@ -90,10 +90,14 @@ describe("config", () => {
         kindSoftCaps: {
           locked: 24,
           live: 10,
+          low_salience_live: 4,
+          dormant_live: 1,
           invalidated: 4,
           pending: 4,
           tentative: 2,
         },
+        recentTurnThreshold: 5,
+        dormantTurnThreshold: 15,
         renderMaxEntries: 40,
         renderMaxTokens: 5_000,
         renderReservedSlots: {
@@ -107,6 +111,8 @@ describe("config", () => {
           maxEntries: {
             locked: 14,
             live: 8,
+            low_salience_live: 2,
+            dormant_live: 0,
             pending: 6,
             invalidated: 4,
             tentative: 2,

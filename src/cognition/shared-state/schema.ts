@@ -2,7 +2,6 @@ import { z } from "zod";
 
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import {
-  SHARED_STATE_ENTRY_KINDS,
   type SharedStateArtifact,
   type SharedStateCanonicalizes,
   type SharedStateEntryKind,
@@ -46,18 +45,29 @@ const DEFAULT_MAX_ACTIVE_SHARED_STATE_ENTRIES = 40;
 const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {
   locked: 24,
   live: 10,
+  low_salience_live: 4,
+  dormant_live: 1,
   invalidated: 4,
   pending: 4,
   tentative: 2,
 } as const satisfies Record<SharedStateEntryKind, number>;
 const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
+  "dormant_live",
+  "low_salience_live",
+  "live",
   "tentative",
-  "locked",
   "invalidated",
   "pending",
-  "live",
+  "locked",
 ] as const satisfies readonly SharedStateEntryKind[];
-const sharedStateToolKindSchema = z.enum(SHARED_STATE_ENTRY_KINDS);
+export const SHARED_STATE_TOOL_ENTRY_KINDS = [
+  "locked",
+  "live",
+  "tentative",
+  "invalidated",
+  "pending",
+] as const;
+const sharedStateToolKindSchema = z.enum(SHARED_STATE_TOOL_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .describe("Stream entry ids that support this artifact operation.");
@@ -260,6 +270,8 @@ export type SharedStateLifecycleOptions = {
   maxLiveEntriesPerKey?: number;
   kindSoftCaps?: Partial<Record<SharedStateEntryKind, number>>;
   newestStateChangeReservedSlots?: number;
+  recentTurnThreshold?: number;
+  dormantTurnThreshold?: number;
 };
 
 export type SharedStateLedgerMode = "delta" | "full_fallback";

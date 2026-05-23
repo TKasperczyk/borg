@@ -23,6 +23,8 @@ export const SHARED_STATE_RENDER_FILL_ORDER = [
   "pending",
   "invalidated",
   "locked",
+  "low_salience_live",
+  "dormant_live",
   "tentative",
 ] as const satisfies readonly SharedStateEntryKind[];
 
@@ -109,6 +111,7 @@ function newestStateChangeReservedIds(input: {
 export type SharedStateRenderSalienceOptions = {
   currentUserStreamEntryId?: StreamEntryId;
   ledgerStreamEntryIds?: readonly StreamEntryId[];
+  recentlyRetrievedEntryIds?: readonly SharedStateEntry["id"][];
   activeOpenQuestionIds?: readonly OpenQuestionId[];
   activeActionIds?: readonly ActionId[];
   activeGoalIds?: readonly GoalId[];
@@ -161,6 +164,13 @@ export function sharedStateEntryHasLedgerOverlap(
   );
 }
 
+export function sharedStateEntryWasRecentlyRetrieved(
+  entry: SharedStateEntry,
+  recentlyRetrievedEntryIds: readonly SharedStateEntry["id"][] | undefined,
+): boolean {
+  return idSet(recentlyRetrievedEntryIds).has(entry.id);
+}
+
 export function sharedStateEntryHasOperationalCanonicalizer(
   entry: SharedStateEntry,
   options: Pick<
@@ -203,6 +213,10 @@ function sharedStateEntrySalienceScore(
   }
 
   if (sharedStateEntryHasLedgerOverlap(entry, options.ledgerStreamEntryIds)) {
+    return 500;
+  }
+
+  if (sharedStateEntryWasRecentlyRetrieved(entry, options.recentlyRetrievedEntryIds)) {
     return 500;
   }
 
@@ -499,7 +513,7 @@ export function onePerKindTokenDropFloor(
     return 0;
   }
 
-  if (kind === "tentative") {
+  if (kind === "tentative" || kind === "low_salience_live" || kind === "dormant_live") {
     return 0;
   }
 
@@ -601,7 +615,7 @@ export function tokenDropIndex(input: {
   for (const dropTier of sharedStateTokenDropTierOrder(input.entries, input.dropTiers)) {
     const dropTentative = tokenDropIndexForKinds({
       entries: input.entries,
-      kinds: ["tentative"],
+      kinds: ["tentative", "dormant_live", "low_salience_live"],
       minimumForKind: () => 0,
       dropTier,
       dropTiers: input.dropTiers,

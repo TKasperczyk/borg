@@ -267,6 +267,14 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_omitted_live_old"
   | "shared_state_omitted_locked"
   | "shared_state_omitted_pending"
+  | "shared_state_omitted_low_salience_live"
+  | "shared_state_omitted_dormant_live"
+  | "shared_state_active_low_salience_live"
+  | "shared_state_active_dormant_live"
+  | "shared_state_demoted_live_to_low_salience_total"
+  | "shared_state_demoted_low_salience_to_dormant_total"
+  | "shared_state_reactivated_low_salience_live_total"
+  | "shared_state_reactivated_dormant_live_total"
   | "shared_state_all_active_keys_indexed"
   | "shared_state_live_entry_starvation"
   | "shared_state_newest_entries_reserved"
@@ -940,6 +948,10 @@ function sharedStateCapPressureMetrics(
   let omittedLiveOld = 0;
   let omittedLocked = 0;
   let omittedPending = 0;
+  let omittedLowSalienceLive = 0;
+  let omittedDormantLive = 0;
+  let activeLowSalienceLive = 0;
+  let activeDormantLive = 0;
   let allActiveKeysIndexed = true;
   let liveEntryStarvation = false;
   let newestEntriesReserved = 0;
@@ -965,6 +977,10 @@ function sharedStateCapPressureMetrics(
     omittedLiveOld += traceNumber(record, "omitted_live_old");
     omittedLocked += traceNumber(record, "omitted_locked");
     omittedPending += traceNumber(record, "omitted_pending");
+    omittedLowSalienceLive = traceNumber(record, "omitted_low_salience_live");
+    omittedDormantLive = traceNumber(record, "omitted_dormant_live");
+    activeLowSalienceLive = traceObjectNumber(record, "active_by_kind", "low_salience_live");
+    activeDormantLive = traceObjectNumber(record, "active_by_kind", "dormant_live");
     allActiveKeysIndexed = allActiveKeysIndexed && record.all_active_keys_indexed !== false;
     newestEntriesReserved += traceNumber(record, "newest_entries_reserved");
 
@@ -995,6 +1011,34 @@ function sharedStateCapPressureMetrics(
     shared_state_omitted_live_old: omittedLiveOld,
     shared_state_omitted_locked: omittedLocked,
     shared_state_omitted_pending: omittedPending,
+    shared_state_omitted_low_salience_live: omittedLowSalienceLive,
+    shared_state_omitted_dormant_live: omittedDormantLive,
+    shared_state_active_low_salience_live: activeLowSalienceLive,
+    shared_state_active_dormant_live: activeDormantLive,
+    shared_state_demoted_live_to_low_salience_total: traceRecords.filter(
+      (record) =>
+        record.event === "shared_state.lifecycle.demoted" &&
+        traceString(record, "from_kind") === "live" &&
+        traceString(record, "to_kind") === "low_salience_live",
+    ).length,
+    shared_state_demoted_low_salience_to_dormant_total: traceRecords.filter(
+      (record) =>
+        record.event === "shared_state.lifecycle.demoted" &&
+        traceString(record, "from_kind") === "low_salience_live" &&
+        traceString(record, "to_kind") === "dormant_live",
+    ).length,
+    shared_state_reactivated_low_salience_live_total: traceRecords.filter(
+      (record) =>
+        record.event === "shared_state.lifecycle.reactivated" &&
+        traceString(record, "from_kind") === "low_salience_live" &&
+        traceString(record, "to_kind") === "live",
+    ).length,
+    shared_state_reactivated_dormant_live_total: traceRecords.filter(
+      (record) =>
+        record.event === "shared_state.lifecycle.reactivated" &&
+        traceString(record, "from_kind") === "dormant_live" &&
+        traceString(record, "to_kind") === "live",
+    ).length,
     shared_state_all_active_keys_indexed: allActiveKeysIndexed,
     shared_state_live_entry_starvation: liveEntryStarvation,
     shared_state_newest_entries_reserved: newestEntriesReserved,
@@ -2999,6 +3043,22 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
       shared_state_omitted_pending: sharedStateCapPressureMetricCounts.shared_state_omitted_pending,
+      shared_state_omitted_low_salience_live:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live,
+      shared_state_omitted_dormant_live:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live,
+      shared_state_active_low_salience_live:
+        sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live,
+      shared_state_active_dormant_live:
+        sharedStateCapPressureMetricCounts.shared_state_active_dormant_live,
+      shared_state_demoted_live_to_low_salience_total:
+        sharedStateCapPressureMetricCounts.shared_state_demoted_live_to_low_salience_total,
+      shared_state_demoted_low_salience_to_dormant_total:
+        sharedStateCapPressureMetricCounts.shared_state_demoted_low_salience_to_dormant_total,
+      shared_state_reactivated_low_salience_live_total:
+        sharedStateCapPressureMetricCounts.shared_state_reactivated_low_salience_live_total,
+      shared_state_reactivated_dormant_live_total:
+        sharedStateCapPressureMetricCounts.shared_state_reactivated_dormant_live_total,
       shared_state_all_active_keys_indexed:
         sharedStateCapPressureMetricCounts.shared_state_all_active_keys_indexed,
       shared_state_live_entry_starvation:
@@ -3401,6 +3461,22 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
       shared_state_omitted_pending: sharedStateCapPressureMetricCounts.shared_state_omitted_pending,
+      shared_state_omitted_low_salience_live:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_low_salience_live,
+      shared_state_omitted_dormant_live:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_dormant_live,
+      shared_state_active_low_salience_live:
+        sharedStateCapPressureMetricCounts.shared_state_active_low_salience_live,
+      shared_state_active_dormant_live:
+        sharedStateCapPressureMetricCounts.shared_state_active_dormant_live,
+      shared_state_demoted_live_to_low_salience_total:
+        sharedStateCapPressureMetricCounts.shared_state_demoted_live_to_low_salience_total,
+      shared_state_demoted_low_salience_to_dormant_total:
+        sharedStateCapPressureMetricCounts.shared_state_demoted_low_salience_to_dormant_total,
+      shared_state_reactivated_low_salience_live_total:
+        sharedStateCapPressureMetricCounts.shared_state_reactivated_low_salience_live_total,
+      shared_state_reactivated_dormant_live_total:
+        sharedStateCapPressureMetricCounts.shared_state_reactivated_dormant_live_total,
       shared_state_all_active_keys_indexed:
         sharedStateCapPressureMetricCounts.shared_state_all_active_keys_indexed,
       shared_state_live_entry_starvation:

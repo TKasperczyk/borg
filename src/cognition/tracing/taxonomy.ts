@@ -38,6 +38,8 @@ export const TRACE_EVENT_TAXONOMY = {
     "shared_state.compile.repair_attempted",
     "shared_state.compile.repair_succeeded",
     "shared_state.compile.repair_failed",
+    "shared_state.lifecycle.demoted",
+    "shared_state.lifecycle.reactivated",
     "shared_state.lifecycle.degraded",
     "shared_state.reconcile.completed",
     "shared_state.reconcile.skipped",

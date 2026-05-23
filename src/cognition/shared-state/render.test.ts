@@ -249,6 +249,66 @@ describe("renderSharedStateArtifact", () => {
     expect(summary.allActiveKeysIndexed).toBe(true);
   });
 
+  it("keeps demoted live entries in the compact index without default detail expansion", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 50,
+        stateKey: "state.current",
+        text: "current live detail",
+      }),
+      entry({
+        audience,
+        kind: "low_salience_live",
+        rank: 1,
+        updatedAt: 40,
+        stateKey: "state.low",
+        text: "low salience detail",
+      }),
+      entry({
+        audience,
+        kind: "dormant_live",
+        rank: 2,
+        updatedAt: 30,
+        stateKey: "state.dormant",
+        text: "dormant detail",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        reservedSlots: {
+          live: 1,
+          pending: 0,
+          invalidated: 0,
+        },
+        newestStateChangeReservedSlots: 0,
+      }) ?? "";
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 1,
+        pending: 0,
+        invalidated: 0,
+      },
+      newestStateChangeReservedSlots: 0,
+    });
+
+    expect(rendered).toContain("- state.low | kinds=low_salience_live |");
+    expect(rendered).toContain("- state.dormant | kinds=dormant_live |");
+    expect(rendered).toContain("text: current live detail");
+    expect(rendered).not.toContain("text: low salience detail");
+    expect(rendered).not.toContain("text: dormant detail");
+    expect(summary.omittedLowSalienceLive).toBe(1);
+    expect(summary.omittedDormantLive).toBe(1);
+  });
+
   it("uses structural salience signals to choose detailed expansions", () => {
     const audience = createEntityId();
     const currentUserStreamEntryId = createStreamEntryId();

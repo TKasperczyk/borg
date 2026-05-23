@@ -107,6 +107,8 @@ const sharedStateKindSoftCapsSchema = z
   .object({
     locked: z.number().int().positive().default(24),
     live: z.number().int().positive().default(10),
+    low_salience_live: z.number().int().positive().default(4),
+    dormant_live: z.number().int().positive().default(1),
     invalidated: z.number().int().positive().default(4),
     pending: z.number().int().positive().default(4),
     tentative: z.number().int().positive().default(2),
@@ -125,6 +127,8 @@ const sharedStatePreviousArtifactSummaryMaxEntriesSchema = z
   .object({
     locked: z.number().int().nonnegative().default(14),
     live: z.number().int().nonnegative().default(8),
+    low_salience_live: z.number().int().nonnegative().default(2),
+    dormant_live: z.number().int().nonnegative().default(0),
     pending: z.number().int().nonnegative().default(6),
     invalidated: z.number().int().nonnegative().default(4),
     tentative: z.number().int().nonnegative().default(2),
@@ -156,6 +160,8 @@ const sharedStateConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
     maxLiveEntriesPerKey: z.number().int().positive().default(2),
+    recentTurnThreshold: z.number().int().positive().default(5),
+    dormantTurnThreshold: z.number().int().positive().default(15),
     kindSoftCaps: sharedStateKindSoftCapsSchema,
     renderMaxEntries: z.number().int().positive().default(40),
     renderMaxTokens: z.number().int().positive().default(5_000),

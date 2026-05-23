@@ -82,11 +82,18 @@ export type SharedStatePruneOperation = {
   id: SharedStateEntryId;
 };
 
+export type SharedStateKindTransitionOperation = {
+  type: "transition_kind";
+  id: SharedStateEntryId;
+  kind: SharedStateEntryKind;
+};
+
 export type SharedStateOperation =
   | SharedStateAddOperation
   | SharedStateUpdateOperation
   | SharedStateSupersedeOperation
-  | SharedStatePruneOperation;
+  | SharedStatePruneOperation
+  | SharedStateKindTransitionOperation;
 
 export type SharedStateUpsertOptions = IdentityCasOptions & {
   now?: number;
@@ -663,6 +670,33 @@ export class SharedStateRepository {
     }
   }
 
+  private transitionEntryKind(
+    audienceEntityId: EntityId,
+    operation: SharedStateKindTransitionOperation,
+  ): void {
+    const current = this.getEntry(operation.id, audienceEntityId);
+    const next = sharedStateEntrySchema.parse({
+      ...current,
+      kind: operation.kind,
+    });
+
+    const result = this.db
+      .prepare(
+        `
+          UPDATE decision_artifact_entries
+          SET kind = ?
+          WHERE id = ? AND audience_entity_id = ?
+        `,
+      )
+      .run(next.kind, next.id, next.audience_entity_id);
+
+    if (result.changes === 0) {
+      throw new StorageError(`Unknown shared state entry id: ${operation.id}`, {
+        code: "SHARED_STATE_ENTRY_NOT_FOUND",
+      });
+    }
+  }
+
   upsert(
     audienceEntityId: EntityId,
     operations: readonly SharedStateOperation[],
@@ -771,6 +805,9 @@ export class SharedStateRepository {
             break;
           case "prune":
             this.pruneEntry(audienceEntityId, operation);
+            break;
+          case "transition_kind":
+            this.transitionEntryKind(audienceEntityId, operation);
             break;
         }
       }

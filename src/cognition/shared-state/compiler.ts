@@ -4,6 +4,7 @@ import type { LLMCompleteResult } from "../../llm/index.js";
 import type {
   SharedStateArtifact,
   SharedStateEntry,
+  SharedStateEntryKind,
   SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
 import { SystemClock } from "../../util/clock.js";
@@ -56,8 +57,15 @@ import {
 } from "./patch-validation.js";
 import { errorMessage } from "./reconciliation-summary.js";
 import { applySharedStateArtifactLifecycleCap, expandPruneDependencies } from "./lifecycle-cap.js";
+import { materializeSharedStateOperationIds } from "./lifecycle-cap.js";
+import {
+  applyLifecycleAging,
+  materializeSharedStateEntriesAfterOperations,
+  type SharedStateLifecycleTransition,
+} from "./lifecycle-aging.js";
 import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candidates.js";
 import { buildExistingStateKeyRegistry, buildSharedStateArtifactPromptSummary } from "./summary.js";
+import { SHARED_STATE_RECENT_TURN_THRESHOLD } from "./render.js";
 
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
@@ -109,6 +117,11 @@ function emptyPatch(): EmitSharedStatePatch {
 }
 
 type SharedStateOperationKind = EmitSharedStatePatch["operations"][number]["type"];
+type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
+type SharedStateToolEntryKind = Extract<
+  EmitSharedStatePatch["operations"][number],
+  { type: "add" }
+>["kind"];
 
 function emptyOperationCountsByKind(): Record<SharedStateOperationKind, number> {
   return {
@@ -154,11 +167,102 @@ function operationStateKey(
       return operation.replacement.state_key ?? previousStateKeysById.get(operation.id) ?? null;
     case "prune":
       return previousStateKeysById.get(operation.id) ?? null;
+    case "transition_kind":
+      return previousStateKeysById.get(operation.id) ?? null;
+  }
+}
+
+function publicSharedStateOperations(
+  operations: readonly SharedStateOperation[],
+): PublicSharedStateOperation[] {
+  return operations.filter(
+    (operation): operation is PublicSharedStateOperation => operation.type !== "transition_kind",
+  );
+}
+
+function publicKindForOmittedUpdate(
+  entryKind: SharedStateEntryKind | undefined,
+): SharedStateToolEntryKind | undefined {
+  if (entryKind === "low_salience_live" || entryKind === "dormant_live") {
+    return "live";
+  }
+
+  return entryKind as SharedStateToolEntryKind | undefined;
+}
+
+function touchedSharedStateEntryIds(
+  operations: readonly SharedStateOperation[],
+): Set<SharedStateEntry["id"]> {
+  const ids = new Set<SharedStateEntry["id"]>();
+
+  for (const operation of operations) {
+    if (operation.type === "update" || operation.type === "supersede") {
+      ids.add(operation.id);
+    }
+  }
+
+  return ids;
+}
+
+function lastUpdatedTurnByEntryId(input: {
+  entries: readonly SharedStateEntry[];
+  currentUserStreamEntryId: StreamEntryId;
+  currentTurnCounter?: number;
+  lastUpdatedTurnByStreamEntryId?: Readonly<Record<string, number>>;
+}): Record<string, number> {
+  const turnsByStreamEntryId = {
+    ...(input.lastUpdatedTurnByStreamEntryId ?? {}),
+    ...(input.currentTurnCounter === undefined
+      ? {}
+      : { [input.currentUserStreamEntryId]: input.currentTurnCounter }),
+  };
+  const result: Record<string, number> = {};
+
+  for (const entry of input.entries) {
+    for (const streamEntryId of entry.last_updated_stream_entry_ids) {
+      const turn = turnsByStreamEntryId[streamEntryId];
+
+      if (turn === undefined || !Number.isFinite(turn)) {
+        continue;
+      }
+
+      const previous = result[entry.id];
+      result[entry.id] = previous === undefined ? turn : Math.max(previous, turn);
+    }
+  }
+
+  return result;
+}
+
+function traceSharedStateLifecycleTransitions(input: {
+  tracer: CompileSharedStateArtifactInput["tracer"];
+  turnId: CompileSharedStateArtifactInput["turnId"];
+  audienceEntityId: CompileSharedStateArtifactInput["audienceEntityId"];
+  transitions: readonly SharedStateLifecycleTransition[];
+}): void {
+  if (input.tracer?.enabled !== true || input.turnId === undefined) {
+    return;
+  }
+
+  for (const transition of input.transitions) {
+    input.tracer.emit(
+      transition.transition === "reactivated"
+        ? "shared_state.lifecycle.reactivated"
+        : "shared_state.lifecycle.demoted",
+      {
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        entry_id: transition.entryId,
+        from_kind: transition.fromKind,
+        to_kind: transition.toKind,
+        reason: transition.reason,
+      },
+    );
   }
 }
 
 function operationCountsByStateKey(
-  operations: readonly SharedStateOperation[],
+  operations: readonly PublicSharedStateOperation[],
   previousArtifact: SharedStateArtifact | null,
 ): Record<string, Record<SharedStateOperationKind, number>> {
   const previousStateKeysById = entryStateKeyById(previousArtifact);
@@ -929,9 +1033,46 @@ export async function compileSharedStateArtifact(
 
   const clock = input.clock ?? new SystemClock();
   const nowMs = clock.now();
+  const compilerOperations = materializeSharedStateOperationIds(normalized.operations);
+  const postCompilerEntries = materializeSharedStateEntriesAfterOperations({
+    previousArtifact,
+    operations: compilerOperations,
+    audienceEntityId: input.audienceEntityId,
+    nowMs,
+  });
+  const aging = applyLifecycleAging({
+    entries: postCompilerEntries,
+    currentTurnCounter: input.turnCounter,
+    currentUserStreamEntryId: input.currentUserStreamEntryId,
+    ledgerStreamEntryIds: input.renderOptions?.ledgerStreamEntryIds,
+    activeOpenQuestionIds: input.renderOptions?.activeOpenQuestionIds,
+    activeActionIds: input.renderOptions?.activeActionIds,
+    activeGoalIds: input.renderOptions?.activeGoalIds,
+    activeCriticalCommitmentIds: input.renderOptions?.activeCriticalCommitmentIds,
+    recentlyRetrievedEntryIds: input.renderOptions?.recentlyRetrievedEntryIds,
+    touchedEntryIds: touchedSharedStateEntryIds(compilerOperations),
+    lastUpdatedTurnByEntryId: lastUpdatedTurnByEntryId({
+      entries: postCompilerEntries,
+      currentUserStreamEntryId: input.currentUserStreamEntryId,
+      currentTurnCounter: input.turnCounter,
+      lastUpdatedTurnByStreamEntryId: input.renderOptions?.lastUpdatedTurnByStreamEntryId,
+    }),
+    recentTurnThreshold:
+      input.lifecycle?.recentTurnThreshold ??
+      input.renderOptions?.recentTurnThreshold ??
+      SHARED_STATE_RECENT_TURN_THRESHOLD,
+    dormantTurnThreshold: input.lifecycle?.dormantTurnThreshold,
+  });
+  const lifecycleTransitionOperations: SharedStateOperation[] = aging.transitions.map(
+    (transition) => ({
+      type: "transition_kind",
+      id: transition.entryId,
+      kind: transition.toKind,
+    }),
+  );
   const lifecycle = applySharedStateArtifactLifecycleCap({
     previousArtifact,
-    operations: normalized.operations,
+    operations: [...compilerOperations, ...lifecycleTransitionOperations],
     options: input.lifecycle,
     nowMs,
   });
@@ -955,9 +1096,13 @@ export async function compileSharedStateArtifact(
   });
   const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
   const operations = dedupedCanonicalizations.operations;
-  const operationCounts = operationCountsByKind(operations);
-  const operationCountsByStateKeyForTrace = operationCountsByStateKey(operations, previousArtifact);
-  const newStateKeysForTrace = introducedStateKeys(operations, previousArtifact);
+  const publicOperations = publicSharedStateOperations(operations);
+  const operationCounts = operationCountsByKind(publicOperations);
+  const operationCountsByStateKeyForTrace = operationCountsByStateKey(
+    publicOperations,
+    previousArtifact,
+  );
+  const newStateKeysForTrace = introducedStateKeys(publicOperations, previousArtifact);
   const prunedEntryCountThisTurn = operations.filter(
     (operation) => operation.type === "prune",
   ).length;
@@ -989,6 +1134,7 @@ export async function compileSharedStateArtifact(
         operationCountsByStateKey: operationCountsByStateKeyForTrace,
         newStateKeys: newStateKeysForTrace,
         nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+        lifecycleTransitions: aging.transitions,
       });
 
       return degraded(input, "repository_failed", error);
@@ -1046,6 +1192,7 @@ export async function compileSharedStateArtifact(
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
       newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      lifecycleTransitions: aging.transitions,
     });
 
     return emptyPatch();
@@ -1087,6 +1234,12 @@ export async function compileSharedStateArtifact(
       turnCounter: input.turnCounter,
     });
     mergeSemanticBeliefRevisionResult(reconciliationResult, semanticReconciliationResult);
+    traceSharedStateLifecycleTransitions({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      transitions: aging.transitions,
+    });
 
     traceReconciliationCompleted({
       tracer: input.tracer,
@@ -1112,6 +1265,7 @@ export async function compileSharedStateArtifact(
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
       newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      lifecycleTransitions: aging.transitions,
     });
   } catch (error) {
     traceCompileCompleted({
@@ -1126,19 +1280,20 @@ export async function compileSharedStateArtifact(
       operationCountsByStateKey: operationCountsByStateKeyForTrace,
       newStateKeys: newStateKeysForTrace,
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+      lifecycleTransitions: aging.transitions,
     });
 
     return degraded(input, "repository_failed", error);
   }
 
   return {
-    operations: operations.map((operation) => {
+    operations: publicOperations.map((operation) => {
       switch (operation.type) {
         case "add":
           return {
             type: "add",
             state_key: operation.state_key ?? "legacy",
-            kind: operation.kind,
+            kind: operation.kind as SharedStateToolEntryKind,
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.provenance_stream_entry_ids],
@@ -1151,7 +1306,7 @@ export async function compileSharedStateArtifact(
             type: "update",
             id: operation.id,
             state_key: operation.state_key ?? "legacy",
-            kind: operation.kind,
+            kind: publicKindForOmittedUpdate(operation.kind),
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.last_updated_stream_entry_ids],
@@ -1165,7 +1320,7 @@ export async function compileSharedStateArtifact(
             id: operation.id,
             replacement: {
               state_key: operation.replacement.state_key ?? "legacy",
-              kind: operation.replacement.kind,
+              kind: operation.replacement.kind as SharedStateToolEntryKind,
               text: operation.replacement.text,
               owner_entity_id: operation.replacement.owner_entity_id,
               source_stream_entry_ids: [...operation.replacement.provenance_stream_entry_ids],

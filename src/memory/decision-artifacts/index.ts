@@ -2,6 +2,7 @@ export { sharedStateMigrations } from "./migrations.js";
 export {
   SharedStateRepository,
   type SharedStateAddOperation,
+  type SharedStateKindTransitionOperation,
   type SharedStateOperation,
   type SharedStatePruneOperation,
   type SharedStateRepositoryOptions,
@@ -11,6 +12,7 @@ export {
 } from "./repository.js";
 export {
   ACTIVE_SHARED_STATE_ENTRY_KINDS,
+  DEMOTED_LIVE_SHARED_STATE_ENTRY_KINDS,
   SHARED_STATE_ENTRY_KINDS,
   allowAllSharedStateSourceTrustValidator,
   sharedStateEntryIdSchema,

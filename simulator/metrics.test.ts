@@ -237,6 +237,14 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_omitted_live_old",
   "shared_state_omitted_locked",
   "shared_state_omitted_pending",
+  "shared_state_omitted_low_salience_live",
+  "shared_state_omitted_dormant_live",
+  "shared_state_active_low_salience_live",
+  "shared_state_active_dormant_live",
+  "shared_state_demoted_live_to_low_salience_total",
+  "shared_state_demoted_low_salience_to_dormant_total",
+  "shared_state_reactivated_low_salience_live_total",
+  "shared_state_reactivated_dormant_live_total",
   "shared_state_all_active_keys_indexed",
   "shared_state_live_entry_starvation",
   "shared_state_newest_entries_reserved",
@@ -1533,8 +1541,14 @@ describe("MetricsCapture", () => {
           omitted_live_old: 3,
           omitted_locked: 4,
           omitted_pending: 5,
+          omitted_low_salience_live: 6,
+          omitted_dormant_live: 7,
           all_active_keys_indexed: true,
           newest_entries_reserved: 2,
+          active_by_kind: {
+            low_salience_live: 1,
+            dormant_live: 0,
+          },
           rendered_by_kind: {
             locked: 14,
             live: 8,
@@ -1563,8 +1577,14 @@ describe("MetricsCapture", () => {
           omitted_live_old: 8,
           omitted_locked: 9,
           omitted_pending: 10,
+          omitted_low_salience_live: 11,
+          omitted_dormant_live: 12,
           all_active_keys_indexed: false,
           newest_entries_reserved: 1,
+          active_by_kind: {
+            low_salience_live: 2,
+            dormant_live: 1,
+          },
           rendered_by_kind: {},
           omitted_by_kind: {},
         },
@@ -1580,14 +1600,48 @@ describe("MetricsCapture", () => {
           omitted_live_old: 17,
           omitted_locked: 19,
           omitted_pending: 23,
+          omitted_low_salience_live: 29,
+          omitted_dormant_live: 31,
           all_active_keys_indexed: true,
           newest_entries_reserved: 3,
+          active_by_kind: {
+            low_salience_live: 3,
+            dormant_live: 2,
+          },
           rendered_by_kind: {
             locked: 10,
           },
           omitted_by_kind: {
             invalidated: 3,
           },
+        },
+        {
+          ts: 103,
+          turnId: "turn-shared-cap-3",
+          event: "shared_state.lifecycle.demoted",
+          from_kind: "live",
+          to_kind: "low_salience_live",
+        },
+        {
+          ts: 104,
+          turnId: "turn-shared-cap-3",
+          event: "shared_state.lifecycle.demoted",
+          from_kind: "low_salience_live",
+          to_kind: "dormant_live",
+        },
+        {
+          ts: 105,
+          turnId: "turn-shared-cap-3",
+          event: "shared_state.lifecycle.reactivated",
+          from_kind: "low_salience_live",
+          to_kind: "live",
+        },
+        {
+          ts: 106,
+          turnId: "turn-shared-cap-3",
+          event: "shared_state.lifecycle.reactivated",
+          from_kind: "dormant_live",
+          to_kind: "live",
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -1613,6 +1667,14 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_omitted_live_old).toBe(28);
     expect(row.shared_state_omitted_locked).toBe(32);
     expect(row.shared_state_omitted_pending).toBe(38);
+    expect(row.shared_state_omitted_low_salience_live).toBe(29);
+    expect(row.shared_state_omitted_dormant_live).toBe(31);
+    expect(row.shared_state_active_low_salience_live).toBe(3);
+    expect(row.shared_state_active_dormant_live).toBe(2);
+    expect(row.shared_state_demoted_live_to_low_salience_total).toBe(1);
+    expect(row.shared_state_demoted_low_salience_to_dormant_total).toBe(1);
+    expect(row.shared_state_reactivated_low_salience_live_total).toBe(1);
+    expect(row.shared_state_reactivated_dormant_live_total).toBe(1);
     expect(row.shared_state_all_active_keys_indexed).toBe(false);
     expect(row.shared_state_live_entry_starvation).toBe(true);
     expect(row.shared_state_newest_entries_reserved).toBe(6);

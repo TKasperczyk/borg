@@ -40,6 +40,7 @@ function canonicalizedEntryIdsFromOperations(
         }
         break;
       case "prune":
+      case "transition_kind":
         break;
     }
   }

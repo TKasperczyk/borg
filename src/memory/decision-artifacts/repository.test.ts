@@ -190,6 +190,174 @@ describe("SharedStateRepository", () => {
     expect(artifact?.entries[0]?.state_key).toBe("x");
   });
 
+  it("accepts internal live lifecycle kinds and transitions kind without changing update metadata", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          id: entryId,
+          state_key: "state.fixture",
+          kind: "low_salience_live",
+          text: "Placeholder state remains represented by its key",
+          provenance_stream_entry_ids: [source],
+          last_updated_stream_entry_ids: [source],
+          created_at: 100,
+          last_updated_at: 100,
+        },
+      ],
+      {
+        now: 1_000,
+      },
+    );
+
+    expect(initial?.entries[0]).toMatchObject({
+      kind: "low_salience_live",
+      last_updated_at: 100,
+      last_updated_stream_entry_ids: [source],
+    });
+
+    const transitioned = repository.upsert(
+      audience,
+      [
+        {
+          type: "transition_kind",
+          id: entryId,
+          kind: "dormant_live",
+        },
+      ],
+      {
+        now: 2_000,
+      },
+    );
+
+    expect(transitioned?.entries[0]).toMatchObject({
+      kind: "dormant_live",
+      last_updated_at: 100,
+      last_updated_stream_entry_ids: [source],
+    });
+  });
+
+  it("migrates old kind constraints while preserving existing live rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-shared-state-migration-"));
+    const path = join(dir, "state.sqlite");
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+    const initialMigration = composeMigrations(sharedStateMigrations).find(
+      (migration) => migration.name === "decision_artifacts_initial_schema",
+    );
+
+    expect(initialMigration).toBeDefined();
+
+    let legacyDb: SqliteDatabase | null = openDatabase(path);
+
+    try {
+      legacyDb.exec(`
+        CREATE TABLE decision_artifacts (
+          audience_entity_id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_compiled_at INTEGER NULL,
+          last_compiled_stream_entry_id TEXT NULL
+        );
+
+        CREATE TABLE decision_artifact_entries (
+          id TEXT PRIMARY KEY,
+          audience_entity_id TEXT NOT NULL,
+          state_key TEXT NULL,
+          kind TEXT NOT NULL CHECK (
+            kind IN ('locked', 'live', 'tentative', 'invalidated', 'pending')
+          ),
+          text TEXT NOT NULL,
+          owner_entity_id TEXT NULL,
+          provenance_stream_entry_ids TEXT NOT NULL,
+          last_updated_stream_entry_ids TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          last_updated_at INTEGER NOT NULL,
+          superseded_by_id TEXT NULL,
+          rank INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+      legacyDb
+        .prepare("INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)")
+        .run(initialMigration!.id, initialMigration!.name, 1);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO decision_artifacts (
+              audience_entity_id, record_version, created_at, updated_at,
+              last_compiled_at, last_compiled_stream_entry_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(audience, 1, 100, 100, null, null);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO decision_artifact_entries (
+              id, audience_entity_id, state_key, kind, text, owner_entity_id,
+              provenance_stream_entry_ids, last_updated_stream_entry_ids,
+              created_at, last_updated_at, superseded_by_id, rank
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          entryId,
+          audience,
+          "state.fixture",
+          "live",
+          "Legacy live row",
+          null,
+          serializeJsonValue([source]),
+          serializeJsonValue([source]),
+          100,
+          100,
+          null,
+          0,
+        );
+      legacyDb.close();
+      legacyDb = null;
+
+      const upgradedDb = openDatabase(path, {
+        migrations: composeMigrations(sharedStateMigrations),
+      });
+      const upgradedRepository = new SharedStateRepository({
+        db: upgradedDb,
+        clock,
+      });
+
+      try {
+        expect(upgradedRepository.get(audience)?.entries[0]).toMatchObject({
+          id: entryId,
+          kind: "live",
+        });
+
+        const transitioned = upgradedRepository.upsert(audience, [
+          {
+            type: "transition_kind",
+            id: entryId,
+            kind: "low_salience_live",
+          },
+        ]);
+
+        expect(transitioned?.entries[0]).toMatchObject({
+          id: entryId,
+          kind: "low_salience_live",
+        });
+      } finally {
+        upgradedDb.close();
+      }
+    } finally {
+      legacyDb?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects add, update, and supersede writes with quarantined source ids when a trust validator is configured", () => {
     const audience = createEntityId();
     const allowedSource = createStreamEntryId();

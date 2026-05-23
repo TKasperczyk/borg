@@ -48,6 +48,7 @@ import type {
   GoalId,
   OpenQuestionId,
   SessionId,
+  SharedStateEntryId,
   StreamEntryId,
 } from "../../../util/ids.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
@@ -148,6 +149,37 @@ function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   }
 
   return unique;
+}
+
+function retrievedStreamEntryIds(
+  input: Pick<EvidenceLedgerBuildInput, "retrievedEvidence" | "retrievedEpisodes">,
+): StreamEntryId[] {
+  return uniqueStreamEntryIds([
+    ...input.retrievedEvidence.flatMap((item) => item.provenance?.streamIds ?? []),
+    ...input.retrievedEpisodes.flatMap((result) => result.episode.source_stream_ids),
+    ...input.retrievedEpisodes.flatMap((result) => result.citationChain.map((entry) => entry.id)),
+  ]);
+}
+
+function recentlyRetrievedSharedStateEntryIds(input: {
+  artifact: SharedStateArtifact | null;
+  retrievedStreamEntryIds: readonly StreamEntryId[];
+}): SharedStateEntryId[] {
+  if (input.artifact === null || input.retrievedStreamEntryIds.length === 0) {
+    return [];
+  }
+
+  const retrievedIds = new Set(input.retrievedStreamEntryIds);
+
+  return input.artifact.entries
+    .filter(
+      (entry) =>
+        entry.superseded_by_id === null &&
+        entry.last_updated_stream_entry_ids.some((streamEntryId) =>
+          retrievedIds.has(streamEntryId),
+        ),
+    )
+    .map((entry) => entry.id);
 }
 
 export async function runRetrievalPhase(input: {
@@ -613,10 +645,16 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     currentTurnId: input.input.turnId,
     currentTurnCounter: turnCounter,
   });
+  const recentRetrievalStreamEntryIds = retrievedStreamEntryIds(input.input);
+  const recentlyRetrievedEntryIds = recentlyRetrievedSharedStateEntryIds({
+    artifact: previousArtifact,
+    retrievedStreamEntryIds: recentRetrievalStreamEntryIds,
+  });
   const renderOptions = {
     ...sharedStateRenderOptions(input.options.config),
     currentUserStreamEntryId: input.input.currentUserEntry.id,
     ledgerStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
+    recentlyRetrievedEntryIds,
     activeOpenQuestionIds: activeOpenQuestions.map((question) => question.id as OpenQuestionId),
     activeActionIds: (actionCanonicalizationCandidates.candidates ?? []).map(
       (action) => action.id as ActionId,
@@ -816,6 +854,8 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,
       maxLiveEntriesPerKey: sharedStateConfig.maxLiveEntriesPerKey,
+      recentTurnThreshold: sharedStateConfig.recentTurnThreshold,
+      dormantTurnThreshold: sharedStateConfig.dormantTurnThreshold,
       kindSoftCaps: sharedStateConfig.kindSoftCaps,
       newestStateChangeReservedSlots: sharedStateConfig.newestStateChangeReservedSlots,
     },

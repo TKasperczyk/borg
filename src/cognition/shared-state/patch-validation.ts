@@ -566,7 +566,9 @@ export function normalizePatch(input: {
           .filter((stateKey): stateKey is string => stateKey !== null),
       ),
     ].sort((left, right) => left.localeCompare(right));
-    const exactStateKeyExists = activeStateKeys.some((stateKey) => stateKey === operation.state_key);
+    const exactStateKeyExists = activeStateKeys.some(
+      (stateKey) => stateKey === operation.state_key,
+    );
     const lockedEntries = lockedEntriesForStateKey(activeEntriesByStateKey, operation.state_key);
 
     if ((operation.kind === "locked" || operation.kind === "live") && lockedEntries.length > 0) {
@@ -591,7 +593,10 @@ export function normalizePatch(input: {
         return rejection(operation, operationIndex, "near_duplicate_state_key", {
           stateKey: operation.state_key,
           similarStateKeys,
-          sharedStateKeyTokens: sharedStateKeyTokens(operation.state_key, similarStateKeys[0] ?? ""),
+          sharedStateKeyTokens: sharedStateKeyTokens(
+            operation.state_key,
+            similarStateKeys[0] ?? "",
+          ),
         });
       }
 
@@ -1070,6 +1075,7 @@ export function dedupeCanonicalizesAcrossOperations(operations: readonly SharedS
             },
           };
         case "prune":
+        case "transition_kind":
           return operation;
       }
     }),

@@ -12,17 +12,21 @@ const DEFAULT_MAX_ACTIVE_SHARED_STATE_ENTRIES = 40;
 const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {
   locked: 24,
   live: 10,
+  low_salience_live: 4,
+  dormant_live: 1,
   invalidated: 4,
   pending: 4,
   tentative: 2,
 } as const satisfies Record<SharedStateEntryKind, number>;
 const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
 const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
+  "dormant_live",
+  "low_salience_live",
+  "live",
   "tentative",
-  "locked",
   "invalidated",
   "pending",
-  "live",
+  "locked",
 ] as const satisfies readonly SharedStateEntryKind[];
 
 type LifecycleEntry = Pick<
@@ -54,7 +58,7 @@ function newestStateChangeReservedSlots(options: SharedStateLifecycleOptions | u
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
-function operationIdsMaterialized(
+export function materializeSharedStateOperationIds(
   operations: readonly SharedStateOperation[],
 ): SharedStateOperation[] {
   return operations.map((operation) => {
@@ -74,6 +78,7 @@ function operationIdsMaterialized(
         };
       case "update":
       case "prune":
+      case "transition_kind":
         return operation;
     }
   });
@@ -128,6 +133,19 @@ function materializePostPatchLifecycleEntries(input: {
           kind: operation.kind ?? current.kind,
           last_updated_at: operation.last_updated_at ?? input.nowMs,
           rank: operation.rank ?? current.rank,
+        });
+        break;
+      }
+      case "transition_kind": {
+        const current = entries.get(operation.id);
+
+        if (current === undefined) {
+          break;
+        }
+
+        entries.set(operation.id, {
+          ...current,
+          kind: operation.kind,
         });
         break;
       }
@@ -397,7 +415,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   overCapDelta: number;
   newestReservedEntryCount: number;
 } {
-  const operations = operationIdsMaterialized(input.operations);
+  const operations = materializeSharedStateOperationIds(input.operations);
   const entries = materializePostPatchLifecycleEntries({
     previousArtifact: input.previousArtifact,
     operations,

@@ -49,6 +49,7 @@ export type SharedStateArtifactRenderSummary = {
   newestReservedEntryCount: number;
   renderedByKind: SharedStateKindCounts;
   omittedByKind: SharedStateKindCounts;
+  activeByKind: SharedStateKindCounts;
   activeEntriesByKey: Record<string, number>;
   topKeysByEntryCount: Record<string, number>;
   compactIndexEstimatedTokens: number;
@@ -59,6 +60,8 @@ export type SharedStateArtifactRenderSummary = {
   omittedLiveOld: number;
   omittedLocked: number;
   omittedPending: number;
+  omittedLowSalienceLive: number;
+  omittedDormantLive: number;
 };
 
 type SharedStateRenderBudgetOptions = {
@@ -108,6 +111,7 @@ function sharedStateRenderOptions(
     activeActionIds: options.activeActionIds ?? [],
     activeGoalIds: options.activeGoalIds ?? [],
     activeCriticalCommitmentIds: options.activeCriticalCommitmentIds ?? [],
+    recentlyRetrievedEntryIds: options.recentlyRetrievedEntryIds ?? [],
     currentTurnCounter: options.currentTurnCounter,
     lastUpdatedTurnByStreamEntryId: options.lastUpdatedTurnByStreamEntryId ?? {},
     recentTurnThreshold: normalizePositiveInteger(
@@ -508,6 +512,8 @@ function sharedStateOmissionSeverity(input: {
   | "omittedLiveOld"
   | "omittedLocked"
   | "omittedPending"
+  | "omittedLowSalienceLive"
+  | "omittedDormantLive"
 > {
   const renderedIds = new Set(input.renderedEntries.map((entry) => entry.id));
   let omittedLiveRecentOperational = 0;
@@ -515,6 +521,8 @@ function sharedStateOmissionSeverity(input: {
   let omittedLiveOld = 0;
   let omittedLocked = 0;
   let omittedPending = 0;
+  let omittedLowSalienceLive = 0;
+  let omittedDormantLive = 0;
 
   for (const entry of input.activeEntries) {
     if (renderedIds.has(entry.id)) {
@@ -527,6 +535,14 @@ function sharedStateOmissionSeverity(input: {
 
     if (entry.kind === "pending") {
       omittedPending += 1;
+    }
+
+    if (entry.kind === "low_salience_live") {
+      omittedLowSalienceLive += 1;
+    }
+
+    if (entry.kind === "dormant_live") {
+      omittedDormantLive += 1;
     }
 
     if (entry.kind !== "live") {
@@ -553,6 +569,8 @@ function sharedStateOmissionSeverity(input: {
     omittedLiveOld,
     omittedLocked,
     omittedPending,
+    omittedLowSalienceLive,
+    omittedDormantLive,
   };
 }
 
@@ -575,6 +593,7 @@ function cappedSharedStateArtifactRender(input: {
         newestReservedEntryCount: 0,
         renderedByKind: emptySharedStateKindCounts(),
         omittedByKind: emptySharedStateKindCounts(),
+        activeByKind: emptySharedStateKindCounts(),
         activeEntriesByKey: {},
         topKeysByEntryCount: {},
         compactIndexEstimatedTokens: 0,
@@ -585,6 +604,8 @@ function cappedSharedStateArtifactRender(input: {
         omittedLiveOld: 0,
         omittedLocked: 0,
         omittedPending: 0,
+        omittedLowSalienceLive: 0,
+        omittedDormantLive: 0,
       },
     };
   }
@@ -704,6 +725,7 @@ function cappedSharedStateArtifactRender(input: {
       newestReservedEntryCount: entries.filter((entry) => newestReservedIds.has(entry.id)).length,
       renderedByKind: counts.renderedByKind,
       omittedByKind: counts.omittedByKind,
+      activeByKind: activeCounts,
       activeEntriesByKey: countSharedStateEntriesByKey(activeEntries),
       topKeysByEntryCount: topSharedStateEntryKeysByCount(
         countSharedStateEntriesByKey(activeEntries),
@@ -754,6 +776,7 @@ export function summarizeSharedStateArtifactRender(
       newestReservedEntryCount: 0,
       renderedByKind: emptySharedStateKindCounts(),
       omittedByKind: emptySharedStateKindCounts(),
+      activeByKind: emptySharedStateKindCounts(),
       activeEntriesByKey: {},
       topKeysByEntryCount: {},
       compactIndexEstimatedTokens: 0,
@@ -764,6 +787,8 @@ export function summarizeSharedStateArtifactRender(
       omittedLiveOld: 0,
       omittedLocked: 0,
       omittedPending: 0,
+      omittedLowSalienceLive: 0,
+      omittedDormantLive: 0,
     };
   }
 

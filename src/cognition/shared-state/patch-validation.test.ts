@@ -106,7 +106,7 @@ function normalizeKeyedPatch(input: {
 
 function addOperation(input: {
   stateKey: string;
-  kind?: SharedStateEntry["kind"];
+  kind?: Extract<EmitSharedStatePatch["operations"][number], { type: "add" }>["kind"];
   sourceStreamEntryId: StreamEntryId;
   newKeyReason?: string | null;
 }): Extract<EmitSharedStatePatch["operations"][number], { type: "add" }> {
@@ -464,10 +464,7 @@ describe("normalizePatch empty update no-op handling", () => {
       ],
       audienceEntityId,
       sourceStreamEntryId: originalSourceStreamEntryId,
-      allowedSourceStreamEntryIds: [
-        originalSourceStreamEntryId,
-        citationOnlySourceStreamEntryId,
-      ],
+      allowedSourceStreamEntryIds: [originalSourceStreamEntryId, citationOnlySourceStreamEntryId],
     });
 
     expect(result.operations).toEqual([]);

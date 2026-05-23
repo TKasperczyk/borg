@@ -23,6 +23,8 @@ import { truncateSharedStateArtifactText } from "./render.js";
 const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES = {
   locked: 14,
   live: 8,
+  low_salience_live: 2,
+  dormant_live: 0,
   pending: 6,
   invalidated: 4,
   tentative: 2,
@@ -105,13 +107,9 @@ function emptySharedStatePromptSummaryEntries(): Record<
   SharedStateEntryKind,
   SharedStatePromptSummaryEntry[]
 > {
-  return {
-    locked: [],
-    live: [],
-    pending: [],
-    invalidated: [],
-    tentative: [],
-  };
+  return Object.fromEntries(
+    SHARED_STATE_ENTRY_KINDS.map((kind) => [kind, []]),
+  ) as unknown as Record<SharedStateEntryKind, SharedStatePromptSummaryEntry[]>;
 }
 
 function sharedStateCanonicalizesIdCount(entry: SharedStateEntry): number {
@@ -289,7 +287,7 @@ function sharedStatePromptSummaryDropIndex(input: {
 }): number | null {
   const dropTentative = tokenDropIndexForKinds({
     entries: input.entries,
-    kinds: ["tentative"],
+    kinds: ["tentative", "dormant_live", "low_salience_live"],
     minimumForKind: () => 0,
   });
 

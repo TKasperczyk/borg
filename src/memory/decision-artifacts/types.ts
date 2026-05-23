@@ -20,12 +20,15 @@ import {
 export const SHARED_STATE_ENTRY_KINDS = [
   "locked",
   "live",
+  "low_salience_live",
+  "dormant_live",
   "tentative",
   "invalidated",
   "pending",
 ] as const;
 
 export const ACTIVE_SHARED_STATE_ENTRY_KINDS = ["locked", "live"] as const;
+export const DEMOTED_LIVE_SHARED_STATE_ENTRY_KINDS = ["low_salience_live", "dormant_live"] as const;
 
 export const sharedStateEntryIdSchema = z
   .string()

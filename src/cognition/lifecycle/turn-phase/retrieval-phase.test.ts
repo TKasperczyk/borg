@@ -394,6 +394,204 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     expect(result.renderOptions?.activeGoalIds).toEqual([goalId]);
     expect(result.renderOptions?.activeCriticalCommitmentIds).toEqual([commitmentId]);
   });
+
+  it("protects shared-state entries cited by current retrieval results from demotion", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-retrieved-state-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(30_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const oldSourceEntry = {
+      id: createStreamEntryId(),
+      kind: "user_msg",
+      content: "Placeholder source for retrieved shared state.",
+      timestamp: 1_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-1",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const fillerEntries = Array.from({ length: 8 }, (_, index) => ({
+      id: createStreamEntryId(),
+      kind: "user_msg",
+      content: `Placeholder filler source ${index + 2}.`,
+      timestamp: 2_000 + index,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: `turn-${index + 2}`,
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    })) as StreamEntry[];
+    const currentUserEntry = {
+      id: createStreamEntryId(),
+      kind: "user_msg",
+      content: "Current placeholder source.",
+      timestamp: 30_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-10",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const initial = sharedStateRepository.upsert(
+      audienceEntityId,
+      [
+        {
+          type: "add",
+          state_key: "state.placeholder",
+          kind: "live",
+          text: "Placeholder retrieved shared state",
+          provenance_stream_entry_ids: [oldSourceEntry.id],
+          last_updated_stream_entry_ids: [oldSourceEntry.id],
+          created_at: 1_000,
+          last_updated_at: 1_000,
+        },
+      ],
+      {
+        now: 1_000,
+      },
+    );
+    const entryId = initial?.entries[0]?.id;
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_shared_state",
+              name: SHARED_STATE_TOOL_NAME,
+              input: {
+                operations: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: false,
+              },
+              recentTurnThreshold: 5,
+              dormantTurnThreshold: 15,
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => llmClient,
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            for (const entry of [oldSourceEntry, ...fillerEntries, currentUserEntry]) {
+              yield entry;
+            }
+          },
+        }) as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-retrieved-shared-state",
+        audienceEntityId,
+        currentUserMessage: "Current placeholder source.",
+        currentUserEntry,
+        globalTurnCounter: 10,
+        workingMemory: {
+          turn_counter: 10,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [
+          {
+            id: "retrieved-placeholder-source",
+            source: "raw_stream",
+            text: "Placeholder retrieved evidence.",
+            provenance: {
+              streamIds: [oldSourceEntry.id],
+            },
+            recallIntentId: "intent-placeholder",
+            matchedTerms: [],
+            score: 1,
+            scoreBreakdown: {},
+          },
+        ] as never,
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "",
+    });
+
+    expect(result.renderOptions?.recentlyRetrievedEntryIds).toEqual([entryId]);
+    expect(sharedStateRepository.get(audienceEntityId)?.entries[0]?.kind).toBe("live");
+  });
 });
 
 describe("runRetrievalPhase session re-entry continuity", () => {
