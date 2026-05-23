@@ -317,8 +317,14 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile"
   | "shared_state_lifecycle_aging_blocked_by_recent_retrieval_total"
   | "shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile"
-  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total"
-  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_total"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_total"
+  | "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_hard_total"
+  | "shared_state_lifecycle_aging_blocked_by_hard_final_compile"
+  | "shared_state_lifecycle_aging_blocked_by_soft_total"
+  | "shared_state_lifecycle_aging_blocked_by_soft_final_compile"
   | "shared_state_lifecycle_aging_unknown_age_total"
   | "shared_state_lifecycle_aging_unknown_age_final_compile"
   | "shared_state_lifecycle_aging_blocked_by_multiple_reasons_total"
@@ -335,8 +341,14 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile"
   | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total"
   | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile"
-  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total"
-  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_final_compile"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_total"
+  | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_final_compile"
   | "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total"
   | "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile"
   | "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total"
@@ -1020,8 +1032,14 @@ type LifecycleAgingBlockerMetricCounts = {
   blocked_by_ledger_overlap_final_compile: number;
   blocked_by_recent_retrieval_total: number;
   blocked_by_recent_retrieval_final_compile: number;
-  blocked_by_active_canonicalizer_total: number;
-  blocked_by_active_canonicalizer_final_compile: number;
+  blocked_by_active_canonicalizer_critical_total: number;
+  blocked_by_active_canonicalizer_critical_final_compile: number;
+  blocked_by_active_canonicalizer_operational_total: number;
+  blocked_by_active_canonicalizer_operational_final_compile: number;
+  blocked_by_hard_total: number;
+  blocked_by_hard_final_compile: number;
+  blocked_by_soft_total: number;
+  blocked_by_soft_final_compile: number;
   unknown_age_total: number;
   unknown_age_final_compile: number;
   blocked_by_multiple_reasons_total: number;
@@ -1045,8 +1063,14 @@ function lifecycleAgingBlockerMetrics(
     blocked_by_ledger_overlap_final_compile: 0,
     blocked_by_recent_retrieval_total: 0,
     blocked_by_recent_retrieval_final_compile: 0,
-    blocked_by_active_canonicalizer_total: 0,
-    blocked_by_active_canonicalizer_final_compile: 0,
+    blocked_by_active_canonicalizer_critical_total: 0,
+    blocked_by_active_canonicalizer_critical_final_compile: 0,
+    blocked_by_active_canonicalizer_operational_total: 0,
+    blocked_by_active_canonicalizer_operational_final_compile: 0,
+    blocked_by_hard_total: 0,
+    blocked_by_hard_final_compile: 0,
+    blocked_by_soft_total: 0,
+    blocked_by_soft_final_compile: 0,
     unknown_age_total: 0,
     unknown_age_final_compile: 0,
     blocked_by_multiple_reasons_total: 0,
@@ -1076,10 +1100,25 @@ function lifecycleAgingBlockerMetrics(
       traceKey,
       "blocked_by_recent_retrieval",
     );
-    metrics.blocked_by_active_canonicalizer_final_compile = traceObjectNumber(
+    metrics.blocked_by_active_canonicalizer_critical_final_compile = traceObjectNumber(
       record,
       traceKey,
-      "blocked_by_active_canonicalizer",
+      "blocked_by_active_canonicalizer_critical",
+    );
+    metrics.blocked_by_active_canonicalizer_operational_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_active_canonicalizer_operational",
+    );
+    metrics.blocked_by_hard_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_hard_total",
+    );
+    metrics.blocked_by_soft_final_compile = traceObjectNumber(
+      record,
+      traceKey,
+      "blocked_by_soft_total",
     );
     metrics.unknown_age_final_compile = traceObjectNumber(record, traceKey, "unknown_age_count");
     metrics.blocked_by_multiple_reasons_final_compile = traceObjectNumber(
@@ -1095,8 +1134,12 @@ function lifecycleAgingBlockerMetrics(
     metrics.blocked_by_patch_touch_total += metrics.blocked_by_patch_touch_final_compile;
     metrics.blocked_by_ledger_overlap_total += metrics.blocked_by_ledger_overlap_final_compile;
     metrics.blocked_by_recent_retrieval_total += metrics.blocked_by_recent_retrieval_final_compile;
-    metrics.blocked_by_active_canonicalizer_total +=
-      metrics.blocked_by_active_canonicalizer_final_compile;
+    metrics.blocked_by_active_canonicalizer_critical_total +=
+      metrics.blocked_by_active_canonicalizer_critical_final_compile;
+    metrics.blocked_by_active_canonicalizer_operational_total +=
+      metrics.blocked_by_active_canonicalizer_operational_final_compile;
+    metrics.blocked_by_hard_total += metrics.blocked_by_hard_final_compile;
+    metrics.blocked_by_soft_total += metrics.blocked_by_soft_final_compile;
     metrics.unknown_age_total += metrics.unknown_age_final_compile;
     metrics.blocked_by_multiple_reasons_total += metrics.blocked_by_multiple_reasons_final_compile;
   }
@@ -1330,10 +1373,22 @@ function sharedStateCapPressureMetrics(
       liveToLowSalienceBlockers.blocked_by_recent_retrieval_total,
     shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile:
       liveToLowSalienceBlockers.blocked_by_recent_retrieval_final_compile,
-    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total:
-      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_total,
-    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile:
-      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_final_compile,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_total:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_critical_total,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_final_compile:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_critical_final_compile,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_total:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_operational_total,
+    shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_final_compile:
+      liveToLowSalienceBlockers.blocked_by_active_canonicalizer_operational_final_compile,
+    shared_state_lifecycle_aging_blocked_by_hard_total:
+      liveToLowSalienceBlockers.blocked_by_hard_total,
+    shared_state_lifecycle_aging_blocked_by_hard_final_compile:
+      liveToLowSalienceBlockers.blocked_by_hard_final_compile,
+    shared_state_lifecycle_aging_blocked_by_soft_total:
+      liveToLowSalienceBlockers.blocked_by_soft_total,
+    shared_state_lifecycle_aging_blocked_by_soft_final_compile:
+      liveToLowSalienceBlockers.blocked_by_soft_final_compile,
     shared_state_lifecycle_aging_unknown_age_total: liveToLowSalienceBlockers.unknown_age_total,
     shared_state_lifecycle_aging_unknown_age_final_compile:
       liveToLowSalienceBlockers.unknown_age_final_compile,
@@ -1365,10 +1420,22 @@ function sharedStateCapPressureMetrics(
       lowSalienceToDormantBlockers.blocked_by_recent_retrieval_total,
     shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile:
       lowSalienceToDormantBlockers.blocked_by_recent_retrieval_final_compile,
-    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total:
-      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_total,
-    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile:
-      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_total:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_critical_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_critical_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_total:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_operational_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_active_canonicalizer_operational_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_total:
+      lowSalienceToDormantBlockers.blocked_by_hard_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_hard_final_compile,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_total:
+      lowSalienceToDormantBlockers.blocked_by_soft_total,
+    shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_final_compile:
+      lowSalienceToDormantBlockers.blocked_by_soft_final_compile,
     shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total:
       lowSalienceToDormantBlockers.unknown_age_total,
     shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile:

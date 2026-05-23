@@ -30,7 +30,8 @@ export type SharedStateLifecycleTransitionReason =
   | "current_turn_update"
   | "touched_by_patch"
   | "ledger_overlap"
-  | "active_canonicalizer_overlap"
+  | "active_canonicalizer_critical"
+  | "active_canonicalizer_operational"
   | "recent_retrieval";
 
 export type SharedStateLifecycleTransition = {
@@ -45,16 +46,38 @@ export type LifecycleProtectionReason =
   | "touched_by_patch"
   | "current_turn_update"
   | "ledger_overlap"
-  | "active_canonicalizer_overlap"
+  | "active_canonicalizer_critical"
+  | "active_canonicalizer_operational"
   | "recent_retrieval";
 
-export const LIFECYCLE_PROTECTION_REASONS = [
+export type LifecycleProtectionStrength = "hard" | "soft";
+
+export type LifecycleProtectionEntry = {
+  reason: LifecycleProtectionReason;
+  strength: LifecycleProtectionStrength;
+};
+
+export type EntryProtectionState = {
+  hard: LifecycleProtectionReason[];
+  soft: LifecycleProtectionReason[];
+};
+
+export const LIFECYCLE_HARD_PROTECTION_REASONS = [
   "touched_by_patch",
   "current_turn_update",
   "ledger_overlap",
-  "active_canonicalizer_overlap",
+  "active_canonicalizer_critical",
+] as const satisfies readonly LifecycleProtectionReason[];
+
+export const LIFECYCLE_SOFT_PROTECTION_REASONS = [
+  "active_canonicalizer_operational",
   "recent_retrieval",
-] as const;
+] as const satisfies readonly LifecycleProtectionReason[];
+
+export const LIFECYCLE_PROTECTION_REASONS = [
+  ...LIFECYCLE_HARD_PROTECTION_REASONS,
+  ...LIFECYCLE_SOFT_PROTECTION_REASONS,
+] as const satisfies readonly LifecycleProtectionReason[];
 
 export type LifecycleAgingBlockerCounts = {
   demotable_count: number;
@@ -64,7 +87,10 @@ export type LifecycleAgingBlockerCounts = {
   blocked_by_patch_touch: number;
   blocked_by_ledger_overlap: number;
   blocked_by_recent_retrieval: number;
-  blocked_by_active_canonicalizer: number;
+  blocked_by_active_canonicalizer_critical: number;
+  blocked_by_active_canonicalizer_operational: number;
+  blocked_by_hard_total: number;
+  blocked_by_soft_total: number;
   blocked_by_multiple_reasons: number;
 };
 
@@ -73,6 +99,8 @@ export type LifecycleAgingBlockedSampleEntry = {
   state_key: string | null;
   age_turns: number | null;
   block_reasons: LifecycleProtectionReason[];
+  block_strengths: LifecycleProtectionStrength[];
+  block_reasons_with_strength: LifecycleProtectionEntry[];
   active_canonicalizer_kinds: string[] | null;
 };
 
@@ -85,6 +113,7 @@ export type ApplyLifecycleAgingInput = {
   activeActionIds?: readonly ActionId[];
   activeGoalIds?: readonly GoalId[];
   activeCriticalCommitmentIds?: readonly CommitmentId[];
+  activeOperationalCommitmentIds?: readonly CommitmentId[];
   recentlyRetrievedEntryIds?: readonly SharedStateEntryId[];
   touchedEntryIds?: ReadonlySet<SharedStateEntryId>;
   lastUpdatedTurnByEntryId?: Readonly<Record<string, number>>;
@@ -254,21 +283,6 @@ function hasAnyIdOverlap<TId extends string>(
   return values.some((value) => candidates.has(value));
 }
 
-function sharedStateEntryHasActiveCanonicalizerOverlap(
-  entry: SharedStateEntry,
-  input: Pick<
-    ApplyLifecycleAgingInput,
-    "activeOpenQuestionIds" | "activeActionIds" | "activeGoalIds" | "activeCriticalCommitmentIds"
-  >,
-): boolean {
-  return (
-    hasAnyIdOverlap(entry.canonicalizes.open_question_ids, idSet(input.activeOpenQuestionIds)) ||
-    hasAnyIdOverlap(entry.canonicalizes.action_ids, idSet(input.activeActionIds)) ||
-    hasAnyIdOverlap(entry.canonicalizes.goal_ids, idSet(input.activeGoalIds)) ||
-    hasAnyIdOverlap(entry.canonicalizes.commitment_ids, idSet(input.activeCriticalCommitmentIds))
-  );
-}
-
 function isTouchedByPatch(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
   return input.touchedEntryIds?.has(entry.id) === true;
 }
@@ -281,11 +295,26 @@ function hasLedgerOverlap(entry: SharedStateEntry, input: ApplyLifecycleAgingInp
   return sharedStateEntryHasLedgerOverlap(entry, input.ledgerStreamEntryIds);
 }
 
-function hasActiveCanonicalizerOverlap(
+function hasActiveCriticalCanonicalizerOverlap(
   entry: SharedStateEntry,
   input: ApplyLifecycleAgingInput,
 ): boolean {
-  return sharedStateEntryHasActiveCanonicalizerOverlap(entry, input);
+  return hasAnyIdOverlap(
+    entry.canonicalizes.commitment_ids,
+    idSet(input.activeCriticalCommitmentIds),
+  );
+}
+
+function hasActiveOperationalCanonicalizerOverlap(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): boolean {
+  return (
+    hasAnyIdOverlap(entry.canonicalizes.open_question_ids, idSet(input.activeOpenQuestionIds)) ||
+    hasAnyIdOverlap(entry.canonicalizes.action_ids, idSet(input.activeActionIds)) ||
+    hasAnyIdOverlap(entry.canonicalizes.goal_ids, idSet(input.activeGoalIds)) ||
+    hasAnyIdOverlap(entry.canonicalizes.commitment_ids, idSet(input.activeOperationalCommitmentIds))
+  );
 }
 
 function hasRecentRetrieval(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): boolean {
@@ -296,7 +325,11 @@ function activeCanonicalizerOverlapKinds(
   entry: SharedStateEntry,
   input: Pick<
     ApplyLifecycleAgingInput,
-    "activeOpenQuestionIds" | "activeActionIds" | "activeGoalIds" | "activeCriticalCommitmentIds"
+    | "activeOpenQuestionIds"
+    | "activeActionIds"
+    | "activeGoalIds"
+    | "activeCriticalCommitmentIds"
+    | "activeOperationalCommitmentIds"
   >,
 ): string[] {
   const kinds: string[] = [];
@@ -319,63 +352,81 @@ function activeCanonicalizerOverlapKinds(
     kinds.push("critical");
   }
 
+  if (
+    hasAnyIdOverlap(entry.canonicalizes.commitment_ids, idSet(input.activeOperationalCommitmentIds))
+  ) {
+    kinds.push("operational_commitment");
+  }
+
   return kinds;
+}
+
+export function entryProtectionState(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): EntryProtectionState {
+  const hard: LifecycleProtectionReason[] = [];
+  const soft: LifecycleProtectionReason[] = [];
+
+  if (isTouchedByPatch(entry, input)) {
+    hard.push("touched_by_patch");
+  }
+
+  if (hasCurrentTurnUpdate(entry, input)) {
+    hard.push("current_turn_update");
+  }
+
+  if (hasLedgerOverlap(entry, input)) {
+    hard.push("ledger_overlap");
+  }
+
+  if (hasActiveCriticalCanonicalizerOverlap(entry, input)) {
+    hard.push("active_canonicalizer_critical");
+  }
+
+  if (hasActiveOperationalCanonicalizerOverlap(entry, input)) {
+    soft.push("active_canonicalizer_operational");
+  }
+
+  if (hasRecentRetrieval(entry, input)) {
+    soft.push("recent_retrieval");
+  }
+
+  return { hard, soft };
 }
 
 export function sharedStateLifecycleProtectionReasons(
   entry: SharedStateEntry,
   input: ApplyLifecycleAgingInput,
-): LifecycleProtectionReason[] {
-  const reasons: LifecycleProtectionReason[] = [];
+): LifecycleProtectionEntry[] {
+  const protection = entryProtectionState(entry, input);
 
-  if (isTouchedByPatch(entry, input)) {
-    reasons.push("touched_by_patch");
-  }
-
-  if (hasCurrentTurnUpdate(entry, input)) {
-    reasons.push("current_turn_update");
-  }
-
-  if (hasLedgerOverlap(entry, input)) {
-    reasons.push("ledger_overlap");
-  }
-
-  if (hasActiveCanonicalizerOverlap(entry, input)) {
-    reasons.push("active_canonicalizer_overlap");
-  }
-
-  if (hasRecentRetrieval(entry, input)) {
-    reasons.push("recent_retrieval");
-  }
-
-  return reasons;
+  return [
+    ...protection.hard.map((reason) => ({ reason, strength: "hard" as const })),
+    ...protection.soft.map((reason) => ({ reason, strength: "soft" as const })),
+  ];
 }
 
-function reactivationReason(
+export function blocksLiveToLowSalienceDemotion(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): LifecycleProtectionReason | null {
+  return entryProtectionState(entry, input).hard[0] ?? null;
+}
+
+export function blocksLowSalienceToDormantDemotion(
+  entry: SharedStateEntry,
+  input: ApplyLifecycleAgingInput,
+): LifecycleProtectionReason | null {
+  const protection = entryProtectionState(entry, input);
+  return protection.hard[0] ?? protection.soft[0] ?? null;
+}
+
+export function reactivatesDemoted(
   entry: SharedStateEntry,
   input: ApplyLifecycleAgingInput,
 ): SharedStateLifecycleTransitionReason | null {
-  if (isTouchedByPatch(entry, input)) {
-    return "touched_by_patch";
-  }
-
-  if (hasCurrentTurnUpdate(entry, input)) {
-    return "current_turn_update";
-  }
-
-  if (hasLedgerOverlap(entry, input)) {
-    return "ledger_overlap";
-  }
-
-  if (hasActiveCanonicalizerOverlap(entry, input)) {
-    return "active_canonicalizer_overlap";
-  }
-
-  if (hasRecentRetrieval(entry, input)) {
-    return "recent_retrieval";
-  }
-
-  return null;
+  return entryProtectionState(entry, input).hard[0] ?? null;
 }
 
 function entryTurnAge(entry: SharedStateEntry, input: ApplyLifecycleAgingInput): number | null {
@@ -405,15 +456,34 @@ function emptyLifecycleAgingBlockerCounts(): LifecycleAgingBlockerCounts {
     blocked_by_patch_touch: 0,
     blocked_by_ledger_overlap: 0,
     blocked_by_recent_retrieval: 0,
-    blocked_by_active_canonicalizer: 0,
+    blocked_by_active_canonicalizer_critical: 0,
+    blocked_by_active_canonicalizer_operational: 0,
+    blocked_by_hard_total: 0,
+    blocked_by_soft_total: 0,
     blocked_by_multiple_reasons: 0,
   };
+}
+
+function lifecycleProtectionStrength(
+  reason: LifecycleProtectionReason,
+): LifecycleProtectionStrength {
+  return LIFECYCLE_HARD_PROTECTION_REASONS.includes(
+    reason as (typeof LIFECYCLE_HARD_PROTECTION_REASONS)[number],
+  )
+    ? "hard"
+    : "soft";
 }
 
 function incrementBlockerCount(
   counts: LifecycleAgingBlockerCounts,
   reason: LifecycleProtectionReason,
 ): void {
+  if (lifecycleProtectionStrength(reason) === "hard") {
+    counts.blocked_by_hard_total += 1;
+  } else {
+    counts.blocked_by_soft_total += 1;
+  }
+
   switch (reason) {
     case "touched_by_patch":
       counts.blocked_by_patch_touch += 1;
@@ -424,12 +494,28 @@ function incrementBlockerCount(
     case "ledger_overlap":
       counts.blocked_by_ledger_overlap += 1;
       break;
-    case "active_canonicalizer_overlap":
-      counts.blocked_by_active_canonicalizer += 1;
+    case "active_canonicalizer_critical":
+      counts.blocked_by_active_canonicalizer_critical += 1;
+      break;
+    case "active_canonicalizer_operational":
+      counts.blocked_by_active_canonicalizer_operational += 1;
       break;
     case "recent_retrieval":
       counts.blocked_by_recent_retrieval += 1;
       break;
+  }
+}
+
+function incrementBlockerStrengthCounts(
+  counts: LifecycleAgingBlockerCounts,
+  reasons: readonly LifecycleProtectionReason[],
+): void {
+  if (reasons.some((reason) => lifecycleProtectionStrength(reason) === "hard")) {
+    counts.blocked_by_hard_total += 1;
+  }
+
+  if (reasons.some((reason) => lifecycleProtectionStrength(reason) === "soft")) {
+    counts.blocked_by_soft_total += 1;
   }
 }
 
@@ -451,16 +537,23 @@ function recordDemotionCandidate(input: {
 
   if (input.reasons.length > 1) {
     input.counts.blocked_by_multiple_reasons += 1;
+    incrementBlockerStrengthCounts(input.counts, input.reasons);
   } else if (input.reasons.length === 1) {
     incrementBlockerCount(input.counts, input.reasons[0]!);
   }
 
   const activeCanonicalizerKinds = activeCanonicalizerOverlapKinds(input.entry, input.agingInput);
+  const blockReasonsWithStrength = input.reasons.map((reason) => ({
+    reason,
+    strength: lifecycleProtectionStrength(reason),
+  }));
   input.blockedSamples.push({
     entry_id: input.entry.id,
     state_key: input.entry.state_key,
     age_turns: input.age,
     block_reasons: input.reasons,
+    block_strengths: blockReasonsWithStrength.map((reason) => reason.strength),
+    block_reasons_with_strength: blockReasonsWithStrength,
     active_canonicalizer_kinds:
       activeCanonicalizerKinds.length === 0 ? null : activeCanonicalizerKinds,
   });
@@ -489,7 +582,7 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
       continue;
     }
 
-    const reason = reactivationReason(entry, input);
+    const reason = reactivatesDemoted(entry, input);
 
     if (reason === null) {
       continue;
@@ -511,7 +604,9 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
     }
 
     const age = entryTurnAge(entry, input);
-    const reasons = sharedStateLifecycleProtectionReasons(entry, input);
+    const protection = entryProtectionState(entry, input);
+    const liveToLowSalienceBlockReasons = protection.hard;
+    const lowSalienceToDormantBlockReasons = [...protection.hard, ...protection.soft];
 
     if (entry.kind === "live" && age === null) {
       blockerCountsLiveToLowSalience.unknown_age_count += 1;
@@ -522,11 +617,11 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
     }
 
     if (entry.kind === "live" && age !== null && age > recentTurnThreshold) {
-      const demoted = reasons.length === 0;
+      const demoted = liveToLowSalienceBlockReasons.length === 0;
       recordDemotionCandidate({
         entry,
         age,
-        reasons,
+        reasons: liveToLowSalienceBlockReasons,
         counts: blockerCountsLiveToLowSalience,
         blockedSamples,
         demoted,
@@ -535,11 +630,11 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
     }
 
     if (entry.kind === "low_salience_live" && age !== null && age > dormantTurnThreshold) {
-      const demoted = reasons.length === 0;
+      const demoted = lowSalienceToDormantBlockReasons.length === 0;
       recordDemotionCandidate({
         entry,
         age,
-        reasons,
+        reasons: lowSalienceToDormantBlockReasons,
         counts: blockerCountsLowSalienceToDormant,
         blockedSamples,
         demoted,
@@ -547,15 +642,15 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
       });
     }
 
-    if (reactivationReason(entry, input) !== null) {
-      continue;
-    }
-
     if (age === null) {
       continue;
     }
 
-    if (entry.kind === "live" && age > recentTurnThreshold) {
+    if (
+      entry.kind === "live" &&
+      age > recentTurnThreshold &&
+      blocksLiveToLowSalienceDemotion(entry, input) === null
+    ) {
       transitions.push({
         entryId: entry.id,
         fromKind: "live",
@@ -566,7 +661,11 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
       continue;
     }
 
-    if (entry.kind === "low_salience_live" && age > dormantTurnThreshold) {
+    if (
+      entry.kind === "low_salience_live" &&
+      age > dormantTurnThreshold &&
+      blocksLowSalienceToDormantDemotion(entry, input) === null
+    ) {
       transitions.push({
         entryId: entry.id,
         fromKind: "low_salience_live",

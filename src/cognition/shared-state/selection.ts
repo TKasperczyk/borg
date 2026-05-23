@@ -116,6 +116,7 @@ export type SharedStateRenderSalienceOptions = {
   activeActionIds?: readonly ActionId[];
   activeGoalIds?: readonly GoalId[];
   activeCriticalCommitmentIds?: readonly CommitmentId[];
+  activeOperationalCommitmentIds?: readonly CommitmentId[];
 };
 
 export type SharedStateRenderSelection = {

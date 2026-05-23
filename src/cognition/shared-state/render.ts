@@ -119,6 +119,7 @@ function sharedStateRenderOptions(
     activeActionIds: options.activeActionIds ?? [],
     activeGoalIds: options.activeGoalIds ?? [],
     activeCriticalCommitmentIds: options.activeCriticalCommitmentIds ?? [],
+    activeOperationalCommitmentIds: options.activeOperationalCommitmentIds ?? [],
     recentlyRetrievedEntryIds: options.recentlyRetrievedEntryIds ?? [],
     currentTurnCounter: options.currentTurnCounter,
     lastUpdatedTurnByStreamEntryId: options.lastUpdatedTurnByStreamEntryId ?? {},

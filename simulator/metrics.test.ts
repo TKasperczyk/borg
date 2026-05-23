@@ -284,8 +284,14 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile",
   "shared_state_lifecycle_aging_blocked_by_recent_retrieval_total",
   "shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile",
-  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total",
-  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_total",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_total",
+  "shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_hard_total",
+  "shared_state_lifecycle_aging_blocked_by_hard_final_compile",
+  "shared_state_lifecycle_aging_blocked_by_soft_total",
+  "shared_state_lifecycle_aging_blocked_by_soft_final_compile",
   "shared_state_lifecycle_aging_unknown_age_total",
   "shared_state_lifecycle_aging_unknown_age_final_compile",
   "shared_state_lifecycle_aging_blocked_by_multiple_reasons_total",
@@ -302,8 +308,14 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_ledger_overlap_final_compile",
   "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_total",
   "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile",
-  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total",
-  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_final_compile",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_total",
+  "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_final_compile",
   "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total",
   "shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile",
   "shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_multiple_reasons_total",
@@ -1792,7 +1804,10 @@ describe("MetricsCapture", () => {
             blocked_by_patch_touch: 3,
             blocked_by_ledger_overlap: 4,
             blocked_by_recent_retrieval: 5,
-            blocked_by_active_canonicalizer: 6,
+            blocked_by_active_canonicalizer_critical: 6,
+            blocked_by_active_canonicalizer_operational: 7,
+            blocked_by_hard_total: 9,
+            blocked_by_soft_total: 10,
             unknown_age_count: 7,
             blocked_by_multiple_reasons: 8,
           },
@@ -1803,7 +1818,10 @@ describe("MetricsCapture", () => {
             blocked_by_patch_touch: 2,
             blocked_by_ledger_overlap: 3,
             blocked_by_recent_retrieval: 4,
-            blocked_by_active_canonicalizer: 5,
+            blocked_by_active_canonicalizer_critical: 5,
+            blocked_by_active_canonicalizer_operational: 6,
+            blocked_by_hard_total: 7,
+            blocked_by_soft_total: 8,
             unknown_age_count: 6,
             blocked_by_multiple_reasons: 7,
           },
@@ -1843,7 +1861,10 @@ describe("MetricsCapture", () => {
             blocked_by_patch_touch: 17,
             blocked_by_ledger_overlap: 19,
             blocked_by_recent_retrieval: 23,
-            blocked_by_active_canonicalizer: 29,
+            blocked_by_active_canonicalizer_critical: 29,
+            blocked_by_active_canonicalizer_operational: 31,
+            blocked_by_hard_total: 30,
+            blocked_by_soft_total: 32,
             unknown_age_count: 31,
             blocked_by_multiple_reasons: 37,
           },
@@ -1854,7 +1875,10 @@ describe("MetricsCapture", () => {
             blocked_by_patch_touch: 5,
             blocked_by_ledger_overlap: 6,
             blocked_by_recent_retrieval: 7,
-            blocked_by_active_canonicalizer: 8,
+            blocked_by_active_canonicalizer_critical: 8,
+            blocked_by_active_canonicalizer_operational: 9,
+            blocked_by_hard_total: 10,
+            blocked_by_soft_total: 11,
             unknown_age_count: 9,
             blocked_by_multiple_reasons: 10,
           },
@@ -1966,8 +1990,22 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_lifecycle_aging_blocked_by_ledger_overlap_final_compile).toBe(19);
     expect(row.shared_state_lifecycle_aging_blocked_by_recent_retrieval_total).toBe(28);
     expect(row.shared_state_lifecycle_aging_blocked_by_recent_retrieval_final_compile).toBe(23);
-    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_total).toBe(35);
-    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_final_compile).toBe(29);
+    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_total).toBe(
+      35,
+    );
+    expect(
+      row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_critical_final_compile,
+    ).toBe(29);
+    expect(row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_total).toBe(
+      38,
+    );
+    expect(
+      row.shared_state_lifecycle_aging_blocked_by_active_canonicalizer_operational_final_compile,
+    ).toBe(31);
+    expect(row.shared_state_lifecycle_aging_blocked_by_hard_total).toBe(39);
+    expect(row.shared_state_lifecycle_aging_blocked_by_hard_final_compile).toBe(30);
+    expect(row.shared_state_lifecycle_aging_blocked_by_soft_total).toBe(42);
+    expect(row.shared_state_lifecycle_aging_blocked_by_soft_final_compile).toBe(32);
     expect(row.shared_state_lifecycle_aging_unknown_age_total).toBe(38);
     expect(row.shared_state_lifecycle_aging_unknown_age_final_compile).toBe(31);
     expect(row.shared_state_lifecycle_aging_blocked_by_multiple_reasons_total).toBe(45);
@@ -2003,11 +2041,25 @@ describe("MetricsCapture", () => {
       row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_recent_retrieval_final_compile,
     ).toBe(7);
     expect(
-      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_total,
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_total,
     ).toBe(13);
     expect(
-      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_final_compile,
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_critical_final_compile,
     ).toBe(8);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_total,
+    ).toBe(15);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_active_canonicalizer_operational_final_compile,
+    ).toBe(9);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_total).toBe(17);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_hard_final_compile,
+    ).toBe(10);
+    expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_total).toBe(19);
+    expect(
+      row.shared_state_lifecycle_aging_low_salience_to_dormant_blocked_by_soft_final_compile,
+    ).toBe(11);
     expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_total).toBe(15);
     expect(row.shared_state_lifecycle_aging_low_salience_to_dormant_unknown_age_final_compile).toBe(
       9,

@@ -1056,6 +1056,7 @@ export async function compileSharedStateArtifact(
     activeActionIds: input.renderOptions?.activeActionIds,
     activeGoalIds: input.renderOptions?.activeGoalIds,
     activeCriticalCommitmentIds: input.renderOptions?.activeCriticalCommitmentIds,
+    activeOperationalCommitmentIds: input.renderOptions?.activeOperationalCommitmentIds,
     recentlyRetrievedEntryIds: input.renderOptions?.recentlyRetrievedEntryIds,
     touchedEntryIds: touchedSharedStateEntryIds(compilerOperations),
     lastUpdatedTurnByEntryId: lastUpdatedTurnByEntryId({

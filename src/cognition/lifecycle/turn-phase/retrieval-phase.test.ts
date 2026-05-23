@@ -249,6 +249,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const goalId = createGoalId();
     const openQuestionId = createOpenQuestionId();
     const commitmentId = createCommitmentId();
+    const operationalCommitmentId = createCommitmentId();
     const streamEntryId = createStreamEntryId();
     const currentUserEntry = {
       id: streamEntryId,
@@ -326,6 +327,15 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
             enforcement_class: "critical",
             critical_domain: "privacy",
           },
+          {
+            id: operationalCommitmentId,
+            directive: "Prefer concise project-note summaries.",
+            kind: "process_norm",
+            type: "rule",
+            directive_family: "brevity",
+            enforcement_class: "advisory",
+            critical_domain: null,
+          },
         ],
       },
       openQuestionsRepository: {
@@ -393,9 +403,11 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     expect(result.renderOptions?.activeActionIds).toEqual([actionId]);
     expect(result.renderOptions?.activeGoalIds).toEqual([goalId]);
     expect(result.renderOptions?.activeCriticalCommitmentIds).toEqual([commitmentId]);
+    expect(result.renderOptions?.activeOperationalCommitmentIds).toEqual([operationalCommitmentId]);
+    expect(result.renderOptions?.activeOperationalCommitmentIds).not.toContain(commitmentId);
   });
 
-  it("protects shared-state entries cited by current retrieval results from demotion", async () => {
+  it("keeps shared-state entries cited by current retrieval results searchable while allowing low-salience demotion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-retrieved-state-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
     const db = openDatabase(join(tempDir, "borg.db"), {
@@ -590,7 +602,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     });
 
     expect(result.renderOptions?.recentlyRetrievedEntryIds).toEqual([entryId]);
-    expect(sharedStateRepository.get(audienceEntityId)?.entries[0]?.kind).toBe("live");
+    expect(sharedStateRepository.get(audienceEntityId)?.entries[0]?.kind).toBe("low_salience_live");
   });
 });
 

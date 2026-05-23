@@ -3165,6 +3165,8 @@ describe("compileSharedStateArtifact", () => {
           age_turns: 11,
           rendered: true,
           block_reasons: ["ledger_overlap"],
+          block_strengths: ["hard"],
+          block_reasons_with_strength: [{ reason: "ledger_overlap", strength: "hard" }],
           active_canonicalizer_kinds: null,
         },
       ],

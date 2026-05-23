@@ -666,6 +666,9 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     activeCriticalCommitmentIds: activeCommitmentCanonicalizationRecords
       .filter((commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical")
       .map((commitment) => commitment.id as CommitmentId),
+    activeOperationalCommitmentIds: activeCommitmentCanonicalizationRecords
+      .filter((commitment) => effectiveCommitmentEnforcementClass(commitment) !== "critical")
+      .map((commitment) => commitment.id as CommitmentId),
     currentTurnCounter: turnCounter,
     lastUpdatedTurnByStreamEntryId,
   };
