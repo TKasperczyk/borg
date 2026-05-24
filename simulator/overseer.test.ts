@@ -283,6 +283,7 @@ function metricsRow(turn: number): MetricsRow {
     decision_artifact_semantic_nodes_marked_contradicted: 0,
     decision_artifact_semantic_revision_cache_hits: 0,
     decision_artifact_semantic_revision_cache_size: 0,
+    embedding_cache_pending_overflow_total: 0,
     semantic_revision_error_count: 0,
     semantic_revision_skipped_due_to_error: 0,
     semantic_revision_error_total_by_reason: {},

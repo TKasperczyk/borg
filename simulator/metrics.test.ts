@@ -194,6 +194,7 @@ const TURN_METRICS_KEY_ORDER = [
   "decision_artifact_semantic_nodes_marked_contradicted",
   "decision_artifact_semantic_revision_cache_hits",
   "decision_artifact_semantic_revision_cache_size",
+  "embedding_cache_pending_overflow_total",
   "semantic_revision_error_count",
   "semantic_revision_skipped_due_to_error",
   "semantic_revision_error_total_by_reason",
@@ -1100,6 +1101,22 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("captures embedding cache pending-overflow totals", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    const row = await new MetricsCapture(metricsPath, {
+      embeddingCacheStats: () => ({ pending_overflow: 3 }),
+    }).capture(fakeBorg(), "turn-embedding-cache-stats", 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(row.embedding_cache_pending_overflow_total).toBe(3);
   });
 
   it("captures session re-entry continuity counters from trace events", async () => {

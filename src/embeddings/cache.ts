@@ -171,6 +171,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
     const value = promise.then(
       (embedding) => {
         entry.settled = true;
+        this.evictOldest();
         return embedding;
       },
       (error) => {
@@ -179,6 +180,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
           this.records.delete(key);
         }
 
+        this.evictOldest();
         throw error;
       },
     );

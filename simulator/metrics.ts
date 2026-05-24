@@ -62,6 +62,7 @@ import type { TraceRecord } from "../assessor/types.js";
 import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
 import { isExtractorMaxTokenLlmLabel } from "../src/cognition/tracing/extractor-labels.js";
 import { writeFileAtomic } from "../src/util/atomic-write.js";
+import type { EmbeddingCacheStats } from "../src/embeddings/cache.js";
 
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
@@ -169,6 +170,7 @@ type MemoryBandMetricCounts = Pick<
 export type MetricsCaptureOptions = {
   tracePath?: string;
   semanticRevisionVerdictCacheSize?: () => number;
+  embeddingCacheStats?: () => Pick<EmbeddingCacheStats, "pending_overflow"> | undefined;
   scenarioKey?: string;
 };
 
@@ -3011,6 +3013,9 @@ export class MetricsCapture {
   private readonly tracePath?: string;
   private readonly scenarioKey?: string;
   private readonly semanticRevisionVerdictCacheSize: () => number;
+  private readonly embeddingCacheStats?: () =>
+    | Pick<EmbeddingCacheStats, "pending_overflow">
+    | undefined;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
   private previousTraceRecordCount = 0;
@@ -3027,6 +3032,7 @@ export class MetricsCapture {
     this.scenarioKey = options.scenarioKey;
     this.semanticRevisionVerdictCacheSize =
       options.semanticRevisionVerdictCacheSize ?? sharedStateSemanticRevisionVerdictCacheSize;
+    this.embeddingCacheStats = options.embeddingCacheStats;
   }
 
   listHealthWarnings(): SimulatorHealthWarning[] {
@@ -3600,6 +3606,7 @@ export class MetricsCapture {
       decision_artifact_semantic_revision_cache_hits:
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:
@@ -4111,6 +4118,7 @@ export class MetricsCapture {
       decision_artifact_semantic_revision_cache_hits:
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:

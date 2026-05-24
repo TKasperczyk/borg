@@ -15,6 +15,7 @@ import {
   type ReviewQueueItem,
   type SessionId,
 } from "../src/index.js";
+import type { EmbeddingCacheStats } from "../src/embeddings/cache.js";
 import { isNaturalSilenceSuppressionReason } from "../src/cognition/generation/types.js";
 
 import { MetricsCapture } from "./metrics.js";
@@ -103,6 +104,10 @@ const PERSONA_CHANNEL_TRANSCRIPT_LIMIT = 10;
 const BORG_OBSERVATION_MARKER_PREFIX = "[borg observation:";
 export const EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE =
   "--emission-baseline sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
+
+type EmbeddingClientWithStats = {
+  stats(): EmbeddingCacheStats;
+};
 
 type ChannelTranscriptLogEntry = PersonaChannelTranscriptEntry & {
   speakerIndex: number | null;
@@ -228,6 +233,22 @@ function incrementNestedStringCounts(
 
   incrementStringCounts(nested, labels);
   counts[key] = nested;
+}
+
+function embeddingCacheStatsFromTransport(
+  transport: BorgTransport,
+): Pick<EmbeddingCacheStats, "pending_overflow"> | undefined {
+  const embeddingClient = transport.getEmbeddingClient();
+
+  if (
+    embeddingClient === undefined ||
+    !("stats" in embeddingClient) ||
+    typeof embeddingClient.stats !== "function"
+  ) {
+    return undefined;
+  }
+
+  return (embeddingClient as EmbeddingClientWithStats).stats();
 }
 
 function postGenerationRejectedForTurn(
@@ -721,6 +742,7 @@ export class SimulatorRunner {
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
       scenarioKey: this.options.scenarioKey,
+      embeddingCacheStats: () => embeddingCacheStatsFromTransport(transport),
     });
     const personaSessions = createPersonaSessions(this.options, personas);
     const personaRoleBleedLlmClient =

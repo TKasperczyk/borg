@@ -20,6 +20,7 @@ import {
   type TurnEmission,
   type LLMToolCall,
 } from "../src/index.js";
+import { createEmbeddingClient } from "../src/borg/clients.js";
 import {
   FakeLLMClient,
   createFakeEmitAnswerResponse,
@@ -644,7 +645,7 @@ export class BorgTransport {
   private readonly maintenance: boolean;
   private readonly includeTracePayloads?: boolean;
   private readonly llmClient?: BorgOpenOptions["llmClient"];
-  private readonly embeddingClient?: BorgOpenOptions["embeddingClient"];
+  private embeddingClient?: BorgOpenOptions["embeddingClient"];
   private readonly clock: ManualClock;
   private readonly defaultUser?: string;
   private readonly seededGoals = new Map<string, GoalRecord>();
@@ -712,6 +713,7 @@ export class BorgTransport {
         tempDir: this.dataDir,
         llm: this.llmClient ?? createMockBorgLlmClient(),
         clock: this.clock,
+        ...(this.embeddingClient === undefined ? {} : { embeddingClient: this.embeddingClient }),
         tracerPath: this.tracePath,
         env,
         config: mockConfig,
@@ -721,19 +723,22 @@ export class BorgTransport {
       return;
     }
 
+    const config = createRealConfig({
+      dataDir: this.dataDir,
+      env,
+      scenario: this.scenario,
+      maintenance: this.maintenance,
+      defaultUser: this.defaultUser,
+    });
+    this.embeddingClient ??= createEmbeddingClient(config);
+
     this.borg = await Borg.open({
-      config: createRealConfig({
-        dataDir: this.dataDir,
-        env,
-        scenario: this.scenario,
-        maintenance: this.maintenance,
-        defaultUser: this.defaultUser,
-      }),
+      config,
       env,
       tracerPath: this.tracePath,
       clock: this.clock,
       ...(this.llmClient === undefined ? {} : { llmClient: this.llmClient }),
-      ...(this.embeddingClient === undefined ? {} : { embeddingClient: this.embeddingClient }),
+      embeddingClient: this.embeddingClient,
     });
     this.seedScenarioGoals();
     await sleep(OPEN_HOOK_SETTLE_MS);
@@ -825,6 +830,10 @@ export class BorgTransport {
     }
 
     return this.borg;
+  }
+
+  getEmbeddingClient(): BorgOpenOptions["embeddingClient"] | undefined {
+    return this.embeddingClient;
   }
 
   resolveEntity(name: string, options: EntityResolveOptions = {}): EntityId {

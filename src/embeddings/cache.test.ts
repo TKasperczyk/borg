@@ -286,6 +286,91 @@ describe("createCachingEmbeddingClient", () => {
     expect(client.stats().cache_evictions).toBe(2);
   });
 
+  it("drains pending overflow after a pending entry settles", async () => {
+    const deferredByText = new Map<string, ReturnType<typeof createDeferred<Float32Array>>>();
+    const deferredFor = (text: string) => {
+      const existing = deferredByText.get(text);
+
+      if (existing !== undefined) {
+        return existing;
+      }
+
+      const deferred = createDeferred<Float32Array>();
+      deferredByText.set(text, deferred);
+      return deferred;
+    };
+    const embed = vi.fn((text: string) => deferredFor(text).promise);
+    const inner = {
+      embed,
+      embedBatch: vi.fn(async (texts: readonly string[]) => texts.map((text) => vectorFor(text))),
+    } satisfies EmbeddingClient;
+    const client = createCachingEmbeddingClient(inner, {
+      model: "model-a",
+      dims: 1,
+      maxEntries: 2,
+    }) as StatsClient;
+
+    const firstA = client.embed("a");
+    const firstB = client.embed("b");
+    const firstC = client.embed("c");
+
+    expect(embed).toHaveBeenCalledTimes(3);
+    expect(client.stats().pending_overflow).toBe(1);
+
+    deferredFor("a").resolve(vectorFor("a"));
+    await expect(firstA).resolves.toEqual(vectorFor("a"));
+
+    expect(client.stats().cache_evictions).toBe(1);
+
+    const secondA = client.embed("a");
+
+    expect(embed).toHaveBeenCalledTimes(4);
+
+    deferredFor("b").resolve(vectorFor("b"));
+    deferredFor("c").resolve(vectorFor("c"));
+    await expect(firstB).resolves.toEqual(vectorFor("b"));
+    await expect(firstC).resolves.toEqual(vectorFor("c"));
+    await expect(secondA).resolves.toEqual(vectorFor("a"));
+
+    expect(client.stats().cache_evictions).toBe(2);
+  });
+
+  it("drains pending overflow after rejection without poisoning retries", async () => {
+    const firstA = createDeferred<Float32Array>();
+    const firstB = createDeferred<Float32Array>();
+    const embed = vi
+      .fn()
+      .mockImplementationOnce(() => firstA.promise)
+      .mockImplementationOnce(() => firstB.promise)
+      .mockResolvedValueOnce(vectorFor("a"));
+    const inner = {
+      embed,
+      embedBatch: vi.fn(async (texts: readonly string[]) => texts.map((text) => vectorFor(text))),
+    } satisfies EmbeddingClient;
+    const client = createCachingEmbeddingClient(inner, {
+      model: "model-a",
+      dims: 1,
+      maxEntries: 1,
+    }) as StatsClient;
+
+    const pendingA = client.embed("a");
+    const pendingB = client.embed("b");
+
+    expect(embed).toHaveBeenCalledTimes(2);
+    expect(client.stats().pending_overflow).toBe(1);
+
+    firstA.reject(new Error("provider unavailable"));
+    await expect(pendingA).rejects.toThrow("provider unavailable");
+
+    const retryA = client.embed("a");
+
+    expect(embed).toHaveBeenCalledTimes(3);
+    await expect(retryA).resolves.toEqual(vectorFor("a"));
+
+    firstB.resolve(vectorFor("b"));
+    await expect(pendingB).resolves.toEqual(vectorFor("b"));
+  });
+
   it("keeps different model ids in separate cache keys", async () => {
     const inner = createInnerClient();
     const modelA = createCachingEmbeddingClient(inner.client, {
