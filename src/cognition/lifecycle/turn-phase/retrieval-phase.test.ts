@@ -407,6 +407,175 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     expect(result.renderOptions?.activeOperationalCommitmentIds).not.toContain(commitmentId);
   });
 
+  it("uses indexed source-trust facts instead of loading the full session stream", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-indexed-trust-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(21_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const inactiveSourceEntryId = createStreamEntryId();
+    const currentSourceEntryId = createStreamEntryId();
+    const currentUserEntry = {
+      id: currentSourceEntryId,
+      kind: "user_msg",
+      content: "Thanks, that closes it.",
+      timestamp: 21_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-indexed-source-trust",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const lookupEntriesById = vi.fn((entryIds: readonly string[]) => {
+      const facts = new Map();
+
+      if (entryIds.includes(inactiveSourceEntryId)) {
+        facts.set(inactiveSourceEntryId, {
+          entry_id: inactiveSourceEntryId,
+          session_id: DEFAULT_SESSION_ID,
+          timestamp: 19_000,
+          kind: "user_msg",
+          turn_id: "turn-aborted",
+          turn_status: "active",
+          active: false,
+        });
+      }
+
+      return facts;
+    });
+    const iterate = vi.fn(async function* () {
+      throw new Error("session stream should not be loaded for indexed source trust");
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: true,
+              },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => new FakeLLMClient({ responses: [] }),
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+      },
+      entryIndex: {
+        countSessionEntriesByKind: () => 0,
+        lookupEntriesById,
+      },
+      createStreamReader: () =>
+        ({
+          iterate,
+        }) as unknown as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-indexed-source-trust",
+        audienceEntityId,
+        currentUserMessage: "Thanks, that closes it.",
+        currentUserEntry,
+        globalTurnCounter: 13,
+        workingMemory: {
+          turn_counter: 13,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "idle",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [
+          {
+            id: "current_user_message",
+            label: "1. Current User Message",
+            entries: [
+              {
+                id: `current_session_stream:${inactiveSourceEntryId}`,
+                source_type: "current_session_stream",
+                session_scope: "current_session",
+                actor: "user",
+                trust_rank: 0,
+                text: "Inactive evidence.",
+              },
+              {
+                id: `current_user_message:${currentSourceEntryId}`,
+                source_type: "current_user_message",
+                session_scope: "current_session",
+                actor: "user",
+                trust_rank: 0,
+                text: "Current evidence.",
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "",
+    });
+
+    expect(iterate).not.toHaveBeenCalled();
+    expect(lookupEntriesById).toHaveBeenCalled();
+    expect(result.renderOptions?.ledgerStreamEntryIds).toEqual([currentSourceEntryId]);
+  });
+
   it("keeps shared-state entries cited by current retrieval results searchable while allowing low-salience demotion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-retrieved-state-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));

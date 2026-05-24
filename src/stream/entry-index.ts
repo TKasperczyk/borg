@@ -9,8 +9,10 @@ import {
   type SessionId,
   type StreamEntry,
   type StreamEntryKind,
+  type StreamTurnStatus,
   streamEntrySchema,
 } from "./types.js";
+import { collectInactiveStreamEntryRefs, streamEntryIsActive } from "./turn-status.js";
 
 type LoggerLike = Pick<Console, "error">;
 
@@ -69,6 +71,46 @@ export const streamEntryIndexMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 204,
+    name: "add-stream-entry-trust-facts",
+    up: (db) => {
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "turn_id")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN turn_id TEXT NULL;
+        `);
+      }
+
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "turn_status")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN turn_status TEXT NULL;
+        `);
+      }
+
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "active")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stream_entry_active
+        ON stream_entry_index(active);
+      `);
+    },
+  },
 ];
 
 export type StreamEntryIndexRecord = {
@@ -78,7 +120,15 @@ export type StreamEntryIndexRecord = {
   timestamp: number;
   kind: StreamEntryKind | null;
   sender_entity_id: EntityId | null;
+  turn_id: string | null;
+  turn_status: StreamTurnStatus | null;
+  active: boolean;
 };
+
+export type IndexedEntryFacts = Pick<
+  StreamEntryIndexRecord,
+  "entry_id" | "session_id" | "timestamp" | "kind" | "turn_id" | "turn_status" | "active"
+>;
 
 type StreamEntryIndexRow = {
   entry_id: string;
@@ -87,6 +137,9 @@ type StreamEntryIndexRow = {
   timestamp: number;
   kind?: string | null;
   sender_entity_id: string | null;
+  turn_id?: string | null;
+  turn_status?: string | null;
+  active?: number | null;
 };
 
 type SessionEntryCountRow = {
@@ -95,6 +148,10 @@ type SessionEntryCountRow = {
 
 type MissingKindCountRow = {
   missing_kind_count: number;
+};
+
+type MissingTrustFactsCountRow = {
+  missing_trust_fact_count: number;
 };
 
 export type StreamEntryIndexRepositoryOptions = {
@@ -140,6 +197,24 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
       row.sender_entity_id === null || row.sender_entity_id === undefined
         ? null
         : (row.sender_entity_id as EntityId),
+    turn_id: row.turn_id ?? null,
+    turn_status:
+      row.turn_status === null || row.turn_status === undefined
+        ? null
+        : (row.turn_status as StreamTurnStatus),
+    active: row.active === null || row.active === undefined ? true : row.active !== 0,
+  };
+}
+
+function factsFromRecord(record: StreamEntryIndexRecord): IndexedEntryFacts {
+  return {
+    entry_id: record.entry_id,
+    session_id: record.session_id,
+    timestamp: record.timestamp,
+    kind: record.kind,
+    turn_id: record.turn_id,
+    turn_status: record.turn_status,
+    active: record.active,
   };
 }
 
@@ -259,28 +334,85 @@ export class StreamEntryIndexRepository {
     timestamp: number,
     kind: StreamEntryKind | null = null,
     senderEntityId: EntityId | null = null,
+    turnId: string | null = null,
+    turnStatus: StreamTurnStatus | null = null,
+    active = true,
   ): void {
     this.db
       .prepare(
         `INSERT INTO stream_entry_index (
-           entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id
+           entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id,
+           turn_id, turn_status, active
          )
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
            timestamp = excluded.timestamp,
            kind = excluded.kind,
-           sender_entity_id = excluded.sender_entity_id`,
+           sender_entity_id = excluded.sender_entity_id,
+           turn_id = excluded.turn_id,
+           turn_status = excluded.turn_status,
+           active = excluded.active`,
       )
-      .run(entryId, sessionId, byteOffset, timestamp, kind, senderEntityId);
+      .run(
+        entryId,
+        sessionId,
+        byteOffset,
+        timestamp,
+        kind,
+        senderEntityId,
+        turnId,
+        turnStatus,
+        active ? 1 : 0,
+      );
+  }
+
+  recordEntry(entry: StreamEntry, byteOffset: number): void {
+    const inactiveRefs = collectInactiveStreamEntryRefs([entry]);
+
+    this.record(
+      entry.id,
+      entry.session_id,
+      byteOffset,
+      entry.timestamp,
+      entry.kind,
+      entry.sender_entity_id,
+      entry.turn_id ?? null,
+      entry.turn_status ?? "active",
+      streamEntryIsActive(entry, inactiveRefs),
+    );
+
+    if (inactiveRefs.streamEntryIds.size > 0) {
+      const ids = [...inactiveRefs.streamEntryIds];
+
+      this.db
+        .prepare(
+          `UPDATE stream_entry_index
+           SET active = 0
+           WHERE entry_id IN (${ids.map(() => "?").join(", ")})`,
+        )
+        .run(...ids);
+    }
+
+    if (inactiveRefs.turnIds.size > 0) {
+      const turnIds = [...inactiveRefs.turnIds];
+
+      this.db
+        .prepare(
+          `UPDATE stream_entry_index
+           SET active = 0
+           WHERE session_id = ? AND turn_id IN (${turnIds.map(() => "?").join(", ")})`,
+        )
+        .run(entry.session_id, ...turnIds);
+    }
   }
 
   lookup(entryId: string): StreamEntryIndexRecord | null {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , kind, sender_entity_id
+              , kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE entry_id = ?`,
       )
@@ -299,13 +431,19 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , kind, sender_entity_id
+              , kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE entry_id IN (${uniqueIds.map(() => "?").join(", ")})`,
       )
       .all(...uniqueIds) as StreamEntryIndexRow[];
 
     return new Map(rows.map((row) => [row.entry_id, recordFromRow(row)]));
+  }
+
+  lookupEntriesById(entryIds: readonly string[]): Map<string, IndexedEntryFacts> {
+    return new Map(
+      [...this.lookupMany(entryIds)].map(([entryId, record]) => [entryId, factsFromRecord(record)]),
+    );
   }
 
   async backfillSession(sessionId: SessionId): Promise<{ inserted: number }> {
@@ -329,6 +467,13 @@ export class StreamEntryIndexRepository {
          WHERE session_id = ? AND kind IS NULL`,
       )
       .get(sessionId) as MissingKindCountRow;
+    const missingTrustFactsCoverage = this.db
+      .prepare(
+        `SELECT COUNT(*) AS missing_trust_fact_count
+         FROM stream_entry_index
+         WHERE session_id = ? AND turn_status IS NULL`,
+      )
+      .get(sessionId) as MissingTrustFactsCountRow;
     const fileDescriptor = openSync(streamPath, "r");
 
     try {
@@ -346,29 +491,41 @@ export class StreamEntryIndexRepository {
         () => undefined,
       );
 
-      if (coverage.entry_count === fileEntryCount && missingKindCoverage.missing_kind_count === 0) {
+      if (
+        coverage.entry_count === fileEntryCount &&
+        missingKindCoverage.missing_kind_count === 0 &&
+        missingTrustFactsCoverage.missing_trust_fact_count === 0
+      ) {
         return { inserted: 0 };
       }
 
       const insertMissing = this.db.transaction((): number => {
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
-             entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id
+             entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id,
+             turn_id, turn_status, active
            )
-           VALUES (?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (entry_id) DO UPDATE SET
              session_id = excluded.session_id,
              byte_offset = excluded.byte_offset,
              timestamp = excluded.timestamp,
              kind = excluded.kind,
-             sender_entity_id = excluded.sender_entity_id
+             sender_entity_id = excluded.sender_entity_id,
+             turn_id = excluded.turn_id,
+             turn_status = excluded.turn_status,
+             active = excluded.active
            WHERE stream_entry_index.session_id != excluded.session_id
               OR stream_entry_index.byte_offset != excluded.byte_offset
               OR stream_entry_index.timestamp != excluded.timestamp
               OR stream_entry_index.kind IS NOT excluded.kind
-              OR stream_entry_index.sender_entity_id IS NOT excluded.sender_entity_id`,
+              OR stream_entry_index.sender_entity_id IS NOT excluded.sender_entity_id
+              OR stream_entry_index.turn_id IS NOT excluded.turn_id
+              OR stream_entry_index.turn_status IS NOT excluded.turn_status
+              OR stream_entry_index.active IS NOT excluded.active`,
         );
         let inserted = 0;
+        const scannedEntries: { entry: StreamEntry; byteOffset: number }[] = [];
 
         scanForwardStreamEntries(
           fileDescriptor,
@@ -376,18 +533,29 @@ export class StreamEntryIndexRepository {
           streamPath,
           this.logger,
           (entry, byteOffset) => {
-            inserted += Number(
-              insert.run(
-                entry.id,
-                sessionId,
-                byteOffset,
-                entry.timestamp,
-                entry.kind,
-                entry.sender_entity_id,
-              ).changes,
-            );
+            scannedEntries.push({ entry, byteOffset });
           },
         );
+
+        const inactiveRefs = collectInactiveStreamEntryRefs(
+          scannedEntries.map((scanned) => scanned.entry),
+        );
+
+        for (const { entry, byteOffset } of scannedEntries) {
+          inserted += Number(
+            insert.run(
+              entry.id,
+              sessionId,
+              byteOffset,
+              entry.timestamp,
+              entry.kind,
+              entry.sender_entity_id,
+              entry.turn_id ?? null,
+              entry.turn_status ?? "active",
+              streamEntryIsActive(entry, inactiveRefs) ? 1 : 0,
+            ).changes,
+          );
+        }
 
         return inserted;
       });

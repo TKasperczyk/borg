@@ -39,7 +39,7 @@ import {
 } from "../../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
-import type { StreamEntry } from "../../../stream/index.js";
+import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
 import type {
   ActionId,
@@ -468,7 +468,7 @@ async function countPriorUserTurnsForSession(input: {
 }
 
 function sharedStateLastUpdatedTurnByStreamEntryId(input: {
-  entries: readonly StreamEntry[];
+  entries: readonly Pick<StreamEntry, "id" | "turn_id">[];
   currentUserEntry: StreamEntry;
   currentTurnId?: string;
   currentTurnCounter?: number;
@@ -527,6 +527,101 @@ function sharedStateLastUpdatedTurnByStreamEntryId(input: {
   }
 
   return turnCounterByStreamEntryId;
+}
+
+function streamEntryFromIndexedFacts(facts: IndexedEntryFacts): Pick<StreamEntry, "id" | "kind"> {
+  return {
+    id: facts.entry_id as StreamEntryId,
+    kind: facts.kind ?? "internal_event",
+  };
+}
+
+function createIndexedSourceTrustLookup(input: {
+  entryIndex?: Pick<NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>, "lookupEntriesById">;
+  currentUserEntry: StreamEntry;
+}): {
+  lookup: (streamEntryIds: readonly StreamEntryId[]) => Map<StreamEntryId, IndexedEntryFacts>;
+  entriesForKnownFacts: () => Pick<StreamEntry, "id" | "kind" | "turn_id">[];
+} {
+  const factsById = new Map<StreamEntryId, IndexedEntryFacts>();
+
+  const rememberCurrentUserEntry = (): void => {
+    if (!factsById.has(input.currentUserEntry.id)) {
+      factsById.set(input.currentUserEntry.id, {
+        entry_id: input.currentUserEntry.id,
+        session_id: input.currentUserEntry.session_id,
+        timestamp: input.currentUserEntry.timestamp,
+        kind: input.currentUserEntry.kind,
+        turn_id: input.currentUserEntry.turn_id ?? null,
+        turn_status: input.currentUserEntry.turn_status ?? "active",
+        active: input.currentUserEntry.turn_status !== "aborted",
+      });
+    }
+  };
+
+  const lookup = (
+    streamEntryIds: readonly StreamEntryId[],
+  ): Map<StreamEntryId, IndexedEntryFacts> => {
+    rememberCurrentUserEntry();
+
+    if (input.entryIndex !== undefined) {
+      const missingIds = uniqueStreamEntryIds(
+        streamEntryIds.filter((streamEntryId) => !factsById.has(streamEntryId)),
+      );
+
+      if (missingIds.length > 0) {
+        for (const [streamEntryId, facts] of input.entryIndex.lookupEntriesById(missingIds)) {
+          factsById.set(streamEntryId as StreamEntryId, facts);
+        }
+      }
+    }
+
+    const result = new Map<StreamEntryId, IndexedEntryFacts>();
+
+    for (const streamEntryId of streamEntryIds) {
+      const facts = factsById.get(streamEntryId);
+
+      if (facts !== undefined) {
+        result.set(streamEntryId, facts);
+      }
+    }
+
+    return result;
+  };
+
+  return {
+    lookup,
+    entriesForKnownFacts: () =>
+      [...factsById.values()].map((facts) => ({
+        ...streamEntryFromIndexedFacts(facts),
+        turn_id: facts.turn_id ?? undefined,
+      })),
+  };
+}
+
+function buildIndexedSharedStateSourceTrustValidator(input: {
+  lookupFacts: (streamEntryIds: readonly StreamEntryId[]) => Map<StreamEntryId, IndexedEntryFacts>;
+  quarantinedStreamEntryIds: ReadonlySet<StreamEntryId>;
+}) {
+  return (streamEntryId: StreamEntryId) => {
+    if (input.quarantinedStreamEntryIds.has(streamEntryId)) {
+      return {
+        allowed: false,
+        reason: "quarantined",
+      } as const;
+    }
+
+    const facts = input.lookupFacts([streamEntryId]).get(streamEntryId);
+
+    if (facts?.active === false) {
+      return {
+        allowed: false,
+        reason: "inactive",
+      } as const;
+    }
+
+    return { allowed: true } as const;
+  };
 }
 
 function emitSessionReentryContinuityTrace(input: {
@@ -591,23 +686,37 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     return { artifact: previousArtifact, appliedOperationCount: 0 };
   }
 
-  const sourceTrustEntries =
-    typeof input.options.createStreamReader === "function"
-      ? await loadSessionStreamEntries(input.options.createStreamReader(input.input.sessionId))
-      : [];
-  const currentSessionTrustEntries = sourceTrustEntries.some(
-    (entry) => entry.id === input.input.currentUserEntry?.id,
-  )
-    ? sourceTrustEntries
-    : [...sourceTrustEntries, input.input.currentUserEntry];
   const quarantinedStreamEntryIds =
     await collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
       input.options.config.dataDir,
     );
-  const sourceTrustValidator = buildSharedStateSourceTrustValidator({
-    currentSessionEntries: currentSessionTrustEntries,
-    quarantinedStreamEntryIds,
-  });
+  const indexedSourceTrustLookup =
+    input.options.entryIndex === undefined
+      ? null
+      : createIndexedSourceTrustLookup({
+          entryIndex: input.options.entryIndex,
+          currentUserEntry: input.input.currentUserEntry,
+        });
+  const currentSessionTrustEntries =
+    indexedSourceTrustLookup === null
+      ? typeof input.options.createStreamReader === "function"
+        ? await loadSessionStreamEntries(input.options.createStreamReader(input.input.sessionId))
+        : []
+      : indexedSourceTrustLookup.entriesForKnownFacts();
+  const sourceTrustValidator =
+    indexedSourceTrustLookup === null
+      ? buildSharedStateSourceTrustValidator({
+          currentSessionEntries: currentSessionTrustEntries.some(
+            (entry) => entry.id === input.input.currentUserEntry?.id,
+          )
+            ? (currentSessionTrustEntries as StreamEntry[])
+            : [...(currentSessionTrustEntries as StreamEntry[]), input.input.currentUserEntry],
+          quarantinedStreamEntryIds,
+        })
+      : buildIndexedSharedStateSourceTrustValidator({
+          lookupFacts: indexedSourceTrustLookup.lookup,
+          quarantinedStreamEntryIds,
+        });
   const sharedStateConfig = input.options.config.generation.evidenceLedger.decisionArtifact;
   const turnCounter = input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter;
   const ledgerPromptContext = buildSharedStateLedgerPromptContext({
@@ -639,8 +748,30 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     visibleToAudienceEntityId: audienceEntityId,
     limit: 80,
   });
+  const relationalSlotsContext = listSharedStateRelationalSlotsForParticipants(
+    input.options.relationalSlotRepository,
+    input.input.activeParticipants ?? [],
+  );
+  const relationalSlotEvidenceStreamEntryIds = uniqueStreamEntryIds(
+    relationalSlotsContext.flatMap((slot) => slot.evidence_stream_entry_ids),
+  );
+  const sourceTrustFactIds = uniqueStreamEntryIds([
+    input.input.currentUserEntry.id,
+    ...ledgerPromptContext.visibleStreamEntryIds,
+    ...ledgerPromptContext.offLimitsSourceStreamEntryIds,
+    ...relationalSlotEvidenceStreamEntryIds,
+  ]);
+  const sourceTrustFacts =
+    indexedSourceTrustLookup === null ? null : indexedSourceTrustLookup.lookup(sourceTrustFactIds);
+  const lastUpdatedSourceTrustEntries =
+    sourceTrustFacts === null
+      ? currentSessionTrustEntries
+      : [...sourceTrustFacts.values()].map((facts) => ({
+          id: facts.entry_id as StreamEntryId,
+          turn_id: facts.turn_id ?? undefined,
+        }));
   const lastUpdatedTurnByStreamEntryId = sharedStateLastUpdatedTurnByStreamEntryId({
-    entries: currentSessionTrustEntries,
+    entries: lastUpdatedSourceTrustEntries,
     currentUserEntry: input.input.currentUserEntry,
     currentTurnId: input.input.turnId,
     currentTurnCounter: turnCounter,
@@ -791,13 +922,6 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     });
   }
 
-  const relationalSlotsContext = listSharedStateRelationalSlotsForParticipants(
-    input.options.relationalSlotRepository,
-    input.input.activeParticipants ?? [],
-  );
-  const relationalSlotEvidenceStreamEntryIds = uniqueStreamEntryIds(
-    relationalSlotsContext.flatMap((slot) => slot.evidence_stream_entry_ids),
-  );
   const trustedRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
     (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
   );
@@ -844,7 +968,10 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     sourceTrustValidator,
     relationshipEvidenceStreamEntryTrust:
       createLoadedUserStreamEntryRelationshipEvidenceTrustValidator({
-        entries: currentSessionTrustEntries,
+        entries:
+          sourceTrustFacts === null
+            ? currentSessionTrustEntries
+            : [...sourceTrustFacts.values()].map(streamEntryFromIndexedFacts),
         isTrusted: (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
       }),
     canonicalizationCandidates,

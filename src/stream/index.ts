@@ -33,6 +33,7 @@ export { StreamWriter, type StreamWriterOptions } from "./stream-writer.js";
 export {
   StreamEntryIndexRepository,
   streamEntryIndexMigrations,
+  type IndexedEntryFacts,
   type StreamEntryIndexRecord,
   type StreamEntryIndexRepositoryOptions,
 } from "./entry-index.js";

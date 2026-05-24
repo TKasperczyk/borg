@@ -180,6 +180,117 @@ describe("stream entry index", () => {
     }
   });
 
+  it("looks up indexed facts by id across hits, misses, and sessions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      const first = await writer.append({
+        kind: "user_msg",
+        content: "one",
+        turn_id: "turn-one",
+      });
+      const other = await otherWriter.append({
+        kind: "agent_msg",
+        content: "other",
+        turn_id: "turn-other",
+      });
+
+      const facts = entryIndex.lookupEntriesById([first.id, "strm_0000000000000000", other.id]);
+
+      expect(new Set(facts.keys())).toEqual(new Set([first.id, other.id]));
+      expect(facts.get(first.id)).toMatchObject({
+        entry_id: first.id,
+        session_id: DEFAULT_SESSION_ID,
+        kind: "user_msg",
+        turn_id: "turn-one",
+        active: true,
+      });
+      expect(facts.get(other.id)).toMatchObject({
+        entry_id: other.id,
+        session_id: otherSessionId,
+        kind: "agent_msg",
+        turn_id: "turn-other",
+        active: true,
+      });
+      expect(facts.has("strm_0000000000000000")).toBe(false);
+    } finally {
+      writer.close();
+      otherWriter.close();
+      db.close();
+    }
+  });
+
+  it("records and backfills active trust facts for aborted turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const userEntry = await writer.append({
+        kind: "user_msg",
+        content: "aborted",
+        turn_id: "turn-aborted",
+      });
+      const marker = await writer.append({
+        kind: "internal_event",
+        content: {
+          event: "aborted_turn",
+          turn_id: "turn-aborted",
+          aborted_stream_entry_ids: [userEntry.id],
+        },
+      });
+
+      expect(entryIndex.lookupEntriesById([userEntry.id]).get(userEntry.id)?.active).toBe(false);
+      expect(entryIndex.lookupEntriesById([marker.id]).get(marker.id)?.active).toBe(false);
+
+      db.prepare(
+        "UPDATE stream_entry_index SET active = 1, turn_id = NULL, turn_status = NULL",
+      ).run();
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+
+      expect(entryIndex.lookupEntriesById([userEntry.id]).get(userEntry.id)).toMatchObject({
+        active: false,
+        turn_id: "turn-aborted",
+      });
+      expect(entryIndex.lookupEntriesById([marker.id]).get(marker.id)?.active).toBe(false);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("backfills kind for legacy stream index rows", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -296,6 +407,64 @@ describe("stream entry index", () => {
 
       expect(row?.kind).toBeNull();
       expect(indexRow?.name).toBe("idx_stream_entry_session_kind");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds trust facts to an existing stream index with active legacy rows", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const trustFactsMigration = streamEntryIndexMigrations.find(
+      (migration) => migration.name === "add-stream-entry-trust-facts",
+    ) as Migration | undefined;
+
+    expect(trustFactsMigration).toBeDefined();
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        {
+          id: 1,
+          name: "legacy-stream-entry-index",
+          up: `
+            CREATE TABLE stream_entry_index (
+              entry_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              byte_offset INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL,
+              kind TEXT NULL,
+              sender_entity_id TEXT NULL
+            );
+            INSERT INTO stream_entry_index (
+              entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id
+            )
+            VALUES ('strm_abcdefghijklmnop', 'default', 0, 100, 'user_msg', NULL);
+          `,
+        },
+        trustFactsMigration as Migration,
+      ],
+    });
+
+    try {
+      const row = db
+        .prepare(
+          `SELECT turn_id, turn_status, active
+           FROM stream_entry_index
+           WHERE entry_id = ?`,
+        )
+        .get("strm_abcdefghijklmnop") as
+        | { turn_id: string | null; turn_status: string | null; active: number }
+        | undefined;
+      const indexRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get("idx_stream_entry_active") as { name: string } | undefined;
+
+      expect(row).toEqual({
+        turn_id: null,
+        turn_status: null,
+        active: 1,
+      });
+      expect(indexRow?.name).toBe("idx_stream_entry_active");
     } finally {
       db.close();
     }

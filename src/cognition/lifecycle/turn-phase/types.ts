@@ -92,7 +92,7 @@ export type TurnPhaseCoordinatorOptions = {
   >;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
-  entryIndex?: Pick<StreamEntryIndexRepository, "countSessionEntriesByKind">;
+  entryIndex?: Pick<StreamEntryIndexRepository, "countSessionEntriesByKind" | "lookupEntriesById">;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;
