@@ -2,17 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   FakeLLMClient,
-  episodicMigrations,
   EpisodicRepository,
   createEpisodesTableSchema,
-  selfMigrations,
-  retrievalMigrations,
   LanceDbStore,
-  composeMigrations,
   openDatabase,
   ManualClock,
   createTestConfig,
   Borg,
+  createBorgMigrations,
   ScriptedEmbeddingClient,
   join,
   mkdtempSync,
@@ -41,7 +38,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",

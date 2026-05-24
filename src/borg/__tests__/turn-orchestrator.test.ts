@@ -7,19 +7,15 @@ import {
   ReflectorOptions,
   FakeLLMClient,
   LLMClient,
-  commitmentMigrations,
-  episodicMigrations,
   EpisodicRepository,
   createEpisodesTableSchema,
-  selfMigrations,
-  retrievalMigrations,
   LanceDbStore,
-  composeMigrations,
   openDatabase,
   ManualClock,
   createTestConfig,
   createStreamEntryId,
   Borg,
+  createBorgMigrations,
   EPISODE_TOOL_NAME,
   ScriptedEmbeddingClient,
   borgInternals,
@@ -218,7 +214,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -580,7 +576,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -722,7 +718,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, commitmentMigrations, selfMigrations),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -920,7 +916,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",

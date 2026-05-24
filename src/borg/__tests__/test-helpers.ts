@@ -29,7 +29,7 @@ export {
   createStreamEntryId,
 } from "../../util/ids.js";
 export { createTestConfig } from "../../offline/test-support.js";
-export { resolveBorgConfig } from "../storage-setup.js";
+export { createMigrations as createBorgMigrations, resolveBorgConfig } from "../storage-setup.js";
 export { Borg };
 
 export function borgInternals<T>(borg: Borg): T {

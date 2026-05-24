@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { openDatabase } from "./index.js";
+import { StorageError } from "../../util/errors.js";
+import { composeMigrations, openDatabase } from "./index.js";
 
 describe("sqlite storage", () => {
   const tempDirs: string[] = [];
@@ -48,5 +49,50 @@ describe("sqlite storage", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("composes multi-band migrations without disturbing within-band runtime order", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const applied: string[] = [];
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(
+        [
+          { id: 1, name: "alpha-1", up: () => applied.push("alpha-1") },
+          { id: 2, name: "alpha-2", up: () => applied.push("alpha-2") },
+          { id: 3, name: "alpha-3", up: () => applied.push("alpha-3") },
+        ],
+        [
+          { id: 1, name: "beta-1", up: () => applied.push("beta-1") },
+          { id: 2, name: "beta-2", up: () => applied.push("beta-2") },
+        ],
+      ),
+    });
+
+    try {
+      expect(applied).toEqual(["alpha-1", "alpha-2", "alpha-3", "beta-1", "beta-2"]);
+      expect(db.listAppliedMigrations().map((migration) => migration.id)).toEqual([
+        1, 2, 3, 1_000_001, 1_000_002,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps identical source ids unique across composed bands", () => {
+    const migrations = composeMigrations(
+      [{ id: 1, name: "alpha", up: "" }],
+      [{ id: 1, name: "beta", up: "" }],
+    );
+
+    expect(migrations.map((migration) => migration.id)).toEqual([1, 1_000_001]);
+    expect(new Set(migrations.map((migration) => migration.id)).size).toBe(2);
+  });
+
+  it("rejects composed source ids outside a band range", () => {
+    expect(() =>
+      composeMigrations([{ id: 1_000_000, name: "too-large", up: "" }]),
+    ).toThrow(StorageError);
   });
 });

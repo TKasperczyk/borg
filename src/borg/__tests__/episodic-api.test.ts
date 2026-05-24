@@ -3,19 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FakeLLMClient,
   EntityRepository,
-  commitmentMigrations,
-  episodicMigrations,
   EpisodicRepository,
   createEpisodesTableSchema,
-  selfMigrations,
-  retrievalMigrations,
   LanceDbStore,
-  composeMigrations,
   openDatabase,
   ManualClock,
   createEpisodeId,
   createStreamEntryId,
   Borg,
+  createBorgMigrations,
   ScriptedEmbeddingClient,
   join,
   mkdtempSync,
@@ -42,12 +38,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(
-        episodicMigrations,
-        selfMigrations,
-        retrievalMigrations,
-        commitmentMigrations,
-      ),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -152,12 +143,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(
-        episodicMigrations,
-        selfMigrations,
-        retrievalMigrations,
-        commitmentMigrations,
-      ),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -254,12 +240,7 @@ describe("Borg", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(
-        episodicMigrations,
-        selfMigrations,
-        retrievalMigrations,
-        commitmentMigrations,
-      ),
+      migrations: createBorgMigrations(),
     });
     const table = await store.openTable({
       name: "episodes",

@@ -8,24 +8,16 @@ import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
 import { FakeLLMClient, createFakeEmitAnswerResponse } from "./llm/test-support/fake-client.js";
-import { affectiveMigrations } from "./memory/affective/index.js";
-import { commitmentMigrations } from "./memory/commitments/index.js";
 import {
   EpisodicRepository,
   createEpisodesTableSchema,
-  episodicMigrations,
   type Episode,
 } from "./memory/episodic/index.js";
-import { proceduralMigrations } from "./memory/procedural/index.js";
-import { selfMigrations } from "./memory/self/index.js";
-import { semanticMigrations } from "./memory/semantic/index.js";
-import { socialMigrations } from "./memory/social/index.js";
-import { offlineMigrations } from "./offline/index.js";
-import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
-import { composeMigrations, openDatabase } from "./storage/sqlite/index.js";
+import { openDatabase } from "./storage/sqlite/index.js";
 import { FixedClock } from "./util/clock.js";
 import { DEFAULT_SESSION_ID, createEpisodeId, createStreamEntryId } from "./util/ids.js";
+import { createMigrations as createBorgMigrations } from "./borg/storage-setup.js";
 
 class RustEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
@@ -158,17 +150,7 @@ describe("Borg Sprint 7", () => {
     const clock = new FixedClock(1_000);
     const embeddingClient = new RustEmbeddingClient();
     const sqlite = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(
-        episodicMigrations,
-        selfMigrations,
-        affectiveMigrations,
-        retrievalMigrations,
-        semanticMigrations,
-        commitmentMigrations,
-        socialMigrations,
-        proceduralMigrations,
-        offlineMigrations,
-      ),
+      migrations: createBorgMigrations(),
     });
     const lance = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -360,17 +342,7 @@ describe("Borg Sprint 7", () => {
       expect(updatedSkill?.alpha).toBe(2);
       expect(updatedSkill?.successes).toBe(1);
       const verificationDb = openDatabase(join(tempDir, "borg.db"), {
-        migrations: composeMigrations(
-          episodicMigrations,
-          selfMigrations,
-          affectiveMigrations,
-          retrievalMigrations,
-          semanticMigrations,
-          commitmentMigrations,
-          socialMigrations,
-          proceduralMigrations,
-          offlineMigrations,
-        ),
+        migrations: createBorgMigrations(),
       });
 
       try {

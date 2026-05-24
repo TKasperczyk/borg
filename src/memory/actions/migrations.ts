@@ -67,8 +67,7 @@ export const actionMigrations = [
           ),
           session_anchor_id TEXT NULL,
           last_referenced_at_ms INTEGER NULL,
-          last_referenced_turn_counter INTEGER NULL,
-          last_referenced_turn_global INTEGER NULL
+          last_referenced_turn_counter INTEGER NULL
         );
 
         CREATE INDEX IF NOT EXISTS action_records_state_idx
@@ -89,14 +88,6 @@ export const actionMigrations = [
           ON action_records(session_anchor_id, session_scope);
         CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
           ON action_records(last_referenced_turn_counter);
-        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_global_idx
-          ON action_records(last_referenced_turn_global);
-        CREATE TABLE IF NOT EXISTS action_lifecycle_turn_counter (
-          id TEXT PRIMARY KEY CHECK (id = 'global'),
-          value INTEGER NOT NULL CHECK (value >= 0)
-        );
-        INSERT OR IGNORE INTO action_lifecycle_turn_counter (id, value)
-          VALUES ('global', 0);
       `);
     },
   },
@@ -203,8 +194,7 @@ export const actionMigrations = [
           ),
           session_anchor_id TEXT NULL,
           last_referenced_at_ms INTEGER NULL,
-          last_referenced_turn_counter INTEGER NULL,
-          last_referenced_turn_global INTEGER NULL
+          last_referenced_turn_counter INTEGER NULL
         );
 
         INSERT INTO action_records_next (
@@ -212,8 +202,7 @@ export const actionMigrations = [
           provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
           considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
           archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
-          session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter,
-          last_referenced_turn_global
+          session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter
         )
         SELECT
           id,
@@ -240,7 +229,6 @@ export const actionMigrations = [
           NULL,
           NULL,
           updated_at,
-          NULL,
           NULL
         FROM action_records;
 
@@ -265,8 +253,6 @@ export const actionMigrations = [
           ON action_records(session_anchor_id, session_scope);
         CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_idx
           ON action_records(last_referenced_turn_counter);
-        CREATE INDEX IF NOT EXISTS action_records_last_referenced_turn_global_idx
-          ON action_records(last_referenced_turn_global);
       `);
     },
   },

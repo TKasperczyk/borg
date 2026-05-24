@@ -191,7 +191,7 @@ export function resolveBorgConfig(options: {
   });
 }
 
-function createMigrations(): Migration[] {
+export function createMigrations(): Migration[] {
   return composeMigrations(
     episodicMigrations,
     selfMigrations,
