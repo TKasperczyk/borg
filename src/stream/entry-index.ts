@@ -18,7 +18,7 @@ import {
   streamEntryIsActive,
 } from "./turn-status.js";
 
-type LoggerLike = Pick<Console, "error">;
+type LoggerLike = Pick<Console, "error" | "warn">;
 
 const FORWARD_SCAN_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;
@@ -171,6 +171,10 @@ type MissingKindCountRow = {
   missing_kind_count: number;
 };
 
+type MissingKindSampleRow = {
+  entry_id: string;
+};
+
 type MissingTrustFactsCountRow = {
   missing_trust_fact_count: number;
 };
@@ -183,6 +187,11 @@ export type StreamEntryIndexRepositoryOptions = {
   db: SqliteDatabase;
   dataDir: string;
   logger?: LoggerLike;
+};
+
+export type LegacyMissingKindRowsReport = {
+  count: number;
+  sampleEntryIds: string[];
 };
 
 function parseIndexedStreamLine(
@@ -697,6 +706,42 @@ export class StreamEntryIndexRepository {
     } finally {
       closeSync(fileDescriptor);
     }
+  }
+
+  legacyRowsMissingKindReport(sampleLimit = 5): LegacyMissingKindRowsReport {
+    const countRow = this.db
+      .prepare(
+        `SELECT COUNT(*) AS missing_kind_count
+         FROM stream_entry_index
+         WHERE kind IS NULL`,
+      )
+      .get() as MissingKindCountRow;
+    const sampleRows = this.db
+      .prepare(
+        `SELECT entry_id
+         FROM stream_entry_index
+         WHERE kind IS NULL
+         ORDER BY session_id ASC, byte_offset ASC, entry_id ASC
+         LIMIT ?`,
+      )
+      .all(sampleLimit) as MissingKindSampleRow[];
+
+    return {
+      count: countRow.missing_kind_count,
+      sampleEntryIds: sampleRows.map((row) => row.entry_id),
+    };
+  }
+
+  warnLegacyRowsMissingKind(sampleLimit = 5): LegacyMissingKindRowsReport {
+    const report = this.legacyRowsMissingKindReport(sampleLimit);
+
+    if (report.count > 0) {
+      this.logger.warn(
+        `Stream entry index has ${report.count} legacy rows with kind IS NULL after startup backfill; sample_entry_ids=${report.sampleEntryIds.join(",")}`,
+      );
+    }
+
+    return report;
   }
 
   countSessionEntriesByKind(input: {

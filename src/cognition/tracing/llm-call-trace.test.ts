@@ -147,6 +147,42 @@ describe("llm call trace helpers", () => {
     });
   });
 
+  it("keeps reserved response fields when extra uses the same keys", () => {
+    const tracer = createTracer();
+    const response: LLMCompleteResult = {
+      text: "ok",
+      input_tokens: 7,
+      output_tokens: 3,
+      stop_reason: "end_turn",
+      tool_calls: [],
+    };
+
+    traceLlmCallResponse({
+      tracer,
+      turnId: "turn_1",
+      label: "actual_label",
+      response,
+      responseShape: { textLength: 2 },
+      extra: {
+        label: "wrong_label",
+        responseShape: { wrong: true },
+        stopReason: "wrong_stop",
+        usage: null,
+      },
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call.completed", {
+      turnId: "turn_1",
+      label: "actual_label",
+      responseShape: { textLength: 2 },
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 7,
+        outputTokens: 3,
+      },
+    });
+  });
+
   it("emits llm_call.completed errors with the established null stop and usage fields", () => {
     const tracer = createTracer();
 

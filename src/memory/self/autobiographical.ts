@@ -4,12 +4,11 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
-  autobiographicalPeriodIdHelpers,
   createAutobiographicalPeriodId,
   type AutobiographicalPeriodId,
+  type EpisodeId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { episodeIdSchema } from "../episodic/types.js";
 import {
   assertIdentityCasUpdated,
   expectedRecordVersion,
@@ -18,50 +17,24 @@ import {
 } from "../common/cas.js";
 import {
   parseStoredProvenance,
-  provenanceSchema,
   toStoredProvenance,
+  type Provenance,
 } from "../common/provenance.js";
+import {
+  autobiographicalPeriodIdSchema,
+  autobiographicalPeriodPatchSchema,
+  autobiographicalPeriodSchema,
+  valueSourceEpisodeIdSchema,
+  type AutobiographicalPeriod,
+  type AutobiographicalPeriodPatch,
+} from "./types.js";
 
-export const autobiographicalPeriodIdSchema = z
-  .string()
-  .refine((value) => autobiographicalPeriodIdHelpers.is(value), {
-    message: "Invalid autobiographical period id",
-  })
-  .transform((value) => value as AutobiographicalPeriodId);
-
-export const autobiographicalPeriodSchema = z
-  .object({
-    id: autobiographicalPeriodIdSchema,
-    record_version: z.number().int().positive().optional(),
-    label: z.string().min(1),
-    start_ts: z.number().finite(),
-    end_ts: z.number().finite().nullable(),
-    narrative: z.string(),
-    key_episode_ids: z.array(episodeIdSchema),
-    themes: z.array(z.string().min(1)),
-    provenance: provenanceSchema,
-    created_at: z.number().finite(),
-    last_updated: z.number().finite(),
-  })
-  .refine((value) => value.end_ts === null || value.end_ts >= value.start_ts, {
-    message: "Autobiographical period end_ts must be after start_ts",
-    path: ["end_ts"],
-  });
-
-export const autobiographicalPeriodPatchSchema = z
-  .object({
-    label: z.string().min(1).optional(),
-    start_ts: z.number().finite().optional(),
-    end_ts: z.number().finite().nullable().optional(),
-    narrative: z.string().optional(),
-    key_episode_ids: z.array(episodeIdSchema).optional(),
-    themes: z.array(z.string().min(1)).optional(),
-    provenance: provenanceSchema.optional(),
-  })
-  .strict();
-
-export type AutobiographicalPeriod = z.infer<typeof autobiographicalPeriodSchema>;
-export type AutobiographicalPeriodPatch = z.infer<typeof autobiographicalPeriodPatchSchema>;
+export {
+  autobiographicalPeriodIdSchema,
+  autobiographicalPeriodPatchSchema,
+  autobiographicalPeriodSchema,
+};
+export type { AutobiographicalPeriod, AutobiographicalPeriodPatch };
 
 export type AutobiographicalRepositoryOptions = {
   db: SqliteDatabase;
@@ -102,7 +75,7 @@ function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
     narrative: String(row.narrative ?? ""),
     key_episode_ids: parseStringArray(
       String(row.key_episode_ids ?? "[]"),
-      episodeIdSchema,
+      valueSourceEpisodeIdSchema,
       "autobiographical key_episode_ids",
     ),
     themes: parseStringArray(
@@ -151,9 +124,9 @@ export class AutobiographicalRepository {
       start_ts: number;
       end_ts?: number | null;
       narrative: string;
-      key_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
+      key_episode_ids?: readonly EpisodeId[];
       themes?: readonly string[];
-      provenance: z.infer<typeof provenanceSchema>;
+      provenance: Provenance;
       created_at?: number;
       last_updated?: number;
     },
@@ -392,9 +365,9 @@ export class AutobiographicalRepository {
   updateNarrative(
     id: AutobiographicalPeriodId,
     narrative: string,
-    keyEpisodeIds?: readonly z.infer<typeof episodeIdSchema>[],
+    keyEpisodeIds?: readonly EpisodeId[],
     themes?: readonly string[],
-    provenance?: z.infer<typeof provenanceSchema>,
+    provenance?: Provenance,
   ): AutobiographicalPeriod {
     const existing = this.getPeriod(id);
 

@@ -37,12 +37,12 @@ export function traceLlmCallStarted(options: {
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("llm_call.started", {
+      ...options.extra,
       turnId: options.turnId,
       label: options.label,
       model: options.model,
       promptCharCount: countCompletePromptChars(options.systemPrompt, options.messages),
       ...(options.tools === undefined ? {} : { toolSchemas: summarizeToolSchemas(options.tools) }),
-      ...options.extra,
     });
   }
 }
@@ -57,12 +57,12 @@ export function traceLlmCallResponse(options: {
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("llm_call.completed", {
+      ...options.extra,
       turnId: options.turnId,
       label: options.label,
       responseShape: options.responseShape,
       stopReason: options.response.stop_reason,
       usage: buildUsageTraceBlock(options.response),
-      ...options.extra,
     });
   }
 }
@@ -76,6 +76,7 @@ export function traceLlmCallError(options: {
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("llm_call.completed", {
+      ...options.extra,
       turnId: options.turnId,
       label: options.label,
       responseShape: {
@@ -83,7 +84,6 @@ export function traceLlmCallError(options: {
       },
       stopReason: null,
       usage: null,
-      ...options.extra,
     });
   }
 }

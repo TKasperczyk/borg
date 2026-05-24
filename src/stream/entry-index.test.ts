@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openDatabase, type Migration } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
@@ -485,6 +485,59 @@ describe("stream entry index", () => {
           kind: "user_msg",
         }),
       ).toBe(1);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("warns when startup backfill leaves legacy rows with null kind", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+    };
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+      logger,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const backfillableEntry = await writer.append({
+        kind: "user_msg",
+        content: "legacy kind",
+      });
+      const orphanedLegacyEntryId = createStreamEntryId();
+
+      db.prepare("UPDATE stream_entry_index SET kind = NULL WHERE entry_id = ?").run(
+        backfillableEntry.id,
+      );
+      db.prepare(
+        `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id)
+         VALUES (?, ?, ?, ?, NULL, NULL)`,
+      ).run(orphanedLegacyEntryId, DEFAULT_SESSION_ID, 999, 50);
+
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      const report = entryIndex.warnLegacyRowsMissingKind();
+
+      expect(entryIndex.lookup(backfillableEntry.id)?.kind).toBe("user_msg");
+      expect(report).toEqual({
+        count: 1,
+        sampleEntryIds: [orphanedLegacyEntryId],
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        `Stream entry index has 1 legacy rows with kind IS NULL after startup backfill; sample_entry_ids=${orphanedLegacyEntryId}`,
+      );
     } finally {
       writer.close();
       db.close();

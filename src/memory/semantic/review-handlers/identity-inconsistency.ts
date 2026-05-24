@@ -7,8 +7,6 @@ import {
   autobiographicalPeriodIdSchema,
   autobiographicalPeriodPatchSchema,
   autobiographicalPeriodSchema,
-} from "../../self/autobiographical.js";
-import {
   goalIdSchema,
   goalPatchSchema,
   traitIdSchema,

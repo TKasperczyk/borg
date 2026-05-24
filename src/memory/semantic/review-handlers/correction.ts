@@ -2,8 +2,12 @@ import { z } from "zod";
 
 import { episodeIdSchema, episodePatchSchema } from "../../episodic/index.js";
 import { commitmentIdSchema, entityIdSchema } from "../../commitments/index.js";
-import { openQuestionIdSchema } from "../../self/open-questions.js";
-import { goalIdSchema, traitIdSchema, valueIdSchema } from "../../self/types.js";
+import {
+  goalIdSchema,
+  openQuestionIdSchema,
+  traitIdSchema,
+  valueIdSchema,
+} from "../../self/types.js";
 import { provenanceSchema } from "../../common/provenance.js";
 import { SemanticError } from "../../../util/errors.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema, semanticNodePatchSchema } from "../types.js";

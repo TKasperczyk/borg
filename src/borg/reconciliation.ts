@@ -32,4 +32,6 @@ export async function backfillStreamEntryIndex(options: {
   for (const sessionId of sessionIds) {
     await options.entryIndex.backfillSession(sessionId);
   }
+
+  options.entryIndex.warnLegacyRowsMissingKind();
 }

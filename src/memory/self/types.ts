@@ -2,16 +2,20 @@ import { z } from "zod";
 
 import {
   entityIdHelpers,
+  autobiographicalPeriodIdHelpers,
   sharedStateEntryIdHelpers,
   episodeIdHelpers,
   goalIdHelpers,
+  openQuestionIdHelpers,
   streamEntryIdHelpers,
   traitIdHelpers,
   valueIdHelpers,
+  type AutobiographicalPeriodId,
   type EntityId,
   type SharedStateEntryId,
   type EpisodeId,
   type GoalId,
+  type OpenQuestionId,
   type StreamEntryId,
   type TraitId,
   type ValueId,
@@ -34,6 +38,13 @@ export const goalIdSchema = z
     message: "Invalid goal id",
   })
   .transform((value) => value as GoalId);
+
+export const openQuestionIdSchema = z
+  .string()
+  .refine((value) => openQuestionIdHelpers.is(value), {
+    message: "Invalid open question id",
+  })
+  .transform((value) => value as OpenQuestionId);
 
 export const goalAudienceEntityIdSchema = z
   .string()
@@ -76,6 +87,44 @@ export const valueSourceEpisodeIdSchema = z
     message: "Invalid episode id",
   })
   .transform((value) => value as EpisodeId);
+
+export const autobiographicalPeriodIdSchema = z
+  .string()
+  .refine((value) => autobiographicalPeriodIdHelpers.is(value), {
+    message: "Invalid autobiographical period id",
+  })
+  .transform((value) => value as AutobiographicalPeriodId);
+
+export const autobiographicalPeriodSchema = z
+  .object({
+    id: autobiographicalPeriodIdSchema,
+    record_version: z.number().int().positive().optional(),
+    label: z.string().min(1),
+    start_ts: z.number().finite(),
+    end_ts: z.number().finite().nullable(),
+    narrative: z.string(),
+    key_episode_ids: z.array(valueSourceEpisodeIdSchema),
+    themes: z.array(z.string().min(1)),
+    provenance: provenanceSchema,
+    created_at: z.number().finite(),
+    last_updated: z.number().finite(),
+  })
+  .refine((value) => value.end_ts === null || value.end_ts >= value.start_ts, {
+    message: "Autobiographical period end_ts must be after start_ts",
+    path: ["end_ts"],
+  });
+
+export const autobiographicalPeriodPatchSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    start_ts: z.number().finite().optional(),
+    end_ts: z.number().finite().nullable().optional(),
+    narrative: z.string().optional(),
+    key_episode_ids: z.array(valueSourceEpisodeIdSchema).optional(),
+    themes: z.array(z.string().min(1)).optional(),
+    provenance: provenanceSchema.optional(),
+  })
+  .strict();
 
 export const valueSchema = z.object({
   id: valueIdSchema,
@@ -187,6 +236,8 @@ export type GoalPatch = z.infer<typeof goalPatchSchema>;
 export type GoalStatus = z.infer<typeof goalStatusSchema>;
 export type TraitRecord = z.infer<typeof traitSchema>;
 export type TraitPatch = z.infer<typeof traitPatchSchema>;
+export type AutobiographicalPeriod = z.infer<typeof autobiographicalPeriodSchema>;
+export type AutobiographicalPeriodPatch = z.infer<typeof autobiographicalPeriodPatchSchema>;
 export type SelfProvenance = Provenance;
 export type IdentityState = z.infer<typeof identityStateSchema>;
 

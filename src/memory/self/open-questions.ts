@@ -47,7 +47,7 @@ import {
   provenanceSchema,
   toStoredProvenance,
 } from "../common/provenance.js";
-import { goalIdSchema } from "./types.js";
+import { goalIdSchema, openQuestionIdSchema } from "./types.js";
 
 export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
 export const OPEN_QUESTION_SOURCES = [
@@ -60,12 +60,8 @@ export const OPEN_QUESTION_SOURCES = [
   "deliberator",
 ] as const;
 
-export const openQuestionIdSchema = z
-  .string()
-  .refine((value) => openQuestionIdHelpers.is(value), {
-    message: "Invalid open question id",
-  })
-  .transform((value) => value as OpenQuestionId);
+export { openQuestionIdSchema } from "./types.js";
+
 export const openQuestionAudienceEntityIdSchema = z
   .string()
   .refine((value) => entityIdHelpers.is(value), {
