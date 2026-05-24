@@ -17,6 +17,7 @@ import type { StreamEntry, StreamReader } from "../../stream/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
   Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
@@ -35,6 +36,7 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadSimilarityThreshold?: number;
   actionThreadSourceRecordLimit?: number;
   entityRepository?: Pick<EntityRepository, "get">;
+  tracer?: TurnTracer;
 };
 
 export type EvidenceLedgerBuildInput = {

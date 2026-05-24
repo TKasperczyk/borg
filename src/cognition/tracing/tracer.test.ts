@@ -344,6 +344,7 @@ describe("TurnTracer", () => {
       "retrieval.degraded",
       "retrieval.completed",
       "session_reentry.continuity.evaluated",
+      "evidence_ledger.reverse_scan",
       "evidence_ledger.completed",
       "deliberation.contradiction_routing.completed",
       "deliberation.path.completed",

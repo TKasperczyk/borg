@@ -363,6 +363,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
     entityRepository: input.options.entityRepository,
+    tracer: input.options.tracer,
   });
   const builtLedger = await builder.build(input.input);
   const compacted = compactEvidenceLedger(builtLedger, {

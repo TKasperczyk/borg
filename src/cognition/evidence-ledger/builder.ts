@@ -2,6 +2,7 @@ import {
   activeSessionTranscriptEntries,
   type StreamEntry,
   type StreamReader,
+  type StreamReverseScanResult,
 } from "../../stream/index.js";
 import type { BuilderSectionContext } from "./builder-context.js";
 import type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
@@ -42,20 +43,31 @@ export { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 const EVIDENCE_LEDGER_SESSION_SCAN_MAX_ENTRIES = 1_024;
 const EVIDENCE_LEDGER_SESSION_SCAN_MAX_BYTES = 8 * 1024 * 1024;
 
-function loadRecentSessionStreamEntries(reader: StreamReader): StreamEntry[] {
+function scanRecentSessionStreamEntries(reader: StreamReader): StreamReverseScanResult {
   return reader.scanReverse({
     maxEntries: EVIDENCE_LEDGER_SESSION_SCAN_MAX_ENTRIES,
     maxBytes: EVIDENCE_LEDGER_SESSION_SCAN_MAX_BYTES,
-  }).entries;
+  });
 }
 
 export class EvidenceLedgerBuilder {
   constructor(private readonly options: EvidenceLedgerBuilderOptions) {}
 
   async build(input: EvidenceLedgerBuildInput): Promise<EvidenceLedger> {
-    const streamEntries = loadRecentSessionStreamEntries(
+    const streamScan = scanRecentSessionStreamEntries(
       this.options.createStreamReader(input.sessionId),
     );
+    const streamEntries = streamScan.entries;
+    if (this.options.tracer?.enabled === true && input.turnId !== undefined) {
+      this.options.tracer.emit("evidence_ledger.reverse_scan", {
+        turnId: input.turnId,
+        ledger_reverse_scan_entries: streamEntries.length,
+        ledger_reverse_scan_bytes: streamScan.scannedBytes,
+        ledger_reverse_scan_entry_cap_hit: streamScan.capReached === "entries",
+        ledger_reverse_scan_byte_cap_hit: streamScan.capReached === "bytes",
+      });
+    }
+
     const streamEntriesById = new Map<string, StreamEntry>();
     const streamOrderById = new Map<string, number>();
 

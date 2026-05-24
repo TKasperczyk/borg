@@ -16,6 +16,7 @@ export type TurnTraceEventName =
   | "recall_expansion.completed"
   | "retrieval.started"
   | "retrieval.completed"
+  | "evidence_ledger.reverse_scan"
   | "evidence_ledger.completed"
   | "evidence_ledger.compaction.completed"
   | "session_reentry.continuity.evaluated"

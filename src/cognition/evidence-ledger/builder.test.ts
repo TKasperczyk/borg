@@ -20,6 +20,7 @@ import {
 } from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   createEpisodeFixture,
   createRetrievalScoreFixture,
@@ -408,6 +409,7 @@ function attributionBuilder(input: {
   commitments?: readonly CommitmentRecord[];
   goals?: readonly GoalRecord[];
   entities?: readonly EntityRecord[];
+  tracer?: TurnTracer;
 }) {
   return new EvidenceLedgerBuilder({
     createStreamReader: (sessionId) => new StreamReader({ dataDir: input.tempDir, sessionId }),
@@ -425,6 +427,7 @@ function attributionBuilder(input: {
     },
     currentSessionTranscriptTokenBudget: 50_000,
     entityRepository: entityRepository(input.entities ?? []),
+    tracer: input.tracer,
   });
 }
 
@@ -480,6 +483,65 @@ describe("EvidenceLedgerBuilder", () => {
       ).toBe(true);
     } finally {
       scanSpy.mockRestore();
+      writer.close();
+    }
+  });
+
+  it("traces reverse-scan count, bytes, and cap hits", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const traceEvents: Array<{ event: TurnTraceEventName } & TurnTraceData> = [];
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: (event, data) => {
+        traceEvents.push({ event, ...data });
+      },
+    };
+
+    try {
+      let currentUserEntry: StreamEntry | undefined;
+      for (let index = 0; index < 1_025; index += 1) {
+        currentUserEntry = await writer.append({
+          kind: "user_msg",
+          content: `Ledger reverse scan fixture ${index}`,
+        });
+      }
+
+      await attributionBuilder({ tempDir, tracer }).build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-ledger-reverse-scan",
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry?.content ?? ""),
+        currentUserEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "evidence_ledger.reverse_scan",
+          turnId: "turn-ledger-reverse-scan",
+          ledger_reverse_scan_entries: 1_024,
+          ledger_reverse_scan_entry_cap_hit: true,
+          ledger_reverse_scan_byte_cap_hit: false,
+        }),
+      );
+      const scanEvent = traceEvents.find((event) => event.event === "evidence_ledger.reverse_scan");
+      expect(scanEvent?.ledger_reverse_scan_bytes).toEqual(expect.any(Number));
+      expect(scanEvent?.ledger_reverse_scan_bytes).toBeGreaterThan(0);
+    } finally {
       writer.close();
     }
   });

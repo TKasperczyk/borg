@@ -195,6 +195,10 @@ const TURN_METRICS_KEY_ORDER = [
   "decision_artifact_semantic_revision_cache_hits",
   "decision_artifact_semantic_revision_cache_size",
   "embedding_cache_pending_overflow_total",
+  "ledger_reverse_scan_entries_total",
+  "ledger_reverse_scan_bytes_total",
+  "ledger_reverse_scan_entry_cap_hit_total",
+  "ledger_reverse_scan_byte_cap_hit_total",
   "semantic_revision_error_count",
   "semantic_revision_skipped_due_to_error",
   "semantic_revision_error_total_by_reason",
@@ -1117,6 +1121,53 @@ describe("MetricsCapture", () => {
     });
 
     expect(row.embedding_cache_pending_overflow_total).toBe(3);
+  });
+
+  it("captures cumulative evidence ledger reverse-scan telemetry from trace events", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        JSON.stringify({
+          ts: 1,
+          turnId: "turn-ledger-scan-1",
+          event: "evidence_ledger.reverse_scan",
+          ledger_reverse_scan_entries: 1024,
+          ledger_reverse_scan_bytes: 4096,
+          ledger_reverse_scan_entry_cap_hit: true,
+          ledger_reverse_scan_byte_cap_hit: false,
+        }),
+        JSON.stringify({
+          ts: 2,
+          turnId: "turn-ledger-scan-2",
+          event: "evidence_ledger.reverse_scan",
+          ledger_reverse_scan_entries: 12,
+          ledger_reverse_scan_bytes: 8_388_608,
+          ledger_reverse_scan_entry_cap_hit: false,
+          ledger_reverse_scan_byte_cap_hit: true,
+        }),
+      ].join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-ledger-scan-2",
+      2,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row.ledger_reverse_scan_entries_total).toBe(1036);
+    expect(row.ledger_reverse_scan_bytes_total).toBe(8_392_704);
+    expect(row.ledger_reverse_scan_entry_cap_hit_total).toBe(1);
+    expect(row.ledger_reverse_scan_byte_cap_hit_total).toBe(1);
   });
 
   it("captures session re-entry continuity counters from trace events", async () => {

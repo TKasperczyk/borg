@@ -264,6 +264,14 @@ type SemanticRevisionCumulativeMetricCounts = Pick<
   | "semantic_revision_skipped_over_cap_total"
 >;
 
+type EvidenceLedgerReverseScanMetricCounts = Pick<
+  MetricsRow,
+  | "ledger_reverse_scan_entries_total"
+  | "ledger_reverse_scan_bytes_total"
+  | "ledger_reverse_scan_entry_cap_hit_total"
+  | "ledger_reverse_scan_byte_cap_hit_total"
+>;
+
 type SharedStateCapPressureMetricCounts = Pick<
   MetricsRow,
   | "shared_state_at_cap_turns"
@@ -578,6 +586,12 @@ function traceNumber(record: TraceRecord, key: string): number {
   const value = record[key];
 
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function traceBoolean(record: TraceRecord, key: string): boolean {
+  const value = record[key];
+
+  return value === true || value === 1;
 }
 
 function traceObjectNumber(record: TraceRecord, objectKey: string, numberKey: string): number {
@@ -1021,6 +1035,31 @@ function semanticRevisionCumulativeMetrics(
     ),
     semantic_revision_degraded_total: degraded.length,
     semantic_revision_skipped_over_cap_total: skippedOverCap.length,
+  };
+}
+
+function evidenceLedgerReverseScanMetrics(
+  cumulativeTraceRecords: readonly TraceRecord[],
+): EvidenceLedgerReverseScanMetricCounts {
+  const reverseScans = cumulativeTraceRecords.filter(
+    (record) => record.event === "evidence_ledger.reverse_scan",
+  );
+
+  return {
+    ledger_reverse_scan_entries_total: reverseScans.reduce(
+      (total, record) => total + traceNumber(record, "ledger_reverse_scan_entries"),
+      0,
+    ),
+    ledger_reverse_scan_bytes_total: reverseScans.reduce(
+      (total, record) => total + traceNumber(record, "ledger_reverse_scan_bytes"),
+      0,
+    ),
+    ledger_reverse_scan_entry_cap_hit_total: reverseScans.filter((record) =>
+      traceBoolean(record, "ledger_reverse_scan_entry_cap_hit"),
+    ).length,
+    ledger_reverse_scan_byte_cap_hit_total: reverseScans.filter((record) =>
+      traceBoolean(record, "ledger_reverse_scan_byte_cap_hit"),
+    ).length,
   };
 }
 
@@ -3390,6 +3429,8 @@ export class MetricsCapture {
     });
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
+    const evidenceLedgerReverseScanMetricCounts =
+      evidenceLedgerReverseScanMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
       allTraceRecords,
@@ -3607,6 +3648,14 @@ export class MetricsCapture {
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
+      ledger_reverse_scan_entries_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entries_total,
+      ledger_reverse_scan_bytes_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_bytes_total,
+      ledger_reverse_scan_entry_cap_hit_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entry_cap_hit_total,
+      ledger_reverse_scan_byte_cap_hit_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_byte_cap_hit_total,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:
@@ -3915,6 +3964,8 @@ export class MetricsCapture {
     });
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
+    const evidenceLedgerReverseScanMetricCounts =
+      evidenceLedgerReverseScanMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
       allTraceRecords,
@@ -4119,6 +4170,14 @@ export class MetricsCapture {
         sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
       decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
+      ledger_reverse_scan_entries_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entries_total,
+      ledger_reverse_scan_bytes_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_bytes_total,
+      ledger_reverse_scan_entry_cap_hit_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entry_cap_hit_total,
+      ledger_reverse_scan_byte_cap_hit_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_byte_cap_hit_total,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:

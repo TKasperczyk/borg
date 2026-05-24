@@ -21,23 +21,35 @@ export const LEGACY_METRIC_ALIAS_KEYS = [
   "borg_aborted_turns",
 ] as const satisfies readonly (keyof MetricsRow)[];
 
+export const OVERSEER_OMITTED_METRIC_KEYS = [
+  ...LEGACY_METRIC_ALIAS_KEYS,
+  "ledger_reverse_scan_entries_total",
+  "ledger_reverse_scan_bytes_total",
+  "ledger_reverse_scan_entry_cap_hit_total",
+  "ledger_reverse_scan_byte_cap_hit_total",
+] as const satisfies readonly (keyof MetricsRow)[];
+
 export type LegacyMetricAlias = (typeof LEGACY_METRIC_ALIAS_KEYS)[number];
-export type OverseerMetricsRow = Omit<MetricsRow, LegacyMetricAlias>;
+export type OverseerOmittedMetric = (typeof OVERSEER_OMITTED_METRIC_KEYS)[number];
+export type OverseerMetricsRow = Omit<MetricsRow, OverseerOmittedMetric>;
 
 export const LEGACY_METRIC_ALIASES: ReadonlySet<LegacyMetricAlias> = new Set(
   LEGACY_METRIC_ALIAS_KEYS,
 );
+const OVERSEER_OMITTED_METRICS: ReadonlySet<OverseerOmittedMetric> = new Set(
+  OVERSEER_OMITTED_METRIC_KEYS,
+);
 
 export function stripLegacyAliases<T extends object>(
   row: T,
-): Omit<T, Extract<keyof T, LegacyMetricAlias>> {
+): Omit<T, Extract<keyof T, OverseerOmittedMetric>> {
   const filtered = { ...row };
 
   for (const key of Object.keys(filtered)) {
-    if (LEGACY_METRIC_ALIASES.has(key as LegacyMetricAlias)) {
+    if (OVERSEER_OMITTED_METRICS.has(key as OverseerOmittedMetric)) {
       delete filtered[key as keyof T];
     }
   }
 
-  return filtered as Omit<T, Extract<keyof T, LegacyMetricAlias>>;
+  return filtered as Omit<T, Extract<keyof T, OverseerOmittedMetric>>;
 }

@@ -179,6 +179,10 @@ export type MetricsRow = {
   decision_artifact_semantic_revision_cache_hits: number;
   decision_artifact_semantic_revision_cache_size: number;
   embedding_cache_pending_overflow_total: number;
+  ledger_reverse_scan_entries_total: number;
+  ledger_reverse_scan_bytes_total: number;
+  ledger_reverse_scan_entry_cap_hit_total: number;
+  ledger_reverse_scan_byte_cap_hit_total: number;
   semantic_revision_error_count: number;
   semantic_revision_skipped_due_to_error: number;
   semantic_revision_error_total_by_reason: Record<string, number>;

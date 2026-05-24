@@ -22,6 +22,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "retrieval.degraded",
     "recall_expansion.completed",
     "citation_resolution.degraded",
+    "evidence_ledger.reverse_scan",
     "evidence_ledger.completed",
     "evidence_ledger.compaction.completed",
     "session_reentry.continuity.evaluated",
