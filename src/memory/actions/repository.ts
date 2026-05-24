@@ -10,6 +10,7 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import { getDistance, toSimilarity } from "../../storage/lancedb/vector-results.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
@@ -43,19 +44,6 @@ const ACTION_JSON_ARRAY_CODEC = {
   errorCode: "ACTION_RECORD_ROW_INVALID",
   errorMessage: (label: string) => `Failed to parse action record ${label}`,
 } satisfies JsonArrayCodecOptions;
-
-function toSimilarity(distance: number | undefined): number {
-  if (distance === undefined) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(1, 1 - distance));
-}
-
-function getDistance(row: Record<string, unknown>): number | undefined {
-  const value = row._distance;
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
 
 function mapActionRow(row: Record<string, unknown>): ActionRecord {
   const parsed = actionRecordSchema.safeParse({

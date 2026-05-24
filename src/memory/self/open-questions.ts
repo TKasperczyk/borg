@@ -10,6 +10,7 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import { getDistance, toSimilarity } from "../../storage/lancedb/vector-results.js";
 import {
   quoteSqlString,
   toFloat32Array,
@@ -284,19 +285,6 @@ function parseIdArray<T>(value: string, schema: z.ZodType<T>, label: string): T[
 
 function normalizeQuestionForDedupe(text: string): string {
   return text.normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
-}
-
-function toSimilarity(distance: number | undefined): number {
-  if (distance === undefined) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(1, 1 - distance));
-}
-
-function getDistance(row: Record<string, unknown>): number | undefined {
-  const value = row._distance;
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isVisibleToAudience(

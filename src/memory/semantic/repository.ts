@@ -8,6 +8,7 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import { getDistance, toSimilarity } from "../../storage/lancedb/vector-results.js";
 import {
   parseJsonArray,
   quoteSqlString,
@@ -111,20 +112,6 @@ function assertPositiveLimit(limit: number | undefined, label: string, fallback:
   }
 
   return resolved;
-}
-
-function toSimilarity(distance: number | undefined): number {
-  if (distance === undefined) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(1, 1 - distance));
-}
-
-function getDistance(row: Record<string, unknown>): number | undefined {
-  return typeof row._distance === "number" && Number.isFinite(row._distance)
-    ? row._distance
-    : undefined;
 }
 
 function normalizeAliases(values: readonly string[]): string[] {

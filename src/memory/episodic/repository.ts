@@ -8,6 +8,7 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import { getDistance, toSimilarity } from "../../storage/lancedb/vector-results.js";
 import {
   parseJsonArray,
   quoteSqlString,
@@ -193,19 +194,6 @@ function normalizeTerm(value: string): string {
 
 function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
-}
-
-function getDistance(row: Record<string, unknown>): number | undefined {
-  const value = row._distance;
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function toSimilarity(distance: number | undefined): number {
-  if (distance === undefined) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(1, 1 - distance));
 }
 
 function toEpisodeRow(episode: Episode): EpisodeRow {
