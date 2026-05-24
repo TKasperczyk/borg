@@ -123,6 +123,7 @@ export class StreamWriter {
                   entry.session_id,
                   byteOffset,
                   entry.timestamp,
+                  entry.kind,
                   entry.sender_entity_id,
                 );
               }

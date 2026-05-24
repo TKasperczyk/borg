@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ActionRecord, ActionRecordListFilter } from "../../memory/actions/index.js";
 import type {
@@ -434,6 +434,53 @@ describe("EvidenceLedgerBuilder", () => {
   afterEach(() => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+    }
+  });
+
+  it("collects current-session ledger context with a bounded reverse stream scan", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const scanSpy = vi.spyOn(StreamReader.prototype, "scanReverse");
+
+    try {
+      const userEntry = await writer.append({
+        kind: "user_msg",
+        content: "Bounded scan should still render this current message.",
+      });
+
+      const ledger = await attributionBuilder({ tempDir }).build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-bounded-ledger-scan",
+        audienceEntityId: null,
+        currentUserMessage: String(userEntry.content),
+        currentUserEntry: userEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      expect(scanSpy).toHaveBeenCalledWith({
+        maxEntries: 1_024,
+        maxBytes: 8 * 1024 * 1024,
+      });
+      expect(
+        ledger.sections
+          .find((section) => section.id === "current_session_transcript")
+          ?.entries.some((entry) => entry.id === `current_session_stream:${userEntry.id}`),
+      ).toBe(true);
+    } finally {
+      scanSpy.mockRestore();
+      writer.close();
     }
   });
 

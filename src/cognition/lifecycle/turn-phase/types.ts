@@ -29,7 +29,11 @@ import type { GoalsRepository, OpenQuestionsRepository } from "../../../memory/s
 import type { SemanticNodeRepository } from "../../../memory/semantic/index.js";
 import type { SocialRepository } from "../../../memory/social/index.js";
 import type { WorkingMemoryStore } from "../../../memory/working/index.js";
-import type { StreamReader, StreamWriter } from "../../../stream/index.js";
+import type {
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWriter,
+} from "../../../stream/index.js";
 import type { ToolDispatcher } from "../../../tools/index.js";
 import type { Clock } from "../../../util/clock.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
@@ -88,6 +92,7 @@ export type TurnPhaseCoordinatorOptions = {
   >;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
+  entryIndex?: Pick<StreamEntryIndexRepository, "countSessionEntriesByKind">;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;

@@ -452,6 +452,14 @@ async function countPriorUserTurnsForSession(input: {
   sessionId: SessionId;
   currentUserEntryId?: StreamEntryId;
 }): Promise<number> {
+  if (input.options.entryIndex !== undefined) {
+    return input.options.entryIndex.countSessionEntriesByKind({
+      sessionId: input.sessionId,
+      kind: "user_msg",
+      excludeEntryId: input.currentUserEntryId,
+    });
+  }
+
   const entries = await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId));
 
   return entries.filter(

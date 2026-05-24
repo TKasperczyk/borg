@@ -155,6 +155,7 @@ export async function openBorgDependencies(
       sessionLock,
       streamIngestionCoordinator,
       createStreamWriter: repositories.createStreamWriter,
+      entryIndex: repositories.entryIndex,
       clock,
       tracer,
     });

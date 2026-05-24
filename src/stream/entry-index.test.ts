@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase, type Migration } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
-import { createEntityId } from "../util/ids.js";
+import { createEntityId, createSessionId } from "../util/ids.js";
 
 import {
   DEFAULT_SESSION_ID,
@@ -117,6 +117,106 @@ describe("stream entry index", () => {
     }
   });
 
+  it("counts user messages by session from the stream entry index", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      expect(
+        entryIndex.countSessionEntriesByKind({
+          sessionId: DEFAULT_SESSION_ID,
+          kind: "user_msg",
+        }),
+      ).toBe(0);
+
+      const first = await writer.append({ kind: "user_msg", content: "one" });
+      await writer.append({ kind: "agent_msg", content: "assistant" });
+      await writer.append({ kind: "user_msg", content: "two" });
+      await otherWriter.append({ kind: "user_msg", content: "other session" });
+
+      expect(
+        entryIndex.countSessionEntriesByKind({
+          sessionId: DEFAULT_SESSION_ID,
+          kind: "user_msg",
+        }),
+      ).toBe(2);
+      expect(
+        entryIndex.countSessionEntriesByKind({
+          sessionId: DEFAULT_SESSION_ID,
+          kind: "user_msg",
+          excludeEntryId: first.id,
+        }),
+      ).toBe(1);
+      expect(
+        entryIndex.countSessionEntriesByKind({
+          sessionId: otherSessionId,
+          kind: "user_msg",
+        }),
+      ).toBe(1);
+    } finally {
+      writer.close();
+      otherWriter.close();
+      db.close();
+    }
+  });
+
+  it("backfills kind for legacy stream index rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const entry = await writer.append({ kind: "user_msg", content: "legacy kind" });
+
+      db.prepare("UPDATE stream_entry_index SET kind = NULL WHERE entry_id = ?").run(entry.id);
+      expect(entryIndex.lookup(entry.id)?.kind).toBeNull();
+
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+
+      expect(entryIndex.lookup(entry.id)?.kind).toBe("user_msg");
+      expect(
+        entryIndex.countSessionEntriesByKind({
+          sessionId: DEFAULT_SESSION_ID,
+          kind: "user_msg",
+        }),
+      ).toBe(1);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("adds sender entity ids to an existing stream index as a nullable column", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -152,6 +252,50 @@ describe("stream entry index", () => {
         .get("strm_abcdefghijklmnop") as { sender_entity_id: string | null } | undefined;
 
       expect(row?.sender_entity_id).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds kind to an existing stream index as a nullable indexed column", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const kindMigration = streamEntryIndexMigrations.find(
+      (migration) => migration.name === "add-stream-entry-kind",
+    ) as Migration | undefined;
+
+    expect(kindMigration).toBeDefined();
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        {
+          id: 1,
+          name: "legacy-stream-entry-index",
+          up: `
+            CREATE TABLE stream_entry_index (
+              entry_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              byte_offset INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL
+            );
+            INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
+            VALUES ('strm_abcdefghijklmnop', 'default', 0, 100);
+          `,
+        },
+        kindMigration as Migration,
+      ],
+    });
+
+    try {
+      const row = db
+        .prepare("SELECT kind FROM stream_entry_index WHERE entry_id = ?")
+        .get("strm_abcdefghijklmnop") as { kind: string | null } | undefined;
+      const indexRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get("idx_stream_entry_session_kind") as { name: string } | undefined;
+
+      expect(row?.kind).toBeNull();
+      expect(indexRow?.name).toBe("idx_stream_entry_session_kind");
     } finally {
       db.close();
     }

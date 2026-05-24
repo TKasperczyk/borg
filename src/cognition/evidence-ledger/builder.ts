@@ -1,17 +1,11 @@
 import {
   activeSessionTranscriptEntries,
-  loadSessionStreamEntries,
   type StreamEntry,
+  type StreamReader,
 } from "../../stream/index.js";
 import type { BuilderSectionContext } from "./builder-context.js";
-import type {
-  EvidenceLedgerBuildInput,
-  EvidenceLedgerBuilderOptions,
-} from "./builder-types.js";
-import {
-  createSectionBuckets,
-  finalSections,
-} from "./section-buckets.js";
+import type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
+import { createSectionBuckets, finalSections } from "./section-buckets.js";
 import {
   buildEpisodeScopeMap,
   buildEpisodeSourceStreamIdMap,
@@ -42,17 +36,24 @@ import { estimateLedgerTokens } from "./trace-summary.js";
 import { compactTranscriptEntries } from "./transcript-compaction.js";
 import type { EvidenceLedger } from "./types.js";
 
-export type {
-  EvidenceLedgerBuildInput,
-  EvidenceLedgerBuilderOptions,
-} from "./builder-types.js";
+export type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
 export { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
+
+const EVIDENCE_LEDGER_SESSION_SCAN_MAX_ENTRIES = 1_024;
+const EVIDENCE_LEDGER_SESSION_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+
+function loadRecentSessionStreamEntries(reader: StreamReader): StreamEntry[] {
+  return reader.scanReverse({
+    maxEntries: EVIDENCE_LEDGER_SESSION_SCAN_MAX_ENTRIES,
+    maxBytes: EVIDENCE_LEDGER_SESSION_SCAN_MAX_BYTES,
+  }).entries;
+}
 
 export class EvidenceLedgerBuilder {
   constructor(private readonly options: EvidenceLedgerBuilderOptions) {}
 
   async build(input: EvidenceLedgerBuildInput): Promise<EvidenceLedger> {
-    const streamEntries = await loadSessionStreamEntries(
+    const streamEntries = loadRecentSessionStreamEntries(
       this.options.createStreamReader(input.sessionId),
     );
     const streamEntriesById = new Map<string, StreamEntry>();

@@ -36,6 +36,7 @@ import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgStreamWriterFactory } from "./types.js";
+import type { StreamEntryIndexRepository } from "../stream/index.js";
 
 export type BuildTurnOrchestratorOptions = {
   config: Config;
@@ -68,6 +69,7 @@ export type BuildTurnOrchestratorOptions = {
   sessionLock: SessionLock;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   createStreamWriter: BorgStreamWriterFactory;
+  entryIndex?: StreamEntryIndexRepository;
   clock: Clock;
   tracer?: TurnTracer;
 };
@@ -120,6 +122,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     clock: options.clock,
     tracer: options.tracer,
     createStreamWriter: options.createStreamWriter,
+    entryIndex: options.entryIndex,
     // Explicit so borg.ts wires a single compiler instance per process;
     // turn-orchestrator.ts falls back to defaults if omitted, but doing
     // it here makes the configuration visible at the composition root.

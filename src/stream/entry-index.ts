@@ -5,7 +5,12 @@ import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.
 import type { EntityId } from "../util/ids.js";
 
 import { getSessionStreamPath } from "./path.js";
-import { type SessionId, type StreamEntry, streamEntrySchema } from "./types.js";
+import {
+  type SessionId,
+  type StreamEntry,
+  type StreamEntryKind,
+  streamEntrySchema,
+} from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
 
@@ -22,6 +27,7 @@ export const streamEntryIndexMigrations: Migration[] = [
         session_id TEXT NOT NULL,
         byte_offset INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
+        kind TEXT NULL,
         sender_entity_id TEXT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_stream_entry_session
@@ -43,6 +49,26 @@ export const streamEntryIndexMigrations: Migration[] = [
       }
     },
   },
+  {
+    id: 203,
+    name: "add-stream-entry-kind",
+    up: (db) => {
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "kind")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN kind TEXT NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stream_entry_session_kind
+        ON stream_entry_index(session_id, kind);
+      `);
+    },
+  },
 ];
 
 export type StreamEntryIndexRecord = {
@@ -50,6 +76,7 @@ export type StreamEntryIndexRecord = {
   session_id: SessionId;
   byte_offset: number;
   timestamp: number;
+  kind: StreamEntryKind | null;
   sender_entity_id: EntityId | null;
 };
 
@@ -58,11 +85,16 @@ type StreamEntryIndexRow = {
   session_id: string;
   byte_offset: number;
   timestamp: number;
+  kind?: string | null;
   sender_entity_id: string | null;
 };
 
 type SessionEntryCountRow = {
   entry_count: number;
+};
+
+type MissingKindCountRow = {
+  missing_kind_count: number;
 };
 
 export type StreamEntryIndexRepositoryOptions = {
@@ -103,6 +135,7 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
     session_id: row.session_id as SessionId,
     byte_offset: row.byte_offset,
     timestamp: row.timestamp,
+    kind: row.kind === null || row.kind === undefined ? null : (row.kind as StreamEntryKind),
     sender_entity_id:
       row.sender_entity_id === null || row.sender_entity_id === undefined
         ? null
@@ -224,28 +257,30 @@ export class StreamEntryIndexRepository {
     sessionId: SessionId,
     byteOffset: number,
     timestamp: number,
+    kind: StreamEntryKind | null = null,
     senderEntityId: EntityId | null = null,
   ): void {
     this.db
       .prepare(
         `INSERT INTO stream_entry_index (
-           entry_id, session_id, byte_offset, timestamp, sender_entity_id
+           entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id
          )
-         VALUES (?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
            timestamp = excluded.timestamp,
+           kind = excluded.kind,
            sender_entity_id = excluded.sender_entity_id`,
       )
-      .run(entryId, sessionId, byteOffset, timestamp, senderEntityId);
+      .run(entryId, sessionId, byteOffset, timestamp, kind, senderEntityId);
   }
 
   lookup(entryId: string): StreamEntryIndexRecord | null {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , sender_entity_id
+              , kind, sender_entity_id
          FROM stream_entry_index
          WHERE entry_id = ?`,
       )
@@ -264,7 +299,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , sender_entity_id
+              , kind, sender_entity_id
          FROM stream_entry_index
          WHERE entry_id IN (${uniqueIds.map(() => "?").join(", ")})`,
       )
@@ -287,6 +322,13 @@ export class StreamEntryIndexRepository {
          WHERE session_id = ?`,
       )
       .get(sessionId) as SessionEntryCountRow;
+    const missingKindCoverage = this.db
+      .prepare(
+        `SELECT COUNT(*) AS missing_kind_count
+         FROM stream_entry_index
+         WHERE session_id = ? AND kind IS NULL`,
+      )
+      .get(sessionId) as MissingKindCountRow;
     const fileDescriptor = openSync(streamPath, "r");
 
     try {
@@ -304,17 +346,27 @@ export class StreamEntryIndexRepository {
         () => undefined,
       );
 
-      if (coverage.entry_count === fileEntryCount) {
+      if (coverage.entry_count === fileEntryCount && missingKindCoverage.missing_kind_count === 0) {
         return { inserted: 0 };
       }
 
       const insertMissing = this.db.transaction((): number => {
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
-             entry_id, session_id, byte_offset, timestamp, sender_entity_id
+             entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id
            )
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (entry_id) DO NOTHING`,
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (entry_id) DO UPDATE SET
+             session_id = excluded.session_id,
+             byte_offset = excluded.byte_offset,
+             timestamp = excluded.timestamp,
+             kind = excluded.kind,
+             sender_entity_id = excluded.sender_entity_id
+           WHERE stream_entry_index.session_id != excluded.session_id
+              OR stream_entry_index.byte_offset != excluded.byte_offset
+              OR stream_entry_index.timestamp != excluded.timestamp
+              OR stream_entry_index.kind IS NOT excluded.kind
+              OR stream_entry_index.sender_entity_id IS NOT excluded.sender_entity_id`,
         );
         let inserted = 0;
 
@@ -325,8 +377,14 @@ export class StreamEntryIndexRepository {
           this.logger,
           (entry, byteOffset) => {
             inserted += Number(
-              insert.run(entry.id, sessionId, byteOffset, entry.timestamp, entry.sender_entity_id)
-                .changes,
+              insert.run(
+                entry.id,
+                sessionId,
+                byteOffset,
+                entry.timestamp,
+                entry.kind,
+                entry.sender_entity_id,
+              ).changes,
             );
           },
         );
@@ -340,5 +398,30 @@ export class StreamEntryIndexRepository {
     } finally {
       closeSync(fileDescriptor);
     }
+  }
+
+  countSessionEntriesByKind(input: {
+    sessionId: SessionId;
+    kind: StreamEntryKind;
+    excludeEntryId?: string;
+  }): number {
+    const row =
+      input.excludeEntryId === undefined
+        ? (this.db
+            .prepare(
+              `SELECT COUNT(*) AS entry_count
+               FROM stream_entry_index
+               WHERE session_id = ? AND kind = ?`,
+            )
+            .get(input.sessionId, input.kind) as SessionEntryCountRow)
+        : (this.db
+            .prepare(
+              `SELECT COUNT(*) AS entry_count
+               FROM stream_entry_index
+               WHERE session_id = ? AND kind = ? AND entry_id != ?`,
+            )
+            .get(input.sessionId, input.kind, input.excludeEntryId) as SessionEntryCountRow);
+
+    return row.entry_count;
   }
 }

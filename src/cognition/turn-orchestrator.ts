@@ -24,7 +24,12 @@ import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/se
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
-import { ABORTED_TURN_EVENT, StreamReader, StreamWriter } from "../stream/index.js";
+import {
+  ABORTED_TURN_EVENT,
+  StreamReader,
+  StreamWriter,
+  type StreamEntryIndexRepository,
+} from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
@@ -118,6 +123,7 @@ export type TurnOrchestratorOptions = {
   toolDispatcher: ToolDispatcher;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
+  entryIndex?: StreamEntryIndexRepository;
   /**
    * Build a reader for the given session's stream. The orchestrator uses
    * this to compile the recent-dialogue window before a turn starts, so the
@@ -291,6 +297,7 @@ export class TurnOrchestrator {
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,
       createStreamReader,
+      entryIndex: options.entryIndex,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,
