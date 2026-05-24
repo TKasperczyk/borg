@@ -463,6 +463,13 @@ function sharedStateEntryLastUpdatedTurn(
   entry: SharedStateEntry,
   lastUpdatedTurnByStreamEntryId: Readonly<Record<string, number>>,
 ): number | null {
+  if (
+    entry.last_updated_turn_global !== null &&
+    Number.isFinite(entry.last_updated_turn_global)
+  ) {
+    return entry.last_updated_turn_global;
+  }
+
   let lastTurn: number | null = null;
 
   for (const streamEntryId of entry.last_updated_stream_entry_ids) {

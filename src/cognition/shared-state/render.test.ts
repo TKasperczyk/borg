@@ -31,6 +31,7 @@ function entry(input: {
   text?: string;
   provenanceStreamEntryIds?: StreamEntryId[];
   lastUpdatedStreamEntryIds?: StreamEntryId[];
+  lastUpdatedTurnGlobal?: number | null;
   canonicalizes?: {
     goal_ids?: GoalId[];
     commitment_ids?: CommitmentId[];
@@ -53,7 +54,7 @@ function entry(input: {
     last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
     created_at: input.updatedAt,
     last_updated_at: input.updatedAt,
-    last_updated_turn_global: null,
+    last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
     superseded_by_id: null,
     rank: input.rank,
     canonicalizes: {
@@ -290,6 +291,164 @@ describe("summarizeSharedStateArtifactRender", () => {
     expect(summary.omittedLockedWithActiveCriticalCommitment).toBe(1);
     expect(summary.omittedLockedWithOperationalCanonicalizer).toBe(1);
     expect(summary.omittedLockedIndexedOnly).toBe(5);
+  });
+
+  it("classifies omitted live prior-session entries with old persisted turns as old", () => {
+    const audience = createEntityId();
+    const priorSessionId = createStreamEntryId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 100,
+        text: "rendered live",
+      }),
+      entry({
+        audience,
+        kind: "live",
+        rank: 1,
+        updatedAt: 10,
+        text: "old persisted live",
+        lastUpdatedStreamEntryIds: [priorSessionId],
+        lastUpdatedTurnGlobal: 1,
+      }),
+    ];
+
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+      },
+      newestStateChangeReservedSlots: 0,
+      currentTurnCounter: 10,
+      lastUpdatedTurnByStreamEntryId: {},
+    });
+
+    expect(summary.omittedLiveOld).toBe(1);
+    expect(summary.omittedLiveUnknownAge).toBe(0);
+  });
+
+  it("classifies omitted live prior-session entries with recent persisted turns as recent", () => {
+    const audience = createEntityId();
+    const priorSessionId = createStreamEntryId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 100,
+        text: "rendered live",
+      }),
+      entry({
+        audience,
+        kind: "live",
+        rank: 1,
+        updatedAt: 10,
+        text: "recent persisted live",
+        lastUpdatedStreamEntryIds: [priorSessionId],
+        lastUpdatedTurnGlobal: 8,
+      }),
+    ];
+
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+      },
+      newestStateChangeReservedSlots: 0,
+      currentTurnCounter: 10,
+      lastUpdatedTurnByStreamEntryId: {},
+    });
+
+    expect(summary.omittedLiveRecentLowSalience).toBe(1);
+    expect(summary.omittedLiveOld).toBe(0);
+    expect(summary.omittedLiveUnknownAge).toBe(0);
+  });
+
+  it("keeps omitted live entries with null persisted turns and no stream lookup unknown age", () => {
+    const audience = createEntityId();
+    const priorSessionId = createStreamEntryId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 100,
+        text: "rendered live",
+      }),
+      entry({
+        audience,
+        kind: "live",
+        rank: 1,
+        updatedAt: 10,
+        text: "unknown persisted live",
+        lastUpdatedStreamEntryIds: [priorSessionId],
+        lastUpdatedTurnGlobal: null,
+      }),
+    ];
+
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+      },
+      newestStateChangeReservedSlots: 0,
+      currentTurnCounter: 10,
+      lastUpdatedTurnByStreamEntryId: {},
+    });
+
+    expect(summary.omittedLiveOld).toBe(0);
+    expect(summary.omittedLiveUnknownAge).toBe(1);
+  });
+
+  it("classifies omitted locked prior-session entries with old persisted turns as old", () => {
+    const audience = createEntityId();
+    const priorSessionId = createStreamEntryId();
+    const entries = [
+      entry({
+        audience,
+        kind: "locked",
+        rank: 0,
+        updatedAt: 100,
+        text: "rendered locked",
+      }),
+      entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 10,
+        text: "old persisted locked",
+        lastUpdatedStreamEntryIds: [priorSessionId],
+        lastUpdatedTurnGlobal: 1,
+      }),
+    ];
+
+    const summary = summarizeSharedStateArtifactRender(artifact(entries), {
+      maxEntries: 1,
+      maxTokens: 50_000,
+      reservedSlots: {
+        live: 0,
+        pending: 0,
+        invalidated: 0,
+      },
+      lockedMaxEntries: 1,
+      newestStateChangeReservedSlots: 0,
+      currentTurnCounter: 10,
+      lastUpdatedTurnByStreamEntryId: {},
+    });
+
+    expect(summary.omittedLockedOld).toBe(1);
+    expect(summary.omittedLockedUnknownAge).toBe(0);
   });
 });
 
