@@ -181,6 +181,64 @@ describe("stream entry index", () => {
     }
   });
 
+  it("looks up session entries by kind with byte offsets", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      const firstMarker = await writer.append({
+        kind: "internal_event",
+        content: { event: "first" },
+      });
+      await writer.append({
+        kind: "user_msg",
+        content: "not a marker",
+      });
+      const secondMarker = await writer.append({
+        kind: "internal_event",
+        content: { event: "second" },
+      });
+      await otherWriter.append({
+        kind: "internal_event",
+        content: { event: "other" },
+      });
+
+      const records = entryIndex.lookupSessionEntriesByKind({
+        sessionId: DEFAULT_SESSION_ID,
+        kind: "internal_event",
+      });
+
+      expect(records.map((record) => record.entry_id)).toEqual([firstMarker.id, secondMarker.id]);
+      expect(records.map((record) => record.kind)).toEqual(["internal_event", "internal_event"]);
+      expect(records.every((record) => record.session_id === DEFAULT_SESSION_ID)).toBe(true);
+      expect(records.every((record) => record.byte_offset >= 0)).toBe(true);
+    } finally {
+      writer.close();
+      otherWriter.close();
+      db.close();
+    }
+  });
+
   it("looks up indexed facts by id across hits, misses, and sessions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

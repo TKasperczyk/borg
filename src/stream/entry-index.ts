@@ -551,6 +551,23 @@ export class StreamEntryIndexRepository {
     );
   }
 
+  lookupSessionEntriesByKind(input: {
+    sessionId: SessionId;
+    kind: StreamEntryKind;
+  }): StreamEntryIndexRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT entry_id, session_id, byte_offset, timestamp
+              , kind, sender_entity_id, turn_id, turn_status, active
+         FROM stream_entry_index
+         WHERE session_id = ? AND kind = ?
+         ORDER BY timestamp ASC, byte_offset ASC, entry_id ASC`,
+      )
+      .all(input.sessionId, input.kind) as StreamEntryIndexRow[];
+
+    return rows.map(recordFromRow);
+  }
+
   quarantinedSharedStateArtifactRefs(): ReadonlySet<StreamEntryId> {
     const rows = this.db
       .prepare(

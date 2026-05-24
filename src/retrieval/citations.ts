@@ -166,6 +166,35 @@ export class CitationResolver {
   }
 
   private readStatusMarkerEntries(sessionId: SessionId): StreamEntry[] {
+    if (this.options.entryIndex !== undefined) {
+      const markerEntries: StreamEntry[] = [];
+      const records = this.options.entryIndex.lookupSessionEntriesByKind({
+        sessionId,
+        kind: "internal_event",
+      });
+
+      for (const record of records) {
+        const entry = this.readCitationEntryAtOffset(record.session_id, record.byte_offset);
+
+        if (entry === null || entry.id !== record.entry_id || entry.kind !== "internal_event") {
+          console.warn("Citation status-marker index read failed; falling back to stream scan.", {
+            entryId: record.entry_id,
+            sessionId: record.session_id,
+            byteOffset: record.byte_offset,
+          });
+          return this.readStatusMarkerEntriesFromStream(sessionId);
+        }
+
+        markerEntries.push(entry);
+      }
+
+      return markerEntries;
+    }
+
+    return this.readStatusMarkerEntriesFromStream(sessionId);
+  }
+
+  private readStatusMarkerEntriesFromStream(sessionId: SessionId): StreamEntry[] {
     const streamPath = getSessionStreamPath(this.options.dataDir, sessionId);
 
     if (!existsSync(streamPath)) {
