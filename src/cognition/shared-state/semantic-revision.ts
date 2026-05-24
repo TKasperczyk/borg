@@ -26,7 +26,12 @@ import type {
 } from "../../memory/decision-artifacts/index.js";
 import type { SharedStateEntryId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
-import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
 import {
   contaminatedSharedStateArtifactSources,
   errorMessage,
@@ -346,24 +351,6 @@ function semanticRevisionPromptPayload(input: {
   );
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
 function summarizeSemanticRevisionResponseShape(response: LLMCompleteResult): JsonValue {
   return {
     textLength: response.text.length,
@@ -383,15 +370,15 @@ function traceSemanticRevisionLlmCallStarted(options: {
   messages: readonly LLMMessage[];
   tools: readonly LLMToolDefinition[];
 }): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-      model: options.model,
-      promptCharCount: countCompletePromptChars(options.systemPrompt, options.messages),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
+  traceLlmCallStarted({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
+    model: options.model,
+    systemPrompt: options.systemPrompt,
+    messages: options.messages,
+    tools: options.tools,
+  });
 }
 
 function traceSemanticRevisionLlmCallResponse(options: {
@@ -399,15 +386,13 @@ function traceSemanticRevisionLlmCallResponse(options: {
   turnId?: string;
   response: LLMCompleteResult;
 }): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-      responseShape: summarizeSemanticRevisionResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
+  traceLlmCallResponse({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
+    response: options.response,
+    responseShape: summarizeSemanticRevisionResponseShape(options.response),
+  });
 }
 
 function traceSemanticRevisionLlmCallError(options: {
@@ -415,17 +400,12 @@ function traceSemanticRevisionLlmCallError(options: {
   turnId?: string;
   error: unknown;
 }): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
+  traceLlmCallError({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
+    error: options.error,
+  });
 }
 
 function parseSemanticRevisionJudgeResult(result: LLMCompleteResult): SemanticRevisionVerdict[] {

@@ -13,11 +13,15 @@ import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
-  buildUsageTraceBlock,
   summarizeTraceValueShape,
   toTraceJsonValue,
   type TurnTracer,
 } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
 
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
   "substantive",
@@ -662,63 +666,6 @@ function summarizeClosureLoopResponseShape(response: LLMCompleteResult): JsonVal
   };
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "closure_loop_classifier",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(CLOSURE_LOOP_SYSTEM_PROMPT, options.messages),
-    });
-  }
-}
-
-function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "closure_loop_classifier",
-      responseShape: summarizeClosureLoopResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "closure_loop_classifier",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
-}
-
 export function assessClosureLoopClassification(input: {
   classification: ClosureLoopClassification;
   suppliedMessages: readonly ClosureLoopMessageForClassification[];
@@ -863,7 +810,9 @@ export class ClosureLoopClassifier {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "closure_loop_classifier",
       model: this.options.model,
+      systemPrompt: CLOSURE_LOOP_SYSTEM_PROMPT,
       messages,
     });
 
@@ -883,6 +832,7 @@ export class ClosureLoopClassifier {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "closure_loop_classifier",
         error,
       });
 
@@ -892,7 +842,9 @@ export class ClosureLoopClassifier {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "closure_loop_classifier",
       response,
+      responseShape: summarizeClosureLoopResponseShape(response),
     });
 
     try {

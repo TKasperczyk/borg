@@ -15,11 +15,15 @@ import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
-  buildUsageTraceBlock,
   summarizeTraceValueShape,
   toTraceJsonValue,
   type TurnTracer,
 } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
 import {
   type FrameAnomalyClassification,
   type FrameAnomalyKind,
@@ -419,76 +423,6 @@ function summarizeFrameAnomalyResponseShape(response: LLMCompleteResult): JsonVa
   };
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
-function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "frame_anomaly_classifier",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(FRAME_ANOMALY_SYSTEM_PROMPT, options.messages),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
-}
-
-function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "frame_anomaly_classifier",
-      responseShape: summarizeFrameAnomalyResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "frame_anomaly_classifier",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
-}
-
 export class FrameAnomalyClassifier {
   constructor(private readonly options: FrameAnomalyClassifierOptions = {}) {}
 
@@ -525,7 +459,9 @@ export class FrameAnomalyClassifier {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "frame_anomaly_classifier",
       model: this.options.model,
+      systemPrompt: FRAME_ANOMALY_SYSTEM_PROMPT,
       messages,
       tools,
     });
@@ -546,6 +482,7 @@ export class FrameAnomalyClassifier {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "frame_anomaly_classifier",
         error,
       });
 
@@ -555,7 +492,9 @@ export class FrameAnomalyClassifier {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "frame_anomaly_classifier",
       response,
+      responseShape: summarizeFrameAnomalyResponseShape(response),
     });
 
     try {

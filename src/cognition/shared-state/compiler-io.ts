@@ -1,12 +1,11 @@
-import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm/index.js";
+import type { LLMCompleteResult } from "../../llm/index.js";
 import type {
   SharedStateArtifact,
   SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
-import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
-import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
 import { similarStateKeyClusterCount } from "./state-key.js";
 import type {
@@ -55,7 +54,7 @@ export function parseResponse(result: LLMCompleteResult): EmitSharedStatePatch {
   return parsed.data;
 }
 
-function summarizeSharedStateArtifactResponseShape(response: LLMCompleteResult): JsonValue {
+export function summarizeSharedStateArtifactResponseShape(response: LLMCompleteResult): JsonValue {
   return {
     textLength: response.text.length,
     toolUseBlocks: response.tool_calls.map((call) => ({
@@ -63,76 +62,6 @@ function summarizeSharedStateArtifactResponseShape(response: LLMCompleteResult):
       name: call.name,
     })),
   };
-}
-
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
-export function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "decision_artifact_compiler",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(SHARED_STATE_SYSTEM_PROMPT, options.messages),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
-}
-
-export function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "decision_artifact_compiler",
-      responseShape: summarizeSharedStateArtifactResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-export function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "decision_artifact_compiler",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
 }
 
 export function traceCompileCompleted(options: {

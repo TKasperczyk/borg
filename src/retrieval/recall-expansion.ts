@@ -8,7 +8,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../llm/index.js";
-import { buildUsageTraceBlock, type TurnTracer } from "../cognition/tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../cognition/tracing/llm-call-trace.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { JsonValue } from "../util/json-value.js";
 
 const recallExpansionFacetKindSchema = z.enum([
@@ -82,15 +87,15 @@ export async function expandRecall(
   ];
   const tools = [RECALL_EXPANSION_TOOL];
 
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "recall_expansion",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(RECALL_EXPANSION_SYSTEM_PROMPT, messages),
-      toolSchemas: summarizeToolSchemas(tools),
-    });
-  }
+  traceLlmCallStarted({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: "recall_expansion",
+    model: options.model,
+    systemPrompt: RECALL_EXPANSION_SYSTEM_PROMPT,
+    messages,
+    tools,
+  });
 
   let response: LLMCompleteResult;
 
@@ -105,30 +110,23 @@ export async function expandRecall(
       budget: "recall-expansion",
     });
   } catch (error) {
-    if (options.tracer?.enabled === true && options.turnId !== undefined) {
-      options.tracer.emit("llm_call.completed", {
-        turnId: options.turnId,
-        label: "recall_expansion",
-        responseShape: {
-          error: error instanceof Error ? error.message : String(error),
-        },
-        stopReason: null,
-        usage: null,
-      });
-    }
+    traceLlmCallError({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      label: "recall_expansion",
+      error,
+    });
 
     throw error;
   }
 
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "recall_expansion",
-      responseShape: summarizeRecallExpansionResponseShape(response),
-      stopReason: response.stop_reason,
-      usage: buildUsageTraceBlock(response),
-    });
-  }
+  traceLlmCallResponse({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: "recall_expansion",
+    response,
+    responseShape: summarizeRecallExpansionResponseShape(response),
+  });
 
   const toolCall = response.tool_calls.find(isRecallExpansionToolCall);
 
@@ -183,22 +181,4 @@ function summarizeRecallExpansionResponseShape(response: LLMCompleteResult): Jso
       name: call.name,
     })),
   };
-}
-
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
 }

@@ -34,6 +34,7 @@ import {
 } from "./schema.js";
 import {
   parseResponse,
+  summarizeSharedStateArtifactResponseShape,
   traceAddRejectedMissingNewKeyReason,
   traceAddRejectedCapExceeded,
   traceAddRejectedNearDuplicateStateKey,
@@ -45,11 +46,13 @@ import {
   traceCompileRepairSucceeded,
   traceEmptyUpdateDropped,
   traceLabelUngrounded,
+  traceReconciliationCompleted,
+} from "./compiler-io.js";
+import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-  traceReconciliationCompleted,
-} from "./compiler-io.js";
+} from "../tracing/llm-call-trace.js";
 import {
   allowedCanonicalizationIds,
   dedupeCanonicalizesAcrossOperations,
@@ -623,7 +626,9 @@ export async function compileSharedStateArtifact(
   traceLlmCallStarted({
     tracer: input.tracer,
     turnId: input.turnId,
+    label: "decision_artifact_compiler",
     model: input.model,
+    systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
     messages,
     tools,
   });
@@ -644,6 +649,7 @@ export async function compileSharedStateArtifact(
     traceLlmCallError({
       tracer: input.tracer,
       turnId: input.turnId,
+      label: "decision_artifact_compiler",
       error,
     });
     traceCompileCompleted({
@@ -662,7 +668,9 @@ export async function compileSharedStateArtifact(
   traceLlmCallResponse({
     tracer: input.tracer,
     turnId: input.turnId,
+    label: "decision_artifact_compiler",
     response,
+    responseShape: summarizeSharedStateArtifactResponseShape(response),
   });
 
   let parsed: EmitSharedStatePatch | undefined;
@@ -704,7 +712,9 @@ export async function compileSharedStateArtifact(
       traceLlmCallStarted({
         tracer: input.tracer,
         turnId: input.turnId,
+        label: "decision_artifact_compiler",
         model: input.model,
+        systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
         messages: repairMessages,
         tools,
       });
@@ -725,6 +735,7 @@ export async function compileSharedStateArtifact(
         traceLlmCallError({
           tracer: input.tracer,
           turnId: input.turnId,
+          label: "decision_artifact_compiler",
           error: repairError,
         });
         traceCompileRepairFailed({
@@ -749,7 +760,9 @@ export async function compileSharedStateArtifact(
       traceLlmCallResponse({
         tracer: input.tracer,
         turnId: input.turnId,
+        label: "decision_artifact_compiler",
         response: repairResponse,
+        responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),
       });
 
       try {
@@ -889,7 +902,9 @@ export async function compileSharedStateArtifact(
     traceLlmCallStarted({
       tracer: input.tracer,
       turnId: input.turnId,
+      label: "decision_artifact_compiler",
       model: input.model,
+      systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
       messages: repairMessages,
       tools,
     });
@@ -910,6 +925,7 @@ export async function compileSharedStateArtifact(
       traceLlmCallError({
         tracer: input.tracer,
         turnId: input.turnId,
+        label: "decision_artifact_compiler",
         error,
       });
       traceCompileRepairFailed({
@@ -935,7 +951,9 @@ export async function compileSharedStateArtifact(
     traceLlmCallResponse({
       tracer: input.tracer,
       turnId: input.turnId,
+      label: "decision_artifact_compiler",
       response: repairResponse,
+      responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),
     });
 
     let repairedParsed: EmitSharedStatePatch;

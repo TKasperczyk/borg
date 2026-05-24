@@ -9,9 +9,9 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { JsonValue } from "../../util/json-value.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
+import { traceLlmCallResponse, traceLlmCallStarted } from "../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
@@ -192,14 +192,16 @@ async function callPlannerAttempt(
   tools: readonly LLMToolDefinition[],
   messages: readonly LLMMessage[],
 ): Promise<PlannerAttemptResult> {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "s2_planner",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(systemPrompt, messages),
-      toolSchemas: summarizeToolSchemas(tools),
-      ...(options.tracer.includePayloads
+  traceLlmCallStarted({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    label: "s2_planner",
+    model: options.model,
+    systemPrompt,
+    messages,
+    tools,
+    extra:
+      options.tracer?.includePayloads === true
         ? {
             prompt: toTraceJsonValue({
               system: systemPrompt,
@@ -207,9 +209,8 @@ async function callPlannerAttempt(
               tools,
             }),
           }
-        : {}),
-    });
-  }
+        : undefined,
+  });
 
   const planner = await options.llmClient.complete({
     model: options.model,
@@ -224,20 +225,21 @@ async function callPlannerAttempt(
   const extraction = extractTurnPlan(planner.tool_calls);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
+    traceLlmCallResponse({
+      tracer: options.tracer,
       turnId: options.turnId,
       label: "s2_planner",
+      response: planner,
       responseShape: summarizePlannerResponseShape(planner),
-      stopReason: planner.stop_reason,
-      usage: buildUsageTraceBlock(planner),
-      ...(options.tracer.includePayloads
-        ? {
-            response: toTraceJsonValue({
-              text: planner.text,
-              toolCalls: planner.tool_calls,
-            }),
-          }
-        : {}),
+      extra:
+        options.tracer.includePayloads === true
+          ? {
+              response: toTraceJsonValue({
+                text: planner.text,
+                toolCalls: planner.tool_calls,
+              }),
+            }
+          : undefined,
     });
     options.tracer.emit("deliberation.plan.completed", {
       turnId: options.turnId,
@@ -290,22 +292,4 @@ function extractTurnPlan(toolCalls: readonly LLMToolCall[]): ExtractTurnPlanResu
     plan: parsed.data,
     reason: null,
   };
-}
-
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
 }

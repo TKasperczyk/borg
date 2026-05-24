@@ -15,6 +15,7 @@ import type {
 } from "../../tools/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
+import { summarizeToolSchemas } from "../tracing/llm-call-trace.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -468,17 +469,6 @@ function countConversePromptChars(
       0,
     )
   );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
 }
 
 function summarizeResponseShape(blocks: readonly LLMContentBlock[]): JsonValue {

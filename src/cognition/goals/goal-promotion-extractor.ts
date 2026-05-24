@@ -14,7 +14,12 @@ import type { EntityId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
@@ -518,76 +523,6 @@ function summarizeGoalPromotionResponseShape(response: LLMCompleteResult): JsonV
   };
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
-function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "goal_promotion_extractor",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(GOAL_PROMOTION_SYSTEM_PROMPT, options.messages),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
-}
-
-function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "goal_promotion_extractor",
-      responseShape: summarizeGoalPromotionResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "goal_promotion_extractor",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
-}
-
 function degradedReasonForParseError(error: unknown): GoalPromotionExtractorDegradedReason {
   if (error instanceof MissingGoalPromotionToolCallError) {
     return "missing_tool_call";
@@ -672,7 +607,9 @@ export class GoalPromotionExtractor {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "goal_promotion_extractor",
       model: this.options.model as string,
+      systemPrompt: GOAL_PROMOTION_SYSTEM_PROMPT,
       messages: input.messages,
       tools: input.tools,
     });
@@ -691,7 +628,9 @@ export class GoalPromotionExtractor {
       traceLlmCallResponse({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "goal_promotion_extractor",
         response,
+        responseShape: summarizeGoalPromotionResponseShape(response),
       });
 
       return response;
@@ -699,6 +638,7 @@ export class GoalPromotionExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "goal_promotion_extractor",
         error,
       });
 

@@ -30,7 +30,12 @@ import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-prefe
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import {
   normalizeCommitmentClassification,
   type ClassificationNormalizationResult,
@@ -459,79 +464,6 @@ function summarizeCorrectivePreferenceResponseShape(response: LLMCompleteResult)
   };
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
-function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "corrective_preference_extractor",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(
-        CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
-        options.messages,
-      ),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
-}
-
-function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "corrective_preference_extractor",
-      responseShape: summarizeCorrectivePreferenceResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "corrective_preference_extractor",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
-}
-
 export class CorrectivePreferenceExtractor {
   constructor(private readonly options: CorrectivePreferenceExtractorOptions = {}) {}
 
@@ -571,7 +503,9 @@ export class CorrectivePreferenceExtractor {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "corrective_preference_extractor",
       model: this.options.model,
+      systemPrompt: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
       messages,
       tools,
     });
@@ -592,6 +526,7 @@ export class CorrectivePreferenceExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "corrective_preference_extractor",
         error,
       });
 
@@ -606,7 +541,9 @@ export class CorrectivePreferenceExtractor {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "corrective_preference_extractor",
       response,
+      responseShape: summarizeCorrectivePreferenceResponseShape(response),
     });
 
     try {

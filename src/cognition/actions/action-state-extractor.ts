@@ -36,7 +36,12 @@ import {
 import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
+import {
+  traceLlmCallError,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
@@ -538,76 +543,6 @@ function summarizeActionStateResponseShape(response: LLMCompleteResult): JsonVal
   };
 }
 
-function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
-  return (
-    systemPrompt.length +
-    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
-  );
-}
-
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
-    propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
-}
-
-function traceLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.started", {
-      turnId: options.turnId,
-      label: "action_state_extractor",
-      model: options.model,
-      promptCharCount: countCompletePromptChars(ACTION_STATE_SYSTEM_PROMPT, options.messages),
-      toolSchemas: summarizeToolSchemas(options.tools),
-    });
-  }
-}
-
-function traceLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "action_state_extractor",
-      responseShape: summarizeActionStateResponseShape(options.response),
-      stopReason: options.response.stop_reason,
-      usage: buildUsageTraceBlock(options.response),
-    });
-  }
-}
-
-function traceLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("llm_call.completed", {
-      turnId: options.turnId,
-      label: "action_state_extractor",
-      responseShape: {
-        error: options.error instanceof Error ? options.error.message : String(options.error),
-      },
-      stopReason: null,
-      usage: null,
-    });
-  }
-}
-
 function zeroActionStateCounts(): Record<ActionState, number> {
   return Object.fromEntries(ACTION_STATES.map((state) => [state, 0])) as Record<
     ActionState,
@@ -834,7 +769,9 @@ export class ActionStateExtractor {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "action_state_extractor",
       model: this.options.model,
+      systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
       messages,
       tools,
     });
@@ -855,6 +792,7 @@ export class ActionStateExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        label: "action_state_extractor",
         error,
       });
 
@@ -864,7 +802,9 @@ export class ActionStateExtractor {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      label: "action_state_extractor",
       response,
+      responseShape: summarizeActionStateResponseShape(response),
     });
 
     let parsed: ActionStateParseResult;
