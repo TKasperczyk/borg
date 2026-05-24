@@ -8,7 +8,7 @@ import {
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 
-import { mergeCandidates } from "./episodic-candidates.js";
+import { mergeCandidates } from "../test-support/episodic-candidates.js";
 
 const QUERY = "architecture";
 const MAYA_CORRECTION_QUERY = "my partner's not Maya. Also, Thursday's design review is next week.";
