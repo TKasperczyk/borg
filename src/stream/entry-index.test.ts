@@ -544,6 +544,47 @@ describe("stream entry index", () => {
     }
   });
 
+  it("does not warn when startup backfill leaves no legacy rows with null kind", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+    };
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+      logger,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      await writer.append({
+        kind: "user_msg",
+        content: "backfilled kind",
+      });
+
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      const report = entryIndex.warnLegacyRowsMissingKind();
+
+      expect(report).toEqual({
+        count: 0,
+        sampleEntryIds: [],
+      });
+      expect(logger.warn).not.toHaveBeenCalled();
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("adds sender entity ids to an existing stream index as a nullable column", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
