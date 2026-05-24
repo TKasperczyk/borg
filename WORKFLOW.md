@@ -6,6 +6,14 @@ CLAUDE.md / AGENTS.md tell you what NOT to do in the codebase (scope, guardrails
 
 ---
 
+## No production users yet
+
+Borg is in active development. Nothing depends on it externally. **Schema migrations, on-disk formats, and persisted shapes can be changed freely.** No backward-compat patching, no defensive migration-N rewrites, no conservative NULL backfills "in case real data exists." If a column needs to change, just change it -- worst case is wiping `.borg-data` and re-running sims, which is cheap.
+
+This unlocks cleaner fixes than the orchestrator might otherwise reach for. For example: if `composeMigrations` orders migrations weirdly, fix the function; don't pile defensive updates into every migration that touches a re-created table. If a previous migration's column set is now wrong, edit it in place; don't add another migration that ALTERs the result.
+
+The corollary: **don't optimize for the "what if a real user upgrades from version X" case.** That case doesn't exist. The code that polishes that case is code that has to be maintained for no benefit.
+
 ## Project goal (the only one that matters)
 
 A cognitive memory architecture for an LLM that is:
