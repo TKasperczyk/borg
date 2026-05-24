@@ -687,9 +687,11 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
   }
 
   const quarantinedStreamEntryIds =
-    await collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
-      input.options.config.dataDir,
-    );
+    input.options.entryIndex === undefined
+      ? new Set<StreamEntryId>()
+      : await collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
+          input.options.entryIndex,
+        );
   const indexedSourceTrustLookup =
     input.options.entryIndex === undefined
       ? null

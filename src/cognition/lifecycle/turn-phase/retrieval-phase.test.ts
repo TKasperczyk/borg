@@ -497,6 +497,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       entryIndex: {
         countSessionEntriesByKind: () => 0,
         lookupEntriesById,
+        quarantinedSharedStateArtifactRefs: () => new Set(),
       },
       createStreamReader: () =>
         ({

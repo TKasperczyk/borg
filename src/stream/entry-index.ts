@@ -2,7 +2,7 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.js";
-import type { EntityId } from "../util/ids.js";
+import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../util/ids.js";
 
 import { getSessionStreamPath } from "./path.js";
 import {
@@ -12,7 +12,11 @@ import {
   type StreamTurnStatus,
   streamEntrySchema,
 } from "./types.js";
-import { collectInactiveStreamEntryRefs, streamEntryIsActive } from "./turn-status.js";
+import {
+  collectInactiveStreamEntryRefs,
+  isQuarantinedUserEntryMarker,
+  streamEntryIsActive,
+} from "./turn-status.js";
 
 type LoggerLike = Pick<Console, "error">;
 
@@ -111,6 +115,23 @@ export const streamEntryIndexMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 205,
+    name: "create-stream-quarantine-refs",
+    up: `
+      CREATE TABLE IF NOT EXISTS stream_quarantine_refs (
+        marker_entry_id TEXT NOT NULL,
+        marker_session_id TEXT NOT NULL,
+        referenced_entry_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        PRIMARY KEY (marker_entry_id, referenced_entry_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_stream_quarantine_refs_referenced
+      ON stream_quarantine_refs(referenced_entry_id);
+      CREATE INDEX IF NOT EXISTS idx_stream_quarantine_refs_session
+      ON stream_quarantine_refs(marker_session_id);
+    `,
+  },
 ];
 
 export type StreamEntryIndexRecord = {
@@ -152,6 +173,10 @@ type MissingKindCountRow = {
 
 type MissingTrustFactsCountRow = {
   missing_trust_fact_count: number;
+};
+
+type QuarantineRefRow = {
+  referenced_entry_id: string;
 };
 
 export type StreamEntryIndexRepositoryOptions = {
@@ -216,6 +241,33 @@ function factsFromRecord(record: StreamEntryIndexRecord): IndexedEntryFacts {
     turn_status: record.turn_status,
     active: record.active,
   };
+}
+
+function collectQuarantinedSharedStateArtifactRefs(entry: StreamEntry): StreamEntryId[] {
+  if (!isQuarantinedUserEntryMarker(entry)) {
+    return [];
+  }
+
+  const content: Record<string, unknown> =
+    entry.content !== null && typeof entry.content === "object" && !Array.isArray(entry.content)
+      ? (entry.content as Record<string, unknown>)
+      : {};
+  const refs = new Set<StreamEntryId>();
+  const addRef = (value: unknown): void => {
+    if (typeof value === "string" && streamEntryIdHelpers.is(value)) {
+      refs.add(value);
+    }
+  };
+
+  addRef(content.source_stream_entry_id);
+
+  if (Array.isArray(content.cited_stream_entry_ids)) {
+    for (const item of content.cited_stream_entry_ids) {
+      addRef(item);
+    }
+  }
+
+  return [...refs];
 }
 
 function forwardLineToString(
@@ -406,6 +458,59 @@ export class StreamEntryIndexRepository {
         )
         .run(entry.session_id, ...turnIds);
     }
+
+    this.recordQuarantineRefs(entry);
+  }
+
+  private recordQuarantineRefs(entry: StreamEntry): void {
+    const refs = collectQuarantinedSharedStateArtifactRefs(entry);
+
+    if (refs.length === 0) {
+      return;
+    }
+
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO stream_quarantine_refs (
+         marker_entry_id, marker_session_id, referenced_entry_id, timestamp
+       )
+       VALUES (?, ?, ?, ?)`,
+    );
+
+    const insertRefs = this.db.transaction(() => {
+      for (const ref of refs) {
+        insert.run(entry.id, entry.session_id, ref, entry.timestamp);
+      }
+    });
+
+    insertRefs();
+  }
+
+  private refreshQuarantineRefsForSession(
+    entries: readonly StreamEntry[],
+    sessionId: SessionId,
+  ): void {
+    const deleteSessionRefs = this.db.prepare(
+      `DELETE FROM stream_quarantine_refs
+       WHERE marker_session_id = ?`,
+    );
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO stream_quarantine_refs (
+         marker_entry_id, marker_session_id, referenced_entry_id, timestamp
+       )
+       VALUES (?, ?, ?, ?)`,
+    );
+
+    const refresh = this.db.transaction(() => {
+      deleteSessionRefs.run(sessionId);
+
+      for (const entry of entries) {
+        for (const ref of collectQuarantinedSharedStateArtifactRefs(entry)) {
+          insert.run(entry.id, sessionId, ref, entry.timestamp);
+        }
+      }
+    });
+
+    refresh();
   }
 
   lookup(entryId: string): StreamEntryIndexRecord | null {
@@ -446,6 +551,18 @@ export class StreamEntryIndexRepository {
     );
   }
 
+  quarantinedSharedStateArtifactRefs(): ReadonlySet<StreamEntryId> {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT referenced_entry_id
+         FROM stream_quarantine_refs
+         ORDER BY timestamp ASC, marker_entry_id ASC, referenced_entry_id ASC`,
+      )
+      .all() as QuarantineRefRow[];
+
+    return new Set(rows.map((row) => row.referenced_entry_id as StreamEntryId));
+  }
+
   async backfillSession(sessionId: SessionId): Promise<{ inserted: number }> {
     const streamPath = getSessionStreamPath(this.dataDir, sessionId);
 
@@ -483,12 +600,20 @@ export class StreamEntryIndexRepository {
         return { inserted: 0 };
       }
 
+      const scannedEntries: { entry: StreamEntry; byteOffset: number }[] = [];
       const fileEntryCount = scanForwardStreamEntries(
         fileDescriptor,
         fileSize,
         streamPath,
         this.logger,
-        () => undefined,
+        (entry, byteOffset) => {
+          scannedEntries.push({ entry, byteOffset });
+        },
+      );
+
+      this.refreshQuarantineRefsForSession(
+        scannedEntries.map((scanned) => scanned.entry),
+        sessionId,
       );
 
       if (
@@ -525,17 +650,6 @@ export class StreamEntryIndexRepository {
               OR stream_entry_index.active IS NOT excluded.active`,
         );
         let inserted = 0;
-        const scannedEntries: { entry: StreamEntry; byteOffset: number }[] = [];
-
-        scanForwardStreamEntries(
-          fileDescriptor,
-          fileSize,
-          streamPath,
-          this.logger,
-          (entry, byteOffset) => {
-            scannedEntries.push({ entry, byteOffset });
-          },
-        );
 
         const inactiveRefs = collectInactiveStreamEntryRefs(
           scannedEntries.map((scanned) => scanned.entry),

@@ -6,10 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase, type Migration } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
-import { createEntityId, createSessionId } from "../util/ids.js";
+import { createEntityId, createSessionId, createStreamEntryId } from "../util/ids.js";
 
 import {
   DEFAULT_SESSION_ID,
+  QUARANTINED_USER_ENTRY_EVENT,
   StreamEntryIndexRepository,
   StreamWriter,
   streamEntryIndexMigrations,
@@ -291,6 +292,110 @@ describe("stream entry index", () => {
     }
   });
 
+  it("looks up quarantined shared-state artifact refs across sessions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const quarantinedSource = createStreamEntryId();
+    const quarantinedCitation = createStreamEntryId();
+    const otherQuarantinedSource = createStreamEntryId();
+    const trustedSource = createStreamEntryId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      await writer.append({
+        kind: "internal_event",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          source_stream_entry_id: quarantinedSource,
+          cited_stream_entry_ids: [quarantinedCitation, quarantinedSource, "not-a-stream-id"],
+        },
+      });
+      await otherWriter.append({
+        kind: "internal_event",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          source_stream_entry_id: otherQuarantinedSource,
+          cited_stream_entry_ids: [],
+        },
+      });
+      await otherWriter.append({
+        kind: "internal_event",
+        content: {
+          event: "aborted_turn",
+          aborted_stream_entry_ids: [trustedSource],
+        },
+      });
+
+      expect(entryIndex.quarantinedSharedStateArtifactRefs()).toEqual(
+        new Set([quarantinedCitation, quarantinedSource, otherQuarantinedSource]),
+      );
+      expect(entryIndex.quarantinedSharedStateArtifactRefs().has(trustedSource)).toBe(false);
+    } finally {
+      writer.close();
+      otherWriter.close();
+      db.close();
+    }
+  });
+
+  it("backfills quarantined shared-state artifact refs for legacy rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const quarantinedSource = createStreamEntryId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      await writer.append({
+        kind: "internal_event",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          source_stream_entry_id: quarantinedSource,
+          cited_stream_entry_ids: [quarantinedSource],
+        },
+      });
+
+      db.prepare("DELETE FROM stream_quarantine_refs").run();
+      expect(entryIndex.quarantinedSharedStateArtifactRefs()).toEqual(new Set());
+
+      await expect(entryIndex.backfillSession(DEFAULT_SESSION_ID)).resolves.toEqual({
+        inserted: 0,
+      });
+      expect(entryIndex.quarantinedSharedStateArtifactRefs()).toEqual(new Set([quarantinedSource]));
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("backfills kind for legacy stream index rows", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -465,6 +570,39 @@ describe("stream entry index", () => {
         active: 1,
       });
       expect(indexRow?.name).toBe("idx_stream_entry_active");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("creates the quarantine refs table and indexes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const quarantineRefsMigration = streamEntryIndexMigrations.find(
+      (migration) => migration.name === "create-stream-quarantine-refs",
+    ) as Migration | undefined;
+
+    expect(quarantineRefsMigration).toBeDefined();
+    expect(quarantineRefsMigration?.id).toBe(205);
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [quarantineRefsMigration as Migration],
+    });
+
+    try {
+      const tableRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get("stream_quarantine_refs") as { name: string } | undefined;
+      const referencedIndexRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get("idx_stream_quarantine_refs_referenced") as { name: string } | undefined;
+      const sessionIndexRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get("idx_stream_quarantine_refs_session") as { name: string } | undefined;
+
+      expect(tableRow?.name).toBe("stream_quarantine_refs");
+      expect(referencedIndexRow?.name).toBe("idx_stream_quarantine_refs_referenced");
+      expect(sessionIndexRow?.name).toBe("idx_stream_quarantine_refs_session");
     } finally {
       db.close();
     }

@@ -23,7 +23,14 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, StreamWriter } from "../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWriter,
+  streamEntryIndexMigrations,
+} from "../../stream/index.js";
+import { openDatabase } from "../../storage/sqlite/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
@@ -1819,12 +1826,20 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     const currentSource = createStreamEntryId();
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
     let upsertCount = 0;
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
 
     try {
       const priorWriter = new StreamWriter({
         dataDir: tempDir,
         sessionId: priorSession,
         clock: { now: () => 1_000 },
+        entryIndex,
       });
 
       try {
@@ -1911,6 +1926,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         entityRepository: {
           resolve: () => self,
         },
+        entryIndex,
         llmFactory: () => llmClient,
         clock: {
           now: () => 2_000,
@@ -1988,6 +2004,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         }),
       );
     } finally {
+      db.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
