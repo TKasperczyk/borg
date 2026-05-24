@@ -6,10 +6,20 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
+import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { StreamReader, StreamWriter, type StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createCommitmentId, createStreamEntryId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import {
+  createActionId,
+  createCommitmentId,
+  createEpisodeId,
+  createRelationalSlotId,
+  createStreamEntryId,
+  DEFAULT_SESSION_ID,
+} from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -350,6 +360,111 @@ describe("post-generation guard shadow chain", () => {
         maxBytes: 4 * 1024 * 1024,
       });
       expect(scanSpy.mock.results[0]?.value.scannedEntries).toBeLessThanOrEqual(512);
+    } finally {
+      scanSpy.mockRestore();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses old transcript IDs outside the scan window when surfaced by retrieved context", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-post-generation-guard-old-id-"));
+    const scanSpy = vi.spyOn(StreamReader.prototype, "scanReverse");
+
+    try {
+      const writer = new StreamWriter({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+        clock: new FixedClock(1_000),
+      });
+      const entries = await writer.appendMany(
+        Array.from({ length: 700 }, (_, index) => ({
+          kind: "user_msg" as const,
+          content: `old message ${index}`,
+        })),
+      );
+      const oldTranscriptEntry = entries[0];
+
+      if (oldTranscriptEntry === undefined) {
+        throw new Error("expected old transcript entry");
+      }
+
+      const llm = new FakeLLMClient({
+        responses: [
+          closureAuditResponse({
+            spans: [],
+            response_shape: "no_closure",
+            reason: "No closure.",
+          }),
+        ],
+      });
+      const commitment = {
+        ...makeCommitment(),
+        source_stream_entry_ids: [oldTranscriptEntry.id],
+      };
+      const relationalSlot = {
+        id: createRelationalSlotId(),
+        subject_entity_id: null,
+        evidence_stream_entry_ids: [oldTranscriptEntry.id],
+        contradicted_by_stream_entry_ids: [],
+        alternate_values: [],
+      } as unknown as RelationalSlot;
+      const completedAction = {
+        id: createActionId(),
+        actor: "user",
+        audience_entity_id: null,
+        provenance_episode_ids: [],
+        provenance_stream_entry_ids: [oldTranscriptEntry.id],
+        updated_at: 2_000,
+      } as unknown as ActionRecord;
+      const retrievedEpisode = {
+        episode: {
+          id: createEpisodeId(),
+          audience_entity_id: null,
+          source_stream_ids: [oldTranscriptEntry.id],
+          lineage: {
+            derived_from: [],
+            supersedes: [],
+          },
+        },
+        citationChain: [],
+      } as unknown as RetrievedEpisode;
+      const postGenerationRunner = new TurnPostGenerationGuardRunner({
+        auditModel: "audit",
+        rewriteModel: "rewrite",
+        closurePressureMode: "enforce",
+        createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId }),
+        actionRepository: {
+          list: vi.fn(() => [completedAction]),
+        },
+        relationalSlotRepository: {
+          list: vi.fn(() => [relationalSlot]),
+        },
+        clock: new FixedClock(2_000),
+        tracer: {
+          enabled: true,
+          includePayloads: false,
+          emit: vi.fn(),
+        },
+      });
+
+      const finalEmission = await postGenerationRunner.run({
+        llmClient: llm,
+        turnId: "turn-old-context-id-leak",
+        response: `The old source handle was ${oldTranscriptEntry.id}.`,
+        sessionId: DEFAULT_SESSION_ID,
+        retrievedEpisodes: [retrievedEpisode],
+        activeCommitments: [commitment],
+        closureLoop: null,
+        audienceEntityId: null,
+      });
+
+      expect(scanSpy.mock.results[0]?.value.entries).not.toContainEqual(
+        expect.objectContaining({ id: oldTranscriptEntry.id }),
+      );
+      expect(finalEmission).toEqual({
+        kind: "suppressed",
+        reason: "internal_identifier_leak",
+      });
     } finally {
       scanSpy.mockRestore();
       rmSync(dataDir, { recursive: true, force: true });

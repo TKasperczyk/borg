@@ -891,4 +891,47 @@ describe("stream", () => {
       code: "STREAM_SERIALIZE_FAILED",
     });
   });
+
+  it("surfaces stream entry index update failures after a committed append", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const logger = {
+      error: vi.fn(),
+    };
+    const indexError = new Error("index is unavailable");
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(1),
+      logger,
+      entryIndex: {
+        recordEntry: vi.fn(() => {
+          throw indexError;
+        }),
+      } as never,
+    });
+
+    await expect(
+      writer.append({
+        kind: "user_msg",
+        content: "committed before index failure",
+      }),
+    ).rejects.toMatchObject({
+      code: "STREAM_INDEX_UPDATE_FAILED",
+    });
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "Failed to update stream entry index after committed append",
+      expect.objectContaining({
+        sessionId: DEFAULT_SESSION_ID,
+        entryIds: [expect.stringMatching(/^strm_/)],
+        cause: "index is unavailable",
+      }),
+    );
+    expect(new StreamReader({ dataDir: tempDir }).tail(1)).toMatchObject([
+      {
+        kind: "user_msg",
+        content: "committed before index failure",
+      },
+    ]);
+  });
 });

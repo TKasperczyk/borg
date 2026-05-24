@@ -121,13 +121,26 @@ export class StreamWriter {
                 this.entryIndex.recordEntry(entry, byteOffset);
               }
             } catch (error) {
-              this.logger.error(`Failed to update stream entry index for ${streamPath}`);
-              this.logger.error(error instanceof Error ? error.message : String(error));
+              this.logger.error("Failed to update stream entry index after committed append", {
+                streamPath,
+                sessionId: this.sessionId,
+                entryIds: entries.map((entry) => entry.id),
+                cause: error instanceof Error ? error.message : String(error),
+              });
+
+              throw new StreamError(`Failed to update stream entry index for ${streamPath}`, {
+                cause: error,
+                code: "STREAM_INDEX_UPDATE_FAILED",
+              });
             }
           }
 
           appendedEntries = entries;
         } catch (error) {
+          if (error instanceof StreamError) {
+            throw error;
+          }
+
           this.logger.error(`Failed to append to stream ${streamPath}`);
 
           if (error instanceof TypeError) {

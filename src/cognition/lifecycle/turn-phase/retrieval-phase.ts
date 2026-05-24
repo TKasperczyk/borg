@@ -602,7 +602,10 @@ function createIndexedSourceTrustLookup(input: {
 function buildIndexedSharedStateSourceTrustValidator(input: {
   lookupFacts: (streamEntryIds: readonly StreamEntryId[]) => Map<StreamEntryId, IndexedEntryFacts>;
   quarantinedStreamEntryIds: ReadonlySet<StreamEntryId>;
+  onMissingIndexedStreamEntry?: (streamEntryId: StreamEntryId) => void;
 }) {
+  const warnedStreamEntryIds = new Set<StreamEntryId>();
+
   return (streamEntryId: StreamEntryId) => {
     if (input.quarantinedStreamEntryIds.has(streamEntryId)) {
       return {
@@ -612,6 +615,11 @@ function buildIndexedSharedStateSourceTrustValidator(input: {
     }
 
     const facts = input.lookupFacts([streamEntryId]).get(streamEntryId);
+
+    if (facts === undefined && !warnedStreamEntryIds.has(streamEntryId)) {
+      warnedStreamEntryIds.add(streamEntryId);
+      input.onMissingIndexedStreamEntry?.(streamEntryId);
+    }
 
     if (facts?.active === false) {
       return {
@@ -688,7 +696,9 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
 
   const quarantinedStreamEntryIds =
     input.options.entryIndex === undefined
-      ? new Set<StreamEntryId>()
+      ? await collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
+          input.options.config.dataDir,
+        )
       : await collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
           input.options.entryIndex,
         );
@@ -718,6 +728,11 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
       : buildIndexedSharedStateSourceTrustValidator({
           lookupFacts: indexedSourceTrustLookup.lookup,
           quarantinedStreamEntryIds,
+          onMissingIndexedStreamEntry: (streamEntryId) => {
+            console.warn(
+              `Stream entry ${streamEntryId} was not found in the stream entry index during shared-state source trust validation`,
+            );
+          },
         });
   const sharedStateConfig = input.options.config.generation.evidenceLedger.decisionArtifact;
   const turnCounter = input.input.globalTurnCounter ?? input.input.workingMemory?.turn_counter;

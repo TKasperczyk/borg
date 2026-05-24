@@ -17,11 +17,17 @@ import {
   createEntityId,
   createGoalId,
   createOpenQuestionId,
+  createSessionId,
   createStreamEntryId,
   type EntityId,
 } from "../../../util/ids.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
-import type { StreamEntry, StreamReader } from "../../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  StreamWriter,
+  type StreamEntry,
+  type StreamReader,
+} from "../../../stream/index.js";
 import {
   makeLockedSharedStateEntry,
   makeSharedStateArtifact,
@@ -420,6 +426,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const selfEntityId = createEntityId();
     const inactiveSourceEntryId = createStreamEntryId();
     const currentSourceEntryId = createStreamEntryId();
+    const missingIndexedSourceEntryId = createStreamEntryId();
     const currentUserEntry = {
       id: currentSourceEntryId,
       kind: "user_msg",
@@ -451,6 +458,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const iterate = vi.fn(async function* () {
       throw new Error("session stream should not be loaded for indexed source trust");
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const options = {
       config: {
         ...DEFAULT_CONFIG,
@@ -559,6 +567,15 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
                 trust_rank: 0,
                 text: "Current evidence.",
               },
+              {
+                id: "retrieved_evidence:missing-index-source",
+                source_type: "prior_session_stream",
+                session_scope: "prior_session",
+                actor: "user",
+                trust_rank: 1,
+                citations: [missingIndexedSourceEntryId],
+                text: "Evidence missing from the index.",
+              },
             ],
           },
         ],
@@ -574,7 +591,194 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
 
     expect(iterate).not.toHaveBeenCalled();
     expect(lookupEntriesById).toHaveBeenCalled();
-    expect(result.renderOptions?.ledgerStreamEntryIds).toEqual([currentSourceEntryId]);
+    expect(warn).toHaveBeenCalledWith(
+      `Stream entry ${missingIndexedSourceEntryId} was not found in the stream entry index during shared-state source trust validation`,
+    );
+    expect(result.renderOptions?.ledgerStreamEntryIds).toEqual([
+      currentSourceEntryId,
+      missingIndexedSourceEntryId,
+    ]);
+    warn.mockRestore();
+  });
+
+  it("falls back to stream scanning for cross-session quarantined shared-state refs without an entry index", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-quarantine-fallback-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(25_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const quarantinedSourceEntryId = createStreamEntryId();
+    const currentSourceEntryId = createStreamEntryId();
+    const currentUserEntry = {
+      id: currentSourceEntryId,
+      kind: "user_msg",
+      content: "Current placeholder source.",
+      timestamp: 25_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-quarantine-fallback-current",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const quarantineWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: createSessionId(),
+      clock,
+    });
+    cleanup.push(() => quarantineWriter.close());
+    await quarantineWriter.append({
+      kind: "internal_event",
+      content: {
+        event: QUARANTINED_USER_ENTRY_EVENT,
+        source_stream_entry_id: quarantinedSourceEntryId,
+        cited_stream_entry_ids: [],
+      },
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_shared_state",
+              name: SHARED_STATE_TOOL_NAME,
+              input: {
+                operations: [
+                  {
+                    type: "add",
+                    state_key: "decision.quarantined",
+                    kind: "locked",
+                    text: "A quarantined cross-session source should not be accepted.",
+                    owner_entity_id: audienceEntityId,
+                    source_stream_entry_ids: [quarantinedSourceEntryId],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: true,
+              },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => llmClient,
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            yield currentUserEntry;
+          },
+        }) as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-quarantine-fallback",
+        audienceEntityId,
+        currentUserMessage: "Current placeholder source.",
+        currentUserEntry,
+        globalTurnCounter: 25,
+        workingMemory: {
+          turn_counter: 25,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "idle",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [
+          {
+            id: "prior_session_memory",
+            label: "Retrieved Evidence",
+            entries: [
+              {
+                id: `retrieved_evidence:${quarantinedSourceEntryId}`,
+                source_type: "prior_session_stream",
+                session_scope: "prior_session",
+                actor: "user",
+                trust_rank: 1,
+                text: "Quarantined cross-session evidence.",
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "Quarantined cross-session evidence.",
+    });
+
+    expect(result.appliedOperationCount).toBe(0);
+    expect(sharedStateRepository.get(audienceEntityId)?.entries ?? []).toHaveLength(0);
   });
 
   it("keeps shared-state entries cited by current retrieval results searchable while allowing low-salience demotion", async () => {

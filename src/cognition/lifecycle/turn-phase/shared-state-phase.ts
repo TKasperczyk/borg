@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+
 import { isActionVisibleToSession } from "../../evidence-ledger/audience-visibility.js";
 import {
   estimateEvidenceLedgerPromptTokens,
@@ -26,11 +28,20 @@ import type {
 } from "../../../memory/decision-artifacts/index.js";
 import {
   collectInactiveStreamEntryRefs,
+  getStreamDirectory,
+  isQuarantinedUserEntryMarker,
+  StreamReader,
   streamEntryIsActive,
   type StreamEntry,
   type StreamEntryIndexRepository,
 } from "../../../stream/index.js";
-import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../../../util/ids.js";
+import {
+  parseSessionId,
+  streamEntryIdHelpers,
+  type EntityId,
+  type SessionId,
+  type StreamEntryId,
+} from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
 
 const SHARED_STATE_LEDGER_STREAM_METADATA_KEYS = [
@@ -60,10 +71,81 @@ function addSharedStateArtifactAllowedStreamIds(ids: Set<StreamEntryId>, value: 
   }
 }
 
-export async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
-  entryIndex: Pick<StreamEntryIndexRepository, "quarantinedSharedStateArtifactRefs">,
+function isSharedStateArtifactStreamContentRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function collectQuarantinedSharedStateArtifactStreamEntryIds(
+  entries: readonly StreamEntry[],
+  ids: Set<StreamEntryId> = new Set<StreamEntryId>(),
+): Set<StreamEntryId> {
+  for (const entry of entries) {
+    if (!isQuarantinedUserEntryMarker(entry)) {
+      continue;
+    }
+
+    const content = isSharedStateArtifactStreamContentRecord(entry.content) ? entry.content : {};
+
+    addSharedStateArtifactAllowedStreamId(ids, content.source_stream_entry_id);
+    addSharedStateArtifactAllowedStreamIds(ids, content.cited_stream_entry_ids);
+  }
+
+  return ids;
+}
+
+const SHARED_STATE_STREAM_SESSION_FILE_SUFFIX = ".jsonl";
+
+function listSharedStateArtifactStreamSessionIds(dataDir: string): SessionId[] {
+  const streamDir = getStreamDirectory(dataDir);
+
+  if (!existsSync(streamDir)) {
+    return [];
+  }
+
+  return readdirSync(streamDir)
+    .map((filename) => {
+      if (!filename.endsWith(SHARED_STATE_STREAM_SESSION_FILE_SUFFIX)) {
+        return null;
+      }
+
+      try {
+        return parseSessionId(filename.slice(0, -SHARED_STATE_STREAM_SESSION_FILE_SUFFIX.length));
+      } catch {
+        return null;
+      }
+    })
+    .filter((sessionId): sessionId is SessionId => sessionId !== null);
+}
+
+async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIdsFromStream(
+  dataDir: string,
 ): Promise<ReadonlySet<StreamEntryId>> {
-  return entryIndex.quarantinedSharedStateArtifactRefs();
+  const ids = new Set<StreamEntryId>();
+
+  for (const sessionId of listSharedStateArtifactStreamSessionIds(dataDir)) {
+    const reader = new StreamReader({
+      dataDir,
+      sessionId,
+    });
+
+    for await (const entry of reader.iterate({ kinds: ["internal_event"] })) {
+      collectQuarantinedSharedStateArtifactStreamEntryIds([entry], ids);
+    }
+  }
+
+  return ids;
+}
+
+export async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
+  source: string | Pick<StreamEntryIndexRepository, "quarantinedSharedStateArtifactRefs">,
+): Promise<ReadonlySet<StreamEntryId>> {
+  if (typeof source === "string") {
+    return collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIdsFromStream(source);
+  }
+
+  return source.quarantinedSharedStateArtifactRefs();
 }
 
 export function buildSharedStateSourceTrustValidator(input: {
