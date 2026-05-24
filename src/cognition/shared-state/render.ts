@@ -60,6 +60,7 @@ export type SharedStateArtifactRenderSummary = {
   omittedLiveRecentOperational: number;
   omittedLiveRecentLowSalience: number;
   omittedLiveOld: number;
+  omittedLiveUnknownAge: number;
   omittedLocked: number;
   omittedLockedRecent: number;
   omittedLockedOld: number;
@@ -475,30 +476,6 @@ function sharedStateEntryLastUpdatedTurn(
   return lastTurn;
 }
 
-function sharedStateEntryIsRecent(
-  entry: SharedStateEntry,
-  options: NormalizedSharedStateRenderOptions,
-): boolean {
-  if (sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId)) {
-    return true;
-  }
-
-  if (options.currentTurnCounter === undefined) {
-    return false;
-  }
-
-  const lastUpdatedTurn = sharedStateEntryLastUpdatedTurn(
-    entry,
-    options.lastUpdatedTurnByStreamEntryId,
-  );
-
-  if (lastUpdatedTurn === null) {
-    return false;
-  }
-
-  return options.currentTurnCounter - lastUpdatedTurn <= options.recentTurnThreshold;
-}
-
 function sharedStateEntryRecencyStatus(
   entry: SharedStateEntry,
   options: NormalizedSharedStateRenderOptions,
@@ -546,6 +523,7 @@ function sharedStateOmissionSeverity(input: {
   | "omittedLiveRecentOperational"
   | "omittedLiveRecentLowSalience"
   | "omittedLiveOld"
+  | "omittedLiveUnknownAge"
   | "omittedLocked"
   | "omittedLockedRecent"
   | "omittedLockedOld"
@@ -561,6 +539,7 @@ function sharedStateOmissionSeverity(input: {
   let omittedLiveRecentOperational = 0;
   let omittedLiveRecentLowSalience = 0;
   let omittedLiveOld = 0;
+  let omittedLiveUnknownAge = 0;
   let omittedLocked = 0;
   let omittedLockedRecent = 0;
   let omittedLockedOld = 0;
@@ -622,10 +601,15 @@ function sharedStateOmissionSeverity(input: {
       continue;
     }
 
-    const recent = sharedStateEntryIsRecent(entry, input.options);
+    const recency = sharedStateEntryRecencyStatus(entry, input.options);
 
-    if (!recent) {
+    if (recency === "old") {
       omittedLiveOld += 1;
+      continue;
+    }
+
+    if (recency === "unknown") {
+      omittedLiveUnknownAge += 1;
       continue;
     }
 
@@ -640,6 +624,7 @@ function sharedStateOmissionSeverity(input: {
     omittedLiveRecentOperational,
     omittedLiveRecentLowSalience,
     omittedLiveOld,
+    omittedLiveUnknownAge,
     omittedLocked,
     omittedLockedRecent,
     omittedLockedOld,
@@ -682,6 +667,7 @@ function cappedSharedStateArtifactRender(input: {
         omittedLiveRecentOperational: 0,
         omittedLiveRecentLowSalience: 0,
         omittedLiveOld: 0,
+        omittedLiveUnknownAge: 0,
         omittedLocked: 0,
         omittedLockedRecent: 0,
         omittedLockedOld: 0,
@@ -875,6 +861,7 @@ export function summarizeSharedStateArtifactRender(
       omittedLiveRecentOperational: 0,
       omittedLiveRecentLowSalience: 0,
       omittedLiveOld: 0,
+      omittedLiveUnknownAge: 0,
       omittedLocked: 0,
       omittedLockedRecent: 0,
       omittedLockedOld: 0,

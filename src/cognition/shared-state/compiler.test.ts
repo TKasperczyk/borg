@@ -3109,6 +3109,7 @@ describe("compileSharedStateArtifact", () => {
 
   it("emits lifecycle aging blocker diagnostics in compile completion trace", async () => {
     const ledgerSource = createStreamEntryId();
+    const unknownAgeSource = createStreamEntryId();
     const initial = repository.upsert(
       audience,
       [
@@ -3120,10 +3121,21 @@ describe("compileSharedStateArtifact", () => {
           provenance_stream_entry_ids: [ledgerSource],
           last_updated_stream_entry_ids: [ledgerSource],
         },
+        {
+          type: "add",
+          state_key: "state.unknown-age",
+          kind: "live",
+          text: "A shared state entry without turn age.",
+          provenance_stream_entry_ids: [unknownAgeSource],
+          last_updated_stream_entry_ids: [unknownAgeSource],
+        },
       ],
       { now: 100 },
     );
-    const entryId = initial?.entries[0]?.id;
+    const entryId = initial?.entries.find((entry) => entry.state_key === "state.blocked")?.id;
+    const unknownAgeEntryId = initial?.entries.find(
+      (entry) => entry.state_key === "state.unknown-age",
+    )?.id;
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
       responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
@@ -3168,6 +3180,16 @@ describe("compileSharedStateArtifact", () => {
           block_strengths: ["hard"],
           block_reasons_with_strength: [{ reason: "ledger_overlap", strength: "hard" }],
           active_canonicalizer_kinds: null,
+        },
+      ],
+      lifecycle_aging_unknown_age_sample: [
+        {
+          entry_id: unknownAgeEntryId,
+          state_key: "state.unknown-age",
+          kind: "live",
+          last_updated_stream_entry_ids_count: 1,
+          last_updated_turn_global: null,
+          rendered: true,
         },
       ],
     });

@@ -233,6 +233,9 @@ export type MetricsRow = {
   shared_state_omitted_live_old: number;
   shared_state_omitted_live_old_total_across_compiles: number;
   shared_state_omitted_live_old_final_compile: number;
+  shared_state_omitted_live_unknown_age: number;
+  shared_state_omitted_live_unknown_age_total_across_compiles: number;
+  shared_state_omitted_live_unknown_age_final_compile: number;
   shared_state_omitted_locked: number;
   shared_state_omitted_locked_total_across_compiles: number;
   shared_state_omitted_locked_final_compile: number;

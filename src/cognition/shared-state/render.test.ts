@@ -115,6 +115,7 @@ describe("summarizeSharedStateArtifactRender", () => {
     const operationalUpdateId = createStreamEntryId();
     const recentUpdateId = createStreamEntryId();
     const oldUpdateId = createStreamEntryId();
+    const unknownUpdateId = createStreamEntryId();
     const openQuestionId = createOpenQuestionId();
     const entries = [
       entry({
@@ -158,8 +159,16 @@ describe("summarizeSharedStateArtifactRender", () => {
         text: "old live",
         lastUpdatedStreamEntryIds: [oldUpdateId],
       }),
-      entry({ audience, kind: "locked", rank: 5, updatedAt: 60 }),
-      entry({ audience, kind: "pending", rank: 6, updatedAt: 50 }),
+      entry({
+        audience,
+        kind: "live",
+        rank: 5,
+        updatedAt: 65,
+        text: "unknown age live",
+        lastUpdatedStreamEntryIds: [unknownUpdateId],
+      }),
+      entry({ audience, kind: "locked", rank: 6, updatedAt: 60 }),
+      entry({ audience, kind: "pending", rank: 7, updatedAt: 50 }),
     ];
 
     const summary = summarizeSharedStateArtifactRender(artifact(entries), {
@@ -186,6 +195,7 @@ describe("summarizeSharedStateArtifactRender", () => {
     expect(summary.omittedLiveRecentOperational).toBe(2);
     expect(summary.omittedLiveRecentLowSalience).toBe(1);
     expect(summary.omittedLiveOld).toBe(1);
+    expect(summary.omittedLiveUnknownAge).toBe(1);
     expect(summary.omittedLocked).toBe(1);
     expect(summary.omittedPending).toBe(1);
     expect(summary.allActiveKeysIndexed).toBe(true);

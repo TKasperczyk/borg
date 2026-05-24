@@ -104,6 +104,15 @@ export type LifecycleAgingBlockedSampleEntry = {
   active_canonicalizer_kinds: string[] | null;
 };
 
+export type LifecycleAgingUnknownAgeSampleEntry = {
+  entry_id: SharedStateEntryId;
+  state_key: string | null;
+  kind: SharedStateEntryKind;
+  last_updated_stream_entry_ids_count: number;
+  last_updated_turn_global: number | null;
+  rank: number;
+};
+
 export type ApplyLifecycleAgingInput = {
   entries: readonly SharedStateEntry[];
   currentTurnCounter?: number;
@@ -565,17 +574,33 @@ function recordDemotionCandidate(input: {
   });
 }
 
+function recordUnknownAgeSample(
+  entry: SharedStateEntry,
+  unknownAgeSamples: LifecycleAgingUnknownAgeSampleEntry[],
+): void {
+  unknownAgeSamples.push({
+    entry_id: entry.id,
+    state_key: entry.state_key,
+    kind: entry.kind,
+    last_updated_stream_entry_ids_count: entry.last_updated_stream_entry_ids.length,
+    last_updated_turn_global: entry.last_updated_turn_global,
+    rank: entry.rank,
+  });
+}
+
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
   blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;
   blockerCountsLowSalienceToDormant: LifecycleAgingBlockerCounts;
   blockedSample: LifecycleAgingBlockedSampleEntry[];
+  unknownAgeSample: LifecycleAgingUnknownAgeSampleEntry[];
 } {
   const transitions: SharedStateLifecycleTransition[] = [];
   const transitionedEntryIds = new Set<SharedStateEntryId>();
   const blockerCountsLiveToLowSalience = emptyLifecycleAgingBlockerCounts();
   const blockerCountsLowSalienceToDormant = emptyLifecycleAgingBlockerCounts();
   const blockedSamples: LifecycleAgingBlockedSampleEntry[] = [];
+  const unknownAgeSamples: LifecycleAgingUnknownAgeSampleEntry[] = [];
   const recentTurnThreshold = normalizedThreshold(input.recentTurnThreshold, 5);
   const dormantTurnThreshold = normalizedThreshold(
     input.dormantTurnThreshold,
@@ -616,6 +641,7 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
 
     if (entry.kind === "live" && age === null) {
       blockerCountsLiveToLowSalience.unknown_age_count += 1;
+      recordUnknownAgeSample(entry, unknownAgeSamples);
     }
 
     if (entry.kind === "low_salience_live" && age === null) {
@@ -689,6 +715,9 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
     blockedSample: blockedSamples
       .filter((sample) => sample.block_reasons.length > 0)
       .sort((left, right) => (right.age_turns ?? -1) - (left.age_turns ?? -1))
+      .slice(0, 10),
+    unknownAgeSample: unknownAgeSamples
+      .sort((left, right) => left.rank - right.rank || left.entry_id.localeCompare(right.entry_id))
       .slice(0, 10),
   };
 }

@@ -9,6 +9,7 @@ export const LEGACY_METRIC_ALIAS_KEYS = [
   "shared_state_omitted_live_recent_operational",
   "shared_state_omitted_live_recent_low_salience",
   "shared_state_omitted_live_old",
+  "shared_state_omitted_live_unknown_age",
   "shared_state_omitted_locked",
   "shared_state_omitted_pending",
   "shared_state_omitted_low_salience_live",

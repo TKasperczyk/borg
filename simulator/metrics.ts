@@ -277,6 +277,9 @@ type SharedStateCapPressureMetricCounts = Pick<
   | "shared_state_omitted_live_old"
   | "shared_state_omitted_live_old_total_across_compiles"
   | "shared_state_omitted_live_old_final_compile"
+  | "shared_state_omitted_live_unknown_age"
+  | "shared_state_omitted_live_unknown_age_total_across_compiles"
+  | "shared_state_omitted_live_unknown_age_final_compile"
   | "shared_state_omitted_locked"
   | "shared_state_omitted_locked_total_across_compiles"
   | "shared_state_omitted_locked_final_compile"
@@ -1170,6 +1173,8 @@ function sharedStateCapPressureMetrics(
   let omittedLiveRecentLowSalienceFinalCompile = 0;
   let omittedLiveOld = 0;
   let omittedLiveOldFinalCompile = 0;
+  let omittedLiveUnknownAge = 0;
+  let omittedLiveUnknownAgeFinalCompile = 0;
   let omittedLocked = 0;
   let omittedLockedFinalCompile = 0;
   let omittedLockedRecent = 0;
@@ -1224,6 +1229,7 @@ function sharedStateCapPressureMetrics(
       "omitted_live_recent_low_salience",
     );
     omittedLiveOldFinalCompile = traceNumber(record, "omitted_live_old");
+    omittedLiveUnknownAgeFinalCompile = traceNumber(record, "omitted_live_unknown_age");
     omittedLockedFinalCompile = traceNumber(record, "omitted_locked");
     omittedLockedRecentFinalCompile = traceNumber(record, "omitted_locked_recent_final_compile");
     omittedLockedOldFinalCompile = traceNumber(record, "omitted_locked_old_final_compile");
@@ -1247,6 +1253,7 @@ function sharedStateCapPressureMetrics(
     omittedLiveRecentOperational += omittedLiveRecentOperationalFinalCompile;
     omittedLiveRecentLowSalience += omittedLiveRecentLowSalienceFinalCompile;
     omittedLiveOld += omittedLiveOldFinalCompile;
+    omittedLiveUnknownAge += omittedLiveUnknownAgeFinalCompile;
     omittedLocked += omittedLockedFinalCompile;
     omittedLockedRecent += omittedLockedRecentFinalCompile;
     omittedLockedOld += omittedLockedOldFinalCompile;
@@ -1309,6 +1316,9 @@ function sharedStateCapPressureMetrics(
     shared_state_omitted_live_old: omittedLiveOld,
     shared_state_omitted_live_old_total_across_compiles: omittedLiveOld,
     shared_state_omitted_live_old_final_compile: omittedLiveOldFinalCompile,
+    shared_state_omitted_live_unknown_age: omittedLiveUnknownAge,
+    shared_state_omitted_live_unknown_age_total_across_compiles: omittedLiveUnknownAge,
+    shared_state_omitted_live_unknown_age_final_compile: omittedLiveUnknownAgeFinalCompile,
     shared_state_omitted_locked: omittedLocked,
     shared_state_omitted_locked_total_across_compiles: omittedLocked,
     shared_state_omitted_locked_final_compile: omittedLockedFinalCompile,
@@ -3683,6 +3693,12 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_total_across_compiles,
       shared_state_omitted_live_old_final_compile:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_final_compile,
+      shared_state_omitted_live_unknown_age:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age,
+      shared_state_omitted_live_unknown_age_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age_total_across_compiles,
+      shared_state_omitted_live_unknown_age_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age_final_compile,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
       shared_state_omitted_locked_total_across_compiles:
         sharedStateCapPressureMetricCounts.shared_state_omitted_locked_total_across_compiles,
@@ -4188,6 +4204,12 @@ export class MetricsCapture {
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_total_across_compiles,
       shared_state_omitted_live_old_final_compile:
         sharedStateCapPressureMetricCounts.shared_state_omitted_live_old_final_compile,
+      shared_state_omitted_live_unknown_age:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age,
+      shared_state_omitted_live_unknown_age_total_across_compiles:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age_total_across_compiles,
+      shared_state_omitted_live_unknown_age_final_compile:
+        sharedStateCapPressureMetricCounts.shared_state_omitted_live_unknown_age_final_compile,
       shared_state_omitted_locked: sharedStateCapPressureMetricCounts.shared_state_omitted_locked,
       shared_state_omitted_locked_total_across_compiles:
         sharedStateCapPressureMetricCounts.shared_state_omitted_locked_total_across_compiles,

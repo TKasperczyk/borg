@@ -30,6 +30,7 @@ import {
 import type {
   LifecycleAgingBlockedSampleEntry,
   LifecycleAgingBlockerCounts,
+  LifecycleAgingUnknownAgeSampleEntry,
   SharedStateLifecycleTransition,
 } from "./lifecycle-aging.js";
 
@@ -163,6 +164,7 @@ export function traceCompileCompleted(options: {
   lifecycleAgingBlockerCountsLiveToLowSalience?: LifecycleAgingBlockerCounts;
   lifecycleAgingBlockerCountsLowSalienceToDormant?: LifecycleAgingBlockerCounts;
   lifecycleAgingBlockedSample?: readonly LifecycleAgingBlockedSampleEntry[];
+  lifecycleAgingUnknownAgeSample?: readonly LifecycleAgingUnknownAgeSampleEntry[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -215,6 +217,7 @@ export function traceCompileCompleted(options: {
       omitted_live_recent_operational: artifactSummary.omittedLiveRecentOperational,
       omitted_live_recent_low_salience: artifactSummary.omittedLiveRecentLowSalience,
       omitted_live_old: artifactSummary.omittedLiveOld,
+      omitted_live_unknown_age: artifactSummary.omittedLiveUnknownAge,
       omitted_locked: artifactSummary.omittedLocked,
       omitted_locked_recent_final_compile: artifactSummary.omittedLockedRecent,
       omitted_locked_old_final_compile: artifactSummary.omittedLockedOld,
@@ -270,6 +273,12 @@ export function traceCompileCompleted(options: {
       ),
       lifecycle_aging_blocked_sample: toTraceJsonValue(
         (options.lifecycleAgingBlockedSample ?? []).map((entry) => ({
+          ...entry,
+          rendered: renderedEntryIds.has(entry.entry_id),
+        })),
+      ),
+      lifecycle_aging_unknown_age_sample: toTraceJsonValue(
+        (options.lifecycleAgingUnknownAgeSample ?? []).map((entry) => ({
           ...entry,
           rendered: renderedEntryIds.has(entry.entry_id),
         })),

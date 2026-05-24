@@ -244,6 +244,9 @@ const TURN_METRICS_KEY_ORDER = [
   "shared_state_omitted_live_old",
   "shared_state_omitted_live_old_total_across_compiles",
   "shared_state_omitted_live_old_final_compile",
+  "shared_state_omitted_live_unknown_age",
+  "shared_state_omitted_live_unknown_age_total_across_compiles",
+  "shared_state_omitted_live_unknown_age_final_compile",
   "shared_state_omitted_locked",
   "shared_state_omitted_locked_total_across_compiles",
   "shared_state_omitted_locked_final_compile",
@@ -1738,6 +1741,7 @@ describe("MetricsCapture", () => {
           omitted_live_recent_operational: 1,
           omitted_live_recent_low_salience: 2,
           omitted_live_old: 3,
+          omitted_live_unknown_age: 2,
           omitted_locked: 4,
           omitted_locked_recent_final_compile: 1,
           omitted_locked_old_final_compile: 2,
@@ -1781,6 +1785,7 @@ describe("MetricsCapture", () => {
           omitted_live_recent_operational: 6,
           omitted_live_recent_low_salience: 7,
           omitted_live_old: 8,
+          omitted_live_unknown_age: 3,
           omitted_locked: 9,
           omitted_locked_recent_final_compile: 2,
           omitted_locked_old_final_compile: 3,
@@ -1838,6 +1843,7 @@ describe("MetricsCapture", () => {
           omitted_live_recent_operational: 11,
           omitted_live_recent_low_salience: 13,
           omitted_live_old: 17,
+          omitted_live_unknown_age: 5,
           omitted_locked: 19,
           omitted_locked_recent_final_compile: 5,
           omitted_locked_old_final_compile: 10,
@@ -1946,6 +1952,9 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_omitted_live_old).toBe(28);
     expect(row.shared_state_omitted_live_old_total_across_compiles).toBe(28);
     expect(row.shared_state_omitted_live_old_final_compile).toBe(17);
+    expect(row.shared_state_omitted_live_unknown_age).toBe(10);
+    expect(row.shared_state_omitted_live_unknown_age_total_across_compiles).toBe(10);
+    expect(row.shared_state_omitted_live_unknown_age_final_compile).toBe(5);
     expect(row.shared_state_omitted_locked).toBe(32);
     expect(row.shared_state_omitted_locked_total_across_compiles).toBe(32);
     expect(row.shared_state_omitted_locked_final_compile).toBe(19);

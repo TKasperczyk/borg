@@ -5,8 +5,8 @@ import {
   createCommitmentId,
   createGoalId,
   createOpenQuestionId,
-  createSharedStateEntryId,
   createStreamEntryId,
+  sharedStateEntryIdHelpers,
 } from "../../util/ids.js";
 import { makeSharedStateEntry } from "../../test-support/factories/shared-state.js";
 import {
@@ -627,6 +627,83 @@ describe("applyLifecycleAging", () => {
       oldProtected.id,
       oldMultipleProtected.id,
     ]);
+    expect(result.unknownAgeSample).toEqual([
+      {
+        entry_id: unknownAge.id,
+        state_key: "unknown",
+        kind: "live",
+        last_updated_stream_entry_ids_count: 1,
+        last_updated_turn_global: null,
+        rank: unknownAge.rank,
+      },
+    ]);
+  });
+
+  it("sorts unknown-age samples by rank then entry id", () => {
+    const highRank = makeSharedStateEntry({
+      id: sharedStateEntryIdHelpers.parse("dart_0000000000000004"),
+      kind: "live",
+      state_key: "unknown.high-rank",
+      rank: 9,
+    });
+    const tiedLaterId = makeSharedStateEntry({
+      id: sharedStateEntryIdHelpers.parse("dart_0000000000000003"),
+      kind: "live",
+      state_key: "unknown.tie-later",
+      rank: 2,
+    });
+    const tiedEarlierId = makeSharedStateEntry({
+      id: sharedStateEntryIdHelpers.parse("dart_0000000000000001"),
+      kind: "live",
+      state_key: "unknown.tie-earlier",
+      rank: 2,
+    });
+    const lowRank = makeSharedStateEntry({
+      id: sharedStateEntryIdHelpers.parse("dart_0000000000000002"),
+      kind: "live",
+      state_key: "unknown.low-rank",
+      rank: 1,
+    });
+
+    const result = applyLifecycleAging({
+      entries: [highRank, tiedLaterId, tiedEarlierId, lowRank],
+      currentTurnCounter: 30,
+      recentTurnThreshold: 5,
+    });
+
+    expect(result.unknownAgeSample.map((entry) => entry.entry_id)).toEqual([
+      lowRank.id,
+      tiedEarlierId.id,
+      tiedLaterId.id,
+      highRank.id,
+    ]);
+  });
+
+  it("caps unknown-age samples at the first 10 entries by deterministic sort order", () => {
+    const entries = Array.from({ length: 12 }, (_, index) =>
+      makeSharedStateEntry({
+        id: sharedStateEntryIdHelpers.parse(
+          `dart_00000000000000${String(index).padStart(2, "0")}`,
+        ),
+        kind: "live",
+        state_key: `unknown.${index}`,
+        rank: 12 - index,
+      }),
+    );
+
+    const result = applyLifecycleAging({
+      entries,
+      currentTurnCounter: 30,
+      recentTurnThreshold: 5,
+    });
+
+    const expectedEntryIds = [...entries]
+      .sort((left, right) => left.rank - right.rank || left.id.localeCompare(right.id))
+      .slice(0, 10)
+      .map((entry) => entry.id);
+
+    expect(result.unknownAgeSample).toHaveLength(10);
+    expect(result.unknownAgeSample.map((entry) => entry.entry_id)).toEqual(expectedEntryIds);
   });
 });
 

@@ -1712,6 +1712,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `  - recent operational: ${report.finalMetrics.shared_state_omitted_live_recent_operational_final_compile} / ${report.finalMetrics.shared_state_omitted_live_recent_operational_total_across_compiles}`,
     `  - recent low-salience: ${report.finalMetrics.shared_state_omitted_live_recent_low_salience_final_compile} / ${report.finalMetrics.shared_state_omitted_live_recent_low_salience_total_across_compiles}`,
     `  - old: ${report.finalMetrics.shared_state_omitted_live_old_final_compile} / ${report.finalMetrics.shared_state_omitted_live_old_total_across_compiles}`,
+    `  - unknown age: ${report.finalMetrics.shared_state_omitted_live_unknown_age_final_compile} / ${report.finalMetrics.shared_state_omitted_live_unknown_age_total_across_compiles}`,
     `  - locked: ${report.finalMetrics.shared_state_omitted_locked_final_compile} / ${report.finalMetrics.shared_state_omitted_locked_total_across_compiles}`,
     `  - pending: ${report.finalMetrics.shared_state_omitted_pending_final_compile} / ${report.finalMetrics.shared_state_omitted_pending_total_across_compiles}`,
     `  - low-salience live final: ${report.finalMetrics.shared_state_omitted_low_salience_live_final_compile}`,

@@ -1100,6 +1100,7 @@ export async function compileSharedStateArtifact(
     lifecycleAgingBlockerCountsLiveToLowSalience: aging.blockerCountsLiveToLowSalience,
     lifecycleAgingBlockerCountsLowSalienceToDormant: aging.blockerCountsLowSalienceToDormant,
     lifecycleAgingBlockedSample: aging.blockedSample,
+    lifecycleAgingUnknownAgeSample: aging.unknownAgeSample,
   };
   const expandedOperations = expandPruneDependencies({
     previousArtifact,
