@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
-import type { StreamEntry, StreamReader } from "../../stream/index.js";
+import { StreamReader, StreamWriter, type StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createCommitmentId, createStreamEntryId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
@@ -79,6 +83,12 @@ function makeCommitment(): CommitmentRecord {
 
 function emptyStreamReader(): StreamReader {
   return {
+    scanReverse: () => ({
+      entries: [],
+      scannedEntries: 0,
+      scannedBytes: 0,
+      capReached: null,
+    }),
     async *iterate() {
       return;
     },
@@ -268,6 +278,82 @@ describe("post-generation guard shadow chain", () => {
       verdict: "suppressed",
       leaked_identifiers: [userEntryId],
     });
+  });
+
+  it("collects known stream identifiers from a bounded recent-session scan", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-post-generation-guard-"));
+    const scanSpy = vi.spyOn(StreamReader.prototype, "scanReverse");
+
+    try {
+      const writer = new StreamWriter({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+        clock: new FixedClock(1_000),
+      });
+      await writer.appendMany(
+        Array.from({ length: 700 }, (_, index) => ({
+          kind: "user_msg" as const,
+          content: `old message ${index}`,
+        })),
+      );
+      const recentEntry = await writer.append({
+        kind: "agent_msg",
+        content: "recent answer",
+      });
+
+      const llm = new FakeLLMClient({
+        responses: [
+          closureAuditResponse({
+            spans: [],
+            response_shape: "no_closure",
+            reason: "No closure.",
+          }),
+        ],
+      });
+      const postGenerationRunner = new TurnPostGenerationGuardRunner({
+        auditModel: "audit",
+        rewriteModel: "rewrite",
+        closurePressureMode: "enforce",
+        createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId }),
+        actionRepository: {
+          list: vi.fn(() => []),
+        },
+        relationalSlotRepository: {
+          list: vi.fn(() => []),
+        },
+        clock: new FixedClock(2_000),
+        tracer: {
+          enabled: false,
+          includePayloads: false,
+          emit: vi.fn(),
+        },
+      });
+
+      const finalEmission = await postGenerationRunner.run({
+        llmClient: llm,
+        turnId: "turn-bounded-internal-id-scan",
+        response: `The recent source handle was ${recentEntry.id}.`,
+        sessionId: DEFAULT_SESSION_ID,
+        retrievedEpisodes: [],
+        activeCommitments: [],
+        closureLoop: null,
+        audienceEntityId: null,
+      });
+
+      expect(finalEmission).toEqual({
+        kind: "suppressed",
+        reason: "internal_identifier_leak",
+      });
+      expect(scanSpy).toHaveBeenCalledTimes(1);
+      expect(scanSpy).toHaveBeenCalledWith({
+        maxEntries: 512,
+        maxBytes: 4 * 1024 * 1024,
+      });
+      expect(scanSpy.mock.results[0]?.value.scannedEntries).toBeLessThanOrEqual(512);
+    } finally {
+      scanSpy.mockRestore();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("allows user-authored ID-shaped strings that are not known internal identifiers", async () => {
