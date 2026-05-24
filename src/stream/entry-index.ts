@@ -561,7 +561,7 @@ export class StreamEntryIndexRepository {
               , kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE session_id = ? AND kind = ?
-         ORDER BY timestamp ASC, byte_offset ASC, entry_id ASC`,
+         ORDER BY byte_offset ASC`,
       )
       .all(input.sessionId, input.kind) as StreamEntryIndexRow[];
 
