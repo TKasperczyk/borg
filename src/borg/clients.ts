@@ -1,14 +1,20 @@
 // Client factories for Borg's embedding and LLM dependencies.
 
 import type { Config } from "../config/index.js";
+import { createCachingEmbeddingClient } from "../embeddings/cache.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "../embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "../llm/index.js";
 import type { Clock } from "../util/clock.js";
 
 export function createEmbeddingClient(config: Config): EmbeddingClient {
-  return new OpenAICompatibleEmbeddingClient({
+  const inner = new OpenAICompatibleEmbeddingClient({
     baseUrl: config.embedding.baseUrl,
     apiKey: config.embedding.apiKey,
+    model: config.embedding.model,
+    dims: config.embedding.dims,
+  });
+
+  return createCachingEmbeddingClient(inner, {
     model: config.embedding.model,
     dims: config.embedding.dims,
   });
