@@ -10,6 +10,11 @@ import { composeMigrations, openDatabase } from "./index.js";
 describe("sqlite storage", () => {
   const tempDirs: string[] = [];
 
+  function expectComposeError(fn: () => void, message: RegExp): void {
+    expect(fn).toThrow(StorageError);
+    expect(fn).toThrow(message);
+  }
+
   afterEach(() => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
@@ -90,9 +95,37 @@ describe("sqlite storage", () => {
     expect(new Set(migrations.map((migration) => migration.id)).size).toBe(2);
   });
 
+  it("rejects non-positive composed source ids in later bands", () => {
+    expectComposeError(
+      () =>
+        composeMigrations([{ id: 1, name: "alpha", up: "" }], [{ id: 0, name: "zero", up: "" }]),
+      /Migration source id 0 must be an integer in \[1, 999999\]: zero:0/,
+    );
+
+    expectComposeError(
+      () =>
+        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
+          { id: -1, name: "negative", up: "" },
+        ]),
+      /Migration source id -1 must be an integer in \[1, 999999\]: negative:-1/,
+    );
+  });
+
   it("rejects composed source ids outside a band range", () => {
-    expect(() =>
-      composeMigrations([{ id: 1_000_000, name: "too-large", up: "" }]),
-    ).toThrow(StorageError);
+    expectComposeError(
+      () =>
+        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
+          { id: 1_000_000, name: "too-large", up: "" },
+        ]),
+      /Migration source id 1000000 must be an integer in \[1, 999999\]: too-large:1000000/,
+    );
+
+    expectComposeError(
+      () =>
+        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
+          { id: 1_000_001, name: "much-too-large", up: "" },
+        ]),
+      /Migration source id 1000001 must be an integer in \[1, 999999\]: much-too-large:1000001/,
+    );
   });
 });

@@ -76,9 +76,15 @@ export function composeMigrations(...groups: readonly (readonly Migration[])[]):
   return groups.flatMap((group, bandIndex) =>
     group.map((migration) => {
       const label = `${migration.name}:${migration.id}`;
-      if (migration.id >= MIGRATION_BAND_SIZE) {
+      if (
+        !Number.isInteger(migration.id) ||
+        migration.id <= 0 ||
+        migration.id >= MIGRATION_BAND_SIZE
+      ) {
         throw new StorageError(
-          `Migration source id ${migration.id} exceeds maximum ${MIGRATION_BAND_SIZE - 1}: ${label}`,
+          `Migration source id ${migration.id} must be an integer in [1, ${
+            MIGRATION_BAND_SIZE - 1
+          }]: ${label}`,
         );
       }
 
