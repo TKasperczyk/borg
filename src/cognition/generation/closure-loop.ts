@@ -9,6 +9,7 @@ import {
 } from "../../llm/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { isPlainRecord } from "../../util/guards.js";
 import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -233,10 +234,6 @@ function validateSuppliedClosureLoopRefs(
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function normalizeMachineLabel(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -427,7 +424,7 @@ function normalizeClosureLoopToolInput(
 ): NormalizedClosureLoopPayload {
   validateSuppliedClosureLoopRefs(suppliedMessages);
 
-  if (!isRecord(input)) {
+  if (!isPlainRecord(input)) {
     throw new InvalidClosureLoopPayloadError("Closure-loop classifier input was not an object.");
   }
 
@@ -457,7 +454,7 @@ function normalizeClosureLoopToolInput(
   const allowedMessageFields = new Set<string>(CLOSURE_LOOP_MESSAGE_FIELDS);
 
   for (const rawMessage of rawMessages) {
-    if (!isRecord(rawMessage)) {
+    if (!isPlainRecord(rawMessage)) {
       normalizations.push({
         field: "messages",
         action: "invalid_message_ignored",

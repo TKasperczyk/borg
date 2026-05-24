@@ -25,6 +25,7 @@ import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycl
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
+import { clamp } from "../../util/math.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -128,10 +129,6 @@ type RuminatorReversal = {
   previous_duplicate?: OpenQuestion;
   marker_id?: z.infer<typeof growthMarkerIdSchema>;
 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function buildResolutionPrompt(question: OpenQuestion, evidence: string): string {
   return [

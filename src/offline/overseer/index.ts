@@ -14,6 +14,7 @@ import {
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
@@ -164,19 +165,7 @@ function isAssistantAuthoredReviewSource(entry: Pick<StreamEntry, "kind">): bool
 }
 
 function uniqueStreamIds(ids: readonly z.infer<typeof streamEntryIdSchema>[]) {
-  const seen = new Set<string>();
-  const unique: z.infer<typeof streamEntryIdSchema>[] = [];
-
-  for (const id of ids) {
-    if (seen.has(id)) {
-      continue;
-    }
-
-    seen.add(id);
-    unique.push(id);
-  }
-
-  return unique;
+  return dedupePreservingOrder(ids);
 }
 
 async function assistantAuthoredCitedStreamEntryIds(

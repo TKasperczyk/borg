@@ -10,6 +10,7 @@ import {
 import type { EntityKind } from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
+import { isPlainRecord } from "../../util/guards.js";
 import type { ActiveParticipant } from "../participants.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
@@ -119,10 +120,6 @@ type NormalizedFrameAnomalyPayload = {
   payload: z.input<typeof frameAnomalyClassificationSchema>;
   normalizations: FrameAnomalyPayloadNormalization[];
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function jsonValueOrNull(value: unknown): JsonValue {
   return toTraceJsonValue(value);
@@ -252,7 +249,7 @@ function normalizeRationale(
 }
 
 function normalizeFrameAnomalyToolInput(input: unknown): NormalizedFrameAnomalyPayload {
-  if (!isRecord(input)) {
+  if (!isPlainRecord(input)) {
     throw new InvalidFrameAnomalyPayloadError("Frame anomaly classifier input was not an object.");
   }
 

@@ -24,7 +24,9 @@ import { markSemanticSuperseded } from "../../memory/lifecycle-ops/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
+import { positiveIntegerValue } from "../../util/parse.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -191,15 +193,11 @@ const reviewResolverTool = {
 } satisfies LLMToolDefinition;
 
 function uniqueStreamIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
-  return [...new Set(ids)];
+  return dedupePreservingOrder(ids);
 }
 
 function parsePositiveInteger(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    return null;
-  }
-
-  return value;
+  return positiveIntegerValue(value);
 }
 
 function configuredMaxItems(

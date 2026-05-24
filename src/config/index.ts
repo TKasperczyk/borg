@@ -11,6 +11,7 @@ import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { commitmentKindSchema, type CommitmentKind } from "../memory/commitments/types.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
+import { isPlainRecord } from "../util/guards.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
 export const DEFAULT_ACTIVE_PARTICIPANT_LIMIT = 8;
@@ -689,10 +690,6 @@ function readOptionalEnvAnthropicAuthMode(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function mergeConfigOverrides(base: ConfigOverrides, override: ConfigOverrides): ConfigOverrides {

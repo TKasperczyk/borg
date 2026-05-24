@@ -33,6 +33,7 @@ import {
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
+import { isPlainRecord } from "../src/util/guards.js";
 import type { EntityResolveOptions } from "../src/memory/commitments/index.js";
 import {
   ABORTED_TURN_EVENT,
@@ -120,10 +121,6 @@ function sanitizePathPart(value: string): string {
   return value.replace(/[^A-Za-z0-9_.-]/g, "-");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function goalProgressPatchFromReview(
   item: ReviewQueueItem,
   goalId: GoalRecord["id"],
@@ -138,7 +135,7 @@ function goalProgressPatchFromReview(
 
   const patch = item.refs.patch;
 
-  if (!isRecord(patch) || typeof patch.progress_notes !== "string") {
+  if (!isPlainRecord(patch) || typeof patch.progress_notes !== "string") {
     return null;
   }
 
@@ -154,7 +151,12 @@ function deepMerge<T>(base: T, override: DeepPartial<T> | undefined): T {
     return base;
   }
 
-  if (Array.isArray(base) || Array.isArray(override) || !isRecord(base) || !isRecord(override)) {
+  if (
+    Array.isArray(base) ||
+    Array.isArray(override) ||
+    !isPlainRecord(base) ||
+    !isPlainRecord(override)
+  ) {
     return override as T;
   }
 

@@ -51,6 +51,7 @@ import type {
   SharedStateEntryId,
   StreamEntryId,
 } from "../../../util/ids.js";
+import { dedupePreservingOrder } from "../../../util/collections.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
@@ -136,19 +137,7 @@ export type TurnRetrievalPhaseResult = {
 };
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
-  const seen = new Set<string>();
-  const unique: StreamEntryId[] = [];
-
-  for (const id of ids) {
-    if (seen.has(id)) {
-      continue;
-    }
-
-    seen.add(id);
-    unique.push(id);
-  }
-
-  return unique;
+  return dedupePreservingOrder(ids);
 }
 
 function retrievedStreamEntryIds(

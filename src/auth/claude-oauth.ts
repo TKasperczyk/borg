@@ -9,6 +9,7 @@ import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import type { Clock } from "../util/clock.js";
 import { SystemClock } from "../util/clock.js";
 import { AuthError } from "../util/errors.js";
+import { isPlainRecord } from "../util/guards.js";
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
@@ -64,10 +65,6 @@ function resolveCredentialsPath(options: ClaudeOAuthOptions = {}): string {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 export function getClaudeCredentialsPath(options: ClaudeOAuthOptions = {}): string {
   return resolveCredentialsPath(options);
 }
@@ -100,7 +97,7 @@ function readCredentialsFile(options: ClaudeOAuthOptions = {}): LoadedOAuthCrede
     });
   }
 
-  const raw = isRecord(rawValue) ? rawValue : {};
+  const raw = isPlainRecord(rawValue) ? rawValue : {};
 
   return {
     credentials: parsed.data.claudeAiOauth,
@@ -123,8 +120,8 @@ export function saveCredentials(creds: OAuthCredentials, options: ClaudeOAuthOpt
     credentialsPath,
   });
 
-  const root = isRecord(existing?.raw) ? { ...existing.raw } : {};
-  const currentOauth = isRecord(root.claudeAiOauth)
+  const root = isPlainRecord(existing?.raw) ? { ...existing.raw } : {};
+  const currentOauth = isPlainRecord(root.claudeAiOauth)
     ? (root.claudeAiOauth as Record<string, unknown>)
     : {};
 

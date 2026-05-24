@@ -19,6 +19,7 @@ import {
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
+import { clamp } from "../../util/math.js";
 import {
   createOpenQuestionId,
   sharedStateEntryIdHelpers,
@@ -253,10 +254,6 @@ export function createOpenQuestionsTableSchema(dimensions: number) {
     float64Field("last_touched"),
     vectorField("embedding", dimensions),
   ]);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function parseIdArray<T>(value: string, schema: z.ZodType<T>, label: string): T[] {

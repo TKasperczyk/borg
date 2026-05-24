@@ -1,6 +1,7 @@
 import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
@@ -114,7 +115,7 @@ function parseStreamEntryIds(value: string, label: string): StreamEntryId[] {
 }
 
 function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[] {
-  return [...new Set(values)];
+  return dedupePreservingOrder(values);
 }
 
 function emptyCanonicalizes(): SharedStateCanonicalizes {
@@ -132,10 +133,10 @@ function uniqueCanonicalizes(
   const source = value ?? EMPTY_SHARED_STATE_CANONICALIZES;
 
   return sharedStateCanonicalizesSchema.parse({
-    goal_ids: [...new Set(source.goal_ids)],
-    commitment_ids: [...new Set(source.commitment_ids)],
-    action_ids: [...new Set(source.action_ids)],
-    open_question_ids: [...new Set(source.open_question_ids)],
+    goal_ids: dedupePreservingOrder(source.goal_ids),
+    commitment_ids: dedupePreservingOrder(source.commitment_ids),
+    action_ids: dedupePreservingOrder(source.action_ids),
+    open_question_ids: dedupePreservingOrder(source.open_question_ids),
   });
 }
 

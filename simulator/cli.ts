@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { cac } from "cac";
 
 import { loadCredentials } from "../src/auth/claude-oauth.js";
+import { parsePositiveIntegerValue } from "../src/util/parse.js";
 
 import { tomPersona } from "./personas/tom.js";
 import { findSimulatorScenario, scenarioPersonas } from "./scenarios/index.js";
@@ -66,9 +67,9 @@ function parsePositiveInteger(
     return fallback;
   }
 
-  const parsed = typeof value === "number" ? value : Number(value);
+  const parsed = parsePositiveIntegerValue(value);
 
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (parsed === null) {
     throw new Error(`${label} must be a positive integer`);
   }
 

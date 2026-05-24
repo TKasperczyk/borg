@@ -13,7 +13,7 @@ import {
   type StreamEntry,
   type TurnResult,
 } from "../src/index.ts";
-import { createAnsi } from "./_ansi.ts";
+import { createAnsi } from "../src/util/ansi.ts";
 import { selectScriptClients } from "./_clients.ts";
 
 type DebugState = {

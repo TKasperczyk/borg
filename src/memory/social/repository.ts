@@ -4,6 +4,7 @@ import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { CommitmentRepository } from "../commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
+import { clamp } from "../../util/math.js";
 import {
   assertIdentityCasUpdated,
   expectedRecordVersion,
@@ -25,10 +26,6 @@ import {
   type SocialProfile,
   type SocialSentimentPoint,
 } from "./types.js";
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function parseSentimentHistory(value: string): SocialSentimentPoint[] {
   let parsed: unknown;

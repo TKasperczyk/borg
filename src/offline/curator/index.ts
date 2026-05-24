@@ -15,6 +15,7 @@ import {
 import { traitIdSchema, traitSchema } from "../../memory/self/index.js";
 import { socialProfileSchema } from "../../memory/social/index.js";
 import type { Clock } from "../../util/clock.js";
+import { clamp } from "../../util/math.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import type {
@@ -118,10 +119,6 @@ export type CuratorPlan = z.infer<typeof curatorPlanSchema>;
 
 function compareTiers(left: EpisodeTier, right: EpisodeTier): number {
   return TIER_ORDER[left] - TIER_ORDER[right];
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function decayFactor(elapsedMs: number, halfLifeDays: number): number {

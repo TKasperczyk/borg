@@ -13,16 +13,22 @@ import {
   semanticRelationSchema,
 } from "../../memory/semantic/index.js";
 import { OFFLINE_PROCESS_NAMES, type OfflineProcessName } from "../../offline/index.js";
+import { clamp } from "../../util/math.js";
+import { positiveIntegerValue } from "../../util/parse.js";
 import { CliError } from "./errors.js";
+
+export { clamp } from "../../util/math.js";
 
 export function parseLimit(value: unknown, flag = "--limit"): number {
   const candidate = Array.isArray(value) ? value.at(-1) : value;
 
-  if (!Number.isInteger(candidate) || candidate <= 0) {
+  const parsed = positiveIntegerValue(candidate);
+
+  if (parsed === null) {
     throw new CliError(`${flag} must be a positive integer`);
   }
 
-  return candidate;
+  return parsed;
 }
 
 export function parsePriority(value: unknown, fallback = 0): number {
@@ -267,11 +273,13 @@ export function parseStringList(value: unknown, flag: string): string[] {
 export function parsePositiveInteger(value: unknown, flag: string): number {
   const candidate = Array.isArray(value) ? value.at(-1) : value;
 
-  if (!Number.isInteger(candidate) || candidate <= 0) {
+  const parsed = positiveIntegerValue(candidate);
+
+  if (parsed === null) {
     throw new CliError(`${flag} must be a positive integer`);
   }
 
-  return candidate;
+  return parsed;
 }
 
 export function parseOptionalPositiveInteger(value: unknown, flag: string): number | undefined {
@@ -365,10 +373,6 @@ export function parseJsonObject(value: unknown, flag: string): Record<string, un
       cause: error,
     });
   }
-}
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 export function parseStakes(value: unknown): "low" | "medium" | "high" | undefined {

@@ -1,4 +1,5 @@
 import type { StreamEntry } from "./types.js";
+import { isPlainRecord } from "../util/guards.js";
 
 export const ABORTED_TURN_EVENT = "aborted_turn";
 export const QUARANTINED_USER_ENTRY_EVENT = "quarantined_user_entry";
@@ -7,10 +8,6 @@ export type InactiveStreamEntryRefs = {
   turnIds: ReadonlySet<string>;
   streamEntryIds: ReadonlySet<string>;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function abortedEntryIds(content: Record<string, unknown>): string[] {
   const value = content.aborted_stream_entry_ids;
@@ -35,7 +32,7 @@ function citedStreamEntryIds(content: Record<string, unknown>): string[] {
 export function isAbortedTurnMarker(entry: StreamEntry): boolean {
   return (
     entry.kind === "internal_event" &&
-    isRecord(entry.content) &&
+    isPlainRecord(entry.content) &&
     entry.content.event === ABORTED_TURN_EVENT
   );
 }
@@ -43,7 +40,7 @@ export function isAbortedTurnMarker(entry: StreamEntry): boolean {
 export function isQuarantinedUserEntryMarker(entry: StreamEntry): boolean {
   return (
     entry.kind === "internal_event" &&
-    isRecord(entry.content) &&
+    isPlainRecord(entry.content) &&
     entry.content.event === QUARANTINED_USER_ENTRY_EVENT
   );
 }
@@ -55,7 +52,7 @@ export function collectInactiveStreamEntryRefs(
   const streamEntryIds = new Set<string>();
 
   for (const entry of entries) {
-    if (!isRecord(entry.content)) {
+    if (!isPlainRecord(entry.content)) {
       continue;
     }
 

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { cac } from "cac";
 
 import { loadCredentials } from "../src/auth/claude-oauth.js";
+import { parsePositiveIntegerValue } from "../src/util/parse.js";
 
 import { formatAssessorReport, hasAssessorRunFailure } from "./report.js";
 import { runScenarios } from "./runner.js";
@@ -42,9 +43,9 @@ function parsePositiveInteger(
     return undefined;
   }
 
-  const parsed = typeof value === "number" ? value : Number(value);
+  const parsed = parsePositiveIntegerValue(value);
 
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (parsed === null) {
     throw new Error(`${label} must be a positive integer`);
   }
 

@@ -11,8 +11,9 @@ import {
 } from "../src/index.ts";
 import { computeBetaStats } from "../src/memory/procedural/index.js";
 import { WorkingMemoryStore } from "../src/memory/working/index.js";
+import { createAnsi } from "../src/util/ansi.ts";
 import { BorgError } from "../src/util/errors.js";
-import { createAnsi } from "./_ansi.ts";
+import { parsePositiveIntegerValue } from "../src/util/parse.js";
 import { selectScriptClients, type ScriptClientSelectionMode } from "./_clients.ts";
 
 type SessionTarget = {
@@ -256,9 +257,9 @@ function takeBooleanFlag(args: string[], flag: string): boolean {
 }
 
 function parsePositiveInteger(value: string, label: string): number {
-  const parsed = Number(value);
+  const parsed = parsePositiveIntegerValue(value);
 
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (parsed === null) {
     throw new Error(`${label} must be a positive integer`);
   }
 

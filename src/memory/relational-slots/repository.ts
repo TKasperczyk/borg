@@ -1,6 +1,7 @@
 import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
@@ -72,17 +73,7 @@ function uniqueTrimmed(values: readonly string[]): string[] {
 }
 
 function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[] {
-  const unique: StreamEntryId[] = [];
-
-  for (const value of values) {
-    if (unique.some((existing) => existing === value)) {
-      continue;
-    }
-
-    unique.push(value);
-  }
-
-  return unique;
+  return dedupePreservingOrder(values);
 }
 
 const NAME_PROVENANCE_RANK: Record<RelationalSlotNameProvenance, number> = {

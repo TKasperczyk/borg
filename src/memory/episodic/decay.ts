@@ -1,4 +1,5 @@
 import type { Episode, EpisodeStats, EpisodeTier } from "./types.js";
+import { clamp } from "../../util/math.js";
 
 export type DecayOptions = {
   nowMs: number;
@@ -10,10 +11,6 @@ export type DecayResult = {
   decayedSalience: number;
   effectiveHalfLifeHours: number;
 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function getTierHalfLifeHours(stats: EpisodeStats, options: DecayOptions): number {
   const tierHalfLife = options.halfLifeByTier?.[stats.tier];

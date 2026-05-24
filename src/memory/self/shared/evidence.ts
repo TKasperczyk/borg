@@ -1,14 +1,13 @@
 import { type EpisodeId } from "../../../util/ids.js";
+import { clamp } from "../../../util/math.js";
 import { isEpisodeProvenance, type Provenance } from "../../common/provenance.js";
+
+export { clamp } from "../../../util/math.js";
 
 export const EVIDENCE_EPISODE_LIMIT = 3;
 
 const CONFIDENCE_ALPHA = 2;
 const CONFIDENCE_BETA = 1;
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 export function computeConfidence(supportCount: number, contradictionCount: number): number {
   return clamp(

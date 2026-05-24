@@ -1,12 +1,11 @@
-type AnsiOutput = {
+export type AnsiOutput = object & {
   isTTY?: boolean;
 };
 
-export type ScriptAnsi = ReturnType<typeof createAnsi>;
+export type Ansi = ReturnType<typeof createAnsi>;
 
 export function createAnsi(output: AnsiOutput = process.stdout) {
   const colorEnabled = output.isTTY === true;
-
   const style = (text: string, code: string): string =>
     colorEnabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 

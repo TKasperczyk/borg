@@ -3,6 +3,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { type SessionId } from "../../util/ids.js";
+import { clamp } from "../../util/math.js";
 import {
   parseStoredProvenance,
   provenanceSchema,
@@ -18,10 +19,6 @@ import {
 } from "./types.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function parseStringArray(value: string, label: string): string[] {
   try {

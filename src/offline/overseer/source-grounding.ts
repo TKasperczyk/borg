@@ -9,6 +9,7 @@ import {
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import type { EntityId, EpisodeId, StreamEntryId } from "../../util/ids.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { OfflineContext } from "../types.js";
@@ -221,35 +222,11 @@ export function buildOverseerFlagAuditPayload(
 }
 
 function uniqueEpisodeIds(ids: readonly EpisodeId[]): EpisodeId[] {
-  const seen = new Set<string>();
-  const unique: EpisodeId[] = [];
-
-  for (const id of ids) {
-    if (seen.has(id)) {
-      continue;
-    }
-
-    seen.add(id);
-    unique.push(id);
-  }
-
-  return unique;
+  return dedupePreservingOrder(ids);
 }
 
 function uniqueStreamIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
-  const seen = new Set<string>();
-  const unique: StreamEntryId[] = [];
-
-  for (const id of ids) {
-    if (seen.has(id)) {
-      continue;
-    }
-
-    seen.add(id);
-    unique.push(id);
-  }
-
-  return unique;
+  return dedupePreservingOrder(ids);
 }
 
 function appendStreamSources(

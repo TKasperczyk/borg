@@ -10,9 +10,12 @@ import type { ValueRecord } from "../memory/self/index.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry } from "../stream/index.js";
 import type { EntityId } from "../util/ids.js";
+import { clamp } from "../util/math.js";
 
 import { computeTimeRelevance, type ResolvedTimeRange } from "./time-signals.js";
 import type { RetrievalScoringFeatures } from "./scoring-features.js";
+
+export { clamp } from "../util/math.js";
 
 export type SuppressionLookup = {
   isSuppressed(id: string): boolean;
@@ -79,10 +82,6 @@ export type EpisodeScore = {
   suppressionPenalty: number;
   score: number;
 };
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function defaultDecayOptions(nowMs: number): DecayOptions {
   return {

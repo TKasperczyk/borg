@@ -7,6 +7,7 @@ import type {
   SharedStateEntryKind,
   SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { PROTECTED_RELATIONSHIP_LABELS } from "../prompts/relationship-labels.js";
@@ -460,19 +461,7 @@ function traceEmptyUpdateDrops(
 }
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
-  const seen = new Set<string>();
-  const unique: StreamEntryId[] = [];
-
-  for (const id of ids) {
-    if (seen.has(id)) {
-      continue;
-    }
-
-    seen.add(id);
-    unique.push(id);
-  }
-
-  return unique;
+  return dedupePreservingOrder(ids);
 }
 
 function relationalSlotEvidenceStreamEntryIds(

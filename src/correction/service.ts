@@ -1,4 +1,5 @@
 import { ConfigError, StorageError } from "../util/errors.js";
+import { isPlainRecord } from "../util/guards.js";
 import type { JsonValue } from "../util/json-value.js";
 import { correctionTargetIdKindDescriptors, type EntityId } from "../util/ids.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -53,10 +54,6 @@ type ParsedCorrectionTarget<
   ? { type: TDescriptor["kind"]; id: ReturnType<TDescriptor["parse"]> }
   : never;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function parseTarget(id: string): ParsedCorrectionTarget {
   for (const descriptor of correctionTargetIdKindDescriptors) {
     if (id.startsWith(descriptor.prefix)) {
@@ -95,7 +92,7 @@ function toIdentityJsonValue(value: unknown): JsonValue {
     return value.map((entry) => toIdentityJsonValue(entry));
   }
 
-  if (isRecord(value)) {
+  if (isPlainRecord(value)) {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [key, toIdentityJsonValue(entry)]),
     );
@@ -117,8 +114,8 @@ function jsonValuesEqual(left: JsonValue, right: JsonValue): boolean {
     return left.every((entry, index) => jsonValuesEqual(entry, right[index] as JsonValue));
   }
 
-  if (isRecord(left) || isRecord(right)) {
-    if (!isRecord(left) || !isRecord(right)) {
+  if (isPlainRecord(left) || isPlainRecord(right)) {
+    if (!isPlainRecord(left) || !isPlainRecord(right)) {
       return false;
     }
 
@@ -157,8 +154,8 @@ function patchValueAlreadyApplied(currentValue: unknown, patchValue: unknown): b
     );
   }
 
-  if (isRecord(patchValue)) {
-    if (!isRecord(currentValue)) {
+  if (isPlainRecord(patchValue)) {
+    if (!isPlainRecord(currentValue)) {
       return false;
     }
 
@@ -803,7 +800,7 @@ export class CorrectionService {
     patch: Record<string, unknown>,
     provenance: Provenance = MANUAL_PROVENANCE,
   ): Promise<ReviewQueueItem> {
-    if (!isRecord(patch)) {
+    if (!isPlainRecord(patch)) {
       throw new StorageError("Correction patch must be a JSON object", {
         code: "CORRECTION_PATCH_INVALID",
       });
@@ -912,7 +909,7 @@ export class CorrectionService {
     const patch = refs.patch;
     const proposedProvenance = parseReviewProvenance(item.refs);
 
-    if (!isRecord(patch)) {
+    if (!isPlainRecord(patch)) {
       throw new StorageError("Correction review item is missing an object patch", {
         code: "REVIEW_QUEUE_INVALID",
       });

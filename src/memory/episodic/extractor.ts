@@ -19,6 +19,7 @@ import {
   type StreamCursor,
   type StreamEntry,
 } from "../../stream/index.js";
+import { uniqueStrings } from "../../util/collections.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -160,10 +161,6 @@ function chunkEntries(entries: readonly StreamEntry[], maxTokens: number): Strea
   }
 
   return chunks;
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }
 
 function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_stream_ids"] {

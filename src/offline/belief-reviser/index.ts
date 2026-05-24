@@ -16,6 +16,7 @@ import {
 } from "../../memory/semantic/index.js";
 import { markSemanticContradicted } from "../../memory/lifecycle-ops/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -223,11 +224,11 @@ type ApplyRegradeResult = {
 };
 
 function uniqueEpisodeIds(ids: readonly z.infer<typeof episodeIdSchema>[]) {
-  return [...new Set(ids)];
+  return dedupePreservingOrder(ids);
 }
 
 function uniqueEdgeIds(ids: readonly z.infer<typeof semanticEdgeIdSchema>[]) {
-  return [...new Set(ids)];
+  return dedupePreservingOrder(ids);
 }
 
 function collectEpisodeIds(

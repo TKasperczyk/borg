@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { isPlainRecord } from "../../util/guards.js";
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import {
   commitmentIdHelpers,
@@ -149,12 +150,8 @@ export const commitmentSchema = z.object({
   last_reinforced_at: z.number().finite(),
 });
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function normalizeLegacyCommitmentValue(value: unknown): unknown {
-  if (!isRecord(value)) {
+  if (!isPlainRecord(value)) {
     return value;
   }
 

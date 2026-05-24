@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import type { CAC } from "cac";
 
-import { createAnsi } from "../helpers/ansi.js";
+import { createAnsi } from "../../util/ansi.js";
 import { CliError } from "../helpers/errors.js";
 import { writeLine } from "../helpers/formatters.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
