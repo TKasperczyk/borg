@@ -2,6 +2,7 @@
 .claude
 .serena
 simulator-runs
+simulator-runs.zip
 replay-out
 graphify-out
 node_modules

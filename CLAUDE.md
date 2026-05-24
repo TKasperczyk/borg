@@ -1,3 +1,7 @@
+## Workflow
+
+The dev-loop process (sprint cycle, GPT Pro review submission, sim runs, ChatGPT mechanics, end-state goals) lives in `WORKFLOW.md` at the repo root. Read it after this file when starting a fresh session.
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.
