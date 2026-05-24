@@ -12,12 +12,10 @@ import {
   type Episode,
 } from "../episodic/index.js";
 import { type IdentityEventRepository, type IdentityService } from "../identity/index.js";
-import {
-  AutobiographicalRepository,
-  GoalsRepository,
-  TraitsRepository,
-  ValuesRepository,
-} from "../self/index.js";
+import type { AutobiographicalRepository } from "../self/autobiographical.js";
+import type { GoalsRepository } from "../self/goals-repository.js";
+import type { TraitsRepository } from "../self/traits-repository.js";
+import type { ValuesRepository } from "../self/values-repository.js";
 import { CommitmentRepository, entityIdSchema } from "../commitments/index.js";
 import { type EntityId } from "../../util/ids.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";

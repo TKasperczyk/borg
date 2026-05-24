@@ -7,13 +7,15 @@ import {
   autobiographicalPeriodIdSchema,
   autobiographicalPeriodPatchSchema,
   autobiographicalPeriodSchema,
+} from "../../self/autobiographical.js";
+import {
   goalIdSchema,
   goalPatchSchema,
   traitIdSchema,
   traitPatchSchema,
   valueIdSchema,
   valuePatchSchema,
-} from "../../self/index.js";
+} from "../../self/types.js";
 import { SemanticError } from "../../../util/errors.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../types.js";
 import type {
