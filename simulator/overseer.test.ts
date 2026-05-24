@@ -22,6 +22,13 @@ import {
 import { LEGACY_METRIC_ALIAS_KEYS } from "./legacy-metric-aliases.js";
 import type { MetricsRow, RawOverseerVerdict } from "./types.js";
 
+const OVERSEER_OMITTED_LEDGER_METRIC_KEYS = [
+  "ledger_reverse_scan_entries_total",
+  "ledger_reverse_scan_bytes_total",
+  "ledger_reverse_scan_entry_cap_hit_total",
+  "ledger_reverse_scan_byte_cap_hit_total",
+] as const satisfies readonly (keyof MetricsRow)[];
+
 type CapturedRequest = Parameters<
   NonNullable<RunOverseerOptions["client"]>["messages"]["stream"]
 >[0];
@@ -1145,6 +1152,10 @@ describe("simulator overseer", () => {
       finalizer_no_output_flags_by_flag: { with_open_question: 1 },
       borg_aborted_turns: 2,
       borg_hard_aborted_turns: 2,
+      ledger_reverse_scan_entries_total: 1024,
+      ledger_reverse_scan_bytes_total: 8388608,
+      ledger_reverse_scan_entry_cap_hit_total: 1,
+      ledger_reverse_scan_byte_cap_hit_total: 1,
     } satisfies MetricsRow;
 
     try {
@@ -1166,6 +1177,11 @@ describe("simulator overseer", () => {
         expect(diskRow).toHaveProperty(alias);
         expect(overseerRow).not.toHaveProperty(alias);
         expect(promptJson).not.toContain(`"${alias}":`);
+      }
+      for (const key of OVERSEER_OMITTED_LEDGER_METRIC_KEYS) {
+        expect(diskRow).toHaveProperty(key);
+        expect(overseerRow).not.toHaveProperty(key);
+        expect(promptJson).not.toContain(`"${key}":`);
       }
       expect(promptJson).toContain("shared_state_omitted_recent_entries_total_across_compiles");
       expect(promptJson).toContain("shared_state_omitted_live_old_final_compile");

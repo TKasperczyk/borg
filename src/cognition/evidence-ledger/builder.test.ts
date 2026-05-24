@@ -546,6 +546,119 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
+  it("traces reverse-scan byte cap hits", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const traceEvents: Array<{ event: TurnTraceEventName } & TurnTraceData> = [];
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: (event, data) => {
+        traceEvents.push({ event, ...data });
+      },
+    };
+
+    try {
+      let currentUserEntry: StreamEntry | undefined;
+      const largePayload = "x".repeat(1024 * 1024);
+      for (let index = 0; index < 9; index += 1) {
+        currentUserEntry = await writer.append({
+          kind: "user_msg",
+          content: `Ledger reverse scan byte fixture ${index} ${largePayload}`,
+        });
+      }
+
+      await attributionBuilder({ tempDir, tracer }).build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-ledger-reverse-scan-byte-cap",
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry?.content ?? ""),
+        currentUserEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "evidence_ledger.reverse_scan",
+          turnId: "turn-ledger-reverse-scan-byte-cap",
+          ledger_reverse_scan_bytes: 8 * 1024 * 1024,
+          ledger_reverse_scan_entry_cap_hit: false,
+          ledger_reverse_scan_byte_cap_hit: true,
+        }),
+      );
+    } finally {
+      writer.close();
+    }
+  });
+
+  it("traces reverse-scan without cap hits", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const traceEvents: Array<{ event: TurnTraceEventName } & TurnTraceData> = [];
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: (event, data) => {
+        traceEvents.push({ event, ...data });
+      },
+    };
+
+    try {
+      let currentUserEntry: StreamEntry | undefined;
+      for (let index = 0; index < 3; index += 1) {
+        currentUserEntry = await writer.append({
+          kind: "user_msg",
+          content: `Ledger reverse scan uncapped fixture ${index}`,
+        });
+      }
+
+      await attributionBuilder({ tempDir, tracer }).build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-ledger-reverse-scan-no-cap",
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry?.content ?? ""),
+        currentUserEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "evidence_ledger.reverse_scan",
+          turnId: "turn-ledger-reverse-scan-no-cap",
+          ledger_reverse_scan_entries: 3,
+          ledger_reverse_scan_entry_cap_hit: false,
+          ledger_reverse_scan_byte_cap_hit: false,
+        }),
+      );
+    } finally {
+      writer.close();
+    }
+  });
+
   it("renders a structural attribution matrix without leaking owner, actor, or assistant rationale buckets", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
