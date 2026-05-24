@@ -489,16 +489,10 @@ function lifecycleProtectionStrength(
     : "soft";
 }
 
-function incrementBlockerCount(
+function incrementBlockerReasonCount(
   counts: LifecycleAgingBlockerCounts,
   reason: LifecycleProtectionReason,
 ): void {
-  if (lifecycleProtectionStrength(reason) === "hard") {
-    counts.blocked_by_hard_total += 1;
-  } else {
-    counts.blocked_by_soft_total += 1;
-  }
-
   switch (reason) {
     case "touched_by_patch":
       counts.blocked_by_patch_touch += 1;
@@ -521,16 +515,24 @@ function incrementBlockerCount(
   }
 }
 
-function incrementBlockerStrengthCounts(
+export function recordBlockerCounts(
   counts: LifecycleAgingBlockerCounts,
   reasons: readonly LifecycleProtectionReason[],
 ): void {
+  for (const reason of reasons) {
+    incrementBlockerReasonCount(counts, reason);
+  }
+
   if (reasons.some((reason) => lifecycleProtectionStrength(reason) === "hard")) {
     counts.blocked_by_hard_total += 1;
   }
 
   if (reasons.some((reason) => lifecycleProtectionStrength(reason) === "soft")) {
     counts.blocked_by_soft_total += 1;
+  }
+
+  if (reasons.length > 1) {
+    counts.blocked_by_multiple_reasons += 1;
   }
 }
 
@@ -550,12 +552,7 @@ function recordDemotionCandidate(input: {
     return;
   }
 
-  if (input.reasons.length > 1) {
-    input.counts.blocked_by_multiple_reasons += 1;
-    incrementBlockerStrengthCounts(input.counts, input.reasons);
-  } else if (input.reasons.length === 1) {
-    incrementBlockerCount(input.counts, input.reasons[0]!);
-  }
+  recordBlockerCounts(input.counts, input.reasons);
 
   const activeCanonicalizerKinds = activeCanonicalizerOverlapKinds(input.entry, input.agingInput);
   const blockReasonsWithStrength = input.reasons.map((reason) => ({

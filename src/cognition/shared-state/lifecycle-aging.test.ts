@@ -15,8 +15,11 @@ import {
   blocksLowSalienceToDormantDemotion,
   entryProtectionState,
   materializeSharedStateEntriesAfterOperations,
+  recordBlockerCounts,
   reactivatesDemoted,
   sharedStateLifecycleProtectionReasons,
+  type LifecycleAgingBlockerCounts,
+  type LifecycleProtectionReason,
 } from "./lifecycle-aging.js";
 
 const DEMOTED_KINDS = ["low_salience_live", "dormant_live"] as const;
@@ -29,6 +32,103 @@ function staleTurnInput(entryId: string) {
     dormantTurnThreshold: 15,
   };
 }
+
+function emptyBlockerCounts(): LifecycleAgingBlockerCounts {
+  return {
+    demotable_count: 0,
+    unknown_age_count: 0,
+    demoted_count: 0,
+    blocked_by_current_turn_update: 0,
+    blocked_by_patch_touch: 0,
+    blocked_by_ledger_overlap: 0,
+    blocked_by_recent_retrieval: 0,
+    blocked_by_active_canonicalizer_critical: 0,
+    blocked_by_active_canonicalizer_operational: 0,
+    blocked_by_hard_total: 0,
+    blocked_by_soft_total: 0,
+    blocked_by_multiple_reasons: 0,
+  };
+}
+
+describe("recordBlockerCounts", () => {
+  it.each<{
+    name: string;
+    reasons: LifecycleProtectionReason[];
+    expected: Partial<LifecycleAgingBlockerCounts>;
+  }>([
+    {
+      name: "single hard reason",
+      reasons: ["ledger_overlap"],
+      expected: {
+        blocked_by_ledger_overlap: 1,
+        blocked_by_hard_total: 1,
+        blocked_by_soft_total: 0,
+        blocked_by_multiple_reasons: 0,
+      },
+    },
+    {
+      name: "single soft reason",
+      reasons: ["recent_retrieval"],
+      expected: {
+        blocked_by_recent_retrieval: 1,
+        blocked_by_hard_total: 0,
+        blocked_by_soft_total: 1,
+        blocked_by_multiple_reasons: 0,
+      },
+    },
+    {
+      name: "two hard reasons",
+      reasons: ["current_turn_update", "ledger_overlap"],
+      expected: {
+        blocked_by_current_turn_update: 1,
+        blocked_by_ledger_overlap: 1,
+        blocked_by_hard_total: 1,
+        blocked_by_soft_total: 0,
+        blocked_by_multiple_reasons: 1,
+      },
+    },
+    {
+      name: "two soft reasons",
+      reasons: ["active_canonicalizer_operational", "recent_retrieval"],
+      expected: {
+        blocked_by_active_canonicalizer_operational: 1,
+        blocked_by_recent_retrieval: 1,
+        blocked_by_hard_total: 0,
+        blocked_by_soft_total: 1,
+        blocked_by_multiple_reasons: 1,
+      },
+    },
+    {
+      name: "mixed hard and soft reasons",
+      reasons: ["ledger_overlap", "recent_retrieval"],
+      expected: {
+        blocked_by_ledger_overlap: 1,
+        blocked_by_recent_retrieval: 1,
+        blocked_by_hard_total: 1,
+        blocked_by_soft_total: 1,
+        blocked_by_multiple_reasons: 1,
+      },
+    },
+    {
+      name: "three mixed reasons",
+      reasons: ["current_turn_update", "ledger_overlap", "recent_retrieval"],
+      expected: {
+        blocked_by_current_turn_update: 1,
+        blocked_by_ledger_overlap: 1,
+        blocked_by_recent_retrieval: 1,
+        blocked_by_hard_total: 1,
+        blocked_by_soft_total: 1,
+        blocked_by_multiple_reasons: 1,
+      },
+    },
+  ])("records $name", ({ reasons, expected }) => {
+    const counts = emptyBlockerCounts();
+
+    recordBlockerCounts(counts, reasons);
+
+    expect(counts).toMatchObject(expected);
+  });
+});
 
 describe("applyLifecycleAging", () => {
   it("materializes global update turns for add update and supersede but not transitions", () => {
@@ -613,9 +713,9 @@ describe("applyLifecycleAging", () => {
       demotable_count: 3,
       unknown_age_count: 1,
       demoted_count: 1,
-      blocked_by_current_turn_update: 0,
+      blocked_by_current_turn_update: 1,
       blocked_by_patch_touch: 0,
-      blocked_by_ledger_overlap: 0,
+      blocked_by_ledger_overlap: 1,
       blocked_by_recent_retrieval: 0,
       blocked_by_active_canonicalizer_critical: 1,
       blocked_by_active_canonicalizer_operational: 0,
