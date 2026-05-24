@@ -444,6 +444,7 @@ function makeGranadaConstraintConflictLedger(): EvidenceLedger {
         last_updated_stream_entry_ids: [tuesdayStreamId],
         created_at: 1_000,
         last_updated_at: 1_000,
+        last_updated_turn_global: null,
         superseded_by_id: null,
         rank: 0,
         canonicalizes: {
@@ -1148,6 +1149,7 @@ describe("deliberator", () => {
               last_updated_stream_entry_ids: [currentUserEntryId],
               created_at: 1_000,
               last_updated_at: 1_000,
+              last_updated_turn_global: null,
               superseded_by_id: null,
               rank: 0,
               canonicalizes: {

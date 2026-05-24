@@ -97,6 +97,7 @@ export type SharedStateOperation =
 
 export type SharedStateUpsertOptions = IdentityCasOptions & {
   now?: number;
+  lastUpdatedTurnGlobal?: number | null;
   lastCompiledAt?: number | null;
   lastCompiledStreamEntryId?: StreamEntryId | null;
   sourceTrustValidator?: SharedStateSourceTrustValidator;
@@ -207,6 +208,10 @@ function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
     ),
     created_at: Number(row.created_at),
     last_updated_at: Number(row.last_updated_at),
+    last_updated_turn_global:
+      row.last_updated_turn_global === null || row.last_updated_turn_global === undefined
+        ? null
+        : Number(row.last_updated_turn_global),
     superseded_by_id:
       row.superseded_by_id === null || row.superseded_by_id === undefined
         ? null
@@ -419,8 +424,9 @@ export class SharedStateRepository {
           INSERT INTO decision_artifact_entries (
             id, audience_entity_id, state_key, kind, text, owner_entity_id,
             provenance_stream_entry_ids, last_updated_stream_entry_ids,
-            created_at, last_updated_at, superseded_by_id, rank, canonicalizes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, last_updated_at, last_updated_turn_global, superseded_by_id, rank,
+            canonicalizes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -434,6 +440,7 @@ export class SharedStateRepository {
         serializeJsonValue(parsed.last_updated_stream_entry_ids),
         parsed.created_at,
         parsed.last_updated_at,
+        parsed.last_updated_turn_global,
         parsed.superseded_by_id,
         parsed.rank,
         serializeJsonValue(parsed.canonicalizes),
@@ -476,6 +483,7 @@ export class SharedStateRepository {
     audienceEntityId: EntityId,
     operation: Omit<SharedStateAddOperation, "type">,
     nowMs: number,
+    lastUpdatedTurnGlobal: number | null,
     sourceTrustValidator: SharedStateSourceTrustValidator,
   ): SharedStateEntry {
     const provenanceStreamEntryIds = uniqueStreamEntryIds([
@@ -508,6 +516,7 @@ export class SharedStateRepository {
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
       created_at: operation.created_at ?? nowMs,
       last_updated_at: operation.last_updated_at ?? operation.created_at ?? nowMs,
+      last_updated_turn_global: lastUpdatedTurnGlobal,
       superseded_by_id: null,
       rank: operation.rank ?? 0,
       canonicalizes: uniqueCanonicalizes(operation.canonicalizes),
@@ -521,6 +530,7 @@ export class SharedStateRepository {
     audienceEntityId: EntityId,
     operation: SharedStateUpdateOperation,
     nowMs: number,
+    lastUpdatedTurnGlobal: number | null,
     sourceTrustValidator: SharedStateSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
@@ -557,6 +567,7 @@ export class SharedStateRepository {
       provenance_stream_entry_ids: provenanceStreamEntryIds,
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
       last_updated_at: operation.last_updated_at ?? nowMs,
+      last_updated_turn_global: lastUpdatedTurnGlobal,
       rank: operation.rank ?? current.rank,
       canonicalizes: mergeCanonicalizes(current.canonicalizes, operation.canonicalizes),
     });
@@ -572,6 +583,7 @@ export class SharedStateRepository {
               provenance_stream_entry_ids = ?,
               last_updated_stream_entry_ids = ?,
               last_updated_at = ?,
+              last_updated_turn_global = ?,
               rank = ?,
               canonicalizes = ?
           WHERE id = ? AND audience_entity_id = ?
@@ -585,6 +597,7 @@ export class SharedStateRepository {
         serializeJsonValue(next.provenance_stream_entry_ids),
         serializeJsonValue(next.last_updated_stream_entry_ids),
         next.last_updated_at,
+        next.last_updated_turn_global,
         next.rank,
         serializeJsonValue(next.canonicalizes),
         next.id,
@@ -596,6 +609,7 @@ export class SharedStateRepository {
     audienceEntityId: EntityId,
     operation: SharedStateSupersedeOperation,
     nowMs: number,
+    lastUpdatedTurnGlobal: number | null,
     sourceTrustValidator: SharedStateSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
@@ -614,6 +628,7 @@ export class SharedStateRepository {
         id: parseSharedStateEntryId(replacementId),
       },
       nowMs,
+      lastUpdatedTurnGlobal,
       sourceTrustValidator,
     );
     const lastUpdatedAt = operation.last_updated_at ?? nowMs;
@@ -632,6 +647,7 @@ export class SharedStateRepository {
       superseded_by_id: replacement.id,
       last_updated_at: lastUpdatedAt,
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
+      last_updated_turn_global: lastUpdatedTurnGlobal,
     });
 
     this.db
@@ -640,7 +656,8 @@ export class SharedStateRepository {
           UPDATE decision_artifact_entries
           SET superseded_by_id = ?,
               last_updated_at = ?,
-              last_updated_stream_entry_ids = ?
+              last_updated_stream_entry_ids = ?,
+              last_updated_turn_global = ?
           WHERE id = ? AND audience_entity_id = ?
         `,
       )
@@ -648,6 +665,7 @@ export class SharedStateRepository {
         replacement.id,
         lastUpdatedAt,
         serializeJsonValue(lastUpdatedStreamEntryIds),
+        lastUpdatedTurnGlobal,
         current.id,
         audienceEntityId,
       );
@@ -770,6 +788,7 @@ export class SharedStateRepository {
     }
 
     const nowMs = options.now ?? this.clock.now();
+    const lastUpdatedTurnGlobal = options.lastUpdatedTurnGlobal ?? null;
     const lastCompiledAt = options.lastCompiledAt ?? nowMs;
     const lastCompiledStreamEntryId = options.lastCompiledStreamEntryId ?? null;
     const sourceTrustValidator = this.sourceTrustValidator(options.sourceTrustValidator);
@@ -795,13 +814,31 @@ export class SharedStateRepository {
       for (const operation of operations) {
         switch (operation.type) {
           case "add":
-            this.addEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
+            this.addEntry(
+              audienceEntityId,
+              operation,
+              nowMs,
+              lastUpdatedTurnGlobal,
+              sourceTrustValidator,
+            );
             break;
           case "update":
-            this.updateEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
+            this.updateEntry(
+              audienceEntityId,
+              operation,
+              nowMs,
+              lastUpdatedTurnGlobal,
+              sourceTrustValidator,
+            );
             break;
           case "supersede":
-            this.supersedeEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
+            this.supersedeEntry(
+              audienceEntityId,
+              operation,
+              nowMs,
+              lastUpdatedTurnGlobal,
+              sourceTrustValidator,
+            );
             break;
           case "prune":
             this.pruneEntry(audienceEntityId, operation);

@@ -102,6 +102,7 @@ export const sharedStateEntrySchema = z
     last_updated_stream_entry_ids: z.array(sharedStateStreamEntryIdSchema).min(1),
     created_at: z.number().finite(),
     last_updated_at: z.number().finite(),
+    last_updated_turn_global: z.number().int().nonnegative().nullable().default(null),
     superseded_by_id: sharedStateEntryIdSchema.nullable(),
     rank: z.number().int().nonnegative(),
     canonicalizes: sharedStateCanonicalizesSchema,

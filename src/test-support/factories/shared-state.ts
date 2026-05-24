@@ -40,6 +40,7 @@ export function makeSharedStateEntry(overrides: Partial<SharedStateEntry> = {}):
     last_updated_stream_entry_ids: overrides.last_updated_stream_entry_ids ?? sourceIds,
     created_at: createdAt,
     last_updated_at: overrides.last_updated_at ?? createdAt,
+    last_updated_turn_global: overrides.last_updated_turn_global ?? null,
     superseded_by_id: overrides.superseded_by_id ?? null,
     rank: overrides.rank ?? 0,
     canonicalizes: makeSharedStateCanonicalizes(overrides.canonicalizes),

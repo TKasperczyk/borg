@@ -96,6 +96,7 @@ function sharedStateEntry(input: {
     last_updated_stream_entry_ids: [input.source],
     created_at: 1_000 + input.index,
     last_updated_at: 1_000 + input.index,
+    last_updated_turn_global: null,
     superseded_by_id: null,
     rank: input.index,
     canonicalizes: {
@@ -230,6 +231,7 @@ describe("renderSharedStateArtifact", () => {
           last_updated_stream_entry_ids: [source],
           created_at: now,
           last_updated_at: now,
+          last_updated_turn_global: null,
           superseded_by_id: null,
           rank: 0,
           canonicalizes: {

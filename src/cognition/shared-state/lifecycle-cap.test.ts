@@ -32,6 +32,7 @@ function sharedStateEntry(input: {
     last_updated_stream_entry_ids: [streamEntryId],
     created_at: input.updatedAt,
     last_updated_at: input.updatedAt,
+    last_updated_turn_global: null,
     superseded_by_id: null,
     rank: input.rank,
     canonicalizes: {

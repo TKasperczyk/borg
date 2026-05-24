@@ -14,6 +14,7 @@ import {
   blocksLiveToLowSalienceDemotion,
   blocksLowSalienceToDormantDemotion,
   entryProtectionState,
+  materializeSharedStateEntriesAfterOperations,
   reactivatesDemoted,
   sharedStateLifecycleProtectionReasons,
 } from "./lifecycle-aging.js";
@@ -30,9 +31,146 @@ function staleTurnInput(entryId: string) {
 }
 
 describe("applyLifecycleAging", () => {
+  it("materializes global update turns for add update and supersede but not transitions", () => {
+    const source = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const thirdSource = createStreamEntryId();
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_turn_global: 2,
+      last_updated_stream_entry_ids: [source],
+    });
+    const audienceEntityId = entry.audience_entity_id;
+    const transitionedOnly = materializeSharedStateEntriesAfterOperations({
+      previousArtifact: {
+        audience_entity_id: audienceEntityId,
+        record_version: 1,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_compiled_at: 1_000,
+        last_compiled_stream_entry_id: source,
+        entries: [entry],
+      },
+      audienceEntityId,
+      nowMs: 2_000,
+      lastUpdatedTurnGlobal: 10,
+      operations: [
+        {
+          type: "transition_kind",
+          id: entry.id,
+          kind: "low_salience_live",
+        },
+      ],
+    });
+
+    const updated = materializeSharedStateEntriesAfterOperations({
+      previousArtifact: {
+        audience_entity_id: audienceEntityId,
+        record_version: 1,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_compiled_at: 1_000,
+        last_compiled_stream_entry_id: source,
+        entries: [entry],
+      },
+      audienceEntityId,
+      nowMs: 2_000,
+      lastUpdatedTurnGlobal: 10,
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.fixture",
+          last_updated_stream_entry_ids: [secondSource],
+        },
+        {
+          type: "transition_kind",
+          id: entry.id,
+          kind: "low_salience_live",
+        },
+        {
+          type: "supersede",
+          id: entry.id,
+          replacement: {
+            state_key: "decision.fixture",
+            kind: "locked",
+            text: "Replacement fixture",
+            provenance_stream_entry_ids: [thirdSource],
+          },
+          last_updated_stream_entry_ids: [thirdSource],
+        },
+      ],
+    });
+    const oldEntry = updated.find((candidate) => candidate.id === entry.id);
+    const replacement = updated.find((candidate) => candidate.id !== entry.id);
+
+    expect(transitionedOnly[0]).toMatchObject({
+      kind: "low_salience_live",
+      last_updated_turn_global: 2,
+    });
+    expect(oldEntry).toMatchObject({
+      kind: "low_salience_live",
+      last_updated_turn_global: 10,
+    });
+    expect(replacement).toMatchObject({
+      kind: "locked",
+      last_updated_turn_global: 10,
+    });
+  });
+
   it("demotes old live entries without structural pull", () => {
     const entry = makeSharedStateEntry({
       kind: "live",
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+
+    const result = applyLifecycleAging({
+      entries: [entry],
+      currentTurnCounter: 12,
+      lastUpdatedTurnByEntryId: { [entry.id]: 6 },
+      recentTurnThreshold: 5,
+    });
+
+    expect(result.transitions).toEqual([
+      {
+        entryId: entry.id,
+        fromKind: "live",
+        toKind: "low_salience_live",
+        reason: "old_live_without_structural_pull",
+        transition: "demoted",
+      },
+    ]);
+  });
+
+  it("uses persisted global update turn before the stream-derived fallback", () => {
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_turn_global: 1,
+      last_updated_stream_entry_ids: [createStreamEntryId()],
+    });
+
+    const result = applyLifecycleAging({
+      entries: [entry],
+      currentTurnCounter: 30,
+      lastUpdatedTurnByEntryId: { [entry.id]: 30 },
+      recentTurnThreshold: 5,
+    });
+
+    expect(result.transitions).toEqual([
+      {
+        entryId: entry.id,
+        fromKind: "live",
+        toKind: "low_salience_live",
+        reason: "old_live_without_structural_pull",
+        transition: "demoted",
+      },
+    ]);
+  });
+
+  it("falls back to stream-derived update turn for legacy entries", () => {
+    const entry = makeSharedStateEntry({
+      kind: "live",
+      last_updated_turn_global: null,
       last_updated_stream_entry_ids: [createStreamEntryId()],
     });
 

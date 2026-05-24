@@ -69,6 +69,7 @@ function sharedStateEntry(input: {
     last_updated_stream_entry_ids: [input.source],
     created_at: 1_000 + index,
     last_updated_at: 1_000 + index,
+    last_updated_turn_global: null,
     superseded_by_id: null,
     rank: index,
     canonicalizes: input.canonicalizes ?? {
@@ -1083,6 +1084,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
                   operation.last_updated_stream_entry_ids as StreamEntryId[],
                 created_at: now,
                 last_updated_at: now,
+                last_updated_turn_global: null,
                 superseded_by_id: null,
                 rank: nextEntries.length,
                 canonicalizes: {

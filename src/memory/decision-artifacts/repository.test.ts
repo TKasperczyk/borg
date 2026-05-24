@@ -238,7 +238,95 @@ describe("SharedStateRepository", () => {
       kind: "dormant_live",
       last_updated_at: 100,
       last_updated_stream_entry_ids: [source],
+      last_updated_turn_global: null,
     });
+  });
+
+  it("persists last updated global turn on add update and supersede but not kind transitions", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const thirdSource = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          id: entryId,
+          state_key: "decision.route",
+          kind: "live",
+          text: "Route is still open",
+          provenance_stream_entry_ids: [firstSource],
+        },
+      ],
+      {
+        lastUpdatedTurnGlobal: 10,
+      },
+    );
+
+    expect(initial?.entries[0]?.last_updated_turn_global).toBe(10);
+
+    const updated = repository.upsert(
+      audience,
+      [
+        {
+          type: "update",
+          id: entryId,
+          state_key: "decision.route",
+          text: "Route is settled",
+          last_updated_stream_entry_ids: [secondSource],
+        },
+      ],
+      {
+        lastUpdatedTurnGlobal: 12,
+      },
+    );
+
+    expect(updated?.entries[0]?.last_updated_turn_global).toBe(12);
+
+    const transitioned = repository.upsert(
+      audience,
+      [
+        {
+          type: "transition_kind",
+          id: entryId,
+          kind: "low_salience_live",
+        },
+      ],
+      {
+        lastUpdatedTurnGlobal: 99,
+      },
+    );
+
+    expect(transitioned?.entries[0]?.last_updated_turn_global).toBe(12);
+
+    const superseded = repository.upsert(
+      audience,
+      [
+        {
+          type: "supersede",
+          id: entryId,
+          replacement: {
+            state_key: "decision.route",
+            kind: "locked",
+            text: "Final route is locked",
+            provenance_stream_entry_ids: [thirdSource],
+          },
+          last_updated_stream_entry_ids: [thirdSource],
+        },
+      ],
+      {
+        lastUpdatedTurnGlobal: 15,
+      },
+    );
+
+    const oldEntry = superseded?.entries.find((entry) => entry.id === entryId);
+    const replacement = superseded?.entries.find((entry) => entry.id !== entryId);
+
+    expect(oldEntry?.last_updated_turn_global).toBe(15);
+    expect(replacement?.last_updated_turn_global).toBe(15);
   });
 
   it("migrates old kind constraints while preserving existing live rows", () => {
@@ -348,6 +436,129 @@ describe("SharedStateRepository", () => {
         expect(transitioned?.entries[0]).toMatchObject({
           id: entryId,
           kind: "low_salience_live",
+        });
+      } finally {
+        upgradedDb.close();
+      }
+    } finally {
+      legacyDb?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds nullable last updated global turn column to legacy entries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-shared-state-turn-migration-"));
+    const path = join(dir, "state.sqlite");
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+    let legacyDb: SqliteDatabase | null = openDatabase(path);
+
+    try {
+      legacyDb.exec(`
+        CREATE TABLE decision_artifacts (
+          audience_entity_id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_compiled_at INTEGER NULL,
+          last_compiled_stream_entry_id TEXT NULL
+        );
+
+        CREATE TABLE decision_artifact_entries (
+          id TEXT PRIMARY KEY,
+          audience_entity_id TEXT NOT NULL,
+          state_key TEXT NULL,
+          kind TEXT NOT NULL CHECK (
+            kind IN (
+              'locked',
+              'live',
+              'low_salience_live',
+              'dormant_live',
+              'tentative',
+              'invalidated',
+              'pending'
+            )
+          ),
+          text TEXT NOT NULL,
+          owner_entity_id TEXT NULL,
+          provenance_stream_entry_ids TEXT NOT NULL,
+          last_updated_stream_entry_ids TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          last_updated_at INTEGER NOT NULL,
+          superseded_by_id TEXT NULL,
+          rank INTEGER NOT NULL DEFAULT 0,
+          canonicalizes TEXT NOT NULL DEFAULT '{"goal_ids":[],"commitment_ids":[],"action_ids":[],"open_question_ids":[]}'
+        );
+      `);
+
+      for (const migration of composeMigrations(sharedStateMigrations).filter(
+        (item) => item.name !== "decision_artifact_entries_last_updated_turn_global",
+      )) {
+        legacyDb
+          .prepare("INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)")
+          .run(migration.id, migration.name, 1);
+      }
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO decision_artifacts (
+              audience_entity_id, record_version, created_at, updated_at,
+              last_compiled_at, last_compiled_stream_entry_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(audience, 1, 100, 100, null, null);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO decision_artifact_entries (
+              id, audience_entity_id, state_key, kind, text, owner_entity_id,
+              provenance_stream_entry_ids, last_updated_stream_entry_ids,
+              created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          entryId,
+          audience,
+          "state.fixture",
+          "live",
+          "Legacy live row",
+          null,
+          serializeJsonValue([source]),
+          serializeJsonValue([source]),
+          100,
+          100,
+          null,
+          0,
+          serializeJsonValue({
+            goal_ids: [],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [],
+          }),
+        );
+      legacyDb.close();
+      legacyDb = null;
+
+      const upgradedDb = openDatabase(path, {
+        migrations: composeMigrations(sharedStateMigrations),
+      });
+      const upgradedRepository = new SharedStateRepository({
+        db: upgradedDb,
+        clock,
+      });
+
+      try {
+        const columns = upgradedDb.prepare("PRAGMA table_info(decision_artifact_entries)").all() as
+          Array<{ name: string }>;
+
+        expect(columns.some((column) => column.name === "last_updated_turn_global")).toBe(true);
+        expect(upgradedRepository.get(audience)?.entries[0]).toMatchObject({
+          id: entryId,
+          last_updated_turn_global: null,
         });
       } finally {
         upgradedDb.close();

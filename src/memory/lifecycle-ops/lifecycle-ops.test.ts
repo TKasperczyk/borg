@@ -43,6 +43,7 @@ function lockedEntry(overrides: Partial<SharedStateEntry> = {}): SharedStateEntr
     last_updated_stream_entry_ids: overrides.last_updated_stream_entry_ids ?? [streamEntryId],
     created_at: overrides.created_at ?? 1_000,
     last_updated_at: overrides.last_updated_at ?? 1_000,
+    last_updated_turn_global: overrides.last_updated_turn_global ?? null,
     superseded_by_id: overrides.superseded_by_id ?? null,
     rank: overrides.rank ?? 0,
     canonicalizes: overrides.canonicalizes ?? {

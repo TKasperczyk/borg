@@ -61,6 +61,7 @@ function makeEntry(input: {
     last_updated_stream_entry_ids: [input.sourceStreamEntryId],
     created_at: 1_000 + rank,
     last_updated_at: 1_000 + rank,
+    last_updated_turn_global: null,
     superseded_by_id: null,
     rank,
     canonicalizes: input.canonicalizes ?? EMPTY_CANONICALIZES,

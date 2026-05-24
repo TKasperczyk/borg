@@ -36,6 +36,7 @@ export const sharedStateMigrations = [
         last_updated_stream_entry_ids TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         last_updated_at INTEGER NOT NULL,
+        last_updated_turn_global INTEGER NULL,
         superseded_by_id TEXT NULL,
         rank INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (audience_entity_id)
@@ -137,6 +138,7 @@ export const sharedStateMigrations = [
           last_updated_stream_entry_ids TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           last_updated_at INTEGER NOT NULL,
+          last_updated_turn_global INTEGER NULL,
           superseded_by_id TEXT NULL,
           rank INTEGER NOT NULL DEFAULT 0,
           canonicalizes TEXT NOT NULL DEFAULT '{"goal_ids":[],"commitment_ids":[],"action_ids":[],"open_question_ids":[]}',
@@ -151,12 +153,13 @@ export const sharedStateMigrations = [
         INSERT INTO decision_artifact_entries_next (
           id, audience_entity_id, state_key, kind, text, owner_entity_id,
           provenance_stream_entry_ids, last_updated_stream_entry_ids,
-          created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+          created_at, last_updated_at, last_updated_turn_global, superseded_by_id, rank,
+          canonicalizes
         )
         SELECT
           id, audience_entity_id, state_key, kind, text, owner_entity_id,
           provenance_stream_entry_ids, last_updated_stream_entry_ids,
-          created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+          created_at, last_updated_at, NULL, superseded_by_id, rank, canonicalizes
         FROM decision_artifact_entries;
 
         DROP TABLE decision_artifact_entries;
@@ -170,6 +173,23 @@ export const sharedStateMigrations = [
           ON decision_artifact_entries(superseded_by_id);
         CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_audience_state_key
           ON decision_artifact_entries(audience_entity_id, state_key);
+      `);
+    },
+  },
+  {
+    id: 5,
+    name: "decision_artifact_entries_last_updated_turn_global",
+    up: (db) => {
+      if (
+        !tableExists(db, "decision_artifact_entries") ||
+        tableHasColumn(db, "decision_artifact_entries", "last_updated_turn_global")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE decision_artifact_entries
+          ADD COLUMN last_updated_turn_global INTEGER NULL;
       `);
     },
   },

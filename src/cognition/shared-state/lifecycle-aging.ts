@@ -153,6 +153,7 @@ export function materializeSharedStateEntriesAfterOperations(input: {
   operations: readonly SharedStateOperation[];
   audienceEntityId: SharedStateArtifact["audience_entity_id"];
   nowMs: number;
+  lastUpdatedTurnGlobal?: number | null;
 }): SharedStateEntry[] {
   const entries = new Map<SharedStateEntryId, SharedStateEntry>();
 
@@ -177,6 +178,7 @@ export function materializeSharedStateEntriesAfterOperations(input: {
           ),
           created_at: operation.created_at ?? input.nowMs,
           last_updated_at: operation.last_updated_at ?? operation.created_at ?? input.nowMs,
+          last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
           superseded_by_id: null,
           rank: operation.rank ?? entries.size,
           canonicalizes: operation.canonicalizes ?? EMPTY_CANONICALIZES,
@@ -205,6 +207,7 @@ export function materializeSharedStateEntriesAfterOperations(input: {
           ]),
           last_updated_stream_entry_ids: uniqueIds(operation.last_updated_stream_entry_ids),
           last_updated_at: operation.last_updated_at ?? input.nowMs,
+          last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
           rank: operation.rank ?? current.rank,
           canonicalizes: mergeCanonicalizes(current.canonicalizes, operation.canonicalizes),
         });
@@ -220,6 +223,7 @@ export function materializeSharedStateEntriesAfterOperations(input: {
             superseded_by_id: replacementId,
             last_updated_stream_entry_ids: uniqueIds(operation.last_updated_stream_entry_ids),
             last_updated_at: operation.last_updated_at ?? input.nowMs,
+            last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
           });
         }
 
@@ -240,6 +244,7 @@ export function materializeSharedStateEntriesAfterOperations(input: {
             operation.replacement.last_updated_at ??
             operation.replacement.created_at ??
             input.nowMs,
+          last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
           superseded_by_id: null,
           rank: operation.replacement.rank ?? entries.size,
           canonicalizes: operation.replacement.canonicalizes ?? EMPTY_CANONICALIZES,
@@ -434,7 +439,8 @@ function entryTurnAge(entry: SharedStateEntry, input: ApplyLifecycleAgingInput):
     return null;
   }
 
-  const lastUpdatedTurn = input.lastUpdatedTurnByEntryId?.[entry.id];
+  const lastUpdatedTurn =
+    entry.last_updated_turn_global ?? input.lastUpdatedTurnByEntryId?.[entry.id];
 
   if (lastUpdatedTurn === undefined || !Number.isFinite(lastUpdatedTurn)) {
     return null;

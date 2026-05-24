@@ -1046,6 +1046,7 @@ export async function compileSharedStateArtifact(
     operations: compilerOperations,
     audienceEntityId: input.audienceEntityId,
     nowMs,
+    lastUpdatedTurnGlobal: input.turnCounter ?? null,
   });
   const aging = applyLifecycleAging({
     entries: postCompilerEntries,
@@ -1216,6 +1217,7 @@ export async function compileSharedStateArtifact(
       lastCompiledAt: nowMs,
       lastCompiledStreamEntryId: input.currentUserStreamEntryId,
       sourceTrustValidator: input.sourceTrustValidator,
+      lastUpdatedTurnGlobal: input.turnCounter ?? null,
     });
 
     const reconciliationWorkSet = buildSharedStateReconciliationWorkSet({
