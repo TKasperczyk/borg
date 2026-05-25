@@ -33,6 +33,7 @@ import {
   makeSharedStateArtifact,
 } from "../../../test-support/factories/shared-state.js";
 import type { PerceptionResult } from "../../types.js";
+import { summarizeSharedStateArtifactRender } from "../../shared-state/render.js";
 import { SHARED_STATE_TOOL_NAME } from "../../shared-state/schema.js";
 import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity.js";
 import {
@@ -599,6 +600,244 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       missingIndexedSourceEntryId,
     ]);
     warn.mockRestore();
+  });
+
+  it("does not infer legacy shared-state turn age from sparse indexed source-trust facts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-indexed-legacy-age-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(22_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const priorSessionId = createSessionId();
+    const priorSourceEntryId = createStreamEntryId();
+    const currentSourceEntryId = createStreamEntryId();
+    const currentUserEntry = {
+      id: currentSourceEntryId,
+      kind: "user_msg",
+      content: "Current placeholder source.",
+      timestamp: 22_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-current-indexed-legacy-age",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const initialArtifact = sharedStateRepository.upsert(
+      audienceEntityId,
+      [
+        {
+          type: "add",
+          state_key: "state.legacy",
+          kind: "live",
+          text: "Legacy shared state with no durable turn age.",
+          provenance_stream_entry_ids: [priorSourceEntryId],
+          last_updated_stream_entry_ids: [priorSourceEntryId],
+          created_at: 1_000,
+          last_updated_at: 1_000,
+        },
+        {
+          type: "add",
+          state_key: "state.current",
+          kind: "live",
+          text: "Current shared state entry that consumes the render slot.",
+          provenance_stream_entry_ids: [currentSourceEntryId],
+          last_updated_stream_entry_ids: [currentSourceEntryId],
+          created_at: 2_000,
+          last_updated_at: 2_000,
+        },
+      ],
+      {
+        now: 1_000,
+        lastUpdatedTurnGlobal: null,
+      },
+    );
+    const legacyEntryId = initialArtifact?.entries[0]?.id;
+    const lookupEntriesById = vi.fn((entryIds: readonly string[]) => {
+      const facts = new Map();
+
+      if (entryIds.includes(priorSourceEntryId)) {
+        facts.set(priorSourceEntryId, {
+          entry_id: priorSourceEntryId,
+          session_id: priorSessionId,
+          timestamp: 1_000,
+          kind: "user_msg",
+          turn_id: "turn-prior-session-indexed-legacy-age",
+          turn_status: "active",
+          active: true,
+        });
+      }
+
+      return facts;
+    });
+    const iterate = vi.fn(async function* () {
+      throw new Error("session stream should not be loaded for indexed source trust");
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: false,
+              },
+              recentTurnThreshold: 5,
+              dormantTurnThreshold: 15,
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () =>
+        new FakeLLMClient({
+          responses: [
+            {
+              text: "",
+              input_tokens: 12,
+              output_tokens: 8,
+              stop_reason: "tool_use",
+              tool_calls: [
+                {
+                  id: "toolu_shared_state",
+                  name: SHARED_STATE_TOOL_NAME,
+                  input: {
+                    operations: [],
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+      },
+      entryIndex: {
+        countSessionEntriesByKind: () => 0,
+        lookupEntriesById,
+        quarantinedSharedStateArtifactRefs: () => new Set(),
+      },
+      createStreamReader: () =>
+        ({
+          iterate,
+        }) as unknown as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-current-indexed-legacy-age",
+        audienceEntityId,
+        currentUserMessage: "Current placeholder source.",
+        currentUserEntry,
+        globalTurnCounter: 30,
+        workingMemory: {
+          turn_counter: 30,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [
+          {
+            id: "prior_session_memory",
+            label: "Retrieved Evidence",
+            entries: [
+              {
+                id: `retrieved_evidence:${priorSourceEntryId}`,
+                source_type: "prior_session_stream",
+                session_scope: "prior_session",
+                actor: "user",
+                trust_rank: 1,
+                citations: [priorSourceEntryId],
+                text: "Prior-session source for legacy shared state.",
+              },
+              {
+                id: `current_user_message:${currentSourceEntryId}`,
+                source_type: "current_user_message",
+                session_scope: "current_session",
+                actor: "user",
+                trust_rank: 0,
+                text: "Current placeholder source.",
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "Prior-session source for legacy shared state.",
+    });
+
+    expect(iterate).not.toHaveBeenCalled();
+    expect(lookupEntriesById).toHaveBeenCalled();
+    expect(result.renderOptions?.lastUpdatedTurnByStreamEntryId).toEqual({
+      [currentSourceEntryId]: 30,
+    });
+
+    const summary = summarizeSharedStateArtifactRender(sharedStateRepository.get(audienceEntityId), {
+      ...result.renderOptions,
+      maxEntries: 1,
+      reservedSlots: {
+        live: 0,
+      },
+      newestStateChangeReservedSlots: 0,
+    });
+
+    expect(summary.renderedEntryIds).not.toContain(legacyEntryId);
+    expect(summary.omittedLiveUnknownAge).toBe(1);
+    expect(summary.omittedLiveRecentLowSalience).toBe(0);
   });
 
   it("falls back to stream scanning for cross-session quarantined shared-state refs without an entry index", async () => {

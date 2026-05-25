@@ -784,10 +784,12 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
   const lastUpdatedSourceTrustEntries =
     sourceTrustFacts === null
       ? currentSessionTrustEntries
-      : [...sourceTrustFacts.values()].map((facts) => ({
-          id: facts.entry_id as StreamEntryId,
-          turn_id: facts.turn_id ?? undefined,
-        }));
+      : [
+          {
+            id: input.input.currentUserEntry.id,
+            turn_id: input.input.currentUserEntry.turn_id,
+          },
+        ];
   const lastUpdatedTurnByStreamEntryId = sharedStateLastUpdatedTurnByStreamEntryId({
     entries: lastUpdatedSourceTrustEntries,
     currentUserEntry: input.input.currentUserEntry,
