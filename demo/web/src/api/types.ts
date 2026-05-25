@@ -45,6 +45,344 @@ export type StreamResponse = {
   next_cursor: string | null;
 };
 
+export type AttachmentRecord = {
+  attachment_id: string;
+  sha256: string;
+  media_type: string;
+  byte_size: number;
+  width: number;
+  height: number;
+  storage_ref: string;
+  thumbnail_ref: string | null;
+  perception_id: string | null;
+  text_embedding_ref: string | null;
+  visual_embedding_ref: string | null;
+  active: boolean;
+  audience: string | null;
+  created_turn_global: number | null;
+  parent_entry_id: string;
+  stream_entry_id: string | null;
+  parent_turn_id: string;
+  created_at: number;
+};
+
+export type ImagePerceptionRecord = {
+  perception_id: string;
+  payload_id: string;
+  attachment_id: string;
+  caption: string;
+  image_kind: string;
+  active: boolean;
+  audience: string | null;
+  visible_text: string[];
+  objects: string[];
+  people_or_roles: string[];
+  scene: string;
+  colors_and_visual_attributes: string[];
+  spatial_relationships: string[];
+  possible_user_relevant_details: string[];
+  search_terms: string[];
+  uncertainties: string[];
+  embedding_status: "pending" | "complete" | "failed";
+};
+
+export type AttachmentMetadataResponse = {
+  attachment: AttachmentRecord;
+  perception: ImagePerceptionRecord | null;
+  status: {
+    active: boolean;
+    quarantined: boolean;
+    stream_active?: boolean;
+    parent_active?: boolean;
+  };
+};
+
+export type AttachmentStatusItem = {
+  id: string;
+  status: AttachmentMetadataResponse["status"];
+};
+
+export type MemoryBandId =
+  | "episodic"
+  | "semantic"
+  | "procedural"
+  | "affective"
+  | "self"
+  | "commitments"
+  | "social"
+  | "relational";
+
+export type MemoryBandSummary = {
+  id: MemoryBandId;
+  n?: string;
+  name: string;
+  desc?: string;
+  count: number;
+  growth?: number[];
+  stats: Array<{ k: string; v: number | string }>;
+};
+
+export type MemoryBandsResponse = {
+  bands: MemoryBandSummary[];
+};
+
+export type EpisodeMemoryItem = {
+  id: string;
+  title: string;
+  narrative: string;
+  participants: string[];
+  location: string | null;
+  start_time: number;
+  end_time: number;
+  audience: string | null;
+  significance: number;
+  confidence: number;
+  tags: string[];
+  source_stream_ids: string[];
+  source_count: number;
+  lineage: { derived_from: string[]; supersedes: string[] };
+  emotional_arc: unknown | null;
+  vector_dims: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SemanticMemoryNode = {
+  id: string;
+  kind: "concept" | "entity" | "proposition";
+  label: string;
+  description: string;
+  domain: string | null;
+  aliases: string[];
+  confidence: number;
+  status: "active" | "superseded" | "contradicted" | "quarantined";
+  source_episode_ids: string[];
+  source_count: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SemanticMemoryEdge = {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  relation: string;
+  confidence: number;
+  evidence_episode_ids: string[];
+  source_count: number;
+  valid_from: number;
+  valid_to: number | null;
+  invalidated_at: number | null;
+  invalidated_by_edge_id: string | null;
+  invalidated_by_review_id: number | null;
+  invalidated_by_process: string | null;
+  invalidated_reason: string | null;
+};
+
+export type ProceduralMemoryItem = {
+  id: string;
+  applies_when: string;
+  approach: string;
+  status: "active" | "superseded";
+  alpha: number;
+  beta: number;
+  attempts: number;
+  successes: number;
+  failures: number;
+  sample_count: number;
+  source_episode_ids: string[];
+  last_used: number | null;
+  last_successful: number | null;
+  requires_manual_review: boolean;
+  created_at: number;
+  updated_at: number;
+};
+
+export type MoodHistoryEntry = {
+  id: number;
+  session_id: string;
+  ts: number;
+  valence: number;
+  arousal: number;
+  trigger_reason: string | null;
+  provenance: Record<string, unknown>;
+};
+
+export type IdentityValue = {
+  id: string;
+  label: string;
+  description: string;
+  priority: number;
+  created_at: number;
+  last_affirmed: number | null;
+  state: "candidate" | "established";
+  confidence: number;
+  support_count: number;
+  contradiction_count: number;
+  evidence_episode_ids: string[];
+};
+
+export type IdentityGoal = {
+  id: string;
+  description: string;
+  priority: number;
+  status: "active" | "done" | "abandoned" | "blocked";
+  progress_notes: string | null;
+  created_at: number;
+  target_at: number | null;
+};
+
+export type IdentityTrait = {
+  id: string;
+  label: string;
+  strength: number;
+  state: "candidate" | "established";
+  confidence: number;
+  support_count: number;
+  contradiction_count: number;
+  evidence_episode_ids: string[];
+};
+
+export type OpenQuestion = {
+  id: string;
+  question: string;
+  urgency: number;
+  status: "open" | "resolved" | "abandoned";
+  goal_id: string | null;
+  source: string;
+  created_at: number;
+  last_touched: number;
+  resolved_at: number | null;
+  abandoned_at: number | null;
+  abandoned_reason: string | null;
+  resolution_note: string | null;
+  unresolved_rumination_ticks: number;
+  last_ruminated_at: number | null;
+};
+
+export type GrowthMarker = {
+  id: string;
+  ts: number;
+  category: string;
+  what_changed: string;
+  before_description: string | null;
+  after_description: string | null;
+  evidence_episode_ids: string[];
+  confidence: number;
+  source_process: string;
+  created_at: number;
+};
+
+export type AutobiographicalPeriod = {
+  id: string;
+  label: string;
+  start_ts: number;
+  end_ts: number | null;
+  narrative: string;
+  key_episode_ids: string[];
+  themes: string[];
+  created_at: number;
+  last_updated: number;
+};
+
+export type IdentityEvent = {
+  id: number;
+  record_type: string;
+  record_id: string;
+  action: string;
+  old_value: unknown | null;
+  new_value: unknown | null;
+  reason: string | null;
+  review_item_id: number | null;
+  overwrite_without_review: boolean;
+  ts: number;
+};
+
+export type IdentityResponse = {
+  values: IdentityValue[];
+  goals: IdentityGoal[];
+  traits: IdentityTrait[];
+  open_questions: OpenQuestion[];
+  growth_markers: GrowthMarker[];
+  periods: AutobiographicalPeriod[];
+  open_question_events: IdentityEvent[];
+};
+
+export type CommitmentState = "active" | "revoked" | "expired";
+export type CommitmentEnforcement = "critical" | "advisory";
+
+export type CommitmentItem = {
+  id: string;
+  text: string;
+  type: string;
+  kind: string;
+  enforcement_class: CommitmentEnforcement;
+  critical_domain: string | null;
+  state: CommitmentState;
+  priority: number;
+  directive_family: string;
+  audience: string | null;
+  made_to: string | null;
+  about: string | null;
+  committed_by: string | null;
+  source: string;
+  source_stream_entry_ids: string[];
+  created_at: number;
+  expires_at: number | null;
+  expired_at: number | null;
+  revoked_at: number | null;
+  revoked_reason: string | null;
+  superseded_by_id: string | null;
+  canonicalized_by_artifact_entry_id: string | null;
+  last_reinforced_at: number;
+};
+
+export type CommitmentsResponse = {
+  commitments: CommitmentItem[];
+};
+
+export type SocialMemoryItem = {
+  entity_id: string;
+  name: string | null;
+  trust: number;
+  attachment: number;
+  interaction_count: number;
+  history_count: number;
+  commitment_count: number;
+  last_interaction_at: number | null;
+  updated_at: number;
+};
+
+export type RelationalMemoryItem = {
+  id: string;
+  slot: string;
+  subject_entity_id: string;
+  subject: string | null;
+  slot_key: string;
+  value: string;
+  state: "established" | "contested" | "quarantined" | "revoked";
+  sources_count: number;
+  contradicted_count: number;
+  alternate_count: number;
+  name_provenance: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type MemoryBandDetail =
+  | { band: "episodic"; items: EpisodeMemoryItem[]; nextCursor: string | null }
+  | { band: "semantic"; nodes: SemanticMemoryNode[]; edges: SemanticMemoryEdge[] }
+  | { band: "procedural"; items: ProceduralMemoryItem[] }
+  | { band: "affective"; current: MoodSnapshot; history: MoodHistoryEntry[] }
+  | ({ band: "self" } & IdentityResponse)
+  | { band: "commitments"; items: CommitmentItem[] }
+  | { band: "social"; items: SocialMemoryItem[] }
+  | {
+      band: "relational";
+      counts: Record<string, number>;
+      items: RelationalMemoryItem[];
+    };
+
 export type SharedStateEntryKind =
   | "locked"
   | "live"
@@ -79,6 +417,77 @@ export type SharedStateEntry = {
 export type SharedStateResponse = {
   audience: string;
   entries: SharedStateEntry[];
+};
+
+export type MaintenanceAuditRow = {
+  id: number;
+  run_id: string;
+  process: string;
+  action: string;
+  targets: Record<string, unknown>;
+  reversal: Record<string, unknown>;
+  applied_at: number;
+  reverted_at: number | null;
+  reverted_by: string | null;
+};
+
+export type ReviewRow = {
+  id: number;
+  kind: string;
+  refs: Record<string, unknown>;
+  reason: string;
+  created_at: number;
+  resolved_at: number | null;
+  resolution: string | null;
+};
+
+export type DreamProcessName =
+  | "consolidator"
+  | "reflector"
+  | "semantic-extractor"
+  | "curator"
+  | "overseer"
+  | "review-resolver"
+  | "ruminator"
+  | "self-narrator"
+  | "procedural-synthesizer"
+  | "belief-reviser";
+
+export type DreamProcessSummary = {
+  name: DreamProcessName;
+  description: string;
+  last_run_at: number | null;
+  last_status: "ok" | "error" | null;
+  last_audit_id: number | null;
+  budget: number | null;
+  enabled: boolean;
+};
+
+export type DreamScheduleItem = {
+  process: DreamProcessName;
+  scheduled_at: number;
+  source: "audit" | "scheduler" | "stream";
+  audit_id?: number;
+  stream_entry_id?: string;
+};
+
+export type DreamStateResponse = {
+  processes: DreamProcessSummary[];
+  schedule: DreamScheduleItem[];
+  audit_rows: MaintenanceAuditRow[];
+  belief_revision_rows: ReviewRow[];
+  scheduler: {
+    enabled: boolean;
+    light_interval_ms: number;
+    heavy_interval_ms: number;
+    light_processes: DreamProcessName[];
+    heavy_processes: DreamProcessName[];
+    process_budgets: Partial<Record<DreamProcessName, number | null>>;
+  };
+};
+
+export type DreamAuditResponse = {
+  rows: MaintenanceAuditRow[];
 };
 
 export type EvidenceLedgerSourceType =

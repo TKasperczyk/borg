@@ -15,6 +15,7 @@ export {
 export type {
   BorgActionsFacade,
   BorgAttachmentBytesResult,
+  BorgAttachmentMetadataResult,
   BorgAttachmentsFacade,
   BorgAuditFacade,
   BorgAutonomyFacade,
@@ -473,6 +474,7 @@ export {
 } from "./util/ids.js";
 export {
   type BorgUserContentBlock,
+  type ImagePerceptionRecord,
   type ImageMediaType,
   type StoredAttachmentRecord,
   type TurnInputAttachment,

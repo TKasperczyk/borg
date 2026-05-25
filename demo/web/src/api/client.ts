@@ -1,8 +1,19 @@
 import type {
+  AttachmentMetadataResponse,
+  AttachmentStatusItem,
+  CommitmentEnforcement,
+  CommitmentState,
+  CommitmentsResponse,
+  DreamAuditResponse,
+  DreamStateResponse,
+  IdentityResponse,
   LedgerResponse,
+  MemoryBandDetail,
+  MemoryBandId,
+  MemoryBandsResponse,
   SharedStateResponse,
   StateSnapshot,
-  StreamChatKind,
+  StreamEntryKind,
   StreamResponse,
   TurnRequest,
   TurnResponse
@@ -89,7 +100,7 @@ export async function getState(): Promise<StateSnapshot> {
 
 export async function getStream(input: {
   audience?: string;
-  kinds?: readonly StreamChatKind[];
+  kinds?: readonly StreamEntryKind[];
   limit?: number;
   before?: string;
 }): Promise<StreamResponse> {
@@ -117,6 +128,65 @@ export async function getLedger(turnId: string): Promise<LedgerResponse> {
 export async function getSharedState(audience: string): Promise<SharedStateResponse> {
   const params = new URLSearchParams({ audience });
   return fetchJson<SharedStateResponse>("api/shared-state", undefined, params);
+}
+
+export async function getMemoryBands(): Promise<MemoryBandsResponse> {
+  return fetchJson<MemoryBandsResponse>("api/memory/bands");
+}
+
+export async function getMemoryBand(id: MemoryBandId): Promise<MemoryBandDetail> {
+  return fetchJson<MemoryBandDetail>(`api/memory/bands/${encodeURIComponent(id)}`);
+}
+
+export async function getIdentity(): Promise<IdentityResponse> {
+  return fetchJson<IdentityResponse>("api/identity");
+}
+
+export async function getCommitments(input: {
+  state?: CommitmentState | "all";
+  enforcement?: CommitmentEnforcement | "all";
+  audience?: string;
+} = {}): Promise<CommitmentsResponse> {
+  const params = new URLSearchParams();
+  if (input.state !== undefined) {
+    params.set("state", input.state);
+  }
+  if (input.enforcement !== undefined && input.enforcement !== "all") {
+    params.set("enforcement", input.enforcement);
+  }
+  if (input.audience !== undefined && input.audience.length > 0) {
+    params.set("audience", input.audience);
+  }
+
+  return fetchJson<CommitmentsResponse>("api/commitments", undefined, params);
+}
+
+export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {
+  return fetchJson<DreamAuditResponse>(
+    "api/dream/audit",
+    undefined,
+    new URLSearchParams({ limit: String(limit) })
+  );
+}
+
+export async function getDreamState(): Promise<DreamStateResponse> {
+  return fetchJson<DreamStateResponse>("api/dream/state");
+}
+
+export async function getAttachmentMetadata(attachmentId: string): Promise<AttachmentMetadataResponse> {
+  return fetchJson<AttachmentMetadataResponse>(`api/attachments/${encodeURIComponent(attachmentId)}`);
+}
+
+export async function getAttachmentStatuses(attachmentIds: readonly string[]): Promise<AttachmentStatusItem[]> {
+  if (attachmentIds.length === 0) {
+    return [];
+  }
+
+  return fetchJson<AttachmentStatusItem[]>(
+    "api/attachments",
+    undefined,
+    new URLSearchParams({ ids: attachmentIds.join(",") })
+  );
 }
 
 export async function postTurn(input: TurnRequest): Promise<TurnResponse> {

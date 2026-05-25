@@ -213,6 +213,7 @@ export type BorgMoodFacade = {
 
 export type BorgSocialFacade = {
   getProfile: (entity: string) => ReturnType<SocialRepository["getProfile"]>;
+  list: (...args: Parameters<SocialRepository["list"]>) => ReturnType<SocialRepository["list"]>;
   upsertProfile: (entity: string) => ReturnType<SocialRepository["upsertProfile"]>;
   recordInteraction: (
     entity: string,
@@ -229,6 +230,8 @@ export type BorgEntitiesFacade = {
   resolve: (
     ...args: Parameters<EntityRepository["resolve"]>
   ) => ReturnType<EntityRepository["resolve"]>;
+  get: (...args: Parameters<EntityRepository["get"]>) => ReturnType<EntityRepository["get"]>;
+  list: (...args: Parameters<EntityRepository["list"]>) => ReturnType<EntityRepository["list"]>;
   find: (
     name: string,
     options?: Parameters<EntityRepository["findByName"]>[1],
@@ -250,7 +253,19 @@ export type BorgAttachmentBytesResult = {
   bytes: Uint8Array;
 };
 
+export type BorgAttachmentMetadataResult = {
+  attachment: NonNullable<ReturnType<BorgDependencies["attachmentRepository"]["get"]>>;
+  perception: ReturnType<BorgDependencies["imagePerceptionRepository"]["get"]>;
+  status: {
+    active: boolean;
+    quarantined: boolean;
+    stream_active?: boolean;
+    parent_active?: boolean;
+  };
+};
+
 export type BorgAttachmentsFacade = {
+  get: (attachmentId: AttachmentId) => BorgAttachmentMetadataResult | null;
   getBytes: (
     attachmentId: AttachmentId,
     options?: { audience?: string | null },
@@ -383,6 +398,9 @@ export type BorgCorrectionFacade = {
 export type BorgActionsFacade = ActionRepository;
 
 export type BorgRelationalSlotsFacade = {
+  list: (
+    ...args: Parameters<RelationalSlotRepository["list"]>
+  ) => ReturnType<RelationalSlotRepository["list"]>;
   countByState: () => ReturnType<RelationalSlotRepository["countByState"]>;
 };
 
@@ -414,6 +432,14 @@ export type BorgAutonomyFacade = {
 
 export type BorgMaintenanceFacade = {
   scheduler: MaintenanceScheduler;
+  config: () => {
+    enabled: boolean;
+    lightIntervalMs: number;
+    heavyIntervalMs: number;
+    lightProcesses: readonly OfflineProcessName[];
+    heavyProcesses: readonly OfflineProcessName[];
+    processBudgets: Partial<Record<OfflineProcessName, number | null>>;
+  };
 };
 
 export type BorgWorkmemFacade = {

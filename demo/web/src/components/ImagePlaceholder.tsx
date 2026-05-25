@@ -80,6 +80,7 @@ export function ImagePlaceholder({
       >
         <img src={objectUrl} alt={attachmentId ?? "attachment"} width={width} height={height} style={{ objectFit: "cover" }} />
         <div className="img-ph-label">{attachmentId ?? "image"}</div>
+        {quarantined ? <div className="img-ph-quar">quarantined</div> : null}
       </div>
     );
   }

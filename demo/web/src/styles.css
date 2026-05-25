@@ -372,6 +372,16 @@ html, body {
 .btn.ghost { background: transparent; }
 .btn.ghost:hover { background: var(--bg-2); }
 .btn.sm { padding: 3px 8px; font-size: 10.5px; }
+.btn:disabled, .btn:disabled:hover {
+  color: var(--text-faint);
+  border-color: var(--line-soft);
+  background: var(--bg-1);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.btn.ghost:disabled, .btn.ghost:disabled:hover {
+  background: transparent;
+}
 
 /* table */
 .tbl {

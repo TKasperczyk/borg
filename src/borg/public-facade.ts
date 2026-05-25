@@ -40,7 +40,7 @@ import type {
   SkillSearchCandidate,
   SkillSelectionResult,
 } from "../memory/procedural/types.js";
-import type { RelationalSlotState } from "../memory/relational-slots/types.js";
+import type { RelationalSlot, RelationalSlotState } from "../memory/relational-slots/types.js";
 import type {
   AutobiographicalPeriod,
   GoalPatch,
@@ -83,7 +83,11 @@ import type {
   StreamEntryInput,
   StreamIterateOptions,
 } from "../stream/types.js";
-import type { ImageMediaType, StoredAttachmentRecord } from "../attachments/index.js";
+import type {
+  ImageMediaType,
+  ImagePerceptionRecord,
+  StoredAttachmentRecord,
+} from "../attachments/index.js";
 import type {
   ActionId,
   AuditId,
@@ -551,6 +555,7 @@ export type BorgSocialInteractionInput = {
 
 export type BorgSocialFacade = {
   getProfile(entity: string): SocialProfile | null;
+  list(limit?: number): SocialProfile[];
   upsertProfile(entity: string): SocialProfile;
   recordInteraction(entity: string, interaction: BorgSocialInteractionInput): SocialProfile;
   adjustTrust(entity: string, delta: number, provenance: Provenance): SocialProfile;
@@ -564,6 +569,8 @@ export type BorgEntityResolveOptions = {
 
 export type BorgEntitiesFacade = {
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
+  get(id: EntityId): EntityRecord | null;
+  list(options?: { kind?: EntityKind }): EntityRecord[];
   find(name: string, options?: Pick<BorgEntityResolveOptions, "kind">): EntityRecord | null;
 };
 
@@ -578,7 +585,19 @@ export type BorgAttachmentBytesResult = {
   bytes: Uint8Array;
 };
 
+export type BorgAttachmentMetadataResult = {
+  attachment: StoredAttachmentRecord;
+  perception: ImagePerceptionRecord | null;
+  status: {
+    active: boolean;
+    quarantined: boolean;
+    stream_active?: boolean;
+    parent_active?: boolean;
+  };
+};
+
 export type BorgAttachmentsFacade = {
+  get(attachmentId: AttachmentId): BorgAttachmentMetadataResult | null;
   getBytes(
     attachmentId: AttachmentId,
     options?: {
@@ -801,6 +820,7 @@ export type BorgCorrectionFacade = {
 };
 
 export type BorgRelationalSlotsFacade = {
+  list(options?: { subjectEntityId?: EntityId; states?: readonly RelationalSlotState[]; limit?: number }): RelationalSlot[];
   countByState(): Record<RelationalSlotState, number>;
 };
 
@@ -1040,6 +1060,14 @@ export type BorgMaintenanceScheduler = {
 
 export type BorgMaintenanceFacade = {
   scheduler: BorgMaintenanceScheduler;
+  config(): {
+    enabled: boolean;
+    lightIntervalMs: number;
+    heavyIntervalMs: number;
+    lightProcesses: readonly string[];
+    heavyProcesses: readonly string[];
+    processBudgets: Partial<Record<string, number | null>>;
+  };
 };
 
 export type BorgWorkmemFacade = {

@@ -11,7 +11,12 @@ import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "..
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
 import { StreamReader } from "../stream/index.js";
 import { AttachmentError } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, createSemanticNodeId, type EntityId } from "../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createSemanticNodeId,
+  type EntityId,
+  type ImagePerceptionId,
+} from "../util/ids.js";
 import type { BorgFacades } from "./facade-types.js";
 import type {
   BorgDependencies,
@@ -146,6 +151,26 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     })
       .filter(([, enabled]) => enabled)
       .map(([name]) => name as OfflineProcessName);
+
+  const maintenanceConfigSnapshot = () => ({
+    enabled: deps.config.maintenance.enabled,
+    lightIntervalMs: deps.config.maintenance.lightIntervalMs,
+    heavyIntervalMs: deps.config.maintenance.heavyIntervalMs,
+    lightProcesses: deps.config.maintenance.lightProcesses,
+    heavyProcesses: deps.config.maintenance.heavyProcesses,
+    processBudgets: {
+      consolidator: deps.config.offline.consolidator.budget,
+      reflector: deps.config.offline.reflector.budget,
+      "semantic-extractor": deps.config.offline.semanticExtractor.budget,
+      curator: null,
+      overseer: deps.config.offline.overseer.budget,
+      "review-resolver": deps.config.offline.reviewResolver.budget,
+      ruminator: deps.config.offline.ruminator.budget,
+      "self-narrator": deps.config.offline.selfNarrator.budget,
+      "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.budget,
+      "belief-reviser": null,
+    } satisfies Partial<Record<OfflineProcessName, number | null>>,
+  });
 
   const upsertAutobiographicalPeriod = ((
     input: Parameters<typeof deps.identityService.addPeriod>[0],
@@ -315,6 +340,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     social: {
       getProfile: (entity) =>
         deps.socialRepository.getProfile(deps.entityRepository.resolve(entity)),
+      list: (...args) => deps.socialRepository.list(...args),
       upsertProfile: (entity) =>
         deps.socialRepository.upsertProfile(deps.entityRepository.resolve(entity)),
       recordInteraction: (entity, interaction) =>
@@ -324,6 +350,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     entities: {
       resolve: (...args) => deps.entityRepository.resolve(...args),
+      get: (...args) => deps.entityRepository.get(...args),
+      list: (...args) => deps.entityRepository.list(...args),
       find: (name, options) => {
         const entityId = deps.entityRepository.findByName(name, options);
         return entityId === null ? null : deps.entityRepository.get(entityId);
@@ -340,6 +368,32 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       },
     },
     attachments: {
+      get: (attachmentId) => {
+        const attachment = deps.attachmentRepository.get(attachmentId);
+
+        if (attachment === null) {
+          return null;
+        }
+
+        const streamFacts =
+          attachment.stream_entry_id === null ? null : deps.entryIndex.lookup(attachment.stream_entry_id);
+        const parentFacts = deps.entryIndex.lookup(attachment.parent_entry_id);
+
+        return {
+          attachment,
+          perception:
+            attachment.perception_id === null
+              ? null
+              : deps.imagePerceptionRepository.get(attachment.perception_id as ImagePerceptionId),
+          status: {
+            active: attachment.active && streamFacts?.active !== false && parentFacts?.active !== false,
+            quarantined:
+              !attachment.active || streamFacts?.active === false || parentFacts?.active === false,
+            ...(streamFacts === null ? {} : { stream_active: streamFacts.active }),
+            ...(parentFacts === null ? {} : { parent_active: parentFacts.active }),
+          },
+        };
+      },
       getBytes: (attachmentId, options = {}) => {
         const attachment = deps.attachmentRepository.get(attachmentId);
 
@@ -441,6 +495,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       },
     },
     relationalSlots: {
+      list: (...args) => deps.relationalSlotRepository.list(...args),
       countByState: () => deps.relationalSlotRepository.countByState(),
     },
     commitments: {
@@ -601,6 +656,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     maintenance: {
       scheduler: deps.maintenanceScheduler,
+      config: maintenanceConfigSnapshot,
     },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),

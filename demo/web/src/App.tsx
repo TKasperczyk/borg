@@ -9,7 +9,13 @@ import { Rail, type RouteId } from "./components/Rail";
 import { StatusBar } from "./components/StatusBar";
 import { Topbar } from "./components/Topbar";
 import { CognitionScreen } from "./screens/Cognition";
-import { PlaceholderScreen } from "./screens/Placeholder";
+import { CommitScreen } from "./screens/Commit";
+import { DreamScreen } from "./screens/Dream";
+import { GraphScreen } from "./screens/Graph";
+import { IdentityScreen } from "./screens/Identity";
+import { MemoryScreen } from "./screens/Memory";
+import { SharedScreen } from "./screens/Shared";
+import { StreamScreen } from "./screens/Stream";
 
 const AUDIENCE = "alice";
 
@@ -17,13 +23,6 @@ function formatNow(): string {
   const date = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
-function placeholderName(route: RouteId): string {
-  if (route === "commit") {
-    return "commit";
-  }
-  return route;
 }
 
 export function App() {
@@ -61,11 +60,14 @@ export function App() {
           now={now}
         />
         <div className="main">
-          {route === "cognition" ? (
-            <CognitionScreen sessionId={sessionId} audience={AUDIENCE} turnStream={turnStream} />
-          ) : (
-            <PlaceholderScreen name={placeholderName(route)} />
-          )}
+          {route === "cognition" ? <CognitionScreen sessionId={sessionId} audience={AUDIENCE} turnStream={turnStream} /> : null}
+          {route === "stream" ? <StreamScreen /> : null}
+          {route === "memory" ? <MemoryScreen /> : null}
+          {route === "identity" ? <IdentityScreen /> : null}
+          {route === "commit" ? <CommitScreen /> : null}
+          {route === "shared" ? <SharedScreen /> : null}
+          {route === "dream" ? <DreamScreen /> : null}
+          {route === "graph" ? <GraphScreen /> : null}
         </div>
         <StatusBar state={stateApi.data} lastPhase={turnStream.lastPhase} />
       </div>
