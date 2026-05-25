@@ -97,6 +97,64 @@ output -- moving already-LLM-identified handles around, not interpreting
 language deterministically. Reaching for regex would have just shifted the
 bug from English to non-English users.
 
+## Production posture (post v82-v87 arc)
+
+The v82-v87 development arc closed out correctness, hygiene, and per-turn stream scaling. The remaining notes here document architectural invariants and operational caveats that landed during that arc and that callers should understand.
+
+### `StreamEntryIndex` is a production invariant, not an optimization
+
+After v86 P8 and v87 P0-P3, the index participates in:
+
+- source-trust validation (`lookupEntriesById`)
+- prior user-turn count (`countSessionEntriesByKind`)
+- cross-session quarantine refs (`quarantinedSharedStateArtifactRefs`)
+- citation status-marker filtering (`lookupSessionEntriesByKind`)
+- active/inactive entry facts (the `active` column)
+- the post-generation guard's transcript window (no -- that one uses scanReverse, not the index)
+
+Production Borg must construct `StreamWriter` and the retrieval/turn coordinator with the shared `StreamEntryIndexRepository`. The no-index fallbacks in retrieval and citations are for test setups and custom harnesses only. They preserve correctness but lose the scaling guarantees.
+
+### Stream append and index update are not atomic
+
+`StreamWriter` writes the JSONL stream first (fsync'd) and then updates SQLite. If the SQLite update fails after the append commits, the writer throws `StreamError` with code `STREAM_INDEX_UPDATE_FAILED`. The startup backfill (`reconciliation.ts`) repairs the index by re-reading committed stream files.
+
+Operationally: a `STREAM_INDEX_UPDATE_FAILED` is an index-consistency incident, not a normal soft degradation. The committed turn is on disk; the failed turn should be treated as needing a backfill before the next turn runs.
+
+### Citation status-marker lookup is index-backed, not constant-time
+
+`readStatusMarkerEntries` no longer reads the whole session stream file. It queries the `(session_id, kind)` index for `internal_event` rows and reads only those entries by byte offset. That's a large improvement and the per-turn cost stays bounded with marker volume, not session length.
+
+If marker density ever becomes a hot path, a dedicated `inactive_refs` / `status_refs` table parallel to `stream_quarantine_refs` would let the citation filter ask `inactiveRefsForSession(sessionId)` directly. Filed as future work, not closeout-critical.
+
+### Cap telemetry: nonzero cap-hit is a review trigger
+
+`EvidenceLedgerBuilder` uses `scanReverse({ maxEntries: 1024, maxBytes: 8MiB })` and emits `ledger_reverse_scan_entry_cap_hit_total` / `_byte_cap_hit_total` cumulative counters plus the per-turn `evidence_ledger.reverse_scan` trace event.
+
+Through v87.1 family + compaction, both cap-hit counters stayed at 0 (14 entries/turn avg in family, 33/turn in compaction). The cap-hit branches are unit-tested but never sim-exercised.
+
+Operational rule: nonzero cap-hit is not automatically bad, but it should trigger review of whether the ledger is leaning on recent transcript instead of retrieval / shared-state / durable memory.
+
+### Sparse indexed source-trust facts are not a turn sequence
+
+`compileSharedStateArtifactForEvidenceLedgerResult()` builds `lastUpdatedSourceTrustEntries` for the indexed source-trust path. That input is now scoped to the current user entry only -- sparse indexed facts (visible ledger IDs, off-limits IDs, relational-slot evidence IDs, prior-session source IDs) are valid for trust allow/reject lookups but NOT for reconstructing a turn-age sequence.
+
+The principle from v86 P0 still applies: durable `last_updated_turn_global` is the only authoritative source of shared-state age. Legacy or in-flight entries with null durable age stay "unknown age" by design -- they do not get a pseudo-age inferred from sparse indexed facts.
+
+### Backlog (not closeout blockers)
+
+These are real maintainability items but do not extend the v82-v87 arc:
+
+- split `src/retrieval/pipeline.ts` (2200+ lines)
+- split `simulator/metrics.ts` (4365 lines)
+- rename or merge `src/cognition/action` vs `src/cognition/actions`
+- public/internal export surface cleanup in `src/index.ts`
+- tool-use block normalization between Borg / assessor / overseer
+- migration helper or test/checklist for `_next` table swaps
+- broader pure schema/type extraction (only the v87 P5 case landed)
+- possible dedicated `StreamFactsRepository` shell that wraps `StreamEntryIndex`
+
+Future cycles may pull any of these, but none should be treated as required.
+
 ## Conventions
 
 ### File layout
