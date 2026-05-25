@@ -96,6 +96,48 @@ function rowToRecord(row: AttachmentRow): StoredAttachmentRecord {
 export class AttachmentRepository {
   constructor(private readonly db: SqliteDatabase) {}
 
+  private hasImagePerceptionArtifactsTable(): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get("image_perception_artifacts") !== undefined
+    );
+  }
+
+  private cascadePerceptionActiveByAttachment(attachmentId: AttachmentId, active: boolean): void {
+    if (!this.hasImagePerceptionArtifactsTable()) {
+      return;
+    }
+
+    this.db
+      .prepare(
+        `UPDATE image_perception_artifacts
+         SET active = ?
+         WHERE attachment_id = ?`,
+      )
+      .run(active ? 1 : 0, attachmentId);
+  }
+
+  private cascadeInactivePerceptionsFromInactiveAttachments(): void {
+    if (!this.hasImagePerceptionArtifactsTable()) {
+      return;
+    }
+
+    this.db
+      .prepare(
+        `UPDATE image_perception_artifacts
+         SET active = 0
+         WHERE active != 0
+           AND EXISTS (
+             SELECT 1
+             FROM stream_attachments
+             WHERE stream_attachments.attachment_id = image_perception_artifacts.attachment_id
+               AND stream_attachments.active = 0
+           )`,
+      )
+      .run();
+  }
+
   insert(record: StoredAttachmentRecord): void {
     this.db
       .prepare(
@@ -186,6 +228,24 @@ export class AttachmentRepository {
          WHERE attachment_id = ?`,
       )
       .run(active ? 1 : 0, attachmentId);
+    this.cascadePerceptionActiveByAttachment(attachmentId, active);
+  }
+
+  setPerceptionRefs(
+    attachmentId: AttachmentId,
+    refs: {
+      perceptionId: string | null;
+      textEmbeddingRef: string | null;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE stream_attachments
+         SET perception_id = ?,
+             text_embedding_ref = ?
+         WHERE attachment_id = ?`,
+      )
+      .run(refs.perceptionId, refs.textEmbeddingRef, attachmentId);
   }
 
   setStreamEntryId(attachmentId: AttachmentId, streamEntryId: StreamEntryId): void {
@@ -240,6 +300,7 @@ export class AttachmentRepository {
       )
       .run();
 
+    this.cascadeInactivePerceptionsFromInactiveAttachments();
     return result.changes;
   }
 

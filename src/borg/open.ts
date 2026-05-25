@@ -5,6 +5,7 @@ import {
   AttachmentBlobStore,
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionService,
 } from "../attachments/index.js";
 import { SessionLock } from "../cognition/index.js";
 import { createTurnTracer } from "../cognition/tracing/tracer.js";
@@ -78,12 +79,23 @@ export async function openBorgDependencies(
       openQuestionsTable: tables.openQuestionsTable,
       skillsTable: tables.skillsTable,
       actionRecordsTable: tables.actionRecordsTable,
+      imagePerceptionsTable: tables.imagePerceptionsTable,
       embeddingClient,
       llmClient: lazyLlmClient,
       clock,
       tracer,
       attachmentRepository,
       entryIndex,
+    });
+    const imagePerceptionService = new ImagePerceptionService({
+      repository: repositories.imagePerceptionRepository,
+      attachmentRepository,
+      llmClient: lazyLlmClient,
+      embeddingClient,
+      model: config.anthropic.models.imagePerception,
+      promptVersion: config.attachments.perceptionPromptVersion,
+      clock,
+      tracer,
     });
     const sessionLock = new SessionLock({
       dataDir: config.dataDir,
@@ -183,6 +195,7 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
       attachmentService,
       attachmentRepository,
+      imagePerceptionService,
       clock,
       tracer,
     });
@@ -218,6 +231,7 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
       attachmentRepository,
       attachmentService,
+      imagePerceptionRepository: repositories.imagePerceptionRepository,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,

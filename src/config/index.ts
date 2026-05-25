@@ -224,6 +224,7 @@ const attachmentsConfigSchema = z
     maxWidth: z.number().int().positive().default(8192),
     maxHeight: z.number().int().positive().default(8192),
     maxImagesPerTurn: z.number().int().positive().default(4),
+    perceptionPromptVersion: z.string().min(1).default("v88-p1-2026-05-25"),
   })
   .strict()
   .prefault({});
@@ -270,6 +271,7 @@ const anthropicModelsConfigSchema = z
     background: z.string().min(1).default("claude-opus-4-7"),
     extraction: z.string().min(1).default("claude-opus-4-7"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })
   .prefault({});
 

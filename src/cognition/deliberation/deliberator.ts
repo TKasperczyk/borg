@@ -14,6 +14,7 @@ import {
   buildDialogueMessages,
   toContentBlockMessages,
   withCurrentUserContentBlocks,
+  withLedgerImageContentBlocks,
 } from "./dialogue.js";
 import { runFinalizer, type FinalizerResult } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
@@ -427,9 +428,12 @@ export class Deliberator {
     ];
 
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
-    const dialogueBlockMessages = withCurrentUserContentBlocks(
-      toContentBlockMessages(dialogueMessages),
-      context.currentUserContent,
+    const dialogueBlockMessages = withLedgerImageContentBlocks(
+      withCurrentUserContentBlocks(
+        toContentBlockMessages(dialogueMessages),
+        context.currentUserContent,
+      ),
+      context.evidenceLedger,
     );
     const thinking = cognitionThinkingOption(this.options);
 

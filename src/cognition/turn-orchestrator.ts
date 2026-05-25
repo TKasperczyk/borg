@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionService,
   TurnInputAttachment,
 } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
@@ -132,6 +133,7 @@ export type TurnOrchestratorOptions = {
   entryIndex?: StreamEntryIndexRepository;
   attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
   attachmentService: AttachmentService;
+  imagePerceptionService?: ImagePerceptionService;
   /**
    * Build a reader for the given session's stream. The orchestrator uses
    * this to compile the recent-dialogue window before a turn starts, so the
@@ -308,6 +310,7 @@ export class TurnOrchestrator {
       entryIndex: options.entryIndex,
       attachmentRepository: options.attachmentRepository,
       attachmentService: options.attachmentService,
+      imagePerceptionService: options.imagePerceptionService,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,

@@ -1,5 +1,7 @@
 // Converts recency-window dialogue and the current turn into LLM message shapes.
 import type { BorgUserContentBlock } from "../../attachments/index.js";
+import type { AttachmentId } from "../../util/ids.js";
+import type { EvidenceLedger } from "../evidence-ledger/types.js";
 import type { LLMContentBlock, LLMContentBlockMessage, LLMMessage } from "../../llm/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 
@@ -124,4 +126,30 @@ export function withCurrentUserContentBlocks(
 
   last.content = content;
   return next;
+}
+
+export function withLedgerImageContentBlocks(
+  messages: readonly LLMContentBlockMessage[],
+  ledger: EvidenceLedger | null | undefined,
+): LLMContentBlockMessage[] {
+  if (ledger?.imageAttachments === undefined || ledger.imageAttachments.length === 0) {
+    return [...messages];
+  }
+
+  return [
+    ...messages,
+    {
+      role: "user",
+      content: ledger.imageAttachments.flatMap((image): LLMContentBlock[] => [
+        {
+          type: "text",
+          text: image.label,
+        },
+        {
+          type: "image_ref",
+          attachment_id: image.attachment_id as AttachmentId,
+        },
+      ]),
+    },
+  ];
 }

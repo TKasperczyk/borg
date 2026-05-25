@@ -192,6 +192,14 @@ export class TurnPhaseCoordinator {
     const currentUserContent = openingPersistence.currentUserContent;
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
+
+    for (const attachment of openingPersistence.persistedAttachments) {
+      await this.options.imagePerceptionService?.perceiveAttachment({
+        attachmentId: attachment.attachmentId,
+        turnId,
+      });
+    }
+
     const activeParticipantLimit = this.options.config.generation.activeParticipantLimit;
     const participantScan =
       audienceEntity?.kind === "group"

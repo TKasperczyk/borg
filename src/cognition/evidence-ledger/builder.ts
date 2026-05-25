@@ -155,6 +155,7 @@ export class EvidenceLedgerBuilder {
     addOpenQuestionsSection(context);
 
     const orderedSections = finalSections(sections);
+    const imageAttachments = collectLedgerImageAttachments(input.retrievedEvidence);
 
     return {
       sections: orderedSections,
@@ -164,6 +165,35 @@ export class EvidenceLedgerBuilder {
       compactedTranscriptEntryCount: transcript.compactedEntryCount,
       rawPreservedUserTranscriptEntryCount: transcript.rawPreservedUserEntryCount,
       estimatedTokens: estimateLedgerTokens(orderedSections),
+      ...(imageAttachments.length === 0 ? {} : { imageAttachments }),
     };
   }
+}
+
+function collectLedgerImageAttachments(
+  evidence: readonly import("../../retrieval/index.js").EvidenceItem[],
+) {
+  const labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const byAttachment = new Map<string, string>();
+
+  for (const item of evidence) {
+    if (item.imageAttachmentId === undefined) {
+      continue;
+    }
+
+    if (!byAttachment.has(item.imageAttachmentId)) {
+      // Labels are scoped to the rendered turn. Stable cross-turn labels would
+      // need durable UI state and are intentionally deferred.
+      const letter = labels[byAttachment.size] ?? String(byAttachment.size + 1);
+      byAttachment.set(
+        item.imageAttachmentId,
+        (item.imageLabel ?? "Image").replace(/^Image:/, `Image ${letter}:`),
+      );
+    }
+  }
+
+  return [...byAttachment.entries()].map(([attachment_id, label]) => ({
+    attachment_id,
+    label,
+  }));
 }

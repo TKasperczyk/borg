@@ -2,6 +2,7 @@
 
 import { AutonomyWakesRepository } from "../autonomy/index.js";
 import type { AttachmentRepository } from "../attachments/index.js";
+import { ImagePerceptionRepository } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
 import { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -99,6 +100,7 @@ export type BorgRepositorySetup = Pick<
   | "workingMemoryStore"
   | "autonomyWakesRepository"
   | "attachmentRepository"
+  | "imagePerceptionRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -111,6 +113,7 @@ export type BuildBorgRepositoriesOptions = {
   openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
   actionRecordsTable: LanceDbTable;
+  imagePerceptionsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
   clock: Clock;
@@ -132,6 +135,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const imagePerceptionRepository = new ImagePerceptionRepository(
+    sqlite,
+    options.imagePerceptionsTable,
+  );
   await episodicRepository.reconcileCrossStoreState();
 
   const entryIndex =
@@ -400,6 +407,7 @@ export async function buildBorgRepositories(
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
     semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
     semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+    imagePerceptionRepository,
   });
   const correctionService = new CorrectionService({
     config,
@@ -460,6 +468,7 @@ export async function buildBorgRepositories(
     workingMemoryStore,
     autonomyWakesRepository,
     attachmentRepository: options.attachmentRepository,
+    imagePerceptionRepository,
     createStreamWriter,
   };
 }

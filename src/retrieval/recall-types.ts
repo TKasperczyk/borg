@@ -5,6 +5,8 @@ import type {
   SemanticEdgeId,
   SemanticNodeId,
   StreamEntryId,
+  AttachmentId,
+  ImagePerceptionId,
 } from "../util/ids.js";
 
 export const RECALL_INTENT_KINDS = [
@@ -53,6 +55,7 @@ export type EvidenceSource =
   | "commitment"
   | "open_question"
   | "working_state"
+  | "image_perception"
   | "warm_recall";
 
 export type RecallEvidenceHandle =
@@ -61,7 +64,8 @@ export type RecallEvidenceHandle =
   | { source: "semantic_node"; nodeId: SemanticNodeId }
   | { source: "semantic_edge"; edgeId: SemanticEdgeId; nodeId?: SemanticNodeId }
   | { source: "commitment"; commitmentId: CommitmentId }
-  | { source: "open_question"; openQuestionId: OpenQuestionId };
+  | { source: "open_question"; openQuestionId: OpenQuestionId }
+  | { source: "image_perception"; perceptionId: ImagePerceptionId; attachmentId: AttachmentId };
 
 export type EvidenceProvenance = {
   streamIds?: StreamEntryId[];
@@ -71,6 +75,8 @@ export type EvidenceProvenance = {
   edgeId?: SemanticEdgeId;
   commitmentId?: CommitmentId;
   openQuestionId?: OpenQuestionId;
+  imagePerceptionId?: ImagePerceptionId;
+  attachmentId?: AttachmentId;
 };
 
 export type EvidenceScoreBreakdown = {
@@ -94,6 +100,8 @@ export type EvidenceItem = {
   source_episode_ids?: EpisodeId[];
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
+  imageAttachmentId?: AttachmentId;
+  imageLabel?: string;
 };
 
 export type EvidencePool = {

@@ -33,6 +33,7 @@ export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
 export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
 export type ExecutiveStepId = BrandedId<"ExecutiveStepId">;
 export type AttachmentId = BrandedId<"AttachmentId">;
+export type ImagePerceptionId = BrandedId<"ImagePerceptionId">;
 export type AuditId = number & {
   readonly __brand: "AuditId";
 };
@@ -106,6 +107,7 @@ export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 export const executiveStepIdHelpers = createIdHelpers<"ExecutiveStepId">("exstep");
 export const attachmentIdHelpers = createIdHelpers<"AttachmentId">("att");
+export const imagePerceptionIdHelpers = createIdHelpers<"ImagePerceptionId">("imgp");
 export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
   prefix: "autonomy_wake_",
   pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
@@ -145,6 +147,7 @@ export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHe
 export const createExecutiveStepId = (): ExecutiveStepId => executiveStepIdHelpers.create();
 export const createAutonomyWakeId = (): AutonomyWakeId => autonomyWakeIdHelpers.create();
 export const createAttachmentId = (): AttachmentId => attachmentIdHelpers.create();
+export const createImagePerceptionId = (): ImagePerceptionId => imagePerceptionIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);

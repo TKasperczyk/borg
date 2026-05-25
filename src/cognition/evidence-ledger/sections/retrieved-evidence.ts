@@ -3,6 +3,7 @@ import { rawStreamActor } from "../entry-metadata.js";
 import {
   COMMITMENT_TRUST_RANK,
   DISCOURSE_TRUST_RANK,
+  IMAGE_PERCEPTION_TRUST_RANK,
   OPEN_QUESTION_TRUST_RANK,
   RAW_STREAM_TRUST_RANK,
   WARM_RECALL_TRUST_RANK,
@@ -81,7 +82,12 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
       source_type: evidenceItemSourceType(item, scope),
       session_scope: scope,
       actor: "memory" as const,
-      trust_rank: item.source === "warm_recall" ? WARM_RECALL_TRUST_RANK : RAW_STREAM_TRUST_RANK,
+      trust_rank:
+        item.source === "warm_recall"
+          ? WARM_RECALL_TRUST_RANK
+          : item.source === "image_perception"
+            ? IMAGE_PERCEPTION_TRUST_RANK
+            : RAW_STREAM_TRUST_RANK,
       text: item.text,
       value: item.source,
       state: evidenceItemState(item),

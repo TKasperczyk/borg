@@ -1,7 +1,11 @@
 // Wires the per-turn cognitive orchestrator and its session-scoped dependencies.
 
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
-import type { AttachmentRepository, AttachmentService } from "../attachments/index.js";
+import type {
+  AttachmentRepository,
+  AttachmentService,
+  ImagePerceptionService,
+} from "../attachments/index.js";
 import type { SessionLock } from "../cognition/index.js";
 import { Reflector, TurnOrchestrator } from "../cognition/index.js";
 import { TurnContextCompiler } from "../cognition/recency/index.js";
@@ -73,6 +77,7 @@ export type BuildTurnOrchestratorOptions = {
   entryIndex?: StreamEntryIndexRepository;
   attachmentService: AttachmentService;
   attachmentRepository: AttachmentRepository;
+  imagePerceptionService?: ImagePerceptionService;
   clock: Clock;
   tracer?: TurnTracer;
 };
@@ -128,6 +133,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     entryIndex: options.entryIndex,
     attachmentService: options.attachmentService,
     attachmentRepository: options.attachmentRepository,
+    imagePerceptionService: options.imagePerceptionService,
     // Explicit so borg.ts wires a single compiler instance per process;
     // turn-orchestrator.ts falls back to defaults if omitted, but doing
     // it here makes the configuration visible at the composition root.

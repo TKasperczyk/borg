@@ -45,6 +45,7 @@ export type TurnOpeningPersistenceInput = {
 
 export type TurnOpeningPersistenceResult = {
   persistedUserEntry: StreamEntry | null;
+  persistedAttachments: readonly PersistedTurnAttachment[];
   persistedAttachmentEntries: readonly StreamEntry[];
   currentUserContent: readonly import("../../attachments/index.js").BorgUserContentBlock[];
   persistedPerceptionEntry: StreamEntry;
@@ -114,6 +115,7 @@ export class TurnOpeningPersistence {
 
     return {
       persistedUserEntry,
+      persistedAttachments,
       persistedAttachmentEntries: persistedAttachments.map((attachment) => attachment.streamEntry),
       currentUserContent,
       persistedPerceptionEntry,

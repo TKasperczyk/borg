@@ -5,7 +5,9 @@ import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import {
   commitmentIdHelpers,
+  attachmentIdHelpers,
   episodeIdHelpers,
+  imagePerceptionIdHelpers,
   openQuestionIdHelpers,
   parseCommitmentId,
   parseEpisodeId,
@@ -68,6 +70,20 @@ const openQuestionIdSchema = z
   })
   .transform((value) => parseOpenQuestionId(value));
 
+const attachmentIdSchema = z
+  .string()
+  .refine((value) => attachmentIdHelpers.is(value), {
+    message: "Invalid attachment id",
+  })
+  .transform((value) => attachmentIdHelpers.parse(value));
+
+const imagePerceptionIdSchema = z
+  .string()
+  .refine((value) => imagePerceptionIdHelpers.is(value), {
+    message: "Invalid image perception id",
+  })
+  .transform((value) => imagePerceptionIdHelpers.parse(value));
+
 export const recallEvidenceHandleSchema = z.discriminatedUnion("source", [
   z
     .object({
@@ -105,6 +121,13 @@ export const recallEvidenceHandleSchema = z.discriminatedUnion("source", [
     .object({
       source: z.literal("open_question"),
       openQuestionId: openQuestionIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      source: z.literal("image_perception"),
+      perceptionId: imagePerceptionIdSchema,
+      attachmentId: attachmentIdSchema,
     })
     .strict(),
 ]);
@@ -253,6 +276,14 @@ export function deriveRecallEvidenceHandle(item: EvidenceItem): RecallEvidenceHa
     };
   }
 
+  if (provenance.imagePerceptionId !== undefined && provenance.attachmentId !== undefined) {
+    return {
+      source: "image_perception",
+      perceptionId: provenance.imagePerceptionId,
+      attachmentId: provenance.attachmentId,
+    };
+  }
+
   if (provenance.streamIds !== undefined && provenance.streamIds.length > 0) {
     return normalizeRecallEvidenceHandle({
       source: "raw_stream",
@@ -330,7 +361,11 @@ export function recallEvidenceHandleKey(handle: RecallEvidenceHandle): string {
     return `commitment:${handle.commitmentId}`;
   }
 
-  return `open_question:${handle.openQuestionId}`;
+  if (handle.source === "open_question") {
+    return `open_question:${handle.openQuestionId}`;
+  }
+
+  return `image_perception:${handle.perceptionId}`;
 }
 
 function parseRecallStateRow(row: RecallStateRow): RecallState {

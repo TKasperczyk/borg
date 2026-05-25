@@ -23,6 +23,10 @@ export function evidenceItemSourceType(
   item: EvidenceItem,
   scope: EvidenceLedgerSessionScope,
 ): EvidenceLedgerSourceType {
+  if (item.provenance?.attachmentId !== undefined || item.source === "image_perception") {
+    return "image_attachment";
+  }
+
   if (item.provenance?.streamIds !== undefined && item.provenance.streamIds.length > 0) {
     return rawStreamSourceType(scope);
   }
@@ -99,6 +103,10 @@ export function evidenceItemProvenanceMetadata(
     ...(provenance.openQuestionId === undefined
       ? {}
       : { open_question_id: provenance.openQuestionId }),
+    ...(provenance.imagePerceptionId === undefined
+      ? {}
+      : { image_perception_id: provenance.imagePerceptionId }),
+    ...(provenance.attachmentId === undefined ? {} : { attachment_id: provenance.attachmentId }),
     ...(provenance.streamIds === undefined || provenance.streamIds.length === 0
       ? {}
       : { stream_ids: provenance.streamIds }),

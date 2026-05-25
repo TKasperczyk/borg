@@ -2,6 +2,7 @@ import type { ToolLoopCallRecord } from "../../action/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionService,
   TurnInputAttachment,
 } from "../../../attachments/index.js";
 import type { TurnActionCoordinator } from "../../action/turn-action-coordinator.js";
@@ -104,6 +105,7 @@ export type TurnPhaseCoordinatorOptions = {
   >;
   attachmentService: AttachmentService;
   attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
+  imagePerceptionService?: ImagePerceptionService;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;

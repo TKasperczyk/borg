@@ -36,6 +36,7 @@ describe("config", () => {
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
       recallExpansion: "claude-haiku-4-5-20251001",
+      imagePerception: "claude-haiku-4-5-20251001",
     });
     expect(config.host_capabilities).toContain("Inputs available to you");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
@@ -464,6 +465,7 @@ describe("config", () => {
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
       recallExpansion: "claude-haiku-4-5-20251001",
+      imagePerception: "claude-haiku-4-5-20251001",
     });
   });
 

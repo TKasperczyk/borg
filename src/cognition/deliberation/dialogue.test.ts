@@ -6,6 +6,7 @@ import {
   buildDialogueMessages,
   toContentBlockMessages,
   withCurrentUserContentBlocks,
+  withLedgerImageContentBlocks,
 } from "./dialogue.js";
 
 function makeRecency(role: "user" | "assistant", content: string, index: number): RecencyMessage {
@@ -109,5 +110,41 @@ describe("withCurrentUserContentBlocks", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("withLedgerImageContentBlocks", () => {
+  it("appends retrieved image refs with stable labels for the finalizer", () => {
+    const attachmentId = "att_aaaaaaaaaaaaaaaa";
+    const messages = toContentBlockMessages(buildDialogueMessages([], "What was in it?"));
+    const withImages = withLedgerImageContentBlocks(messages, {
+      sections: [],
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+      imageAttachments: [
+        {
+          label: "Image A: user-uploaded screenshot from turn 42 (audience: Alice)",
+          attachment_id: attachmentId,
+        },
+      ],
+    });
+
+    expect(withImages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "Image A: user-uploaded screenshot from turn 42 (audience: Alice)",
+        },
+        {
+          type: "image_ref",
+          attachment_id: attachmentId,
+        },
+      ],
+    });
   });
 });

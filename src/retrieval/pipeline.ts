@@ -1,4 +1,5 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
+import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type {
@@ -122,6 +123,7 @@ export type RetrievalPipelineOptions = {
   semanticGraph?: SemanticGraph;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
   openQuestionsRepository?: OpenQuestionsRepository;
+  imagePerceptionRepository?: ImagePerceptionRepository;
   entityRepository?: Pick<EntityRepository, "findByName">;
   commitmentRepository?: Pick<CommitmentRepository, "get" | "list">;
   recallStateRepository?: Pick<RecallStateRepository, "load" | "save">;
@@ -213,6 +215,11 @@ type OpenQuestionEvidenceCandidate = {
   intent: RecallIntent;
   question: OpenQuestion;
   score: number;
+};
+
+type ImagePerceptionEvidenceCandidate = {
+  intent: RecallIntent;
+  hit: ImagePerceptionSearchHit;
 };
 
 type RecallStateTurnContext = {
@@ -339,6 +346,7 @@ export class RetrievalPipeline {
     const semanticRetrievals = await this.collectSemanticRetrievals(intents, options);
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
     const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
+    const imagePerceptions = await this.collectImagePerceptionEvidence(intents, options);
     const episodeEvidenceSources = episodeCandidates.map((item) => ({
       evidence: episodeCandidateToEvidence(item),
       item,
@@ -352,6 +360,7 @@ export class RetrievalPipeline {
       item,
     }));
     const openQuestionEvidence = openQuestionEvidenceSources.map((item) => item.evidence);
+    const imagePerceptionEvidence = imagePerceptions.map(imagePerceptionToEvidence);
     const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
@@ -361,6 +370,7 @@ export class RetrievalPipeline {
       ...episodeEvidence,
       ...semanticEvidence,
       ...openQuestionEvidence,
+      ...imagePerceptionEvidence,
       ...commitmentEvidence,
       ...rawStreamEvidence,
     ];
@@ -515,7 +525,37 @@ export class RetrievalPipeline {
       return this.rehydrateCommitmentHandle(handle, stateHandle, options, nowMs);
     }
 
+    if (handle.source === "image_perception") {
+      return this.rehydrateImagePerceptionHandle(handle, stateHandle);
+    }
+
     return this.rehydrateOpenQuestionHandle(handle, stateHandle, options);
+  }
+
+  private rehydrateImagePerceptionHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "image_perception" }>,
+    stateHandle: RecallStateHandle,
+  ): EvidenceItem | null {
+    const record = this.options.imagePerceptionRepository?.get(handle.perceptionId);
+
+    if (record === undefined || record === null || !record.active) {
+      return null;
+    }
+
+    return imagePerceptionToEvidence({
+      intent: {
+        id: WARM_RECALL_INTENT_ID,
+        kind: "recent",
+        query: record.caption,
+        terms: [],
+        priority: 0.4,
+        source: "recency",
+      },
+      hit: {
+        record,
+        similarity: warmRecallScore(stateHandle),
+      },
+    });
   }
 
   private async rehydrateEpisodeHandle(
@@ -1307,6 +1347,51 @@ export class RetrievalPipeline {
         right.question.urgency - left.question.urgency ||
         right.question.last_touched - left.question.last_touched,
     );
+  }
+
+  private async collectImagePerceptionEvidence(
+    intents: readonly RecallIntent[],
+    options: RetrievalSearchOptions,
+  ): Promise<ImagePerceptionEvidenceCandidate[]> {
+    if (this.options.imagePerceptionRepository === undefined) {
+      return [];
+    }
+
+    const byId = new Map<string, ImagePerceptionEvidenceCandidate>();
+    const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
+    const results = await mapWithConcurrency(
+      relevantIntents,
+      RETRIEVAL_FANOUT_CONCURRENCY,
+      async (intent): Promise<ImagePerceptionEvidenceCandidate[]> => {
+        try {
+          const vector = await this.options.embeddingClient.embed(intent.query);
+          const hits = await this.options.imagePerceptionRepository!.search({
+            vector,
+            limit: Math.max(1, options.limit ?? 5),
+            audienceTerms: options.audienceTerms ?? [],
+            crossAudience: options.crossAudience,
+          });
+
+          return hits.map((hit) => ({
+            intent,
+            hit,
+          }));
+        } catch (error) {
+          this.emitRetrievalDegraded(options, "image_perception", error);
+          return [];
+        }
+      },
+    );
+
+    for (const item of results.flat()) {
+      const current = byId.get(item.hit.record.perception_id);
+
+      if (current === undefined || item.hit.similarity > current.hit.similarity) {
+        byId.set(item.hit.record.perception_id, item);
+      }
+    }
+
+    return [...byId.values()].sort((left, right) => right.hit.similarity - left.hit.similarity);
   }
 
   private emitRetrievalDegraded(
@@ -2107,6 +2192,48 @@ function openQuestionToEvidence(
     scoreBreakdown: {
       salience: question.urgency,
     },
+  };
+}
+
+function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): EvidenceItem {
+  const record = item.hit.record;
+  const turnLabel =
+    record.created_turn_global === null ? "unknown turn" : `turn ${record.created_turn_global}`;
+  const audienceLabel = record.audience ?? "global";
+  const imageLabel = `Image: user-uploaded ${record.image_kind} from ${turnLabel} (audience: ${audienceLabel})`;
+
+  return {
+    id: `evidence_image_perception_${record.perception_id}_${item.intent.id}`,
+    source: "image_perception",
+    text: [
+      `${imageLabel}.`,
+      `Caption: ${record.caption}`,
+      `Scene: ${record.scene}`,
+      record.search_terms.length === 0 ? null : `Search terms: ${record.search_terms.join("; ")}`,
+      record.visible_text.length === 0 ? null : `Visible text: ${record.visible_text.join("; ")}`,
+      record.possible_user_relevant_details.length === 0
+        ? null
+        : `Possible relevant details: ${record.possible_user_relevant_details.join("; ")}`,
+    ]
+      .filter((part): part is string => part !== null)
+      .join("\n"),
+    provenance: {
+      imagePerceptionId: record.perception_id,
+      attachmentId: record.attachment_id,
+      streamIds:
+        record.stream_entry_id === null
+          ? [record.parent_entry_id]
+          : [record.parent_entry_id, record.stream_entry_id],
+    },
+    recallIntentId: item.intent.id,
+    matchedTerms: item.intent.kind === "known_term" ? [...item.intent.terms] : [],
+    score: clamp(item.hit.similarity, 0, 1),
+    scoreBreakdown: {
+      vector: item.hit.similarity,
+      provenance: 0.7,
+    },
+    imageAttachmentId: record.attachment_id,
+    imageLabel,
   };
 }
 

@@ -13,6 +13,7 @@ export const evidenceLedgerSourceTypeSchema = z.enum([
   "action_record",
   "relational_slot",
   "commitment",
+  "image_attachment",
   "assistant_stream",
   "system_metadata",
 ]);
@@ -143,6 +144,12 @@ export type EvidenceLedger = {
   compactedTranscriptEntryCount: number;
   rawPreservedUserTranscriptEntryCount: number;
   estimatedTokens: number;
+  imageAttachments?: EvidenceLedgerImageAttachment[];
+};
+
+export type EvidenceLedgerImageAttachment = {
+  label: string;
+  attachment_id: string;
 };
 
 export type EvidenceLedgerTraceSummary = {

@@ -3,7 +3,11 @@
 import { join } from "node:path";
 
 import { autonomyMigrations } from "../autonomy/index.js";
-import { attachmentMigrations } from "../attachments/index.js";
+import {
+  attachmentMigrations,
+  createImagePerceptionTableSchema,
+  imagePerceptionMigrations,
+} from "../attachments/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "../config/index.js";
 import { executiveMigrations } from "../executive/index.js";
 import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
@@ -39,6 +43,7 @@ export type BorgLanceTables = {
   openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
   actionRecordsTable: LanceDbTable;
+  imagePerceptionsTable: LanceDbTable;
 };
 
 export function resolveBorgConfig(options: {
@@ -216,6 +221,7 @@ export function createMigrations(): Migration[] {
     streamWatermarkMigrations,
     streamEntryIndexMigrations,
     attachmentMigrations,
+    imagePerceptionMigrations,
   );
 }
 
@@ -254,6 +260,10 @@ export async function openBorgLanceTables(options: {
     name: "action_records",
     schema: createActionRecordsTableSchema(options.embeddingDimensions),
   });
+  const imagePerceptionsTable = await options.lance.openTable({
+    name: "image_perception_embeddings",
+    schema: createImagePerceptionTableSchema(options.embeddingDimensions),
+  });
 
   return {
     episodesTable,
@@ -261,5 +271,6 @@ export async function openBorgLanceTables(options: {
     openQuestionsTable,
     skillsTable,
     actionRecordsTable,
+    imagePerceptionsTable,
   };
 }

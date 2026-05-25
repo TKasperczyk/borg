@@ -17,6 +17,9 @@ export const EPISODE_TRUST_RANK = 52;
 export const SEMANTIC_TRUST_RANK = 42;
 export const OPEN_QUESTION_TRUST_RANK = 38;
 export const WARM_RECALL_TRUST_RANK = 34;
+// Image perception is a recall bridge to the original attachment, not a
+// primary source; keep it visibly below durable semantic memory.
+export const IMAGE_PERCEPTION_TRUST_RANK = 10;
 export const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
