@@ -56,6 +56,7 @@ export const streamEntryEntityIdSchema = z
 export const streamEntrySchema = z.object({
   id: streamEntryIdSchema,
   timestamp: z.number().finite(),
+  entry_index: z.number().int().nonnegative().optional(),
   kind: streamEntryKindSchema,
   content: z.unknown(),
   turn_id: z.string().min(1).optional(),
@@ -74,6 +75,7 @@ export const streamEntryInputSchema = streamEntrySchema
   .omit({
     id: true,
     timestamp: true,
+    entry_index: true,
     session_id: true,
   })
   .extend({

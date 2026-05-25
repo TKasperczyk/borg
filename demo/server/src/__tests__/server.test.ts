@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 
 import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/t
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import { createDemoServerApp } from "../app.js";
-import { createLiveBridge, type LiveFrame } from "../live.js";
+import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 
 const PNG_1X1 = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -135,6 +135,38 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   throw new Error("Timed out waiting for condition");
 }
 
+function collectLiveFrames(live: ReturnType<typeof createLiveBridge>): {
+  frames: LiveFrame[];
+  wasClosed(): boolean;
+} {
+  const frames: LiveFrame[] = [];
+  let closed = false;
+
+  live.broadcaster.add({
+    send(data: string): void {
+      frames.push(JSON.parse(data) as LiveFrame);
+    },
+    close(): void {
+      closed = true;
+    },
+  });
+
+  return {
+    frames,
+    wasClosed: () => closed,
+  };
+}
+
+function serverPort(server: ReturnType<typeof serve>): number {
+  const address = server.address() as AddressInfo | string | null;
+
+  if (address === null || typeof address === "string") {
+    throw new Error("Expected server to listen on a TCP port");
+  }
+
+  return address.port;
+}
+
 async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   const internal = borg as unknown as BorgTestInternals;
   const sourceEntry = await borg.stream.append({
@@ -177,7 +209,11 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   } finally {
     writer.close();
   }
-  internal.deps.attachmentService.setAttachmentActive(attachmentId, false, "turn_attachment_quarantine");
+  internal.deps.attachmentService.setAttachmentActive(
+    attachmentId,
+    false,
+    "turn_attachment_quarantine",
+  );
 
   clock.advance(10);
   await borg.stream.append({
@@ -226,6 +262,27 @@ describe("demo server", () => {
     }
   });
 
+  it("closeAll attempts every live client even if one close throws", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    let secondClosed = false;
+
+    broadcaster.add({
+      send(): void {},
+      close(): void {
+        throw new Error("close failed");
+      },
+    });
+    broadcaster.add({
+      send(): void {},
+      close(): void {
+        secondClosed = true;
+      },
+    });
+
+    expect(() => broadcaster.closeAll()).not.toThrow();
+    expect(secondClosed).toBe(true);
+  });
+
   it("serves REST endpoint contract shapes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
@@ -263,7 +320,12 @@ describe("demo server", () => {
       source: "user",
       provenance: { kind: "manual" },
     });
-    borg.self.openQuestions.abandon(openQuestion.id, "demo smoke", { kind: "manual" }, { throughReview: true });
+    borg.self.openQuestions.abandon(
+      openQuestion.id,
+      "demo smoke",
+      { kind: "manual" },
+      { throughReview: true },
+    );
     const { app } = createDemoServerApp({ borg, live });
 
     const state = await app.request("/api/state");
@@ -335,7 +397,12 @@ describe("demo server", () => {
     const commitments = await app.request("/api/commitments?audience=Alice&state=all");
     expect(commitments.status).toBe(200);
     const commitmentBody = (await commitments.json()) as {
-      commitments: Array<{ id: string; state: string; enforcement_class: string; audience: string }>;
+      commitments: Array<{
+        id: string;
+        state: string;
+        enforcement_class: string;
+        audience: string;
+      }>;
     };
     expect(commitmentBody.commitments).toEqual(
       expect.arrayContaining([
@@ -395,11 +462,17 @@ describe("demo server", () => {
         }),
       ]),
       schedule: expect.arrayContaining([
-        expect.objectContaining({ process: "belief-reviser", source: "audit", audit_id: seeded.audit.id }),
+        expect.objectContaining({
+          process: "belief-reviser",
+          source: "audit",
+          audit_id: seeded.audit.id,
+        }),
         expect.objectContaining({ process: "belief-reviser", source: "stream" }),
       ]),
       audit_rows: [expect.objectContaining({ id: seeded.audit.id })],
-      belief_revision_rows: [expect.objectContaining({ id: seeded.review.id, kind: "belief_revision" })],
+      belief_revision_rows: [
+        expect.objectContaining({ id: seeded.review.id, kind: "belief_revision" }),
+      ],
       scheduler: expect.objectContaining({ enabled: expect.any(Boolean) }),
     });
 
@@ -481,10 +554,11 @@ describe("demo server", () => {
     const firstPage = await app.request("/api/stream?limit=1");
     expect(firstPage.status).toBe(200);
     const firstBody = (await firstPage.json()) as {
-      entries: Array<{ id: string }>;
+      entries: Array<{ id: string; entry_index?: number }>;
       next_cursor: string | null;
     };
     expect(firstBody.entries[0]?.id).toBe(cursorEntry?.id);
+    expect(firstBody.entries[0]?.entry_index).toBe(cursorEntry?.entry_index);
     expect(firstBody.next_cursor).not.toBeNull();
 
     const secondPage = await app.request(`/api/stream?limit=1&before=${firstBody.next_cursor}`);
@@ -493,7 +567,32 @@ describe("demo server", () => {
     expect(secondBody.entries[0]?.id).toBe(older.id);
   });
 
-  it("broadcasts turn phases and stream appends over WebSocket", async () => {
+  it("surfaces indexed entry_index for legacy stream JSONL rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borg, live });
+    const entry = await borg.stream.append({ kind: "internal_event", content: { legacy: true } });
+    const streamPath = join(tempDir, "stream", `${DEFAULT_SESSION_ID}.jsonl`);
+    const rawLine = readFileSync(streamPath, "utf8").trimEnd();
+    const rawEntry = JSON.parse(rawLine) as Record<string, unknown>;
+    delete rawEntry.entry_index;
+    writeFileSync(streamPath, `${JSON.stringify(rawEntry)}\n`);
+
+    const response = await app.request("/api/stream?limit=1");
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      entries: Array<{ id: string; entry_index?: number }>;
+    };
+    expect(body.entries[0]).toMatchObject({
+      id: entry.id,
+      entry_index: entry.entry_index,
+    });
+  });
+
+  it("broadcasts turn phases and stream appends over the live bridge", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
     const llm = new FakeLLMClient({
@@ -501,40 +600,21 @@ describe("demo server", () => {
     });
     const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
-    const { app, injectWebSocket } = createDemoServerApp({ borg, live });
-    const server = serve({ fetch: app.fetch, port: 0 });
-    injectWebSocket(server);
-    closers.push(
-      () =>
-        new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        }),
-    );
-    const port = (server.address() as AddressInfo).port;
-    const frames: LiveFrame[] = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/live`);
-    closers.push(async () => ws.close());
+    const { frames, wasClosed } = collectLiveFrames(live);
 
-    ws.addEventListener("message", (event) => {
-      frames.push(JSON.parse(String(event.data)) as LiveFrame);
+    const response = await borg.turn({
+      userMessage: "hello ws",
+      audience: "Alice",
+      stakes: "low",
     });
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve(), { once: true });
-      ws.addEventListener("error", () => reject(new Error("websocket failed")), { once: true });
-    });
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/turn`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "hello ws", audience: "Alice", stakes: "low" }),
-    });
-    expect(response.status).toBe(200);
+    expect(response.turn_id).toEqual(expect.any(String));
 
     await waitFor(
       () =>
         frames.some((frame) => frame.type === "stream:append") &&
         frames.some((frame) => frame.type === "turn:phase:started") &&
-        frames.some((frame) => frame.type === "turn:phase:completed"),
+        frames.some((frame) => frame.type === "turn:phase:completed") &&
+        frames.some((frame) => frame.type === "turn:terminal"),
     );
 
     const phaseFrames = frames.filter((frame) => frame.type.startsWith("turn:phase:"));
@@ -551,15 +631,28 @@ describe("demo server", () => {
 
     expect(perceptionStart).toBeGreaterThanOrEqual(0);
     expect(perceptionComplete).toBeGreaterThan(perceptionStart);
+    expect(frames.find((frame) => frame.type === "turn:terminal")).toMatchObject({
+      event: "turn.terminal",
+      data: {
+        outcome: "reflected",
+        turn_id: expect.any(String),
+        duration_ms: expect.any(Number),
+      },
+    });
+    live.broadcaster.closeAll();
+    expect(wasClosed()).toBe(true);
   });
 
-  it("broadcasts evidence ledger events over WebSocket", async () => {
+  it("broadcasts turn terminal frames to /api/live WebSocket clients after phase frames", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
-    const { borg, live } = await openHarness({ tempDir });
+    const llm = new FakeLLMClient({
+      responses: [createFakeEmitAnswerResponse("ws terminal ok"), createEmptyReflectionResponse()],
+    });
+    const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
     const { app, injectWebSocket } = createDemoServerApp({ borg, live });
-    const server = serve({ fetch: app.fetch, port: 0 });
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     injectWebSocket(server);
     closers.push(
       () =>
@@ -567,11 +660,11 @@ describe("demo server", () => {
           server.close(() => resolve());
         }),
     );
-    const port = (server.address() as AddressInfo).port;
-    const frames: LiveFrame[] = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/live`);
-    closers.push(async () => ws.close());
+    await waitFor(() => server.address() !== null);
 
+    const frames: LiveFrame[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${serverPort(server)}/api/live`);
+    closers.push(async () => ws.close());
     ws.addEventListener("message", (event) => {
       frames.push(JSON.parse(String(event.data)) as LiveFrame);
     });
@@ -579,6 +672,53 @@ describe("demo server", () => {
       ws.addEventListener("open", () => resolve(), { once: true });
       ws.addEventListener("error", () => reject(new Error("websocket failed")), { once: true });
     });
+
+    const result = await borg.turn({
+      userMessage: "hello websocket terminal",
+      audience: "Alice",
+      stakes: "low",
+    });
+
+    await waitFor(() =>
+      frames.some(
+        (frame) =>
+          frame.type === "turn:terminal" &&
+          (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
+      ),
+    );
+
+    const terminalIndex = frames.findIndex(
+      (frame) =>
+        frame.type === "turn:terminal" &&
+        (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
+    );
+    const phaseIndices = frames
+      .map((frame, index) => ({ frame, index }))
+      .filter(
+        ({ frame }) =>
+          frame.type.startsWith("turn:phase:") &&
+          (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
+      )
+      .map(({ index }) => index);
+
+    expect(phaseIndices.length).toBeGreaterThan(0);
+    expect(Math.max(...phaseIndices)).toBeLessThan(terminalIndex);
+    expect(frames[terminalIndex]).toMatchObject({
+      type: "turn:terminal",
+      event: "turn.terminal",
+      data: {
+        turn_id: result.turn_id,
+        outcome: "reflected",
+      },
+    });
+  });
+
+  it("broadcasts evidence ledger events over the live bridge", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { frames, wasClosed } = collectLiveFrames(live);
 
     live.tracer.emit("evidence_ledger.built", {
       turnId: "turn_ledger",
@@ -594,5 +734,7 @@ describe("demo server", () => {
       turn_id: "turn_ledger",
       ledger: { sections: [] },
     });
+    live.broadcaster.closeAll();
+    expect(wasClosed()).toBe(true);
   });
 });

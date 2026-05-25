@@ -92,6 +92,7 @@ describe("stream", () => {
     writer.close();
 
     expect(first.timestamp).toBe(100);
+    expect(first.entry_index).toBe(0);
     expect(first.compressed).toBe(false);
     expect(first.sender_entity_id).toBeNull();
     expect(first.reply_target_entity_id).toBeNull();
@@ -116,6 +117,7 @@ describe("stream", () => {
       "agent_suppressed",
       "internal_event",
     ]);
+    expect(reader.tail(4).map((entry) => entry.entry_index)).toEqual([0, 1, 2, 3]);
   });
 
   it("persists and reads sender entity ids", async () => {
@@ -946,6 +948,7 @@ describe("stream", () => {
       clock: new ManualClock(1),
       logger,
       entryIndex: {
+        nextEntryIndex: vi.fn(() => 0),
         recordEntry: vi.fn(() => {
           throw indexError;
         }),

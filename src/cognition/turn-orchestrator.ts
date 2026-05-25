@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import type {
   AttachmentRepository,
@@ -65,7 +66,7 @@ import { TurnReflectionCoordinator } from "./reflection/turn-reflection-coordina
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { SessionLock } from "./session-lock.js";
 import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
-import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
+import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 
 export type TurnInput = {
@@ -181,6 +182,7 @@ export class TurnOrchestrator {
         new StreamReader({
           dataDir: options.config.dataDir,
           sessionId,
+          entryIndex: options.entryIndex,
         }));
     const perceptionGateway = new PerceptionGateway({
       config: options.config,
@@ -379,6 +381,24 @@ export class TurnOrchestrator {
     }
   }
 
+  private emitTerminalTurn(input: {
+    turnId: string;
+    outcome: TurnTerminalOutcome;
+    startedWallMs: number;
+  }): void {
+    if (!this.tracer.enabled) {
+      return;
+    }
+
+    this.tracer.emit("turn.terminal", {
+      turnId: input.turnId,
+      turn_id: input.turnId,
+      outcome: input.outcome,
+      ts: this.clock.now(),
+      duration_ms: Math.max(0, performance.now() - input.startedWallMs),
+    });
+  }
+
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
@@ -399,6 +419,8 @@ export class TurnOrchestrator {
         ? this.options.actionRepository.nextLifecycleTurnGlobal()
         : this.options.actionRepository.ensureLifecycleTurnGlobal(input.globalTurnCounter);
     const streamWriter = this.options.createStreamWriter(sessionId);
+    const terminalStartedWallMs = performance.now();
+    let terminalOutcome: TurnTerminalOutcome = "error";
     const lifecycleTracker = new TurnLifecycleTracker({
       workingMemoryStore: this.options.workingMemoryStore,
       actionRepository: this.options.actionRepository,
@@ -420,11 +442,21 @@ export class TurnOrchestrator {
           lifecycleTracker,
         });
         lifecycleTracker.commitTurnState();
+        terminalOutcome =
+          result.terminalOutcome ??
+          (result.path === "suppressed" ? "suppressed_action" : "reflected");
         return result;
       } catch (error) {
         await lifecycleTracker.cleanupAbortedTurnState();
         await this.appendFailureEvent(streamWriter, error, sessionId, turnId);
+        terminalOutcome = "aborted";
         throw error;
+      } finally {
+        this.emitTerminalTurn({
+          turnId,
+          outcome: terminalOutcome,
+          startedWallMs: terminalStartedWallMs,
+        });
       }
     } finally {
       streamWriter.close();

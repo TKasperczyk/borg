@@ -37,6 +37,7 @@
     "build:server": "pnpm --filter @borg/demo-server build",
     "build:web": "pnpm --filter @borg/demo-web build",
     "test": "vitest run",
+    "test:dist-smoke": "pnpm build && NODE_OPTIONS= node --import tsx scripts/dist-smoke.ts",
     "heuristics:guard": "tsx scripts/heuristics-guard.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json",

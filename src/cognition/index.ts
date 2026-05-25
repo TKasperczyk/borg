@@ -149,6 +149,7 @@ export {
   type JsonlTracerOptions,
   type TurnTraceData,
   type TurnTraceEventName,
+  type TurnTerminalOutcome,
   type TurnTracer,
 } from "./tracing/tracer.js";
 export {

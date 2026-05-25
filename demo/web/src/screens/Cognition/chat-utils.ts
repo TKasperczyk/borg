@@ -1,4 +1,5 @@
 import type { StreamEntry } from "../../api/types";
+import { sortStreamEntries, streamContentText } from "../../lib/stream-utils";
 
 export type AttachmentRef = {
   attachmentId: string;
@@ -31,43 +32,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export function timestampLabel(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
-}
-
-export function contentText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    const blocks = content.flatMap((item) => {
-      if (isRecord(item) && item.type === "text" && typeof item.text === "string") {
-        return [item.text];
-      }
-      return [];
-    });
-    if (blocks.length > 0) {
-      return blocks.join("\n");
-    }
-  }
-
-  if (isRecord(content) && typeof content.text === "string") {
-    return content.text;
-  }
-
-  try {
-    return JSON.stringify(content ?? null);
-  } catch {
-    return String(content);
-  }
-}
-
 function contentThought(content: unknown): string | undefined {
   if (!isRecord(content)) {
     return undefined;
@@ -90,8 +54,8 @@ function contentRefs(content: unknown): ChatTurn["refs"] {
         id: item.id,
         kind: item.kind,
         label: typeof item.label === "string" ? item.label : item.id,
-        trust: typeof item.trust === "string" ? item.trust : undefined
-      }
+        trust: typeof item.trust === "string" ? item.trust : undefined,
+      },
     ];
   });
 }
@@ -109,17 +73,12 @@ function attachmentFromEntry(entry: StreamEntry): AttachmentRef | null {
   return {
     attachmentId: content.attachment_id,
     mediaType: typeof content.media_type === "string" ? content.media_type : undefined,
-    entryId: entry.id
+    entryId: entry.id,
   };
 }
 
 export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatTurn[] {
-  const ordered = [...entries].sort((left, right) => {
-    if (left.timestamp !== right.timestamp) {
-      return left.timestamp - right.timestamp;
-    }
-    return left.id.localeCompare(right.id);
-  });
+  const ordered = sortStreamEntries(entries);
   const turns: ChatTurn[] = [];
   const byTurnId = new Map<string, ChatTurn>();
 
@@ -128,10 +87,10 @@ export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatT
       const turn: ChatTurn = {
         entry,
         role: entry.kind === "user_msg" ? "user" : "borg",
-        text: contentText(entry.content),
+        text: streamContentText(entry.content),
         attachments: [],
         thought: contentThought(entry.content),
-        refs: contentRefs(entry.content)
+        refs: contentRefs(entry.content),
       };
       turns.push(turn);
       if (entry.turn_id !== undefined) {
@@ -154,7 +113,7 @@ export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatT
           entry,
           role: "user",
           text: "image attachment",
-          attachments: [attachment]
+          attachments: [attachment],
         });
       }
     }

@@ -233,11 +233,13 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         new StreamReader({
           dataDir: deps.config.dataDir,
           sessionId: options.session ?? DEFAULT_SESSION_ID,
+          entryIndex: deps.entryIndex,
         }).tail(n),
       reader: (options = {}) =>
         new StreamReader({
           dataDir: deps.config.dataDir,
           sessionId: options.session ?? DEFAULT_SESSION_ID,
+          entryIndex: deps.entryIndex,
         }),
     },
     episodic: {
@@ -376,7 +378,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }
 
         const streamFacts =
-          attachment.stream_entry_id === null ? null : deps.entryIndex.lookup(attachment.stream_entry_id);
+          attachment.stream_entry_id === null
+            ? null
+            : deps.entryIndex.lookup(attachment.stream_entry_id);
         const parentFacts = deps.entryIndex.lookup(attachment.parent_entry_id);
 
         return {
@@ -386,7 +390,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
               ? null
               : deps.imagePerceptionRepository.get(attachment.perception_id as ImagePerceptionId),
           status: {
-            active: attachment.active && streamFacts?.active !== false && parentFacts?.active !== false,
+            active:
+              attachment.active && streamFacts?.active !== false && parentFacts?.active !== false,
             quarantined:
               !attachment.active || streamFacts?.active === false || parentFacts?.active === false,
             ...(streamFacts === null ? {} : { stream_active: streamFacts.active }),
@@ -484,6 +489,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
                 new StreamReader({
                   dataDir: deps.config.dataDir,
                   sessionId,
+                  entryIndex: deps.entryIndex,
                 }),
               isActiveAttachmentStreamEntry: (streamEntryId) =>
                 deps.attachmentRepository.isActiveForStreamEntry(streamEntryId),

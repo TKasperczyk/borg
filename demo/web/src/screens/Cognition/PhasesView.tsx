@@ -18,11 +18,11 @@ function phaseGlyph(status: PhaseState["status"]): string {
   return "○";
 }
 
-function phaseDetail(phase: PhaseState): { substrate: string; writes: string; degraded: string } {
+function phaseDetail(phase: PhaseState): { substrate: string; detail: string; degraded: string } {
   return {
     substrate: "turn trace",
-    writes: phase.sub === "waiting" ? "pending" : phase.sub,
-    degraded: phase.status === "fail" ? "yes" : "no"
+    detail: phase.sub === "waiting" ? "pending" : phase.sub,
+    degraded: phase.status === "fail" ? "yes" : "no",
   };
 }
 
@@ -41,7 +41,7 @@ export function PhasesView({ phases, activeTurnId }: PhasesViewProps) {
             fontSize: 10.5,
             color: "var(--text-mute)",
             textTransform: "uppercase",
-            letterSpacing: "0.08em"
+            letterSpacing: "0.08em",
           }}
         >
           <span>turn {activeTurnId ?? "idle"}</span>
@@ -49,7 +49,8 @@ export function PhasesView({ phases, activeTurnId }: PhasesViewProps) {
         </div>
         <div style={{ display: "flex", gap: 10, fontSize: 10.5, color: "var(--text-mute)" }}>
           <span>
-            phases <span className="acc">{phases.filter((phase) => phase.status === "done").length}</span>/
+            phases{" "}
+            <span className="acc">{phases.filter((phase) => phase.status === "done").length}</span>/
             {phases.length}
           </span>
           <span className="dim">·</span>
@@ -85,8 +86,8 @@ export function PhasesView({ phases, activeTurnId }: PhasesViewProps) {
                     <span className="v">{detail.substrate}</span>
                   </div>
                   <div className="row">
-                    <span className="k">writes</span>
-                    <span className="v">{detail.writes}</span>
+                    <span className="k">detail</span>
+                    <span className="v">{detail.detail}</span>
                   </div>
                   <div className="row">
                     <span className="k">degraded</span>

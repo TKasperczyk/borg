@@ -5,13 +5,14 @@ import type {
   EpisodeMemoryItem,
   MemoryBandDetail,
   MemoryBandId,
-  MemoryBandSummary
+  MemoryBandSummary,
 } from "../../api/types";
 import { Panel } from "../../components/Panel";
 import { Spark } from "../../components/Spark";
 import { Tag } from "../../components/Tag";
 import { useApi } from "../../hooks/use-api";
-import { dateLabel, jsonText, shortId, timeLabel } from "../screen-utils";
+import { formatTime } from "../../lib/stream-utils";
+import { dateLabel, jsonText, shortId } from "../screen-utils";
 
 const BAND_ORDER: MemoryBandId[] = [
   "episodic",
@@ -21,7 +22,7 @@ const BAND_ORDER: MemoryBandId[] = [
   "self",
   "commitments",
   "social",
-  "relational"
+  "relational",
 ];
 
 const BAND_DESCRIPTIONS: Record<MemoryBandId, string> = {
@@ -32,17 +33,19 @@ const BAND_DESCRIPTIONS: Record<MemoryBandId, string> = {
   self: "values, goals, traits, narrative",
   commitments: "scoped promises and boundaries",
   social: "per-entity trust and history",
-  relational: "evidence-backed relationship facts"
+  relational: "evidence-backed relationship facts",
 };
 
-function detailRows(detail: MemoryBandDetail): Array<{ id: string; title: string; meta: string; body: string }> {
+function detailRows(
+  detail: MemoryBandDetail,
+): Array<{ id: string; title: string; meta: string; body: string }> {
   switch (detail.band) {
     case "episodic":
       return detail.items.map((item) => ({
         id: item.id,
         title: item.title,
         meta: `${dateLabel(item.start_time)} · ${item.audience ?? "global"} · ${item.source_count} src`,
-        body: item.narrative
+        body: item.narrative,
       }));
     case "semantic":
       return [
@@ -50,28 +53,28 @@ function detailRows(detail: MemoryBandDetail): Array<{ id: string; title: string
           id: node.id,
           title: node.label,
           meta: `${node.kind} · ${node.status} · ${node.source_count} src`,
-          body: node.description
+          body: node.description,
         })),
         ...detail.edges.map((edge) => ({
           id: edge.id,
           title: `${edge.from_node_id} --${edge.relation}-> ${edge.to_node_id}`,
           meta: `edge · confidence ${edge.confidence.toFixed(2)} · ${edge.source_count} src`,
-          body: edge.invalidated_reason ?? "active edge"
-        }))
+          body: edge.invalidated_reason ?? "active edge",
+        })),
       ];
     case "procedural":
       return detail.items.map((skill) => ({
         id: skill.id,
         title: skill.applies_when,
         meta: `alpha ${skill.alpha.toFixed(1)} · beta ${skill.beta.toFixed(1)} · ${skill.sample_count} samples`,
-        body: skill.approach
+        body: skill.approach,
       }));
     case "affective":
       return detail.history.map((point) => ({
         id: String(point.id),
-        title: `${timeLabel(point.ts)} · valence ${point.valence.toFixed(2)}`,
+        title: `${formatTime(point.ts)} · valence ${point.valence.toFixed(2)}`,
         meta: `arousal ${point.arousal.toFixed(2)} · ${point.trigger_reason ?? "no trigger"}`,
-        body: jsonText(point.provenance)
+        body: jsonText(point.provenance),
       }));
     case "self":
       return [
@@ -79,47 +82,47 @@ function detailRows(detail: MemoryBandDetail): Array<{ id: string; title: string
           id: value.id,
           title: value.label,
           meta: `value · confidence ${value.confidence.toFixed(2)}`,
-          body: value.description
+          body: value.description,
         })),
         ...detail.goals.map((goal) => ({
           id: goal.id,
           title: goal.description,
           meta: `goal · ${goal.status} · priority ${goal.priority.toFixed(2)}`,
-          body: goal.progress_notes ?? "no progress notes"
+          body: goal.progress_notes ?? "no progress notes",
         })),
         ...detail.traits.map((trait) => ({
           id: trait.id,
           title: trait.label,
           meta: `trait · confidence ${trait.confidence.toFixed(2)}`,
-          body: `${trait.support_count} support · ${trait.contradiction_count} contradiction`
+          body: `${trait.support_count} support · ${trait.contradiction_count} contradiction`,
         })),
         ...detail.open_questions.map((question) => ({
           id: question.id,
           title: question.question,
           meta: `open_question · ${question.status} · urgency ${question.urgency.toFixed(2)}`,
-          body: question.resolution_note ?? question.abandoned_reason ?? "unresolved"
-        }))
+          body: question.resolution_note ?? question.abandoned_reason ?? "unresolved",
+        })),
       ];
     case "commitments":
       return detail.items.map((commitment) => ({
         id: commitment.id,
         title: commitment.text,
         meta: `${commitment.state} · ${commitment.enforcement_class} · ${commitment.audience ?? "global"}`,
-        body: `${commitment.type} · ${commitment.kind}`
+        body: `${commitment.type} · ${commitment.kind}`,
       }));
     case "social":
       return detail.items.map((profile) => ({
         id: profile.entity_id,
         title: profile.name ?? profile.entity_id,
         meta: `trust ${profile.trust.toFixed(2)} · ${profile.history_count} interactions`,
-        body: `attachment ${profile.attachment.toFixed(2)} · commitments ${profile.commitment_count}`
+        body: `attachment ${profile.attachment.toFixed(2)} · commitments ${profile.commitment_count}`,
       }));
     case "relational":
       return detail.items.map((slot) => ({
         id: slot.id,
         title: slot.slot,
         meta: `${slot.state} · ${slot.sources_count} src · ${slot.alternate_count} alternates`,
-        body: slot.value
+        body: slot.value,
       }));
   }
 }
@@ -149,15 +152,17 @@ export function MemoryScreen() {
         desc: BAND_DESCRIPTIONS[id],
         count: 0,
         growth: [1, 1, 1],
-        stats: []
-      }
+        stats: [],
+      },
   );
 
   return (
     <div className="bands">
       <div className="bands-head">
         <h1>memory::bands</h1>
-        <div className="desc">8 derived stores · source-linked records · audience scope before render</div>
+        <div className="desc">
+          raw memory store browser · audience scoping applies during retrieval/evidence ledger
+        </div>
       </div>
       <div className="bands-grid">
         {bands.map((band) => (
@@ -247,7 +252,7 @@ function MemoryDrill({ band, back }: { band: MemoryBandId; back: () => void }) {
               gap: 8,
               alignItems: "center",
               fontSize: 10.5,
-              color: "var(--text-mute)"
+              color: "var(--text-mute)",
             }}
           >
             <span>{rows.length} visible</span>
@@ -283,14 +288,31 @@ function MemoryDrill({ band, back }: { band: MemoryBandId; back: () => void }) {
                 <span>{selected.meta}</span>
               </div>
               <div className="divider">body</div>
-              <div style={{ fontFamily: "var(--sans)", color: "var(--text-dim)", fontSize: 13, lineHeight: 1.6 }}>
+              <div
+                style={{
+                  fontFamily: "var(--sans)",
+                  color: "var(--text-dim)",
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
                 {selected.body}
               </div>
-              {api.data === null ? null : <BandSpecificDetail detail={api.data} selectedId={selected.id} />}
+              {api.data === null ? null : (
+                <BandSpecificDetail detail={api.data} selectedId={selected.id} />
+              )}
             </>
           )}
         </div>
-        <div className="panel" style={{ borderLeft: "1px solid var(--line)", borderTop: 0, borderRight: 0, borderBottom: 0 }}>
+        <div
+          className="panel"
+          style={{
+            borderLeft: "1px solid var(--line)",
+            borderTop: 0,
+            borderRight: 0,
+            borderBottom: 0,
+          }}
+        >
           <div className="panel-header">
             <span className="title">properties</span>
           </div>
@@ -331,9 +353,17 @@ function MemoryDrill({ band, back }: { band: MemoryBandId; back: () => void }) {
   );
 }
 
-function BandSpecificDetail({ detail, selectedId }: { detail: MemoryBandDetail; selectedId: string }) {
+function BandSpecificDetail({
+  detail,
+  selectedId,
+}: {
+  detail: MemoryBandDetail;
+  selectedId: string;
+}) {
   if (detail.band === "episodic") {
-    const episode = detail.items.find((item) => item.id === selectedId) as EpisodeMemoryItem | undefined;
+    const episode = detail.items.find((item) => item.id === selectedId) as
+      | EpisodeMemoryItem
+      | undefined;
     if (episode === undefined) {
       return null;
     }
@@ -366,7 +396,7 @@ function BandSpecificDetail({ detail, selectedId }: { detail: MemoryBandDetail; 
           </div>
           <div className="row">
             <span className="k">updated</span>
-            <span className="v">{timeLabel(detail.current.updated_at)}</span>
+            <span className="v">{formatTime(detail.current.updated_at)}</span>
           </div>
         </div>
       </>

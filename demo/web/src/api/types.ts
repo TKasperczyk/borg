@@ -26,6 +26,7 @@ export type StreamChatKind = "user_msg" | "agent_msg" | "user_image_attachment";
 export type StreamEntry = {
   id: string;
   timestamp: number;
+  entry_index?: number;
   kind: StreamEntryKind;
   content: unknown;
   turn_id?: string;
@@ -612,6 +613,23 @@ export type PhaseEventData = {
   [key: string]: JsonValue | undefined;
 };
 
+export type TurnTerminalOutcome =
+  | "reflected"
+  | "suppressed_closure"
+  | "suppressed_generation_gate"
+  | "suppressed_action"
+  | "aborted"
+  | "error";
+
+export type TurnTerminalData = {
+  turnId: string;
+  turn_id?: string;
+  outcome: TurnTerminalOutcome;
+  ts?: number;
+  duration_ms?: number;
+  [key: string]: JsonValue | undefined;
+};
+
 export type LiveFrameBase = {
   type: string;
   ts: number;
@@ -628,12 +646,22 @@ export type TurnPhaseFrame = LiveFrameBase & {
   data: PhaseEventData;
 };
 
+export type TurnTerminalFrame = LiveFrameBase & {
+  type: "turn:terminal";
+  event: "turn.terminal";
+  data: TurnTerminalData;
+};
+
 export type EvidenceLedgerBuiltFrame = LiveFrameBase & {
   type: "evidence_ledger:built";
   turn_id: string;
   ledger: EvidenceLedger | null;
 };
 
-export type LiveFrame = StreamAppendFrame | TurnPhaseFrame | EvidenceLedgerBuiltFrame;
+export type LiveFrame =
+  | StreamAppendFrame
+  | TurnPhaseFrame
+  | TurnTerminalFrame
+  | EvidenceLedgerBuiltFrame;
 
 export type WsState = "live" | "reconnecting" | "down";

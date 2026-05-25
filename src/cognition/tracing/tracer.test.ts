@@ -120,6 +120,9 @@ describe("TurnTracer", () => {
       rewritten_response: "after",
       dropped_facets: [{ query: "hidden", priority: 1 }],
       description: "candidate text",
+      candidate_description: "goal candidate text",
+      description_excerpt: "action excerpt",
+      skipped_promotions: [{ description_excerpt: "skipped goal" }],
       error: "stack-like detail",
       spans: [{ text: "hidden span" }],
       reason: "ordinary_reason",
@@ -130,6 +133,9 @@ describe("TurnTracer", () => {
       prompt: "full prompt",
       response: "full response",
       ledger: { sections: [] },
+      candidate_description: "goal candidate text",
+      description_excerpt: "action excerpt",
+      skipped_promotions: [{ description_excerpt: "skipped goal" }],
       summary: "safe metadata",
     });
     expect(withoutPayloads[0]).toEqual({
@@ -446,7 +452,13 @@ describe("TurnTracer", () => {
       "reflection.completed",
       "turn_phase.completed",
       "action_archive_scan.completed",
+      "turn.terminal",
     ]);
+    expect(events.find((event) => event.event === "turn.terminal")).toMatchObject({
+      outcome: "reflected",
+      turn_id: expect.any(String),
+      duration_ms: expect.any(Number),
+    });
     expect(
       events.find((event) => event.event === "deliberation.plan_persistence.completed"),
     ).toMatchObject({

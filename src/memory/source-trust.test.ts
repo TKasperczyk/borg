@@ -14,6 +14,7 @@ function indexedEntry(overrides: Partial<StreamEntryIndexRecord> = {}): StreamEn
     entry_id: ATTACHMENT_ENTRY_ID,
     session_id: DEFAULT_SESSION_ID,
     byte_offset: 0,
+    entry_index: 0,
     timestamp: 1,
     kind: "user_image_attachment",
     sender_entity_id: null,

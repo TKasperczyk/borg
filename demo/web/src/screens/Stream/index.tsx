@@ -5,13 +5,14 @@ import type {
   AttachmentMetadataResponse,
   AttachmentStatusItem,
   StreamEntry,
-  StreamEntryKind
+  StreamEntryKind,
 } from "../../api/types";
 import { ImagePlaceholder } from "../../components/ImagePlaceholder";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
-import { contentField, jsonText, shortId, streamContentText, timeLabel } from "../screen-utils";
+import { formatTime, mergeEntries, streamContentText } from "../../lib/stream-utils";
+import { contentField, jsonText, shortId } from "../screen-utils";
 
 const STREAM_KINDS: StreamEntryKind[] = [
   "user_msg",
@@ -24,7 +25,7 @@ const STREAM_KINDS: StreamEntryKind[] = [
   "tool_result",
   "perception",
   "internal_event",
-  "dream_report"
+  "dream_report",
 ];
 
 function kindTag(kind: StreamEntryKind): TagKind {
@@ -57,21 +58,10 @@ function mediaType(entry: StreamEntry): string | undefined {
   return contentField(entry.content, "media_type");
 }
 
-function prependUnique(entries: StreamEntry[], incoming: readonly StreamEntry[]): StreamEntry[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  for (const entry of incoming) {
-    byId.set(entry.id, entry);
-  }
-
-  return [...byId.values()].sort((left, right) => {
-    if (left.timestamp !== right.timestamp) {
-      return right.timestamp - left.timestamp;
-    }
-    return right.id.localeCompare(left.id);
-  });
-}
-
-function summarizeStatus(entry: StreamEntry, attachment?: AttachmentMetadataResponse | null): string {
+function summarizeStatus(
+  entry: StreamEntry,
+  attachment?: AttachmentMetadataResponse | null,
+): string {
   if (attachment?.status.quarantined === true) {
     return "quarantined";
   }
@@ -90,12 +80,15 @@ export function StreamScreen() {
   const [audiences, setAudiences] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    if (streamApi.data === null) {
+    const streamData = streamApi.data;
+
+    if (streamData === null) {
       return;
     }
-    const sorted = prependUnique([], streamApi.data.entries);
-    setEntries(sorted);
-    setSelectedId((current) => current ?? sorted[0]?.id ?? null);
+    setEntries((current) => mergeEntries(current, streamData.entries, "desc"));
+    setSelectedId(
+      (current) => current ?? mergeEntries([], streamData.entries, "desc")[0]?.id ?? null,
+    );
   }, [streamApi.data]);
 
   useEffect(() => {
@@ -103,16 +96,19 @@ export function StreamScreen() {
       if (frame.type !== "stream:append") {
         return;
       }
-      setEntries((current) => prependUnique(current, frame.entries));
+      setEntries((current) => mergeEntries(current, frame.entries, "desc"));
       setSelectedId((current) => current ?? frame.entries.at(-1)?.id ?? null);
     });
   }, [live]);
 
   const windowAudiences = useMemo(
     () =>
-      [...new Set(entries.flatMap((entry) => (entry.audience === undefined ? [] : [entry.audience])))]
-        .sort(),
-    [entries]
+      [
+        ...new Set(
+          entries.flatMap((entry) => (entry.audience === undefined ? [] : [entry.audience])),
+        ),
+      ].sort(),
+    [entries],
   );
 
   useEffect(() => {
@@ -129,9 +125,9 @@ export function StreamScreen() {
       entries.filter(
         (entry) =>
           kinds.has(entry.kind) &&
-          (entry.audience === undefined || audiences.size === 0 || audiences.has(entry.audience))
+          (entry.audience === undefined || audiences.size === 0 || audiences.has(entry.audience)),
       ),
-    [audiences, entries, kinds]
+    [audiences, entries, kinds],
   );
   const selected = filtered.find((entry) => entry.id === selectedId) ?? filtered[0] ?? null;
   const selectedAttachmentId = selected === null ? undefined : attachmentId(selected);
@@ -140,29 +136,33 @@ export function StreamScreen() {
       selectedAttachmentId === undefined
         ? Promise.resolve(null)
         : getAttachmentMetadata(selectedAttachmentId).catch(() => null),
-    [selectedAttachmentId]
+    [selectedAttachmentId],
   );
-  const [attachmentStatusById, setAttachmentStatusById] = useState<Record<string, AttachmentStatusItem["status"]>>({});
+  const [attachmentStatusById, setAttachmentStatusById] = useState<
+    Record<string, AttachmentStatusItem["status"]>
+  >({});
   const visibleAttachmentIds = useMemo(
-    () =>
-      [
-        ...new Set(
-          filtered.flatMap((entry) => {
-            const id = attachmentId(entry);
-            return id === undefined ? [] : [id];
-          })
-        )
-      ],
-    [filtered]
+    () => [
+      ...new Set(
+        filtered.flatMap((entry) => {
+          const id = attachmentId(entry);
+          return id === undefined ? [] : [id];
+        }),
+      ),
+    ],
+    [filtered],
   );
   const missingAttachmentIds = useMemo(
     () => visibleAttachmentIds.filter((id) => attachmentStatusById[id] === undefined),
-    [attachmentStatusById, visibleAttachmentIds]
+    [attachmentStatusById, visibleAttachmentIds],
   );
   const missingAttachmentKey = missingAttachmentIds.join(",");
   const attachmentStatusesApi = useApi<AttachmentStatusItem[]>(
-    () => (missingAttachmentIds.length === 0 ? Promise.resolve([]) : getAttachmentStatuses(missingAttachmentIds)),
-    [missingAttachmentKey]
+    () =>
+      missingAttachmentIds.length === 0
+        ? Promise.resolve([])
+        : getAttachmentStatuses(missingAttachmentIds),
+    [missingAttachmentKey],
   );
 
   useEffect(() => {
@@ -183,19 +183,19 @@ export function StreamScreen() {
   const kindCounts = useMemo(
     () =>
       Object.fromEntries(
-        STREAM_KINDS.map((kind) => [kind, entries.filter((entry) => entry.kind === kind).length])
+        STREAM_KINDS.map((kind) => [kind, entries.filter((entry) => entry.kind === kind).length]),
       ) as Record<StreamEntryKind, number>,
-    [entries]
+    [entries],
   );
   const audienceCounts = useMemo(
     () =>
       Object.fromEntries(
         windowAudiences.map((audience) => [
           audience,
-          entries.filter((entry) => entry.audience === audience).length
-        ])
+          entries.filter((entry) => entry.audience === audience).length,
+        ]),
       ) as Record<string, number>,
-    [entries, windowAudiences]
+    [entries, windowAudiences],
   );
 
   const toggleKind = (kind: StreamEntryKind) => {
@@ -262,11 +262,15 @@ export function StreamScreen() {
           <div className="label">status</div>
           <div className="opt on">
             <span>active</span>
-            <span className="count">{entries.filter((entry) => entry.turn_status !== "aborted").length}</span>
+            <span className="count">
+              {entries.filter((entry) => entry.turn_status !== "aborted").length}
+            </span>
           </div>
           <div className="opt on">
             <span>aborted-turn</span>
-            <span className="count">{entries.filter((entry) => entry.turn_status === "aborted").length}</span>
+            <span className="count">
+              {entries.filter((entry) => entry.turn_status === "aborted").length}
+            </span>
           </div>
         </div>
       </div>
@@ -284,7 +288,7 @@ export function StreamScreen() {
             gap: 12,
             fontSize: 10.5,
             color: "var(--text-mute)",
-            zIndex: 2
+            zIndex: 2,
           }}
         >
           <span>{filtered.length} events</span>
@@ -293,8 +297,12 @@ export function StreamScreen() {
           <span className="live-dot"></span>
           <span className="acc upper">tailing</span>
         </div>
-        {streamApi.loading && entries.length === 0 ? <div className="notice">loading stream</div> : null}
-        {streamApi.error !== null ? <div className="notice bad">{streamApi.error.message}</div> : null}
+        {streamApi.loading && entries.length === 0 ? (
+          <div className="notice">loading stream</div>
+        ) : null}
+        {streamApi.error !== null ? (
+          <div className="notice bad">{streamApi.error.message}</div>
+        ) : null}
         {filtered.map((entry) => {
           const attId = attachmentId(entry);
           const attachmentStatus = attId === undefined ? undefined : attachmentStatusById[attId];
@@ -307,7 +315,7 @@ export function StreamScreen() {
               }`}
               onClick={() => setSelectedId(entry.id)}
             >
-              <span className="t">{timeLabel(entry.timestamp)}</span>
+              <span className="t">{formatTime(entry.timestamp)}</span>
               <span className={`k ${kindTag(entry.kind)}`}>{entry.kind}</span>
               <span className={isAttachment ? "att-inline" : "body"}>
                 {isAttachment ? (
@@ -320,12 +328,14 @@ export function StreamScreen() {
                       quarantined={attachmentStatus?.quarantined === true}
                     />
                     <span className="body-txt">
-                      {attId ?? "attachment"} · {streamContentText(entry)}
+                      {attId ?? "attachment"} · {streamContentText(entry.content)}
                     </span>
-                    {attachmentStatus?.quarantined === true ? <Tag kind="bad">quarantined</Tag> : null}
+                    {attachmentStatus?.quarantined === true ? (
+                      <Tag kind="bad">quarantined</Tag>
+                    ) : null}
                   </>
                 ) : (
-                  streamContentText(entry)
+                  streamContentText(entry.content)
                 )}
               </span>
               <span className="aud">{entry.audience ?? "global"}</span>
@@ -344,7 +354,10 @@ export function StreamScreen() {
                 {selected.audience ?? "global"}
               </div>
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <Tag kind={summarizeStatus(selected, attachmentApi.data) === "active" ? "acc" : "bad"} dot>
+                <Tag
+                  kind={summarizeStatus(selected, attachmentApi.data) === "active" ? "acc" : "bad"}
+                  dot
+                >
                   {summarizeStatus(selected, attachmentApi.data)}
                 </Tag>
                 <Tag>{selected.session_id}</Tag>
@@ -374,9 +387,16 @@ export function StreamScreen() {
                         {attachmentApi.data?.perception?.caption ?? "perception unavailable"}
                       </div>
                       <div className="att-card-stats">
-                        <span>{attachmentApi.data?.attachment.width ?? "?"}x{attachmentApi.data?.attachment.height ?? "?"}</span>
+                        <span>
+                          {attachmentApi.data?.attachment.width ?? "?"}x
+                          {attachmentApi.data?.attachment.height ?? "?"}
+                        </span>
                         <span>{shortId(attachmentApi.data?.attachment.sha256)}</span>
-                        <span>{attachmentApi.data?.status.quarantined === true ? "quarantined cascade" : "active"}</span>
+                        <span>
+                          {attachmentApi.data?.status.quarantined === true
+                            ? "quarantined cascade"
+                            : "active"}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -385,7 +405,7 @@ export function StreamScreen() {
               <div className="upper dim" style={{ marginTop: 16, marginBottom: 6 }}>
                 body
               </div>
-              <pre>{streamContentText(selected)}</pre>
+              <pre>{streamContentText(selected.content)}</pre>
               <div className="upper dim" style={{ marginTop: 16, marginBottom: 6 }}>
                 raw
               </div>

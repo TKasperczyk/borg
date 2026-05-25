@@ -2871,6 +2871,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
   it("turns S2 no-output recommendations into suppressed turns", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_100_000);
     const llm = new FakeLLMClient({
       responses: [
@@ -2878,7 +2879,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createEmitNoOutputResponse("The planner recommended no assistant message."),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
 
     try {
       const result = await borg.turn({
@@ -2889,6 +2892,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const thoughtEntry = entries.find((entry) => entry.kind === "thought");
       const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
       const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+      const terminalEvent = readTraceEvents(tracePath).find(
+        (event) => event.event === "turn.terminal",
+      );
 
       expect(result.emitted).toBe(false);
       expect(result.response).toBe("");
@@ -2905,6 +2911,13 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
+      expect(terminalEvent).toMatchObject({
+        turnId: result.turn_id,
+        turn_id: result.turn_id,
+        outcome: "suppressed_action",
+        ts: clock.now(),
+        duration_ms: expect.any(Number),
+      });
     } finally {
       await borg.close();
     }
@@ -2913,6 +2926,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
   it("consumes a detected closure loop through S2 no-output before suppressing later closure", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_120_000);
     const closureSourceEntryId = createStreamEntryId();
     const llm = new FakeLLMClient({
@@ -2929,7 +2943,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createClosureLoopSignoffResponseFromRequest(),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
     const internal = borg as unknown as {
       deps: Pick<BorgDependencies, "workingMemoryStore">;
     };
@@ -2966,6 +2982,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         reason: "finalizer_no_output",
       });
       expect(second.response).toBe("");
+      expect(
+        readTraceEvents(tracePath)
+          .filter((event) => event.event === "turn.terminal")
+          .map((event) => event.outcome),
+      ).toEqual(["suppressed_action", "suppressed_closure"]);
     } finally {
       await borg.close();
     }
@@ -4748,6 +4769,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
   it("runs the generation gate before retrieval and finalization under active stop state", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_200_000);
     const embeddingClient = new CountingEmbeddingClient();
     const llm = new FakeLLMClient({
@@ -4764,7 +4786,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         }),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock, embeddingClient);
+    const borg = await openTestBorg(tempDir, llm, clock, embeddingClient, {
+      tracerPath: tracePath,
+    });
 
     try {
       await borg.turn({
@@ -4789,6 +4813,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
         provenance: "self_commitment_extractor",
       });
+      expect(
+        readTraceEvents(tracePath)
+          .filter((event) => event.event === "turn.terminal")
+          .map((event) => event.outcome),
+      ).toEqual(["reflected", "suppressed_generation_gate"]);
     } finally {
       await borg.close();
     }

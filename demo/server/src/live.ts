@@ -2,7 +2,10 @@ import type { StreamEntry, TurnTraceData, TurnTraceEventName, TurnTracer } from 
 
 type SocketLike = {
   send(data: string): void;
+  close?: () => void;
 };
+
+type LoggerLike = Pick<Console, "error">;
 
 export type LiveFrame = {
   type: string;
@@ -12,6 +15,8 @@ export type LiveFrame = {
 
 export class LiveBroadcaster {
   private readonly clients = new Set<SocketLike>();
+
+  constructor(private readonly logger: LoggerLike = console) {}
 
   add(client: SocketLike): void {
     this.clients.add(client);
@@ -28,6 +33,20 @@ export class LiveBroadcaster {
       try {
         client.send(payload);
       } catch {
+        this.clients.delete(client);
+      }
+    }
+  }
+
+  closeAll(): void {
+    for (const client of this.clients) {
+      try {
+        client.close?.();
+      } catch (error) {
+        this.logger.error("Live WebSocket close failed", {
+          cause: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
         this.clients.delete(client);
       }
     }
@@ -82,6 +101,16 @@ export class WsBridgeTracer implements TurnTracer {
     if (event === "turn_phase.failed") {
       this.broadcaster.broadcast({
         type: "turn:phase:failed",
+        ts: Date.now(),
+        event,
+        data,
+      });
+      return;
+    }
+
+    if (event === "turn.terminal") {
+      this.broadcaster.broadcast({
+        type: "turn:terminal",
         ts: Date.now(),
         event,
         data,

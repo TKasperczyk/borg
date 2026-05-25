@@ -5,7 +5,8 @@ import type { DreamProcessName, DreamProcessSummary } from "../../api/types";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
-import { jsonText, timeLabel } from "../screen-utils";
+import { formatTime } from "../../lib/stream-utils";
+import { jsonText } from "../screen-utils";
 
 const PROCESS_NAMES: DreamProcessName[] = [
   "consolidator",
@@ -17,7 +18,7 @@ const PROCESS_NAMES: DreamProcessName[] = [
   "ruminator",
   "self-narrator",
   "procedural-synthesizer",
-  "belief-reviser"
+  "belief-reviser",
 ];
 
 function statusTag(status: DreamProcessSummary["last_status"]) {
@@ -30,13 +31,6 @@ function statusTag(status: DreamProcessSummary["last_status"]) {
   return "";
 }
 
-function budgetPct(process: DreamProcessSummary): number {
-  if (process.budget === null) {
-    return process.last_run_at === null ? 0 : 100;
-  }
-  return process.last_run_at === null ? 0 : 65;
-}
-
 export function DreamScreen() {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
@@ -45,7 +39,10 @@ export function DreamScreen() {
 
   useEffect(() => {
     return live.subscribe((frame) => {
-      if (frame.type === "stream:append" && frame.entries.some((entry) => entry.kind === "dream_report")) {
+      if (
+        frame.type === "stream:append" &&
+        frame.entries.some((entry) => entry.kind === "dream_report")
+      ) {
         void refetch();
       }
     });
@@ -61,8 +58,8 @@ export function DreamScreen() {
         last_status: null,
         last_audit_id: null,
         budget: null,
-        enabled: false
-      }
+        enabled: false,
+      },
   );
   const selectedProcess = processes.find((process) => process.name === selected) ?? processes[0];
 
@@ -87,11 +84,13 @@ export function DreamScreen() {
             display: "flex",
             alignItems: "center",
             gap: 6,
-            whiteSpace: "nowrap"
+            whiteSpace: "nowrap",
           }}
         >
           <span className={state?.scheduler.enabled === true ? "live-dot" : "dot mute"}></span>
-          <span className="acc upper">{state?.scheduler.enabled === true ? "scheduler enabled" : "scheduler disabled"}</span>
+          <span className="acc upper">
+            {state?.scheduler.enabled === true ? "scheduler enabled" : "scheduler disabled"}
+          </span>
         </span>
         <button className="btn sm" disabled title="v1 read-only">
           dry-run all
@@ -103,20 +102,44 @@ export function DreamScreen() {
 
       <div className="page-body">
         <div style={{ padding: "14px 20px 16px 20px", borderBottom: "1px solid var(--line)" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 10,
+            }}
+          >
             <div className="upper dim">schedule · recent synthesized rows</div>
             <div className="dim" style={{ fontSize: 10.5 }}>
               {state?.schedule.length ?? 0} rows · {state?.audit_rows.length ?? 0} audit ·{" "}
               {state?.belief_revision_rows.length ?? 0} belief-revision reviews
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 14, alignItems: "center", rowGap: 5 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "150px 1fr",
+              gap: 14,
+              alignItems: "center",
+              rowGap: 5,
+            }}
+          >
             {processes.slice(0, 6).map((process) => {
-              const runs = (state?.schedule ?? []).filter((item) => item.process === process.name).slice(0, 6);
+              const runs = (state?.schedule ?? [])
+                .filter((item) => item.process === process.name)
+                .slice(0, 6);
               return (
                 <Fragment key={process.name}>
                   <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{process.name}</div>
-                  <div style={{ position: "relative", height: 12, background: "var(--bg-1)", border: "1px solid var(--line-soft)" }}>
+                  <div
+                    style={{
+                      position: "relative",
+                      height: 12,
+                      background: "var(--bg-1)",
+                      border: "1px solid var(--line-soft)",
+                    }}
+                  >
                     {[1, 2, 3, 4, 5].map((index) => (
                       <div
                         key={index}
@@ -126,14 +149,14 @@ export function DreamScreen() {
                           bottom: 0,
                           left: `${(index / 6) * 100}%`,
                           width: 1,
-                          background: "var(--line-soft)"
+                          background: "var(--line-soft)",
                         }}
                       ></div>
                     ))}
                     {runs.map((run, index) => (
                       <div
                         key={`${run.process}-${run.scheduled_at}-${index}`}
-                        title={`${run.source} · ${timeLabel(run.scheduled_at)}`}
+                        title={`${run.source} · ${formatTime(run.scheduled_at)}`}
                         style={{
                           position: "absolute",
                           left: `${Math.max(0, 95 - index * 15)}%`,
@@ -141,7 +164,7 @@ export function DreamScreen() {
                           top: 1,
                           bottom: 1,
                           background: run.source === "audit" ? "var(--acc)" : "var(--purple)",
-                          opacity: 0.75
+                          opacity: 0.75,
                         }}
                       ></div>
                     ))}
@@ -181,11 +204,15 @@ export function DreamScreen() {
                   </div>
                   <div className="row">
                     <span className="k">last run</span>
-                    <span className="v">{timeLabel(selectedProcess.last_run_at)}</span>
+                    <span className="v">{formatTime(selectedProcess.last_run_at)}</span>
                   </div>
                   <div className="row">
                     <span className="k">budget cap</span>
-                    <span className="v">{selectedProcess.budget === null ? "uncapped / process-local" : selectedProcess.budget}</span>
+                    <span className="v">
+                      {selectedProcess.budget === null
+                        ? "uncapped / process-local"
+                        : selectedProcess.budget}
+                    </span>
                   </div>
                   <div className="row">
                     <span className="k">last audit</span>
@@ -211,10 +238,14 @@ export function DreamScreen() {
               {(state?.belief_revision_rows ?? []).map((row) => (
                 <tr key={row.id}>
                   <td className="acc">{row.id}</td>
-                  <td>{String(row.refs.target_type ?? "target")}:{String(row.refs.target_id ?? "—")}</td>
+                  <td>
+                    {String(row.refs.target_type ?? "target")}:{String(row.refs.target_id ?? "—")}
+                  </td>
                   <td className="dim">{String(row.refs.invalidated_edge_id ?? "—")}</td>
-                  <td className="wrap" style={{ fontFamily: "var(--sans)" }}>{row.reason}</td>
-                  <td className="dim">{timeLabel(row.created_at)}</td>
+                  <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
+                    {row.reason}
+                  </td>
+                  <td className="dim">{formatTime(row.created_at)}</td>
                 </tr>
               ))}
               {(state?.belief_revision_rows.length ?? 0) === 0 ? (
@@ -242,7 +273,7 @@ export function DreamScreen() {
             <tbody>
               {(state?.audit_rows ?? []).map((row) => (
                 <tr key={row.id}>
-                  <td className="dim">{timeLabel(row.applied_at)}</td>
+                  <td className="dim">{formatTime(row.applied_at)}</td>
                   <td>
                     <span className="purple">{row.process}</span>
                   </td>
@@ -250,7 +281,15 @@ export function DreamScreen() {
                   <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
                     {jsonText(row.targets)}
                   </td>
-                  <td>{Object.keys(row.reversal).length > 0 ? <Tag kind="acc" dot>reverter</Tag> : <Tag kind="warn">no_reverser</Tag>}</td>
+                  <td>
+                    {Object.keys(row.reversal).length > 0 ? (
+                      <Tag kind="acc" dot>
+                        reverter
+                      </Tag>
+                    ) : (
+                      <Tag kind="warn">no_reverser</Tag>
+                    )}
+                  </td>
                   <td>
                     <Tag kind={row.reverted_at === null ? "acc" : "warn"} dot>
                       {row.reverted_at === null ? "ok" : "reverted"}
@@ -276,15 +315,18 @@ export function DreamScreen() {
 function DreamCard({
   process,
   selected,
-  onSelect
+  onSelect,
 }: {
   process: DreamProcessSummary;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const pct = budgetPct(process);
   return (
-    <div className="dream-card" onClick={onSelect} style={{ borderColor: selected ? "var(--acc-dim)" : undefined, cursor: "pointer" }}>
+    <div
+      className="dream-card"
+      onClick={onSelect}
+      style={{ borderColor: selected ? "var(--acc-dim)" : undefined, cursor: "pointer" }}
+    >
       <div className="h">
         <div>
           <div className="name">{process.name}</div>
@@ -296,7 +338,9 @@ function DreamCard({
         </Tag>
       </div>
       <div className="body">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}
+        >
           <div>
             <div className="upper dim">budget</div>
             <div style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums", fontSize: 14 }}>
@@ -311,11 +355,13 @@ function DreamCard({
           </div>
           <div>
             <div className="upper dim">last</div>
-            <div style={{ color: "var(--text-dim)", fontSize: 12 }}>{timeLabel(process.last_run_at)}</div>
+            <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
+              {formatTime(process.last_run_at)}
+            </div>
           </div>
         </div>
-        <div className="bar-meter">
-          <div className={`fill ${process.last_status === "error" ? "warn" : "purple"}`} style={{ width: `${pct}%`, opacity: process.last_run_at === null ? 0.3 : 1 }}></div>
+        <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.4 }}>
+          synthesized state; live budget metering ships in v2
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
           <span title="v1 read-only" style={{ display: "inline-flex" }}>

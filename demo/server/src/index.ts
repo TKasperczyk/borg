@@ -59,15 +59,36 @@ const shutdown = async (signal: NodeJS.Signals) => {
   shuttingDown = true;
   console.log(`Received ${signal}; shutting down`);
 
+  live.broadcaster.closeAll();
+  const serverWithConnectionCloser = server as typeof server & {
+    closeAllConnections?: () => void;
+  };
   await new Promise<void>((resolve) => {
-    server.close(() => resolve());
+    const forceCloseTimer = setTimeout(() => {
+      serverWithConnectionCloser.closeAllConnections?.();
+      resolve();
+    }, 5_000);
+
+    server.close(() => {
+      clearTimeout(forceCloseTimer);
+      resolve();
+    });
   });
   await borg.close();
 };
 
+function exitAfterShutdown(signal: NodeJS.Signals): void {
+  void shutdown(signal)
+    .then(() => process.exit(0))
+    .catch((error: unknown) => {
+      console.error("Borg demo server shutdown failed", error);
+      process.exit(1);
+    });
+}
+
 process.once("SIGINT", (signal) => {
-  void shutdown(signal).then(() => process.exit(0));
+  exitAfterShutdown(signal);
 });
 process.once("SIGTERM", (signal) => {
-  void shutdown(signal).then(() => process.exit(0));
+  exitAfterShutdown(signal);
 });

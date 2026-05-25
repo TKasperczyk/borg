@@ -118,6 +118,39 @@ describe("stream entry index", () => {
     }
   });
 
+  it("uses existing row count for next entry index when legacy rows are null", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      await writer.appendMany([
+        { kind: "user_msg", content: "alpha" },
+        { kind: "agent_msg", content: "beta" },
+        { kind: "internal_event", content: "omega" },
+      ]);
+
+      db.prepare("UPDATE stream_entry_index SET entry_index = NULL WHERE entry_index = 2").run();
+
+      expect(entryIndex.nextEntryIndex(DEFAULT_SESSION_ID)).toBe(3);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("counts user messages by session from the stream entry index", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -755,6 +788,51 @@ describe("stream entry index", () => {
       expect(tableRow?.name).toBe("stream_quarantine_refs");
       expect(referencedIndexRow?.name).toBe("idx_stream_quarantine_refs_referenced");
       expect(sessionIndexRow?.name).toBe("idx_stream_quarantine_refs_session");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds entry_index to an existing stream index as a nullable ordered column", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const orderMigration = streamEntryIndexMigrations.find(
+      (migration) => migration.name === "add-stream-entry-order-index",
+    ) as Migration | undefined;
+
+    expect(orderMigration).toBeDefined();
+    expect(orderMigration?.id).toBe(206);
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        {
+          id: 1,
+          name: "legacy-stream-entry-index",
+          up: `
+            CREATE TABLE stream_entry_index (
+              entry_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              byte_offset INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL
+            );
+            INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
+            VALUES ('strm_abcdefghijklmnop', 'default', 0, 100);
+          `,
+        },
+        orderMigration as Migration,
+      ],
+    });
+
+    try {
+      const row = db
+        .prepare("SELECT entry_index FROM stream_entry_index WHERE entry_id = ?")
+        .get("strm_abcdefghijklmnop") as { entry_index: number | null } | undefined;
+      const indexRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get("idx_stream_entry_session_entry_index") as { name: string } | undefined;
+
+      expect(row?.entry_index).toBeNull();
+      expect(indexRow?.name).toBe("idx_stream_entry_session_entry_index");
     } finally {
       db.close();
     }

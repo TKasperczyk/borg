@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 
 import { StreamError } from "../util/errors.js";
 
+import type { StreamEntryIndexRepository } from "./entry-index.js";
 import { getSessionStreamPath } from "./path.js";
 import {
   DEFAULT_SESSION_ID,
@@ -59,17 +60,20 @@ export type StreamReaderOptions = {
   dataDir: string;
   sessionId?: SessionId;
   logger?: LoggerLike;
+  entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
 };
 
 export class StreamReader {
   private readonly dataDir: string;
   private readonly sessionId: SessionId;
   private readonly logger: LoggerLike;
+  private readonly entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
 
   constructor(options: StreamReaderOptions) {
     this.dataDir = options.dataDir;
     this.sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
     this.logger = options.logger ?? console;
+    this.entryIndex = options.entryIndex;
   }
 
   private get streamPath(): string {
@@ -90,7 +94,14 @@ export class StreamReader {
         return undefined;
       }
 
-      return parsed.data;
+      if (parsed.data.entry_index !== undefined || this.entryIndex === undefined) {
+        return parsed.data;
+      }
+
+      const indexedEntry = this.entryIndex.lookup(parsed.data.id);
+      return indexedEntry?.entry_index === null || indexedEntry?.entry_index === undefined
+        ? parsed.data
+        : { ...parsed.data, entry_index: indexedEntry.entry_index };
     } catch (error) {
       this.logger.error(`Skipping unreadable stream line in ${this.streamPath}`);
       this.logger.error(error instanceof Error ? error.message : String(error));

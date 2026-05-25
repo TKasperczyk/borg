@@ -1,7 +1,7 @@
 import { AttachmentChip } from "../../components/AttachmentChip";
 import { Tag } from "../../components/Tag";
+import { formatTime } from "../../lib/stream-utils";
 import type { ChatTurn } from "./chat-utils";
-import { timestampLabel } from "./chat-utils";
 
 export type ChatMessageProps = {
   turn: ChatTurn;
@@ -17,7 +17,7 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
         ) : (
           <span className="role borg">borg ⟶ {audience}</span>
         )}
-        <span className="dim">{timestampLabel(turn.entry.timestamp)}</span>
+        <span className="dim">{formatTime(turn.entry.timestamp)}</span>
         {turn.refs === undefined ? null : <span className="dim">· {turn.refs.length} refs</span>}
         {turn.attachments.length === 0 ? null : (
           <span className="dim">

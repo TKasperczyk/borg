@@ -6,10 +6,12 @@ import type {
   LiveFrame,
   PhaseEventData,
   StreamEntry,
+  TurnTerminalFrame,
   TurnPhaseFrame,
   TurnPhaseName,
-  TurnRequest
+  TurnRequest,
 } from "../api/types";
+import { formatTime, sortStreamEntries, streamContentText } from "../lib/stream-utils";
 import type { LiveEvents } from "./use-live-events";
 
 export type PhaseStatus = "queue" | "running" | "done" | "fail";
@@ -41,41 +43,19 @@ const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
   { id: "ledger", name: "evidence ledger" },
   { id: "shared", name: "shared state" },
   { id: "delib", name: "deliberation" },
-  { id: "reflect", name: "reflection" }
+  { id: "reflect", name: "reflection" },
 ];
 
 export function initialPhases(): PhaseState[] {
   return PHASES.map((phase) => ({
     ...phase,
     sub: "waiting",
-    status: "queue"
+    status: "queue",
   }));
 }
 
 function turnIdFromPhase(data: PhaseEventData): string {
   return data.turn_id ?? data.turnId;
-}
-
-function hms(ts: number): string {
-  const date = new Date(ts);
-  return date.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
-}
-
-function contentText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  try {
-    return JSON.stringify(content ?? null);
-  } catch {
-    return String(content);
-  }
 }
 
 function tailKindForEntry(entry: StreamEntry): string {
@@ -97,6 +77,10 @@ function tailKindForEntry(entry: StreamEntry): string {
   return "internal";
 }
 
+function turnIdFromTerminal(frame: TurnTerminalFrame): string {
+  return frame.data.turn_id ?? frame.data.turnId;
+}
+
 function phaseTailKind(frame: TurnPhaseFrame): string {
   const phase = frame.data.phase;
   if (phase === "perception" || phase === "frame" || phase === "extract") {
@@ -115,53 +99,61 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
   if (frame.type === "stream:append") {
     return frame.entries.map((entry) => ({
       id: `${frame.type}:${entry.id}`,
-      ts: hms(frame.ts),
+      ts: formatTime(frame.ts),
       kind: tailKindForEntry(entry),
-      body: `${entry.kind} · ${contentText(entry.content)}`,
-      isNew: true
+      body: `${entry.kind} · ${streamContentText(entry.content)}`,
+      isNew: true,
     }));
   }
 
   if (frame.type === "evidence_ledger:built") {
-    const count = frame.ledger?.sections.reduce((sum, section) => sum + section.entries.length, 0) ?? 0;
+    const count =
+      frame.ledger?.sections.reduce((sum, section) => sum + section.entries.length, 0) ?? 0;
     return [
       {
         id: `${frame.type}:${frame.turn_id}:${frame.ts}`,
-        ts: hms(frame.ts),
+        ts: formatTime(frame.ts),
         kind: "tool",
         body: `evidence ledger built · turn ${frame.turn_id} · ${count} entries`,
-        isNew: true
-      }
+        isNew: true,
+      },
+    ];
+  }
+
+  if (frame.type === "turn:terminal") {
+    const turnId = turnIdFromTerminal(frame);
+    return [
+      {
+        id: `${frame.type}:${turnId}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: "internal",
+        body: `terminal · turn ${turnId} · ${frame.data.outcome}`,
+        isNew: true,
+      },
     ];
   }
 
   return [
     {
       id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,
-      ts: hms(frame.ts),
+      ts: formatTime(frame.ts),
       kind: phaseTailKind(frame),
       body: `${frame.type.replace("turn:phase:", "")} · ${frame.data.phase ?? "unknown"}${frame.data.sub === undefined ? "" : ` · ${frame.data.sub}`}`,
-      isNew: true
-    }
+      isNew: true,
+    },
   ];
 }
 
 function tailRowsFromEntries(entries: readonly StreamEntry[]): TailEvent[] {
-  return [...entries]
-    .sort((left, right) => {
-      if (left.timestamp !== right.timestamp) {
-        return left.timestamp - right.timestamp;
-      }
-      return left.id.localeCompare(right.id);
-    })
+  return sortStreamEntries(entries)
     .slice(-60)
     .reverse()
     .map((entry) => ({
       id: `stream:append:${entry.id}`,
-      ts: hms(entry.timestamp),
+      ts: formatTime(entry.timestamp),
       kind: tailKindForEntry(entry),
-      body: `${entry.kind} · ${contentText(entry.content)}`,
-      isNew: false
+      body: `${entry.kind} · ${streamContentText(entry.content)}`,
+      isNew: false,
     }));
 }
 
@@ -172,7 +164,11 @@ function updatePhase(phases: PhaseState[], frame: TurnPhaseFrame): PhaseState[] 
   }
 
   const status: PhaseStatus =
-    frame.type === "turn:phase:started" ? "running" : frame.type === "turn:phase:completed" ? "done" : "fail";
+    frame.type === "turn:phase:started"
+      ? "running"
+      : frame.type === "turn:phase:completed"
+        ? "done"
+        : "fail";
 
   return phases.map((phase) => {
     if (phase.id !== phaseName) {
@@ -184,7 +180,7 @@ function updatePhase(phases: PhaseState[], frame: TurnPhaseFrame): PhaseState[] 
       status,
       sub: frame.data.sub ?? phase.sub,
       durationMs: frame.data.duration_ms ?? phase.durationMs,
-      startedAt: frame.type === "turn:phase:started" ? frame.ts : phase.startedAt
+      startedAt: frame.type === "turn:phase:started" ? frame.ts : phase.startedAt,
     };
   });
 }
@@ -210,6 +206,11 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const [lastPhase, setLastPhase] = useState("idle");
   const clearTimersRef = useRef<number[]>([]);
   const reflectTimeoutRef = useRef<number | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeTurnIdRef.current = activeTurnId;
+  }, [activeTurnId]);
 
   const clearReflectTimeout = useCallback(() => {
     if (reflectTimeoutRef.current !== null) {
@@ -221,7 +222,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const markTailSettled = useCallback((ids: readonly string[]) => {
     const timer = window.setTimeout(() => {
       setEventTail((current) =>
-        current.map((event) => (ids.includes(event.id) ? { ...event, isNew: false } : event))
+        current.map((event) => (ids.includes(event.id) ? { ...event, isNew: false } : event)),
       );
     }, 800);
     clearTimersRef.current.push(timer);
@@ -235,7 +236,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       setEventTail((current) => [...rows, ...current].slice(0, 60));
       markTailSettled(rows.map((row) => row.id));
     },
-    [markTailSettled]
+    [markTailSettled],
   );
 
   useEffect(
@@ -245,7 +246,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       }
       clearReflectTimeout();
     },
-    [clearReflectTimeout]
+    [clearReflectTimeout],
   );
 
   useEffect(() => {
@@ -263,6 +264,21 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         return;
       }
 
+      if (frame.type === "turn:terminal") {
+        const frameTurnId = turnIdFromTerminal(frame);
+        const currentTurnId = activeTurnIdRef.current;
+
+        setActiveTurnId((current) => current ?? frameTurnId);
+        setLastPhase(`terminal ${frame.data.outcome}`);
+
+        if (currentTurnId === null || currentTurnId === frameTurnId) {
+          clearReflectTimeout();
+          setRunning(false);
+        }
+
+        return;
+      }
+
       if (!frame.type.startsWith("turn:phase:")) {
         return;
       }
@@ -274,16 +290,19 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
 
       if (phaseFrame.data.phase !== undefined) {
         const timing =
-          phaseFrame.data.duration_ms === undefined ? "" : ` ${Math.round(phaseFrame.data.duration_ms)}ms`;
+          phaseFrame.data.duration_ms === undefined
+            ? ""
+            : ` ${Math.round(phaseFrame.data.duration_ms)}ms`;
         const suffix =
-          phaseFrame.type === "turn:phase:failed" ? "failed" : phaseFrame.type === "turn:phase:completed" ? "ok" : "run";
+          phaseFrame.type === "turn:phase:failed"
+            ? "failed"
+            : phaseFrame.type === "turn:phase:completed"
+              ? "ok"
+              : "run";
         setLastPhase(`${phaseFrame.data.phase} ${suffix}${timing}`);
       }
 
-      if (
-        phaseFrame.type === "turn:phase:completed" &&
-        phaseFrame.data.phase === "reflect"
-      ) {
+      if (phaseFrame.type === "turn:phase:completed" && phaseFrame.data.phase === "reflect") {
         clearReflectTimeout();
         setRunning(false);
       }
@@ -295,31 +314,34 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
     });
   }, [clearReflectTimeout, live, pushTail]);
 
-  const runTurn = useCallback(async (input: TurnRequest) => {
-    if (running) {
-      return;
-    }
+  const runTurn = useCallback(
+    async (input: TurnRequest) => {
+      if (running) {
+        return;
+      }
 
-    setRunning(true);
-    setActiveTurnId(null);
-    setPhases(initialPhases());
-    setLastPhase("turn queued");
-    clearReflectTimeout();
-    reflectTimeoutRef.current = window.setTimeout(() => {
-      reflectTimeoutRef.current = null;
-      setRunning(false);
-      setLastPhase("reflect timeout");
-    }, TURN_REFLECT_TIMEOUT_MS);
-
-    try {
-      const result = await postTurn(input);
-      setActiveTurnId(result.turn_id);
-    } catch {
+      setRunning(true);
+      setActiveTurnId(null);
+      setPhases(initialPhases());
+      setLastPhase("turn queued");
       clearReflectTimeout();
-      setRunning(false);
-      setLastPhase("turn failed");
-    }
-  }, [clearReflectTimeout, running]);
+      reflectTimeoutRef.current = window.setTimeout(() => {
+        reflectTimeoutRef.current = null;
+        setRunning(false);
+        setLastPhase("reflect timeout");
+      }, TURN_REFLECT_TIMEOUT_MS);
+
+      try {
+        const result = await postTurn(input);
+        setActiveTurnId(result.turn_id);
+      } catch {
+        clearReflectTimeout();
+        setRunning(false);
+        setLastPhase("turn failed");
+      }
+    },
+    [clearReflectTimeout, running],
+  );
 
   const resetForReconnect = useCallback(() => {
     setLastPhase("ws reconnected");
@@ -339,7 +361,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       lastPhase,
       runTurn,
       resetForReconnect,
-      replaceTailFromEntries
+      replaceTailFromEntries,
     }),
     [
       activeTurnId,
@@ -350,7 +372,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       replaceTailFromEntries,
       resetForReconnect,
       runTurn,
-      running
-    ]
+      running,
+    ],
   );
 }

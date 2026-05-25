@@ -459,6 +459,7 @@ export async function runPostGenerationPhase(input: {
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
+    terminalOutcome: "reflected",
   };
 }
 
@@ -561,6 +562,7 @@ export async function suppressFromClosureLoopPhase(input: {
     referencedEpisodeIds: [],
     retrievedEpisodeIds: [],
     toolCalls: [],
+    terminalOutcome: "suppressed_closure",
   });
 }
 
@@ -664,6 +666,7 @@ export async function suppressFromGenerationGatePhase(input: {
     referencedEpisodeIds: [],
     retrievedEpisodeIds: [],
     toolCalls: [],
+    terminalOutcome: "suppressed_generation_gate",
   });
 }
 
@@ -757,6 +760,7 @@ async function suppressFromActionPhase(input: {
     retrievedEpisodeIds: input.deliberation.retrievedEpisodes.map((result) => result.episode.id),
     referencedEpisodeIds: [...(input.deliberation.referencedEpisodeIds ?? [])],
     toolCalls: [...input.actionResult.tool_calls],
+    terminalOutcome: "suppressed_action",
   });
 }
 
@@ -769,6 +773,7 @@ function suppressedTurnPhaseResult(input: {
   retrievedEpisodeIds: string[];
   referencedEpisodeIds: string[];
   toolCalls: TurnPhaseResult["toolCalls"];
+  terminalOutcome: TurnPhaseResult["terminalOutcome"];
 }): TurnPhaseResult {
   return {
     turn_id: input.turnId,
@@ -783,5 +788,6 @@ function suppressedTurnPhaseResult(input: {
     referencedEpisodeIds: input.referencedEpisodeIds,
     intents: [],
     toolCalls: input.toolCalls,
+    terminalOutcome: input.terminalOutcome,
   };
 }

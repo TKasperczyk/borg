@@ -1,4 +1,12 @@
-import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  writeFileSync,
+} from "node:fs";
 
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StreamError } from "../util/errors.js";
@@ -17,6 +25,9 @@ import {
 } from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
+
+const FORWARD_SCAN_CHUNK_SIZE_BYTES = 64 * 1024;
+const NEWLINE_BYTE = 0x0a;
 
 export type StreamWriterOptions = {
   dataDir: string;
@@ -57,7 +68,7 @@ export class StreamWriter {
     }
   }
 
-  private buildEntry(input: StreamEntryInput, timestamp: number): StreamEntry {
+  private buildEntry(input: StreamEntryInput, timestamp: number, entryIndex: number): StreamEntry {
     const parsedInput = streamEntryInputSchema.safeParse(input);
 
     if (!parsedInput.success) {
@@ -70,11 +81,37 @@ export class StreamWriter {
       ...parsedInput.data,
       id: createStreamEntryId(),
       timestamp,
+      entry_index: entryIndex,
       session_id: this.sessionId,
       compressed: parsedInput.data.compressed ?? false,
     };
 
     return entry;
+  }
+
+  private countExistingEntries(fileDescriptor: number, fileSize: number): number {
+    let position = 0;
+    let count = 0;
+
+    while (position < fileSize) {
+      const chunkSize = Math.min(FORWARD_SCAN_CHUNK_SIZE_BYTES, fileSize - position);
+      const chunk = Buffer.allocUnsafe(chunkSize);
+      const bytesRead = readSync(fileDescriptor, chunk, 0, chunkSize, position);
+
+      if (bytesRead <= 0) {
+        break;
+      }
+
+      for (let index = 0; index < bytesRead; index += 1) {
+        if (chunk[index] === NEWLINE_BYTE) {
+          count += 1;
+        }
+      }
+
+      position += bytesRead;
+    }
+
+    return count;
   }
 
   private async appendEntries(inputs: readonly StreamEntryInput[]): Promise<StreamEntry[]> {
@@ -91,22 +128,36 @@ export class StreamWriter {
         let fileDescriptor: number | undefined;
 
         try {
-          const entries = inputs.map((input) => this.buildEntry(input, this.clock.now()));
-          const serializedEntries = entries.map((entry) => `${serializeJsonValue(entry)}\n`);
-          const payload = serializedEntries.join("");
-
           // We intentionally open the stream file in append mode so the kernel uses
           // O_APPEND semantics for each write, while the lock file provides
           // best-effort cross-process serialization around multi-line appends.
-          fileDescriptor = openSync(streamPath, "a");
+          fileDescriptor = openSync(streamPath, "a+");
           const fileSizeBeforeAppend = fstatSync(fileDescriptor).size;
+          const firstEntryIndex =
+            this.entryIndex?.nextEntryIndex(this.sessionId) ??
+            this.countExistingEntries(fileDescriptor, fileSizeBeforeAppend);
+          const entries: StreamEntry[] = [];
+          const serializedEntries: string[] = [];
           const byteOffsets: number[] = [];
           let nextByteOffset = fileSizeBeforeAppend;
 
-          for (const serializedEntry of serializedEntries) {
+          for (let inputIndex = 0; inputIndex < inputs.length; inputIndex += 1) {
+            const input = inputs[inputIndex];
+
+            if (input === undefined) {
+              continue;
+            }
+
+            const entry = this.buildEntry(input, this.clock.now(), firstEntryIndex + inputIndex);
+            const serializedEntry = `${serializeJsonValue(entry)}\n`;
+
+            entries.push(entry);
+            serializedEntries.push(serializedEntry);
             byteOffsets.push(nextByteOffset);
             nextByteOffset += Buffer.byteLength(serializedEntry);
           }
+
+          const payload = serializedEntries.join("");
 
           writeFileSync(fileDescriptor, payload);
           fsyncSync(fileDescriptor);
@@ -139,19 +190,6 @@ export class StreamWriter {
           }
 
           appendedEntries = entries;
-
-          if (this.onAppend !== undefined) {
-            try {
-              this.onAppend(entries);
-            } catch (error) {
-              this.logger.error("Stream append observer failed", {
-                streamPath,
-                sessionId: this.sessionId,
-                entryIds: entries.map((entry) => entry.id),
-                cause: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
         } catch (error) {
           if (error instanceof StreamError) {
             throw error;
@@ -180,6 +218,19 @@ export class StreamWriter {
         retryDelayMs: this.lockRetryDelayMs,
       },
     );
+
+    if (this.onAppend !== undefined && appendedEntries.length > 0) {
+      try {
+        this.onAppend(appendedEntries);
+      } catch (error) {
+        this.logger.error("Stream append observer failed", {
+          streamPath,
+          sessionId: this.sessionId,
+          entryIds: appendedEntries.map((entry) => entry.id),
+          cause: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     return appendedEntries;
   }

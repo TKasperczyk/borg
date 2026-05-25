@@ -19,6 +19,11 @@ type LedgerGroup = {
   entries: EvidenceLedgerEntry[];
 };
 
+type LedgerState = {
+  turnId: string;
+  ledger: EvidenceLedger;
+};
+
 function sectionEntries(ledger: EvidenceLedger, id: string): EvidenceLedgerEntry[] {
   return ledger.sections.find((section) => section.id === id)?.entries ?? [];
 }
@@ -32,20 +37,30 @@ function groupsForLedger(ledger: EvidenceLedger): LedgerGroup[] {
       actor: "memory",
       trust_rank: entry.rank,
       text: entry.text,
-      state: entry.kind
+      state: entry.kind,
     })) ?? [];
 
   return [
     { id: "ep", label: "episodes", color: "info", entries: sectionEntries(ledger, "episodes") },
-    { id: "sn", label: "semantic", color: "purple", entries: sectionEntries(ledger, "semantic_graph") },
+    {
+      id: "sn",
+      label: "semantic",
+      color: "purple",
+      entries: sectionEntries(ledger, "semantic_graph"),
+    },
     {
       id: "cm",
       label: "active commitments",
       color: "bad",
-      entries: sectionEntries(ledger, "commitments_and_constraints")
+      entries: sectionEntries(ledger, "commitments_and_constraints"),
     },
-    { id: "rs", label: "relational slots", color: "acc", entries: sectionEntries(ledger, "relational_slots") },
-    { id: "ss", label: "shared state", color: "warn", entries: sharedEntries }
+    {
+      id: "rs",
+      label: "relational slots",
+      color: "acc",
+      entries: sectionEntries(ledger, "relational_slots"),
+    },
+    { id: "ss", label: "shared state", color: "warn", entries: sharedEntries },
   ];
 }
 
@@ -63,14 +78,26 @@ function trustKind(entry: EvidenceLedgerEntry): TagKind {
 }
 
 export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
-  const [ledger, setLedger] = useState<EvidenceLedger | null>(cachedLedger ?? null);
+  const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
+    turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (cachedLedger !== undefined) {
-      setLedger(cachedLedger);
+    setError(null);
+
+    if (turnId === null) {
+      setLedgerState(null);
+      return;
     }
-  }, [cachedLedger]);
+
+    if (cachedLedger !== undefined) {
+      setLedgerState({ turnId, ledger: cachedLedger });
+      return;
+    }
+
+    setLedgerState((current) => (current?.turnId === turnId ? current : null));
+  }, [cachedLedger, turnId]);
 
   useEffect(() => {
     if (!active || turnId === null || cachedLedger !== undefined) {
@@ -82,11 +109,12 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
     void getLedger(turnId)
       .then((response) => {
         if (!cancelled) {
-          setLedger(response.ledger);
+          setLedgerState({ turnId, ledger: response.ledger });
         }
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
+          setLedgerState(null);
           setError(caught instanceof Error ? caught.message : String(caught));
         }
       });
@@ -100,6 +128,8 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
     return <Empty>send a turn to build an evidence ledger</Empty>;
   }
 
+  const ledger = ledgerState?.turnId === turnId ? ledgerState.ledger : null;
+
   if (ledger === null) {
     return <Empty>{error ?? "ledger not loaded yet"}</Empty>;
   }
@@ -108,7 +138,14 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
 
   return (
     <div>
-      <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", color: "var(--text-mute)", fontSize: "10.5px" }}>
+      <div
+        style={{
+          padding: "10px 14px",
+          borderBottom: "1px solid var(--line)",
+          color: "var(--text-mute)",
+          fontSize: "10.5px",
+        }}
+      >
         prompt-visible substrate · {ledger.estimatedTokens} estimated tokens
       </div>
       {groups.map((group) => (
@@ -118,13 +155,23 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
             <span>{group.label}</span>
             <span className="count">[{group.entries.length}]</span>
           </div>
-          {group.entries.length === 0 ? <div className="notice" style={{ padding: 14 }}>empty</div> : null}
+          {group.entries.length === 0 ? (
+            <div className="notice" style={{ padding: 14 }}>
+              empty
+            </div>
+          ) : null}
           {group.entries.map((entry) => (
             <div key={entry.id} className="lgr-item">
               <div className="head">
-                <span className="id">[{group.id}:{entry.id}]</span>
-                {entry.state === undefined ? null : <Tag kind={trustKind(entry)}>{entry.state}</Tag>}
-                {entry.taint === undefined || entry.taint === "none" ? null : <Tag kind={trustKind(entry)}>{entry.taint}</Tag>}
+                <span className="id">
+                  [{group.id}:{entry.id}]
+                </span>
+                {entry.state === undefined ? null : (
+                  <Tag kind={trustKind(entry)}>{entry.state}</Tag>
+                )}
+                {entry.taint === undefined || entry.taint === "none" ? null : (
+                  <Tag kind={trustKind(entry)}>{entry.taint}</Tag>
+                )}
                 <span className="trust">trust {entry.trust_rank}</span>
               </div>
               <div className="text">{entry.text ?? entry.value ?? "(no text)"}</div>
@@ -145,7 +192,11 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
           </div>
           <div style={{ padding: "0 14px" }}>
             {ledger.imageAttachments.map((image) => (
-              <AttachmentChip key={image.attachment_id} attachmentId={image.attachment_id} expanded />
+              <AttachmentChip
+                key={image.attachment_id}
+                attachmentId={image.attachment_id}
+                expanded
+              />
             ))}
           </div>
         </div>

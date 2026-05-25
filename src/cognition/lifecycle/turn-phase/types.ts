@@ -21,7 +21,7 @@ import type { TurnOpeningPersistence } from "../../persistence/turn-opening.js";
 import type { TurnReflectionCoordinator } from "../../reflection/turn-reflection-coordinator.js";
 import type { TurnRetrievalCoordinator } from "../../retrieval/turn-coordinator.js";
 import type { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
-import type { TurnTracer } from "../../tracing/tracer.js";
+import type { TurnTerminalOutcome, TurnTracer } from "../../tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "../../types.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
@@ -75,6 +75,7 @@ export type TurnPhaseResult = {
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
   agentMessageId?: string;
+  terminalOutcome?: TurnTerminalOutcome;
 };
 
 export type TurnPhaseCoordinatorOptions = {

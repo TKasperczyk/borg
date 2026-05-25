@@ -11,6 +11,7 @@ export type TurnTraceEventName =
   | "attachment.fetch_for_ledger"
   | "attachment.rejected"
   | "attachment.blob_corrupted"
+  | "turn.terminal"
   | "turn_phase.started"
   | "turn_phase.completed"
   | "turn_phase.failed"
@@ -149,6 +150,14 @@ export type TurnTraceData = {
   [key: string]: JsonValue | undefined;
 };
 
+export type TurnTerminalOutcome =
+  | "reflected"
+  | "suppressed_closure"
+  | "suppressed_generation_gate"
+  | "suppressed_action"
+  | "aborted"
+  | "error";
+
 export type TurnTracer = {
   readonly enabled: boolean;
   readonly includePayloads: boolean;
@@ -167,7 +176,11 @@ export class NoopTracer implements TurnTracer {
 export const NOOP_TRACER = new NoopTracer();
 
 const PAYLOAD_GATED_TRACE_KEYS = new Set([
+  "candidate_description",
+  "contextText",
+  "conversationContext",
   "description",
+  "description_excerpt",
   "dropped_facets",
   "error",
   "ledger",
@@ -178,6 +191,7 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "record",
   "response",
   "rewritten_response",
+  "skipped_promotions",
 ]);
 
 function stripPayloadGatedTraceData(data: TurnTraceData): TurnTraceData {

@@ -138,6 +138,7 @@ export {
   type TurnStakes,
   type TurnTraceData,
   type TurnTraceEventName,
+  type TurnTerminalOutcome,
   type TurnTracer,
 } from "./cognition/index.js";
 export {

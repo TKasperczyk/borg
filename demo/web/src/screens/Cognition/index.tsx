@@ -5,6 +5,7 @@ import type { SharedStateEntry, StreamChatKind, StreamEntry, TurnStakes } from "
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import type { TurnStreamState } from "../../hooks/use-turn-stream";
+import { mergeEntries } from "../../lib/stream-utils";
 import { ChatInput } from "./ChatInput";
 import { ChatStream } from "./ChatStream";
 import { Xray } from "./Xray";
@@ -17,19 +18,6 @@ export type CognitionScreenProps = {
   turnStream: TurnStreamState;
 };
 
-function mergeEntries(current: readonly StreamEntry[], incoming: readonly StreamEntry[]): StreamEntry[] {
-  const byId = new Map(current.map((entry) => [entry.id, entry]));
-  for (const entry of incoming) {
-    byId.set(entry.id, entry);
-  }
-  return [...byId.values()].sort((left, right) => {
-    if (left.timestamp !== right.timestamp) {
-      return left.timestamp - right.timestamp;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
-
 function isChatEntry(entry: StreamEntry, audience: string): boolean {
   return CHAT_KINDS.includes(entry.kind as StreamChatKind) && entry.audience === audience;
 }
@@ -40,20 +28,28 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
   const [sharedEntries, setSharedEntries] = useState<SharedStateEntry[]>([]);
   const previousConnectionCountRef = useRef(live.connectionCount);
 
-  const streamApi = useApi(
-    () => getStream({ audience, kinds: CHAT_KINDS, limit: 50 }),
-    [audience]
-  );
+  const streamApi = useApi(() => getStream({ audience, kinds: CHAT_KINDS, limit: 50 }), [audience]);
   const sharedApi = useApi(() => getSharedState(audience), [audience]);
   const refetchShared = sharedApi.refetch;
   const resetForReconnect = turnStream.resetForReconnect;
   const replaceTailFromEntries = turnStream.replaceTailFromEntries;
 
   useEffect(() => {
-    if (streamApi.data !== null) {
-      setChatEntries(mergeEntries([], streamApi.data.entries));
+    setChatEntries([]);
+  }, [audience]);
+
+  useEffect(() => {
+    const streamData = streamApi.data;
+
+    if (streamData !== null) {
+      setChatEntries((current) =>
+        mergeEntries(
+          current.filter((entry) => entry.audience === audience),
+          streamData.entries,
+        ),
+      );
     }
-  }, [streamApi.data]);
+  }, [audience, streamApi.data]);
 
   useEffect(() => {
     if (sharedApi.data !== null) {
@@ -89,14 +85,19 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
       try {
         const [stream, shared] = await Promise.all([
           getStream({ audience, kinds: CHAT_KINDS, limit: 50 }),
-          getSharedState(audience)
+          getSharedState(audience),
         ]);
 
         if (cancelled) {
           return;
         }
 
-        setChatEntries(mergeEntries([], stream.entries));
+        setChatEntries((current) =>
+          mergeEntries(
+            current.filter((entry) => entry.audience === audience),
+            stream.entries,
+          ),
+        );
         setSharedEntries(shared.entries);
         replaceTailFromEntries(stream.entries);
       } catch {

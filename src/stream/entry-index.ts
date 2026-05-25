@@ -132,12 +132,33 @@ export const streamEntryIndexMigrations: Migration[] = [
       ON stream_quarantine_refs(marker_session_id);
     `,
   },
+  {
+    id: 206,
+    name: "add-stream-entry-order-index",
+    up: (db) => {
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "entry_index")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN entry_index INTEGER NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stream_entry_session_entry_index
+        ON stream_entry_index(session_id, entry_index);
+      `);
+    },
+  },
 ];
 
 export type StreamEntryIndexRecord = {
   entry_id: string;
   session_id: SessionId;
   byte_offset: number;
+  entry_index: number | null;
   timestamp: number;
   kind: StreamEntryKind | null;
   sender_entity_id: EntityId | null;
@@ -155,6 +176,7 @@ type StreamEntryIndexRow = {
   entry_id: string;
   session_id: string;
   byte_offset: number;
+  entry_index?: number | null;
   timestamp: number;
   kind?: string | null;
   sender_entity_id: string | null;
@@ -177,6 +199,14 @@ type MissingKindSampleRow = {
 
 type MissingTrustFactsCountRow = {
   missing_trust_fact_count: number;
+};
+
+type MissingEntryIndexCountRow = {
+  missing_entry_index_count: number;
+};
+
+type NextEntryIndexRow = {
+  next_entry_index: number;
 };
 
 type QuarantineRefRow = {
@@ -225,6 +255,7 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
     entry_id: row.entry_id,
     session_id: row.session_id as SessionId,
     byte_offset: row.byte_offset,
+    entry_index: row.entry_index ?? null,
     timestamp: row.timestamp,
     kind: row.kind === null || row.kind === undefined ? null : (row.kind as StreamEntryKind),
     sender_entity_id:
@@ -392,6 +423,7 @@ export class StreamEntryIndexRepository {
     entryId: string,
     sessionId: SessionId,
     byteOffset: number,
+    entryIndex: number | null,
     timestamp: number,
     kind: StreamEntryKind | null = null,
     senderEntityId: EntityId | null = null,
@@ -402,13 +434,14 @@ export class StreamEntryIndexRepository {
     this.db
       .prepare(
         `INSERT INTO stream_entry_index (
-           entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id,
+           entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
            turn_id, turn_status, active
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
+           entry_index = excluded.entry_index,
            timestamp = excluded.timestamp,
            kind = excluded.kind,
            sender_entity_id = excluded.sender_entity_id,
@@ -420,6 +453,7 @@ export class StreamEntryIndexRepository {
         entryId,
         sessionId,
         byteOffset,
+        entryIndex,
         timestamp,
         kind,
         senderEntityId,
@@ -436,6 +470,7 @@ export class StreamEntryIndexRepository {
       entry.id,
       entry.session_id,
       byteOffset,
+      entry.entry_index ?? null,
       entry.timestamp,
       entry.kind,
       entry.sender_entity_id,
@@ -469,6 +504,18 @@ export class StreamEntryIndexRepository {
     }
 
     this.recordQuarantineRefs(entry);
+  }
+
+  nextEntryIndex(sessionId: SessionId): number {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(COALESCE(MAX(entry_index) + 1, 0), COUNT(*)) AS next_entry_index
+         FROM stream_entry_index
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as NextEntryIndexRow;
+
+    return row.next_entry_index;
   }
 
   private recordQuarantineRefs(entry: StreamEntry): void {
@@ -526,7 +573,7 @@ export class StreamEntryIndexRepository {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE entry_id = ?`,
       )
@@ -545,7 +592,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE entry_id IN (${uniqueIds.map(() => "?").join(", ")})`,
       )
@@ -567,7 +614,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
          FROM stream_entry_index
          WHERE session_id = ? AND kind = ?
          ORDER BY byte_offset ASC`,
@@ -617,6 +664,13 @@ export class StreamEntryIndexRepository {
          WHERE session_id = ? AND turn_status IS NULL`,
       )
       .get(sessionId) as MissingTrustFactsCountRow;
+    const missingEntryIndexCoverage = this.db
+      .prepare(
+        `SELECT COUNT(*) AS missing_entry_index_count
+         FROM stream_entry_index
+         WHERE session_id = ? AND entry_index IS NULL`,
+      )
+      .get(sessionId) as MissingEntryIndexCountRow;
     const fileDescriptor = openSync(streamPath, "r");
 
     try {
@@ -626,14 +680,18 @@ export class StreamEntryIndexRepository {
         return { inserted: 0 };
       }
 
-      const scannedEntries: { entry: StreamEntry; byteOffset: number }[] = [];
+      const scannedEntries: { entry: StreamEntry; byteOffset: number; entryIndex: number }[] = [];
       const fileEntryCount = scanForwardStreamEntries(
         fileDescriptor,
         fileSize,
         streamPath,
         this.logger,
         (entry, byteOffset) => {
-          scannedEntries.push({ entry, byteOffset });
+          scannedEntries.push({
+            entry,
+            byteOffset,
+            entryIndex: entry.entry_index ?? scannedEntries.length,
+          });
         },
       );
 
@@ -645,7 +703,8 @@ export class StreamEntryIndexRepository {
       if (
         coverage.entry_count === fileEntryCount &&
         missingKindCoverage.missing_kind_count === 0 &&
-        missingTrustFactsCoverage.missing_trust_fact_count === 0
+        missingTrustFactsCoverage.missing_trust_fact_count === 0 &&
+        missingEntryIndexCoverage.missing_entry_index_count === 0
       ) {
         return { inserted: 0 };
       }
@@ -653,13 +712,14 @@ export class StreamEntryIndexRepository {
       const insertMissing = this.db.transaction((): number => {
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
-             entry_id, session_id, byte_offset, timestamp, kind, sender_entity_id,
+             entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
              turn_id, turn_status, active
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (entry_id) DO UPDATE SET
              session_id = excluded.session_id,
              byte_offset = excluded.byte_offset,
+             entry_index = excluded.entry_index,
              timestamp = excluded.timestamp,
              kind = excluded.kind,
              sender_entity_id = excluded.sender_entity_id,
@@ -668,6 +728,7 @@ export class StreamEntryIndexRepository {
              active = excluded.active
            WHERE stream_entry_index.session_id != excluded.session_id
               OR stream_entry_index.byte_offset != excluded.byte_offset
+              OR stream_entry_index.entry_index IS NOT excluded.entry_index
               OR stream_entry_index.timestamp != excluded.timestamp
               OR stream_entry_index.kind IS NOT excluded.kind
               OR stream_entry_index.sender_entity_id IS NOT excluded.sender_entity_id
@@ -681,12 +742,13 @@ export class StreamEntryIndexRepository {
           scannedEntries.map((scanned) => scanned.entry),
         );
 
-        for (const { entry, byteOffset } of scannedEntries) {
+        for (const { entry, byteOffset, entryIndex } of scannedEntries) {
           inserted += Number(
             insert.run(
               entry.id,
               sessionId,
               byteOffset,
+              entryIndex,
               entry.timestamp,
               entry.kind,
               entry.sender_entity_id,
