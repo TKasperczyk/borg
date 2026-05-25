@@ -141,6 +141,7 @@ export type RetrievalPipelineOptions = {
   recallStateMaxActiveHandles?: number;
   recallStateMaxNewHandlesPerTurn?: number;
   recallStateMaxWarmEvidenceRendered?: number;
+  maxRetrievedImageRefs?: number;
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
@@ -1391,7 +1392,9 @@ export class RetrievalPipeline {
       }
     }
 
-    return [...byId.values()].sort((left, right) => right.hit.similarity - left.hit.similarity);
+    return [...byId.values()]
+      .sort((left, right) => right.hit.similarity - left.hit.similarity)
+      .slice(0, this.options.maxRetrievedImageRefs ?? 8);
   }
 
   private emitRetrievalDegraded(
@@ -2234,6 +2237,8 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     },
     imageAttachmentId: record.attachment_id,
     imageLabel,
+    citationType:
+      record.stream_entry_id === null ? "parent_user_message" : "generated_perception_text",
   };
 }
 

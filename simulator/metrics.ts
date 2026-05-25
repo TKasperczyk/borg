@@ -270,6 +270,11 @@ type EvidenceLedgerReverseScanMetricCounts = Pick<
   | "ledger_reverse_scan_bytes_total"
   | "ledger_reverse_scan_entry_cap_hit_total"
   | "ledger_reverse_scan_byte_cap_hit_total"
+  | "ledger_image_refs_considered_total"
+  | "ledger_image_refs_attached_total"
+  | "ledger_image_refs_omitted_budget_total"
+  | "ledger_image_bytes_attached_total"
+  | "ledger_image_refs_omitted_inactive_total"
 >;
 
 type SharedStateCapPressureMetricCounts = Pick<
@@ -1060,6 +1065,21 @@ function evidenceLedgerReverseScanMetrics(
     ledger_reverse_scan_byte_cap_hit_total: reverseScans.filter((record) =>
       traceBoolean(record, "ledger_reverse_scan_byte_cap_hit"),
     ).length,
+    ledger_image_refs_considered_total: cumulativeTraceRecords
+      .filter((record) => record.event === "evidence_ledger.image_attach")
+      .reduce((total, record) => total + traceNumber(record, "considered_count"), 0),
+    ledger_image_refs_attached_total: cumulativeTraceRecords
+      .filter((record) => record.event === "evidence_ledger.image_attach")
+      .reduce((total, record) => total + traceNumber(record, "attached_count"), 0),
+    ledger_image_refs_omitted_budget_total: cumulativeTraceRecords
+      .filter((record) => record.event === "evidence_ledger.image_attach")
+      .reduce((total, record) => total + traceNumber(record, "omitted_budget_count"), 0),
+    ledger_image_bytes_attached_total: cumulativeTraceRecords
+      .filter((record) => record.event === "evidence_ledger.image_attach")
+      .reduce((total, record) => total + traceNumber(record, "bytes_attached"), 0),
+    ledger_image_refs_omitted_inactive_total: cumulativeTraceRecords
+      .filter((record) => record.event === "evidence_ledger.image_attach")
+      .reduce((total, record) => total + traceNumber(record, "omitted_inactive_count"), 0),
   };
 }
 
@@ -3655,6 +3675,16 @@ export class MetricsCapture {
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entry_cap_hit_total,
       ledger_reverse_scan_byte_cap_hit_total:
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_byte_cap_hit_total,
+      ledger_image_refs_considered_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_considered_total,
+      ledger_image_refs_attached_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_attached_total,
+      ledger_image_refs_omitted_budget_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_omitted_budget_total,
+      ledger_image_bytes_attached_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_bytes_attached_total,
+      ledger_image_refs_omitted_inactive_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_omitted_inactive_total,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:
@@ -4176,6 +4206,16 @@ export class MetricsCapture {
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entry_cap_hit_total,
       ledger_reverse_scan_byte_cap_hit_total:
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_byte_cap_hit_total,
+      ledger_image_refs_considered_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_considered_total,
+      ledger_image_refs_attached_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_attached_total,
+      ledger_image_refs_omitted_budget_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_omitted_budget_total,
+      ledger_image_bytes_attached_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_bytes_attached_total,
+      ledger_image_refs_omitted_inactive_total:
+        evidenceLedgerReverseScanMetricCounts.ledger_image_refs_omitted_inactive_total,
       semantic_revision_error_count:
         semanticRevisionErrorMetricCounts.semantic_revision_error_count,
       semantic_revision_skipped_due_to_error:

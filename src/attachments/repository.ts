@@ -104,18 +104,18 @@ export class AttachmentRepository {
     );
   }
 
-  private cascadePerceptionActiveByAttachment(attachmentId: AttachmentId, active: boolean): void {
+  private cascadePerceptionActiveByAttachment(attachmentId: AttachmentId, active: boolean): number {
     if (!this.hasImagePerceptionArtifactsTable()) {
-      return;
+      return 0;
     }
 
-    this.db
+    return this.db
       .prepare(
         `UPDATE image_perception_artifacts
          SET active = ?
          WHERE attachment_id = ?`,
       )
-      .run(active ? 1 : 0, attachmentId);
+      .run(active ? 1 : 0, attachmentId).changes;
   }
 
   private cascadeInactivePerceptionsFromInactiveAttachments(): void {
@@ -220,15 +220,29 @@ export class AttachmentRepository {
     return rows.map(rowToRecord);
   }
 
-  setActive(attachmentId: AttachmentId, active: boolean): void {
-    this.db
+  setActive(attachmentId: AttachmentId, active: boolean): number {
+    return this.setActiveWithCascade(attachmentId, active).attachmentChanges;
+  }
+
+  setActiveWithCascade(
+    attachmentId: AttachmentId,
+    active: boolean,
+  ): { attachmentChanges: number; perceptionArtifactChanges: number } {
+    const result = this.db
       .prepare(
         `UPDATE stream_attachments
          SET active = ?
          WHERE attachment_id = ?`,
       )
       .run(active ? 1 : 0, attachmentId);
-    this.cascadePerceptionActiveByAttachment(attachmentId, active);
+    let perceptionArtifactChanges = 0;
+    if (result.changes > 0) {
+      perceptionArtifactChanges = this.cascadePerceptionActiveByAttachment(attachmentId, active);
+    }
+    return {
+      attachmentChanges: result.changes,
+      perceptionArtifactChanges,
+    };
   }
 
   setPerceptionRefs(

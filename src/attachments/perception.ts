@@ -726,6 +726,7 @@ export type ImagePerceptionServiceOptions = {
   attachmentRepository: Pick<AttachmentRepository, "get" | "setPerceptionRefs" | "setActive">;
   llmClient: LLMClient;
   embeddingClient: EmbeddingClient;
+  artifactBySha256?: ReadonlyMap<string, ImagePerceptionArtifact> | Record<string, ImagePerceptionArtifact>;
   model?: string;
   promptVersion?: string;
   clock?: Clock;
@@ -791,11 +792,13 @@ export class ImagePerceptionService {
     const started = performance.now();
 
     try {
-      const artifact = await callPerceptionWithRetry({
-        llmClient: this.options.llmClient,
-        model: this.model,
-        attachmentId: attachment.attachment_id,
-      });
+      const artifact =
+        this.artifactForSha256(attachment.sha256) ??
+        (await callPerceptionWithRetry({
+          llmClient: this.options.llmClient,
+          model: this.model,
+          attachmentId: attachment.attachment_id,
+        }));
       const embeddingText = buildImagePerceptionEmbeddingText(artifact);
       const payloadId = createImagePerceptionId();
       const artifactId = createImagePerceptionId();
@@ -903,6 +906,20 @@ export class ImagePerceptionService {
       embedding_text: payload.embedding_text,
       embedding_status: payload.embedding_status,
     };
+  }
+
+  private artifactForSha256(sha256: string): ImagePerceptionArtifact | null {
+    const fixtures = this.options.artifactBySha256;
+    if (fixtures === undefined) {
+      return null;
+    }
+
+    if (fixtures instanceof Map) {
+      return fixtures.get(sha256) ?? null;
+    }
+
+    const records = fixtures as Record<string, ImagePerceptionArtifact>;
+    return records[sha256] ?? null;
   }
 
   private async ensurePayloadEmbedding(

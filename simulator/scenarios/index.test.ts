@@ -242,6 +242,7 @@ describe("simulator scenarios", () => {
       "trip-planning",
       "coding-incident",
       "family-aging-parent",
+      "image-bearing",
       "kinship-correctness",
       "kinship-headcount",
       "observation-source-precedence",

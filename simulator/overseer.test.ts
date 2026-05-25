@@ -27,6 +27,11 @@ const OVERSEER_OMITTED_LEDGER_METRIC_KEYS = [
   "ledger_reverse_scan_bytes_total",
   "ledger_reverse_scan_entry_cap_hit_total",
   "ledger_reverse_scan_byte_cap_hit_total",
+  "ledger_image_refs_considered_total",
+  "ledger_image_refs_attached_total",
+  "ledger_image_refs_omitted_budget_total",
+  "ledger_image_bytes_attached_total",
+  "ledger_image_refs_omitted_inactive_total",
 ] as const satisfies readonly (keyof MetricsRow)[];
 
 type CapturedRequest = Parameters<
@@ -295,6 +300,11 @@ function metricsRow(turn: number): MetricsRow {
     ledger_reverse_scan_bytes_total: 0,
     ledger_reverse_scan_entry_cap_hit_total: 0,
     ledger_reverse_scan_byte_cap_hit_total: 0,
+    ledger_image_refs_considered_total: 0,
+    ledger_image_refs_attached_total: 0,
+    ledger_image_refs_omitted_budget_total: 0,
+    ledger_image_bytes_attached_total: 0,
+    ledger_image_refs_omitted_inactive_total: 0,
     semantic_revision_error_count: 0,
     semantic_revision_skipped_due_to_error: 0,
     semantic_revision_error_total_by_reason: {},
@@ -1156,6 +1166,11 @@ describe("simulator overseer", () => {
       ledger_reverse_scan_bytes_total: 8388608,
       ledger_reverse_scan_entry_cap_hit_total: 1,
       ledger_reverse_scan_byte_cap_hit_total: 1,
+      ledger_image_refs_considered_total: 0,
+      ledger_image_refs_attached_total: 0,
+      ledger_image_refs_omitted_budget_total: 0,
+      ledger_image_bytes_attached_total: 0,
+      ledger_image_refs_omitted_inactive_total: 0,
     } satisfies MetricsRow;
 
     try {

@@ -131,7 +131,7 @@ export type TurnOrchestratorOptions = {
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   entryIndex?: StreamEntryIndexRepository;
-  attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
+  attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
   attachmentService: AttachmentService;
   imagePerceptionService?: ImagePerceptionService;
   /**

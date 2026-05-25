@@ -408,6 +408,7 @@ export async function buildBorgRepositories(
     semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
     semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
     imagePerceptionRepository,
+    maxRetrievedImageRefs: config.attachments.maxRetrievedImageRefs,
   });
   const correctionService = new CorrectionService({
     config,

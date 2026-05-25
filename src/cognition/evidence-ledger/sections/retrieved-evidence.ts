@@ -92,6 +92,7 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
       value: item.source,
       state: evidenceItemState(item),
       state_metadata: evidenceItemProvenanceMetadata(item),
+      citation_type: item.citationType,
       taint: "none" as const,
       via_retrieval: true,
       ...persistenceClassFromProvenance(

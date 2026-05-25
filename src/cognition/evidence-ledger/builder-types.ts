@@ -12,6 +12,7 @@ import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { StreamEntry, StreamReader } from "../../stream/index.js";
+import type { AttachmentRepository } from "../../attachments/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -34,6 +35,10 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadSimilarityThreshold?: number;
   actionThreadSourceRecordLimit?: number;
   entityRepository?: Pick<EntityRepository, "get">;
+  attachmentRepository?: Pick<AttachmentRepository, "get">;
+  maxImagesPerLedger?: number;
+  maxLedgerImageBytes?: number;
+  imageRenderMaxDimension?: number;
   tracer?: TurnTracer;
 };
 

@@ -49,6 +49,7 @@ export async function runDeliberationPhase(input: {
     tracer: input.options.tracer,
     hostCapabilities: input.options.config.host_capabilities,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
+    maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
   });
   const deliberation = await deliberator.run(
     {

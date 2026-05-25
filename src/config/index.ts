@@ -224,6 +224,14 @@ const attachmentsConfigSchema = z
     maxWidth: z.number().int().positive().default(8192),
     maxHeight: z.number().int().positive().default(8192),
     maxImagesPerTurn: z.number().int().positive().default(4),
+    maxImagesPerLedger: z.number().int().positive().default(4),
+    maxLedgerImageBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(8 * 1024 * 1024),
+    maxRetrievedImageRefs: z.number().int().positive().default(8),
+    imageRenderMaxDimension: z.number().int().positive().default(8192),
     perceptionPromptVersion: z.string().min(1).default("v88-p1-2026-05-25"),
   })
   .strict()
@@ -871,6 +879,26 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["attachments", "maxImagesPerTurn"],
     readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_IMAGES_PER_TURN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxImagesPerLedger"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_IMAGES_PER_LEDGER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxLedgerImageBytes"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_LEDGER_IMAGE_BYTES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxRetrievedImageRefs"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_RETRIEVED_IMAGE_REFS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "imageRenderMaxDimension"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_IMAGE_RENDER_MAX_DIMENSION"),
   );
   setConfigOverride(
     overrides,

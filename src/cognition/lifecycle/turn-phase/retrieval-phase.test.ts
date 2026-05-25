@@ -241,6 +241,197 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     );
   });
 
+  it("ages image-derived shared-state updates by the durable attachment turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-image-aging-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(10_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const currentEntryId = createStreamEntryId();
+    const parentEntryId = createStreamEntryId();
+    const imageStreamEntryId = createStreamEntryId();
+    const attachmentId = "att_aaaaaaaaaaaaaaaa" as never;
+    const currentUserEntry = {
+      id: currentEntryId,
+      kind: "user_msg",
+      content: "What was in the old deployment diagram?",
+      timestamp: 10_000,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+      turn_id: "turn-500",
+      turn_status: "active",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_shared_state",
+              name: SHARED_STATE_TOOL_NAME,
+              input: {
+                operations: [
+                  {
+                    type: "add",
+                    state_key: "project.atlas.diagram",
+                    kind: "live",
+                    text: "The Atlas diagram shows build flowing into release.",
+                    owner_entity_id: audienceEntityId,
+                    source_stream_entry_ids: [parentEntryId],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: { enabled: false },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => llmClient,
+      clock,
+      tracer: { enabled: false, emit: vi.fn() },
+      entityRepository: { resolve: () => selfEntityId },
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [], get: () => null },
+      goalsRepository: { list: () => [] },
+      commitmentRepository: { list: () => [] },
+      openQuestionsRepository: { list: () => [] },
+      attachmentRepository: {
+        get: () => ({
+          attachment_id: attachmentId,
+          active: true,
+          byte_size: 100,
+          width: 2,
+          height: 2,
+          created_turn_global: 100,
+        }),
+        isActiveForStreamEntry: () => true,
+      },
+      entryIndex: {
+        countSessionEntriesByKind: () => 0,
+        lookupEntriesById: (ids: readonly string[]) =>
+          new Map(
+            ids.map((id) => [
+              id,
+              {
+                entry_id: id,
+                session_id: DEFAULT_SESSION_ID,
+                timestamp: 1,
+                kind: "user_msg",
+                turn_id: id === currentEntryId ? "turn-500" : "turn-100",
+                turn_status: "active",
+                active: true,
+              },
+            ]),
+          ),
+        quarantinedSharedStateArtifactRefs: () => new Set(),
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            yield currentUserEntry;
+          },
+        }) as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    await compileSharedStateArtifactForEvidenceLedger({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-image-aging",
+        audienceEntityId,
+        currentUserMessage: "What was in the old deployment diagram?",
+        currentUserEntry,
+        globalTurnCounter: 500,
+        workingMemory: { turn_counter: 500 } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [
+          {
+            id: "image-old",
+            source: "image_perception",
+            text: "Caption: build flowing into release.",
+            provenance: { attachmentId, streamIds: [parentEntryId, imageStreamEntryId] },
+            recallIntentId: "intent-image",
+            matchedTerms: [],
+            score: 0.9,
+            scoreBreakdown: { vector: 0.9 },
+            imageAttachmentId: attachmentId,
+            imageLabel: "Image: old Atlas diagram",
+            citationType: "original_image",
+          },
+        ],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [
+          {
+            id: "retrieved_memory_evidence",
+            label: "Retrieved Evidence",
+            entries: [
+              {
+                id: "retrieved_evidence:image-old",
+                source_type: "prior_session_stream",
+                session_scope: "prior_session",
+                actor: "memory",
+                trust_rank: 1,
+                citations: [parentEntryId, imageStreamEntryId],
+                text: "Caption: build flowing into release.",
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "Caption: build flowing into release.",
+    });
+
+    expect(sharedStateRepository.get(audienceEntityId)?.entries[0]?.last_updated_turn_global).toBe(
+      100,
+    );
+  });
+
   it("uses the same structural render salience signals when compile is skipped", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-skip-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));

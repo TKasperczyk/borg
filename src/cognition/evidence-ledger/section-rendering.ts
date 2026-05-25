@@ -12,6 +12,7 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
     entry.citations === undefined || entry.citations.length === 0
       ? null
       : `[citation: ${entry.citations.join(", ")}]`,
+    entry.citation_type === undefined ? null : `citation_type=${entry.citation_type}`,
     entry.stream_index === undefined ? null : `stream_index=${entry.stream_index}`,
     entry.state === undefined ? null : `state=${entry.state}`,
     entry.salience_class === undefined ? null : `salience_class=${entry.salience_class}`,

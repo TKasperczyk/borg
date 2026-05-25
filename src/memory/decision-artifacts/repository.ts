@@ -52,6 +52,7 @@ export type SharedStateAddOperation = {
   last_updated_stream_entry_ids?: readonly StreamEntryId[];
   created_at?: number;
   last_updated_at?: number;
+  last_updated_turn_global?: number | null;
   rank?: number;
   canonicalizes?: SharedStateCanonicalizes;
 };
@@ -66,6 +67,7 @@ export type SharedStateUpdateOperation = {
   add_provenance_stream_entry_ids?: readonly StreamEntryId[];
   last_updated_stream_entry_ids: readonly StreamEntryId[];
   last_updated_at?: number;
+  last_updated_turn_global?: number | null;
   rank?: number;
   canonicalizes?: SharedStateCanonicalizes;
 };
@@ -76,6 +78,7 @@ export type SharedStateSupersedeOperation = {
   replacement: Omit<SharedStateAddOperation, "type">;
   last_updated_stream_entry_ids: readonly StreamEntryId[];
   last_updated_at?: number;
+  last_updated_turn_global?: number | null;
 };
 
 export type SharedStatePruneOperation = {
@@ -517,7 +520,7 @@ export class SharedStateRepository {
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
       created_at: operation.created_at ?? nowMs,
       last_updated_at: operation.last_updated_at ?? operation.created_at ?? nowMs,
-      last_updated_turn_global: lastUpdatedTurnGlobal,
+      last_updated_turn_global: operation.last_updated_turn_global ?? lastUpdatedTurnGlobal,
       superseded_by_id: null,
       rank: operation.rank ?? 0,
       canonicalizes: uniqueCanonicalizes(operation.canonicalizes),
@@ -568,7 +571,7 @@ export class SharedStateRepository {
       provenance_stream_entry_ids: provenanceStreamEntryIds,
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
       last_updated_at: operation.last_updated_at ?? nowMs,
-      last_updated_turn_global: lastUpdatedTurnGlobal,
+      last_updated_turn_global: operation.last_updated_turn_global ?? lastUpdatedTurnGlobal,
       rank: operation.rank ?? current.rank,
       canonicalizes: mergeCanonicalizes(current.canonicalizes, operation.canonicalizes),
     });
@@ -629,7 +632,7 @@ export class SharedStateRepository {
         id: parseSharedStateEntryId(replacementId),
       },
       nowMs,
-      lastUpdatedTurnGlobal,
+      operation.replacement.last_updated_turn_global ?? lastUpdatedTurnGlobal,
       sourceTrustValidator,
     );
     const lastUpdatedAt = operation.last_updated_at ?? nowMs;
@@ -648,7 +651,7 @@ export class SharedStateRepository {
       superseded_by_id: replacement.id,
       last_updated_at: lastUpdatedAt,
       last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
-      last_updated_turn_global: lastUpdatedTurnGlobal,
+      last_updated_turn_global: operation.last_updated_turn_global ?? lastUpdatedTurnGlobal,
     });
 
     this.db
@@ -666,7 +669,7 @@ export class SharedStateRepository {
         replacement.id,
         lastUpdatedAt,
         serializeJsonValue(lastUpdatedStreamEntryIds),
-        lastUpdatedTurnGlobal,
+        operation.last_updated_turn_global ?? lastUpdatedTurnGlobal,
         current.id,
         audienceEntityId,
       );

@@ -237,4 +237,5 @@ export type DeliberatorOptions = {
   tracer?: TurnTracer;
   hostCapabilities?: string;
   sharedStateRenderOptions?: SharedStateRenderOptions;
+  maxImagesPerLlmCall?: number;
 };

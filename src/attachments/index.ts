@@ -1,6 +1,12 @@
 export { AttachmentBlobStore } from "./blob-store.js";
 export { readImageDimensions, type ImageDimensions } from "./image-info.js";
 export { AttachmentRepository, attachmentMigrations } from "./repository.js";
+export { validateImageForFinalizerRender } from "./render-validation.js";
+export {
+  ImageAttachmentLifecycleService,
+  type ImageAttachmentLifecycleResult,
+  type ImageAttachmentLifecycleServiceOptions,
+} from "./lifecycle.js";
 export {
   AttachmentService,
   type AttachmentValidationConfig,

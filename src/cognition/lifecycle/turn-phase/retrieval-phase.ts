@@ -153,6 +153,32 @@ function retrievedStreamEntryIds(
   ]);
 }
 
+function imageDerivedLastUpdatedTurns(input: {
+  retrievedEvidence?: readonly EvidenceLedgerBuildInput["retrievedEvidence"][number][];
+  attachmentRepository: Pick<TurnPhaseCoordinatorOptions["attachmentRepository"], "get">;
+}): Record<string, number> {
+  const result: Record<string, number> = {};
+
+  for (const item of input.retrievedEvidence ?? []) {
+    const attachmentId = item.imageAttachmentId ?? item.provenance?.attachmentId;
+    if (attachmentId === undefined) {
+      continue;
+    }
+
+    const attachment = input.attachmentRepository.get(attachmentId);
+    const createdTurn = attachment?.created_turn_global;
+    if (createdTurn === undefined || createdTurn === null || !Number.isFinite(createdTurn)) {
+      continue;
+    }
+
+    for (const streamEntryId of item.provenance?.streamIds ?? []) {
+      result[streamEntryId] = createdTurn;
+    }
+  }
+
+  return result;
+}
+
 function recentlyRetrievedSharedStateEntryIds(input: {
   artifact: SharedStateArtifact | null;
   retrievedStreamEntryIds: readonly StreamEntryId[];
@@ -363,6 +389,10 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
     entityRepository: input.options.entityRepository,
+    attachmentRepository: input.options.attachmentRepository,
+    maxImagesPerLedger: input.options.config.attachments.maxImagesPerLedger,
+    maxLedgerImageBytes: input.options.config.attachments.maxLedgerImageBytes,
+    imageRenderMaxDimension: input.options.config.attachments.imageRenderMaxDimension,
     tracer: input.options.tracer,
   });
   const builtLedger = await builder.build(input.input);
@@ -814,6 +844,10 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     currentTurnId: input.input.turnId,
     currentTurnCounter: turnCounter,
   });
+  const imageLastUpdatedTurnByStreamEntryId = imageDerivedLastUpdatedTurns({
+    retrievedEvidence: input.input.retrievedEvidence,
+    attachmentRepository: input.options.attachmentRepository,
+  });
   const recentRetrievalStreamEntryIds = retrievedStreamEntryIds(input.input);
   const recentlyRetrievedEntryIds = recentlyRetrievedSharedStateEntryIds({
     artifact: previousArtifact,
@@ -836,7 +870,10 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
       .filter((commitment) => effectiveCommitmentEnforcementClass(commitment) !== "critical")
       .map((commitment) => commitment.id as CommitmentId),
     currentTurnCounter: turnCounter,
-    lastUpdatedTurnByStreamEntryId,
+    lastUpdatedTurnByStreamEntryId: {
+      ...lastUpdatedTurnByStreamEntryId,
+      ...imageLastUpdatedTurnByStreamEntryId,
+    },
   };
   const currentTurnIsFrameAnomaly = isFrameAnomaly(input.input.frameAnomaly);
   const reconciliationRepositories: SharedStateReconciliationRepositories = {

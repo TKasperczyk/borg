@@ -131,8 +131,24 @@ export function withCurrentUserContentBlocks(
 export function withLedgerImageContentBlocks(
   messages: readonly LLMContentBlockMessage[],
   ledger: EvidenceLedger | null | undefined,
+  options: { maxImagesPerLlmCall?: number } = {},
 ): LLMContentBlockMessage[] {
   if (ledger?.imageAttachments === undefined || ledger.imageAttachments.length === 0) {
+    return [...messages];
+  }
+
+  const currentImageCount = messages.reduce(
+    (count, message) =>
+      count + message.content.filter((block) => block.type === "image_ref").length,
+    0,
+  );
+  const remaining =
+    options.maxImagesPerLlmCall === undefined
+      ? ledger.imageAttachments.length
+      : Math.max(0, options.maxImagesPerLlmCall - currentImageCount);
+  const imageAttachments = ledger.imageAttachments.slice(0, remaining);
+
+  if (imageAttachments.length === 0) {
     return [...messages];
   }
 
@@ -140,7 +156,7 @@ export function withLedgerImageContentBlocks(
     ...messages,
     {
       role: "user",
-      content: ledger.imageAttachments.flatMap((image): LLMContentBlock[] => [
+      content: imageAttachments.flatMap((image): LLMContentBlock[] => [
         {
           type: "text",
           text: image.label,

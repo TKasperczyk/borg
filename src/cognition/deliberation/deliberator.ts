@@ -434,6 +434,7 @@ export class Deliberator {
         context.currentUserContent,
       ),
       context.evidenceLedger,
+      { maxImagesPerLlmCall: this.options.maxImagesPerLlmCall },
     );
     const thinking = cognitionThinkingOption(this.options);
 

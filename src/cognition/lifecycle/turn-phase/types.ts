@@ -104,7 +104,7 @@ export type TurnPhaseCoordinatorOptions = {
     "countSessionEntriesByKind" | "lookupEntriesById" | "quarantinedSharedStateArtifactRefs"
   >;
   attachmentService: AttachmentService;
-  attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
+  attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
   imagePerceptionService?: ImagePerceptionService;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;

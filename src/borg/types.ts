@@ -4,6 +4,7 @@ import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/ind
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImageAttachmentLifecycleService,
   ImagePerceptionRepository,
 } from "../attachments/index.js";
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
@@ -105,6 +106,7 @@ export type BorgDependencies = {
   autonomyWakesRepository: AutonomyWakesRepository;
   attachmentRepository: AttachmentRepository;
   imagePerceptionRepository: ImagePerceptionRepository;
+  imageAttachmentLifecycleService: ImageAttachmentLifecycleService;
   attachmentService: AttachmentService;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;

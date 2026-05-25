@@ -199,6 +199,11 @@ const TURN_METRICS_KEY_ORDER = [
   "ledger_reverse_scan_bytes_total",
   "ledger_reverse_scan_entry_cap_hit_total",
   "ledger_reverse_scan_byte_cap_hit_total",
+  "ledger_image_refs_considered_total",
+  "ledger_image_refs_attached_total",
+  "ledger_image_refs_omitted_budget_total",
+  "ledger_image_bytes_attached_total",
+  "ledger_image_refs_omitted_inactive_total",
   "semantic_revision_error_count",
   "semantic_revision_skipped_due_to_error",
   "semantic_revision_error_total_by_reason",
@@ -1150,6 +1155,16 @@ describe("MetricsCapture", () => {
           ledger_reverse_scan_entry_cap_hit: false,
           ledger_reverse_scan_byte_cap_hit: true,
         }),
+        JSON.stringify({
+          ts: 3,
+          turnId: "turn-ledger-scan-2",
+          event: "evidence_ledger.image_attach",
+          considered_count: 3,
+          attached_count: 1,
+          omitted_budget_count: 1,
+          omitted_inactive_count: 1,
+          bytes_attached: 2048,
+        }),
       ].join("\n"),
     );
 
@@ -1168,6 +1183,11 @@ describe("MetricsCapture", () => {
     expect(row.ledger_reverse_scan_bytes_total).toBe(8_392_704);
     expect(row.ledger_reverse_scan_entry_cap_hit_total).toBe(1);
     expect(row.ledger_reverse_scan_byte_cap_hit_total).toBe(1);
+    expect(row.ledger_image_refs_considered_total).toBe(3);
+    expect(row.ledger_image_refs_attached_total).toBe(1);
+    expect(row.ledger_image_refs_omitted_budget_total).toBe(1);
+    expect(row.ledger_image_refs_omitted_inactive_total).toBe(1);
+    expect(row.ledger_image_bytes_attached_total).toBe(2048);
   });
 
   it("captures session re-entry continuity counters from trace events", async () => {

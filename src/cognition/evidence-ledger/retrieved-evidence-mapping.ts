@@ -78,6 +78,9 @@ export function evidenceItemState(item: EvidenceItem): string {
     item.source_visibility_fraction === undefined
       ? null
       : `visible_fraction=${item.source_visibility_fraction.toFixed(2)}`,
+    item.imageUnavailableReason === undefined
+      ? null
+      : `image_unavailable=${item.imageUnavailableReason}`,
   ].filter((part): part is string => part !== null);
 
   return parts.join(" ");
@@ -107,6 +110,7 @@ export function evidenceItemProvenanceMetadata(
       ? {}
       : { image_perception_id: provenance.imagePerceptionId }),
     ...(provenance.attachmentId === undefined ? {} : { attachment_id: provenance.attachmentId }),
+    ...(item.citationType === undefined ? {} : { citation_type: item.citationType }),
     ...(provenance.streamIds === undefined || provenance.streamIds.length === 0
       ? {}
       : { stream_ids: provenance.streamIds }),

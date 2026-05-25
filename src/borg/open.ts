@@ -5,6 +5,7 @@ import {
   AttachmentBlobStore,
   AttachmentRepository,
   AttachmentService,
+  ImageAttachmentLifecycleService,
   ImagePerceptionService,
 } from "../attachments/index.js";
 import { SessionLock } from "../cognition/index.js";
@@ -55,11 +56,17 @@ export async function openBorgDependencies(
       db: sqlite,
       dataDir: config.dataDir,
     });
+    const imageAttachmentLifecycleService = new ImageAttachmentLifecycleService({
+      db: sqlite,
+      attachmentRepository,
+      tracer,
+    });
     const attachmentService = new AttachmentService({
       repository: attachmentRepository,
       blobStore: new AttachmentBlobStore(config.dataDir),
       config: config.attachments,
       entryIndex,
+      lifecycle: imageAttachmentLifecycleService,
       tracer,
     });
     const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
@@ -232,6 +239,7 @@ export async function openBorgDependencies(
       attachmentRepository,
       attachmentService,
       imagePerceptionRepository: repositories.imagePerceptionRepository,
+      imageAttachmentLifecycleService,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,

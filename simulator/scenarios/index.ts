@@ -5,6 +5,7 @@ import { capabilityBoundaryScenario } from "./capability-boundary.js";
 import { codingIncidentScenario } from "./coding-incident.js";
 import { criticalBoundaryRegenerationScenario } from "./critical-boundary-regeneration.js";
 import { familyAgingParentScenario } from "./family-aging-parent.js";
+import { imageBearingScenario } from "./image-bearing.js";
 import { kinshipCorrectnessScenario } from "./kinship-correctness.js";
 import { kinshipHeadcountScenario } from "./kinship-headcount.js";
 import { observationSourcePrecedenceScenario } from "./observation-source-precedence.js";
@@ -17,6 +18,7 @@ export const simulatorScenarios = [
   tripPlanningScenario,
   codingIncidentScenario,
   familyAgingParentScenario,
+  imageBearingScenario,
   kinshipCorrectnessScenario,
   kinshipHeadcountScenario,
   observationSourcePrecedenceScenario,
@@ -45,6 +47,7 @@ export {
   codingIncidentScenario,
   criticalBoundaryRegenerationScenario,
   familyAgingParentScenario,
+  imageBearingScenario,
   kinshipCorrectnessScenario,
   kinshipHeadcountScenario,
   observationSourcePrecedenceScenario,

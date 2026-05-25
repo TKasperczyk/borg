@@ -183,6 +183,11 @@ export type MetricsRow = {
   ledger_reverse_scan_bytes_total: number;
   ledger_reverse_scan_entry_cap_hit_total: number;
   ledger_reverse_scan_byte_cap_hit_total: number;
+  ledger_image_refs_considered_total: number;
+  ledger_image_refs_attached_total: number;
+  ledger_image_refs_omitted_budget_total: number;
+  ledger_image_bytes_attached_total: number;
+  ledger_image_refs_omitted_inactive_total: number;
   semantic_revision_error_count: number;
   semantic_revision_skipped_due_to_error: number;
   semantic_revision_error_total_by_reason: Record<string, number>;

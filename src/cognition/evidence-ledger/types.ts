@@ -47,6 +47,7 @@ export type EvidenceLedgerEntry = {
   via_retrieval?: boolean;
   stream_index?: number;
   citations?: string[];
+  citation_type?: "original_image" | "generated_perception_text" | "parent_user_message";
 };
 
 type EvidenceLedgerSectionDefinition = {
@@ -150,6 +151,8 @@ export type EvidenceLedger = {
 export type EvidenceLedgerImageAttachment = {
   label: string;
   attachment_id: string;
+  byte_size?: number;
+  citation_type: "original_image";
 };
 
 export type EvidenceLedgerTraceSummary = {

@@ -102,6 +102,8 @@ export type EvidenceItem = {
   source_visibility_fraction?: number;
   imageAttachmentId?: AttachmentId;
   imageLabel?: string;
+  citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
+  imageUnavailableReason?: "budget" | "inactive";
 };
 
 export type EvidencePool = {

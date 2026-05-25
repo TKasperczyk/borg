@@ -11,6 +11,8 @@ import type {
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import { AttachmentBlobStore } from "./blob-store.js";
 import { readImageDimensions } from "./image-info.js";
+import { validateImageForFinalizerRender } from "./render-validation.js";
+import type { ImageAttachmentLifecycleService } from "./lifecycle.js";
 import { AttachmentRepository } from "./repository.js";
 import {
   SUPPORTED_IMAGE_MEDIA_TYPES,
@@ -33,6 +35,10 @@ export type AttachmentServiceOptions = {
   blobStore: AttachmentBlobStore;
   config: AttachmentValidationConfig;
   entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
+  lifecycle?: Pick<
+    ImageAttachmentLifecycleService,
+    "quarantineImageAttachment" | "unquarantineImageAttachment"
+  >;
   logger?: LoggerLike;
   tracer?: TurnTracer;
 };
@@ -56,6 +62,10 @@ export class AttachmentService {
   private readonly blobStore: AttachmentBlobStore;
   private readonly config: AttachmentValidationConfig;
   private readonly entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
+  private readonly lifecycle?: Pick<
+    ImageAttachmentLifecycleService,
+    "quarantineImageAttachment" | "unquarantineImageAttachment"
+  >;
   private readonly logger: LoggerLike;
   private readonly tracer?: TurnTracer;
 
@@ -64,6 +74,7 @@ export class AttachmentService {
     this.blobStore = options.blobStore;
     this.config = options.config;
     this.entryIndex = options.entryIndex;
+    this.lifecycle = options.lifecycle;
     this.logger = options.logger ?? console;
     this.tracer = options.tracer;
   }
@@ -260,6 +271,11 @@ export class AttachmentService {
       });
     }
 
+    validateImageForFinalizerRender(record, {
+      maxBytes: this.config.maxBytesPerImage,
+      maxDimension: Math.max(this.config.maxWidth, this.config.maxHeight),
+    });
+
     const bytes = this.blobStore.read(record.storage_ref);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
 
@@ -294,12 +310,47 @@ export class AttachmentService {
   }
 
   setAttachmentActive(attachmentId: AttachmentId, active: boolean, turnId = "attachment"): void {
+    if (this.lifecycle !== undefined) {
+      if (active) {
+        this.lifecycle.unquarantineImageAttachment({
+          attachmentId,
+          reason: "set_attachment_active",
+          turnId,
+        });
+      } else {
+        this.lifecycle.quarantineImageAttachment({
+          attachmentId,
+          reason: "set_attachment_active",
+          turnId,
+        });
+      }
+      return;
+    }
+
     this.repository.setActive(attachmentId, active);
 
-    if (!active && this.tracer?.enabled === true) {
-      this.tracer.emit("attachment.quarantine", {
+    if (this.tracer?.enabled === true) {
+      if (!active) {
+        this.tracer.emit("attachment.quarantined", {
+          turnId,
+          attachment_id: attachmentId,
+        });
+        this.tracer.emit("image_perception.deactivated", {
+          turnId,
+          attachment_id: attachmentId,
+          active: false,
+          reason: "set_attachment_active",
+          changed_count: 0,
+        });
+        return;
+      }
+
+      this.tracer.emit("image_perception.reactivated", {
         turnId,
         attachment_id: attachmentId,
+        active: true,
+        reason: "set_attachment_active",
+        changed_count: 0,
       });
     }
   }

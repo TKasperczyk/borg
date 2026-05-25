@@ -238,6 +238,84 @@ function lastUpdatedTurnByEntryId(input: {
   return result;
 }
 
+function lastUpdatedTurnForStreamIds(
+  streamEntryIds: readonly StreamEntryId[],
+  turnsByStreamEntryId: Readonly<Record<string, number>> | undefined,
+  fallback: number | null,
+): number | null {
+  let result: number | null = null;
+
+  for (const streamEntryId of streamEntryIds) {
+    const turn = turnsByStreamEntryId?.[streamEntryId];
+    if (turn === undefined || !Number.isFinite(turn)) {
+      continue;
+    }
+
+    result = result === null ? turn : Math.max(result, turn);
+  }
+
+  return result ?? fallback;
+}
+
+function withOperationLastUpdatedTurns(
+  operations: readonly SharedStateOperation[],
+  input: CompileSharedStateArtifactInput,
+): SharedStateOperation[] {
+  const fallback = input.turnCounter ?? null;
+  const turnsByStreamEntryId = {
+    ...(input.renderOptions?.lastUpdatedTurnByStreamEntryId ?? {}),
+    ...(input.turnCounter === undefined
+      ? {}
+      : { [input.currentUserStreamEntryId]: input.turnCounter }),
+  };
+
+  return operations.map((operation) => {
+    switch (operation.type) {
+      case "add": {
+        const streamEntryIds =
+          operation.last_updated_stream_entry_ids ?? operation.provenance_stream_entry_ids;
+        return {
+          ...operation,
+          last_updated_turn_global: lastUpdatedTurnForStreamIds(
+            streamEntryIds,
+            turnsByStreamEntryId,
+            fallback,
+          ),
+        };
+      }
+      case "update":
+        return {
+          ...operation,
+          last_updated_turn_global: lastUpdatedTurnForStreamIds(
+            operation.last_updated_stream_entry_ids,
+            turnsByStreamEntryId,
+            fallback,
+          ),
+        };
+      case "supersede":
+        return {
+          ...operation,
+          last_updated_turn_global: lastUpdatedTurnForStreamIds(
+            operation.last_updated_stream_entry_ids,
+            turnsByStreamEntryId,
+            fallback,
+          ),
+          replacement: {
+            ...operation.replacement,
+            last_updated_turn_global: lastUpdatedTurnForStreamIds(
+              operation.replacement.last_updated_stream_entry_ids ??
+                operation.replacement.provenance_stream_entry_ids,
+              turnsByStreamEntryId,
+              fallback,
+            ),
+          },
+        };
+      default:
+        return operation;
+    }
+  });
+}
+
 function traceSharedStateLifecycleTransitions(input: {
   tracer: CompileSharedStateArtifactInput["tracer"];
   turnId: CompileSharedStateArtifactInput["turnId"];
@@ -1047,7 +1125,10 @@ export async function compileSharedStateArtifact(
 
   const clock = input.clock ?? new SystemClock();
   const nowMs = clock.now();
-  const compilerOperations = materializeSharedStateOperationIds(normalized.operations);
+  const compilerOperations = withOperationLastUpdatedTurns(
+    materializeSharedStateOperationIds(normalized.operations),
+    input,
+  );
   const postCompilerEntries = materializeSharedStateEntriesAfterOperations({
     previousArtifact,
     operations: compilerOperations,

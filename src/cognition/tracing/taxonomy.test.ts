@@ -13,6 +13,12 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("semantic_revision.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.reconcile.completed")).toBe("retrieval");
+    expect(phaseForTraceEventName("attachment.quarantined")).toBe("perception");
+    expect(phaseForTraceEventName("image_perception.deactivated")).toBe("perception");
+    expect(phaseForTraceEventName("image_perception.reactivated")).toBe("perception");
+    expect(phaseForTraceEventName("evidence_ledger.image_attach")).toBe("retrieval");
+    expect(phaseForTraceEventName("citation.image_filtered")).toBe("retrieval");
+    expect(phaseForTraceEventName("shared_state.attachment_rejected")).toBe("retrieval");
     expect(phaseForTraceEventName("decision_artifact_compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("decision_artifact_reconcile.completed")).toBe("retrieval");
     expect(canonicalTraceEventName("decision_artifact_compile.completed")).toBe(

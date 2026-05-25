@@ -142,6 +142,47 @@ describe("AttachmentService", () => {
     );
   });
 
+  it("routes active changes through the image lifecycle orchestrator when configured", () => {
+    const { repository } = setup();
+    const quarantineImageAttachment = vi.fn().mockReturnValue({
+      attachmentChanged: true,
+      perceptionArtifactsChanged: 0,
+    });
+    const unquarantineImageAttachment = vi.fn().mockReturnValue({
+      attachmentChanged: true,
+      perceptionArtifactsChanged: 0,
+    });
+    const service = new AttachmentService({
+      repository,
+      blobStore: new AttachmentBlobStore(tempDir!),
+      config: {
+        maxBytesPerImage: 1024,
+        maxWidth: 64,
+        maxHeight: 64,
+        maxImagesPerTurn: 4,
+      },
+      lifecycle: {
+        quarantineImageAttachment,
+        unquarantineImageAttachment,
+      },
+    });
+    const attachmentId = "att_aaaaaaaaaaaaaaaa" as never;
+
+    service.setAttachmentActive(attachmentId, false, "turn-quarantine");
+    service.setAttachmentActive(attachmentId, true, "turn-reactivate");
+
+    expect(quarantineImageAttachment).toHaveBeenCalledWith({
+      attachmentId,
+      reason: "set_attachment_active",
+      turnId: "turn-quarantine",
+    });
+    expect(unquarantineImageAttachment).toHaveBeenCalledWith({
+      attachmentId,
+      reason: "set_attachment_active",
+      turnId: "turn-reactivate",
+    });
+  });
+
   it("rejects unsupported media types visibly and logs a warning", () => {
     const { service } = setup();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

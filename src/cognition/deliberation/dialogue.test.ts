@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createStreamEntryId } from "../../util/ids.js";
+import { createStreamEntryId, type AttachmentId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   buildDialogueMessages,
@@ -129,6 +129,7 @@ describe("withLedgerImageContentBlocks", () => {
         {
           label: "Image A: user-uploaded screenshot from turn 42 (audience: Alice)",
           attachment_id: attachmentId,
+          citation_type: "original_image",
         },
       ],
     });
@@ -146,5 +147,39 @@ describe("withLedgerImageContentBlocks", () => {
         },
       ],
     });
+  });
+
+  it("applies a combined finalizer image cap and prefers current user images", () => {
+    const currentAttachmentId = "att_aaaaaaaaaaaaaaaa" as AttachmentId;
+    const retrievedAttachmentId = "att_bbbbbbbbbbbbbbbb";
+    const messages = withCurrentUserContentBlocks(
+      toContentBlockMessages(buildDialogueMessages([], "Look at this")),
+      [
+        { type: "text", text: "Look at this" },
+        { type: "image_ref", attachment_id: currentAttachmentId },
+      ],
+    );
+    const withImages = withLedgerImageContentBlocks(
+      messages,
+      {
+        sections: [],
+        transcriptIncluded: true,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+        imageAttachments: [
+          {
+            label: "Image A: retrieved",
+            attachment_id: retrievedAttachmentId,
+            citation_type: "original_image",
+          },
+        ],
+      },
+      { maxImagesPerLlmCall: 1 },
+    );
+
+    expect(withImages).toEqual(messages);
   });
 });

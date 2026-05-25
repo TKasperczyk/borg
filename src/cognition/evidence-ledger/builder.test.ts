@@ -37,6 +37,7 @@ import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createActionId,
+  createAttachmentId,
   createCommitmentId,
   createEntityId,
   createEpisodeId,
@@ -433,6 +434,172 @@ function attributionBuilder(input: {
 
 describe("EvidenceLedgerBuilder", () => {
   const tempDirs: string[] = [];
+
+  it("budgets ledger image attachments separately and renders citation types", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-images-"));
+    tempDirs.push(tempDir);
+    const attachmentA = createAttachmentId();
+    const attachmentB = createAttachmentId();
+    const traceEvents: TurnTraceData[] = [];
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: (_event: TurnTraceEventName, data: TurnTraceData) => {
+        traceEvents.push({ ...data, event: _event });
+      },
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      commitmentRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+      maxImagesPerLedger: 1,
+      maxLedgerImageBytes: 10_000,
+      imageRenderMaxDimension: 8192,
+      attachmentRepository: {
+        get: (attachmentId) => ({
+          attachment_id: attachmentId,
+          sha256: "sha",
+          media_type: "image/png",
+          active: true,
+          byte_size: 100,
+          width: 2,
+          height: 2,
+          storage_ref: "attachments/sha.png",
+          thumbnail_ref: null,
+          perception_id: null,
+          text_embedding_ref: null,
+          visual_embedding_ref: null,
+          audience: null,
+          created_turn_global: attachmentId === attachmentA ? 4 : 5,
+          parent_entry_id: createStreamEntryId(),
+          stream_entry_id: createStreamEntryId(),
+          parent_turn_id: "turn-image",
+          created_at: NOW_MS,
+        }),
+      },
+      tracer,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-images",
+      audienceEntityId: null,
+      currentUserMessage: "What is in the images?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "image-a",
+          source: "image_perception",
+          text: "Image A perception",
+          provenance: { attachmentId: attachmentA },
+          recallIntentId: "intent-a",
+          matchedTerms: [],
+          score: 0.9,
+          scoreBreakdown: { vector: 0.9 },
+          imageAttachmentId: attachmentA,
+          imageLabel: "Image: first",
+          citationType: "generated_perception_text",
+        },
+        {
+          id: "image-b",
+          source: "image_perception",
+          text: "Image B perception",
+          provenance: { attachmentId: attachmentB },
+          recallIntentId: "intent-b",
+          matchedTerms: [],
+          score: 0.1,
+          scoreBreakdown: { vector: 0.1 },
+          imageAttachmentId: attachmentB,
+          imageLabel: "Image: second",
+          citationType: "generated_perception_text",
+        },
+      ],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.imageAttachments).toEqual([
+      expect.objectContaining({
+        attachment_id: attachmentA,
+        citation_type: "original_image",
+      }),
+    ]);
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+    expect(rendered).toContain("citation_type=original_image");
+    expect(rendered).toContain("image_unavailable=budget");
+    expect(rendered).toContain("Use this perception text only as generated_perception_text");
+    expect(traceEvents).toContainEqual(
+      expect.objectContaining({
+        event: "evidence_ledger.image_attach",
+        considered_count: 2,
+        attached_count: 1,
+        omitted_budget_count: 1,
+      }),
+    );
+  });
+
+  it("drops inactive image perception evidence instead of rendering it as grounding text", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-inactive-image-"));
+    tempDirs.push(tempDir);
+    const attachmentId = createAttachmentId();
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      commitmentRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+      maxImagesPerLedger: 4,
+      maxLedgerImageBytes: 10_000,
+      imageRenderMaxDimension: 8192,
+      attachmentRepository: {
+        get: (id) =>
+          ({
+          attachment_id: id,
+          active: false,
+          byte_size: 100,
+          width: 2,
+          height: 2,
+          created_turn_global: 4,
+        }) as never,
+      },
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-images",
+      audienceEntityId: null,
+      currentUserMessage: "What was in the image?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "inactive-image",
+          source: "image_perception",
+          text: "Quarantined perception text must not ground the answer",
+          provenance: { attachmentId },
+          recallIntentId: "intent-a",
+          matchedTerms: [],
+          score: 0.9,
+          scoreBreakdown: { vector: 0.9 },
+          imageAttachmentId: attachmentId,
+          imageLabel: "Image: inactive",
+          citationType: "generated_perception_text",
+        },
+      ],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.imageAttachments).toBeUndefined();
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+    expect(rendered).not.toContain("Quarantined perception text must not ground the answer");
+    expect(rendered).not.toContain("generated_perception_text");
+  });
 
   afterEach(() => {
     while (tempDirs.length > 0) {

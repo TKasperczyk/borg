@@ -148,6 +148,41 @@ describe("ImagePerceptionService", () => {
     );
   });
 
+  it("can use deterministic sha256-indexed perception artifacts for tests and sims", async () => {
+    const { attachmentId, attachmentRepository, repository } = setup();
+    const service = new ImagePerceptionService({
+      repository,
+      attachmentRepository,
+      llmClient: new FakeLLMClient({ responses: [] }),
+      embeddingClient: new FakeEmbeddingClient(4),
+      model: "haiku-test",
+      promptVersion: "test-v1",
+      artifactBySha256: {
+        abc123: {
+          caption: "Fixture perception by hash.",
+          image_kind: "diagram",
+          visible_text: ["fixture"],
+          objects: ["box"],
+          people_or_roles: [],
+          scene: "A deterministic simulator fixture.",
+          colors_and_visual_attributes: [],
+          spatial_relationships: [],
+          possible_user_relevant_details: ["hash fixture"],
+          search_terms: ["hash fixture"],
+          uncertainties: [],
+        },
+      },
+    });
+
+    const record = await service.perceiveAttachment({
+      attachmentId,
+      turnId: "turn-image",
+    });
+
+    expect(record?.caption).toBe("Fixture perception by hash.");
+    expect(record?.search_terms).toEqual(["hash fixture"]);
+  });
+
   it("uses the sha/media/prompt/model cache instead of rerunning perception", async () => {
     const { attachmentId, attachmentRepository, repository } = setup();
     const firstLlm = new FakeLLMClient({
