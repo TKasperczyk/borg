@@ -47,6 +47,7 @@ function scanRecentSessionStreamEntries(reader: StreamReader): StreamReverseScan
   return reader.scanReverse({
     maxEntries: EVIDENCE_LEDGER_SESSION_SCAN_MAX_ENTRIES,
     maxBytes: EVIDENCE_LEDGER_SESSION_SCAN_MAX_BYTES,
+    budgetFilter: (entry) => entry.kind !== "user_image_attachment",
   });
 }
 

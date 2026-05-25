@@ -89,7 +89,9 @@ function uniqueCommitmentKinds(commitments: readonly CommitmentRecord[]): Commit
 function uniqueCommitmentEnforcementClasses(
   commitments: readonly CommitmentRecord[],
 ): CommitmentEnforcementClass[] {
-  return [...new Set(commitments.map((commitment) => effectiveCommitmentEnforcementClass(commitment)))];
+  return [
+    ...new Set(commitments.map((commitment) => effectiveCommitmentEnforcementClass(commitment))),
+  ];
 }
 
 function uniqueCommitmentCriticalDomains(

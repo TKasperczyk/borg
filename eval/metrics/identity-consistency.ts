@@ -142,8 +142,7 @@ async function valuePressureCase(tempDir: string): Promise<{
     llm,
     clock: new FixedClock(BASE_TS),
     config: {
-      perception: {
-      },
+      perception: {},
     },
   });
 
@@ -267,8 +266,7 @@ async function commitmentAdherenceCase(tempDir: string): Promise<{
     llm,
     clock: new FixedClock(BASE_TS + 1_000),
     config: {
-      perception: {
-      },
+      perception: {},
     },
   });
 
@@ -345,8 +343,7 @@ async function contradictionResistanceCase(tempDir: string): Promise<{
     llm,
     clock: new FixedClock(BASE_TS + 2_000),
     config: {
-      perception: {
-      },
+      perception: {},
     },
   });
 

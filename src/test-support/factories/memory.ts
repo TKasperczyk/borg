@@ -96,8 +96,7 @@ export function makeCommitmentRecord(overrides: Partial<CommitmentRecord> = {}):
   const createdAt = overrides.created_at ?? DEFAULT_TEST_TIMESTAMP_MS;
   const type: CommitmentType = overrides.type ?? "promise";
   const kind: CommitmentKind = overrides.kind ?? "assistant_commitment";
-  const enforcementClass =
-    overrides.enforcement_class ?? defaultCommitmentEnforcementClass(kind);
+  const enforcementClass = overrides.enforcement_class ?? defaultCommitmentEnforcementClass(kind);
 
   const defaults: CommitmentRecord = {
     id: overrides.id ?? createCommitmentId(),

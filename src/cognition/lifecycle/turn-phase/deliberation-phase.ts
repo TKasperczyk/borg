@@ -6,6 +6,7 @@ import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
+import type { BorgUserContentBlock } from "../../../attachments/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
@@ -27,6 +28,7 @@ export async function runDeliberationPhase(input: {
   streamWriter: StreamWriter;
   audienceEntityId: EntityId | null;
   persistedUserEntryId?: StreamEntry["id"];
+  currentUserContent?: readonly BorgUserContentBlock[];
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
   activeParticipants: readonly ActiveParticipant[];
@@ -57,6 +59,7 @@ export async function runDeliberationPhase(input: {
       senderEntityId: input.turnInput.senderEntityId,
       userMessage: input.turnInput.userMessage,
       userEntryId: input.persistedUserEntryId,
+      currentUserContent: input.currentUserContent,
       autonomyTrigger: input.turnInput.autonomyTrigger ?? null,
       perception: input.perception,
       retrievalResult: input.retrievalPhase.retrievedEpisodes,

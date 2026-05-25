@@ -1,4 +1,9 @@
 import type { ToolLoopCallRecord } from "../../action/index.js";
+import type {
+  AttachmentRepository,
+  AttachmentService,
+  TurnInputAttachment,
+} from "../../../attachments/index.js";
 import type { TurnActionCoordinator } from "../../action/turn-action-coordinator.js";
 import type { TurnActionStateService } from "../../actions/turn-action-state-service.js";
 import type { AttributionLifecycleService } from "../../attribution/lifecycle-service.js";
@@ -41,6 +46,7 @@ import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 
 export type TurnPhaseInput = {
   userMessage: string;
+  attachments?: readonly TurnInputAttachment[];
   audience?: string;
   senderEntityId?: EntityId;
   stakes?: TurnStakes;
@@ -96,6 +102,8 @@ export type TurnPhaseCoordinatorOptions = {
     StreamEntryIndexRepository,
     "countSessionEntriesByKind" | "lookupEntriesById" | "quarantinedSharedStateArtifactRefs"
   >;
+  attachmentService: AttachmentService;
+  attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;

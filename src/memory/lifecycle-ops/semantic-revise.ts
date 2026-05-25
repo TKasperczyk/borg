@@ -1,8 +1,5 @@
 import type { SemanticNodeRepository } from "../semantic/repository.js";
-import type {
-  SemanticNodeCorrectionRef,
-  SemanticNodeIdValue,
-} from "../semantic/types.js";
+import type { SemanticNodeCorrectionRef, SemanticNodeIdValue } from "../semantic/types.js";
 import type { SemanticNodeStatusTransition } from "../semantic/repository.js";
 import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 

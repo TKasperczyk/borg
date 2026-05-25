@@ -174,8 +174,7 @@ describe("semantic review service", () => {
     const episode = await harness.episodicRepository.insert(
       createEpisodeFixture({
         title: "Python runtime correction",
-        narrative:
-          "The project runtime note was corrected from Python 3.11 to Python 3.12.",
+        narrative: "The project runtime note was corrected from Python 3.11 to Python 3.12.",
         tags: ["python", "runtime"],
         created_at: 2_000,
         updated_at: 2_000,
@@ -282,9 +281,7 @@ describe("semantic review service", () => {
     ).toBeGreaterThan(correctedMatch.base_retrieval_score ?? 0);
     expect(staleMatch.status).toBe("contradicted");
     expect(staleMatch.status_retrieval_multiplier).toBe(0.3);
-    expect(staleMatch.retrieval_score).toBeCloseTo(
-      (staleMatch.base_retrieval_score ?? 0) * 0.3,
-    );
+    expect(staleMatch.retrieval_score).toBeCloseTo((staleMatch.base_retrieval_score ?? 0) * 0.3);
     expect(correctedMatch.status).toBe("active");
     expect(correctedMatch.retrieval_score).toBe(correctedMatch.base_retrieval_score);
     expect(

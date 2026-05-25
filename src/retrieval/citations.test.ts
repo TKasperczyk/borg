@@ -127,8 +127,7 @@ describe("citation resolver", () => {
           cited_stream_entry_ids: [quarantinedEntry.id],
         },
       });
-      const staleOffset =
-        statSync(getSessionStreamPath(tempDir, marker.session_id)).size + 1024;
+      const staleOffset = statSync(getSessionStreamPath(tempDir, marker.session_id)).size + 1024;
       db.prepare("UPDATE stream_entry_index SET byte_offset = ? WHERE entry_id = ?").run(
         staleOffset,
         marker.id,

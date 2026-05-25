@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { createStreamEntryId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
+import {
+  buildDialogueMessages,
+  toContentBlockMessages,
+  withCurrentUserContentBlocks,
+} from "./dialogue.js";
 
 function makeRecency(role: "user" | "assistant", content: string, index: number): RecencyMessage {
   return {
@@ -79,6 +83,31 @@ describe("toContentBlockMessages", () => {
     expect(blocks).toEqual([
       { role: "user", content: [{ type: "text", text: "(no content)" }] },
       { role: "assistant", content: [{ type: "text", text: "real" }] },
+    ]);
+  });
+});
+
+describe("withCurrentUserContentBlocks", () => {
+  it("preserves adjacent prior user recency when current turn has images", () => {
+    const messages = toContentBlockMessages(
+      buildDialogueMessages([makeRecency("user", "prior user turn", 1)], "current user turn"),
+    );
+    const attachmentId = "att_aaaaaaaaaaaaaaaa" as never;
+
+    expect(
+      withCurrentUserContentBlocks(messages, [
+        { type: "text", text: "current user turn" },
+        { type: "image_ref", attachment_id: attachmentId },
+      ]),
+    ).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "prior user turn" },
+          { type: "text", text: "current user turn" },
+          { type: "image_ref", attachment_id: attachmentId },
+        ],
+      },
     ]);
   });
 });

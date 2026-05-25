@@ -432,9 +432,7 @@ describe("TurnGoalPromotionService", () => {
         }),
     );
     const llm = new FakeLLMClient({
-      responses: [
-        goalPromotionResponse({ description, duplicate_of_goal_id: referencedGoalId }),
-      ],
+      responses: [goalPromotionResponse({ description, duplicate_of_goal_id: referencedGoalId })],
     });
     const service = new TurnGoalPromotionService({
       model: "haiku",
@@ -500,9 +498,7 @@ describe("TurnGoalPromotionService", () => {
         }),
     );
     const llm = new FakeLLMClient({
-      responses: [
-        goalPromotionResponse({ description, duplicate_of_goal_id: referencedGoalId }),
-      ],
+      responses: [goalPromotionResponse({ description, duplicate_of_goal_id: referencedGoalId })],
     });
     const service = new TurnGoalPromotionService({
       model: "haiku",

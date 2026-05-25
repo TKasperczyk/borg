@@ -257,7 +257,10 @@ function classifyContradictionRouting(input: {
   contradictionFingerprints: readonly string[];
   enabled: boolean;
 }): { tier: ContradictionRoutingTier; reason: string } {
-  if (!input.enabled || (!input.contradictionPresent && input.contradictionFingerprints.length === 0)) {
+  if (
+    !input.enabled ||
+    (!input.contradictionPresent && input.contradictionFingerprints.length === 0)
+  ) {
     return {
       tier: "none",
       reason: "No retrieved contradiction signal.",
@@ -288,7 +291,11 @@ function fingerprintsForRoutingOverride(
     return uniqueSorted(routingOverride.contradictionFingerprints);
   }
 
-  if (routing === null || routing.contradictions.length === 0 || routingOverride.oqIds.length === 0) {
+  if (
+    routing === null ||
+    routing.contradictions.length === 0 ||
+    routingOverride.oqIds.length === 0
+  ) {
     return [];
   }
 

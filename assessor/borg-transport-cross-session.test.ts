@@ -67,6 +67,10 @@ function blockText(block: LLMContentBlock): string {
     return JSON.stringify(block.input);
   }
 
+  if (block.type === "image_ref") {
+    return block.attachment_id;
+  }
+
   return typeof block.content === "string"
     ? block.content
     : block.content.map((entry) => entry.text).join("\n");

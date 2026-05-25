@@ -253,8 +253,7 @@ describe("CorrectivePreferenceTurnService", () => {
       kind: "participant_preference",
       enforcementClass: "critical",
       criticalDomain: "explicit_no_disclosure",
-      directive:
-        "Do not disclose the deployment freeze discussion to the vendor channel.",
+      directive: "Do not disclose the deployment freeze discussion to the vendor channel.",
       directiveFamily: "e2e_explicit_no_disclosure_boundary",
       expectedEnforcementClass: "critical",
       expectedCriticalDomain: "explicit_no_disclosure",

@@ -2,6 +2,11 @@ import type { TurnTraceEventName } from "./tracer.js";
 
 export const TRACE_EVENT_TAXONOMY = {
   perception: [
+    "attachment.write",
+    "attachment.quarantine",
+    "attachment.fetch_for_ledger",
+    "attachment.rejected",
+    "attachment.blob_corrupted",
     "perception.started",
     "perception.completed",
     "perception.classifier.degraded",

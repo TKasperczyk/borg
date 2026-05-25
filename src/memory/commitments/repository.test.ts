@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createCommitmentId, createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createCommitmentId,
+  createSharedStateEntryId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -214,13 +218,7 @@ describe("commitment repository", () => {
         "channel_visibility",
         "Keep channel-only details out of public replies.",
       );
-      insert.run(
-        createCommitmentId(),
-        "rule",
-        "process_norm",
-        "skip_preamble",
-        "Skip preambles.",
-      );
+      insert.run(createCommitmentId(), "rule", "process_norm", "skip_preamble", "Skip preambles.");
       insert.run(
         createCommitmentId(),
         "preference",
@@ -758,17 +756,7 @@ describe("commitment repository", () => {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
-        .run(
-          commitmentId,
-          "rule",
-          "Keep the legacy rule.",
-          5,
-          "[]",
-          1,
-          "legacy_rule",
-          1,
-          "manual",
-        );
+        .run(commitmentId, "rule", "Keep the legacy rule.", 5, "[]", 1, "legacy_rule", 1, "manual");
       legacyDb.close();
 
       const db = openDatabase(dbPath, {

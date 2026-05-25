@@ -458,8 +458,9 @@ describe("review open-question extractor", () => {
 
     const matching = repository
       .list({ status: "open", limit: 200 })
-      .filter((question) =>
-        question.question === "Should the participant roster collapse Borg and assistant?",
+      .filter(
+        (question) =>
+          question.question === "Should the participant roster collapse Borg and assistant?",
       );
 
     expect(matching).toHaveLength(1);

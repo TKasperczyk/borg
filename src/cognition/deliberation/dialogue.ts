@@ -1,5 +1,6 @@
 // Converts recency-window dialogue and the current turn into LLM message shapes.
-import type { LLMContentBlockMessage, LLMMessage } from "../../llm/index.js";
+import type { BorgUserContentBlock } from "../../attachments/index.js";
+import type { LLMContentBlock, LLMContentBlockMessage, LLMMessage } from "../../llm/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 
 // Anthropic rejects requests where any text content block has empty
@@ -67,4 +68,60 @@ export function toContentBlockMessages(messages: readonly LLMMessage[]): LLMCont
       },
     ],
   }));
+}
+
+export function withCurrentUserContentBlocks(
+  messages: readonly LLMContentBlockMessage[],
+  currentUserContent: readonly BorgUserContentBlock[] | undefined,
+): LLMContentBlockMessage[] {
+  if (currentUserContent === undefined || currentUserContent.length <= 1 || messages.length === 0) {
+    return [...messages];
+  }
+
+  const next = messages.map((message) => ({
+    role: message.role,
+    content: [...message.content],
+  }));
+  const last = next[next.length - 1];
+
+  if (last === undefined || last.role !== "user") {
+    return next;
+  }
+
+  const content: LLMContentBlock[] = currentUserContent.map((block) =>
+    block.type === "text"
+      ? {
+          type: "text",
+          text: block.text.trim().length === 0 ? EMPTY_CONTENT_PLACEHOLDER : block.text,
+        }
+      : {
+          type: "image_ref",
+          attachment_id: block.attachment_id,
+        },
+  );
+
+  const currentText = content[0]?.type === "text" ? content[0].text : undefined;
+  const existingText =
+    last.content.length === 1 && last.content[0]?.type === "text"
+      ? last.content[0].text
+      : undefined;
+
+  if (
+    currentText !== undefined &&
+    existingText !== undefined &&
+    existingText !== currentText &&
+    existingText.endsWith(`${ADJACENT_MESSAGE_SEPARATOR}${currentText}`)
+  ) {
+    last.content = [
+      {
+        type: "text",
+        text: existingText.slice(0, -`${ADJACENT_MESSAGE_SEPARATOR}${currentText}`.length),
+      },
+      ...content,
+    ];
+    return next;
+  }
+
+  last.content = content;
+  return next;
 }

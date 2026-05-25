@@ -159,10 +159,7 @@ export function appendRecentSuppression(
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
   };
-  const next = capNewest(
-    [...(state.recent_suppressions ?? []), entry],
-    RECENT_SUPPRESSIONS_LIMIT,
-  );
+  const next = capNewest([...(state.recent_suppressions ?? []), entry], RECENT_SUPPRESSIONS_LIMIT);
 
   return {
     ...workingMemory,

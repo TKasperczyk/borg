@@ -419,6 +419,48 @@ describe("stream", () => {
     expect(scan.capReached).toBe("entries");
   });
 
+  it("scanReverse budgetFilter excludes entries from the entry budget but not byte scan", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        await writer.append({ kind: "user_msg", content: `narrative-${index}` });
+      }
+
+      for (let index = 0; index < 8; index += 1) {
+        await writer.append({
+          kind: "user_image_attachment",
+          content: { type: "image_ref", attachment_id: `att_attachment${index}` },
+        });
+      }
+    } finally {
+      writer.close();
+    }
+
+    const scan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      maxEntries: 5,
+      budgetFilter: (entry) => entry.kind !== "user_image_attachment",
+    });
+    const negativeControl = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      maxEntries: 5,
+    });
+
+    expect(scan.entries.filter((entry) => entry.kind === "user_msg")).toHaveLength(5);
+    expect(scan.entries.filter((entry) => entry.kind === "user_image_attachment")).toHaveLength(8);
+    expect(scan.scannedEntries).toBe(5);
+    expect(scan.scannedBytes).toBeGreaterThan(negativeControl.scannedBytes);
+    expect(negativeControl.entries.filter((entry) => entry.kind === "user_msg")).toHaveLength(0);
+  });
+
   it("parses entries that straddle the 64KB reverse-read chunk boundary", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

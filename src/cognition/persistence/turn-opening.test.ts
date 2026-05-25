@@ -29,25 +29,35 @@ function makePerception(): PerceptionResult {
 
 function makeStreamWriter(sequence: string[]) {
   const appended: StreamEntryInput[] = [];
-  const streamWriter: Pick<StreamWriter, "append"> = {
+  const buildEntry = (input: StreamEntryInput, index = 0): StreamEntry =>
+    ({
+      ...input,
+      id: input.kind === "user_msg" ? userEntryId : perceptionEntryId,
+      timestamp: input.kind === "user_msg" ? 1_000 : 1_001 + index,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: input.compressed ?? false,
+      turn_status: input.turn_status ?? activeTurnStatus,
+      sender_entity_id:
+        input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
+      reply_target_entity_id:
+        input.reply_target_entity_id === undefined
+          ? null
+          : (input.reply_target_entity_id as EntityId),
+    }) satisfies StreamEntry;
+  const streamWriter: Pick<StreamWriter, "append" | "appendMany"> = {
     append: async (input) => {
       sequence.push(`append:${input.kind}`);
       appended.push(input);
 
-      return {
-        ...input,
-        id: input.kind === "user_msg" ? userEntryId : perceptionEntryId,
-        timestamp: input.kind === "user_msg" ? 1_000 : 1_001,
-        session_id: DEFAULT_SESSION_ID,
-        compressed: input.compressed ?? false,
-        turn_status: input.turn_status ?? activeTurnStatus,
-        sender_entity_id:
-          input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
-        reply_target_entity_id:
-          input.reply_target_entity_id === undefined
-            ? null
-            : (input.reply_target_entity_id as EntityId),
-      } satisfies StreamEntry;
+      return buildEntry(input);
+    },
+    appendMany: async (inputs) => {
+      for (const input of inputs) {
+        sequence.push(`append:${input.kind}`);
+        appended.push(input);
+      }
+
+      return inputs.map((input, index) => buildEntry(input, index));
     },
   };
 

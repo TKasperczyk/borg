@@ -530,10 +530,14 @@ function sharedStateLastUpdatedTurnByStreamEntryId(input: {
   return turnCounterByStreamEntryId;
 }
 
-function streamEntryFromIndexedFacts(facts: IndexedEntryFacts): Pick<StreamEntry, "id" | "kind"> {
+function streamEntryFromIndexedFacts(
+  facts: IndexedEntryFacts,
+): Pick<StreamEntry, "id" | "kind" | "turn_status"> & { active: boolean } {
   return {
     id: facts.entry_id as StreamEntryId,
     kind: facts.kind ?? "internal_event",
+    turn_status: facts.turn_status ?? "active",
+    active: facts.active,
   };
 }
 
@@ -603,6 +607,7 @@ function createIndexedSourceTrustLookup(input: {
 function buildIndexedSharedStateSourceTrustValidator(input: {
   lookupFacts: (streamEntryIds: readonly StreamEntryId[]) => Map<StreamEntryId, IndexedEntryFacts>;
   quarantinedStreamEntryIds: ReadonlySet<StreamEntryId>;
+  isActiveAttachmentStreamEntry?: (streamEntryId: StreamEntryId) => boolean | null;
   onMissingIndexedStreamEntry?: (streamEntryId: StreamEntryId) => void;
 }) {
   const warnedStreamEntryIds = new Set<StreamEntryId>();
@@ -627,6 +632,17 @@ function buildIndexedSharedStateSourceTrustValidator(input: {
         allowed: false,
         reason: "inactive",
       } as const;
+    }
+
+    if (facts?.kind === "user_image_attachment") {
+      const active = input.isActiveAttachmentStreamEntry?.(streamEntryId);
+
+      if (active === false) {
+        return {
+          allowed: false,
+          reason: "inactive",
+        } as const;
+      }
     }
 
     return { allowed: true } as const;
@@ -729,6 +745,8 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
       : buildIndexedSharedStateSourceTrustValidator({
           lookupFacts: indexedSourceTrustLookup.lookup,
           quarantinedStreamEntryIds,
+          isActiveAttachmentStreamEntry: (streamEntryId) =>
+            input.options.attachmentRepository.isActiveForStreamEntry(streamEntryId),
           onMissingIndexedStreamEntry: (streamEntryId) => {
             console.warn(
               `Stream entry ${streamEntryId} was not found in the stream entry index during shared-state source trust validation`,
@@ -993,6 +1011,8 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
             ? currentSessionTrustEntries
             : [...sourceTrustFacts.values()].map(streamEntryFromIndexedFacts),
         isTrusted: (streamEntryId) => sourceTrustValidator(streamEntryId).allowed !== false,
+        isActiveAttachmentStreamEntry: (streamEntryId) =>
+          input.options.attachmentRepository.isActiveForStreamEntry(streamEntryId),
       }),
     canonicalizationCandidates,
     reconciliation: reconciliationRepositories,

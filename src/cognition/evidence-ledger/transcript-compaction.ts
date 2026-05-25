@@ -1,6 +1,4 @@
-import {
-  type TranscriptStreamEntry,
-} from "../../stream/index.js";
+import { type TranscriptStreamEntry } from "../../stream/index.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import type { SpeakerEntityRepository } from "../speaker-tags.js";
 import {

@@ -352,8 +352,8 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
   const structuralNoOutputFlags = structuralNoOutputFlagsForTrace(options, decision);
   const primaryNoOutputReason =
     decision.kind === "no_output"
-      ? decision.primary_no_output_reason ??
-        deriveFinalizerNoOutputPrimaryReason(decision.no_output_categories)
+      ? (decision.primary_no_output_reason ??
+        deriveFinalizerNoOutputPrimaryReason(decision.no_output_categories))
       : undefined;
 
   options.tracer.emit("finalizer.completed", {

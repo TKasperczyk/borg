@@ -475,6 +475,7 @@ describe("EvidenceLedgerBuilder", () => {
       expect(scanSpy).toHaveBeenCalledWith({
         maxEntries: 1_024,
         maxBytes: 8 * 1024 * 1024,
+        budgetFilter: expect.any(Function),
       });
       expect(
         ledger.sections

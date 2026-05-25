@@ -904,10 +904,7 @@ function validateSourcePrecedenceFinding(finding: OverseerFinding): string | nul
     return "Source-precedence findings must not use claim_status unsupported or contradicted.";
   }
 
-  if (
-    classification === "latest_user_correction_accepted" &&
-    finding.claim_status !== "grounded"
-  ) {
+  if (classification === "latest_user_correction_accepted" && finding.claim_status !== "grounded") {
     return "latest_user_correction_accepted findings must use claim_status grounded.";
   }
 

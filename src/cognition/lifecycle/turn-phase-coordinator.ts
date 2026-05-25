@@ -171,6 +171,12 @@ export class TurnPhaseCoordinator {
       streamWriter,
       turnId,
       userMessage: turnInput.userMessage,
+      attachments: turnInput.attachments,
+      persistAttachments: (attachmentInput) =>
+        this.options.attachmentService.persistTurnAttachments({
+          ...attachmentInput,
+          createdTurnGlobal: input.globalTurnCounter,
+        }),
       persistUserMessage: isUserTurn,
       audience: turnInput.audience,
       senderEntityId: turnInput.senderEntityId,
@@ -183,6 +189,7 @@ export class TurnPhaseCoordinator {
     });
     const persistedUserEntry = openingPersistence.persistedUserEntry;
     const persistedUserEntryId = persistedUserEntry?.id;
+    const currentUserContent = openingPersistence.currentUserContent;
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
     const activeParticipantLimit = this.options.config.generation.activeParticipantLimit;
@@ -421,6 +428,7 @@ export class TurnPhaseCoordinator {
       streamWriter,
       audienceEntityId,
       persistedUserEntryId,
+      currentUserContent,
       perception,
       workingMemory,
       activeParticipants,

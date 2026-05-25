@@ -19,6 +19,7 @@ export type SyncRelationshipEvidenceStreamEntryTrustValidator = (
 export function createUserStreamEntryRelationshipEvidenceTrustValidator(options: {
   entryIndex: Pick<StreamEntryIndexRepository, "lookup">;
   createStreamReader: (sessionId: SessionId) => StreamReader;
+  isActiveAttachmentStreamEntry?: (streamEntryId: StreamEntryId) => boolean | null;
 }): RelationshipEvidenceStreamEntryTrustValidator {
   const cache = new Map<StreamEntryId, RelationshipEvidenceStreamEntryTrustResult>();
 
@@ -37,6 +38,21 @@ export function createUserStreamEntryRelationshipEvidenceTrustValidator(options:
       return result;
     }
 
+    if (indexed.active === false || indexed.turn_status === "aborted") {
+      const result = { allowed: false, reason: "untrusted" } as const;
+      cache.set(streamEntryId, result);
+      return result;
+    }
+
+    if (
+      indexed.kind === "user_image_attachment" &&
+      options.isActiveAttachmentStreamEntry?.(streamEntryId) === false
+    ) {
+      const result = { allowed: false, reason: "untrusted" } as const;
+      cache.set(streamEntryId, result);
+      return result;
+    }
+
     for await (const entry of options.createStreamReader(indexed.session_id).iterate({
       sinceTs: indexed.timestamp,
       untilTs: indexed.timestamp,
@@ -46,7 +62,7 @@ export function createUserStreamEntryRelationshipEvidenceTrustValidator(options:
       }
 
       const result =
-        entry.kind === "user_msg"
+        entry.kind === "user_msg" || entry.kind === "user_image_attachment"
           ? ({ allowed: true } as const)
           : ({ allowed: false, reason: "not_user_msg" } as const);
       cache.set(streamEntryId, result);
@@ -60,8 +76,12 @@ export function createUserStreamEntryRelationshipEvidenceTrustValidator(options:
 }
 
 export function createLoadedUserStreamEntryRelationshipEvidenceTrustValidator(options: {
-  entries: readonly Pick<StreamEntry, "id" | "kind">[];
+  entries: readonly (Pick<StreamEntry, "id" | "kind"> & {
+    active?: boolean;
+    turn_status?: StreamEntry["turn_status"];
+  })[];
   isTrusted?: (streamEntryId: StreamEntryId) => boolean;
+  isActiveAttachmentStreamEntry?: (streamEntryId: StreamEntryId) => boolean | null;
 }): SyncRelationshipEvidenceStreamEntryTrustValidator {
   const entriesById = new Map(options.entries.map((entry) => [entry.id, entry]));
 
@@ -82,7 +102,24 @@ export function createLoadedUserStreamEntryRelationshipEvidenceTrustValidator(op
       };
     }
 
-    return entry.kind === "user_msg"
+    if (entry.active === false || entry.turn_status === "aborted") {
+      return {
+        allowed: false,
+        reason: "untrusted",
+      };
+    }
+
+    if (
+      entry.kind === "user_image_attachment" &&
+      options.isActiveAttachmentStreamEntry?.(streamEntryId) === false
+    ) {
+      return {
+        allowed: false,
+        reason: "untrusted",
+      };
+    }
+
+    return entry.kind === "user_msg" || entry.kind === "user_image_attachment"
       ? { allowed: true }
       : {
           allowed: false,

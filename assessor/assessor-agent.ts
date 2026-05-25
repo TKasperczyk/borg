@@ -52,8 +52,7 @@ const readTraceInputSchema = z.object({
   phase: z
     .custom<TracePhase>(
       (value) =>
-        typeof value === "string" &&
-        TRACE_TAXONOMY_PHASES_WITH_OTHER.includes(value as TracePhase),
+        typeof value === "string" && TRACE_TAXONOMY_PHASES_WITH_OTHER.includes(value as TracePhase),
       "Invalid trace phase",
     )
     .optional(),

@@ -519,7 +519,10 @@ describe("post-generation guard shadow chain", () => {
       kind: "message",
       content: response,
     });
-    expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard.completed", expect.any(Object));
+    expect(emit).not.toHaveBeenCalledWith(
+      "internal_identifier_guard.completed",
+      expect.any(Object),
+    );
   });
 
   it("suppresses prompt-visible discourse-state UUID turn IDs after closure guard passes", async () => {

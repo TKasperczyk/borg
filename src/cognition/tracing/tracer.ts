@@ -6,6 +6,11 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
 
 export type TurnTraceEventName =
+  | "attachment.write"
+  | "attachment.quarantine"
+  | "attachment.fetch_for_ledger"
+  | "attachment.rejected"
+  | "attachment.blob_corrupted"
   | "perception.started"
   | "perception.completed"
   | "perception.classifier.degraded"

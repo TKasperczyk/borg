@@ -2,11 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/tracing/tracer.js";
+import type {
+  TurnTraceData,
+  TurnTraceEventName,
+  TurnTracer,
+} from "../../cognition/tracing/tracer.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
 import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
-import { createEpisodeFixture, createOfflineTestHarness, createSemanticNodeFixture } from "../test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+} from "../test-support.js";
 import { ReviewResolverProcess } from "./index.js";
 
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
@@ -129,9 +137,7 @@ async function enqueueSemanticMisattribution(
     }),
   );
   const patch = {
-    ...(options.descriptionPatch === undefined
-      ? {}
-      : { description: options.descriptionPatch }),
+    ...(options.descriptionPatch === undefined ? {} : { description: options.descriptionPatch }),
     ...(options.aliasesPatch === undefined ? {} : { aliases: options.aliasesPatch }),
     ...(options.sourceEpisodeIdsPatch === undefined
       ? {}
@@ -699,11 +705,11 @@ describe("review resolver process", () => {
 
     expect(open?.resolved_at).toBeNull();
     expect(result.errors).toHaveLength(1);
-    expect(
-      tracer.events.find((event) => event.event === "review_resolver.degraded"),
-    ).toMatchObject({
-      review_id: item.id,
-    });
+    expect(tracer.events.find((event) => event.event === "review_resolver.degraded")).toMatchObject(
+      {
+        review_id: item.id,
+      },
+    );
   });
 
   it("fails open when the repair handler rejects the accepted repair", async () => {
@@ -732,12 +738,12 @@ describe("review resolver process", () => {
 
     expect(open?.resolved_at).toBeNull();
     expect(result.errors).toHaveLength(1);
-    expect(
-      tracer.events.find((event) => event.event === "review_resolver.degraded"),
-    ).toMatchObject({
-      review_id: item.id,
-      reason: "repair handler failed",
-    });
+    expect(tracer.events.find((event) => event.event === "review_resolver.degraded")).toMatchObject(
+      {
+        review_id: item.id,
+        reason: "repair handler failed",
+      },
+    );
   });
 
   it("rolls back semantic supersede when review queue finalization fails", async () => {
@@ -754,10 +760,7 @@ describe("review resolver process", () => {
     });
     const originalPrepare = harness.db.prepare.bind(harness.db);
     vi.spyOn(harness.db, "prepare").mockImplementation((sql: string) => {
-      if (
-        sql.indexOf("UPDATE review_queue") >= 0 &&
-        sql.indexOf("resolved_at = ?") >= 0
-      ) {
+      if (sql.indexOf("UPDATE review_queue") >= 0 && sql.indexOf("resolved_at = ?") >= 0) {
         return {
           run() {
             throw new Error("queue update failed");

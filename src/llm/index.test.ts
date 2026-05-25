@@ -835,13 +835,11 @@ describe("llm", () => {
 
   it("routes requests through ANTHROPIC_BASE_URL when set", async () => {
     const requestedUrls: string[] = [];
-    const fetchMock = vi.fn(
-      async (input: Parameters<typeof fetch>[0]) => {
-        const url = input instanceof Request ? input.url : String(input);
-        requestedUrls.push(url);
-        return jsonResponse(createMessageBody());
-      },
-    );
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const url = input instanceof Request ? input.url : String(input);
+      requestedUrls.push(url);
+      return jsonResponse(createMessageBody());
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AnthropicLLMClient({
@@ -1160,6 +1158,61 @@ describe("llm", () => {
       input_tokens: 12,
       output_tokens: 7,
       stop_reason: "tool_use",
+    });
+  });
+
+  it("translates image_ref blocks to Anthropic base64 image blocks", async () => {
+    const create = vi.fn().mockResolvedValue(
+      createMessageBody({
+        content: [{ type: "text", text: "seen", citations: null }],
+      }),
+    );
+    const attachmentBytes = Buffer.from("image-bytes");
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+      attachmentResolver: (attachmentId) => {
+        expect(attachmentId).toBe("att_aaaaaaaaaaaaaaaa");
+        return {
+          mediaType: "image/png",
+          bytes: attachmentBytes,
+        };
+      },
+    });
+
+    await client.converse({
+      model: "claude-sonnet-4-5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image_ref", attachment_id: "att_aaaaaaaaaaaaaaaa" as never },
+          ],
+        },
+      ],
+      max_tokens: 128,
+      budget: "test",
+    });
+
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: attachmentBytes.toString("base64"),
+              },
+            },
+            { type: "text", text: "describe this" },
+          ],
+        },
+      ],
     });
   });
 

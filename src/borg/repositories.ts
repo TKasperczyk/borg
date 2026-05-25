@@ -1,6 +1,7 @@
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
 import { AutonomyWakesRepository } from "../autonomy/index.js";
+import type { AttachmentRepository } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
 import { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -97,6 +98,7 @@ export type BorgRepositorySetup = Pick<
   | "retrievalPipeline"
   | "workingMemoryStore"
   | "autonomyWakesRepository"
+  | "attachmentRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -113,6 +115,8 @@ export type BuildBorgRepositoriesOptions = {
   llmClient: LLMClient;
   clock: Clock;
   tracer?: TurnTracer;
+  attachmentRepository: AttachmentRepository;
+  entryIndex?: StreamEntryIndexRepository;
 };
 
 export async function buildBorgRepositories(
@@ -130,13 +134,16 @@ export async function buildBorgRepositories(
   });
   await episodicRepository.reconcileCrossStoreState();
 
-  const entryIndex = new StreamEntryIndexRepository({
-    db: sqlite,
-    dataDir: config.dataDir,
-  });
+  const entryIndex =
+    options.entryIndex ??
+    new StreamEntryIndexRepository({
+      db: sqlite,
+      dataDir: config.dataDir,
+    });
   await backfillStreamEntryIndex({
     dataDir: config.dataDir,
     entryIndex,
+    attachmentRepository: options.attachmentRepository,
   });
 
   const createStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
@@ -452,6 +459,7 @@ export async function buildBorgRepositories(
     retrievalPipeline,
     workingMemoryStore,
     autonomyWakesRepository,
+    attachmentRepository: options.attachmentRepository,
     createStreamWriter,
   };
 }

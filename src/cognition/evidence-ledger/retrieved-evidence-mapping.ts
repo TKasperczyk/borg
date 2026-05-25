@@ -7,9 +7,7 @@ import {
 } from "./scope-resolver.js";
 import type { EvidenceLedgerSessionScope, EvidenceLedgerSourceType } from "./types.js";
 
-export function rawStreamSourceType(
-  scope: EvidenceLedgerSessionScope,
-): EvidenceLedgerSourceType {
+export function rawStreamSourceType(scope: EvidenceLedgerSessionScope): EvidenceLedgerSourceType {
   if (scope === "current_session") {
     return "current_session_stream";
   }

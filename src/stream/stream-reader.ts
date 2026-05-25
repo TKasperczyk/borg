@@ -26,6 +26,7 @@ export type StreamReverseScanOptions = {
   maxEntries?: number;
   maxBytes?: number;
   filter?: (entry: StreamEntry) => boolean;
+  budgetFilter?: (entry: StreamEntry) => boolean;
   stop?: (entries: StreamEntry[]) => boolean;
 };
 
@@ -361,7 +362,11 @@ export class StreamReader {
           return;
         }
 
-        scannedEntries += 1;
+        const countsTowardEntryBudget = options.budgetFilter?.(entry) ?? true;
+
+        if (countsTowardEntryBudget) {
+          scannedEntries += 1;
+        }
 
         if (options.filter === undefined || options.filter(entry)) {
           entries.push(entry);
@@ -372,7 +377,7 @@ export class StreamReader {
           }
         }
 
-        if (scannedEntries >= maxEntries) {
+        if (countsTowardEntryBudget && scannedEntries >= maxEntries) {
           capReached = "entries";
           shouldStop = true;
         }

@@ -83,7 +83,7 @@ export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   "Impossible Borg-owned capabilities unless this host explicitly wires them:",
   ...renderCapabilities("impossible"),
   "",
-  "Conversation memory is internal shared state: if someone says \"the log\" here, treat that as Borg's in-channel memory unless a host-provided document tool exists. Do not promise an external shareable link, exportable document, or editable log; if a user asks for a log/doc link, clarify the distinction and offer current-turn text they can put somewhere.",
+  'Conversation memory is internal shared state: if someone says "the log" here, treat that as Borg\'s in-channel memory unless a host-provided document tool exists. Do not promise an external shareable link, exportable document, or editable log; if a user asks for a log/doc link, clarify the distinction and offer current-turn text they can put somewhere.',
   "",
   "Reactive wording for future surfacing:",
   '- Prefer "When you next bring this back here, I\'ll surface X" or "When someone asks about X in this channel again, I\'ll mention Y".',

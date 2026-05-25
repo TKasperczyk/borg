@@ -106,9 +106,7 @@ function relationshipSourceForSlot(slot: Pick<RelationalSlot, "id">): string {
   return `relational_slot:${slot.id}`;
 }
 
-function relationshipTextForSlot(
-  slot: Pick<RelationalSlot, "slot_key" | "value">,
-): string {
+function relationshipTextForSlot(slot: Pick<RelationalSlot, "slot_key" | "value">): string {
   return `${slot.slot_key}:${slot.value}`;
 }
 
@@ -164,7 +162,8 @@ export function buildParticipantRoster(input: BuildParticipantRosterInput): Part
   for (const participant of input.activeParticipants) {
     const existing = participantRecords.get(participant.entityId);
     const displayName =
-      participant.displayName ?? displayNameForEntityId(input.entityRepository, participant.entityId);
+      participant.displayName ??
+      displayNameForEntityId(input.entityRepository, participant.entityId);
 
     if (existing !== undefined) {
       if (existing.audience_role !== "speaker" && participant.role === "speaker") {
@@ -218,7 +217,9 @@ export function buildParticipantRoster(input: BuildParticipantRosterInput): Part
     if (subjectParticipant !== undefined) {
       pushUnique(subjectParticipant.known_relationships, relationship);
       pushUnique(subjectParticipant.relationship_sources, source);
-      subjectParticipant.relationship_source = primarySource(subjectParticipant.relationship_sources);
+      subjectParticipant.relationship_source = primarySource(
+        subjectParticipant.relationship_sources,
+      );
     } else {
       const subjectEntity = input.entityRepository.get(slot.subject_entity_id);
 
@@ -291,13 +292,15 @@ export function buildParticipantRoster(input: BuildParticipantRosterInput): Part
   }
 
   return {
-    participants: [...participantRecords.values()].map(({ relationship_sources: _, ...record }) => ({
-      ...record,
-      relationship_sources: [..._],
-      known_relationships: [...record.known_relationships].sort((left, right) =>
-        left.localeCompare(right),
-      ),
-    })),
+    participants: [...participantRecords.values()].map(
+      ({ relationship_sources: _, ...record }) => ({
+        ...record,
+        relationship_sources: [..._],
+        known_relationships: [...record.known_relationships].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+      }),
+    ),
     non_chat_subjects: [...nonChatRecords.values()].map(
       ({ relationship_sources: _, ...record }) => ({
         ...record,
@@ -330,21 +333,19 @@ export function buildParticipantRosterFromRepositories(
   const slotsById = new Map<RelationalSlot["id"], RelationalSlot>();
 
   for (const subjectEntityId of scopedEntityIds) {
-    for (const slot of
-      input.relationalSlotRepository?.list({
-        subjectEntityId,
-        states: ROSTER_SLOT_STATES,
-        limit: slotLimit,
-      }) ?? []) {
+    for (const slot of input.relationalSlotRepository?.list({
+      subjectEntityId,
+      states: ROSTER_SLOT_STATES,
+      limit: slotLimit,
+    }) ?? []) {
       slotsById.set(slot.id, slot);
     }
   }
 
-  for (const slot of
-    input.relationalSlotRepository?.list({
-      states: ROSTER_SLOT_STATES,
-      limit: slotLimit,
-    }) ?? []) {
+  for (const slot of input.relationalSlotRepository?.list({
+    states: ROSTER_SLOT_STATES,
+    limit: slotLimit,
+  }) ?? []) {
     if (
       relationalSlotScopesToRoster({
         slot,
@@ -381,7 +382,9 @@ function renderParts(parts: readonly (string | null)[]): string {
   return parts.filter((part): part is string => part !== null).join("; ");
 }
 
-export function renderParticipantRoster(roster: ParticipantRoster | null | undefined): string | null {
+export function renderParticipantRoster(
+  roster: ParticipantRoster | null | undefined,
+): string | null {
   if (
     roster === null ||
     roster === undefined ||
@@ -444,7 +447,9 @@ export function participantRosterRelationalSlotIds(
 
   for (const source of [
     ...(roster?.participants ?? []).map((participant) => participant.relationship_source),
-    ...(roster?.participants ?? []).flatMap((participant) => participant.relationship_sources ?? []),
+    ...(roster?.participants ?? []).flatMap(
+      (participant) => participant.relationship_sources ?? [],
+    ),
     ...(roster?.non_chat_subjects ?? []).map((subject) => subject.relationship_source),
     ...(roster?.non_chat_subjects ?? []).flatMap((subject) => subject.relationship_sources ?? []),
   ]) {

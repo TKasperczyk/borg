@@ -1,13 +1,7 @@
-import {
-  isQuarantinedUserEntryMarker,
-} from "../../../stream/index.js";
+import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
 import type { BuilderSectionContext } from "../builder-context.js";
-import {
-  QUARANTINE_TRUST_RANK,
-  addEntry,
-  cappedTrustRank,
-} from "../section-buckets.js";
+import { QUARANTINE_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import {
   persistenceClassFromProvenance,
   reviewQueueScope,

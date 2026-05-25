@@ -448,6 +448,10 @@ function countBlockChars(block: LLMContentBlock): number {
     return block.name.length + (JSON.stringify(block.input) ?? "").length;
   }
 
+  if (block.type === "image_ref") {
+    return block.attachment_id.length;
+  }
+
   const content =
     typeof block.content === "string"
       ? block.content

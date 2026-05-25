@@ -3,6 +3,7 @@
 import { join } from "node:path";
 
 import { autonomyMigrations } from "../autonomy/index.js";
+import { attachmentMigrations } from "../attachments/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "../config/index.js";
 import { executiveMigrations } from "../executive/index.js";
 import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
@@ -75,6 +76,10 @@ export function resolveBorgConfig(options: {
     procedural: {
       ...DEFAULT_CONFIG.procedural,
       ...(rawConfig as Partial<Config>).procedural,
+    },
+    attachments: {
+      ...DEFAULT_CONFIG.attachments,
+      ...(rawConfig as Partial<Config>).attachments,
     },
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,
@@ -210,6 +215,7 @@ export function createMigrations(): Migration[] {
     autonomyMigrations,
     streamWatermarkMigrations,
     streamEntryIndexMigrations,
+    attachmentMigrations,
   );
 }
 

@@ -309,6 +309,10 @@ function flattenMessageBlocksForCompatibility(blocks: readonly LLMContentBlock[]
         return `[tool_use ${block.name}]`;
       }
 
+      if (block.type === "image_ref") {
+        return `[image_ref ${block.attachment_id}]`;
+      }
+
       return flattenBlockContentForCompatibility(block.content);
     })
     .join("");

@@ -68,10 +68,7 @@ export type AffectiveExtractorOptions = {
   onDegraded?: (reason: AffectiveExtractorDegradedReason, error?: unknown) => Promise<void> | void;
 };
 
-export type AffectiveExtractorDegradedReason =
-  | "llm_disabled"
-  | "llm_unavailable"
-  | "llm_failed";
+export type AffectiveExtractorDegradedReason = "llm_disabled" | "llm_unavailable" | "llm_failed";
 
 export class AffectiveExtractor {
   private readonly llmEnabled: boolean;

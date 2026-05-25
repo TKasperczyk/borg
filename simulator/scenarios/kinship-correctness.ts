@@ -99,10 +99,7 @@ function beatBlock(arc: KinshipCorrectnessArc, beat: PersonaArcBeat): PersonaBea
   };
 }
 
-function renderBeatsForPersona(
-  personaKey: string,
-  arcs: readonly KinshipCorrectnessArc[],
-): string {
+function renderBeatsForPersona(personaKey: string, arcs: readonly KinshipCorrectnessArc[]): string {
   const blocks = arcs.flatMap((arc) =>
     arc.beats.filter((beat) => beat.speakerKey === personaKey).map((beat) => beatBlock(arc, beat)),
   );

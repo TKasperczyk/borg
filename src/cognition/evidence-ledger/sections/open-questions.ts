@@ -8,11 +8,7 @@ import {
   relevantOpenQuestionEpisodeIds,
   relevantOpenQuestionStreamIds,
 } from "../open-question-handles.js";
-import {
-  OPEN_QUESTION_TRUST_RANK,
-  addEntry,
-  cappedTrustRank,
-} from "../section-buckets.js";
+import { OPEN_QUESTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 
 export function addOpenQuestionsSection(context: BuilderSectionContext): void {

@@ -329,10 +329,7 @@ export function addAttributionMatrixSection(context: BuilderSectionContext): voi
       actor: "system",
       trust_rank: Math.max(ACTION_TRUST_RANK, COMMITMENT_TRUST_RANK, OPEN_QUESTION_TRUST_RANK),
       value: "Group / Channel",
-      text: [
-        "### Group / Channel",
-        `- group decisions/records: ${formatIds(groupIds)}`,
-      ].join("\n"),
+      text: ["### Group / Channel", `- group decisions/records: ${formatIds(groupIds)}`].join("\n"),
       state: "attribution_matrix_group_channel",
       taint: "none",
     });
@@ -364,9 +361,7 @@ function sidebarAssistantText(entries: readonly TranscriptStreamEntry[]): string
   return ["### Borg / Assistant", ...entries.map(sidebarLine)].join("\n");
 }
 
-export function addCurrentSessionAttributionSidebarSection(
-  context: BuilderSectionContext,
-): void {
+export function addCurrentSessionAttributionSidebarSection(context: BuilderSectionContext): void {
   const participants = attributionParticipants(context);
 
   if (participants.length <= 1) {
@@ -398,10 +393,7 @@ export function addCurrentSessionAttributionSidebarSection(
     });
   }
 
-  const assistantEntries = lastItems(
-    assistantMessageEntries(entries),
-    SIDEBAR_ENTRIES_PER_BUCKET,
-  );
+  const assistantEntries = lastItems(assistantMessageEntries(entries), SIDEBAR_ENTRIES_PER_BUCKET);
 
   if (assistantEntries.length === 0) {
     return;

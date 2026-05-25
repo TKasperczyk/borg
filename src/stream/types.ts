@@ -13,6 +13,7 @@ import {
 
 export const STREAM_ENTRY_KINDS = [
   "user_msg",
+  "user_image_attachment",
   "agent_msg",
   "agent_suppressed",
   "agent_observed",

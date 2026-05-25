@@ -826,14 +826,17 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       [currentSourceEntryId]: 30,
     });
 
-    const summary = summarizeSharedStateArtifactRender(sharedStateRepository.get(audienceEntityId), {
-      ...result.renderOptions,
-      maxEntries: 1,
-      reservedSlots: {
-        live: 0,
+    const summary = summarizeSharedStateArtifactRender(
+      sharedStateRepository.get(audienceEntityId),
+      {
+        ...result.renderOptions,
+        maxEntries: 1,
+        reservedSlots: {
+          live: 0,
+        },
+        newestStateChangeReservedSlots: 0,
       },
-      newestStateChangeReservedSlots: 0,
-    });
+    );
 
     expect(summary.renderedEntryIds).not.toContain(legacyEntryId);
     expect(summary.omittedLiveUnknownAge).toBe(1);

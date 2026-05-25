@@ -15,10 +15,7 @@ import {
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import {
-  type LLMContentBlockMessage,
-  type LLMConverseOptions,
-} from "../../llm/index.js";
+import { type LLMContentBlockMessage, type LLMConverseOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { executeToolLoop } from "./tool-loop.js";
 

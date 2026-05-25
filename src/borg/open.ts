@@ -1,11 +1,16 @@
 // Borg.open composition root: orders storage, repositories, tools, offline work, turns, and autonomy.
 
 import { SystemClock } from "../util/clock.js";
+import {
+  AttachmentBlobStore,
+  AttachmentRepository,
+  AttachmentService,
+} from "../attachments/index.js";
 import { SessionLock } from "../cognition/index.js";
 import { createTurnTracer } from "../cognition/tracing/tracer.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
-import { StreamWatermarkRepository } from "../stream/index.js";
+import { StreamEntryIndexRepository, StreamWatermarkRepository } from "../stream/index.js";
 import { buildAutonomyScheduler } from "./autonomy-setup.js";
 import { buildMaintenanceScheduler } from "./maintenance-setup.js";
 import { createEmbeddingClient, createLazyLlmClient, createLlmFactory } from "./clients.js";
@@ -44,8 +49,26 @@ export async function openBorgDependencies(
       lance,
       embeddingDimensions: options.embeddingDimensions ?? config.embedding.dims,
     });
+    const attachmentRepository = new AttachmentRepository(sqlite);
+    const entryIndex = new StreamEntryIndexRepository({
+      db: sqlite,
+      dataDir: config.dataDir,
+    });
+    const attachmentService = new AttachmentService({
+      repository: attachmentRepository,
+      blobStore: new AttachmentBlobStore(config.dataDir),
+      config: config.attachments,
+      entryIndex,
+      tracer,
+    });
     const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
-    const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
+    const llmFactory = createLlmFactory(
+      config,
+      options.llmClient,
+      options.env,
+      clock,
+      attachmentService,
+    );
     const lazyLlmClient = createLazyLlmClient(llmFactory);
     const repositories = await buildBorgRepositories({
       config,
@@ -59,6 +82,8 @@ export async function openBorgDependencies(
       llmClient: lazyLlmClient,
       clock,
       tracer,
+      attachmentRepository,
+      entryIndex,
     });
     const sessionLock = new SessionLock({
       dataDir: config.dataDir,
@@ -156,6 +181,8 @@ export async function openBorgDependencies(
       streamIngestionCoordinator,
       createStreamWriter: repositories.createStreamWriter,
       entryIndex: repositories.entryIndex,
+      attachmentService,
+      attachmentRepository,
       clock,
       tracer,
     });
@@ -189,6 +216,8 @@ export async function openBorgDependencies(
       sqlite,
       lance,
       entryIndex: repositories.entryIndex,
+      attachmentRepository,
+      attachmentService,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,

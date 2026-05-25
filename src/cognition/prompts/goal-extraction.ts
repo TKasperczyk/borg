@@ -23,7 +23,7 @@ export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "",
   "Examples:",
   "- Coding: track refactor decisions across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility; Borg will monitor p95 -> impossible_for_borg_without_capability.",
-  '- Relationships: help me keep job-search context across sessions -> durable_borg_goal; my goal is to get a job -> not_borg_responsibility; send one message -> one_off; friend will respond -> not_borg_responsibility.',
+  "- Relationships: help me keep job-search context across sessions -> durable_borg_goal; my goal is to get a job -> not_borg_responsibility; send one message -> one_off; friend will respond -> not_borg_responsibility.",
   "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility; Borg will attend in person or make payments -> impossible_for_borg_without_capability.",
   "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg memory/conversation responsibilities, not external monitoring.",
 ].join("\n");

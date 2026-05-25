@@ -104,7 +104,10 @@ function buildContradictionRouting(
     };
     const existing = byFingerprint.get(fingerprint);
 
-    byFingerprint.set(fingerprint, existing === undefined ? next : mergeContradictions(existing, next));
+    byFingerprint.set(
+      fingerprint,
+      existing === undefined ? next : mergeContradictions(existing, next),
+    );
   }
 
   return {
@@ -115,7 +118,10 @@ function buildContradictionRouting(
 }
 
 function contradictionFingerprint(edgeId: string | undefined, nodeIds: readonly string[]): string {
-  const handles = [...(edgeId === undefined ? [] : [`edge:${edgeId}`]), ...nodeIds.map((id) => `node:${id}`)]
+  const handles = [
+    ...(edgeId === undefined ? [] : [`edge:${edgeId}`]),
+    ...nodeIds.map((id) => `node:${id}`),
+  ]
     .sort()
     .join("|");
 
@@ -152,7 +158,10 @@ function mergeContradictions(
       : { edgeId: left.edgeId ?? right.edgeId }),
     nodeIds: uniqueSorted([...left.nodeIds, ...right.nodeIds]),
     sourceEpisodeIds: uniqueSorted([...left.sourceEpisodeIds, ...right.sourceEpisodeIds]),
-    validUntil: left.validUntil === null || right.validUntil === null ? null : left.validUntil ?? right.validUntil,
+    validUntil:
+      left.validUntil === null || right.validUntil === null
+        ? null
+        : (left.validUntil ?? right.validUntil),
     sessionScope: mergeSessionScope(left.sessionScope, right.sessionScope),
     linkedOpenQuestionIds: uniqueSorted([
       ...left.linkedOpenQuestionIds,

@@ -10,7 +10,11 @@ import {
   DEFAULT_SEMANTIC_CONTEXT_BUDGET,
 } from "./constants.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
-import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
+import {
+  buildDialogueMessages,
+  toContentBlockMessages,
+  withCurrentUserContentBlocks,
+} from "./dialogue.js";
 import { runFinalizer, type FinalizerResult } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
@@ -423,7 +427,10 @@ export class Deliberator {
     ];
 
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
-    const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
+    const dialogueBlockMessages = withCurrentUserContentBlocks(
+      toContentBlockMessages(dialogueMessages),
+      context.currentUserContent,
+    );
     const thinking = cognitionThinkingOption(this.options);
 
     if (decision.path === "system_1") {

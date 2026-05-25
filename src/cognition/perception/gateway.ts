@@ -66,9 +66,7 @@ export class PerceptionGateway {
 
   beginTurn(input: PerceptionGatewayBeginInput): PreparedPerceptionGateway {
     const optionalPerceptionLlm =
-      this.options.config.perception.llmEnabled === true
-        ? this.getOptionalLlmClient()
-        : undefined;
+      this.options.config.perception.llmEnabled === true ? this.getOptionalLlmClient() : undefined;
     const perceiver = new Perceiver({
       llmClient: optionalPerceptionLlm,
       model: this.options.config.anthropic.models.background,

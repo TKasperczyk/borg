@@ -15,11 +15,7 @@ import type { ActiveParticipant } from "../participants.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeTraceValueShape,
-  toTraceJsonValue,
-  type TurnTracer,
-} from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   traceLlmCallError,
   traceLlmCallResponse,

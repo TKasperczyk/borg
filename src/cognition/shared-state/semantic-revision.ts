@@ -4,10 +4,7 @@ import {
   isEpisodeVisibleToAudience,
   type EpisodicRepository,
 } from "../../memory/episodic/index.js";
-import type {
-  SemanticNode,
-  SemanticNodeSearchCandidate,
-} from "../../memory/semantic/index.js";
+import type { SemanticNode, SemanticNodeSearchCandidate } from "../../memory/semantic/index.js";
 import {
   markSemanticContradicted,
   markSemanticSuperseded,

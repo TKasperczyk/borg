@@ -151,6 +151,12 @@ export class AutonomyError extends BorgError {
   }
 }
 
+export class AttachmentError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_ATTACHMENT_ERROR", message, options);
+  }
+}
+
 export class SessionBusyError extends BorgError {
   constructor(message: string, options: BorgTypedErrorOptions = {}) {
     super(options.code ?? "BORG_SESSION_BUSY", message, options);

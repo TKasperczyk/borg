@@ -782,9 +782,7 @@ describe("applyLifecycleAging", () => {
   it("caps unknown-age samples at the first 10 entries by deterministic sort order", () => {
     const entries = Array.from({ length: 12 }, (_, index) =>
       makeSharedStateEntry({
-        id: sharedStateEntryIdHelpers.parse(
-          `dart_00000000000000${String(index).padStart(2, "0")}`,
-        ),
+        id: sharedStateEntryIdHelpers.parse(`dart_00000000000000${String(index).padStart(2, "0")}`),
         kind: "live",
         state_key: `unknown.${index}`,
         rank: 12 - index,

@@ -267,13 +267,13 @@ function promptPayload(input: {
       verdict_criteria: {
         accept_repair: [
           "The overseer's flag claim is correct.",
-        "The proposed patch is well-formed.",
-        "Applying it would produce a verifiably better memory state than current.",
-        "The decision cites at least one source_bundle.source_entries item whose entry is present and whose taint is none.",
-        "The repair is supported by evidence above assistant outputs in the evidence hierarchy, or by a mixed bundle that does not rely on the assistant output under review as independent support.",
-        "Do not cite stream ids that are missing from the supplied source bundle as support for accept_repair.",
-        "Example: a target says Alice wrote a deployment script, source entries clearly say Ben wrote it, and the patch surgically corrects that attribution.",
-      ],
+          "The proposed patch is well-formed.",
+          "Applying it would produce a verifiably better memory state than current.",
+          "The decision cites at least one source_bundle.source_entries item whose entry is present and whose taint is none.",
+          "The repair is supported by evidence above assistant outputs in the evidence hierarchy, or by a mixed bundle that does not rely on the assistant output under review as independent support.",
+          "Do not cite stream ids that are missing from the supplied source bundle as support for accept_repair.",
+          "Example: a target says Alice wrote a deployment script, source entries clearly say Ben wrote it, and the patch surgically corrects that attribution.",
+        ],
         dismiss_false_positive: [
           "The source bundle does not actually contradict the target.",
           "Example: the target says Alice reviewed a deployment script and the source confirms Alice reviewed it.",
@@ -323,10 +323,8 @@ function vectorDuplicatePromptPayload(input: {
           "Use only when the two nodes are meaning-compatible duplicates. The resolver will supersede one node with the other using metadata-only winner selection.",
         dismiss_false_positive:
           "Use when the nodes are nearby in vector space but represent meaningfully different memories.",
-        reject_malformed:
-          "Use when the refs or node records are broken.",
-        needs_manual:
-          "Use when compatibility is unclear or the merge requires human judgment.",
+        reject_malformed: "Use when the refs or node records are broken.",
+        needs_manual: "Use when compatibility is unclear or the merge requires human judgment.",
       },
       review: sanitizeRecord(input.item),
       vector_match: sanitizeRecord(input.loaded.refs),
@@ -729,9 +727,7 @@ function acceptRepairCitationFailure(input: {
     return null;
   }
 
-  if (
-    input.verdict.support_basis === "assistant_output_under_review"
-  ) {
+  if (input.verdict.support_basis === "assistant_output_under_review") {
     return "tainted_assistant_output_under_review_cannot_independently_support_claim";
   }
 
@@ -788,10 +784,7 @@ function decisionFromVerdict(input: {
     };
   }
 
-  if (
-    input.item.kind === "misattribution" &&
-    semanticNodePatchRequiresSupersede(input.item)
-  ) {
+  if (input.item.kind === "misattribution" && semanticNodePatchRequiresSupersede(input.item)) {
     const correctedBy = semanticNodeSupersedeCorrectionRef(input.item, input.verdict, input.loaded);
 
     if (correctedBy === null) {
@@ -1197,18 +1190,12 @@ function emitDecision(input: {
     kind: input.item.kind,
     verdict: input.decision.verdict,
     applied_resolution:
-      input.decision.action === "needs_manual"
-        ? "needs_manual"
-        : input.decision.appliedResolution,
+      input.decision.action === "needs_manual" ? "needs_manual" : input.decision.appliedResolution,
     reason: input.decision.reason,
   });
 }
 
-function emitDegraded(input: {
-  ctx: OfflineContext;
-  item: ReviewQueueItem;
-  reason: string;
-}): void {
+function emitDegraded(input: { ctx: OfflineContext; item: ReviewQueueItem; reason: string }): void {
   if (input.ctx.tracer?.enabled !== true) {
     return;
   }
@@ -1350,7 +1337,10 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
 
   constructor(private readonly options: ReviewResolverProcessOptions) {}
 
-  async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}): Promise<ReviewResolverPlan> {
+  async plan(
+    ctx: OfflineContext,
+    opts: OfflineProcessRunOptions = {},
+  ): Promise<ReviewResolverPlan> {
     if (!ctx.config.offline.reviewResolver.enabled) {
       return reviewResolverPlanSchema.parse({
         process: this.name,

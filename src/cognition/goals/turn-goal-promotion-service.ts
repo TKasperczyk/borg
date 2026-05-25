@@ -141,9 +141,10 @@ export class TurnGoalPromotionService {
       | null
       | undefined;
 
-    const getEmbeddingDedupState = async (): Promise<
-      { activeVectors: EmbeddedGoalVector[]; acceptedVectors: EmbeddedGoalVector[] } | null
-    > => {
+    const getEmbeddingDedupState = async (): Promise<{
+      activeVectors: EmbeddedGoalVector[];
+      acceptedVectors: EmbeddedGoalVector[];
+    } | null> => {
       if (embeddingDedupState !== undefined) {
         return embeddingDedupState;
       }

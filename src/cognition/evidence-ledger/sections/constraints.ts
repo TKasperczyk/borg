@@ -5,10 +5,7 @@ import {
   addEntry,
   cappedTrustRank,
 } from "../section-buckets.js";
-import {
-  commitmentScope,
-  persistenceClassFromProvenance,
-} from "../scope-resolver.js";
+import { commitmentScope, persistenceClassFromProvenance } from "../scope-resolver.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,

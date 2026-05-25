@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 
+import type {
+  AttachmentRepository,
+  AttachmentService,
+  TurnInputAttachment,
+} from "../attachments/index.js";
 import type { Config } from "../config/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -64,6 +69,7 @@ import type { CognitiveMode, IntentRecord } from "./types.js";
 
 export type TurnInput = {
   userMessage: string;
+  attachments?: readonly TurnInputAttachment[];
   audience?: string;
   senderEntityId?: EntityId;
   stakes?: TurnStakes;
@@ -124,6 +130,8 @@ export type TurnOrchestratorOptions = {
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   entryIndex?: StreamEntryIndexRepository;
+  attachmentRepository: Pick<AttachmentRepository, "isActiveForStreamEntry">;
+  attachmentService: AttachmentService;
   /**
    * Build a reader for the given session's stream. The orchestrator uses
    * this to compile the recent-dialogue window before a turn starts, so the
@@ -298,6 +306,8 @@ export class TurnOrchestrator {
       toolDispatcher: options.toolDispatcher,
       createStreamReader,
       entryIndex: options.entryIndex,
+      attachmentRepository: options.attachmentRepository,
+      attachmentService: options.attachmentService,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,
@@ -367,6 +377,7 @@ export class TurnOrchestrator {
 
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
+    this.options.attachmentService.validateAttachments(input.attachments ?? []);
     const lease =
       input.origin === "autonomous"
         ? await this.sessionLock.tryAcquire(sessionId)

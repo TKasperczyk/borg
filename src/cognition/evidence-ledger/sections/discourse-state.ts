@@ -1,8 +1,5 @@
 import type { BuilderSectionContext } from "../builder-context.js";
-import {
-  DISCOURSE_TRUST_RANK,
-  addEntry,
-} from "../section-buckets.js";
+import { DISCOURSE_TRUST_RANK, addEntry } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 
 export function addDiscourseStateSection(context: BuilderSectionContext): void {

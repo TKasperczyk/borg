@@ -1,5 +1,6 @@
 // Shared deliberation data shapes used by the orchestrator and extracted helpers.
 import type { LLMClient } from "../../llm/index.js";
+import type { BorgUserContentBlock } from "../../attachments/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
@@ -98,6 +99,7 @@ export type DeliberationContext = {
   audienceEntityId?: EntityId | null;
   senderEntityId?: EntityId;
   userMessage: string;
+  currentUserContent?: readonly BorgUserContentBlock[];
   userEntryId?: string;
   autonomyTrigger?: AutonomyTriggerContext | null;
   perception: PerceptionResult;

@@ -13,11 +13,7 @@ import { isPlainRecord } from "../../util/guards.js";
 import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeTraceValueShape,
-  toTraceJsonValue,
-  type TurnTracer,
-} from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   traceLlmCallError,
   traceLlmCallResponse,

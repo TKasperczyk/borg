@@ -323,6 +323,7 @@ export {
 export { FixedClock, ManualClock, SystemClock, type Clock } from "./util/clock.js";
 export {
   AuthError,
+  AttachmentError,
   AutonomyError,
   BorgError,
   BudgetExceededError,
@@ -344,11 +345,13 @@ export {
 } from "./util/errors.js";
 export {
   DEFAULT_SESSION_ID,
+  createAttachmentId,
   createSessionId,
   createExecutiveStepId,
   parseSessionId,
   parseExecutiveStepId,
   type AuditId,
+  type AttachmentId,
   type AutonomyWakeId,
   type BrandedId,
   type ExecutiveStepId,
@@ -365,3 +368,8 @@ export {
   type TraitId,
   type ValueId,
 } from "./util/ids.js";
+export {
+  type BorgUserContentBlock,
+  type ImageMediaType,
+  type TurnInputAttachment,
+} from "./attachments/index.js";

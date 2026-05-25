@@ -220,9 +220,7 @@ function alternateEvidenceForValue(
   alternates: readonly RelationalSlotAlternateValue[],
   value: string,
 ): StreamEntryId[] {
-  return (
-    alternates.find((alternate) => alternate.value === value)?.evidence_stream_entry_ids ?? []
-  );
+  return alternates.find((alternate) => alternate.value === value)?.evidence_stream_entry_ids ?? [];
 }
 
 function hasKnownValue(slot: RelationalSlot, value: string): boolean {
@@ -435,10 +433,7 @@ export class RelationalSlotRepository {
         next = relationalSlotSchema.parse({
           ...current,
           state: parsed.confirmation === "explicit" ? "established" : current.state,
-          name_provenance: strongerNameProvenance(
-            current.name_provenance,
-            assertionNameProvenance,
-          ),
+          name_provenance: strongerNameProvenance(current.name_provenance, assertionNameProvenance),
           evidence_stream_entry_ids: uniqueStreamEntryIds([
             ...current.evidence_stream_entry_ids,
             ...parsed.source_stream_entry_ids,
@@ -488,10 +483,7 @@ export class RelationalSlotRepository {
                 : current.state === "revoked"
                   ? "established"
                   : current.state,
-          name_provenance: strongerNameProvenance(
-            current.name_provenance,
-            assertionNameProvenance,
-          ),
+          name_provenance: strongerNameProvenance(current.name_provenance, assertionNameProvenance),
           alternate_values: alternateValues,
           contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
             ...current.contradicted_by_stream_entry_ids,

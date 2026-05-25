@@ -234,7 +234,9 @@ export class CorrectivePreferenceTurnService {
           return { allowed: false, reason: "missing" };
         }
 
-        return kind === "user_msg" ? { allowed: true } : { allowed: false, reason: "not_user_msg" };
+        return kind === "user_msg" || kind === "user_image_attachment"
+          ? { allowed: true }
+          : { allowed: false, reason: "not_user_msg" };
       },
     });
 

@@ -39,9 +39,7 @@ function makeCommitment(overrides: Partial<CommitmentRecord> = {}): CommitmentRe
     kind,
     enforcement_class: enforcementClass,
     critical_domain:
-      enforcementClass === "critical"
-        ? (overrides.critical_domain ?? "audience_scope")
-        : null,
+      enforcementClass === "critical" ? (overrides.critical_domain ?? "audience_scope") : null,
   };
 }
 

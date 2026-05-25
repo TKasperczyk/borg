@@ -5,6 +5,7 @@ import { createCachingEmbeddingClient } from "../embeddings/cache.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "../embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "../llm/index.js";
 import type { Clock } from "../util/clock.js";
+import type { AttachmentService } from "../attachments/index.js";
 
 export function createEmbeddingClient(config: Config): EmbeddingClient {
   const inner = new OpenAICompatibleEmbeddingClient({
@@ -25,6 +26,7 @@ export function createLlmFactory(
   llmClient: LLMClient | undefined,
   env: NodeJS.ProcessEnv | undefined,
   clock: Clock,
+  attachmentService?: AttachmentService,
 ): () => LLMClient {
   if (llmClient !== undefined) {
     return () => llmClient;
@@ -38,6 +40,11 @@ export function createLlmFactory(
       apiKey: config.anthropic.apiKey,
       env,
       clock,
+      ...(attachmentService === undefined
+        ? {}
+        : {
+            attachmentResolver: (attachmentId) => attachmentService.fetchImageForLlm(attachmentId),
+          }),
     });
     return cached;
   };

@@ -392,6 +392,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
                   dataDir: deps.config.dataDir,
                   sessionId,
                 }),
+              isActiveAttachmentStreamEntry: (streamEntryId) =>
+                deps.attachmentRepository.isActiveForStreamEntry(streamEntryId),
             }),
           clock: deps.clock,
         });

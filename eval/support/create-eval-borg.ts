@@ -22,6 +22,7 @@ type EvalConfigOverrides = {
   commitments?: Partial<Omit<Config["commitments"], "enforce">> & {
     enforce?: Partial<Config["commitments"]["enforce"]>;
   };
+  attachments?: Partial<Config["attachments"]>;
   cognition?: Partial<Omit<Config["cognition"], "actionLifecycle">> & {
     actionLifecycle?: Partial<Config["cognition"]["actionLifecycle"]>;
   };
@@ -146,6 +147,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         ...DEFAULT_CONFIG.commitments.enforce,
         ...options.config?.commitments?.enforce,
       },
+    },
+    attachments: {
+      ...DEFAULT_CONFIG.attachments,
+      ...options.config?.attachments,
     },
     deliberation: {
       ...DEFAULT_CONFIG.deliberation,

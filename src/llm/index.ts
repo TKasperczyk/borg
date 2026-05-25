@@ -19,6 +19,7 @@ import { z } from "zod";
 import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, LLMError } from "../util/errors.js";
+import type { AttachmentId } from "../util/ids.js";
 import { getModelMaxOutputTokens } from "./max-tokens.js";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
@@ -54,7 +55,16 @@ export type LLMToolResultBlock = {
   is_error?: boolean;
 };
 
-export type LLMContentBlock = LLMTextBlock | LLMToolUseBlock | LLMToolResultBlock;
+export type LLMImageRefBlock = {
+  type: "image_ref";
+  attachment_id: AttachmentId;
+};
+
+export type LLMContentBlock =
+  | LLMTextBlock
+  | LLMImageRefBlock
+  | LLMToolUseBlock
+  | LLMToolResultBlock;
 
 export type LLMContentBlockMessage = {
   role: "user" | "assistant";
@@ -262,6 +272,10 @@ export type AnthropicLLMClientOptions = {
   client?: AnthropicClientLike;
   usageSink?: TokenUsageSink;
   clock?: Clock;
+  attachmentResolver?: (attachmentId: AttachmentId) => {
+    mediaType: string;
+    bytes: Buffer | Uint8Array;
+  };
 };
 
 function toAnthropicMessages(messages: readonly LLMMessage[]): MessageParam[] {
@@ -284,12 +298,34 @@ function toAnthropicToolResultContent(
   }));
 }
 
-function toAnthropicContentBlock(block: LLMContentBlock): ContentBlockParam {
+function toAnthropicContentBlock(
+  block: LLMContentBlock,
+  attachmentResolver: AnthropicLLMClientOptions["attachmentResolver"] | undefined,
+): ContentBlockParam {
   if (block.type === "text") {
     return {
       type: "text",
       text: block.text,
     } satisfies TextBlockParam;
+  }
+
+  if (block.type === "image_ref") {
+    if (attachmentResolver === undefined) {
+      throw new LLMError(`No attachment resolver configured for ${block.attachment_id}`, {
+        code: "LLM_ATTACHMENT_RESOLVER_MISSING",
+      });
+    }
+
+    const image = attachmentResolver(block.attachment_id);
+
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: image.mediaType,
+        data: Buffer.from(image.bytes).toString("base64"),
+      },
+    } as ContentBlockParam;
   }
 
   if (block.type === "tool_use") {
@@ -311,10 +347,19 @@ function toAnthropicContentBlock(block: LLMContentBlock): ContentBlockParam {
 
 function toAnthropicConversationMessages(
   messages: readonly LLMContentBlockMessage[],
+  attachmentResolver: AnthropicLLMClientOptions["attachmentResolver"] | undefined,
 ): MessageParam[] {
   return messages.map((message) => ({
     role: message.role,
-    content: message.content.map((block) => toAnthropicContentBlock(block)),
+    content: [...message.content]
+      .sort((left, right) =>
+        left.type === "image_ref" && right.type !== "image_ref"
+          ? -1
+          : left.type !== "image_ref" && right.type === "image_ref"
+            ? 1
+            : 0,
+      )
+      .map((block) => toAnthropicContentBlock(block, attachmentResolver)),
   }));
 }
 
@@ -1197,7 +1242,7 @@ export class AnthropicLLMClient implements LLMClient {
   private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
     const response = await this.createRawMessage(
       options,
-      toAnthropicConversationMessages(options.messages),
+      toAnthropicConversationMessages(options.messages, this.options.attachmentResolver),
     );
     let structuredOutput: unknown;
 
@@ -1234,4 +1279,3 @@ export class AnthropicLLMClient implements LLMClient {
     return this.createConversation(options);
   }
 }
-

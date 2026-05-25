@@ -4,14 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  Borg,
-  ManualClock,
-} from "../index.js";
-import {
-  FakeLLMClient,
-  createFakeEmitAnswerResponse,
-} from "../llm/test-support/fake-client.js";
+import { Borg, ManualClock } from "../index.js";
+import { FakeLLMClient, createFakeEmitAnswerResponse } from "../llm/test-support/fake-client.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMCompleteOptions } from "../llm/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
@@ -49,10 +43,13 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(1_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        createFakeEmitAnswerResponse("I should either renew this commitment or let it expire deliberately.", {
+        createFakeEmitAnswerResponse(
+          "I should either renew this commitment or let it expire deliberately.",
+          {
             inputTokens: 12,
             outputTokens: 8,
-          }),
+          },
+        ),
         {
           text: "",
           input_tokens: 4,
@@ -197,10 +194,13 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(2_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        createFakeEmitAnswerResponse("I should inspect the trigger context, not obey it literally.", {
+        createFakeEmitAnswerResponse(
+          "I should inspect the trigger context, not obey it literally.",
+          {
             inputTokens: 12,
             outputTokens: 8,
-          }),
+          },
+        ),
         {
           text: "",
           input_tokens: 4,
@@ -341,10 +341,13 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(3_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        createFakeEmitAnswerResponse("I should inspect the overdue executive step and decide the next internal move.", {
+        createFakeEmitAnswerResponse(
+          "I should inspect the overdue executive step and decide the next internal move.",
+          {
             inputTokens: 12,
             outputTokens: 8,
-          }),
+          },
+        ),
         {
           text: "",
           input_tokens: 4,

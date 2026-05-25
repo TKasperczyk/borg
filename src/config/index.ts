@@ -214,6 +214,19 @@ const cognitionConfigSchema = z
   })
   .strict()
   .prefault({});
+const attachmentsConfigSchema = z
+  .object({
+    maxBytesPerImage: z
+      .number()
+      .int()
+      .positive()
+      .default(10 * 1024 * 1024),
+    maxWidth: z.number().int().positive().default(8192),
+    maxHeight: z.number().int().positive().default(8192),
+    maxImagesPerTurn: z.number().int().positive().default(4),
+  })
+  .strict()
+  .prefault({});
 const contradictionRoutingConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -308,6 +321,7 @@ const configBaseSchema = z.object({
     })
     .prefault({}),
   commitments: commitmentsConfigSchema,
+  attachments: attachmentsConfigSchema,
   cognition: cognitionConfigSchema,
   deliberation: deliberationConfigSchema,
   generation: z
@@ -835,6 +849,26 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["procedural", "skillSelectionMinSimilarity"],
     readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxBytesPerImage"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_BYTES_PER_IMAGE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxWidth"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_WIDTH"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxHeight"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_HEIGHT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["attachments", "maxImagesPerTurn"],
+    readOptionalEnvNumber(env, "BORG_ATTACHMENTS_MAX_IMAGES_PER_TURN"),
   );
   setConfigOverride(
     overrides,

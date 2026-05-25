@@ -2,12 +2,22 @@
 
 import { existsSync, readdirSync } from "node:fs";
 
-import { getStreamDirectory, type StreamEntryIndexRepository } from "../stream/index.js";
+import type { AttachmentRepository } from "../attachments/index.js";
+import {
+  getStreamDirectory,
+  StreamReader,
+  type StreamEntry,
+  type StreamEntryIndexRepository,
+} from "../stream/index.js";
 import { parseSessionId, type SessionId } from "../util/ids.js";
 
 export async function backfillStreamEntryIndex(options: {
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
+  attachmentRepository?: Pick<
+    AttachmentRepository,
+    "reconcileFromStreamEntries" | "reconcileActiveStateFromStreamIndex"
+  >;
 }): Promise<void> {
   const streamDir = getStreamDirectory(options.dataDir);
 
@@ -31,7 +41,19 @@ export async function backfillStreamEntryIndex(options: {
 
   for (const sessionId of sessionIds) {
     await options.entryIndex.backfillSession(sessionId);
+
+    if (options.attachmentRepository !== undefined) {
+      const entries: StreamEntry[] = [];
+      for await (const entry of new StreamReader({
+        dataDir: options.dataDir,
+        sessionId,
+      }).iterate({ kinds: ["user_image_attachment"] })) {
+        entries.push(entry);
+      }
+      options.attachmentRepository.reconcileFromStreamEntries(entries);
+    }
   }
 
+  options.attachmentRepository?.reconcileActiveStateFromStreamIndex();
   options.entryIndex.warnLegacyRowsMissingKind();
 }

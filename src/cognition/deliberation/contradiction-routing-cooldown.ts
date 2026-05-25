@@ -24,10 +24,7 @@ export class ContradictionRoutingCooldown {
       .map((fingerprint) => {
         const lastForcedTurn = this.lastForcedTurnByKey.get(this.key(input.audience, fingerprint));
 
-        if (
-          lastForcedTurn === undefined ||
-          input.currentTurn - lastForcedTurn > cooldownTurns
-        ) {
+        if (lastForcedTurn === undefined || input.currentTurn - lastForcedTurn > cooldownTurns) {
           return null;
         }
 

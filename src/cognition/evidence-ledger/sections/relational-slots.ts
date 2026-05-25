@@ -10,10 +10,7 @@ import {
   visibleAudienceEntityIds,
 } from "../audience-visibility.js";
 import type { BuilderSectionContext } from "../builder-context.js";
-import {
-  optionalStateMetadata,
-  slotTaint,
-} from "../entry-metadata.js";
+import { optionalStateMetadata, slotTaint } from "../entry-metadata.js";
 import {
   COMMITMENT_TRUST_RANK,
   OPEN_QUESTION_TRUST_RANK,
@@ -169,9 +166,7 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
               }),
             ]),
             participant.entityId,
-          ).filter((goal) =>
-            isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds),
-          );
+          ).filter((goal) => isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds));
 
     for (const goal of participantGoals) {
       addEntry(context.buckets, "relational_slots", {

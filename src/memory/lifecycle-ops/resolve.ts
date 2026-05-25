@@ -147,8 +147,7 @@ export function resolveOpenQuestionThroughIdentityService(input: {
       source_path: input.traceSourcePath,
       decision: "resolved",
       decision_reason: input.traceDecisionReason,
-      evidence_episode_count:
-        input.resolution.resolution_evidence_episode_ids?.length ?? 0,
+      evidence_episode_count: input.resolution.resolution_evidence_episode_ids?.length ?? 0,
       evidence_stream_entry_count:
         input.resolution.resolution_evidence_stream_entry_ids?.length ?? 0,
     });

@@ -1180,7 +1180,9 @@ describe("retrieval pipeline", () => {
         sessionScope: "unknown",
         linkedOpenQuestionIds: [],
         fingerprint: createHash("sha1")
-          .update([`edge:${edge.id}`, `node:${atlas.id}`, `node:${contradiction.id}`].sort().join("|"))
+          .update(
+            [`edge:${edge.id}`, `node:${atlas.id}`, `node:${contradiction.id}`].sort().join("|"),
+          )
           .digest("hex"),
       }),
     ]);

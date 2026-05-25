@@ -17,10 +17,7 @@ const EXTRACTOR_MAX_TOKEN_CONSUMER_LABELS = {
   ],
   "frame-anomaly/classifier.ts": ["frame-anomaly-classifier", "frame_anomaly_classifier"],
   "generation/closure-loop.ts": ["closure-loop-classifier", "closure_loop_classifier"],
-  "goals/goal-promotion-extractor.ts": [
-    "goal-promotion-extractor",
-    "goal_promotion_extractor",
-  ],
+  "goals/goal-promotion-extractor.ts": ["goal-promotion-extractor", "goal_promotion_extractor"],
   "perception/entity-extractor.ts": ["entity_extractor", "perception-entity-fallback"],
   "perception/mode-detector.ts": ["mode_detector", "perception-mode-fallback"],
   "perception/temporal-cue.ts": ["perception-temporal-cue", "temporal_cue_extractor"],

@@ -5,10 +5,7 @@ import {
   canonicalizeGoalWithSharedStateEntry,
   type LifecycleTracer,
 } from "../../memory/lifecycle-ops/index.js";
-import {
-  errorMessage,
-  type SharedStateReconciliationResult,
-} from "./reconciliation-summary.js";
+import { errorMessage, type SharedStateReconciliationResult } from "./reconciliation-summary.js";
 
 export { isTerminalGoalStatus } from "../../memory/lifecycle-ops/index.js";
 

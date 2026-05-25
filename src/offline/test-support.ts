@@ -231,6 +231,10 @@ export function createTestConfig(
         ...overrides.commitments?.enforce,
       },
     },
+    attachments: {
+      ...DEFAULT_CONFIG.attachments,
+      ...overrides.attachments,
+    },
     deliberation: {
       ...DEFAULT_CONFIG.deliberation,
       ...overrides.deliberation,

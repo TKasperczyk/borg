@@ -1,13 +1,6 @@
 import type { BuilderSectionContext } from "../builder-context.js";
-import {
-  EPISODE_TRUST_RANK,
-  addEntry,
-  cappedTrustRank,
-} from "../section-buckets.js";
-import {
-  persistenceClassFromProvenance,
-  scopeFromStreamIds,
-} from "../scope-resolver.js";
+import { EPISODE_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
+import { persistenceClassFromProvenance, scopeFromStreamIds } from "../scope-resolver.js";
 
 export function addEpisodesSection(context: BuilderSectionContext): void {
   for (const result of context.input.retrievedEpisodes) {

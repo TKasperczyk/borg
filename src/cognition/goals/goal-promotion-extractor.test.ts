@@ -202,9 +202,7 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.system).toContain(
       'A user saying "my goal is to..." is usually participant-side context',
     );
-    expect(llm.requests[0]?.system).toContain(
-      'my goal is to deploy", "friend will respond"',
-    );
+    expect(llm.requests[0]?.system).toContain('my goal is to deploy", "friend will respond"');
     expect(llm.requests[0]?.system).not.toContain("treat that speaker as the goal owner");
     expect(llm.requests[0]?.system).toContain("user will deploy -> not_borg_responsibility");
     expect(llm.requests[0]?.system).toContain(
@@ -573,10 +571,7 @@ describe("GoalPromotionExtractor", () => {
     });
 
     await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
-    expect(emit).not.toHaveBeenCalledWith(
-      "extraction.goals.rejected",
-      expect.anything(),
-    );
+    expect(emit).not.toHaveBeenCalledWith("extraction.goals.rejected", expect.anything());
     expect(emit).toHaveBeenCalledWith(
       "extraction.goals.completed",
       expect.objectContaining({

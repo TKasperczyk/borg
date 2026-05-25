@@ -255,9 +255,9 @@ describe("ActionRepository", () => {
     };
     const counterValue = () =>
       (
-        db
-          .prepare("SELECT value FROM action_lifecycle_turn_counter WHERE id = 'global'")
-          .get() as { value: number }
+        db.prepare("SELECT value FROM action_lifecycle_turn_counter WHERE id = 'global'").get() as {
+          value: number;
+        }
       ).value;
 
     try {

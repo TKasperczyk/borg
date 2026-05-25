@@ -1,10 +1,7 @@
 import { z } from "zod";
 
 import { SemanticError } from "../../../util/errors.js";
-import {
-  markSemanticContradicted,
-  markSemanticSuperseded,
-} from "../../lifecycle-ops/index.js";
+import { markSemanticContradicted, markSemanticSuperseded } from "../../lifecycle-ops/index.js";
 import { episodeIdSchema } from "../../episodic/index.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticNode } from "../types.js";
 import {

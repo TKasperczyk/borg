@@ -20,9 +20,7 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
       "When someone asks about X in this channel again, I'll mention Y",
     );
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
-      'Avoid unqualified "I\'ll prompt you"',
-    );
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain('Avoid unqualified "I\'ll prompt you"');
   });
 
   it("includes relationship-label grounding guidance", () => {

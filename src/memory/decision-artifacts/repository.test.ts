@@ -552,8 +552,9 @@ describe("SharedStateRepository", () => {
       });
 
       try {
-        const columns = upgradedDb.prepare("PRAGMA table_info(decision_artifact_entries)").all() as
-          Array<{ name: string }>;
+        const columns = upgradedDb
+          .prepare("PRAGMA table_info(decision_artifact_entries)")
+          .all() as Array<{ name: string }>;
 
         expect(columns.some((column) => column.name === "last_updated_turn_global")).toBe(true);
         expect(upgradedRepository.get(audience)?.entries[0]).toMatchObject({

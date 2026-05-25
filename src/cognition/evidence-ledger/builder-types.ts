@@ -1,9 +1,7 @@
 import type { ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
-import type {
-  RelationalSlotRepository,
-} from "../../memory/relational-slots/index.js";
+import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import type {
   GoalRecord,
   GoalsRepository,

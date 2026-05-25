@@ -104,9 +104,10 @@ describe("sqlite storage", () => {
 
     expectComposeError(
       () =>
-        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
-          { id: -1, name: "negative", up: "" },
-        ]),
+        composeMigrations(
+          [{ id: 1, name: "alpha", up: "" }],
+          [{ id: -1, name: "negative", up: "" }],
+        ),
       /Migration source id -1 must be an integer in \[1, 999999\]: negative:-1/,
     );
   });
@@ -114,17 +115,19 @@ describe("sqlite storage", () => {
   it("rejects composed source ids outside a band range", () => {
     expectComposeError(
       () =>
-        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
-          { id: 1_000_000, name: "too-large", up: "" },
-        ]),
+        composeMigrations(
+          [{ id: 1, name: "alpha", up: "" }],
+          [{ id: 1_000_000, name: "too-large", up: "" }],
+        ),
       /Migration source id 1000000 must be an integer in \[1, 999999\]: too-large:1000000/,
     );
 
     expectComposeError(
       () =>
-        composeMigrations([{ id: 1, name: "alpha", up: "" }], [
-          { id: 1_000_001, name: "much-too-large", up: "" },
-        ]),
+        composeMigrations(
+          [{ id: 1, name: "alpha", up: "" }],
+          [{ id: 1_000_001, name: "much-too-large", up: "" }],
+        ),
       /Migration source id 1000001 must be an integer in \[1, 999999\]: much-too-large:1000001/,
     );
   });

@@ -466,8 +466,9 @@ function actionLifecycleRows(input: {
     actions: input.actions,
     source: input.countsSource,
   });
-  const byStateText = ACTION_SNAPSHOT_STATES.map((state) => `${state}=${counts.byState[state]}`)
-    .join(" ");
+  const byStateText = ACTION_SNAPSHOT_STATES.map(
+    (state) => `${state}=${counts.byState[state]}`,
+  ).join(" ");
 
   return [
     `- total_actions=${counts.total}`,

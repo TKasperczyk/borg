@@ -3429,8 +3429,7 @@ export class MetricsCapture {
     });
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
-    const evidenceLedgerReverseScanMetricCounts =
-      evidenceLedgerReverseScanMetrics(allTraceRecords);
+    const evidenceLedgerReverseScanMetricCounts = evidenceLedgerReverseScanMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
       allTraceRecords,
@@ -3964,8 +3963,7 @@ export class MetricsCapture {
     });
     const semanticRevisionCumulativeMetricCounts =
       semanticRevisionCumulativeMetrics(allTraceRecords);
-    const evidenceLedgerReverseScanMetricCounts =
-      evidenceLedgerReverseScanMetrics(allTraceRecords);
+    const evidenceLedgerReverseScanMetricCounts = evidenceLedgerReverseScanMetrics(allTraceRecords);
     const sharedStateCapPressureMetricCounts = sharedStateCapPressureMetrics(allTraceRecords);
     const sharedStateCompilerHealthMetricCounts = sharedStateCompilerHealthMetrics(
       allTraceRecords,

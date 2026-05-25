@@ -361,7 +361,9 @@ describe("TurnTracer", () => {
       "reflection.completed",
       "action_archive_scan.completed",
     ]);
-    expect(events.find((event) => event.event === "deliberation.plan_persistence.completed")).toMatchObject({
+    expect(
+      events.find((event) => event.event === "deliberation.plan_persistence.completed"),
+    ).toMatchObject({
       streamEntryId: expect.stringMatching(/^strm_/),
     });
     expect(

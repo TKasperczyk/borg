@@ -4,14 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  Borg,
-  ManualClock,
-} from "../index.js";
-import {
-  FakeLLMClient,
-  createFakeEmitAnswerResponse,
-} from "../llm/test-support/fake-client.js";
+import { Borg, ManualClock } from "../index.js";
+import { FakeLLMClient, createFakeEmitAnswerResponse } from "../llm/test-support/fake-client.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 
 async function openTestBorg(tempDir: string, llm: FakeLLMClient) {
@@ -81,13 +75,13 @@ describe("self-turn recency", () => {
     const llm = new FakeLLMClient({
       responses: [
         createFakeEmitAnswerResponse("I reflected on the last few turns.", {
-            inputTokens: 8,
-            outputTokens: 4,
-          }),
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
         createFakeEmitAnswerResponse("Fresh answer for the user.", {
-            inputTokens: 8,
-            outputTokens: 4,
-          }),
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
         createEmptyReflectionResponse(),
       ],
     });
@@ -127,13 +121,13 @@ describe("self-turn recency", () => {
     const llm = new FakeLLMClient({
       responses: [
         createFakeEmitAnswerResponse("I reflected on the last few turns.", {
-            inputTokens: 8,
-            outputTokens: 4,
-          }),
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
         createFakeEmitAnswerResponse("I continued the reflection.", {
-            inputTokens: 8,
-            outputTokens: 4,
-          }),
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
       ],
     });
     const borg = await openTestBorg(tempDir, llm);

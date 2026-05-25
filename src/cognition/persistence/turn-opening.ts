@@ -1,4 +1,5 @@
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
+import type { PersistedTurnAttachment, TurnInputAttachment } from "../../attachments/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type {
   PendingSocialAttribution,
@@ -16,9 +17,21 @@ export type TurnOpeningPersistenceOptions = {
 };
 
 export type TurnOpeningPersistenceInput = {
-  streamWriter: Pick<StreamWriter, "append">;
+  streamWriter: Pick<StreamWriter, "append" | "appendMany">;
   turnId: string;
   userMessage: string;
+  attachments?: readonly TurnInputAttachment[];
+  persistAttachments?: (
+    input: Omit<
+      import("../../attachments/index.js").PersistTurnAttachmentsInput,
+      "attachments" | "streamWriter" | "parentEntry" | "turnId"
+    > & {
+      attachments: readonly TurnInputAttachment[];
+      streamWriter: Pick<StreamWriter, "appendMany">;
+      parentEntry: StreamEntry;
+      turnId: string;
+    },
+  ) => Promise<PersistedTurnAttachment[]>;
   persistUserMessage?: boolean;
   audience?: string;
   senderEntityId?: EntityId;
@@ -32,6 +45,8 @@ export type TurnOpeningPersistenceInput = {
 
 export type TurnOpeningPersistenceResult = {
   persistedUserEntry: StreamEntry | null;
+  persistedAttachmentEntries: readonly StreamEntry[];
+  currentUserContent: readonly import("../../attachments/index.js").BorgUserContentBlock[];
   persistedPerceptionEntry: StreamEntry;
   workingMemory: WorkingMemory;
 };
@@ -53,6 +68,25 @@ export class TurnOpeningPersistence {
               ? {}
               : { sender_entity_id: input.senderEntityId }),
           });
+    const persistedAttachments =
+      persistedUserEntry === null ||
+      input.attachments === undefined ||
+      input.attachments.length === 0 ||
+      input.persistAttachments === undefined
+        ? []
+        : await input.persistAttachments({
+            attachments: input.attachments,
+            streamWriter: input.streamWriter,
+            parentEntry: persistedUserEntry,
+            turnId: input.turnId,
+          });
+    const currentUserContent = [
+      {
+        type: "text" as const,
+        text: input.userMessage,
+      },
+      ...persistedAttachments.map((attachment) => attachment.contentBlock),
+    ];
 
     const workingMemory = this.options.workingMemoryStore.save({
       ...input.workingMemory,
@@ -80,6 +114,8 @@ export class TurnOpeningPersistence {
 
     return {
       persistedUserEntry,
+      persistedAttachmentEntries: persistedAttachments.map((attachment) => attachment.streamEntry),
+      currentUserContent,
       persistedPerceptionEntry,
       workingMemory,
     };

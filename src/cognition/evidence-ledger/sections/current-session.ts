@@ -1,11 +1,5 @@
-import {
-  currentUserMessageStateMetadata,
-  optionalStateMetadata,
-} from "../entry-metadata.js";
-import {
-  CURRENT_USER_TRUST_RANK,
-  addEntry,
-} from "../section-buckets.js";
+import { currentUserMessageStateMetadata, optionalStateMetadata } from "../entry-metadata.js";
+import { CURRENT_USER_TRUST_RANK, addEntry } from "../section-buckets.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 
 export function addCurrentUserMessageSection(context: BuilderSectionContext): void {
