@@ -33,6 +33,7 @@ export {
   type EvidenceLedger,
   type EvidenceLedgerActor,
   type EvidenceLedgerEntry,
+  type EvidenceLedgerImageAttachment,
   type EvidenceLedgerSection,
   type EvidenceLedgerSectionId,
   type EvidenceLedgerSessionScope,

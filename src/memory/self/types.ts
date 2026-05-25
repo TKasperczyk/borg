@@ -21,9 +21,21 @@ import {
   type ValueId,
 } from "../../util/ids.js";
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
+import { episodeIdSchema } from "../episodic/types.js";
+import { semanticNodeIdSchema } from "../semantic/types.js";
 
 export const goalStatusSchema = z.enum(["active", "done", "abandoned", "blocked"]);
 export const identityStateSchema = z.enum(["candidate", "established"]);
+export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
+export const OPEN_QUESTION_SOURCES = [
+  "user",
+  "reflection",
+  "contradiction",
+  "ruminator",
+  "overseer",
+  "autonomy",
+  "deliberator",
+] as const;
 
 export const valueIdSchema = z
   .string()
@@ -71,6 +83,30 @@ export const goalCanonicalizedByArtifactEntryIdSchema = z
   .string()
   .refine((value) => sharedStateEntryIdHelpers.is(value), {
     message: "Invalid goal canonicalized shared state entry id",
+  })
+  .transform((value) => value as SharedStateEntryId);
+
+export const openQuestionAudienceEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid open question audience entity id",
+  })
+  .transform((value) => value as EntityId);
+
+export const openQuestionStatusSchema = z.enum(OPEN_QUESTION_STATUSES);
+export const openQuestionSourceSchema = z.enum(OPEN_QUESTION_SOURCES);
+
+export const openQuestionResolutionStreamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid open question resolution stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
+
+export const openQuestionResolvedByArtifactEntryIdSchema = z
+  .string()
+  .refine((value) => sharedStateEntryIdHelpers.is(value), {
+    message: "Invalid open question resolved shared state entry id",
   })
   .transform((value) => value as SharedStateEntryId);
 
@@ -229,11 +265,86 @@ export const goalPatchSchema = goalSchema
   .partial()
   .strict();
 
+export const openQuestionSchema = z
+  .object({
+    id: openQuestionIdSchema,
+    record_version: z.number().int().positive().optional(),
+    question: z.string().min(1),
+    urgency: z.number().min(0).max(1),
+    status: openQuestionStatusSchema,
+    goal_id: goalIdSchema.nullable().default(null),
+    audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
+    related_episode_ids: z.array(episodeIdSchema),
+    related_semantic_node_ids: z.array(semanticNodeIdSchema),
+    provenance: provenanceSchema.nullable(),
+    source: openQuestionSourceSchema,
+    created_at: z.number().finite(),
+    last_touched: z.number().finite(),
+    resolution_evidence_episode_ids: z.array(episodeIdSchema),
+    resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
+    resolution_note: z.string().nullable(),
+    resolved_at: z.number().finite().nullable(),
+    abandoned_reason: z.string().nullable(),
+    abandoned_at: z.number().finite().nullable(),
+    resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema
+      .nullable()
+      .optional(),
+    unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
+    last_ruminated_at: z.number().finite().nullable().default(null),
+  })
+  .refine(
+    (value) =>
+      value.related_episode_ids.length > 0 ||
+      value.related_semantic_node_ids.length > 0 ||
+      value.provenance !== null,
+    {
+      message:
+        "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
+      path: ["provenance"],
+    },
+  )
+  .refine(
+    (value) =>
+      value.status !== "resolved" ||
+      value.resolution_evidence_episode_ids.length > 0 ||
+      value.resolution_evidence_stream_entry_ids.length > 0,
+    {
+      message: "Resolved open question requires episode or stream evidence",
+      path: ["resolution_evidence_episode_ids"],
+    },
+  );
+
+export const openQuestionPatchSchema = z.object({
+  question: z.string().min(1).optional(),
+  urgency: z.number().min(0).max(1).optional(),
+  status: openQuestionStatusSchema.optional(),
+  goal_id: goalIdSchema.nullable().optional(),
+  audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().optional(),
+  related_episode_ids: z.array(episodeIdSchema).optional(),
+  related_semantic_node_ids: z.array(semanticNodeIdSchema).optional(),
+  provenance: provenanceSchema.nullable().optional(),
+  source: openQuestionSourceSchema.optional(),
+  last_touched: z.number().finite().optional(),
+  resolution_evidence_episode_ids: z.array(episodeIdSchema).optional(),
+  resolution_evidence_stream_entry_ids: z
+    .array(openQuestionResolutionStreamEntryIdSchema)
+    .optional(),
+  resolution_note: z.string().nullable().optional(),
+  resolved_at: z.number().finite().nullable().optional(),
+  abandoned_reason: z.string().nullable().optional(),
+  abandoned_at: z.number().finite().nullable().optional(),
+  resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema.nullable().optional(),
+});
+
 export type ValueRecord = z.infer<typeof valueSchema>;
 export type ValuePatch = z.infer<typeof valuePatchSchema>;
 export type GoalRecord = z.infer<typeof goalSchema>;
 export type GoalPatch = z.infer<typeof goalPatchSchema>;
 export type GoalStatus = z.infer<typeof goalStatusSchema>;
+export type OpenQuestion = z.infer<typeof openQuestionSchema>;
+export type OpenQuestionPatch = z.infer<typeof openQuestionPatchSchema>;
+export type OpenQuestionStatus = z.infer<typeof openQuestionStatusSchema>;
+export type OpenQuestionSource = z.infer<typeof openQuestionSourceSchema>;
 export type TraitRecord = z.infer<typeof traitSchema>;
 export type TraitPatch = z.infer<typeof traitPatchSchema>;
 export type AutobiographicalPeriod = z.infer<typeof autobiographicalPeriodSchema>;
@@ -243,4 +354,36 @@ export type IdentityState = z.infer<typeof identityStateSchema>;
 
 export type GoalTreeNode = GoalRecord & {
   children: GoalTreeNode[];
+};
+
+export type OpenQuestionListOptions = {
+  status?: OpenQuestionStatus;
+  source?: OpenQuestionSource;
+  minUrgency?: number;
+  visibleToAudienceEntityId?: EntityId | null;
+  limit?: number;
+};
+
+export type OpenQuestionSearchCandidate = {
+  question: OpenQuestion;
+  similarity: number;
+};
+
+export type OpenQuestionHandleLookupOptions = {
+  streamEntryIds?: readonly string[];
+  episodeIds?: readonly string[];
+  statuses?: readonly OpenQuestionStatus[];
+  visibleToAudienceEntityId?: EntityId | null;
+  limit?: number;
+};
+
+export type OpenQuestionGoalLookupOptions = {
+  goalId: GoalId;
+  statuses?: readonly OpenQuestionStatus[];
+  limit?: number;
+};
+
+export type OpenQuestionSimilarLookupOptions = {
+  question: string;
+  audienceEntityId?: EntityId | null;
 };

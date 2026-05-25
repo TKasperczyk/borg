@@ -6,9 +6,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { cognitiveModeSchema, type CognitiveMode } from "../types.js";
+import { cognitiveModeSchema } from "../types.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import type { ModeDetectionResult } from "./types.js";
+
+export type { ModeDetectionResult } from "./types.js";
 
 const modeFallbackSchema = z.object({
   mode: cognitiveModeSchema,
@@ -20,11 +23,6 @@ export const MODE_FALLBACK_TOOL = {
   description: "Emit the detected cognitive mode and operational-turn signal for the message.",
   inputSchema: toToolInputSchema(modeFallbackSchema),
 } satisfies LLMToolDefinition;
-
-export type ModeDetectionResult = {
-  mode: CognitiveMode;
-  isOperational: boolean;
-};
 
 function parseModeFallback(result: LLMCompleteResult): ModeDetectionResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === MODE_FALLBACK_TOOL_NAME);

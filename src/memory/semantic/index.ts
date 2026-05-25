@@ -133,6 +133,7 @@ export {
   type SemanticNodeCorrectionRef,
   type SemanticEdge,
   type SemanticEdgeListOptions,
+  type SemanticEdgePatch,
   type SemanticNode,
   type SemanticNodeKind,
   type SemanticNodeListOptions,

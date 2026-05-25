@@ -161,6 +161,10 @@ export function parseSessionId(value: string): SessionId {
   return sessionIdHelpers.parse(value);
 }
 
+export function parseStreamEntryId(value: string): StreamEntryId {
+  return streamEntryIdHelpers.parse(value);
+}
+
 export function parseEpisodeId(value: string): EpisodeId {
   return episodeIdHelpers.parse(value);
 }

@@ -36,7 +36,7 @@ import type {
   PatchRejection,
   SharedStateArtifactParticipantContext,
   SharedStateCanonicalizationCandidates,
-} from "./schema.js";
+} from "./types.js";
 import { parseSourceStreamEntryIds } from "./source-trust.js";
 import { sharedStateKeyTokens, stateKeysAreNearDuplicate } from "./state-key.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";

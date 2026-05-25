@@ -146,11 +146,8 @@ These are real maintainability items but do not extend the v82-v87 arc:
 
 - split `src/retrieval/pipeline.ts` (2200+ lines)
 - split `simulator/metrics.ts` (4365 lines)
-- rename or merge `src/cognition/action` vs `src/cognition/actions`
-- public/internal export surface cleanup in `src/index.ts`
-- tool-use block normalization between Borg / assessor / overseer
 - migration helper or test/checklist for `_next` table swaps
-- broader pure schema/type extraction (only the v87 P5 case landed)
+- broader pure schema/type extraction beyond the v89 public-consumer cleanup
 - possible dedicated `StreamFactsRepository` shell that wraps `StreamEntryIndex`
 
 Future cycles may pull any of these, but none should be treated as required.
@@ -173,7 +170,7 @@ src/
     social/
     working/
     common/       shared memory primitives (provenance, identity-events, ...)
-  cognition/      perception, attention, deliberation, action, reflection
+  cognition/      perception, attention, deliberation, turn-action, reflection
   offline/        consolidator, reflector, curator, overseer, ruminator,
                   self-narrator, procedural-synthesizer, belief-reviser
   retrieval/      unified context-aware retrieval pipeline

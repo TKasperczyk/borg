@@ -11,7 +11,7 @@ import type {
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
-import type { ActionResult } from "../action/index.js";
+import type { ActionResult } from "../turn-action/index.js";
 import type { SuppressionSet } from "../attention/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import type { ExecutiveFocus } from "../../executive/index.js";

@@ -33,7 +33,7 @@ import type {
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
-import type { ToolLoopCallRecord } from "../action/index.js";
+import type { ToolLoopCallRecord } from "../turn-action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";

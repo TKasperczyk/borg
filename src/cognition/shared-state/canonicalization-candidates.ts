@@ -12,7 +12,7 @@ import {
   type SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 import { emptyCanonicalizes, hasCanonicalizes } from "./patch-validation.js";
-import type { CanonicalizeIdChannel } from "./schema.js";
+import type { CanonicalizeIdChannel } from "./types.js";
 
 function canonicalizedEntryIdsFromOperations(
   operations: readonly SharedStateOperation[],

@@ -1,5 +1,5 @@
-import { performAction } from "../../action/index.js";
-import type { TurnActionCoordinator } from "../../action/turn-action-coordinator.js";
+import { performAction } from "../../turn-action/index.js";
+import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordinator.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import { Deliberator } from "../../deliberation/deliberator.js";
 import type { GenerationGate } from "../../generation/generation-gate.js";

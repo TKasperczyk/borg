@@ -11,21 +11,13 @@ import { detectAffectiveSignal } from "./affective-signal.js";
 import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
+import type { PerceptionClassifierFailureObserver, PerceptionClassifierName } from "./types.js";
 
-export type PerceptionClassifierName =
-  | "entity_extractor"
-  | "mode_detector"
-  | "affective_signal"
-  | "temporal_cue";
-
-export type PerceptionClassifierFailure = {
-  classifier: PerceptionClassifierName;
-  error: unknown;
-};
-
-export type PerceptionClassifierFailureObserver = (
-  failure: PerceptionClassifierFailure,
-) => Promise<void> | void;
+export type {
+  PerceptionClassifierFailure,
+  PerceptionClassifierFailureObserver,
+  PerceptionClassifierName,
+} from "./types.js";
 
 export async function runPerceptionClassifierSafely<T>(input: {
   classifier: PerceptionClassifierName;

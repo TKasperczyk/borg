@@ -1,5 +1,10 @@
 export { detectAffectiveSignal } from "./affective-signal.js";
-export { EntityExtractor, type EntityExtractorOptions } from "./entity-extractor.js";
+export {
+  EntityExtractor,
+  type EntityExtractionResult,
+  type EntityExtractorOptions,
+  type ExtractedEntity,
+} from "./entity-extractor.js";
 export {
   ModeDetector,
   type ModeDetectionResult,
@@ -12,13 +17,15 @@ export {
   renderParticipantRoster,
   type BuildParticipantRosterFromRepositoriesInput,
   type BuildParticipantRosterInput,
+} from "./participant-roster.js";
+export {
   type ParticipantRoster,
   type ParticipantRosterAudienceRole,
   type ParticipantRosterMember,
   type ParticipantRosterStreamEvidence,
   type ParticipantRosterSubject,
   type ParticipantRosterUncertain,
-} from "./participant-roster.js";
+} from "./types.js";
 export {
   Perceiver,
   perceive,

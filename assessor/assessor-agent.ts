@@ -5,12 +5,16 @@ import type {
   MessageParam,
   TextBlockParam,
   Tool,
-  ToolResultBlockParam,
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
-import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
+import {
+  CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  createOAuthFetch,
+  toAnthropicContentBlocks,
+  type LLMToolResultBlock,
+} from "../src/llm/index.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
 import { TRACE_TAXONOMY_PHASES_WITH_OTHER } from "../src/cognition/tracing/taxonomy.js";
 
@@ -170,7 +174,7 @@ function isToolUseBlock(block: ContentBlock): block is ToolUseBlock {
   return block.type === "tool_use";
 }
 
-function toolResult(id: string, content: string, isError = false): ToolResultBlockParam {
+function toolResult(id: string, content: string, isError = false): LLMToolResultBlock {
   return {
     type: "tool_result",
     tool_use_id: id,
@@ -349,7 +353,7 @@ export class AssessorAgent {
         continue;
       }
 
-      const results: ToolResultBlockParam[] = [];
+      const results: LLMToolResultBlock[] = [];
 
       for (const use of toolUses) {
         if (use.name === "submit_verdict") {
@@ -440,7 +444,7 @@ export class AssessorAgent {
 
       messages.push({
         role: "user",
-        content: results,
+        content: toAnthropicContentBlocks(results),
       });
     }
 

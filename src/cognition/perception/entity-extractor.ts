@@ -6,9 +6,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { entityKindSchema, type EntityKind } from "../../memory/commitments/index.js";
+import { entityKindSchema } from "../../memory/commitments/types.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import type { EntityExtractionResult, ExtractedEntity } from "./types.js";
+
+export type { EntityExtractionResult, ExtractedEntity } from "./types.js";
 
 const extractedEntitySchema = z.union([
   z.string().min(1),
@@ -70,17 +73,6 @@ function isAcceptableEntity(value: string): boolean {
 
   return true;
 }
-
-export type EntityExtractionResult = {
-  entities: string[];
-  entityMentions: ExtractedEntity[];
-  userIdentityNames: string[];
-};
-
-export type ExtractedEntity = {
-  name: string;
-  kind: EntityKind;
-};
 
 function parseEntityFallback(result: LLMCompleteResult): EntityExtractionResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === ENTITY_FALLBACK_TOOL_NAME);

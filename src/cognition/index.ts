@@ -3,7 +3,7 @@ export {
   type ActionContext,
   type ActionResult,
   type ToolLoopCallRecord,
-} from "./action/index.js";
+} from "./turn-action/index.js";
 export {
   computeRetrievalLimit,
   computeWeights,
@@ -32,6 +32,7 @@ export {
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerBuilderOptions,
   type EvidenceLedgerEntry,
+  type EvidenceLedgerImageAttachment,
   type EvidenceLedgerSection,
   type EvidenceLedgerSectionId,
   type EvidenceLedgerSessionScope,
@@ -52,6 +53,7 @@ export {
   renderParticipantRoster,
   type ParticipantRoster,
   type ParticipantRosterMember,
+  type ParticipantRosterStreamEvidence,
   type ParticipantRosterSubject,
   type ParticipantRosterUncertain,
 } from "./perception/index.js";
@@ -126,8 +128,10 @@ export {
   type AgentSuppressedStreamContent,
   type EmissionRecommendation,
   type FinalizerNoOutputCategory,
+  type FinalizerNoOutputPrimaryReason,
   type FinalizerNoOutputSemanticCategory,
   type FinalizerNoOutputStructuralCategory,
+  type FinalizerNoOutputStructuralFlag,
   type GenerationSuppressionReason,
   type PendingTurnEmission,
   type ReplyTarget,

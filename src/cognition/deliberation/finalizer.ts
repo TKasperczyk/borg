@@ -5,7 +5,7 @@ import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../.
 import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
+import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
 import {
   FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,

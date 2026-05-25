@@ -1,4 +1,4 @@
-import type { ActionResult } from "../action/index.js";
+import type { ActionResult } from "../turn-action/index.js";
 import type { PerceptionResult } from "../types.js";
 import type { ProceduralContext, SkillSelectionResult } from "../../memory/procedural/index.js";
 import {

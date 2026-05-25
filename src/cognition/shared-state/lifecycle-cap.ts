@@ -6,7 +6,7 @@ import {
   type SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
 import { createSharedStateEntryId, type SharedStateEntryId } from "../../util/ids.js";
-import type { SharedStateLifecycleOptions } from "./schema.js";
+import type { SharedStateLifecycleOptions } from "./types.js";
 
 const DEFAULT_MAX_ACTIVE_SHARED_STATE_ENTRIES = 40;
 const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {

@@ -38,7 +38,7 @@ import {
   ValuesRepository,
 } from "../memory/self/index.js";
 import { episodePatchSchema } from "../memory/episodic/types.js";
-import { openQuestionPatchSchema, type OpenQuestionPatch } from "../memory/self/open-questions.js";
+import { openQuestionPatchSchema, type OpenQuestionPatch } from "../memory/self/types.js";
 
 const MANUAL_PROVENANCE = {
   kind: "manual" as const,

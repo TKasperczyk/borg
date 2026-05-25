@@ -13,7 +13,7 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./schema.js";
+import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
 
 const EMPTY_CANONICALIZES = {

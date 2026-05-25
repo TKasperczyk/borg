@@ -11,7 +11,7 @@ import type {
   SharedStateCanonicalizationCandidates,
   SharedStateCommitmentCanonicalizationCandidate,
   SharedStateRelationalSlotContext,
-} from "./schema.js";
+} from "./types.js";
 
 export function buildCanonicalizationCandidatePromptPayload(
   candidates: SharedStateCanonicalizationCandidates,

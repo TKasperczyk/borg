@@ -17,7 +17,7 @@ import {
   isSessionId,
   parseSessionId,
 } from "../../util/ids.js";
-import { goalIdSchema, openQuestionIdSchema } from "../self/index.js";
+import { goalIdSchema, openQuestionIdSchema } from "../self/types.js";
 
 export const ACTION_STATES = [
   "considering",

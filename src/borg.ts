@@ -2,9 +2,9 @@
 
 import type { TurnInput, TurnResult } from "./cognition/index.js";
 import { createBorgFacades } from "./borg/facade.js";
-import type { BorgFacades } from "./borg/facade-types.js";
 import { closeBorgDependencies } from "./borg/lifecycle.js";
 import { openBorgDependencies } from "./borg/open.js";
+import type { BorgFacades } from "./borg/public-facade.js";
 import type { BorgDependencies, BorgOpenOptions } from "./borg/types.js";
 import {
   expireSessionScopedActions,
@@ -20,6 +20,13 @@ export type {
   BorgOpenOptions,
 } from "./borg/types.js";
 
+/**
+ * Public Borg library facade.
+ *
+ * Construct with `Borg.open()`, call `turn()` for conversation turns, and use
+ * the exposed band facades for memory access, maintenance, correction, and
+ * operational state. Repository construction and storage wiring stay internal.
+ */
 export class Borg {
   readonly stream: BorgFacades["stream"];
   readonly episodic: BorgFacades["episodic"];
@@ -42,7 +49,7 @@ export class Borg {
   readonly workmem: BorgFacades["workmem"];
 
   private constructor(private readonly deps: BorgDependencies) {
-    const facades = createBorgFacades(deps);
+    const facades = createBorgFacades(deps) as unknown as BorgFacades;
 
     this.stream = facades.stream;
     this.episodic = facades.episodic;
@@ -65,10 +72,18 @@ export class Borg {
     this.workmem = facades.workmem;
   }
 
+  /**
+   * Run one user or autonomous turn through perception, retrieval,
+   * deliberation, generation, persistence, and post-turn maintenance hooks.
+   */
   turn(input: TurnInput): Promise<TurnResult> {
     return this.deps.turnOrchestrator.run(input);
   }
 
+  /**
+   * Close a session-scoped action window, expiring current-session actions and
+   * optionally rolling eligible next-session actions forward.
+   */
   endSession(
     sessionId: SessionId = DEFAULT_SESSION_ID,
     options: { nextSessionId?: SessionId } = {},
@@ -107,10 +122,12 @@ export class Borg {
     }
   }
 
+  /** Open Borg with default or caller-supplied configuration and clients. */
   static async open(options: BorgOpenOptions = {}): Promise<Borg> {
     return new Borg(await openBorgDependencies(options));
   }
 
+  /** Close underlying storage and runtime resources. */
   async close(): Promise<void> {
     await closeBorgDependencies(this.deps);
   }

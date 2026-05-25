@@ -3,7 +3,7 @@ import {
   type SharedStateSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import { streamEntryIdHelpers, type StreamEntryId } from "../../util/ids.js";
-import type { PatchRejection } from "./schema.js";
+import type { PatchRejection } from "./types.js";
 
 export function parseSourceStreamEntryIds(
   values: readonly string[],

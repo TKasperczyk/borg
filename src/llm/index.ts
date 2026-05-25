@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
-  ContentBlockParam,
   JSONOutputFormat,
   Message,
   MessageParam,
@@ -10,9 +9,7 @@ import type {
   ThinkingConfigParam,
   Tool,
   ToolChoice,
-  ToolResultBlockParam,
   ToolUseBlock,
-  ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
@@ -20,6 +17,7 @@ import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/cl
 import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, LLMError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
+import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
 import { getModelMaxOutputTokens } from "./max-tokens.js";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
@@ -238,6 +236,14 @@ export type LLMClient = {
   converse(options: LLMConverseOptions): Promise<LLMConverseResult>;
 };
 
+export {
+  toAnthropicContentBlock,
+  toAnthropicContentBlocks,
+  toAnthropicContentBlockMessages,
+  type AnthropicAttachmentResolver,
+  type AnthropicContentBlockOptions,
+} from "./anthropic-content-blocks.js";
+
 type AnthropicClientLike = {
   messages: {
     create(params: {
@@ -282,76 +288,6 @@ function toAnthropicMessages(messages: readonly LLMMessage[]): MessageParam[] {
   return messages.map((message) => ({
     role: message.role,
     content: message.content,
-  }));
-}
-
-function toAnthropicToolResultContent(
-  content: LLMToolResultBlock["content"],
-): ToolResultBlockParam["content"] {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  return content.map((block) => ({
-    type: "text",
-    text: block.text,
-  }));
-}
-
-function toAnthropicContentBlock(
-  block: LLMContentBlock,
-  attachmentResolver: AnthropicLLMClientOptions["attachmentResolver"] | undefined,
-): ContentBlockParam {
-  if (block.type === "text") {
-    return {
-      type: "text",
-      text: block.text,
-    } satisfies TextBlockParam;
-  }
-
-  if (block.type === "image_ref") {
-    if (attachmentResolver === undefined) {
-      throw new LLMError(`No attachment resolver configured for ${block.attachment_id}`, {
-        code: "LLM_ATTACHMENT_RESOLVER_MISSING",
-      });
-    }
-
-    const image = attachmentResolver(block.attachment_id);
-
-    return {
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: image.mediaType,
-        data: Buffer.from(image.bytes).toString("base64"),
-      },
-    } as ContentBlockParam;
-  }
-
-  if (block.type === "tool_use") {
-    return {
-      type: "tool_use",
-      id: block.id,
-      name: block.name,
-      input: block.input,
-    } satisfies ToolUseBlockParam;
-  }
-
-  return {
-    type: "tool_result",
-    tool_use_id: block.tool_use_id,
-    content: toAnthropicToolResultContent(block.content),
-    ...(block.is_error === undefined ? {} : { is_error: block.is_error }),
-  } satisfies ToolResultBlockParam;
-}
-
-function toAnthropicConversationMessages(
-  messages: readonly LLMContentBlockMessage[],
-  attachmentResolver: AnthropicLLMClientOptions["attachmentResolver"] | undefined,
-): MessageParam[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content.map((block) => toAnthropicContentBlock(block, attachmentResolver)),
   }));
 }
 
@@ -1234,7 +1170,9 @@ export class AnthropicLLMClient implements LLMClient {
   private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
     const response = await this.createRawMessage(
       options,
-      toAnthropicConversationMessages(options.messages, this.options.attachmentResolver),
+      toAnthropicContentBlockMessages(options.messages, {
+        attachmentResolver: this.options.attachmentResolver,
+      }),
     );
     let structuredOutput: unknown;
 

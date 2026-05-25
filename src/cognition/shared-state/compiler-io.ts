@@ -13,11 +13,13 @@ import type {
   SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
+import { MissingSharedStateArtifactToolCallError } from "./schema.js";
 import {
-  MissingSharedStateArtifactToolCallError,
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
   SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
+} from "./constants.js";
+import {
   sharedStatePatchSchema,
   type CanonicalizationDuplicateDrop,
   type EmptyUpdateDrop,
@@ -25,7 +27,7 @@ import {
   type NonLockedCanonicalizesDrop,
   type PatchRejection,
   type SharedStateLedgerMode,
-} from "./schema.js";
+} from "./types.js";
 import type {
   LifecycleAgingBlockedSampleEntry,
   LifecycleAgingBlockerCounts,

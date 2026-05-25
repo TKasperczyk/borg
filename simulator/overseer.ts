@@ -8,7 +8,6 @@ import type {
   MessageParam,
   TextBlockParam,
   Tool,
-  ToolResultBlockParam,
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
@@ -16,7 +15,12 @@ import { z } from "zod";
 import { BorgTransport, type AuditTranscriptEntry } from "../assessor/borg-transport.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
 import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../src/cognition/prompts/host-capabilities.js";
-import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
+import {
+  CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  createOAuthFetch,
+  toAnthropicContentBlocks,
+  type LLMToolResultBlock,
+} from "../src/llm/index.js";
 import type { StreamEntry } from "../src/stream/index.js";
 
 import { appendJsonlLine } from "./jsonl.js";
@@ -256,7 +260,7 @@ function isToolUseBlock(block: ContentBlock): block is ToolUseBlock {
   return block.type === "tool_use";
 }
 
-function toolResult(id: string, content: string, isError = false): ToolResultBlockParam {
+function toolResult(id: string, content: string, isError = false): LLMToolResultBlock {
   return {
     type: "tool_result",
     tool_use_id: id,
@@ -1270,7 +1274,7 @@ export async function runOverseer(options: RunOverseerOptions): Promise<Overseer
     });
 
     const toolUses = response.content.filter(isToolUseBlock);
-    const results: ToolResultBlockParam[] = [];
+    const results: LLMToolResultBlock[] = [];
 
     for (const use of toolUses) {
       if (use.name !== "submit_overseer_verdict") {
@@ -1326,7 +1330,7 @@ export async function runOverseer(options: RunOverseerOptions): Promise<Overseer
       content:
         results.length === 0
           ? "Submit the checkpoint verdict using submit_overseer_verdict."
-          : results,
+          : toAnthropicContentBlocks(results),
     });
   }
 

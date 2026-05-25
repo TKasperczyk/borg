@@ -1,0 +1,308 @@
+import { z } from "zod";
+
+import type {
+  SharedStateCanonicalizes,
+  SharedStateEntryKind,
+  SharedStateSourceTrustRejectionReason,
+} from "../../memory/decision-artifacts/types.js";
+import type { RelationalSlot } from "../../memory/relational-slots/types.js";
+import type {
+  ActionId,
+  CommitmentId,
+  EntityId,
+  GoalId,
+  OpenQuestionId,
+  SharedStateEntryId,
+} from "../../util/ids.js";
+import type { ParticipantRoster } from "../perception/types.js";
+import type { SharedStateCommitmentCanonicalizationType } from "./commitment-canonicalization.js";
+import {
+  MAX_OPERATIONS_PER_COMPILE,
+  SHARED_STATE_TOOL_ENTRY_KINDS,
+} from "./constants.js";
+
+const sharedStateToolKindSchema = z.enum(SHARED_STATE_TOOL_ENTRY_KINDS);
+const sourceStreamEntryIdsSchema = z
+  .array(z.string().trim().min(1))
+  .describe("Stream entry ids that support this artifact operation.");
+const relationshipEvidenceRelationalSlotIdsSchema = z
+  .array(z.string().trim().min(1))
+  .optional()
+  .describe(
+    "Grounded relational slot ids supporting any strict kinship or caregiver relationship label in this operation text.",
+  );
+const relationshipEvidenceStreamEntryIdsSchema = z
+  .array(z.string().trim().min(1))
+  .optional()
+  .describe(
+    "Trusted user-message stream entry ids supporting any strict kinship or caregiver relationship label in this operation text.",
+  );
+const stateKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .describe(
+    "Stable, domain-neutral dotted key for the shared-state dimension this entry belongs to.",
+  );
+export const canonicalizesSchema = z
+  .object({
+    goal_ids: z.array(z.string().trim().min(1)).optional(),
+    commitment_ids: z.array(z.string().trim().min(1)).optional(),
+    action_ids: z.array(z.string().trim().min(1)).optional(),
+    open_question_ids: z.array(z.string().trim().min(1)).optional(),
+  })
+  .strict()
+  .optional()
+  .describe("Active shared state ids this locked artifact entry makes canonical.");
+const ownerEntityIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .nullable()
+  .optional()
+  .describe("Entity id for the owner of the decision, or null when there is no specific owner.");
+const newKeyReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe(
+    "For add operations using a never-seen state_key, a brief explanation of what distinct object or thread this new key represents.",
+  );
+
+const addOperationSchema = z
+  .object({
+    type: z.literal("add"),
+    state_key: stateKeySchema,
+    new_key_reason: newKeyReasonSchema,
+    kind: sharedStateToolKindSchema,
+    text: z.string().trim().min(1),
+    owner_entity_id: ownerEntityIdSchema,
+    source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    canonicalizes: canonicalizesSchema,
+  })
+  .strict();
+
+const updateOperationSchema = z
+  .object({
+    type: z.literal("update"),
+    id: z.string().trim().min(1),
+    state_key: stateKeySchema,
+    kind: sharedStateToolKindSchema.optional(),
+    text: z.string().trim().min(1).optional(),
+    owner_entity_id: ownerEntityIdSchema,
+    source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    canonicalizes: canonicalizesSchema,
+  })
+  .strict();
+
+const replacementEntrySchema = z
+  .object({
+    state_key: stateKeySchema,
+    kind: sharedStateToolKindSchema,
+    text: z.string().trim().min(1),
+    owner_entity_id: ownerEntityIdSchema,
+    source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+  })
+  .strict();
+
+const supersedeOperationSchema = z
+  .object({
+    type: z.literal("supersede"),
+    id: z.string().trim().min(1),
+    replacement: replacementEntrySchema,
+    source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
+    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
+    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    canonicalizes: canonicalizesSchema,
+  })
+  .strict();
+
+const pruneOperationSchema = z
+  .object({
+    type: z.literal("prune"),
+    id: z.string().trim().min(1),
+    reason: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+export const sharedStatePatchSchema = z
+  .object({
+    operations: z
+      .array(
+        z.discriminatedUnion("type", [
+          addOperationSchema,
+          updateOperationSchema,
+          supersedeOperationSchema,
+          pruneOperationSchema,
+        ]),
+      )
+      .max(MAX_OPERATIONS_PER_COMPILE),
+  })
+  .strict();
+
+export type EmitSharedStatePatch = z.infer<typeof sharedStatePatchSchema>;
+export type EmitDecisionArtifactPatch = EmitSharedStatePatch;
+
+export type SharedStateArtifactParticipantContext = {
+  entityId: EntityId;
+  displayName?: string | null;
+};
+
+export type SharedStateCanonicalizationCandidate = {
+  id: string;
+  text: string;
+};
+
+export type SharedStateActionCanonicalizationCandidate = SharedStateCanonicalizationCandidate & {
+  actor?: string;
+  state?: string;
+  session_scope?: string | null;
+};
+
+export type SharedStateCommitmentCanonicalizationCandidate =
+  SharedStateCanonicalizationCandidate & {
+    kind: string;
+    type: SharedStateCommitmentCanonicalizationType;
+    directive_family: string;
+    enforcement_class: string;
+  };
+
+export type SharedStateCanonicalizationCandidates = {
+  goals?: readonly SharedStateCanonicalizationCandidate[];
+  commitments?: readonly SharedStateCommitmentCanonicalizationCandidate[];
+  actions?: readonly SharedStateActionCanonicalizationCandidate[];
+  openQuestions?: readonly SharedStateCanonicalizationCandidate[];
+};
+
+export type SharedStateRelationalSlotContext = Pick<
+  RelationalSlot,
+  | "id"
+  | "subject_entity_id"
+  | "slot_key"
+  | "value"
+  | "state"
+  | "evidence_stream_entry_ids"
+  | "contradicted_by_stream_entry_ids"
+  | "alternate_values"
+>;
+
+export type SharedStateCompileDegradedReason =
+  | "llm_unavailable"
+  | "repository_unavailable"
+  | "llm_failed"
+  | "missing_tool_call"
+  | "invalid_payload"
+  | "invalid_patch"
+  | "repository_failed";
+
+export type SharedStateLifecycleOptions = {
+  maxActiveEntries?: number;
+  maxLiveEntriesPerKey?: number;
+  kindSoftCaps?: Partial<Record<SharedStateEntryKind, number>>;
+  newestStateChangeReservedSlots?: number;
+  recentTurnThreshold?: number;
+  dormantTurnThreshold?: number;
+};
+
+export type SharedStateLedgerMode = "delta" | "full_fallback";
+
+export type ParsedPatchOperation = EmitSharedStatePatch["operations"][number];
+export type ParsedCanonicalizes = NonNullable<z.infer<typeof canonicalizesSchema>>;
+
+export type PatchRejection = {
+  reason:
+    | "invalid_entry_id"
+    | "unknown_entry_id"
+    | "invalid_owner_entity_id"
+    | "unsupported_kind"
+    | "missing_citation"
+    | "invalid_source_stream_entry_id"
+    | "disallowed_source_stream_entry_id"
+    | "quarantined_source_stream_entry_id"
+    | "inactive_source_stream_entry_id"
+    | "empty_update"
+    | "live_entry_cap_exceeded_for_key"
+    | "locked_state_key_collision"
+    | "near_duplicate_state_key"
+    | "missing_new_key_reason"
+    | "relationship_label_ungrounded";
+  operationType: ParsedPatchOperation["type"];
+  operationIndex: number;
+  sourceStreamEntryId?: string;
+  sourceTrustReason?: SharedStateSourceTrustRejectionReason | "unknown";
+  stateKey?: string;
+  currentCount?: number;
+  proposedCount?: number;
+  maxLiveEntriesPerKey?: number;
+  targetEntryId?: string;
+  lockedEntryIds?: string[];
+  similarStateKeys?: string[];
+  sharedStateKeyTokens?: string[];
+  protectedRelationshipLabels?: string[];
+  relationshipEvidenceRelationalSlotIds?: string[];
+  relationshipEvidenceStreamEntryIds?: string[];
+  rejectedRelationshipEvidenceRelationalSlotIds?: string[];
+  rejectedRelationshipEvidenceStreamEntryIds?: Array<{ id: string; reason: string }>;
+};
+
+export type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";
+
+export type DroppedCanonicalizeId = {
+  channel: CanonicalizeIdChannel;
+  id: string;
+  reason: "invalid_id" | "unknown_id";
+  operationType: ParsedPatchOperation["type"];
+  operationIndex: number;
+};
+
+export type CanonicalizationDuplicateDrop = {
+  artifact_entry_id: SharedStateEntryId;
+  kind: SharedStateEntryKind;
+  dropped_ids: SharedStateCanonicalizes;
+};
+
+export type NonLockedCanonicalizesDrop = {
+  operation_index: number;
+  kind: SharedStateEntryKind;
+  dropped_ids: {
+    goal_ids: string[];
+    commitment_ids: string[];
+    action_ids: string[];
+    open_question_ids: string[];
+  };
+};
+
+export type EmptyUpdateDrop = {
+  operationIndex: number;
+  operationId: SharedStateEntryId;
+  stateKey: string | null;
+  fieldPresence: {
+    kind: boolean;
+    text: boolean;
+    owner_entity_id: boolean;
+    canonicalizes: boolean;
+  };
+};
+
+export type AllowedCanonicalizationIds = {
+  goalIds: ReadonlySet<GoalId>;
+  commitmentIds: ReadonlySet<CommitmentId>;
+  actionIds: ReadonlySet<ActionId>;
+  openQuestionIds: ReadonlySet<OpenQuestionId>;
+};
+
+export type CompileSharedStateArtifactInputBase = {
+  audienceEntityId: EntityId;
+  selfEntityId: EntityId;
+  speakerEntityId?: EntityId | null;
+  participants: readonly SharedStateArtifactParticipantContext[];
+  participantRoster?: ParticipantRoster | null;
+  currentUserMessage: string;
+};

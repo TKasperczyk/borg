@@ -23,16 +23,20 @@ import {
   estimateSharedStateArtifactPromptBudget,
 } from "./compiler-prompt.js";
 import {
-  MAX_PATCH_OUTPUT_TOKENS,
   MissingSharedStateArtifactToolCallError,
-  SHARED_STATE_TOOL_NAME,
   SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
+} from "./schema.js";
+import {
+  MAX_PATCH_OUTPUT_TOKENS,
+  SHARED_STATE_TOOL_NAME,
+} from "./constants.js";
+import {
   type EmptyUpdateDrop,
   type EmitSharedStatePatch,
   type PatchRejection,
   type SharedStateCompileDegradedReason,
-} from "./schema.js";
+} from "./types.js";
 import {
   parseResponse,
   summarizeSharedStateArtifactResponseShape,
@@ -1448,10 +1452,10 @@ export {
   SHARED_STATE_TOOL_NAME,
   SHARED_STATE_TOOL_NAME_ALIASES,
   MAX_PATCH_OUTPUT_TOKENS,
-} from "./schema.js";
+} from "./constants.js";
 export { SHARED_STATE_SYSTEM_PROMPT };
+export type { CompileSharedStateArtifactInput } from "./schema.js";
 export type {
-  CompileSharedStateArtifactInput,
   DroppedCanonicalizeId,
   EmitDecisionArtifactPatch,
   EmitSharedStatePatch,
@@ -1463,4 +1467,4 @@ export type {
   SharedStateCompileDegradedReason,
   SharedStateLedgerMode,
   SharedStateLifecycleOptions,
-} from "./schema.js";
+} from "./types.js";

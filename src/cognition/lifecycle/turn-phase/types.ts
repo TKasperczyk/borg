@@ -1,11 +1,11 @@
-import type { ToolLoopCallRecord } from "../../action/index.js";
+import type { ToolLoopCallRecord } from "../../turn-action/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
   ImagePerceptionService,
   TurnInputAttachment,
 } from "../../../attachments/index.js";
-import type { TurnActionCoordinator } from "../../action/turn-action-coordinator.js";
+import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordinator.js";
 import type { TurnActionStateService } from "../../actions/turn-action-state-service.js";
 import type { AttributionLifecycleService } from "../../attribution/lifecycle-service.js";
 import type { AutonomyTriggerContext } from "../../autonomy-trigger.js";

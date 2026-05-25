@@ -48,7 +48,7 @@ import {
 import { IdentityCasMismatchError, LLMError } from "../../util/errors.js";
 import { z } from "zod";
 
-import type { ActionResult } from "../action/index.js";
+import type { ActionResult } from "../turn-action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";

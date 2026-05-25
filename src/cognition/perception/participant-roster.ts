@@ -3,52 +3,28 @@ import type {
   RelationalSlot,
   RelationalSlotRepository,
 } from "../../memory/relational-slots/index.js";
-import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId } from "../../util/ids.js";
 import type { ActiveParticipant, ActiveParticipantRole } from "../participants.js";
+import type {
+  ParticipantRoster,
+  ParticipantRosterAudienceRole,
+  ParticipantRosterMember,
+  ParticipantRosterStreamEvidence,
+  ParticipantRosterSubject,
+  ParticipantRosterUncertain,
+} from "./types.js";
+
+export type {
+  ParticipantRoster,
+  ParticipantRosterAudienceRole,
+  ParticipantRosterMember,
+  ParticipantRosterStreamEvidence,
+  ParticipantRosterSubject,
+  ParticipantRosterUncertain,
+} from "./types.js";
 
 const DEFAULT_ROSTER_RELATIONAL_SLOT_LIMIT = 64;
 const ROSTER_SLOT_STATES = ["established", "contested", "quarantined"] as const;
-
-export type ParticipantRosterAudienceRole = "speaker" | "active_participant" | "audience";
-
-export type ParticipantRosterMember = {
-  entity_id: EntityId;
-  display_name: string;
-  known_relationships: string[];
-  audience_role: ParticipantRosterAudienceRole;
-  relationship_source: string | null;
-  relationship_sources?: string[];
-};
-
-export type ParticipantRosterSubject = {
-  entity_id: EntityId;
-  display_name: string;
-  known_relationships: string[];
-  relationship_source: string | null;
-  relationship_sources?: string[];
-};
-
-export type ParticipantRosterUncertain = {
-  entity_id: EntityId | null;
-  display_name: string | null;
-  known_relationships: string[];
-  reason: string;
-  relationship_source: string | null;
-  relationship_sources?: string[];
-};
-
-export type ParticipantRoster = {
-  participants: ParticipantRosterMember[];
-  non_chat_subjects: ParticipantRosterSubject[];
-  unknown_or_uncertain: ParticipantRosterUncertain[];
-};
-
-export type ParticipantRosterStreamEvidence = {
-  entity_id: EntityId;
-  display_name?: string | null;
-  known_relationship: string;
-  source_stream_entry_id: StreamEntryId;
-};
 
 export type BuildParticipantRosterInput = {
   activeParticipants: readonly ActiveParticipant[];

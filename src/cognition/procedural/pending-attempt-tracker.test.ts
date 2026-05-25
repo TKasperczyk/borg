@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ActionResult } from "../action/index.js";
+import type { ActionResult } from "../turn-action/index.js";
 import type { PerceptionResult } from "../types.js";
 import {
   deriveProceduralContextKey,

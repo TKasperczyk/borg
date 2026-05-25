@@ -9,7 +9,6 @@ import { EXTRACTOR_MAX_TOKEN_LLM_LABELS, isExtractorMaxTokenLlmLabel } from "./e
 const COGNITION_ROOT = resolve(fileURLToPath(new URL("../", import.meta.url)));
 
 const EXTRACTOR_MAX_TOKEN_CONSUMER_LABELS = {
-  "action/pending-action-judge.ts": ["pending-action-judge", "pending_action_judge"],
   "actions/action-state-extractor.ts": ["action-state-extractor", "action_state_extractor"],
   "commitments/corrective-preference-extractor.ts": [
     "corrective-preference-extractor",
@@ -22,6 +21,7 @@ const EXTRACTOR_MAX_TOKEN_CONSUMER_LABELS = {
   "perception/mode-detector.ts": ["mode_detector", "perception-mode-fallback"],
   "perception/temporal-cue.ts": ["perception-temporal-cue", "temporal_cue_extractor"],
   "procedural/context-extractor.ts": ["procedural-context", "procedural_context_extractor"],
+  "turn-action/pending-action-judge.ts": ["pending-action-judge", "pending_action_judge"],
 } as const satisfies Record<string, readonly string[]>;
 
 function sourceFiles(dir: string): string[] {

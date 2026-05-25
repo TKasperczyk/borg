@@ -1,197 +1,68 @@
-import { z } from "zod";
-
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import {
   type SharedStateArtifact,
-  type SharedStateCanonicalizes,
-  type SharedStateEntryKind,
   type SharedStateRepository,
-  type SharedStateSourceTrustRejectionReason,
   type SharedStateSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import type { Clock } from "../../util/clock.js";
-import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import type {
-  ActionId,
-  CommitmentId,
-  EntityId,
-  GoalId,
-  OpenQuestionId,
-  SharedStateEntryId,
-  StreamEntryId,
-} from "../../util/ids.js";
+import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import type { SharedStateRenderOptions } from "./render.js";
 import type { SharedStatePromptSummaryOptions } from "./summary.js";
-import type { SharedStateCommitmentCanonicalizationType } from "./commitment-canonicalization.js";
 import type {
   SharedStateReconciliationRepositories,
   SharedStateSemanticBeliefRevisionDependencies,
 } from "./reconciliation.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { ParticipantRoster } from "../perception/index.js";
-
-export const SHARED_STATE_TOOL_NAME = "EmitSharedStatePatch";
-export const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
-export const SHARED_STATE_TOOL_NAME_ALIASES = [DECISION_ARTIFACT_TOOL_NAME] as const;
-export const SHARED_STATE_ACCEPTED_TOOL_NAMES = [
+import {
+  DECISION_ARTIFACT_TOOL_NAME,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
-  ...SHARED_STATE_TOOL_NAME_ALIASES,
-] as const;
-const MAX_OPERATIONS_PER_COMPILE = 40;
-export const MAX_PATCH_OUTPUT_TOKENS = 8_000;
-export const SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD = 35_000;
-const DEFAULT_MAX_ACTIVE_SHARED_STATE_ENTRIES = 40;
-const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {
-  locked: 24,
-  live: 10,
-  low_salience_live: 4,
-  dormant_live: 1,
-  invalidated: 4,
-  pending: 4,
-  tentative: 2,
-} as const satisfies Record<SharedStateEntryKind, number>;
-const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
-  "dormant_live",
-  "low_salience_live",
-  "live",
-  "tentative",
-  "invalidated",
-  "pending",
-  "locked",
-] as const satisfies readonly SharedStateEntryKind[];
-export const SHARED_STATE_TOOL_ENTRY_KINDS = [
-  "locked",
-  "live",
-  "tentative",
-  "invalidated",
-  "pending",
-] as const;
-const sharedStateToolKindSchema = z.enum(SHARED_STATE_TOOL_ENTRY_KINDS);
-const sourceStreamEntryIdsSchema = z
-  .array(z.string().trim().min(1))
-  .describe("Stream entry ids that support this artifact operation.");
-const relationshipEvidenceRelationalSlotIdsSchema = z
-  .array(z.string().trim().min(1))
-  .optional()
-  .describe(
-    "Grounded relational slot ids supporting any strict kinship or caregiver relationship label in this operation text.",
-  );
-const relationshipEvidenceStreamEntryIdsSchema = z
-  .array(z.string().trim().min(1))
-  .optional()
-  .describe(
-    "Trusted user-message stream entry ids supporting any strict kinship or caregiver relationship label in this operation text.",
-  );
-const stateKeySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .describe(
-    "Stable, domain-neutral dotted key for the shared-state dimension this entry belongs to.",
-  );
-export const canonicalizesSchema = z
-  .object({
-    goal_ids: z.array(z.string().trim().min(1)).optional(),
-    commitment_ids: z.array(z.string().trim().min(1)).optional(),
-    action_ids: z.array(z.string().trim().min(1)).optional(),
-    open_question_ids: z.array(z.string().trim().min(1)).optional(),
-  })
-  .strict()
-  .optional()
-  .describe("Active shared state ids this locked artifact entry makes canonical.");
-const ownerEntityIdSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .nullable()
-  .optional()
-  .describe("Entity id for the owner of the decision, or null when there is no specific owner.");
-const newKeyReasonSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .optional()
-  .describe(
-    "For add operations using a never-seen state_key, a brief explanation of what distinct object or thread this new key represents.",
-  );
+} from "./constants.js";
+import {
+  sharedStatePatchSchema,
+  type SharedStateArtifactParticipantContext,
+  type SharedStateCanonicalizationCandidates,
+  type SharedStateCompileDegradedReason,
+  type SharedStateLedgerMode,
+  type SharedStateLifecycleOptions,
+  type SharedStateRelationalSlotContext,
+} from "./types.js";
 
-const addOperationSchema = z
-  .object({
-    type: z.literal("add"),
-    state_key: stateKeySchema,
-    new_key_reason: newKeyReasonSchema,
-    kind: sharedStateToolKindSchema,
-    text: z.string().trim().min(1),
-    owner_entity_id: ownerEntityIdSchema,
-    source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
-    canonicalizes: canonicalizesSchema,
-  })
-  .strict();
-
-const updateOperationSchema = z
-  .object({
-    type: z.literal("update"),
-    id: z.string().trim().min(1),
-    state_key: stateKeySchema,
-    kind: sharedStateToolKindSchema.optional(),
-    text: z.string().trim().min(1).optional(),
-    owner_entity_id: ownerEntityIdSchema,
-    source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
-    canonicalizes: canonicalizesSchema,
-  })
-  .strict();
-
-const replacementEntrySchema = z
-  .object({
-    state_key: stateKeySchema,
-    kind: sharedStateToolKindSchema,
-    text: z.string().trim().min(1),
-    owner_entity_id: ownerEntityIdSchema,
-    source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
-  })
-  .strict();
-
-const supersedeOperationSchema = z
-  .object({
-    type: z.literal("supersede"),
-    id: z.string().trim().min(1),
-    replacement: replacementEntrySchema,
-    source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
-    canonicalizes: canonicalizesSchema,
-  })
-  .strict();
-
-const pruneOperationSchema = z
-  .object({
-    type: z.literal("prune"),
-    id: z.string().trim().min(1),
-    reason: z.string().trim().min(1).optional(),
-  })
-  .strict();
-
-export const sharedStatePatchSchema = z
-  .object({
-    operations: z
-      .array(
-        z.discriminatedUnion("type", [
-          addOperationSchema,
-          updateOperationSchema,
-          supersedeOperationSchema,
-          pruneOperationSchema,
-        ]),
-      )
-      .max(MAX_OPERATIONS_PER_COMPILE),
-  })
-  .strict();
+export {
+  DECISION_ARTIFACT_TOOL_NAME,
+  MAX_PATCH_OUTPUT_TOKENS,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
+  SHARED_STATE_TOOL_ENTRY_KINDS,
+  SHARED_STATE_TOOL_NAME,
+  SHARED_STATE_TOOL_NAME_ALIASES,
+  SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+} from "./constants.js";
+export {
+  canonicalizesSchema,
+  sharedStatePatchSchema,
+  type AllowedCanonicalizationIds,
+  type CanonicalizationDuplicateDrop,
+  type CanonicalizeIdChannel,
+  type DroppedCanonicalizeId,
+  type EmitDecisionArtifactPatch,
+  type EmitSharedStatePatch,
+  type EmptyUpdateDrop,
+  type NonLockedCanonicalizesDrop,
+  type ParsedCanonicalizes,
+  type ParsedPatchOperation,
+  type PatchRejection,
+  type SharedStateActionCanonicalizationCandidate,
+  type SharedStateArtifactParticipantContext,
+  type SharedStateCanonicalizationCandidate,
+  type SharedStateCanonicalizationCandidates,
+  type SharedStateCommitmentCanonicalizationCandidate,
+  type SharedStateCompileDegradedReason,
+  type SharedStateLedgerMode,
+  type SharedStateLifecycleOptions,
+  type SharedStateRelationalSlotContext,
+} from "./types.js";
 
 function sharedStateToolDefinition(name: (typeof SHARED_STATE_ACCEPTED_TOOL_NAMES)[number]) {
   return {
@@ -209,72 +80,6 @@ export const SHARED_STATE_TOOLS = [
   DECISION_ARTIFACT_TOOL_ALIAS,
 ] as const satisfies readonly LLMToolDefinition[];
 export const DECISION_ARTIFACT_TOOL = DECISION_ARTIFACT_TOOL_ALIAS;
-
-export type EmitSharedStatePatch = z.infer<typeof sharedStatePatchSchema>;
-export type EmitDecisionArtifactPatch = EmitSharedStatePatch;
-
-export type SharedStateArtifactParticipantContext = {
-  entityId: EntityId;
-  displayName?: string | null;
-};
-
-export type SharedStateCanonicalizationCandidate = {
-  id: string;
-  text: string;
-};
-
-export type SharedStateActionCanonicalizationCandidate = SharedStateCanonicalizationCandidate & {
-  actor?: string;
-  state?: string;
-  session_scope?: string | null;
-};
-
-export type SharedStateCommitmentCanonicalizationCandidate =
-  SharedStateCanonicalizationCandidate & {
-    kind: string;
-    type: SharedStateCommitmentCanonicalizationType;
-    directive_family: string;
-    enforcement_class: string;
-  };
-
-export type SharedStateCanonicalizationCandidates = {
-  goals?: readonly SharedStateCanonicalizationCandidate[];
-  commitments?: readonly SharedStateCommitmentCanonicalizationCandidate[];
-  actions?: readonly SharedStateActionCanonicalizationCandidate[];
-  openQuestions?: readonly SharedStateCanonicalizationCandidate[];
-};
-
-export type SharedStateRelationalSlotContext = Pick<
-  RelationalSlot,
-  | "id"
-  | "subject_entity_id"
-  | "slot_key"
-  | "value"
-  | "state"
-  | "evidence_stream_entry_ids"
-  | "contradicted_by_stream_entry_ids"
-  | "alternate_values"
->;
-
-export type SharedStateCompileDegradedReason =
-  | "llm_unavailable"
-  | "repository_unavailable"
-  | "llm_failed"
-  | "missing_tool_call"
-  | "invalid_payload"
-  | "invalid_patch"
-  | "repository_failed";
-
-export type SharedStateLifecycleOptions = {
-  maxActiveEntries?: number;
-  maxLiveEntriesPerKey?: number;
-  kindSoftCaps?: Partial<Record<SharedStateEntryKind, number>>;
-  newestStateChangeReservedSlots?: number;
-  recentTurnThreshold?: number;
-  dormantTurnThreshold?: number;
-};
-
-export type SharedStateLedgerMode = "delta" | "full_fallback";
 
 export type CompileSharedStateArtifactInput = {
   llmClient?: LLMClient;
@@ -306,91 +111,6 @@ export type CompileSharedStateArtifactInput = {
   previousArtifactSummaryOptions?: SharedStatePromptSummaryOptions;
   ledgerMode?: SharedStateLedgerMode;
   onDegraded?: (reason: SharedStateCompileDegradedReason, error?: unknown) => Promise<void> | void;
-};
-
-export type ParsedPatchOperation = EmitSharedStatePatch["operations"][number];
-export type ParsedCanonicalizes = NonNullable<z.infer<typeof canonicalizesSchema>>;
-
-export type PatchRejection = {
-  reason:
-    | "invalid_entry_id"
-    | "unknown_entry_id"
-    | "invalid_owner_entity_id"
-    | "unsupported_kind"
-    | "missing_citation"
-    | "invalid_source_stream_entry_id"
-    | "disallowed_source_stream_entry_id"
-    | "quarantined_source_stream_entry_id"
-    | "inactive_source_stream_entry_id"
-    | "empty_update"
-    | "live_entry_cap_exceeded_for_key"
-    | "locked_state_key_collision"
-    | "near_duplicate_state_key"
-    | "missing_new_key_reason"
-    | "relationship_label_ungrounded";
-  operationType: ParsedPatchOperation["type"];
-  operationIndex: number;
-  sourceStreamEntryId?: string;
-  sourceTrustReason?: SharedStateSourceTrustRejectionReason | "unknown";
-  stateKey?: string;
-  currentCount?: number;
-  proposedCount?: number;
-  maxLiveEntriesPerKey?: number;
-  targetEntryId?: string;
-  lockedEntryIds?: string[];
-  similarStateKeys?: string[];
-  sharedStateKeyTokens?: string[];
-  protectedRelationshipLabels?: string[];
-  relationshipEvidenceRelationalSlotIds?: string[];
-  relationshipEvidenceStreamEntryIds?: string[];
-  rejectedRelationshipEvidenceRelationalSlotIds?: string[];
-  rejectedRelationshipEvidenceStreamEntryIds?: Array<{ id: string; reason: string }>;
-};
-
-export type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";
-
-export type DroppedCanonicalizeId = {
-  channel: CanonicalizeIdChannel;
-  id: string;
-  reason: "invalid_id" | "unknown_id";
-  operationType: ParsedPatchOperation["type"];
-  operationIndex: number;
-};
-
-export type CanonicalizationDuplicateDrop = {
-  artifact_entry_id: SharedStateEntryId;
-  kind: SharedStateEntryKind;
-  dropped_ids: SharedStateCanonicalizes;
-};
-
-export type NonLockedCanonicalizesDrop = {
-  operation_index: number;
-  kind: SharedStateEntryKind;
-  dropped_ids: {
-    goal_ids: string[];
-    commitment_ids: string[];
-    action_ids: string[];
-    open_question_ids: string[];
-  };
-};
-
-export type EmptyUpdateDrop = {
-  operationIndex: number;
-  operationId: SharedStateEntryId;
-  stateKey: string | null;
-  fieldPresence: {
-    kind: boolean;
-    text: boolean;
-    owner_entity_id: boolean;
-    canonicalizes: boolean;
-  };
-};
-
-export type AllowedCanonicalizationIds = {
-  goalIds: ReadonlySet<GoalId>;
-  commitmentIds: ReadonlySet<CommitmentId>;
-  actionIds: ReadonlySet<ActionId>;
-  openQuestionIds: ReadonlySet<OpenQuestionId>;
 };
 
 export class MissingSharedStateArtifactToolCallError extends Error {}

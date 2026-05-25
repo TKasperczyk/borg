@@ -1,13 +1,14 @@
 export { compileSharedStateArtifact } from "./compiler.js";
 export { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
+export { SHARED_STATE_TOOLS, type CompileSharedStateArtifactInput } from "./schema.js";
 export {
   SHARED_STATE_TOOL_NAME,
   DECISION_ARTIFACT_TOOL_NAME,
   SHARED_STATE_ACCEPTED_TOOL_NAMES,
-  SHARED_STATE_TOOLS,
   SHARED_STATE_TOOL_NAME_ALIASES,
   MAX_PATCH_OUTPUT_TOKENS,
-  type CompileSharedStateArtifactInput,
+} from "./constants.js";
+export {
   type SharedStateActionCanonicalizationCandidate,
   type SharedStateCanonicalizationCandidate,
   type SharedStateCanonicalizationCandidates,
@@ -19,7 +20,7 @@ export {
   type DroppedCanonicalizeId,
   type EmitDecisionArtifactPatch,
   type EmitSharedStatePatch,
-} from "./schema.js";
+} from "./types.js";
 export {
   SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
   type SharedStateCommitmentCanonicalizationType,

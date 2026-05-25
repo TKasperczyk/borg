@@ -353,53 +353,66 @@ export type BorgCorrectionFacade = {
   ) => ReturnType<CorrectionService["listIdentityEvents"]>;
 };
 
+export type BorgActionsFacade = ActionRepository;
+
+export type BorgRelationalSlotsFacade = {
+  countByState: () => ReturnType<RelationalSlotRepository["countByState"]>;
+};
+
+export type BorgReviewFacade = {
+  list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
+  resolve: (
+    id: number,
+    decision: ReviewResolutionInput,
+    options?: ReviewResolveOptions,
+  ) => Promise<ReviewQueueItem | null>;
+  revalidate: (options: ReviewRevalidationOptions) => Promise<ReviewRevalidationResult>;
+};
+
+export type BorgAuditFacade = {
+  list: (options?: {
+    runId?: MaintenanceRunId;
+    process?: OfflineProcessName;
+    reverted?: boolean;
+  }) => ReturnType<BorgDependencies["auditLog"]["list"]>;
+  revert: (id: AuditId, revertedBy?: string) => ReturnType<BorgDependencies["auditLog"]["revert"]>;
+};
+
+export type BorgDreamFacade = BorgDreamRunner;
+
+export type BorgAutonomyFacade = {
+  scheduler: AutonomyScheduler;
+  wakes: AutonomyWakesRepository;
+};
+
+export type BorgMaintenanceFacade = {
+  scheduler: MaintenanceScheduler;
+};
+
+export type BorgWorkmemFacade = {
+  load: (sessionId?: SessionId) => WorkingMemory;
+  clear: (sessionId?: SessionId) => void;
+  getPendingActionMergeCount: () => ReturnType<WorkingMemoryStore["getPendingActionMergeCount"]>;
+};
+
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
   self: BorgSelfFacade;
   skills: BorgSkillsFacade;
   mood: BorgMoodFacade;
-  actions: ActionRepository;
+  actions: BorgActionsFacade;
   social: BorgSocialFacade;
   entities: BorgEntitiesFacade;
   semantic: BorgSemanticFacade;
-  relationalSlots: {
-    countByState: () => ReturnType<RelationalSlotRepository["countByState"]>;
-  };
+  relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;
-  review: {
-    list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
-    resolve: (
-      id: number,
-      decision: ReviewResolutionInput,
-      options?: ReviewResolveOptions,
-    ) => Promise<ReviewQueueItem | null>;
-    revalidate: (options: ReviewRevalidationOptions) => Promise<ReviewRevalidationResult>;
-  };
-  audit: {
-    list: (options?: {
-      runId?: MaintenanceRunId;
-      process?: OfflineProcessName;
-      reverted?: boolean;
-    }) => ReturnType<BorgDependencies["auditLog"]["list"]>;
-    revert: (
-      id: AuditId,
-      revertedBy?: string,
-    ) => ReturnType<BorgDependencies["auditLog"]["revert"]>;
-  };
-  dream: BorgDreamRunner;
-  autonomy: {
-    scheduler: AutonomyScheduler;
-    wakes: AutonomyWakesRepository;
-  };
-  maintenance: {
-    scheduler: MaintenanceScheduler;
-  };
-  workmem: {
-    load: (sessionId?: SessionId) => WorkingMemory;
-    clear: (sessionId?: SessionId) => void;
-    getPendingActionMergeCount: () => ReturnType<WorkingMemoryStore["getPendingActionMergeCount"]>;
-  };
+  review: BorgReviewFacade;
+  audit: BorgAuditFacade;
+  dream: BorgDreamFacade;
+  autonomy: BorgAutonomyFacade;
+  maintenance: BorgMaintenanceFacade;
+  workmem: BorgWorkmemFacade;
 };
