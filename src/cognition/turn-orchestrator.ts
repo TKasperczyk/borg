@@ -81,6 +81,7 @@ export type TurnInput = {
 };
 
 export type TurnResult = {
+  turn_id: string;
   mode: CognitiveMode;
   path: "system_1" | "system_2" | "suppressed";
   response: string;

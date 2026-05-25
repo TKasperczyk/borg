@@ -62,7 +62,7 @@ import type {
 } from "../retrieval/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
-import type { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
+import type { StreamEntry, StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { EntityId, SessionId } from "../util/ids.js";
 
@@ -115,6 +115,7 @@ export type BorgDependencies = {
   auditLog: AuditLog;
   maintenanceOrchestrator: MaintenanceOrchestrator;
   offlineProcesses: Record<OfflineProcessName, OfflineProcess>;
+  createStreamWriter: BorgStreamWriterFactory;
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
   tracer: TurnTracer;
@@ -129,6 +130,8 @@ export type BorgOpenOptions = {
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;
+  tracer?: TurnTracer;
+  onStreamAppend?: (entries: readonly StreamEntry[]) => void;
   tracerPath?: string;
   /**
    * When true, completed turns trigger best-effort watermark-based episodic

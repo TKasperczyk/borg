@@ -14,6 +14,8 @@ export {
 } from "./borg.js";
 export type {
   BorgActionsFacade,
+  BorgAttachmentBytesResult,
+  BorgAttachmentsFacade,
   BorgAuditFacade,
   BorgAutonomyFacade,
   BorgCommitmentsFacade,
@@ -29,6 +31,7 @@ export type {
   BorgReviewFacade,
   BorgSelfFacade,
   BorgSemanticFacade,
+  BorgSharedStateFacade,
   BorgSkillsFacade,
   BorgSocialFacade,
   BorgStreamFacade,
@@ -79,12 +82,14 @@ export {
 export {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   COGNITIVE_MODES,
+  CompositeTracer,
   FINALIZER_NO_OUTPUT_CATEGORIES,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
   FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
   FRAME_ANOMALY_KINDS,
   GOAL_PROMOTION_CLASSIFICATIONS,
   actionCandidateClassificationSchema,
+  compositeTracer,
   goalPromotionClassificationSchema,
   evidenceLedgerSourceTypeSchema,
   isFrameAnomaly,

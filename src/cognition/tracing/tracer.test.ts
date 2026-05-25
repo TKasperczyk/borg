@@ -9,7 +9,14 @@ import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeEmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient, createFakeEmitAnswerResponse } from "../../llm/test-support/fake-client.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import { JsonlTracer, NoopTracer, createTurnTracer, type TurnTracer } from "./tracer.js";
+import {
+  JsonlTracer,
+  NoopTracer,
+  compositeTracer,
+  createTurnTracer,
+  type TurnTraceData,
+  type TurnTracer,
+} from "./tracer.js";
 
 type TraceEvent = {
   ts: number;
@@ -79,6 +86,68 @@ describe("TurnTracer", () => {
       sourceEntryIds: [],
     });
     expect(typeof events[0]?.wallMs).toBe("number");
+  });
+
+  it("strips payload-gated keys per child tracer", () => {
+    const withoutPayloads: TurnTraceData[] = [];
+    const withPayloads: TurnTraceData[] = [];
+    const tracer = compositeTracer([
+      {
+        enabled: true,
+        includePayloads: false,
+        emit: (_event, data) => {
+          withoutPayloads.push(data);
+        },
+      },
+      {
+        enabled: true,
+        includePayloads: true,
+        emit: (_event, data) => {
+          withPayloads.push(data);
+        },
+      },
+    ]);
+
+    tracer.emit("evidence_ledger.built", {
+      turnId: "turn_payload",
+      prompt: "full prompt",
+      response: "full response",
+      ledger: { sections: [] },
+      record: { id: "record" },
+      rawToolInput: { raw: true },
+      normalizedPayload: { normalized: true },
+      original_response: "before",
+      rewritten_response: "after",
+      dropped_facets: [{ query: "hidden", priority: 1 }],
+      description: "candidate text",
+      error: "stack-like detail",
+      spans: [{ text: "hidden span" }],
+      reason: "ordinary_reason",
+      summary: "safe metadata",
+    });
+
+    expect(withPayloads[0]).toMatchObject({
+      prompt: "full prompt",
+      response: "full response",
+      ledger: { sections: [] },
+      summary: "safe metadata",
+    });
+    expect(withoutPayloads[0]).toEqual({
+      turnId: "turn_payload",
+      reason: "ordinary_reason",
+      summary: "safe metadata",
+    });
+
+    tracer.emit("closure_response_guard.completed", {
+      turnId: "turn_spans",
+      reason: "mixed_closure_observed",
+      spans: [{ text: "kept", kind: "farewell", rationale: "mixed" }],
+    });
+
+    expect(withoutPayloads[1]).toMatchObject({
+      reason: "mixed_closure_observed",
+      spans: [{ text: "kept" }],
+    });
   });
 
   it("writes valid JSONL with turn correlation", () => {
@@ -322,13 +391,18 @@ describe("TurnTracer", () => {
 
     expect(new Set(events.map((event) => event.turnId)).size).toBe(1);
     expect(events.map((event) => event.event)).toEqual([
+      "turn_phase.started",
       "recency.completed",
       "perception.started",
       "perception.classifier.degraded",
       "perception.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
       "llm_call.started",
       "llm_call.completed",
       "frame_anomaly.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
       "llm_call.started",
       "llm_call.started",
       "llm_call.started",
@@ -338,14 +412,23 @@ describe("TurnTracer", () => {
       "extraction.actions.completed",
       "llm_call.completed",
       "extraction.goals.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
       "retrieval.started",
       "llm_call.started",
       "llm_call.completed",
       "retrieval.degraded",
       "retrieval.completed",
+      "turn_phase.started",
       "session_reentry.continuity.evaluated",
       "evidence_ledger.reverse_scan",
+      "turn_phase.started",
+      "turn_phase.completed",
       "evidence_ledger.completed",
+      "evidence_ledger.built",
+      "turn_phase.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
       "deliberation.contradiction_routing.completed",
       "deliberation.path.completed",
       "deliberation.planner_ledger.completed",
@@ -356,9 +439,12 @@ describe("TurnTracer", () => {
       "llm_call.started",
       "llm_call.completed",
       "finalizer.completed",
+      "turn_phase.completed",
       "commitment_check.completed",
       "closure_response_guard.completed",
+      "turn_phase.started",
       "reflection.completed",
+      "turn_phase.completed",
       "action_archive_scan.completed",
     ]);
     expect(

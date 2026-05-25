@@ -1,6 +1,11 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      borg: new URL("./src/index.ts", import.meta.url).pathname,
+    },
+  },
   test: {
     globals: false,
     environment: "node",
@@ -11,6 +16,7 @@ export default defineConfig({
       "assessor/**/*.test.ts",
       "simulator/**/*.test.ts",
       "eval/**/*.test.ts",
+      "demo/server/src/**/*.test.ts",
     ],
     testTimeout: 15_000,
     hookTimeout: 15_000,

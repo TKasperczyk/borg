@@ -139,9 +139,11 @@ export {
 } from "./generation/types.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";
 export {
+  CompositeTracer,
   JsonlTracer,
   NOOP_TRACER,
   NoopTracer,
+  compositeTracer,
   createTurnTracer,
   type CreateTurnTracerOptions,
   type JsonlTracerOptions,

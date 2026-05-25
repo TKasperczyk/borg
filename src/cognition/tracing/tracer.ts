@@ -11,6 +11,9 @@ export type TurnTraceEventName =
   | "attachment.fetch_for_ledger"
   | "attachment.rejected"
   | "attachment.blob_corrupted"
+  | "turn_phase.started"
+  | "turn_phase.completed"
+  | "turn_phase.failed"
   | "perception.start"
   | "perception.complete"
   | "perception.degraded"
@@ -31,6 +34,7 @@ export type TurnTraceEventName =
   | "evidence_ledger.reverse_scan"
   | "evidence_ledger.image_attach"
   | "evidence_ledger.completed"
+  | "evidence_ledger.built"
   | "evidence_ledger.compaction.completed"
   | "session_reentry.continuity.evaluated"
   | "session_reentry.continuity.rendered"
@@ -161,6 +165,72 @@ export class NoopTracer implements TurnTracer {
 }
 
 export const NOOP_TRACER = new NoopTracer();
+
+const PAYLOAD_GATED_TRACE_KEYS = new Set([
+  "description",
+  "dropped_facets",
+  "error",
+  "ledger",
+  "normalizedPayload",
+  "original_response",
+  "prompt",
+  "rawToolInput",
+  "record",
+  "response",
+  "rewritten_response",
+]);
+
+function stripPayloadGatedTraceData(data: TurnTraceData): TurnTraceData {
+  let stripped: TurnTraceData | undefined;
+
+  for (const key of PAYLOAD_GATED_TRACE_KEYS) {
+    if (Object.hasOwn(data, key)) {
+      stripped ??= { ...data };
+      delete stripped[key];
+    }
+  }
+
+  if (Object.hasOwn(data, "spans") && data.reason !== "mixed_closure_observed") {
+    stripped ??= { ...data };
+    delete stripped.spans;
+  }
+
+  return stripped ?? data;
+}
+
+export class CompositeTracer implements TurnTracer {
+  private readonly tracers: readonly TurnTracer[];
+  readonly enabled: boolean;
+  readonly includePayloads: boolean;
+
+  constructor(tracers: readonly TurnTracer[]) {
+    this.tracers = tracers.filter((tracer) => tracer.enabled);
+    this.enabled = this.tracers.length > 0;
+    this.includePayloads = this.tracers.some((tracer) => tracer.includePayloads);
+  }
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    const strippedData = stripPayloadGatedTraceData(data);
+
+    for (const tracer of this.tracers) {
+      tracer.emit(event, tracer.includePayloads ? data : strippedData);
+    }
+  }
+}
+
+export function compositeTracer(tracers: readonly (TurnTracer | undefined | null)[]): TurnTracer {
+  const active = tracers.filter((tracer): tracer is TurnTracer => tracer?.enabled === true);
+
+  if (active.length === 0) {
+    return NOOP_TRACER;
+  }
+
+  if (active.length === 1) {
+    return active[0]!;
+  }
+
+  return new CompositeTracer(active);
+}
 
 export function toTraceJsonValue(value: unknown): JsonValue {
   const serialized = JSON.stringify(value);

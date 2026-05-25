@@ -1,6 +1,7 @@
 import type { TurnTraceEventName } from "./tracer.js";
 
 export const TRACE_EVENT_TAXONOMY = {
+  turn_phase: ["turn_phase.started", "turn_phase.completed", "turn_phase.failed"],
   perception: [
     "attachment.write",
     "attachment.quarantined",
@@ -38,6 +39,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "evidence_ledger.image_attach",
     "citation.image_filtered",
     "evidence_ledger.completed",
+    "evidence_ledger.built",
     "evidence_ledger.compaction.completed",
     "session_reentry.continuity.evaluated",
     "session_reentry.continuity.rendered",

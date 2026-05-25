@@ -26,6 +26,7 @@ import type {
   NameProvenance,
 } from "../memory/commitments/types.js";
 import type { Provenance } from "../memory/common/provenance.js";
+import type { SharedStateArtifact, SharedStateEntry } from "../memory/decision-artifacts/index.js";
 import type {
   Episode,
   EpisodeListOptions,
@@ -76,10 +77,17 @@ import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
-import type { StreamCursor, StreamEntry, StreamEntryInput, StreamIterateOptions } from "../stream/types.js";
+import type {
+  StreamCursor,
+  StreamEntry,
+  StreamEntryInput,
+  StreamIterateOptions,
+} from "../stream/types.js";
+import type { ImageMediaType, StoredAttachmentRecord } from "../attachments/index.js";
 import type {
   ActionId,
   AuditId,
+  AttachmentId,
   AutobiographicalPeriodId,
   AutonomyWakeId,
   CommitmentId,
@@ -98,11 +106,7 @@ import type {
   TraitId,
   ValueId,
 } from "../util/ids.js";
-import type {
-  BorgDreamOptions,
-  BorgEpisodeGetOptions,
-  BorgEpisodeSearchOptions,
-} from "./types.js";
+import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
 
 export type BorgIdentityUpdateOptions = {
   throughReview?: boolean;
@@ -560,6 +564,27 @@ export type BorgEntityResolveOptions = {
 
 export type BorgEntitiesFacade = {
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
+  find(name: string, options?: Pick<BorgEntityResolveOptions, "kind">): EntityRecord | null;
+};
+
+export type BorgSharedStateFacade = {
+  getForAudience(audience: string): SharedStateArtifact | null;
+  listEntriesForAudience(audience: string): SharedStateEntry[];
+};
+
+export type BorgAttachmentBytesResult = {
+  attachment: StoredAttachmentRecord;
+  mediaType: ImageMediaType;
+  bytes: Uint8Array;
+};
+
+export type BorgAttachmentsFacade = {
+  getBytes(
+    attachmentId: AttachmentId,
+    options?: {
+      audience?: string | null;
+    },
+  ): BorgAttachmentBytesResult | null;
 };
 
 export type BorgSemanticNodeAddInput = {
@@ -933,10 +958,7 @@ export type BorgDreamFacade = {
   apply(plan: MaintenancePlan): Promise<OrchestratorResult>;
   consolidate(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   reflect(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
-  extractSemantics(options?: {
-    dryRun?: boolean;
-    budget?: number;
-  }): Promise<OrchestratorResult>;
+  extractSemantics(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   curate(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   oversee(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   ruminate(options?: {
@@ -1035,6 +1057,8 @@ export type BorgFacades = {
   actions: BorgActionsFacade;
   social: BorgSocialFacade;
   entities: BorgEntitiesFacade;
+  sharedState: BorgSharedStateFacade;
+  attachments: BorgAttachmentsFacade;
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;

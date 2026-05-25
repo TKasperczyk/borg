@@ -42,6 +42,7 @@ import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/inde
 import type { StreamCursor, StreamEntry, StreamEntryInput, StreamReader } from "../stream/index.js";
 import type {
   AuditId,
+  AttachmentId,
   AutobiographicalPeriodId,
   EpisodeId,
   MaintenanceRunId,
@@ -228,6 +229,32 @@ export type BorgEntitiesFacade = {
   resolve: (
     ...args: Parameters<EntityRepository["resolve"]>
   ) => ReturnType<EntityRepository["resolve"]>;
+  find: (
+    name: string,
+    options?: Parameters<EntityRepository["findByName"]>[1],
+  ) => ReturnType<EntityRepository["get"]>;
+};
+
+export type BorgSharedStateFacade = {
+  getForAudience: (
+    audience: string,
+  ) => ReturnType<BorgDependencies["sharedStateRepository"]["get"]>;
+  listEntriesForAudience: (
+    audience: string,
+  ) => NonNullable<ReturnType<BorgDependencies["sharedStateRepository"]["get"]>>["entries"];
+};
+
+export type BorgAttachmentBytesResult = {
+  attachment: NonNullable<ReturnType<BorgDependencies["attachmentRepository"]["get"]>>;
+  mediaType: string;
+  bytes: Uint8Array;
+};
+
+export type BorgAttachmentsFacade = {
+  getBytes: (
+    attachmentId: AttachmentId,
+    options?: { audience?: string | null },
+  ) => BorgAttachmentBytesResult | null;
 };
 
 export type BorgSemanticFacade = {
@@ -404,6 +431,8 @@ export type BorgFacades = {
   actions: BorgActionsFacade;
   social: BorgSocialFacade;
   entities: BorgEntitiesFacade;
+  sharedState: BorgSharedStateFacade;
+  attachments: BorgAttachmentsFacade;
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;

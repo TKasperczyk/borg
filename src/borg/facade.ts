@@ -9,7 +9,8 @@ import { buildParticipantRosterFromRepositories } from "../cognition/perception/
 import { revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import { StreamReader } from "../stream/index.js";
+import { AttachmentError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, createSemanticNodeId, type EntityId } from "../util/ids.js";
 import type { BorgFacades } from "./facade-types.js";
 import type {
@@ -195,12 +196,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   return {
     stream: {
       append: async (input, options = {}) => {
-        const writer = new StreamWriter({
-          dataDir: deps.config.dataDir,
-          sessionId: options.session ?? DEFAULT_SESSION_ID,
-          clock: deps.clock,
-          entryIndex: deps.entryIndex,
-        });
+        const writer = deps.createStreamWriter(options.session ?? DEFAULT_SESSION_ID);
 
         try {
           return await writer.append(input);
@@ -328,6 +324,49 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     entities: {
       resolve: (...args) => deps.entityRepository.resolve(...args),
+      find: (name, options) => {
+        const entityId = deps.entityRepository.findByName(name, options);
+        return entityId === null ? null : deps.entityRepository.get(entityId);
+      },
+    },
+    sharedState: {
+      getForAudience: (audience) => {
+        const entityId = deps.entityRepository.findByName(audience);
+        return entityId === null ? null : deps.sharedStateRepository.get(entityId);
+      },
+      listEntriesForAudience: (audience) => {
+        const entityId = deps.entityRepository.findByName(audience);
+        return entityId === null ? [] : (deps.sharedStateRepository.get(entityId)?.entries ?? []);
+      },
+    },
+    attachments: {
+      getBytes: (attachmentId, options = {}) => {
+        const attachment = deps.attachmentRepository.get(attachmentId);
+
+        if (attachment === null) {
+          return null;
+        }
+
+        if (options.audience !== undefined && attachment.audience !== options.audience) {
+          return null;
+        }
+
+        try {
+          const image = deps.attachmentService.fetchImageForLlm(attachmentId);
+
+          return {
+            attachment,
+            mediaType: attachment.media_type,
+            bytes: image.bytes,
+          };
+        } catch (error) {
+          if (error instanceof AttachmentError) {
+            return null;
+          }
+
+          throw error;
+        }
+      },
     },
     semantic: {
       nodes: {

@@ -37,18 +37,69 @@ import {
   suppressFromClosureLoopPhase,
   suppressFromGenerationGatePhase,
 } from "./turn-phase/post-generation-phase.js";
+import { traceTurnPhase } from "./turn-phase/phase-trace.js";
 import { appendHookFailureEvent, catchUpStreamIngestion } from "./turn-phase/utils.js";
 import type {
   RunTurnPhasesInput,
   TurnPhaseCoordinatorOptions,
   TurnPhaseResult,
 } from "./turn-phase/types.js";
+import type { TurnExtractionPhaseResult } from "./turn-phase/extraction-phase.js";
+import type { TurnRetrievalPhaseResult } from "./turn-phase/retrieval-phase.js";
+import type { TurnDeliberationPhaseResult } from "./turn-phase/deliberation-phase.js";
 export type {
   RunTurnPhasesInput,
   TurnPhaseCoordinatorOptions,
   TurnPhaseInput,
   TurnPhaseResult,
 } from "./turn-phase/types.js";
+
+function previewItems(items: readonly string[], limit = 4): string {
+  const head = items.slice(0, limit).join(",");
+  return items.length > limit ? `${head},+${items.length - limit}` : head;
+}
+
+function summarizePerceptionResult(
+  result: Awaited<
+    ReturnType<
+      ReturnType<TurnPhaseCoordinatorOptions["perceptionGateway"]["beginTurn"]>["perceive"]
+    >
+  >,
+): string {
+  return `mode=${result.perception.mode} entities=[${previewItems(result.perception.entities)}]`;
+}
+
+function summarizeFrameClassification(
+  classification: Awaited<ReturnType<typeof classifyFrameAnomalyPhase>>,
+): string {
+  if (classification === null) {
+    return "skipped";
+  }
+
+  if (classification.status === "degraded") {
+    return `degraded reason=${classification.reason}`;
+  }
+
+  return `kind=${classification.kind} conf=${classification.confidence}`;
+}
+
+function summarizeExtraction(result: TurnExtractionPhaseResult): string {
+  return `actions=${result.createdActionIds.length} goals=${result.persistedPromotions.goalIds.length} steps=${result.persistedPromotions.executiveStepIds.length} commitment=${result.correctiveCommitment === null ? "none" : "candidate"}`;
+}
+
+function summarizeRetrieval(result: TurnRetrievalPhaseResult): string {
+  const ledgerEntries =
+    result.evidenceLedgerContext.ledger?.sections.reduce(
+      (sum, section) => sum + section.entries.length,
+      0,
+    ) ?? 0;
+
+  return `episodes=${result.retrievedEpisodes.length} evidence=${result.retrieval.evidence.length} ledger=${ledgerEntries}`;
+}
+
+function summarizeDeliberation(result: TurnDeliberationPhaseResult): string {
+  return `path=${result.deliberation.path} recommendation=${result.deliberation.emissionRecommendation ?? "emit"} stop=${result.deliberation.usage.stop_reason ?? "none"}`;
+}
 
 export class TurnPhaseCoordinator {
   private readonly contradictionRoutingCooldown = new ContradictionRoutingCooldown();
@@ -131,12 +182,20 @@ export class TurnPhaseCoordinator {
       groupSpeakerEntityId === null
         ? null
         : (this.options.entityRepository.get(groupSpeakerEntityId)?.canonical_name ?? null);
-    const perceptionResult = await turnPerception.perceive({
-      sessionId,
-      isSelfAudience,
-      origin: turnInput.origin,
-      cognitionInput,
-      workingMemory,
+    const perceptionResult = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
+      turnId,
+      phase: "perception",
+      run: () =>
+        turnPerception.perceive({
+          sessionId,
+          isSelfAudience,
+          origin: turnInput.origin,
+          cognitionInput,
+          workingMemory,
+        }),
+      completedSub: summarizePerceptionResult,
     });
     const perception = perceptionResult.perception;
     for (const userIdentityName of perception.userIdentityNames ?? []) {
@@ -255,42 +314,58 @@ export class TurnPhaseCoordinator {
       participantStreamEntries: participantScan?.entries ?? [],
       entityRepository: this.options.entityRepository,
     });
-    const frameAnomalyClassification = await classifyFrameAnomalyPhase({
-      options: this.options,
-      appendHookFailureEvent: appendHookFailure,
-      llmClient,
+    const frameAnomalyClassification = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId,
-      isUserTurn,
-      userMessage: turnInput.userMessage,
-      recentHistory: recencyWindow.messages,
-      conversationContext: frameAnomalyConversationContext,
-      persistedUserEntryId,
-      streamWriter,
+      phase: "frame",
+      run: () =>
+        classifyFrameAnomalyPhase({
+          options: this.options,
+          appendHookFailureEvent: appendHookFailure,
+          llmClient,
+          turnId,
+          isUserTurn,
+          userMessage: turnInput.userMessage,
+          recentHistory: recencyWindow.messages,
+          conversationContext: frameAnomalyConversationContext,
+          persistedUserEntryId,
+          streamWriter,
+        }),
+      completedSub: summarizeFrameClassification,
     });
     const currentTurnFrameAnomaly = isFrameAnomaly(frameAnomalyClassification)
       ? frameAnomalyClassification
       : null;
 
-    const extraction = await runExtractionPhase({
-      options: this.options,
-      appendHookFailureEvent: appendHookFailure,
-      llmClient,
+    const extraction = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId,
-      sessionId,
-      turnInput,
-      isUserTurn,
-      cognitionInput,
-      perception,
-      workingMemory,
-      recentHistory: recencyWindow.messages,
-      audienceEntityId,
-      groupSpeakerEntityId,
-      groupSpeakerDisplayName,
-      participantRoster,
-      persistedUserEntryId,
-      frameAnomalyClassification,
-      streamWriter,
-      trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
+      phase: "extract",
+      run: () =>
+        runExtractionPhase({
+          options: this.options,
+          appendHookFailureEvent: appendHookFailure,
+          llmClient,
+          turnId,
+          sessionId,
+          turnInput,
+          isUserTurn,
+          cognitionInput,
+          perception,
+          workingMemory,
+          recentHistory: recencyWindow.messages,
+          audienceEntityId,
+          groupSpeakerEntityId,
+          groupSpeakerDisplayName,
+          participantRoster,
+          persistedUserEntryId,
+          frameAnomalyClassification,
+          streamWriter,
+          trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
+        }),
+      completedSub: summarizeExtraction,
     });
     const correctiveCommitment = extraction.correctiveCommitment;
     const correctiveCommitmentSupersession = extraction.correctiveCommitmentSupersession;
@@ -401,52 +476,68 @@ export class TurnPhaseCoordinator {
       });
     }
 
-    const retrievalPhase = await runRetrievalPhase({
-      options: this.options,
-      sessionId,
+    const retrievalPhase = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId,
-      turnInput,
-      isSelfAudience,
-      isUserTurn,
-      cognitionInput,
-      llmClient,
-      recencyMessages: recencyWindow.messages,
-      audienceEntityId,
-      audienceEntity,
-      audienceProfile,
-      perception,
-      workingMemory,
-      suppressionSet,
-      actionLinkSelfContext: extraction.actionLinkSelfContext,
-      persistedPromotions: extraction.persistedPromotions,
-      correctiveCommitment,
-      activeParticipants,
-      participantRoster,
-      participantProfiles,
-      persistedUserEntry: persistedUserEntry ?? undefined,
-      currentTurnFrameAnomaly,
-      closureLoopAssessment,
+      phase: "retrieval",
+      run: () =>
+        runRetrievalPhase({
+          options: this.options,
+          sessionId,
+          turnId,
+          turnInput,
+          isSelfAudience,
+          isUserTurn,
+          cognitionInput,
+          llmClient,
+          recencyMessages: recencyWindow.messages,
+          audienceEntityId,
+          audienceEntity,
+          audienceProfile,
+          perception,
+          workingMemory,
+          suppressionSet,
+          actionLinkSelfContext: extraction.actionLinkSelfContext,
+          persistedPromotions: extraction.persistedPromotions,
+          correctiveCommitment,
+          activeParticipants,
+          participantRoster,
+          participantProfiles,
+          persistedUserEntry: persistedUserEntry ?? undefined,
+          currentTurnFrameAnomaly,
+          closureLoopAssessment,
+        }),
+      completedSub: summarizeRetrieval,
     });
-    const deliberationPhase = await runDeliberationPhase({
-      options: this.options,
-      llmClient,
-      sessionId,
+    const deliberationPhase = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId,
-      turnInput,
-      streamWriter,
-      audienceEntityId,
-      persistedUserEntryId,
-      currentUserContent,
-      perception,
-      workingMemory,
-      activeParticipants,
-      participantRoster,
-      participantProfiles,
-      audienceProfile,
-      recencyMessages: recencyWindow.messages,
-      currentTurnFrameAnomaly,
-      retrievalPhase,
-      contradictionRoutingCooldown: this.contradictionRoutingCooldown,
+      phase: "delib",
+      run: () =>
+        runDeliberationPhase({
+          options: this.options,
+          llmClient,
+          sessionId,
+          turnId,
+          turnInput,
+          streamWriter,
+          audienceEntityId,
+          persistedUserEntryId,
+          currentUserContent,
+          perception,
+          workingMemory,
+          activeParticipants,
+          participantRoster,
+          participantProfiles,
+          audienceProfile,
+          recencyMessages: recencyWindow.messages,
+          currentTurnFrameAnomaly,
+          retrievalPhase,
+          contradictionRoutingCooldown: this.contradictionRoutingCooldown,
+        }),
+      completedSub: summarizeDeliberation,
     });
     const deliberation = deliberationPhase.deliberation;
     workingMemory = deliberationPhase.workingMemory;

@@ -100,6 +100,7 @@ function collectCoverage(results: readonly ScenarioResult[]): Map<TracePhase, bo
 function coverageSection(results: readonly ScenarioResult[]): string {
   const coverage = collectCoverage(results);
   const labelByPhase: Record<TracePhase, string> = {
+    turn_phase: "turn phase",
     perception: "perception",
     working_memory: "working memory",
     executive_focus: "executive_focus",

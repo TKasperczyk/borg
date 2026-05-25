@@ -36,6 +36,8 @@ export class Borg {
   readonly actions: BorgFacades["actions"];
   readonly social: BorgFacades["social"];
   readonly entities: BorgFacades["entities"];
+  readonly sharedState: BorgFacades["sharedState"];
+  readonly attachments: BorgFacades["attachments"];
   readonly semantic: BorgFacades["semantic"];
   readonly relationalSlots: BorgFacades["relationalSlots"];
   readonly commitments: BorgFacades["commitments"];
@@ -59,6 +61,8 @@ export class Borg {
     this.actions = facades.actions;
     this.social = facades.social;
     this.entities = facades.entities;
+    this.sharedState = facades.sharedState;
+    this.attachments = facades.attachments;
     this.semantic = facades.semantic;
     this.relationalSlots = facades.relationalSlots;
     this.commitments = facades.commitments;

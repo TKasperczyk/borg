@@ -61,6 +61,7 @@ import {
   listSharedStateRelationalSlotsForParticipants,
 } from "./context-build.js";
 import { evidenceLedgerCompactionChanged } from "./trace-metrics.js";
+import { traceTurnPhase } from "./phase-trace.js";
 import {
   advanceSharedStateCompileSkipAnchor,
   buildSharedStateLedgerPromptContext,
@@ -135,6 +136,18 @@ export type TurnRetrievalPhaseResult = {
   evidenceLedgerContext: EvidenceLedgerFinalizerContext;
   routingOverride: DeliberationRoutingOverride | null;
 };
+
+function evidenceLedgerEntryCount(ledger: EvidenceLedger | null): number {
+  return ledger?.sections.reduce((sum, section) => sum + section.entries.length, 0) ?? 0;
+}
+
+function summarizeEvidenceLedgerContext(context: EvidenceLedgerFinalizerContext): string {
+  if (context.ledger === null) {
+    return "disabled";
+  }
+
+  return `entries=${evidenceLedgerEntryCount(context.ledger)} shared_ops=${context.sharedStateAppliedOperationCount} images=${context.ledger.imageAttachments?.length ?? 0}`;
+}
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   return dedupePreservingOrder(ids);
@@ -344,6 +357,20 @@ async function buildEvidenceLedgerFinalizerContext(input: {
   options: TurnPhaseCoordinatorOptions;
   input: EvidenceLedgerFinalizerBuildInput;
 }): Promise<EvidenceLedgerFinalizerContext> {
+  return traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
+    turnId: input.input.turnId ?? "unknown",
+    phase: "ledger",
+    run: () => buildEvidenceLedgerFinalizerContextInternal(input),
+    completedSub: summarizeEvidenceLedgerContext,
+  });
+}
+
+async function buildEvidenceLedgerFinalizerContextInternal(input: {
+  options: TurnPhaseCoordinatorOptions;
+  input: EvidenceLedgerFinalizerBuildInput;
+}): Promise<EvidenceLedgerFinalizerContext> {
   const config = input.options.config.generation.evidenceLedger;
   const previousSharedState =
     input.input.audienceEntityId === null
@@ -363,7 +390,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
 
   emitSessionReentryContinuityTrace({
     options: input.options,
-    turnId: input.input.turnId,
+    turnId: input.input.turnId ?? "unknown",
     continuity: sessionReentryContinuity,
   });
 
@@ -466,6 +493,16 @@ async function buildEvidenceLedgerFinalizerContext(input: {
       decision_artifact_rendered_token_estimate: sharedStateSummary.estimatedTokens,
       decision_artifact_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
       decision_artifact_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
+    });
+
+    input.options.tracer.emit("evidence_ledger.built", {
+      turnId: input.input.turnId,
+      turn_id: input.input.turnId,
+      entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
+      image_attachment_count: ledger.imageAttachments?.length ?? 0,
+      shared_state_entry_count: ledger.sharedState?.entries.length ?? 0,
+      total_estimated_tokens: traceSummary.totalEstimatedTokens,
+      ...(input.options.tracer.includePayloads ? { ledger: toTraceJsonValue(ledger) } : {}),
     });
   }
 
@@ -722,6 +759,24 @@ export async function compileSharedStateArtifactForEvidenceLedger(input: {
 }
 
 export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
+  options: TurnPhaseCoordinatorOptions;
+  input: EvidenceLedgerFinalizerBuildInput;
+  previousArtifact?: SharedStateArtifact | null;
+  ledger: EvidenceLedger;
+  promptVisibleLedger: string;
+}): Promise<SharedStateArtifactForEvidenceLedgerResult> {
+  return traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
+    turnId: input.input.turnId ?? "unknown",
+    phase: "shared",
+    run: () => compileSharedStateArtifactForEvidenceLedgerResultInternal(input),
+    completedSub: (result) =>
+      `entries=${result.artifact?.entries.length ?? 0} ops=${result.appliedOperationCount}`,
+  });
+}
+
+async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: {
   options: TurnPhaseCoordinatorOptions;
   input: EvidenceLedgerFinalizerBuildInput;
   previousArtifact?: SharedStateArtifact | null;

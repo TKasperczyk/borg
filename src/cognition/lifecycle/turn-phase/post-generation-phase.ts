@@ -28,6 +28,7 @@ import type { TurnPhaseCoordinatorOptions, TurnPhaseInput, TurnPhaseResult } fro
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { TurnDeliberationPhaseResult } from "./deliberation-phase.js";
 import type { TurnRetrievalPhaseResult } from "./retrieval-phase.js";
+import { traceTurnPhase } from "./phase-trace.js";
 import {
   ACTIVE_TURN_STATUS,
   type AppendHookFailureEvent,
@@ -366,38 +367,49 @@ export async function runPostGenerationPhase(input: {
     }
   }
 
-  await input.options.turnReflectionCoordinator.run({
-    llmClient: input.llmClient,
-    sessionId: input.sessionId,
+  await traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
     turnId: input.turnId,
-    actionLifecycleTurnCounter: lifecycleTurnCounter,
-    origin: input.origin,
-    userMessage: input.turnInput.userMessage,
-    perception: input.perception,
-    workingMood: input.workingMood,
-    postActionWorkingMemory,
-    selfSnapshot: input.retrievalPhase.selfSnapshot,
-    deliberation,
-    actionResult,
-    retrievedEpisodes: deliberation.retrievedEpisodes,
-    retrievalConfidence: input.retrievalPhase.retrieval.confidence,
-    executiveFocus: input.retrievalPhase.executiveFocusWithStep,
-    selectedSkill: input.retrievalPhase.selectedSkill,
-    proceduralContext: input.retrievalPhase.proceduralContext,
-    audienceEntityId: input.audienceEntityId,
-    audienceIsGroup: input.audienceIsGroup,
-    senderEntityId: input.senderEntityId,
-    socialInteractionEntityId: input.socialInteractionEntityId,
-    pendingSocialAttribution: input.pendingSocialAttribution,
-    suppressionSet: input.suppressionSet,
-    persistedUserEntryId: input.persistedUserEntryId,
-    persistedPerceptionEntry: input.persistedPerceptionEntry,
-    persistedAgentEntry,
-    isUserTurn: input.isUserTurn,
-    frameAnomaly: input.frameAnomalyClassification,
-    streamWriter: input.streamWriter,
-    onHookFailure: (hook, error) => input.appendHookFailureEvent(input.streamWriter, hook, error),
-    trackReflectionEffects: (effects) => input.lifecycleTracker.trackReflectionEffects(effects),
+    phase: "reflect",
+    sub: `emission=${actionEmission.kind}`,
+    run: () =>
+      input.options.turnReflectionCoordinator.run({
+        llmClient: input.llmClient,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        actionLifecycleTurnCounter: lifecycleTurnCounter,
+        origin: input.origin,
+        userMessage: input.turnInput.userMessage,
+        perception: input.perception,
+        workingMood: input.workingMood,
+        postActionWorkingMemory,
+        selfSnapshot: input.retrievalPhase.selfSnapshot,
+        deliberation,
+        actionResult,
+        retrievedEpisodes: deliberation.retrievedEpisodes,
+        retrievalConfidence: input.retrievalPhase.retrieval.confidence,
+        executiveFocus: input.retrievalPhase.executiveFocusWithStep,
+        selectedSkill: input.retrievalPhase.selectedSkill,
+        proceduralContext: input.retrievalPhase.proceduralContext,
+        audienceEntityId: input.audienceEntityId,
+        audienceIsGroup: input.audienceIsGroup,
+        senderEntityId: input.senderEntityId,
+        socialInteractionEntityId: input.socialInteractionEntityId,
+        pendingSocialAttribution: input.pendingSocialAttribution,
+        suppressionSet: input.suppressionSet,
+        persistedUserEntryId: input.persistedUserEntryId,
+        persistedPerceptionEntry: input.persistedPerceptionEntry,
+        persistedAgentEntry,
+        isUserTurn: input.isUserTurn,
+        frameAnomaly: input.frameAnomalyClassification,
+        streamWriter: input.streamWriter,
+        onHookFailure: (hook, error) =>
+          input.appendHookFailureEvent(input.streamWriter, hook, error),
+        trackReflectionEffects: (effects) => input.lifecycleTracker.trackReflectionEffects(effects),
+      }),
+    completedSub: () =>
+      `emission=${actionEmission.kind} retrieved=${deliberation.retrievedEpisodes.length}`,
   });
   if (actionEmission.kind === "message" && input.persistedUserEntryId !== undefined) {
     await input.options.turnActionStateService.closeBorgSelfPerformedActions({
@@ -434,6 +446,7 @@ export async function runPostGenerationPhase(input: {
   startLiveIngestion(input.options.streamIngestionCoordinator, input.sessionId);
 
   return {
+    turn_id: input.turnId,
     mode: input.perception.mode,
     path: deliberation.path,
     response: actionResult.response,
@@ -536,6 +549,7 @@ export async function suppressFromClosureLoopPhase(input: {
   });
 
   return suppressedTurnPhaseResult({
+    turnId: input.turnId,
     mode: input.perceptionMode,
     emission: suppressionEmission,
     thoughts: [],
@@ -638,6 +652,7 @@ export async function suppressFromGenerationGatePhase(input: {
   });
 
   return suppressedTurnPhaseResult({
+    turnId: input.turnId,
     mode: input.perceptionMode,
     emission: suppressionEmission,
     thoughts: [],
@@ -734,6 +749,7 @@ async function suppressFromActionPhase(input: {
   });
 
   return suppressedTurnPhaseResult({
+    turnId: input.turnId,
     mode: input.perceptionMode,
     emission: suppressionEmission,
     thoughts: input.deliberation.thoughts,
@@ -745,6 +761,7 @@ async function suppressFromActionPhase(input: {
 }
 
 function suppressedTurnPhaseResult(input: {
+  turnId: string;
   mode: CognitiveMode;
   emission: TurnEmission;
   thoughts: string[];
@@ -754,6 +771,7 @@ function suppressedTurnPhaseResult(input: {
   toolCalls: TurnPhaseResult["toolCalls"];
 }): TurnPhaseResult {
   return {
+    turn_id: input.turnId,
     mode: input.mode,
     path: "suppressed",
     response: "",

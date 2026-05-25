@@ -7,6 +7,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "development": "./src/index.ts",
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
@@ -29,8 +30,10 @@
     "daemon": "tsx scripts/daemon.ts",
     "debug": "tsx scripts/debug.ts",
     "dev": "tsx watch src/cli/index.ts",
+    "dev:server": "pnpm --filter @borg/demo-server dev",
     "eval": "tsx eval/runner.ts",
     "simulate": "tsx simulator/cli.ts",
+    "build:server": "pnpm --filter @borg/demo-server build",
     "test": "vitest run",
     "heuristics:guard": "tsx scripts/heuristics-guard.ts",
     "test:watch": "vitest",

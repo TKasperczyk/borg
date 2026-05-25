@@ -9,7 +9,7 @@ import {
   ImagePerceptionService,
 } from "../attachments/index.js";
 import { SessionLock } from "../cognition/index.js";
-import { createTurnTracer } from "../cognition/tracing/tracer.js";
+import { compositeTracer, createTurnTracer } from "../cognition/tracing/tracer.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamEntryIndexRepository, StreamWatermarkRepository } from "../stream/index.js";
@@ -39,11 +39,14 @@ export async function openBorgDependencies(
 
   try {
     const config = resolveBorgConfig(options);
-    const tracer = createTurnTracer({
-      tracerPath: options.tracerPath,
-      env: options.env ?? process.env,
-      clock,
-    });
+    const tracer = compositeTracer([
+      createTurnTracer({
+        tracerPath: options.tracerPath,
+        env: options.env ?? process.env,
+        clock,
+      }),
+      options.tracer,
+    ]);
     const storage = openBorgStorage(config);
     sqlite = storage.sqlite;
     lance = storage.lance;
@@ -93,6 +96,7 @@ export async function openBorgDependencies(
       tracer,
       attachmentRepository,
       entryIndex,
+      onStreamAppend: options.onStreamAppend,
     });
     const imagePerceptionService = new ImagePerceptionService({
       repository: repositories.imagePerceptionRepository,
@@ -278,6 +282,7 @@ export async function openBorgDependencies(
       auditLog: offline.auditLog,
       maintenanceOrchestrator: offline.maintenanceOrchestrator,
       offlineProcesses: offline.offlineProcesses,
+      createStreamWriter: repositories.createStreamWriter,
       llmFactory,
       embeddingClient,
       tracer,

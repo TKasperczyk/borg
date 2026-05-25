@@ -26,6 +26,7 @@ export type StreamWriterOptions = {
   lockTimeoutMs?: number;
   lockRetryDelayMs?: number;
   entryIndex?: StreamEntryIndexRepository;
+  onAppend?: (entries: readonly StreamEntry[]) => void;
 };
 
 export class StreamWriter {
@@ -36,6 +37,7 @@ export class StreamWriter {
   private readonly lockTimeoutMs: number;
   private readonly lockRetryDelayMs: number;
   private readonly entryIndex?: StreamEntryIndexRepository;
+  private readonly onAppend?: (entries: readonly StreamEntry[]) => void;
   private closed = false;
 
   constructor(options: StreamWriterOptions) {
@@ -46,6 +48,7 @@ export class StreamWriter {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 2_000;
     this.lockRetryDelayMs = options.lockRetryDelayMs ?? 20;
     this.entryIndex = options.entryIndex;
+    this.onAppend = options.onAppend;
   }
 
   private ensureOpen(): void {
@@ -136,6 +139,19 @@ export class StreamWriter {
           }
 
           appendedEntries = entries;
+
+          if (this.onAppend !== undefined) {
+            try {
+              this.onAppend(entries);
+            } catch (error) {
+              this.logger.error("Stream append observer failed", {
+                streamPath,
+                sessionId: this.sessionId,
+                entryIds: entries.map((entry) => entry.id),
+                cause: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
         } catch (error) {
           if (error instanceof StreamError) {
             throw error;
