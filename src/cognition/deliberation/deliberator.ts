@@ -13,6 +13,7 @@ import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import {
   buildDialogueMessages,
   toContentBlockMessages,
+  withFinalizerImageBudget,
   withCurrentUserContentBlocks,
   withLedgerImageContentBlocks,
 } from "./dialogue.js";
@@ -30,6 +31,7 @@ import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thought
 import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   buildCompactPlannerLedgerPrompt,
+  renderEvidenceLedger,
   truncateTextForCompactPlannerLedger,
 } from "../evidence-ledger/index.js";
 import type {
@@ -412,28 +414,43 @@ export class Deliberator {
       effectiveContext,
       baseSystemPromptOptions,
     );
-    const evidenceLedgerPromptSections =
-      context.evidenceLedgerPromptSection === undefined ||
-      context.evidenceLedgerPromptSection === null
-        ? null
-        : [context.evidenceLedgerPromptSection];
     const sessionReentryContinuityPromptSections =
       context.sessionReentryContinuityPromptSection === undefined ||
       context.sessionReentryContinuityPromptSection === null
         ? []
         : [context.sessionReentryContinuityPromptSection];
+    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
+    const currentUserBlockMessages = withCurrentUserContentBlocks(
+      toContentBlockMessages(dialogueMessages),
+      context.currentUserContent,
+    );
+    const finalizerEvidenceLedger = withFinalizerImageBudget(
+      currentUserBlockMessages,
+      context.evidenceLedger,
+      { maxImagesPerLlmCall: this.options.maxImagesPerLlmCall },
+    );
+    const finalizerEvidenceLedgerPromptSection =
+      finalizerEvidenceLedger === undefined || finalizerEvidenceLedger === null
+        ? context.evidenceLedgerPromptSection
+        : finalizerEvidenceLedger === context.evidenceLedger &&
+            context.evidenceLedgerPromptSection !== undefined &&
+            context.evidenceLedgerPromptSection !== null
+          ? context.evidenceLedgerPromptSection
+          : renderEvidenceLedger(finalizerEvidenceLedger, {
+              sharedState: this.options.sharedStateRenderOptions,
+            });
+    const evidenceLedgerPromptSections =
+      finalizerEvidenceLedgerPromptSection === undefined ||
+      finalizerEvidenceLedgerPromptSection === null
+        ? null
+        : [finalizerEvidenceLedgerPromptSection];
     const finalizerGroundingPromptSections = [
       ...sessionReentryContinuityPromptSections,
       ...(evidenceLedgerPromptSections ?? []),
     ];
-
-    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
     const dialogueBlockMessages = withLedgerImageContentBlocks(
-      withCurrentUserContentBlocks(
-        toContentBlockMessages(dialogueMessages),
-        context.currentUserContent,
-      ),
-      context.evidenceLedger,
+      currentUserBlockMessages,
+      finalizerEvidenceLedger,
       { maxImagesPerLlmCall: this.options.maxImagesPerLlmCall },
     );
     const thinking = cognitionThinkingOption(this.options);

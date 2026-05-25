@@ -527,7 +527,7 @@ export class RetrievalPipeline {
     }
 
     if (handle.source === "image_perception") {
-      return this.rehydrateImagePerceptionHandle(handle, stateHandle);
+      return this.rehydrateImagePerceptionHandle(handle, stateHandle, options);
     }
 
     return this.rehydrateOpenQuestionHandle(handle, stateHandle, options);
@@ -536,10 +536,19 @@ export class RetrievalPipeline {
   private rehydrateImagePerceptionHandle(
     handle: Extract<RecallEvidenceHandle, { source: "image_perception" }>,
     stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
   ): EvidenceItem | null {
     const record = this.options.imagePerceptionRepository?.get(handle.perceptionId);
 
     if (record === undefined || record === null || !record.active) {
+      return null;
+    }
+
+    if (
+      options.crossAudience !== true &&
+      record.audience !== null &&
+      !new Set(options.audienceTerms ?? []).has(record.audience)
+    ) {
       return null;
     }
 

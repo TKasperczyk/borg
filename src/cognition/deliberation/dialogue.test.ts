@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { createStreamEntryId, type AttachmentId } from "../../util/ids.js";
+import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   buildDialogueMessages,
   toContentBlockMessages,
+  withFinalizerImageBudget,
   withCurrentUserContentBlocks,
   withLedgerImageContentBlocks,
 } from "./dialogue.js";
@@ -105,8 +107,31 @@ describe("withCurrentUserContentBlocks", () => {
         role: "user",
         content: [
           { type: "text", text: "prior user turn" },
-          { type: "text", text: "current user turn" },
           { type: "image_ref", attachment_id: attachmentId },
+          { type: "text", text: "current user turn" },
+        ],
+      },
+    ]);
+  });
+
+  it("orders current-turn images before text at the caller boundary", () => {
+    const messages = toContentBlockMessages(buildDialogueMessages([], "compare these"));
+    const firstAttachmentId = "att_aaaaaaaaaaaaaaaa" as AttachmentId;
+    const secondAttachmentId = "att_bbbbbbbbbbbbbbbb" as AttachmentId;
+
+    expect(
+      withCurrentUserContentBlocks(messages, [
+        { type: "text", text: "compare these" },
+        { type: "image_ref", attachment_id: firstAttachmentId },
+        { type: "image_ref", attachment_id: secondAttachmentId },
+      ]),
+    ).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "image_ref", attachment_id: firstAttachmentId },
+          { type: "image_ref", attachment_id: secondAttachmentId },
+          { type: "text", text: "compare these" },
         ],
       },
     ]);
@@ -180,6 +205,72 @@ describe("withLedgerImageContentBlocks", () => {
       { maxImagesPerLlmCall: 1 },
     );
 
+    expect(withImages).toEqual(messages);
+  });
+
+  it("downgrades ledger image citations when current images exhaust the call cap", () => {
+    const firstCurrentAttachmentId = "att_aaaaaaaaaaaaaaaa" as AttachmentId;
+    const secondCurrentAttachmentId = "att_bbbbbbbbbbbbbbbb" as AttachmentId;
+    const retrievedAttachmentId = "att_cccccccccccccccc";
+    const messages = withCurrentUserContentBlocks(
+      toContentBlockMessages(buildDialogueMessages([], "Compare these to the old diagram")),
+      [
+        { type: "text", text: "Compare these to the old diagram" },
+        { type: "image_ref", attachment_id: firstCurrentAttachmentId },
+        { type: "image_ref", attachment_id: secondCurrentAttachmentId },
+      ],
+    );
+    const ledger = {
+      sections: [
+        {
+          id: "retrieved_memory_evidence" as const,
+          label: "10. Retrieved Memory Evidence",
+          entries: [
+            {
+              id: "retrieved_evidence:image",
+              source_type: "image_attachment" as const,
+              session_scope: "current_session" as const,
+              actor: "memory" as const,
+              trust_rank: 6,
+              text: "Caption: old diagram",
+              value: "image_perception",
+              state: "score=0.91",
+              state_metadata: { attachment_id: retrievedAttachmentId },
+              citation_type: "original_image" as const,
+            },
+          ],
+        },
+      ],
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+      imageAttachments: [
+        {
+          label: "Image A: old diagram",
+          attachment_id: retrievedAttachmentId,
+          citation_type: "original_image" as const,
+        },
+      ],
+    };
+
+    const budgetedLedger = withFinalizerImageBudget(messages, ledger, {
+      maxImagesPerLlmCall: 2,
+    });
+    const withImages = withLedgerImageContentBlocks(messages, budgetedLedger, {
+      maxImagesPerLlmCall: 2,
+    });
+
+    expect(budgetedLedger?.imageAttachments).toBeUndefined();
+    expect(budgetedLedger?.sections[0]?.entries[0]).toMatchObject({
+      citation_type: "generated_perception_text",
+      state: "score=0.91 image_unavailable=call_budget",
+    });
+    expect(renderEvidenceLedger(budgetedLedger!)).not.toContain(
+      "Retrieved images are reattached below",
+    );
     expect(withImages).toEqual(messages);
   });
 });

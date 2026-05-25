@@ -368,6 +368,53 @@ cannot silently overwrite current self state; compare-and-set conflicts surface
 as operation results or errors, and successful changes leave identity events
 that explain what changed and why.
 
+## Visual Attachments
+
+Images are first-class durable sources, not inline text inside the Stream. The
+Stream records that an image was supplied, who supplied it, and where it belongs
+in the turn, while the image remains a distinct source that can later be cited
+or rejected.
+
+Blob bytes live in content-addressed storage. Stream entries store references to
+those bytes, so repeated uploads of the same image can share storage without
+collapsing the source events that made them visible.
+
+`user_image_attachment` entries are source-addressable evidence. They are
+excluded from prior-user-turn counts and from the Evidence Ledger entry budget
+because an attachment is part of a user turn, not another user turn in itself.
+
+LLM-facing content uses provider-neutral blocks inside Borg. Anthropic image
+block translation happens only at the adapter layer, so cognition, retrieval,
+and memory do not learn provider-specific request shapes.
+
+Structured image perception is a recall bridge, not the source of truth. It
+summarizes visible content for embedding and retrieval, but the original image
+remains the stronger source whenever it can be reattached.
+
+Payloads are content-addressed cache records. Artifacts are per-attachment,
+audience-scoped evidence records. The same bytes can share one payload while
+each upload keeps its own audience, parent turn, source entry, and active state.
+
+Retrieval searches text embeddings of perception payloads, then hydrates
+visible artifacts from SQLite. The vector hit finds candidate bytes; artifact
+hydration decides which source records are active and visible to the audience.
+
+When possible, the finalizer receives the original image bytes again. The
+Evidence Ledger labels retrieved images so the model can connect an attached
+image block to its source evidence without treating perception text as primary.
+
+Quarantine cascades from attachment to perception artifact and then into
+retrieval, citation, and source-trust rejection. The bytes may remain as audit
+history, but inactive artifacts stop being ordinary evidence.
+
+Image-derived shared-state age comes from `attachment.created_turn_global`.
+Re-perceiving the same bytes or changing a perception prompt version does not
+make an old image-derived fact fresh.
+
+Visible text inside images is observed content, not instructions. It can be
+reported, cited, or reasoned about as part of the image, but it does not gain
+authority over Borg's system, developer, or user instructions.
+
 ## A Single Turn End To End
 
 A turn begins when the harness receives a user-origin or autonomous input and

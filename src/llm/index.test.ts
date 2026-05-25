@@ -1161,7 +1161,7 @@ describe("llm", () => {
     });
   });
 
-  it("translates image_ref blocks to Anthropic base64 image blocks", async () => {
+  it("translates image_ref blocks to Anthropic base64 image blocks without reordering", async () => {
     const create = vi.fn().mockResolvedValue(
       createMessageBody({
         content: [{ type: "text", text: "seen", citations: null }],
@@ -1201,6 +1201,7 @@ describe("llm", () => {
         {
           role: "user",
           content: [
+            { type: "text", text: "describe this" },
             {
               type: "image",
               source: {
@@ -1209,11 +1210,79 @@ describe("llm", () => {
                 data: attachmentBytes.toString("base64"),
               },
             },
-            { type: "text", text: "describe this" },
           ],
         },
       ],
     });
+  });
+
+  it("preserves multi-image label adjacency in Anthropic conversation payloads", async () => {
+    const create = vi.fn().mockResolvedValue(
+      createMessageBody({
+        content: [{ type: "text", text: "seen", citations: null }],
+      }),
+    );
+    const firstAttachmentBytes = Buffer.from("first-image");
+    const secondAttachmentBytes = Buffer.from("second-image");
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+      attachmentResolver: (attachmentId) => {
+        if (attachmentId === "att_aaaaaaaaaaaaaaaa") {
+          return {
+            mediaType: "image/png",
+            bytes: firstAttachmentBytes,
+          };
+        }
+
+        expect(attachmentId).toBe("att_bbbbbbbbbbbbbbbb");
+        return {
+          mediaType: "image/png",
+          bytes: secondAttachmentBytes,
+        };
+      },
+    });
+
+    await client.converse({
+      model: "claude-sonnet-4-5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Label A" },
+            { type: "image_ref", attachment_id: "att_aaaaaaaaaaaaaaaa" as never },
+            { type: "text", text: "Label B" },
+            { type: "image_ref", attachment_id: "att_bbbbbbbbbbbbbbbb" as never },
+          ],
+        },
+      ],
+      max_tokens: 128,
+      budget: "test",
+    });
+
+    const content = create.mock.calls[0]?.[0].messages[0]?.content;
+
+    expect(content).toEqual([
+      { type: "text", text: "Label A" },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: firstAttachmentBytes.toString("base64"),
+        },
+      },
+      { type: "text", text: "Label B" },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: secondAttachmentBytes.toString("base64"),
+        },
+      },
+    ]);
   });
 
   it("supports scripted fake llm block conversations", async () => {

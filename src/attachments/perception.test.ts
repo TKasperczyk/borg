@@ -97,6 +97,19 @@ describe("ImagePerceptionService", () => {
     }
   }
 
+  class CountingEmbeddingClient implements EmbeddingClient {
+    attempts = 0;
+
+    async embed(): Promise<Float32Array> {
+      this.attempts += 1;
+      return Float32Array.from([1, 0, 0, 0]);
+    }
+
+    async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+      return texts.map(() => Float32Array.from([1, 0, 0, 0]));
+    }
+  }
+
   it("stores structured perception, embeds recall text, and populates attachment refs", async () => {
     const { attachmentId, attachmentRepository, repository, tableRows } = setup();
     const llm = new FakeLLMClient({
@@ -303,6 +316,86 @@ describe("ImagePerceptionService", () => {
     expect(bob?.attachment_id).toBe(bobAttachmentId);
     expect(bob?.audience).toBe("Bob");
     expect(bob?.parent_entry_id).toBe("strm_cccccccccccccccc");
+  });
+
+  it("canonicalizes concurrent same-byte payload writes before linking artifacts", async () => {
+    const { attachmentId, attachmentRepository, repository, tableRows } = setup();
+    const bobAttachmentId = createAttachmentId();
+    attachmentRepository.insert({
+      attachment_id: bobAttachmentId,
+      sha256: "abc123",
+      media_type: "image/png",
+      byte_size: 12,
+      width: 1,
+      height: 1,
+      storage_ref: "attachments/abc123-bob.png",
+      thumbnail_ref: null,
+      perception_id: null,
+      text_embedding_ref: null,
+      visual_embedding_ref: null,
+      active: true,
+      audience: "Bob",
+      created_turn_global: 43,
+      parent_entry_id: "strm_cccccccccccccccc" as StreamEntryId,
+      stream_entry_id: "strm_dddddddddddddddd" as StreamEntryId,
+      parent_turn_id: "turn-image-bob",
+      created_at: 2_000,
+    });
+    const imageResponse = {
+      type: "tool_use" as const,
+      id: "toolu_image",
+      name: IMAGE_PERCEPTION_TOOL_NAME,
+      input: {
+        caption: "A shared diagram.",
+        image_kind: "diagram",
+        visible_text: [],
+        objects: ["box"],
+        people_or_roles: [],
+        scene: "A simple diagram.",
+        colors_and_visual_attributes: [],
+        spatial_relationships: [],
+        possible_user_relevant_details: ["box diagram"],
+        search_terms: ["box diagram"],
+        uncertainties: [],
+      },
+    };
+    const llm = new FakeLLMClient({
+      responses: [[imageResponse], [imageResponse]],
+    });
+    const embeddingClient = new CountingEmbeddingClient();
+    const service = new ImagePerceptionService({
+      repository,
+      attachmentRepository,
+      llmClient: llm,
+      embeddingClient,
+      model: "haiku-test",
+      promptVersion: "test-v1",
+    });
+
+    const [alice, bob] = await Promise.all([
+      service.perceiveAttachment({ attachmentId, turnId: "turn-image" }),
+      service.perceiveAttachment({ attachmentId: bobAttachmentId, turnId: "turn-image-bob" }),
+    ]);
+    const payloadRows = db!
+      .prepare("SELECT payload_id FROM image_perception_payloads")
+      .all() as Array<{ payload_id: string }>;
+    const artifactRows = db!
+      .prepare(
+        "SELECT attachment_id, payload_id FROM image_perception_artifacts ORDER BY attachment_id",
+      )
+      .all() as Array<{ attachment_id: string; payload_id: string }>;
+
+    expect(payloadRows).toHaveLength(1);
+    expect(alice?.payload_id).toBe(payloadRows[0]?.payload_id);
+    expect(bob?.payload_id).toBe(payloadRows[0]?.payload_id);
+    expect(new Set(artifactRows.map((row) => row.payload_id))).toEqual(
+      new Set([payloadRows[0]?.payload_id]),
+    );
+    expect(artifactRows.map((row) => row.attachment_id).sort()).toEqual(
+      [attachmentId, bobAttachmentId].sort(),
+    );
+    expect(tableRows).toHaveLength(1);
+    expect(embeddingClient.attempts).toBe(1);
   });
 
   it("keeps a payload after embedding failure and retries embedding on cache hit", async () => {

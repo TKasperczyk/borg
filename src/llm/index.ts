@@ -351,15 +351,7 @@ function toAnthropicConversationMessages(
 ): MessageParam[] {
   return messages.map((message) => ({
     role: message.role,
-    content: [...message.content]
-      .sort((left, right) =>
-        left.type === "image_ref" && right.type !== "image_ref"
-          ? -1
-          : left.type !== "image_ref" && right.type === "image_ref"
-            ? 1
-            : 0,
-      )
-      .map((block) => toAnthropicContentBlock(block, attachmentResolver)),
+    content: message.content.map((block) => toAnthropicContentBlock(block, attachmentResolver)),
   }));
 }
 

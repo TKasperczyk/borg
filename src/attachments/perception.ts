@@ -388,6 +388,42 @@ function toPayloadRow(record: ImagePerceptionRecord): ImagePerceptionPayloadRow 
   };
 }
 
+function recordWithPayload(
+  record: ImagePerceptionRecord,
+  payload: ImagePerceptionPayloadRecord,
+): ImagePerceptionRecord {
+  return {
+    caption: payload.caption,
+    image_kind: payload.image_kind,
+    visible_text: payload.visible_text,
+    objects: payload.objects,
+    people_or_roles: payload.people_or_roles,
+    scene: payload.scene,
+    colors_and_visual_attributes: payload.colors_and_visual_attributes,
+    spatial_relationships: payload.spatial_relationships,
+    possible_user_relevant_details: payload.possible_user_relevant_details,
+    search_terms: payload.search_terms,
+    uncertainties: payload.uncertainties,
+    perception_id: record.perception_id,
+    payload_id: payload.payload_id,
+    attachment_id: record.attachment_id,
+    parent_entry_id: record.parent_entry_id,
+    parent_turn_id: record.parent_turn_id,
+    stream_entry_id: record.stream_entry_id,
+    sha256: payload.sha256,
+    media_type: payload.media_type,
+    perception_prompt_version: payload.perception_prompt_version,
+    model: payload.model,
+    audience: record.audience,
+    active: record.active,
+    created_turn_global: record.created_turn_global,
+    created_at: record.created_at,
+    text_embedding_ref: `image_perception_embeddings:${payload.payload_id}`,
+    embedding_text: payload.embedding_text,
+    embedding_status: payload.embedding_status,
+  };
+}
+
 export class ImagePerceptionRepository {
   constructor(
     private readonly db: SqliteDatabase,
@@ -439,9 +475,34 @@ export class ImagePerceptionRepository {
     return row === undefined ? null : payloadRowToRecord(row);
   }
 
-  insertPayload(record: ImagePerceptionRecord): void {
+  insertPayload(record: ImagePerceptionRecord): ImagePerceptionPayloadRecord {
+    const result = this.insertPayloadRow(record);
+    return result.payload;
+  }
+
+  insertPayloadAndUpsertArtifact(record: ImagePerceptionRecord): {
+    record: ImagePerceptionRecord;
+    insertedPayload: boolean;
+  } {
+    const apply = this.db.transaction(() => {
+      const result = this.insertPayloadRow(record);
+      const canonicalRecord = recordWithPayload(record, result.payload);
+      this.upsertArtifact(canonicalRecord);
+      return {
+        record: canonicalRecord,
+        insertedPayload: result.insertedPayload,
+      };
+    });
+
+    return apply();
+  }
+
+  private insertPayloadRow(record: ImagePerceptionRecord): {
+    payload: ImagePerceptionPayloadRecord;
+    insertedPayload: boolean;
+  } {
     const row = toPayloadRow(record);
-    this.db
+    const result = this.db
       .prepare(
         `INSERT INTO image_perception_payloads (
            payload_id, sha256, media_type, perception_prompt_version, model,
@@ -474,6 +535,24 @@ export class ImagePerceptionRepository {
         row.embedding_status,
         row.created_at,
       );
+
+    const canonical = this.findPayload({
+      sha256: record.sha256,
+      mediaType: record.media_type,
+      promptVersion: record.perception_prompt_version,
+      model: record.model,
+    });
+
+    if (canonical === null) {
+      throw new StorageError("Image perception payload insert did not produce a canonical row", {
+        code: "IMAGE_PERCEPTION_PAYLOAD_MISSING",
+      });
+    }
+
+    return {
+      payload: canonical,
+      insertedPayload: result.changes > 0,
+    };
   }
 
   upsertArtifact(record: ImagePerceptionRecord): void {
@@ -726,7 +805,9 @@ export type ImagePerceptionServiceOptions = {
   attachmentRepository: Pick<AttachmentRepository, "get" | "setPerceptionRefs" | "setActive">;
   llmClient: LLMClient;
   embeddingClient: EmbeddingClient;
-  artifactBySha256?: ReadonlyMap<string, ImagePerceptionArtifact> | Record<string, ImagePerceptionArtifact>;
+  artifactBySha256?:
+    | ReadonlyMap<string, ImagePerceptionArtifact>
+    | Record<string, ImagePerceptionArtifact>;
   model?: string;
   promptVersion?: string;
   clock?: Clock;
@@ -824,13 +905,14 @@ export class ImagePerceptionService {
         embedding_status: "pending",
       };
 
-      this.options.repository.insertPayload(record);
-      this.options.repository.upsertArtifact(record);
+      const stored = this.options.repository.insertPayloadAndUpsertArtifact(record);
       this.options.attachmentRepository.setPerceptionRefs(attachment.attachment_id, {
-        perceptionId: artifactId,
-        textEmbeddingRef,
+        perceptionId: stored.record.perception_id,
+        textEmbeddingRef: stored.record.text_embedding_ref,
       });
-      await this.ensurePayloadEmbedding(record, input.turnId);
+      if (stored.insertedPayload || stored.record.embedding_status !== "pending") {
+        await this.ensurePayloadEmbedding(stored.record, input.turnId);
+      }
 
       if (this.options.tracer?.enabled === true) {
         this.options.tracer.emit("perception.complete", {
@@ -841,7 +923,7 @@ export class ImagePerceptionService {
         });
       }
 
-      return this.options.repository.get(artifactId) ?? record;
+      return this.options.repository.get(stored.record.perception_id) ?? stored.record;
     } catch (error) {
       if (this.options.tracer?.enabled === true) {
         this.options.tracer.emit("perception.degraded", {

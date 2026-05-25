@@ -52,6 +52,7 @@ import { episodicMigrations } from "../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodic/repository.js";
 import { retrievalMigrations } from "./migrations.js";
 import { RetrievalPipeline } from "./pipeline.js";
+import { RecallStateRepository } from "./recall-state.js";
 import type { Episode } from "../memory/episodic/types.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
@@ -372,6 +373,119 @@ describe("retrieval pipeline", () => {
       budget: "test",
     });
     expect(JSON.stringify(create.mock.calls[0]?.[0])).toContain(attachmentBytes.toString("base64"));
+  });
+
+  it("does not rehydrate image perception warm recall across audience terms", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-image-warm-audience-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(
+        episodicMigrations,
+        attachmentMigrations,
+        imagePerceptionMigrations,
+        retrievalMigrations,
+      ),
+    });
+    const episodesTable = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const imageTable = await store.openTable({
+      name: "image_perception_embeddings",
+      schema: createImagePerceptionTableSchema(4),
+    });
+    const episodicRepository = new EpisodicRepository({
+      table: episodesTable,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const imagePerceptionRepository = new ImagePerceptionRepository(db, imageTable);
+    const recallStateRepository = new RecallStateRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const attachmentId = createAttachmentId();
+    const payloadId = createImagePerceptionId();
+    const artifactId = createImagePerceptionId();
+    const record: ImagePerceptionRecord = {
+      perception_id: artifactId,
+      payload_id: payloadId,
+      attachment_id: attachmentId,
+      parent_entry_id: "strm_aaaaaaaaaaaaaaaa" as StreamEntryId,
+      parent_turn_id: "turn-image",
+      stream_entry_id: "strm_bbbbbbbbbbbbbbbb" as StreamEntryId,
+      sha256: "image-sha",
+      media_type: "image/png",
+      perception_prompt_version: "test-v1",
+      model: "haiku-test",
+      caption: "A diagram of the Atlas deployment path.",
+      image_kind: "diagram",
+      visible_text: ["Atlas deploy"],
+      objects: ["deployment diagram"],
+      people_or_roles: [],
+      scene: "A technical diagram.",
+      colors_and_visual_attributes: ["blue arrows"],
+      spatial_relationships: ["arrows point from build to deploy"],
+      possible_user_relevant_details: ["Atlas deployment path"],
+      search_terms: ["Atlas deploy diagram", "deployment path"],
+      uncertainties: [],
+      audience: "Alice",
+      active: true,
+      created_turn_global: 42,
+      created_at: 1_000,
+      text_embedding_ref: `image_perception_embeddings:${payloadId}`,
+      embedding_text: "Atlas deploy diagram deployment path",
+      embedding_status: "pending",
+    };
+    imagePerceptionRepository.insertPayload(record);
+    imagePerceptionRepository.upsertArtifact(record);
+    await imagePerceptionRepository.upsertEmbedding(record, Float32Array.from([1, 0, 0, 0]));
+    imagePerceptionRepository.setPayloadEmbeddingStatus(payloadId, "complete");
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      imagePerceptionRepository,
+      recallStateRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+    const alice = await pipeline.searchWithContext("Atlas deployment path", {
+      limit: 5,
+      sessionId: DEFAULT_SESSION_ID,
+      turnCounter: 1,
+      audienceTerms: ["Alice"],
+    });
+    expect(alice.evidence.some((item) => item.provenance?.imagePerceptionId === artifactId)).toBe(
+      true,
+    );
+    expect(
+      recallStateRepository
+        .load(DEFAULT_SESSION_ID)
+        ?.activeHandles.some(
+          (item) =>
+            item.handle.source === "image_perception" && item.handle.perceptionId === artifactId,
+        ),
+    ).toBe(true);
+
+    const bob = await pipeline.searchWithContext("unrelated recall", {
+      limit: 5,
+      sessionId: DEFAULT_SESSION_ID,
+      turnCounter: 2,
+      audienceTerms: ["Bob"],
+    });
+
+    expect(bob.evidence.some((item) => item.provenance?.imagePerceptionId === artifactId)).toBe(
+      false,
+    );
   });
 
   it("keeps unresolved citation markers in rendered citation chains and traces them", async () => {

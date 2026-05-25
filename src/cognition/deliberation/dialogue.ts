@@ -1,7 +1,7 @@
 // Converts recency-window dialogue and the current turn into LLM message shapes.
 import type { BorgUserContentBlock } from "../../attachments/index.js";
 import type { AttachmentId } from "../../util/ids.js";
-import type { EvidenceLedger } from "../evidence-ledger/types.js";
+import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/types.js";
 import type { LLMContentBlock, LLMContentBlockMessage, LLMMessage } from "../../llm/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 
@@ -90,7 +90,7 @@ export function withCurrentUserContentBlocks(
     return next;
   }
 
-  const content: LLMContentBlock[] = currentUserContent.map((block) =>
+  const mappedContent: LLMContentBlock[] = currentUserContent.map((block) =>
     block.type === "text"
       ? {
           type: "text",
@@ -101,8 +101,11 @@ export function withCurrentUserContentBlocks(
           attachment_id: block.attachment_id,
         },
   );
+  const imageContent = mappedContent.filter((block) => block.type === "image_ref");
+  const textContent = mappedContent.filter((block) => block.type !== "image_ref");
+  const content = [...imageContent, ...textContent];
 
-  const currentText = content[0]?.type === "text" ? content[0].text : undefined;
+  const currentText = textContent[0]?.type === "text" ? textContent[0].text : undefined;
   const existingText =
     last.content.length === 1 && last.content[0]?.type === "text"
       ? last.content[0].text
@@ -128,27 +131,103 @@ export function withCurrentUserContentBlocks(
   return next;
 }
 
+function imageRefCount(messages: readonly LLMContentBlockMessage[]): number {
+  return messages.reduce(
+    (count, message) =>
+      count + message.content.filter((block) => block.type === "image_ref").length,
+    0,
+  );
+}
+
+function appendedImageBudgetState(state: string | undefined): string {
+  const marker = "image_unavailable=call_budget";
+
+  if (state === undefined || state.length === 0) {
+    return marker;
+  }
+
+  return state.includes(marker) ? state : `${state} ${marker}`;
+}
+
+function downgradeOmittedImageEntry(
+  entry: EvidenceLedgerEntry,
+  omittedAttachmentIds: ReadonlySet<string>,
+  allLedgerImagesOmitted: boolean,
+): EvidenceLedgerEntry {
+  if (entry.citation_type !== "original_image") {
+    return entry;
+  }
+
+  const attachmentId = entry.state_metadata?.attachment_id;
+  const omitted =
+    (typeof attachmentId === "string" && omittedAttachmentIds.has(attachmentId)) ||
+    (attachmentId === undefined &&
+      allLedgerImagesOmitted &&
+      entry.source_type === "image_attachment");
+
+  if (!omitted) {
+    return entry;
+  }
+
+  return {
+    ...entry,
+    citation_type: "generated_perception_text",
+    state: appendedImageBudgetState(entry.state),
+  };
+}
+
+export function withFinalizerImageBudget(
+  messages: readonly LLMContentBlockMessage[],
+  ledger: EvidenceLedger | null | undefined,
+  options: { maxImagesPerLlmCall?: number } = {},
+): EvidenceLedger | null | undefined {
+  if (ledger?.imageAttachments === undefined || ledger.imageAttachments.length === 0) {
+    return ledger;
+  }
+
+  const remaining =
+    options.maxImagesPerLlmCall === undefined
+      ? ledger.imageAttachments.length
+      : Math.max(0, options.maxImagesPerLlmCall - imageRefCount(messages));
+
+  if (remaining >= ledger.imageAttachments.length) {
+    return ledger;
+  }
+
+  const imageAttachments = ledger.imageAttachments.slice(0, remaining);
+  const omittedAttachmentIds = new Set(
+    ledger.imageAttachments.slice(remaining).map((image) => image.attachment_id),
+  );
+  const allLedgerImagesOmitted = imageAttachments.length === 0;
+  const next: EvidenceLedger = {
+    ...ledger,
+    sections: ledger.sections.map((section) => ({
+      ...section,
+      entries: section.entries.map((entry) =>
+        downgradeOmittedImageEntry(entry, omittedAttachmentIds, allLedgerImagesOmitted),
+      ),
+    })),
+    imageAttachments,
+  };
+
+  if (next.imageAttachments?.length === 0) {
+    delete next.imageAttachments;
+  }
+
+  return next;
+}
+
 export function withLedgerImageContentBlocks(
   messages: readonly LLMContentBlockMessage[],
   ledger: EvidenceLedger | null | undefined,
   options: { maxImagesPerLlmCall?: number } = {},
 ): LLMContentBlockMessage[] {
-  if (ledger?.imageAttachments === undefined || ledger.imageAttachments.length === 0) {
-    return [...messages];
-  }
+  const budgetedLedger = withFinalizerImageBudget(messages, ledger, options);
 
-  const currentImageCount = messages.reduce(
-    (count, message) =>
-      count + message.content.filter((block) => block.type === "image_ref").length,
-    0,
-  );
-  const remaining =
-    options.maxImagesPerLlmCall === undefined
-      ? ledger.imageAttachments.length
-      : Math.max(0, options.maxImagesPerLlmCall - currentImageCount);
-  const imageAttachments = ledger.imageAttachments.slice(0, remaining);
-
-  if (imageAttachments.length === 0) {
+  if (
+    budgetedLedger?.imageAttachments === undefined ||
+    budgetedLedger.imageAttachments.length === 0
+  ) {
     return [...messages];
   }
 
@@ -156,7 +235,7 @@ export function withLedgerImageContentBlocks(
     ...messages,
     {
       role: "user",
-      content: imageAttachments.flatMap((image): LLMContentBlock[] => [
+      content: budgetedLedger.imageAttachments.flatMap((image): LLMContentBlock[] => [
         {
           type: "text",
           text: image.label,
