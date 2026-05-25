@@ -96,18 +96,24 @@ When you decline a recommendation, say why and offer the counter.
 
 (As of 2026-05-24. Chromium on luth's headless sway session at :5901. May drift if ChatGPT redesigns.)
 
-**Start a fresh thread each cycle.** ChatGPT threads get unwieldy after many turns (the "Project Analysis and Review" thread was used from ~v70 through v83 and got very long). Click the "new chat" pencil icon at top-left of the sidebar, then verify "Extended Pro" is selected at the bottom-right of the composer before submitting. Each review cycle is self-contained -- the zip + questions doc give GPT everything it needs.
+**Start a fresh thread each cycle.** ChatGPT threads get unwieldy after many turns (the "Project Analysis and Review" thread was used from ~v70 through v83 and got very long). Click the "new chat" pencil icon at top-left of the sidebar, then **verify the model picker shows `Pro · Extended`** (bottom-right of the composer). The dropdown lists `Latest · 5.5`, `Instant`, `Thinking · Heavy`, `Pro · Extended`, `Configure...`. **`Heavy` is NOT Pro** -- it's GPT-5.5 with heavy thinking effort. The Pro Extended model is its own entry below. Each review cycle is self-contained -- the zip + questions doc give GPT everything it needs.
 
 ### 1. Zip the project
 
+The canonical recipe builds the file list from `git ls-files` plus explicit additions, then zips from stdin:
+
 ```bash
 cd /home/luth/Programming && rm -f ~/borgvN.zip && \
-  zip -r ~/borgvN.zip borg/ -x '*/node_modules/*' '*/dist/*'
+  { git -C borg ls-files | sed 's|^|borg/|'; \
+    find borg/.git borg/.design-dump borg/simulator-runs -type f 2>/dev/null; \
+  } | sort -u | zip ~/borgvN.zip -@
 ```
+
+Why this shape: the simple `zip -r borg/ -x '*/node_modules/*'` recipe blows up on pnpm's symlink-heavy `node_modules/.pnpm/` layout once the demo workspace (with multiple nested `node_modules/`) is present -- zip consumes >9 GB of memory and effectively hangs. `git ls-files` excludes everything `.gitignore` already excludes (node_modules, dist, .borg-data, etc.) with no fnmatch ambiguity, and the `find` line explicitly adds back the three useful gitignored trees: `.git` for commit history, `.design-dump` for design references (if present), `simulator-runs` for sim artifacts.
 
 **INCLUDE** `simulator-runs/`, `.git/`, sim artifacts. GPT runs a sandbox and uses git history + sim outputs. Do not over-exclude. Tom corrected this once already; don't repeat it.
 
-Size will land in the 150-200M range. That's fine.
+Size will land in the 150-200M range when `simulator-runs/` is populated. Demo-only / code-review zips without sim artifacts land closer to 10-15M.
 
 ### 2. Attach via the sway MCP
 
