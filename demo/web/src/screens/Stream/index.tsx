@@ -86,9 +86,9 @@ function summarizeStatus(
   return "active";
 }
 
-export function StreamScreen() {
+export function StreamScreen({ sessionId }: { sessionId: string }) {
   const live = useLiveEventsContext();
-  const streamApi = useApi(() => getStream({ limit: 120 }), []);
+  const streamApi = useApi(() => getStream({ session: sessionId, limit: 120 }), [sessionId]);
   const refetchStream = streamApi.refetch;
   const previousConnectionCountRef = useRef(live.connectionCount);
   const [entries, setEntries] = useState<StreamEntry[]>([]);
@@ -113,9 +113,13 @@ export function StreamScreen() {
       if (frame.type !== "stream:append") {
         return;
       }
-      setEntries((current) => mergeEntries(current, frame.entries, "desc"));
-      setSelectedId((current) => current ?? frame.entries.at(-1)?.id ?? null);
-      const invalidatedAttachmentIds = attachmentStatusInvalidationIds(frame.entries);
+      const matchingEntries = frame.entries.filter((entry) => entry.session_id === sessionId);
+      if (matchingEntries.length === 0) {
+        return;
+      }
+      setEntries((current) => mergeEntries(current, matchingEntries, "desc"));
+      setSelectedId((current) => current ?? matchingEntries.at(-1)?.id ?? null);
+      const invalidatedAttachmentIds = attachmentStatusInvalidationIds(matchingEntries);
       if (invalidatedAttachmentIds.length > 0) {
         setAttachmentStatusById((current) => {
           const next = { ...current };
@@ -126,7 +130,7 @@ export function StreamScreen() {
         });
       }
     });
-  }, [live]);
+  }, [live, sessionId]);
 
   useEffect(() => {
     const previousConnectionCount = previousConnectionCountRef.current;
@@ -179,6 +183,13 @@ export function StreamScreen() {
   const [attachmentStatusById, setAttachmentStatusById] = useState<
     Record<string, AttachmentStatusItem["status"]>
   >({});
+
+  useEffect(() => {
+    setEntries([]);
+    setSelectedId(null);
+    setAudiences(new Set());
+    setAttachmentStatusById({});
+  }, [sessionId]);
   const visibleAttachmentIds = useMemo(
     () => [
       ...new Set(

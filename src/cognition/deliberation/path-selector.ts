@@ -4,6 +4,7 @@ import type {
   RetrievedContradictionRouting,
   RetrievedEpisode,
 } from "../../retrieval/index.js";
+import type { SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { CognitiveMode } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -31,6 +32,7 @@ type NaturalDeliberationPathDecision = Pick<
 export type DeliberationPathTrace = {
   tracer: TurnTracer;
   turnId: string;
+  sessionId?: SessionId;
 };
 
 export type DeliberationPathContradictionRoutingOptions = {
@@ -83,6 +85,7 @@ export function chooseDeliberationPath(
       if (contradictionRoutingEnabled) {
         trace.tracer.emit("deliberation.contradiction_routing.completed", {
           turnId: trace.turnId,
+          ...(trace.sessionId === undefined ? {} : { session_id: trace.sessionId }),
           fingerprints: selectedFingerprints,
           tier: classification.tier,
           reason: classification.reason,
@@ -90,6 +93,7 @@ export function chooseDeliberationPath(
       }
       trace.tracer.emit("deliberation.path.completed", {
         turnId: trace.turnId,
+        ...(trace.sessionId === undefined ? {} : { session_id: trace.sessionId }),
         path,
         reason,
         confidenceOverall: confidence,
@@ -182,6 +186,7 @@ export function chooseDeliberationPath(
     if (trace?.tracer.enabled === true) {
       trace.tracer.emit("deliberation.path.transitioned", {
         turnId: trace.turnId,
+        ...(trace.sessionId === undefined ? {} : { session_id: trace.sessionId }),
         perceptionMode: mode,
         isOperational: effectiveRoutingOverride.isOperational === true,
         audienceEntityId: effectiveRoutingOverride.audienceEntityId ?? null,
@@ -203,6 +208,7 @@ export function chooseDeliberationPath(
       for (const hit of cooldownHits) {
         trace.tracer.emit("deliberation.contradiction_routing.transitioned", {
           turnId: trace.turnId,
+          ...(trace.sessionId === undefined ? {} : { session_id: trace.sessionId }),
           fingerprint: hit.fingerprint,
           last_forced_turn: hit.lastForcedTurn,
           current_turn: hit.currentTurn,

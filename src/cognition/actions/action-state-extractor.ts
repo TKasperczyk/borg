@@ -188,6 +188,7 @@ export type ActionStateExtractorOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   onDegraded?: (
     reason: ActionStateExtractorDegradedReason,
     error?: unknown,
@@ -765,10 +766,12 @@ export class ActionStateExtractor {
 
     const messages = buildActionStateMessages(input);
     const tools = [ACTION_STATE_TOOL];
+    const sessionId = input.sessionId ?? this.options.sessionId;
 
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId,
       label: "action_state_extractor",
       model: this.options.model,
       systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
@@ -792,6 +795,7 @@ export class ActionStateExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId,
         label: "action_state_extractor",
         error,
       });
@@ -802,6 +806,7 @@ export class ActionStateExtractor {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId,
       label: "action_state_extractor",
       response,
       responseShape: summarizeActionStateResponseShape(response),

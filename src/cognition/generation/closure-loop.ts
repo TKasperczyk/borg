@@ -7,7 +7,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { isPlainRecord } from "../../util/guards.js";
 import { CLOSURE_LOOP_SYSTEM_PROMPT } from "../prompts/closure-state-delta.js";
@@ -111,6 +111,7 @@ export type ClosureLoopClassifierOptions = {
   model?: string;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   onDegraded?: (
     reason: ClosureLoopClassifierDegradedReason,
     error?: unknown,
@@ -803,6 +804,7 @@ export class ClosureLoopClassifier {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "closure_loop_classifier",
       model: this.options.model,
       systemPrompt: CLOSURE_LOOP_SYSTEM_PROMPT,
@@ -825,6 +827,7 @@ export class ClosureLoopClassifier {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         label: "closure_loop_classifier",
         error,
       });
@@ -835,6 +838,7 @@ export class ClosureLoopClassifier {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "closure_loop_classifier",
       response,
       responseShape: summarizeClosureLoopResponseShape(response),

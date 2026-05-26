@@ -42,6 +42,7 @@ import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledge
 import type { ActiveParticipant, ParticipantProfileContext } from "../participants.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
+import type { PromptKey } from "../prompts/registry.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -236,6 +237,7 @@ export type DeliberatorOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   hostCapabilities?: string;
+  promptBlocks?: Partial<Record<PromptKey, string>>;
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
 };

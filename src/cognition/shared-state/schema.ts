@@ -6,7 +6,7 @@ import {
 } from "../../memory/decision-artifacts/index.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { SharedStateRenderOptions } from "./render.js";
 import type { SharedStatePromptSummaryOptions } from "./summary.js";
 import type {
@@ -105,6 +105,7 @@ export type CompileSharedStateArtifactInput = {
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   turnCounter?: number;
   lifecycle?: SharedStateLifecycleOptions;
   renderOptions?: SharedStateRenderOptions;

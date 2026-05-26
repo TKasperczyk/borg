@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
+import type { SessionId } from "../../util/ids.js";
 
 export type TurnTraceEventName =
   | "attachment.write"
@@ -150,6 +151,7 @@ export type TurnTraceEventName =
 
 export type TurnTraceData = {
   turnId: string;
+  session_id?: SessionId;
   [key: string]: JsonValue | undefined;
 };
 
@@ -172,6 +174,7 @@ export type TurnTokenTracePhase = "delib" | "final";
 export function emitTurnTokenTrace(input: {
   tracer: TurnTracer | undefined;
   turnId: string | undefined;
+  sessionId?: SessionId;
   phase: TurnTokenTracePhase;
   chunkText: string;
   sequence: number;
@@ -187,6 +190,7 @@ export function emitTurnTokenTrace(input: {
   input.tracer.emit("turn.token", {
     turnId: input.turnId,
     turn_id: input.turnId,
+    ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
     phase: input.phase,
     chunk_text: input.chunkText,
     sequence: input.sequence,
@@ -196,6 +200,7 @@ export function emitTurnTokenTrace(input: {
 export function emitTurnTokenFlushTrace(input: {
   tracer: TurnTracer | undefined;
   turnId: string | undefined;
+  sessionId?: SessionId;
   phase: TurnTokenTracePhase;
   fullText: string;
 }): void {
@@ -206,6 +211,7 @@ export function emitTurnTokenFlushTrace(input: {
   input.tracer.emit("turn.token.flush", {
     turnId: input.turnId,
     turn_id: input.turnId,
+    ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
     phase: input.phase,
     full_text: input.fullText,
   });

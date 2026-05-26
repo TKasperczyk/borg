@@ -116,6 +116,7 @@ function commitmentKindsForRegeneration(
 function emitRegenerationFailedTrace(input: {
   tracer: TurnTracer;
   turnId: string;
+  sessionId: SessionId;
   reason: "regeneration_not_supported" | "regenerated_non_message_emission";
   regeneration: RegenerationRequest;
   commitments: readonly CommitmentRecord[];
@@ -128,6 +129,7 @@ function emitRegenerationFailedTrace(input: {
 
   input.tracer.emit("commitment_guard.regeneration_failed", {
     turnId: input.turnId,
+    session_id: input.sessionId,
     mode: "enforce",
     verdict: "suppressed",
     reason: input.reason,
@@ -175,6 +177,7 @@ export class TurnActionCoordinator {
 
       this.options.tracer.emit("working_memory.degraded", {
         turnId: input.turnId,
+        session_id: input.sessionId,
         subsystem: "pending_actions",
         reason: event.reason,
         confidence: event.confidence,
@@ -228,6 +231,7 @@ export class TurnActionCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       phase: "guards",
       sub: "commitment_post_generation",
       run: async () => {
@@ -237,6 +241,7 @@ export class TurnActionCoordinator {
         let commitmentCheck = await this.options.commitmentGuardRunner.run({
           llmClient: input.llmClient,
           turnId: input.turnId,
+          sessionId: input.sessionId,
           response: currentDeliberation.response,
           userMessage: input.userMessage,
           cognitionInput: input.cognitionInput,
@@ -251,6 +256,7 @@ export class TurnActionCoordinator {
             emitRegenerationFailedTrace({
               tracer: this.options.tracer,
               turnId: input.turnId,
+              sessionId: input.sessionId,
               reason: "regeneration_not_supported",
               regeneration: commitmentCheck.emission.regeneration,
               commitments: input.applicableCommitments,
@@ -266,6 +272,7 @@ export class TurnActionCoordinator {
               emitRegenerationFailedTrace({
                 tracer: this.options.tracer,
                 turnId: input.turnId,
+                sessionId: input.sessionId,
                 reason: "regenerated_non_message_emission",
                 regeneration: commitmentCheck.emission.regeneration,
                 commitments: input.applicableCommitments,
@@ -284,6 +291,7 @@ export class TurnActionCoordinator {
             commitmentCheck = await this.options.commitmentGuardRunner.run({
               llmClient: input.llmClient,
               turnId: input.turnId,
+              sessionId: input.sessionId,
               response: currentDeliberation.response,
               userMessage: input.userMessage,
               cognitionInput: input.cognitionInput,

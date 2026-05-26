@@ -37,8 +37,15 @@ import type {
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
+import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
+import type {
+  SessionEnsureInput,
+  SessionListOptions,
+  SessionRecord,
+  SessionTouchUpdate,
+} from "../sessions/index.js";
 import type { StreamCursor, StreamEntry, StreamEntryInput, StreamReader } from "../stream/index.js";
 import type {
   AuditId,
@@ -448,6 +455,29 @@ export type BorgWorkmemFacade = {
   getPendingActionMergeCount: () => ReturnType<WorkingMemoryStore["getPendingActionMergeCount"]>;
 };
 
+export type BorgPromptBlockView = {
+  key: PromptKey;
+  label: string;
+  description: string;
+  default_text: string;
+  current_text: string;
+  overridden: boolean;
+  updated_at: number | null;
+};
+
+export type BorgPromptsFacade = {
+  list(): BorgPromptBlockView[];
+  set(key: PromptKey, text: string): BorgPromptBlockView;
+  clear(key: PromptKey): BorgPromptBlockView;
+};
+
+export type BorgSessionsFacade = {
+  ensure(input: SessionEnsureInput): SessionRecord;
+  touch(sessionId: SessionId, update?: SessionTouchUpdate): SessionRecord | null;
+  get(sessionId: SessionId): SessionRecord | null;
+  list(options?: SessionListOptions): SessionRecord[];
+};
+
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
@@ -470,4 +500,6 @@ export type BorgFacades = {
   autonomy: BorgAutonomyFacade;
   maintenance: BorgMaintenanceFacade;
   workmem: BorgWorkmemFacade;
+  prompts: BorgPromptsFacade;
+  sessions: BorgSessionsFacade;
 };

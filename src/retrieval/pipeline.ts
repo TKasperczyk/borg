@@ -265,6 +265,7 @@ export class RetrievalPipeline {
       limit?: number;
       queryVector?: Float32Array;
       traceTurnId?: string;
+      sessionId?: SessionId;
     } = {},
   ): Promise<OpenQuestion[]> {
     return retrieveOpenQuestionsForQueryFromRepository(
@@ -278,6 +279,7 @@ export class RetrievalPipeline {
             ? (reason, error) => {
                 this.tracer.emit("retrieval.degraded", {
                   turnId: options.traceTurnId!,
+                  session_id: options.sessionId,
                   subsystem: "open_questions",
                   reason: error instanceof Error ? `${reason}: ${error.message}` : reason,
                 });
@@ -294,6 +296,7 @@ export class RetrievalPipeline {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
+        session_id: options.sessionId,
         query,
         options: summarizeRetrievalOptions(options),
       });
@@ -320,6 +323,7 @@ export class RetrievalPipeline {
         if (this.tracer.enabled && options.traceTurnId !== undefined) {
           this.tracer.emit("retrieval.degraded", {
             turnId: options.traceTurnId,
+            session_id: options.sessionId,
             subsystem: "scoring_features",
             reason: error instanceof Error ? error.message : String(error),
           });
@@ -437,6 +441,7 @@ export class RetrievalPipeline {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.completed", {
         turnId: options.traceTurnId,
+        session_id: options.sessionId,
         episodeCount: context.episodes.length,
         semanticHits: countSemanticHits(context.semantic),
         asOf: options.asOf ?? null,
@@ -1077,6 +1082,7 @@ export class RetrievalPipeline {
         userMessage: query,
         tracer: this.tracer,
         turnId: options.traceTurnId,
+        sessionId: options.sessionId,
       });
       const namedTerms = dedupeStrings(expansion.named_terms);
       const facetIntents = expansion.facets.map((facet, index): RecallIntent => {
@@ -1101,6 +1107,7 @@ export class RetrievalPipeline {
       if (this.tracer.enabled && options.traceTurnId !== undefined) {
         this.tracer.emit("retrieval.degraded", {
           turnId: options.traceTurnId,
+          session_id: options.sessionId,
           subsystem: "recall_expansion",
           reason: error instanceof Error ? error.message : String(error),
         });
@@ -1329,6 +1336,7 @@ export class RetrievalPipeline {
             audienceEntityId: options.audienceEntityId ?? null,
             limit: options.openQuestionsLimit,
             traceTurnId: options.traceTurnId,
+            sessionId: options.sessionId,
           });
 
           return questions.map((question) => ({
@@ -1414,6 +1422,7 @@ export class RetrievalPipeline {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.degraded", {
         turnId: options.traceTurnId,
+        session_id: options.sessionId,
         subsystem,
         reason: error instanceof Error ? error.message : String(error),
       });

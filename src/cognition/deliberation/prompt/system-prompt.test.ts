@@ -28,6 +28,7 @@ import {
   LOOP_BREAKING_POSTURE_SECTION,
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
+import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { DeliberationContext } from "../types.js";
 
 import { buildBaseSystemPrompt, buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
@@ -1259,5 +1260,41 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("call EmitObserve");
     expect(prompt).toContain("tool call alone is the silence signal");
     expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
+  });
+
+  it("substitutes operator-provided prompt block overrides for the 5 editable sections", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      promptBlocks: {
+        base_identity_preamble: "OPERATOR-PREAMBLE",
+        voice_and_posture: "OPERATOR-VOICE",
+        epistemic_posture: "OPERATOR-EPISTEMIC",
+        identity_posture: "OPERATOR-IDENTITY",
+        host_capabilities: "OPERATOR-CAPABILITIES",
+      },
+    });
+
+    expect(prompt).toContain("OPERATOR-PREAMBLE");
+    expect(prompt).toContain("OPERATOR-VOICE");
+    expect(prompt).toContain("OPERATOR-EPISTEMIC");
+    expect(prompt).toContain("OPERATOR-IDENTITY");
+    expect(prompt).toContain("OPERATOR-CAPABILITIES");
+    expect(prompt).not.toContain(
+      "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+    );
+  });
+
+  it("renders every registered editable prompt block override", () => {
+    const promptBlocks = Object.fromEntries(
+      PROMPT_KEYS.map((key) => [key, `OVERRIDE:${key}`]),
+    ) as Record<PromptKey, string>;
+    const prompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      promptBlocks,
+    });
+
+    for (const key of PROMPT_KEYS) {
+      expect(prompt).toContain(`OVERRIDE:${key}`);
+    }
   });
 });

@@ -87,6 +87,7 @@ function incrementSkippedReason(skippedByReason: Record<string, number>, reason:
 function archiveInactiveParticipantActions(input: {
   options: TurnPhaseCoordinatorOptions;
   turnId: string;
+  sessionId: SessionId;
   turnCounter: number;
 }): ActionArchiveScanResult {
   const candidates = input.options.actionRepository.list({
@@ -133,6 +134,7 @@ function archiveInactiveParticipantActions(input: {
       if (input.options.tracer.enabled) {
         input.options.tracer.emit("action_archive.completed", {
           turnId: input.turnId,
+          session_id: input.sessionId,
           action_id: action.id,
           source: "post_generation_inactivity_scan",
           inactive_turns: inactiveTurns,
@@ -162,6 +164,7 @@ function archiveInactiveParticipantActions(input: {
   if (input.options.tracer.enabled) {
     input.options.tracer.emit("action_archive_scan.completed", {
       turnId: input.turnId,
+      session_id: input.sessionId,
       scanned_count: scanResult.scannedCount,
       eligible_count: scanResult.eligibleCount,
       archived_count: scanResult.archivedCount,
@@ -245,6 +248,7 @@ export async function runPostGenerationPhase(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     phase: "persist",
     sub: `emission=${actionEmission.kind}`,
     run: async () =>
@@ -290,6 +294,7 @@ export async function runPostGenerationPhase(input: {
       streamWriter: input.streamWriter,
       appendHookFailureEvent: input.appendHookFailureEvent,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       turnInput: input.turnInput,
       actionResult,
       actionEmission,
@@ -381,6 +386,7 @@ export async function runPostGenerationPhase(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     phase: "reflect",
     sub: `emission=${actionEmission.kind}`,
     run: () =>
@@ -443,6 +449,7 @@ export async function runPostGenerationPhase(input: {
   archiveInactiveParticipantActions({
     options: input.options,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     turnCounter: lifecycleTurnCounter,
   });
   await persistCorrectiveCommitment({
@@ -478,6 +485,7 @@ export async function suppressFromClosureLoopPhase(input: {
   streamWriter: StreamWriter;
   appendHookFailureEvent: AppendHookFailureEvent;
   turnId: string;
+  sessionId: SessionId;
   turnInput: TurnPhaseInput;
   workingMemory: WorkingMemory;
   persistedUserEntryId?: StreamEntry["id"];
@@ -516,6 +524,7 @@ export async function suppressFromClosureLoopPhase(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     phase: "persist",
     sub: "suppressed_closure",
     run: () =>
@@ -543,6 +552,7 @@ export async function suppressFromClosureLoopPhase(input: {
   if (input.options.tracer.enabled) {
     input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
+      session_id: input.sessionId,
       reason: "finalizer_no_output",
       streamEntryId: suppressionMarker.id,
       source: "closure_loop",
@@ -565,6 +575,7 @@ export async function suppressFromClosureLoopPhase(input: {
   archiveInactiveParticipantActions({
     options: input.options,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
   });
 
@@ -590,6 +601,7 @@ export async function suppressFromGenerationGatePhase(input: {
   streamWriter: StreamWriter;
   appendHookFailureEvent: AppendHookFailureEvent;
   turnId: string;
+  sessionId: SessionId;
   turnInput: TurnPhaseInput;
   workingMemory: WorkingMemory;
   persistedUserEntryId?: StreamEntry["id"];
@@ -629,6 +641,7 @@ export async function suppressFromGenerationGatePhase(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     phase: "persist",
     sub: "suppressed_generation_gate",
     run: () =>
@@ -656,6 +669,7 @@ export async function suppressFromGenerationGatePhase(input: {
   if (input.options.tracer.enabled) {
     input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
+      session_id: input.sessionId,
       reason: suppressionReason,
       streamEntryId: suppressionMarker.id,
       source: "generation_gate",
@@ -678,6 +692,7 @@ export async function suppressFromGenerationGatePhase(input: {
   archiveInactiveParticipantActions({
     options: input.options,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
   });
 
@@ -703,6 +718,7 @@ async function suppressFromActionPhase(input: {
   streamWriter: StreamWriter;
   appendHookFailureEvent: AppendHookFailureEvent;
   turnId: string;
+  sessionId: SessionId;
   turnInput: TurnPhaseInput;
   actionResult: Awaited<ReturnType<TurnActionCoordinator["run"]>>["actionResult"];
   actionEmission: Extract<PendingTurnEmission, { kind: "suppressed" }>;
@@ -747,6 +763,7 @@ async function suppressFromActionPhase(input: {
   if (input.options.tracer.enabled) {
     input.options.tracer.emit("post_generation.rejected", {
       turnId: input.turnId,
+      session_id: input.sessionId,
       reason: input.actionEmission.reason,
       streamEntryId: input.persistedAgentEntry.id,
       ...(input.actionEmission.no_output_categories === undefined
@@ -776,6 +793,7 @@ async function suppressFromActionPhase(input: {
   archiveInactiveParticipantActions({
     options: input.options,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.actionResult.workingMemory),
   });
 

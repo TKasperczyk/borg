@@ -358,6 +358,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
 
   options.tracer.emit("finalizer.completed", {
     turnId: options.turnId,
+    session_id: options.sessionId,
     path: options.path,
     mode: "emission_tools",
     decision: decision.kind,
@@ -424,6 +425,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       emitTurnTokenTrace({
         tracer: options.tracer,
         turnId: options.turnId,
+        sessionId: options.sessionId,
         phase: "final",
         chunkText,
         sequence: tokenSequence,
@@ -436,6 +438,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     emitTurnTokenFlushTrace({
       tracer: options.tracer,
       turnId: options.turnId,
+      sessionId: options.sessionId,
       phase: "final",
       fullText: finalizerFlushText(result, decision),
     });

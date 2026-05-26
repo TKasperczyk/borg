@@ -49,6 +49,8 @@ export class Borg {
   readonly autonomy: BorgFacades["autonomy"];
   readonly maintenance: BorgFacades["maintenance"];
   readonly workmem: BorgFacades["workmem"];
+  readonly prompts: BorgFacades["prompts"];
+  readonly sessions: BorgFacades["sessions"];
 
   private constructor(private readonly deps: BorgDependencies) {
     const facades = createBorgFacades(deps) as unknown as BorgFacades;
@@ -74,6 +76,8 @@ export class Borg {
     this.autonomy = facades.autonomy;
     this.maintenance = facades.maintenance;
     this.workmem = facades.workmem;
+    this.prompts = facades.prompts;
+    this.sessions = facades.sessions;
   }
 
   /**

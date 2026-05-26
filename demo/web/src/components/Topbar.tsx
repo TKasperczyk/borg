@@ -1,5 +1,6 @@
 import { apiBase } from "../api/client";
 import type { WsState } from "../api/types";
+import { ResetButton } from "./ResetButton";
 
 export type TopbarProps = {
   session_id: string;
@@ -43,6 +44,8 @@ export function Topbar({ session_id, audience, turns, ws_state, now }: TopbarPro
       </div>
       <div className="topbar-group flex"></div>
       <div className="topbar-group end">
+        <ResetButton />
+        <span className="topbar-sep">·</span>
         <span className="kbd">⌘K</span>
         <span className="topbar-key">command</span>
         <span className="topbar-sep">·</span>

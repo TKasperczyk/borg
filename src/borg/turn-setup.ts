@@ -39,6 +39,7 @@ import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
+import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 import type { StreamEntryIndexRepository } from "../stream/index.js";
@@ -80,6 +81,7 @@ export type BuildTurnOrchestratorOptions = {
   imagePerceptionService?: ImagePerceptionService;
   clock: Clock;
   tracer?: TurnTracer;
+  promptOverrideRepository?: PromptOverrideRepository;
 };
 
 export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): TurnOrchestrator {
@@ -141,5 +143,8 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.streamIngestionCoordinator === undefined
       ? {}
       : { streamIngestionCoordinator: options.streamIngestionCoordinator }),
+    ...(options.promptOverrideRepository === undefined
+      ? {}
+      : { promptOverrideRepository: options.promptOverrideRepository }),
   });
 }

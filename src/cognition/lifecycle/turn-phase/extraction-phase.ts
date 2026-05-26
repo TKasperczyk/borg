@@ -113,6 +113,7 @@ export async function runExtractionPhase(input: {
       ? input.options.turnGoalPromotionService.extractAndPersist({
           llmClient: input.llmClient,
           turnId: input.turnId,
+          sessionId: input.sessionId,
           isUserTurn: input.isUserTurn,
           userMessage: input.turnInput.userMessage,
           recentHistory: input.recentHistory,

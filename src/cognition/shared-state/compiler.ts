@@ -697,6 +697,7 @@ export async function compileSharedStateArtifact(
   traceLlmCallStarted({
     tracer: input.tracer,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     label: "decision_artifact_compiler",
     model: input.model,
     systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
@@ -720,6 +721,7 @@ export async function compileSharedStateArtifact(
     traceLlmCallError({
       tracer: input.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       label: "decision_artifact_compiler",
       error,
     });
@@ -739,6 +741,7 @@ export async function compileSharedStateArtifact(
   traceLlmCallResponse({
     tracer: input.tracer,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     label: "decision_artifact_compiler",
     response,
     responseShape: summarizeSharedStateArtifactResponseShape(response),
@@ -783,6 +786,7 @@ export async function compileSharedStateArtifact(
       traceLlmCallStarted({
         tracer: input.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         label: "decision_artifact_compiler",
         model: input.model,
         systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
@@ -806,6 +810,7 @@ export async function compileSharedStateArtifact(
         traceLlmCallError({
           tracer: input.tracer,
           turnId: input.turnId,
+          sessionId: input.sessionId,
           label: "decision_artifact_compiler",
           error: repairError,
         });
@@ -831,6 +836,7 @@ export async function compileSharedStateArtifact(
       traceLlmCallResponse({
         tracer: input.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         label: "decision_artifact_compiler",
         response: repairResponse,
         responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),
@@ -973,6 +979,7 @@ export async function compileSharedStateArtifact(
     traceLlmCallStarted({
       tracer: input.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       label: "decision_artifact_compiler",
       model: input.model,
       systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
@@ -996,6 +1003,7 @@ export async function compileSharedStateArtifact(
       traceLlmCallError({
         tracer: input.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         label: "decision_artifact_compiler",
         error,
       });
@@ -1022,6 +1030,7 @@ export async function compileSharedStateArtifact(
     traceLlmCallResponse({
       tracer: input.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       label: "decision_artifact_compiler",
       response: repairResponse,
       responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),

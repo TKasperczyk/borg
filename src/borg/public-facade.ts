@@ -75,6 +75,7 @@ import type {
 } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
+import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
 import type {
@@ -83,6 +84,12 @@ import type {
   StreamEntryInput,
   StreamIterateOptions,
 } from "../stream/types.js";
+import type {
+  SessionEnsureInput,
+  SessionListOptions,
+  SessionRecord,
+  SessionTouchUpdate,
+} from "../sessions/types.js";
 import type {
   ImageMediaType,
   ImagePerceptionRecord,
@@ -1080,6 +1087,29 @@ export type BorgWorkmemFacade = {
   getPendingActionMergeCount(): number;
 };
 
+export type BorgPromptBlockView = {
+  key: PromptKey;
+  label: string;
+  description: string;
+  default_text: string;
+  current_text: string;
+  overridden: boolean;
+  updated_at: number | null;
+};
+
+export type BorgPromptsFacade = {
+  list(): BorgPromptBlockView[];
+  set(key: PromptKey, text: string): BorgPromptBlockView;
+  clear(key: PromptKey): BorgPromptBlockView;
+};
+
+export type BorgSessionsFacade = {
+  ensure(input: SessionEnsureInput): SessionRecord;
+  touch(sessionId: SessionId, update?: SessionTouchUpdate): SessionRecord | null;
+  get(sessionId: SessionId): SessionRecord | null;
+  list(options?: SessionListOptions): SessionRecord[];
+};
+
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
@@ -1102,4 +1132,6 @@ export type BorgFacades = {
   autonomy: BorgAutonomyFacade;
   maintenance: BorgMaintenanceFacade;
   workmem: BorgWorkmemFacade;
+  prompts: BorgPromptsFacade;
+  sessions: BorgSessionsFacade;
 };

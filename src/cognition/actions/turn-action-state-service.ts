@@ -88,6 +88,7 @@ export class TurnActionStateService {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId ?? undefined,
       onDegraded: (reason, error) => {
         if (!this.options.tracer.enabled) {
           return;
@@ -167,6 +168,7 @@ export class TurnActionStateService {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId ?? undefined,
       onDegraded: (reason, error) => {
         if (!this.options.tracer.enabled) {
           return;

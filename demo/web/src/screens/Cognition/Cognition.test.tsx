@@ -178,11 +178,11 @@ function ledgerWithText(text: string): EvidenceLedger {
   };
 }
 
-function Harness({ live }: { live: LiveEvents }) {
-  const turnStream = useTurnStream(live);
+function Harness({ live, sessionId = "default" }: { live: LiveEvents; sessionId?: string }) {
+  const turnStream = useTurnStream(live, { sessionId });
   return (
     <LiveEventsProvider value={live}>
-      <CognitionScreen sessionId="default" audience="alice" turnStream={turnStream} />
+      <CognitionScreen sessionId={sessionId} audience="alice" turnStream={turnStream} />
     </LiveEventsProvider>
   );
 }
@@ -265,6 +265,43 @@ describe("cognition screen", () => {
     await waitFor(() => expect(screen.queryByText(/borg is thinking/)).not.toBeInTheDocument());
   });
 
+  it("scopes stream fetches and turn posts to the active session", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch({
+      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+    });
+
+    render(<Harness live={source.live()} sessionId="sess_custom" />);
+
+    await waitFor(() => {
+      const streamCall = fetchMock.mock.calls.find(([request]) =>
+        String(request).includes("/api/stream"),
+      );
+      expect(streamCall).toBeDefined();
+      const streamUrl = new URL(String(streamCall?.[0]), "http://test.invalid");
+      expect(streamUrl.searchParams.get("session")).toBe("sess_custom");
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(() => {
+      const turnCall = fetchMock.mock.calls.find(
+        ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+      );
+      expect(turnCall).toBeDefined();
+      const init = turnCall?.[1] as RequestInit;
+      expect(JSON.parse(String(init.body))).toEqual({
+        message: "hello borg",
+        audience: "alice",
+        session: "sess_custom",
+        stakes: "low",
+      });
+    });
+  });
+
   it("stages uploaded images and posts turns as multipart form data", async () => {
     const source = makeLiveSource();
     const { fetchMock } = installCognitionFetch({
@@ -296,6 +333,7 @@ describe("cognition screen", () => {
       const body = init.body as FormData;
       expect(body.get("message")).toBe("see this image");
       expect(body.get("audience")).toBe("alice");
+      expect(body.get("session")).toBe("default");
       expect(body.get("stakes")).toBe("low");
       expect(body.getAll("attachments[]")).toEqual([file]);
     });

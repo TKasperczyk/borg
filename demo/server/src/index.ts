@@ -1,8 +1,9 @@
 import { serve } from "@hono/node-server";
 import { Borg } from "borg";
 
-import { createDemoServerApp } from "./app.js";
+import { createDemoServerApp, ensureDemoDefaultSession } from "./app.js";
 import { createLiveBridge } from "./live.js";
+import { createResetBorgController, type BorgHandle } from "./reset.js";
 
 function readPort(): number {
   const raw = process.env.PORT ?? "7740";
@@ -31,15 +32,28 @@ function readCorsOrigins(): string[] {
 const dataDir = process.env.BORG_DATA_DIR ?? ".borg-data/demo";
 const port = readPort();
 const live = createLiveBridge();
-const borg = await Borg.open({
-  dataDir,
-  tracer: live.tracer,
-  onStreamAppend: live.onStreamAppend,
-});
+
+async function openDemoBorg(): Promise<Borg> {
+  const borg = await Borg.open({
+    dataDir,
+    tracer: live.tracer,
+    onStreamAppend: live.onStreamAppend,
+  });
+  ensureDemoDefaultSession(borg);
+  return borg;
+}
+
+const borgHandle: BorgHandle = {
+  current: await openDemoBorg(),
+};
+
+const resetBorg = createResetBorgController({ dataDir, live, borgHandle, openBorg: openDemoBorg });
+
 const { app, injectWebSocket } = createDemoServerApp({
-  borg,
+  borgHandle,
   live,
   corsOrigins: readCorsOrigins(),
+  resetBorg,
 });
 const server = serve({
   fetch: app.fetch,
@@ -74,7 +88,9 @@ const shutdown = async (signal: NodeJS.Signals) => {
       resolve();
     });
   });
-  await borg.close();
+  if (borgHandle.state !== "dead" && borgHandle.state !== "closing") {
+    await borgHandle.current.close();
+  }
 };
 
 function exitAfterShutdown(signal: NodeJS.Signals): void {

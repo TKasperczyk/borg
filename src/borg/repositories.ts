@@ -56,11 +56,13 @@ import {
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore } from "../memory/working/index.js";
 import { RecallStateRepository, RetrievalPipeline } from "../retrieval/index.js";
+import { SessionsRepository } from "../sessions/index.js";
 import type { LanceDbTable } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamEntryIndexRepository, StreamWriter, type StreamEntry } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgDependencies, BorgStreamWriterFactory } from "./types.js";
 import { backfillStreamEntryIndex } from "./reconciliation.js";
@@ -99,8 +101,10 @@ export type BorgRepositorySetup = Pick<
   | "retrievalPipeline"
   | "workingMemoryStore"
   | "autonomyWakesRepository"
+  | "sessionsRepository"
   | "attachmentRepository"
   | "imagePerceptionRepository"
+  | "promptOverrideRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -128,6 +132,10 @@ export async function buildBorgRepositories(
 ): Promise<BorgRepositorySetup> {
   const { config, sqlite, clock, embeddingClient } = options;
   const autonomyWakesRepository = new AutonomyWakesRepository({
+    db: sqlite,
+    clock,
+  });
+  const sessionsRepository = new SessionsRepository({
     db: sqlite,
     clock,
   });
@@ -437,6 +445,7 @@ export async function buildBorgRepositories(
     dataDir: config.dataDir,
     clock,
   });
+  const promptOverrideRepository = new PromptOverrideRepository(sqlite, clock);
   return {
     entryIndex,
     episodicRepository,
@@ -470,8 +479,10 @@ export async function buildBorgRepositories(
     retrievalPipeline,
     workingMemoryStore,
     autonomyWakesRepository,
+    sessionsRepository,
     attachmentRepository: options.attachmentRepository,
     imagePerceptionRepository,
+    promptOverrideRepository,
     createStreamWriter,
   };
 }

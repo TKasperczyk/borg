@@ -19,8 +19,12 @@ export type CognitionScreenProps = {
   turnStream: TurnStreamState;
 };
 
-function isChatEntry(entry: StreamEntry, audience: string): boolean {
-  return CHAT_KINDS.includes(entry.kind as StreamChatKind) && entry.audience === audience;
+function isChatEntry(entry: StreamEntry, sessionId: string, audience: string): boolean {
+  return (
+    entry.session_id === sessionId &&
+    CHAT_KINDS.includes(entry.kind as StreamChatKind) &&
+    entry.audience === audience
+  );
 }
 
 export function CognitionScreen({ sessionId, audience, turnStream }: CognitionScreenProps) {
@@ -28,13 +32,16 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
   const [chatEntries, setChatEntries] = useState<StreamEntry[]>([]);
   const previousConnectionCountRef = useRef(live.connectionCount);
 
-  const streamApi = useApi(() => getStream({ audience, kinds: CHAT_KINDS, limit: 50 }), [audience]);
+  const streamApi = useApi(
+    () => getStream({ session: sessionId, audience, kinds: CHAT_KINDS, limit: 50 }),
+    [audience, sessionId],
+  );
   const resetForReconnect = turnStream.resetForReconnect;
   const replaceTailFromEntries = turnStream.replaceTailFromEntries;
 
   useEffect(() => {
     setChatEntries([]);
-  }, [audience]);
+  }, [audience, sessionId]);
 
   useEffect(() => {
     const streamData = streamApi.data;
@@ -42,7 +49,7 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
     if (streamData !== null) {
       setChatEntries((current) =>
         mergeEntries(
-          current.filter((entry) => entry.audience === audience),
+          current.filter((entry) => entry.session_id === sessionId && entry.audience === audience),
           streamData.entries,
         ),
       );
@@ -55,12 +62,12 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
         return;
       }
 
-      const matching = frame.entries.filter((entry) => isChatEntry(entry, audience));
+      const matching = frame.entries.filter((entry) => isChatEntry(entry, sessionId, audience));
       if (matching.length > 0) {
         setChatEntries((current) => mergeEntries(current, matching));
       }
     });
-  }, [audience, live]);
+  }, [audience, live, sessionId]);
 
   useEffect(() => {
     const previousConnectionCount = previousConnectionCountRef.current;
@@ -73,7 +80,12 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
     let cancelled = false;
     void (async () => {
       try {
-        const stream = await getStream({ audience, kinds: CHAT_KINDS, limit: 50 });
+        const stream = await getStream({
+          session: sessionId,
+          audience,
+          kinds: CHAT_KINDS,
+          limit: 50,
+        });
 
         if (cancelled) {
           return;
@@ -81,7 +93,9 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
 
         setChatEntries((current) =>
           mergeEntries(
-            current.filter((entry) => entry.audience === audience),
+            current.filter(
+              (entry) => entry.session_id === sessionId && entry.audience === audience,
+            ),
             stream.entries,
           ),
         );
@@ -98,10 +112,10 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
     return () => {
       cancelled = true;
     };
-  }, [audience, live.connectionCount, replaceTailFromEntries, resetForReconnect]);
+  }, [audience, live.connectionCount, replaceTailFromEntries, resetForReconnect, sessionId]);
 
   const send = (input: { message: string; stakes: TurnStakes; attachments?: readonly File[] }) => {
-    return turnStream.runTurn({ ...input, audience });
+    return turnStream.runTurn({ ...input, audience, session: sessionId });
   };
 
   return (

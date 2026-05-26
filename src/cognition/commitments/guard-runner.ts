@@ -14,6 +14,7 @@ import {
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { escapeReservedBorgTags } from "../../util/prompt-tags.js";
+import type { SessionId } from "../../util/ids.js";
 
 export type CommitmentGuardRunnerOptions = {
   detectionModel: string;
@@ -28,6 +29,7 @@ export type CommitmentGuardRunnerOptions = {
 
 export type CommitmentGuardRunnerInput = {
   turnId: string;
+  sessionId?: SessionId;
   llmClient: LLMClient;
   response: string;
   userMessage: string;
@@ -218,6 +220,7 @@ export class CommitmentGuardRunner {
 
         this.options.tracer.emit("commitment_guard.shadow_observation", {
           turnId: input.turnId,
+          ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
           mode: "shadow",
           verdict: "passed",
           wouldHaveVerdict,
@@ -235,6 +238,7 @@ export class CommitmentGuardRunner {
         if (mode === "enforce") {
           this.options.tracer.emit("commitment_guard.advisory_violation_observed", {
             turnId: input.turnId,
+            ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
             verdict: "passed",
             violationCount: shadowCheck.violations.length,
@@ -257,6 +261,7 @@ export class CommitmentGuardRunner {
       if (this.options.tracer.enabled) {
         this.options.tracer.emit("commitment_check.completed", {
           turnId: input.turnId,
+          ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
           mode,
           verdict: "passed",
           wouldHaveVerdict,
@@ -318,6 +323,7 @@ export class CommitmentGuardRunner {
         if (this.options.tracer.enabled) {
           this.options.tracer.emit("commitment_guard.regeneration_failed", {
             turnId: input.turnId,
+            ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
             verdict: "suppressed",
             reason: "still_violates",
@@ -352,6 +358,7 @@ export class CommitmentGuardRunner {
         if (this.options.tracer.enabled) {
           this.options.tracer.emit("commitment_guard.regeneration_requested", {
             turnId: input.turnId,
+            ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
             verdict: "requires_regeneration",
             violationCount: regeneration.violationCount,
@@ -374,6 +381,7 @@ export class CommitmentGuardRunner {
     ) {
       this.options.tracer.emit("commitment_guard.regeneration_succeeded", {
         turnId: input.turnId,
+        ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
         verdict: "passed",
         violationCount: 0,
@@ -386,6 +394,7 @@ export class CommitmentGuardRunner {
     if (this.options.tracer.enabled && effectiveCommitmentCheck.emission.kind === "suppressed") {
       this.options.tracer.emit("commitment_guard.enforce_suppression", {
         turnId: input.turnId,
+        ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
         verdict: "suppressed",
         reason: effectiveCommitmentCheck.emission.reason,
@@ -407,6 +416,7 @@ export class CommitmentGuardRunner {
     ) {
       this.options.tracer.emit("commitment_guard.enforce_rewrite", {
         turnId: input.turnId,
+        ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
         verdict: "rewritten",
         rewriteTriggered: true,
@@ -423,6 +433,7 @@ export class CommitmentGuardRunner {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("commitment_check.completed", {
         turnId: input.turnId,
+        ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode,
         verdict: actualVerdict,
         wouldHaveVerdict,

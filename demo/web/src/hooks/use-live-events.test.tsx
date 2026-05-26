@@ -5,17 +5,25 @@ import { useLiveEvents } from "./use-live-events";
 
 class FakeWebSocket extends EventTarget {
   static sockets: FakeWebSocket[] = [];
+  readyState = 0;
+  readonly sent: string[] = [];
 
   constructor(readonly url: string) {
     super();
     FakeWebSocket.sockets.push(this);
   }
 
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
   open(): void {
+    this.readyState = 1;
     this.dispatchEvent(new Event("open"));
   }
 
   close(): void {
+    this.readyState = 3;
     this.dispatchEvent(new Event("close"));
   }
 }
@@ -29,11 +37,13 @@ function installFakeWebSocket(): void {
 function Probe({
   onLive,
   onReconnected,
+  sessionId,
 }: {
   onLive?: (live: ReturnType<typeof useLiveEvents>) => void;
   onReconnected?: () => void;
+  sessionId?: string;
 }) {
-  const live = useLiveEvents({ onReconnected });
+  const live = useLiveEvents({ onReconnected, sessionId });
   onLive?.(live);
   return (
     <div data-testid="ws-state">
@@ -117,5 +127,27 @@ describe("useLiveEvents", () => {
     });
 
     expect(seen.at(-1)).not.toBe(seen[0]);
+  });
+
+  it("subscribes to the current session and switches subscriptions on session change", () => {
+    vi.useFakeTimers();
+    installFakeWebSocket();
+
+    const { rerender } = render(<Probe sessionId="sess_a" />);
+
+    act(() => {
+      FakeWebSocket.sockets[0]?.open();
+    });
+
+    expect(FakeWebSocket.sockets[0]?.sent).toEqual([
+      JSON.stringify({ type: "subscribe", session_id: "sess_a" }),
+    ]);
+
+    rerender(<Probe sessionId="sess_b" />);
+
+    expect(FakeWebSocket.sockets[0]?.sent.slice(-2)).toEqual([
+      JSON.stringify({ type: "unsubscribe", session_id: "sess_a" }),
+      JSON.stringify({ type: "subscribe", session_id: "sess_b" }),
+    ]);
   });
 });

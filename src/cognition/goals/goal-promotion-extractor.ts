@@ -10,7 +10,7 @@ import {
 } from "../../llm/index.js";
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -189,6 +189,7 @@ export type GoalPromotionExtractorOptions = {
   model?: string;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   onDegraded?: (
     reason: GoalPromotionExtractorDegradedReason,
     error?: unknown,
@@ -607,6 +608,7 @@ export class GoalPromotionExtractor {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "goal_promotion_extractor",
       model: this.options.model as string,
       systemPrompt: GOAL_PROMOTION_SYSTEM_PROMPT,
@@ -628,6 +630,7 @@ export class GoalPromotionExtractor {
       traceLlmCallResponse({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         label: "goal_promotion_extractor",
         response,
         responseShape: summarizeGoalPromotionResponseShape(response),
@@ -638,6 +641,7 @@ export class GoalPromotionExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         label: "goal_promotion_extractor",
         error,
       });

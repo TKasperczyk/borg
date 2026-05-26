@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 
 import type { Clock } from "../../../util/clock.js";
+import type { SessionId } from "../../../util/ids.js";
 import type { TurnTraceData, TurnTracer } from "../../tracing/tracer.js";
 
 export type TurnPhaseName =
@@ -24,6 +25,7 @@ export type TraceTurnPhaseOptions<T> = {
   tracer: TurnTracer;
   clock: Clock;
   turnId: string;
+  sessionId?: SessionId;
   phase: TurnPhaseName;
   sub?: string;
   completedSub?: (result: T) => string | undefined;
@@ -32,6 +34,7 @@ export type TraceTurnPhaseOptions<T> = {
 
 function phaseTraceData(input: {
   turnId: string;
+  sessionId?: SessionId;
   phase: TurnPhaseName;
   clock: Clock;
   durationMs?: number;
@@ -39,6 +42,7 @@ function phaseTraceData(input: {
 }): {
   turnId: string;
   turn_id: string;
+  session_id?: SessionId;
   phase: TurnPhaseName;
   ts: number;
   duration_ms?: number;
@@ -47,6 +51,7 @@ function phaseTraceData(input: {
   return {
     turnId: input.turnId,
     turn_id: input.turnId,
+    ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
     phase: input.phase,
     ts: input.clock.now(),
     ...(input.durationMs === undefined ? {} : { duration_ms: input.durationMs }),
@@ -72,6 +77,7 @@ export async function traceTurnPhase<T>(options: TraceTurnPhaseOptions<T>): Prom
     "turn_phase.started",
     phaseTraceData({
       turnId: options.turnId,
+      sessionId: options.sessionId,
       phase: options.phase,
       clock: options.clock,
       sub: options.sub,
@@ -85,6 +91,7 @@ export async function traceTurnPhase<T>(options: TraceTurnPhaseOptions<T>): Prom
       "turn_phase.completed",
       phaseTraceData({
         turnId: options.turnId,
+        sessionId: options.sessionId,
         phase: options.phase,
         clock: options.clock,
         durationMs: Math.max(0, performance.now() - startWallMs),
@@ -97,6 +104,7 @@ export async function traceTurnPhase<T>(options: TraceTurnPhaseOptions<T>): Prom
       "turn_phase.failed",
       phaseTraceData({
         turnId: options.turnId,
+        sessionId: options.sessionId,
         phase: options.phase,
         clock: options.clock,
         durationMs: Math.max(0, performance.now() - startWallMs),

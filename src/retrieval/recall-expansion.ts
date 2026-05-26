@@ -14,6 +14,7 @@ import {
   traceLlmCallStarted,
 } from "../cognition/tracing/llm-call-trace.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 
 const recallExpansionFacetKindSchema = z.enum([
@@ -56,6 +57,7 @@ export type RecallExpansionOptions = {
   userMessage: string;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
 };
 
 export const RECALL_EXPANSION_TOOL_NAME = "EmitRecallExpansion";
@@ -90,6 +92,7 @@ export async function expandRecall(
   traceLlmCallStarted({
     tracer: options.tracer,
     turnId: options.turnId,
+    sessionId: options.sessionId,
     label: "recall_expansion",
     model: options.model,
     systemPrompt: RECALL_EXPANSION_SYSTEM_PROMPT,
@@ -113,6 +116,7 @@ export async function expandRecall(
     traceLlmCallError({
       tracer: options.tracer,
       turnId: options.turnId,
+      sessionId: options.sessionId,
       label: "recall_expansion",
       error,
     });
@@ -123,6 +127,7 @@ export async function expandRecall(
   traceLlmCallResponse({
     tracer: options.tracer,
     turnId: options.turnId,
+    sessionId: options.sessionId,
     label: "recall_expansion",
     response,
     responseShape: summarizeRecallExpansionResponseShape(response),
@@ -149,6 +154,7 @@ export async function expandRecall(
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("recall_expansion.completed", {
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       clipped: true,
       original_count: parsed.facets.length,
       retained_count: MAX_RECALL_EXPANSION_FACETS,

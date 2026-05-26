@@ -496,7 +496,7 @@ describe("P2 screens", () => {
     installFetch();
     render(
       <LiveEventsProvider value={live.live()}>
-        <StreamScreen />
+        <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
     );
 
@@ -537,7 +537,7 @@ describe("P2 screens", () => {
     const fetchMock = installFetch();
     const { rerender } = render(
       <LiveEventsProvider value={live.live(1)}>
-        <StreamScreen />
+        <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
     );
 
@@ -549,7 +549,7 @@ describe("P2 screens", () => {
 
     rerender(
       <LiveEventsProvider value={live.live(2)}>
-        <StreamScreen />
+        <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
     );
 
@@ -562,7 +562,7 @@ describe("P2 screens", () => {
 
   it("drills from memory overview into procedural records", async () => {
     installFetch();
-    render(<MemoryScreen />);
+    render(<MemoryScreen sessionId="default" />);
 
     const proceduralLabels = await screen.findAllByText("procedural");
     fireEvent.click(proceduralLabels[0]?.closest(".band-card") ?? proceduralLabels[0]!);

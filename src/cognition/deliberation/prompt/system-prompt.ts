@@ -24,20 +24,16 @@ import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
 import {
-  BASE_IDENTITY_PREAMBLE,
   CURRENT_USER_MESSAGE_REMINDER,
-  EPISTEMIC_POSTURE_SECTION,
-  IDENTITY_POSTURE_SECTION,
   TRUSTED_GUIDANCE_PREAMBLE,
   UNTRUSTED_DATA_PREAMBLE,
-  VOICE_AND_POSTURE_SECTION,
 } from "../../prompts/base-identity.js";
-import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../../prompts/host-capabilities.js";
 import {
   GROUP_CHAT_SENDER_SCOPING_REMINDER,
   LOOP_BREAKING_POSTURE_SECTION,
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
+import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
 import {
   summarizeContradictionSignal,
@@ -54,8 +50,26 @@ export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
   semanticContextBudget: number;
   hostCapabilities?: string;
+  promptBlocks?: Partial<Record<PromptKey, string>>;
   nowMs?: number;
 };
+
+type ResolvedPromptBlocks = Record<PromptKey, string>;
+
+function resolvePromptBlocks(options: BuildBaseSystemPromptOptions): ResolvedPromptBlocks {
+  const overrides = options.promptBlocks ?? {};
+  const result = {} as ResolvedPromptBlocks;
+
+  for (const spec of PROMPT_BLOCKS) {
+    result[spec.key] = overrides[spec.key] ?? spec.default;
+  }
+
+  if (overrides.host_capabilities === undefined && options.hostCapabilities !== undefined) {
+    result.host_capabilities = options.hostCapabilities;
+  }
+
+  return result;
+}
 
 export type CacheableBaseSystemPromptParts = {
   staticPrefix: string;
@@ -67,6 +81,7 @@ type BaseSystemPromptSections = {
   trustedGuidanceSections: readonly TaggedPromptSection[];
   trustedDynamicGuidanceSections: readonly TaggedPromptSection[];
   hostCapabilitiesSection: TaggedPromptSection;
+  resolvedBlocks: ResolvedPromptBlocks;
 };
 
 function renderTaggedPromptSections(sections: readonly TaggedPromptSection[]): string | null {
@@ -184,9 +199,10 @@ function buildBaseSystemPromptSections(
           : formatAutonomyTriggerContext(context.autonomyTrigger),
     },
   ];
+  const resolvedBlocks = resolvePromptBlocks(options);
   const hostCapabilitiesSection = {
     tag: "borg_host_capabilities",
-    content: options.hostCapabilities ?? DEFAULT_HOST_CAPABILITIES_SECTION,
+    content: resolvedBlocks.host_capabilities,
   };
   const heldPreferencesSection = {
     tag: "borg_held_preferences",
@@ -237,6 +253,7 @@ function buildBaseSystemPromptSections(
     ],
     trustedDynamicGuidanceSections,
     hostCapabilitiesSection,
+    resolvedBlocks,
   };
 }
 
@@ -268,10 +285,10 @@ export function buildBaseSystemPrompt(
   );
 
   return [
-    BASE_IDENTITY_PREAMBLE,
-    VOICE_AND_POSTURE_SECTION,
-    EPISTEMIC_POSTURE_SECTION,
-    IDENTITY_POSTURE_SECTION,
+    sections.resolvedBlocks.base_identity_preamble,
+    sections.resolvedBlocks.voice_and_posture,
+    sections.resolvedBlocks.epistemic_posture,
+    sections.resolvedBlocks.identity_posture,
     PARTICIPATION_POSTURE_SECTION,
     LOOP_BREAKING_POSTURE_SECTION,
     untrustedDynamicBlock,
@@ -298,10 +315,10 @@ export function buildCacheableBaseSystemPromptParts(
 
   return {
     staticPrefix: [
-      BASE_IDENTITY_PREAMBLE,
-      VOICE_AND_POSTURE_SECTION,
-      EPISTEMIC_POSTURE_SECTION,
-      IDENTITY_POSTURE_SECTION,
+      sections.resolvedBlocks.base_identity_preamble,
+      sections.resolvedBlocks.voice_and_posture,
+      sections.resolvedBlocks.epistemic_posture,
+      sections.resolvedBlocks.identity_posture,
       PARTICIPATION_POSTURE_SECTION,
       LOOP_BREAKING_POSTURE_SECTION,
       TRUSTED_GUIDANCE_PREAMBLE,

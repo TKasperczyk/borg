@@ -184,6 +184,93 @@ body {
 .topbar-sep {
   color: var(--text-faint);
 }
+.prompts-screen {
+  padding: 18px 22px;
+  overflow-y: auto;
+  height: 100%;
+}
+.prompts-intro {
+  margin-bottom: 18px;
+}
+.prompts-title {
+  font-family: var(--sans);
+  font-size: 18px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.prompts-sub {
+  font-size: 12px;
+  color: var(--text-mute);
+  line-height: 1.5;
+  max-width: 880px;
+}
+.prompts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.prompt-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  background: var(--panel);
+}
+.prompt-card.overridden {
+  border-color: rgba(224, 160, 80, 0.4);
+}
+.prompt-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.prompt-card-label {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--text);
+}
+.prompt-card-desc {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.prompt-card-text {
+  width: 100%;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 80px;
+}
+.prompt-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.topbar-reset {
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 120ms, background 120ms;
+}
+.topbar-reset:hover {
+  color: var(--warn, #e0a050);
+  background: rgba(224, 160, 80, 0.08);
+}
 
 .live-dot {
   width: 6px;
@@ -297,8 +384,105 @@ body {
 /* main */
 .main {
   grid-area: main;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
   overflow: hidden;
   position: relative;
+}
+.screen-shell {
+  min-width: 0;
+  overflow: hidden;
+}
+.sessions-sidebar {
+  border-right: 1px solid var(--line);
+  background: var(--bg-0);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.sessions-head {
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.sessions-head .count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sessions-list {
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.session-row {
+  width: 100%;
+  border: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  text-align: left;
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.session-row:hover {
+  border-color: var(--line);
+  background: var(--bg-1);
+}
+.session-row.active {
+  border-color: var(--acc-dim);
+  background: oklch(0.84 0.155 142 / 0.06);
+}
+.session-row-top,
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.session-row-top {
+  justify-content: space-between;
+}
+.session-source,
+.session-time,
+.session-new {
+  color: var(--text-mute);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.session-label {
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-meta {
+  color: var(--text-mute);
+  font-size: 10.5px;
+  justify-content: space-between;
+}
+.session-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-new {
+  color: var(--acc);
 }
 
 /* statusbar */

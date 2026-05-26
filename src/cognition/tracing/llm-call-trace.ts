@@ -1,4 +1,5 @@
 import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm/index.js";
+import type { SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { buildUsageTraceBlock, type TurnTraceData, type TurnTracer } from "./tracer.js";
 
@@ -28,6 +29,7 @@ export function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonV
 export function traceLlmCallStarted(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   label: string;
   model: string;
   systemPrompt: string;
@@ -39,6 +41,7 @@ export function traceLlmCallStarted(options: {
     options.tracer.emit("llm_call.started", {
       ...options.extra,
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       label: options.label,
       model: options.model,
       promptCharCount: countCompletePromptChars(options.systemPrompt, options.messages),
@@ -50,6 +53,7 @@ export function traceLlmCallStarted(options: {
 export function traceLlmCallResponse(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   label: string;
   response: LLMCompleteResult;
   responseShape: JsonValue;
@@ -59,6 +63,7 @@ export function traceLlmCallResponse(options: {
     options.tracer.emit("llm_call.completed", {
       ...options.extra,
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       label: options.label,
       responseShape: options.responseShape,
       stopReason: options.response.stop_reason,
@@ -70,6 +75,7 @@ export function traceLlmCallResponse(options: {
 export function traceLlmCallError(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   label: string;
   error: unknown;
   extra?: TracePayloadExtension;
@@ -78,6 +84,7 @@ export function traceLlmCallError(options: {
     options.tracer.emit("llm_call.completed", {
       ...options.extra,
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       label: options.label,
       responseShape: {
         error: options.error instanceof Error ? options.error.message : String(options.error),

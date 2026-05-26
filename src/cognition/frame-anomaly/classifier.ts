@@ -9,7 +9,7 @@ import {
 } from "../../llm/index.js";
 import type { EntityKind } from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import { isPlainRecord } from "../../util/guards.js";
 import type { ActiveParticipant } from "../participants.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
@@ -65,6 +65,7 @@ export type FrameAnomalyClassifierOptions = {
   model?: string;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   onDegraded?: (
     reason: FrameAnomalyClassifierDegradedReason,
     error?: unknown,
@@ -452,6 +453,7 @@ export class FrameAnomalyClassifier {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "frame_anomaly_classifier",
       model: this.options.model,
       systemPrompt: FRAME_ANOMALY_SYSTEM_PROMPT,
@@ -475,6 +477,7 @@ export class FrameAnomalyClassifier {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         label: "frame_anomaly_classifier",
         error,
       });
@@ -485,6 +488,7 @@ export class FrameAnomalyClassifier {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "frame_anomaly_classifier",
       response,
       responseShape: summarizeFrameAnomalyResponseShape(response),

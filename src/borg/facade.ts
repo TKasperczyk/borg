@@ -6,6 +6,12 @@ import {
   createUserStreamEntryRelationshipEvidenceTrustValidator,
 } from "../memory/semantic/index.js";
 import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
+import {
+  PROMPT_BLOCKS,
+  getPromptBlockSpec,
+  type PromptKey,
+} from "../cognition/prompts/registry.js";
+import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
@@ -670,6 +676,50 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         deps.turnOrchestrator.clearWorkingMemory(sessionId);
       },
       getPendingActionMergeCount: () => deps.workingMemoryStore.getPendingActionMergeCount(),
+    },
+    prompts: createPromptsFacade(deps),
+    sessions: createSessionsFacade(deps),
+  };
+}
+
+function createSessionsFacade(deps: BorgDependencies): BorgFacades["sessions"] {
+  return {
+    ensure: (...args) => deps.sessionsRepository.ensure(...args),
+    touch: (...args) => deps.sessionsRepository.touch(...args),
+    get: (...args) => deps.sessionsRepository.get(...args),
+    list: (...args) => deps.sessionsRepository.list(...args),
+  };
+}
+
+function createPromptsFacade(deps: BorgDependencies): BorgPromptsFacade {
+  const repo = deps.promptOverrideRepository;
+
+  function view(key: PromptKey): BorgPromptBlockView {
+    const spec = getPromptBlockSpec(key);
+    const override = repo.get(key);
+    const records = repo.list();
+    const record = records.find((row) => row.prompt_key === key);
+    const fallback = key === "host_capabilities" ? deps.config.host_capabilities : spec.default;
+    return {
+      key: spec.key,
+      label: spec.label,
+      description: spec.description,
+      default_text: spec.default,
+      current_text: override ?? fallback,
+      overridden: override !== null,
+      updated_at: record?.updated_at ?? null,
+    };
+  }
+
+  return {
+    list: () => PROMPT_BLOCKS.map((spec) => view(spec.key)),
+    set: (key, text) => {
+      repo.set(key, text);
+      return view(key);
+    },
+    clear: (key) => {
+      repo.clear(key);
+      return view(key);
     },
   };
 }

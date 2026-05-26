@@ -171,6 +171,7 @@ describe("runFinalizer emission tools", () => {
     expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
       turnId: "turn-final-stream",
       turn_id: "turn-final-stream",
+      session_id: DEFAULT_SESSION_ID,
       phase: "final",
       chunk_text: "draft ",
       sequence: 1,
@@ -178,6 +179,7 @@ describe("runFinalizer emission tools", () => {
     expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
       turnId: "turn-final-stream",
       turn_id: "turn-final-stream",
+      session_id: DEFAULT_SESSION_ID,
       phase: "final",
       chunk_text: "tokens",
       sequence: 2,
@@ -185,6 +187,7 @@ describe("runFinalizer emission tools", () => {
     expect(tracer.emit).toHaveBeenCalledWith("turn.token.flush", {
       turnId: "turn-final-stream",
       turn_id: "turn-final-stream",
+      session_id: DEFAULT_SESSION_ID,
       phase: "final",
       full_text: "Final answer.",
     });

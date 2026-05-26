@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { liveUrl } from "../api/client";
 import type { LiveFrame, WsState } from "../api/types";
+import { DEFAULT_DEMO_SESSION_ID } from "./use-session";
 
 export type LiveEventHandler = (frame: LiveFrame) => void;
 
@@ -12,6 +13,7 @@ export type LiveEvents = {
 };
 
 const DOWN_AFTER_FAILED_ATTEMPTS = 5;
+const SOCKET_OPEN = 1;
 
 function isLiveFrame(value: unknown): value is LiveFrame {
   return (
@@ -29,14 +31,20 @@ function reconnectDelay(attempt: number): number {
   return base + Math.floor(Math.random() * 250);
 }
 
-export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveEvents {
+export function useLiveEvents(
+  input: { onReconnected?: () => void; sessionId?: string } = {},
+): LiveEvents {
   const [wsState, setWsState] = useState<WsState>("reconnecting");
   const [connectionCount, setConnectionCount] = useState(0);
   const handlersRef = useRef(new Set<LiveEventHandler>());
   const reconnectTimerRef = useRef<number | null>(null);
   const onReconnectedRef = useRef(input.onReconnected);
+  const socketRef = useRef<WebSocket | null>(null);
+  const sessionIdRef = useRef(input.sessionId ?? DEFAULT_DEMO_SESSION_ID);
+  const subscribedSessionRef = useRef<string | null>(null);
 
   onReconnectedRef.current = input.onReconnected;
+  sessionIdRef.current = input.sessionId ?? DEFAULT_DEMO_SESSION_ID;
 
   const subscribe = useCallback((handler: LiveEventHandler) => {
     handlersRef.current.add(handler);
@@ -44,6 +52,17 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
       handlersRef.current.delete(handler);
     };
   }, []);
+
+  const sendSessionSubscription = useCallback(
+    (type: "subscribe" | "unsubscribe", sessionId: string) => {
+      const socket = socketRef.current;
+      if (socket === null || socket.readyState !== SOCKET_OPEN) {
+        return;
+      }
+      socket.send(JSON.stringify({ type, session_id: sessionId }));
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -67,6 +86,7 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
 
       setWsState(attempt >= DOWN_AFTER_FAILED_ATTEMPTS ? "down" : "reconnecting");
       socket = new WebSocket(liveUrl());
+      socketRef.current = socket;
 
       socket.addEventListener("open", () => {
         if (disposed) {
@@ -77,6 +97,9 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
         attempt = 0;
         setWsState("live");
         setConnectionCount((count) => count + 1);
+        const sessionId = sessionIdRef.current;
+        subscribedSessionRef.current = sessionId;
+        socket?.send(JSON.stringify({ type: "subscribe", session_id: sessionId }));
         if (reconnected) {
           onReconnectedRef.current?.();
         }
@@ -103,6 +126,10 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
         if (disposed) {
           return;
         }
+        if (socketRef.current === socket) {
+          socketRef.current = null;
+        }
+        subscribedSessionRef.current = null;
         const delay = reconnectDelay(attempt);
         attempt += 1;
         setWsState(attempt >= DOWN_AFTER_FAILED_ATTEMPTS ? "down" : "reconnecting");
@@ -120,9 +147,29 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
     return () => {
       disposed = true;
       clearReconnectTimer();
+      socketRef.current = null;
+      subscribedSessionRef.current = null;
       socket?.close();
     };
   }, []);
+
+  useEffect(() => {
+    const nextSessionId = input.sessionId ?? DEFAULT_DEMO_SESSION_ID;
+    const previousSessionId = subscribedSessionRef.current;
+
+    if (previousSessionId === nextSessionId) {
+      return;
+    }
+
+    if (previousSessionId !== null) {
+      sendSessionSubscription("unsubscribe", previousSessionId);
+    }
+    sendSessionSubscription("subscribe", nextSessionId);
+
+    if (socketRef.current?.readyState === SOCKET_OPEN) {
+      subscribedSessionRef.current = nextSessionId;
+    }
+  }, [input.sessionId, sendSessionSubscription]);
 
   return useMemo(
     () => ({ wsState, connectionCount, subscribe }),

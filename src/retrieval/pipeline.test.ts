@@ -30,6 +30,7 @@ import {
   createAttachmentId,
   createEntityId,
   createImagePerceptionId,
+  createSessionId,
   type StreamEntryId,
 } from "../util/ids.js";
 import { attachmentMigrations } from "../attachments/repository.js";
@@ -211,6 +212,52 @@ describe("retrieval pipeline", () => {
       }),
     ]);
     expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(1);
+  });
+
+  it("includes session_id on turn-scoped retrieval trace emits", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const { store, db, episodicRepository } = await openRetrievalFixture(tempDir);
+    const sessionId = createSessionId();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      tracer,
+    });
+
+    await pipeline.searchWithContext("planning", {
+      limit: 1,
+      traceTurnId: "turn-retrieval-session",
+      sessionId,
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.started",
+      expect.objectContaining({
+        turnId: "turn-retrieval-session",
+        session_id: sessionId,
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.completed",
+      expect.objectContaining({
+        turnId: "turn-retrieval-session",
+        session_id: sessionId,
+      }),
+    );
   });
 
   it("retrieves image perception evidence and reattaches the source attachment for finalizer images", async () => {

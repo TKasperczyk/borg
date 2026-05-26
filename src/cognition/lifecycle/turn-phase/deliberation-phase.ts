@@ -1,4 +1,6 @@
 import { Deliberator } from "../../deliberation/deliberator.js";
+import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
+import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
 import type { ContradictionRoutingCooldown } from "../../deliberation/contradiction-routing-cooldown.js";
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
@@ -18,6 +20,23 @@ export type TurnDeliberationPhaseResult = {
   deliberation: Awaited<ReturnType<Deliberator["run"]>>;
   workingMemory: WorkingMemory;
 };
+
+function resolvePromptBlockOverrides(
+  repo: Pick<PromptOverrideRepository, "get"> | undefined,
+): Partial<Record<PromptKey, string>> | undefined {
+  if (repo === undefined) {
+    return undefined;
+  }
+
+  const blocks: Partial<Record<PromptKey, string>> = {};
+  for (const key of PROMPT_KEYS) {
+    const override = repo.get(key);
+    if (override !== null) {
+      blocks[key] = override;
+    }
+  }
+  return Object.keys(blocks).length === 0 ? undefined : blocks;
+}
 
 export async function runDeliberationPhase(input: {
   options: TurnPhaseCoordinatorOptions;
@@ -40,6 +59,7 @@ export async function runDeliberationPhase(input: {
   contradictionRoutingCooldown: ContradictionRoutingCooldown;
   participantRoster: ParticipantRoster | null;
 }): Promise<TurnDeliberationPhaseResult> {
+  const promptBlocks = resolvePromptBlockOverrides(input.options.promptOverrideRepository);
   const deliberator = new Deliberator({
     llmClient: input.llmClient,
     toolDispatcher: input.options.toolDispatcher,
@@ -48,6 +68,7 @@ export async function runDeliberationPhase(input: {
     clock: input.options.clock,
     tracer: input.options.tracer,
     hostCapabilities: input.options.config.host_capabilities,
+    promptBlocks,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
     maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
   });

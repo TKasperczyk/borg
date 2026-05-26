@@ -27,6 +27,7 @@ import {
   type SemanticEdge,
   type SemanticNode,
   type SemanticNodeStatus,
+  type SessionId,
   type StreamCursor,
   type StreamEntry,
   type StreamEntryKind,
@@ -34,10 +35,14 @@ import {
   type TurnInputAttachment,
   parseGoalId,
   parseOpenQuestionId,
+  parseSessionId,
+  PROMPT_KEYS,
+  type PromptKey,
 } from "borg";
 import { z } from "zod";
 
 import type { LiveBridge } from "./live.js";
+import type { BorgHandle } from "./reset.js";
 
 type CursorPayload = {
   ts: number;
@@ -77,6 +82,11 @@ const csvKindsSchema = z
 const limitSchema = z.coerce.number().int().min(1).max(500);
 
 const streamQuerySchema = z.object({
+  session: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
   kind: csvKindsSchema,
   audience: z.string().min(1).optional(),
   limit: limitSchema.default(50),
@@ -101,6 +111,14 @@ const streamQuerySchema = z.object({
 
 const audienceQuerySchema = z.object({
   audience: z.string().min(1).optional(),
+});
+
+const sessionQuerySchema = z.object({
+  session: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
 });
 
 const auditQuerySchema = z.object({
@@ -195,6 +213,7 @@ const turnBodySchema = z.object({
   message: z.string().trim().min(1),
   audience: z.string().trim().min(1).optional(),
   stakes: z.enum(["low", "medium", "high"]).optional(),
+  session: z.string().trim().min(1).optional(),
 });
 
 const offlineProcessNameSchema = z.enum(OFFLINE_PROCESS_NAMES);
@@ -317,6 +336,24 @@ const reviewParamSchema = z.object({
 
 const DEFAULT_OPEN_QUESTION_BUMP_DELTA = 0.1;
 const DEFAULT_GROWTH_MARKER_CATEGORY = "understanding";
+const RESET_CONFIRM_TOKEN = "RESET";
+const BORG_UNAVAILABLE_MESSAGE = "Borg is unavailable after a failed reset; retry /api/admin/reset";
+export const DEMO_DEFAULT_AUDIENCE_LABEL = "alice";
+const DEMO_SOURCE_TYPE = "demo";
+const DEMO_CONVERSATION_KIND = "demo";
+const DEMO_DEFAULT_SESSION_LABEL = "demo (default)";
+
+const promptKeyParamSchema = z.enum(PROMPT_KEYS);
+const promptPutBodySchema = z
+  .object({
+    text: z.string().trim().min(1).max(50_000),
+  })
+  .strict();
+const resetBodySchema = z
+  .object({
+    confirm: z.literal(RESET_CONFIRM_TOKEN),
+  })
+  .strict();
 
 function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -326,6 +363,46 @@ function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
   }
 
   return parsed.data;
+}
+
+function parseOptionalSessionQuery(value: string | undefined, ctx: z.RefinementCtx): SessionId {
+  if (value === undefined || value.length === 0) {
+    return DEFAULT_SESSION_ID;
+  }
+
+  try {
+    return parseSessionId(value);
+  } catch {
+    ctx.addIssue({ code: "custom", message: "Invalid session id" });
+    return z.NEVER;
+  }
+}
+
+function demoSessionLabel(sessionId: SessionId): string {
+  return sessionId === DEFAULT_SESSION_ID ? DEMO_DEFAULT_SESSION_LABEL : `demo (${sessionId})`;
+}
+
+export function ensureDemoSession(
+  borg: Borg,
+  input: { sessionId: SessionId; audienceLabel?: string },
+) {
+  return borg.sessions.ensure({
+    session_id: input.sessionId,
+    source_type: DEMO_SOURCE_TYPE,
+    source_external_id: null,
+    source_url: null,
+    label: demoSessionLabel(input.sessionId),
+    audience_label: input.audienceLabel ?? DEMO_DEFAULT_AUDIENCE_LABEL,
+    audience_entity_id: null,
+    conversation_kind: DEMO_CONVERSATION_KIND,
+  });
+}
+
+export function ensureDemoDefaultSession(borg: Borg) {
+  return ensureDemoSession(borg, {
+    sessionId: DEFAULT_SESSION_ID,
+    audienceLabel: DEMO_DEFAULT_AUDIENCE_LABEL,
+  });
 }
 
 async function parseJsonBody(c: Context): Promise<unknown> {
@@ -393,6 +470,7 @@ async function parseTurnBody(c: Context): Promise<ParsedTurnBody> {
     message: formData.get("message"),
     audience: optionalFormValue(formData.get("audience")),
     stakes: optionalFormValue(formData.get("stakes")),
+    session: optionalFormValue(formData.get("session")),
   });
 
   return {
@@ -555,13 +633,14 @@ function decodeCursor(cursor: string): StreamCursor | null {
 
 async function readStream(input: {
   borg: Borg;
+  sessionId: SessionId;
   kinds?: readonly StreamEntryKind[];
   audience?: string;
   limit: number;
   before?: StreamCursor;
 }): Promise<{ entries: StreamEntry[]; next_cursor: string | null }> {
   const collected: StreamEntry[] = [];
-  const reader = input.borg.stream.reader();
+  const reader = input.borg.stream.reader({ session: input.sessionId });
 
   for await (const entry of reader.iterate({
     kinds: input.kinds,
@@ -589,10 +668,10 @@ async function readStream(input: {
   return { entries, next_cursor };
 }
 
-async function countTurns(borg: Borg): Promise<number> {
+async function countTurns(borg: Borg, sessionId: SessionId): Promise<number> {
   let count = 0;
 
-  for await (const entry of borg.stream.reader().iterate({ kinds: ["user_msg"] })) {
+  for await (const entry of borg.stream.reader({ session: sessionId }).iterate({ kinds: ["user_msg"] })) {
     if (entry.turn_status !== "aborted") {
       count += 1;
     }
@@ -601,11 +680,11 @@ async function countTurns(borg: Borg): Promise<number> {
   return count;
 }
 
-function listAudiences(borg: Borg): string[] {
+function listAudiences(borg: Borg, sessionId: SessionId): string[] {
   return [
     ...new Set(
       borg.stream
-        .tail(500)
+        .tail(500, { session: sessionId })
         .flatMap((entry) => (entry.audience === undefined ? [] : [entry.audience])),
     ),
   ].sort();
@@ -925,11 +1004,11 @@ function latestDreamRunForProcess(
   };
 }
 
-async function memoryBands(borg: Borg) {
+async function memoryBands(borg: Borg, sessionId: SessionId) {
   const episodes = await borg.episodic.list({ limit: 500 });
   const semanticCounts = borg.semantic.nodes.countByStatus();
   const procedural = borg.skills.list(500);
-  const moodHistory = borg.mood.history(DEFAULT_SESSION_ID, { limit: 500 });
+  const moodHistory = borg.mood.history(sessionId, { limit: 500 });
   const values = borg.self.values.list();
   const goals = borg.self.goals.list();
   const traits = borg.self.traits.list();
@@ -937,7 +1016,7 @@ async function memoryBands(borg: Borg) {
   const growthMarkers = borg.self.growthMarkers.list({ limit: 500 });
   const periods = borg.self.autobiographical.listPeriods({ limit: 500 });
   const relationalCounts = borg.relationalSlots.countByState();
-  const audiences = listAudiences(borg);
+  const audiences = listAudiences(borg, sessionId);
 
   return [
     {
@@ -1094,19 +1173,95 @@ function dreamState(borg: Borg) {
   };
 }
 
-export function createDemoServerApp(input: {
-  borg: Borg;
+export type DemoServerAppInput = {
+  borgHandle: BorgHandle;
   live: LiveBridge;
   corsOrigins?: readonly string[];
-}) {
+  resetBorg?: () => Promise<void>;
+  requestGate?: BorgRequestGate;
+};
+
+type BorgRequestGateLease = {
+  release(): void;
+};
+
+export class BorgRequestGate {
+  private inflight = 0;
+  private resetting = false;
+
+  acquire(): BorgRequestGateLease {
+    if (this.resetting) {
+      throw new HTTPException(503, { message: "Borg reset in progress" });
+    }
+
+    this.inflight += 1;
+    let released = false;
+
+    return {
+      release: () => {
+        if (released) {
+          return;
+        }
+
+        released = true;
+        this.inflight = Math.max(0, this.inflight - 1);
+      },
+    };
+  }
+
+  beginReset(): BorgRequestGateLease {
+    if (this.resetting) {
+      throw new HTTPException(409, { message: "Borg reset already in progress" });
+    }
+
+    if (this.inflight > 0) {
+      throw new HTTPException(409, { message: "Borg is busy" });
+    }
+
+    this.resetting = true;
+    let released = false;
+
+    return {
+      release: () => {
+        if (released) {
+          return;
+        }
+
+        released = true;
+        this.resetting = false;
+      },
+    };
+  }
+}
+
+export function createDemoServerApp(args: DemoServerAppInput) {
+  const input = {
+    get borg(): Borg {
+      if (args.borgHandle.state === "dead" || args.borgHandle.state === "closing") {
+        throw new HTTPException(503, { message: BORG_UNAVAILABLE_MESSAGE });
+      }
+
+      return args.borgHandle.current;
+    },
+    live: args.live,
+    corsOrigins: args.corsOrigins,
+    resetBorg: args.resetBorg,
+    requestGate: args.requestGate ?? new BorgRequestGate(),
+  };
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  ensureDemoDefaultSession(input.borg);
   const allowedOrigins = input.corsOrigins ?? ["http://localhost:5173"];
   const dreamPlans = new Map<
     string,
     { plan: MaintenancePlan; applied?: ReturnType<typeof mapDreamApply> }
   >();
   let dreamPlanCounter = 0;
+
+  function clearAppCaches(): void {
+    dreamPlans.clear();
+    dreamPlanCounter = 0;
+  }
 
   function nextDreamPlanId(): string {
     dreamPlanCounter += 1;
@@ -1129,37 +1284,56 @@ export function createDemoServerApp(input: {
     }),
   );
 
+  app.use("/api/*", async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    if (pathname === "/api/live" || pathname === "/api/admin/reset") {
+      return next();
+    }
+
+    const lease = input.requestGate.acquire();
+    try {
+      await next();
+    } finally {
+      lease.release();
+    }
+  });
+
   app.get(
     "/api/live",
     upgradeWebSocket(() => ({
       onOpen: (_event, ws) => input.live.broadcaster.add(ws),
+      onMessage: (event, ws) => input.live.broadcaster.handleSubscriptionMessage(ws, event.data),
       onClose: (_event, ws) => input.live.broadcaster.remove(ws),
       onError: (_event, ws) => input.live.broadcaster.remove(ws),
     })),
   );
 
   app.get("/api/state", async (c) => {
+    const query = parseRequest(sessionQuerySchema, c.req.query());
     const auditRows = input.borg.audit.list();
 
     return c.json({
-      active_session: DEFAULT_SESSION_ID,
-      audiences: listAudiences(input.borg),
+      active_session: query.session,
+      audiences: listAudiences(input.borg, query.session),
       counts: {
-        turns: await countTurns(input.borg),
+        turns: await countTurns(input.borg, query.session),
         commitments: input.borg.commitments.countActive(),
         open_qs: input.borg.self.openQuestions.list({ status: "open" }).length,
         dream_audit_rows: auditRows.length,
       },
-      current_mood: input.borg.mood.current(DEFAULT_SESSION_ID),
+      current_mood: input.borg.mood.current(query.session),
       version: VERSION,
     });
   });
+
+  app.get("/api/sessions", (c) => c.json({ sessions: input.borg.sessions.list({ limit: 1000 }) }));
 
   app.get("/api/stream", async (c) => {
     const query = parseRequest(streamQuerySchema, c.req.query());
     return c.json(
       await readStream({
         borg: input.borg,
+        sessionId: query.session,
         kinds: query.kind,
         audience: query.audience,
         limit: query.limit,
@@ -1179,7 +1353,10 @@ export function createDemoServerApp(input: {
     return c.json({ turn_id: turnId, ledger });
   });
 
-  app.get("/api/memory/bands", async (c) => c.json({ bands: await memoryBands(input.borg) }));
+  app.get("/api/memory/bands", async (c) => {
+    const query = parseRequest(sessionQuerySchema, c.req.query());
+    return c.json({ bands: await memoryBands(input.borg, query.session) });
+  });
 
   app.get("/api/semantic/graph", async (c) => {
     const query = parseRequest(semanticGraphQuerySchema, c.req.query());
@@ -1188,6 +1365,7 @@ export function createDemoServerApp(input: {
 
   app.get("/api/memory/bands/:id", async (c) => {
     const band = parseRequest(memoryBandIdSchema, c.req.param("id"));
+    const query = parseRequest(sessionQuerySchema, c.req.query());
 
     if (band === "episodic") {
       const result = await input.borg.episodic.list({ limit: 50 });
@@ -1264,8 +1442,8 @@ export function createDemoServerApp(input: {
     if (band === "affective") {
       return c.json({
         band,
-        current: input.borg.mood.current(DEFAULT_SESSION_ID),
-        history: input.borg.mood.history(DEFAULT_SESSION_ID, { limit: 100 }),
+        current: input.borg.mood.current(query.session),
+        history: input.borg.mood.history(query.session, { limit: 100 }),
       });
     }
 
@@ -1715,19 +1893,88 @@ export function createDemoServerApp(input: {
 
   app.post("/api/turn", async (c) => {
     const body = await parseTurnBody(c);
+    let sessionId: SessionId;
+    try {
+      sessionId = parseSessionId(body.session ?? DEFAULT_SESSION_ID);
+    } catch {
+      throw new HTTPException(400, { message: "Invalid session id" });
+    }
 
     try {
       // Demo uploads accept png/jpeg/gif/webp images up to 8 MiB; Borg revalidates before persistence.
+      ensureDemoSession(input.borg, {
+        sessionId,
+        audienceLabel: body.audience ?? DEMO_DEFAULT_AUDIENCE_LABEL,
+      });
       const result = await input.borg.turn({
         userMessage: body.message,
         audience: body.audience,
         stakes: body.stakes,
+        sessionId,
         attachments: body.attachments,
       });
+      input.borg.sessions.touch(sessionId, { lastTurnId: result.turn_id });
 
       return c.json({ turn_id: result.turn_id, ok: true });
     } catch (error) {
       mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.get("/api/prompts", (c) => c.json({ blocks: input.borg.prompts.list() }));
+
+  app.put("/api/prompts/:key", async (c) => {
+    const parsed = promptKeyParamSchema.safeParse(c.req.param("key"));
+    if (!parsed.success) {
+      throw new HTTPException(404, { message: "Unknown prompt key" });
+    }
+    const body = parseRequest(promptPutBodySchema, await parseJsonBody(c));
+
+    try {
+      const block = input.borg.prompts.set(parsed.data as PromptKey, body.text);
+      return c.json(block);
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.delete("/api/prompts/:key", (c) => {
+    const parsed = promptKeyParamSchema.safeParse(c.req.param("key"));
+    if (!parsed.success) {
+      throw new HTTPException(404, { message: "Unknown prompt key" });
+    }
+
+    try {
+      const block = input.borg.prompts.clear(parsed.data as PromptKey);
+      return c.json(block);
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/admin/reset", async (c) => {
+    parseRequest(resetBodySchema, await parseJsonBody(c));
+
+    if (input.resetBorg === undefined) {
+      throw new HTTPException(501, { message: "Reset not wired up in this server" });
+    }
+
+    const resetLease = input.requestGate.beginReset();
+    try {
+      clearAppCaches();
+      await input.resetBorg();
+      ensureDemoDefaultSession(input.borg);
+      return c.json({ ok: true });
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof Error && !(error instanceof BorgError)) {
+        throw new HTTPException(500, { message: error.message });
+      }
+      mapBorgErrorToHttp(error);
+    } finally {
+      resetLease.release();
     }
   });
 

@@ -56,6 +56,7 @@ import { TurnGoalPromotionService } from "./goals/turn-goal-promotion-service.js
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import { TurnLifecycleTracker } from "./lifecycle/turn-lifecycle-tracker.js";
 import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
+import type { PromptOverrideRepository } from "./prompts/override-repository.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
 import { PerceptionGateway } from "./perception/gateway.js";
 import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
@@ -158,6 +159,7 @@ export type TurnOrchestratorOptions = {
   affectiveSignalDetector?: typeof detectAffectiveSignal;
   sessionLock?: SessionLock;
   tracer?: TurnTracer;
+  promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
 };
 
 export class TurnOrchestrator {
@@ -330,6 +332,7 @@ export class TurnOrchestrator {
       turnReflectionCoordinator,
       clock: this.clock,
       tracer: this.tracer,
+      promptOverrideRepository: options.promptOverrideRepository,
     });
   }
 
@@ -376,13 +379,14 @@ export class TurnOrchestrator {
       this.tracer.emit("turn.rejected", {
         turnId,
         reason: message,
-        sessionId,
+        session_id: sessionId,
       });
     }
   }
 
   private emitTerminalTurn(input: {
     turnId: string;
+    sessionId: SessionId;
     outcome: TurnTerminalOutcome;
     startedWallMs: number;
   }): void {
@@ -393,6 +397,7 @@ export class TurnOrchestrator {
     this.tracer.emit("turn.terminal", {
       turnId: input.turnId,
       turn_id: input.turnId,
+      session_id: input.sessionId,
       outcome: input.outcome,
       ts: this.clock.now(),
       duration_ms: Math.max(0, performance.now() - input.startedWallMs),
@@ -454,6 +459,7 @@ export class TurnOrchestrator {
       } finally {
         this.emitTerminalTurn({
           turnId,
+          sessionId,
           outcome: terminalOutcome,
           startedWallMs: terminalStartedWallMs,
         });

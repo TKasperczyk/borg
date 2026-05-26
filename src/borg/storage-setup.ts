@@ -3,6 +3,7 @@
 import { join } from "node:path";
 
 import { autonomyMigrations } from "../autonomy/index.js";
+import { promptOverrideMigrations } from "../cognition/prompts/override-migrations.js";
 import {
   attachmentMigrations,
   createImagePerceptionTableSchema,
@@ -23,6 +24,7 @@ import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/se
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
+import { sessionMigrations } from "../sessions/index.js";
 import { LanceDbStore, type LanceDbTable } from "../storage/lancedb/index.js";
 import {
   composeMigrations,
@@ -222,6 +224,8 @@ export function createMigrations(): Migration[] {
     streamEntryIndexMigrations,
     attachmentMigrations,
     imagePerceptionMigrations,
+    promptOverrideMigrations,
+    sessionMigrations,
   );
 }
 

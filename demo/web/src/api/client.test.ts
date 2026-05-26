@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, attachmentBytesUrl, getSemanticGraph, getStream, postTurn } from "./client";
+import {
+  ApiError,
+  attachmentBytesUrl,
+  getSemanticGraph,
+  getSessions,
+  getStream,
+  postTurn,
+} from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -22,6 +29,7 @@ describe("api client", () => {
     );
 
     await getStream({
+      session: "sess_custom",
       audience: "alice",
       kinds: ["user_msg", "agent_msg", "user_image_attachment"],
       limit: 50,
@@ -33,12 +41,13 @@ describe("api client", () => {
     expect(requested.startsWith("/api/stream?")).toBe(true);
     const url = new URL(requested, "http://test.invalid");
     expect(url.pathname).toBe("/api/stream");
+    expect(url.searchParams.get("session")).toBe("sess_custom");
     expect(url.searchParams.get("audience")).toBe("alice");
     expect(url.searchParams.get("kind")).toBe("user_msg,agent_msg,user_image_attachment");
     expect(url.searchParams.get("limit")).toBe("50");
   });
 
-  it("posts turns with message, audience, and stakes", async () => {
+  it("posts turns with message, audience, session, and stakes", async () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ ok: true, turn_id: "turn_123" }), {
         status: 200,
@@ -46,7 +55,7 @@ describe("api client", () => {
       }),
     );
 
-    await postTurn({ message: "hello", audience: "alice", stakes: "low" });
+    await postTurn({ message: "hello", audience: "alice", session: "sess_custom", stakes: "low" });
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/turn");
@@ -54,8 +63,22 @@ describe("api client", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       message: "hello",
       audience: "alice",
+      session: "sess_custom",
       stakes: "low",
     });
+  });
+
+  it("fetches sessions from the registry endpoint", async () => {
+    const fetchMock = mockFetch(
+      new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await getSessions();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions");
   });
 
   it("constructs semantic graph query strings", async () => {

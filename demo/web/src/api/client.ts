@@ -24,9 +24,13 @@ import type {
   PatchGoalRequest,
   PatchOpenQuestionRequest,
   PatchReviewItemRequest,
+  PromptBlockView,
+  PromptBlocksResponse,
+  PromptKey,
   ReviewRow,
   MemoryBandsResponse,
   SemanticGraphResponse,
+  SessionsResponse,
   SharedStateResponse,
   StateSnapshot,
   StreamEntryKind,
@@ -36,6 +40,7 @@ import type {
 } from "./types";
 
 const DEFAULT_API_BASE = "";
+export const RESET_CONFIRM_TOKEN = "RESET";
 
 export type ApiErrorPayload = {
   status: number;
@@ -104,6 +109,12 @@ function apiUrl(path: string, params?: URLSearchParams): string {
   return base.length > 0 ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
 }
 
+function addSessionParam(params: URLSearchParams, session?: string): void {
+  if (session !== undefined && session.length > 0) {
+    params.set("session", session);
+  }
+}
+
 function isFormDataBody(body: BodyInit | null | undefined): body is FormData {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
@@ -137,17 +148,25 @@ async function fetchJson<T>(
   return (await response.json()) as T;
 }
 
-export async function getState(): Promise<StateSnapshot> {
-  return fetchJson<StateSnapshot>("api/state");
+export async function getState(input: { session?: string } = {}): Promise<StateSnapshot> {
+  const params = new URLSearchParams();
+  addSessionParam(params, input.session);
+  return fetchJson<StateSnapshot>("api/state", undefined, params);
+}
+
+export async function getSessions(): Promise<SessionsResponse> {
+  return fetchJson<SessionsResponse>("api/sessions");
 }
 
 export async function getStream(input: {
+  session?: string;
   audience?: string;
   kinds?: readonly StreamEntryKind[];
   limit?: number;
   before?: string;
 }): Promise<StreamResponse> {
   const params = new URLSearchParams();
+  addSessionParam(params, input.session);
   if (input.audience !== undefined) {
     params.set("audience", input.audience);
   }
@@ -173,12 +192,25 @@ export async function getSharedState(audience: string): Promise<SharedStateRespo
   return fetchJson<SharedStateResponse>("api/shared-state", undefined, params);
 }
 
-export async function getMemoryBands(): Promise<MemoryBandsResponse> {
-  return fetchJson<MemoryBandsResponse>("api/memory/bands");
+export async function getMemoryBands(
+  input: { session?: string } = {},
+): Promise<MemoryBandsResponse> {
+  const params = new URLSearchParams();
+  addSessionParam(params, input.session);
+  return fetchJson<MemoryBandsResponse>("api/memory/bands", undefined, params);
 }
 
-export async function getMemoryBand(id: MemoryBandId): Promise<MemoryBandDetail> {
-  return fetchJson<MemoryBandDetail>(`api/memory/bands/${encodeURIComponent(id)}`);
+export async function getMemoryBand(
+  id: MemoryBandId,
+  input: { session?: string } = {},
+): Promise<MemoryBandDetail> {
+  const params = new URLSearchParams();
+  addSessionParam(params, input.session);
+  return fetchJson<MemoryBandDetail>(
+    `api/memory/bands/${encodeURIComponent(id)}`,
+    undefined,
+    params,
+  );
 }
 
 export async function getSemanticGraph(limit = 300): Promise<SemanticGraphResponse> {
@@ -315,6 +347,9 @@ export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
     const body = new FormData();
     body.set("message", input.message);
     body.set("audience", input.audience);
+    if (input.session !== undefined) {
+      body.set("session", input.session);
+    }
     if (input.stakes !== undefined) {
       body.set("stakes", input.stakes);
     }
@@ -333,8 +368,33 @@ export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
     body: JSON.stringify({
       message: input.message,
       audience: input.audience,
+      session: input.session,
       stakes: input.stakes,
     }),
+  });
+}
+
+export async function getPrompts(): Promise<PromptBlocksResponse> {
+  return fetchJson<PromptBlocksResponse>("api/prompts");
+}
+
+export async function putPrompt(key: PromptKey, text: string): Promise<PromptBlockView> {
+  return fetchJson<PromptBlockView>(`api/prompts/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function deletePrompt(key: PromptKey): Promise<PromptBlockView> {
+  return fetchJson<PromptBlockView>(`api/prompts/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function postAdminReset(): Promise<{ ok: true }> {
+  return fetchJson<{ ok: true }>("api/admin/reset", {
+    method: "POST",
+    body: JSON.stringify({ confirm: RESET_CONFIRM_TOKEN }),
   });
 }
 

@@ -7,8 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "../../borg.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeEmbeddingClient } from "../../embeddings/index.js";
-import { FakeLLMClient, createFakeEmitAnswerResponse } from "../../llm/test-support/fake-client.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+  createFakeStreamingResponse,
+} from "../../llm/test-support/fake-client.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
+import { createSessionId } from "../../util/ids.js";
 import {
   JsonlTracer,
   NoopTracer,
@@ -361,6 +366,7 @@ describe("TurnTracer", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "turn.jsonl");
     const clock = new ManualClock(1_000);
+    const sessionId = createSessionId();
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -421,10 +427,13 @@ describe("TurnTracer", () => {
             },
           ],
         },
-        createFakeEmitAnswerResponse("Check the operator class first.", {
-          inputTokens: 12,
-          outputTokens: 6,
-        }),
+        createFakeStreamingResponse(
+          ["Check ", "the operator class first."],
+          createFakeEmitAnswerResponse("Check the operator class first.", {
+            inputTokens: 12,
+            outputTokens: 6,
+          }),
+        ),
         {
           text: "",
           input_tokens: 4,
@@ -474,6 +483,7 @@ describe("TurnTracer", () => {
       const result = await borg.turn({
         userMessage: "I'm stuck again on pgvector embeddings",
         stakes: "medium",
+        sessionId,
       });
 
       expect(result.path).toBe("system_2");
@@ -540,7 +550,10 @@ describe("TurnTracer", () => {
       "deliberation.plan_persistence.completed",
       "turn_phase.started",
       "llm_call.started",
+      "turn.token",
+      "turn.token",
       "llm_call.completed",
+      "turn.token.flush",
       "finalizer.completed",
       "turn_phase.completed",
       "turn_phase.completed",
@@ -570,9 +583,24 @@ describe("TurnTracer", () => {
       ]),
     );
     expect(events.find((event) => event.event === "turn.terminal")).toMatchObject({
+      session_id: sessionId,
       outcome: "reflected",
       turn_id: expect.any(String),
       duration_ms: expect.any(Number),
+    });
+    expect(events.find((event) => event.event === "turn_phase.started")).toMatchObject({
+      session_id: sessionId,
+      phase: "ingest",
+    });
+    expect(events.find((event) => event.event === "turn.token")).toMatchObject({
+      session_id: sessionId,
+      phase: "final",
+    });
+    expect(
+      events.some((event) => event.event === "llm_call.started" && event.session_id === sessionId),
+    ).toBe(true);
+    expect(events.find((event) => event.event === "commitment_check.completed")).toMatchObject({
+      session_id: sessionId,
     });
     expect(
       events.find((event) => event.event === "deliberation.plan_persistence.completed"),

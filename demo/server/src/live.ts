@@ -1,4 +1,11 @@
-import type { StreamEntry, TurnTraceData, TurnTraceEventName, TurnTracer } from "borg";
+import {
+  parseSessionId,
+  type SessionId,
+  type StreamEntry,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTracer,
+} from "borg";
 
 type SocketLike = {
   send(data: string): void;
@@ -13,49 +20,214 @@ export type LiveFrame = {
   [key: string]: unknown;
 };
 
+type LiveClient = {
+  socket: SocketLike;
+  subscribedSessions: Set<SessionId>;
+  subscribedGlobal: boolean;
+};
+
+type BufferedLiveFrame = {
+  frame: LiveFrame;
+  ts: number;
+};
+
+const RING_BUFFER_MAX = 64;
+const RING_BUFFER_MAX_AGE_MS = 60_000;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseMaybeSessionId(value: unknown): SessionId | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  try {
+    return parseSessionId(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function firstStreamEntrySessionId(frame: LiveFrame): SessionId | undefined {
+  if (frame.type !== "stream:append" || !Array.isArray(frame.entries)) {
+    return undefined;
+  }
+
+  return parseMaybeSessionId((frame.entries[0] as { session_id?: unknown } | undefined)?.session_id);
+}
+
+function frameSessionId(frame: LiveFrame): SessionId | undefined {
+  const topLevelSessionId = parseMaybeSessionId(frame.session_id);
+  if (topLevelSessionId !== undefined) {
+    return topLevelSessionId;
+  }
+
+  const dataSessionId = isObject(frame.data) ? parseMaybeSessionId(frame.data.session_id) : undefined;
+  if (dataSessionId !== undefined) {
+    return dataSessionId;
+  }
+
+  return firstStreamEntrySessionId(frame);
+}
+
+function parseSubscriptionPayload(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return isObject(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (raw instanceof ArrayBuffer) {
+    return parseSubscriptionPayload(Buffer.from(raw).toString("utf8"));
+  }
+
+  if (ArrayBuffer.isView(raw)) {
+    return parseSubscriptionPayload(Buffer.from(raw.buffer).toString("utf8"));
+  }
+
+  return isObject(raw) ? raw : null;
+}
+
 export class LiveBroadcaster {
-  private readonly clients = new Set<SocketLike>();
+  private readonly clients = new Map<SocketLike, LiveClient>();
+  private readonly sessionBuffers = new Map<SessionId, BufferedLiveFrame[]>();
 
   constructor(private readonly logger: LoggerLike = console) {}
 
   add(client: SocketLike): void {
-    this.clients.add(client);
+    this.clients.set(client, {
+      socket: client,
+      subscribedSessions: new Set(),
+      subscribedGlobal: true,
+    });
   }
 
   remove(client: SocketLike): void {
     this.clients.delete(client);
   }
 
+  handleSubscriptionMessage(client: SocketLike, raw: unknown): void {
+    const state = this.clients.get(client);
+    const message = parseSubscriptionPayload(raw);
+
+    if (state === undefined || message === null || typeof message.type !== "string") {
+      return;
+    }
+
+    if (message.type === "subscribe_global") {
+      state.subscribedGlobal = true;
+      return;
+    }
+
+    if (message.type === "unsubscribe_global") {
+      state.subscribedGlobal = false;
+      return;
+    }
+
+    if (message.type !== "subscribe" && message.type !== "unsubscribe") {
+      return;
+    }
+
+    const sessionId = parseMaybeSessionId(message.session_id);
+    if (sessionId === undefined) {
+      return;
+    }
+
+    if (message.type === "unsubscribe") {
+      state.subscribedSessions.delete(sessionId);
+      return;
+    }
+
+    if (state.subscribedSessions.has(sessionId)) {
+      return;
+    }
+
+    state.subscribedSessions.add(sessionId);
+    this.flushSessionBuffer(state, sessionId);
+  }
+
   broadcast(frame: LiveFrame): void {
+    const deliverToAll = frame.type === "borg:reset";
+    const sessionId = deliverToAll ? undefined : frameSessionId(frame);
+    if (sessionId !== undefined) {
+      this.bufferSessionFrame(sessionId, frame);
+    }
+
     const payload = JSON.stringify(frame);
 
-    for (const client of this.clients) {
+    for (const client of this.clients.values()) {
+      if (!deliverToAll && !this.shouldDeliver(client, sessionId)) {
+        continue;
+      }
+
       try {
-        client.send(payload);
+        client.socket.send(payload);
       } catch {
-        this.clients.delete(client);
+        this.clients.delete(client.socket);
+      }
+    }
+  }
+
+  clearAllSessionBuffers(): void {
+    this.sessionBuffers.clear();
+  }
+
+  private shouldDeliver(client: LiveClient, sessionId: SessionId | undefined): boolean {
+    return sessionId === undefined
+      ? client.subscribedGlobal
+      : client.subscribedSessions.has(sessionId);
+  }
+
+  private bufferSessionFrame(sessionId: SessionId, frame: LiveFrame): void {
+    const now = Date.now();
+    const frames = this.sessionBuffers.get(sessionId) ?? [];
+    frames.push({ frame, ts: typeof frame.ts === "number" ? frame.ts : now });
+    const cutoff = now - RING_BUFFER_MAX_AGE_MS;
+    const retained = frames.filter((entry) => entry.ts >= cutoff).slice(-RING_BUFFER_MAX);
+    this.sessionBuffers.set(sessionId, retained);
+  }
+
+  private flushSessionBuffer(client: LiveClient, sessionId: SessionId): void {
+    const now = Date.now();
+    const cutoff = now - RING_BUFFER_MAX_AGE_MS;
+    const frames = (this.sessionBuffers.get(sessionId) ?? []).filter((entry) => entry.ts >= cutoff);
+    this.sessionBuffers.set(sessionId, frames);
+
+    for (const entry of frames) {
+      try {
+        client.socket.send(JSON.stringify(entry.frame));
+      } catch {
+        this.clients.delete(client.socket);
+        return;
       }
     }
   }
 
   closeAll(): void {
-    for (const client of this.clients) {
+    for (const client of this.clients.values()) {
       try {
-        client.close?.();
+        client.socket.close?.();
       } catch (error) {
         this.logger.error("Live WebSocket close failed", {
           cause: error instanceof Error ? error.message : String(error),
         });
       } finally {
-        this.clients.delete(client);
+        this.clients.delete(client.socket);
       }
     }
   }
 
   streamAppend(entries: readonly StreamEntry[]): void {
+    const sessionId = entries[0]?.session_id;
     this.broadcast({
       type: "stream:append",
       ts: Date.now(),
+      ...(sessionId === undefined ? {} : { session_id: sessionId }),
       entries,
     });
   }
@@ -119,6 +291,7 @@ export class WsBridgeTracer implements TurnTracer {
         type: "turn:token",
         ts: Date.now(),
         turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
         phase: data.phase,
         chunk_text: data.chunk_text,
         sequence: data.sequence,
@@ -136,6 +309,7 @@ export class WsBridgeTracer implements TurnTracer {
         type: "turn:token:flush",
         ts: Date.now(),
         turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
         phase: data.phase,
         full_text: data.full_text,
       });
@@ -159,6 +333,7 @@ export class WsBridgeTracer implements TurnTracer {
         type: "evidence_ledger:built",
         ts: Date.now(),
         turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
         ledger,
       });
       return;
@@ -173,6 +348,7 @@ export class WsBridgeTracer implements TurnTracer {
         type: "turn:delib_path",
         ts: Date.now(),
         turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
         path: data.path,
       });
       return;
@@ -185,6 +361,7 @@ export class WsBridgeTracer implements TurnTracer {
         type: "turn:final_attempt",
         ts: Date.now(),
         turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
         attempt: 2,
       });
       return;

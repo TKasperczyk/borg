@@ -19,6 +19,7 @@ import {
 import { traceLlmCallResponse, traceLlmCallStarted } from "../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
+import type { SessionId } from "../../util/ids.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
@@ -92,6 +93,7 @@ export type RunS2PlannerOptions = {
   thinking?: LLMCompleteOptions["thinking"];
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
 };
 
 export type S2PlannerResult = {
@@ -126,6 +128,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     emitTurnTokenTrace({
       tracer: options.tracer,
       turnId: options.turnId,
+      sessionId: options.sessionId,
       phase: "delib",
       chunkText,
       sequence: tokenSequence,
@@ -164,6 +167,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   ) {
     options.tracer.emit("deliberation.planner.degraded", {
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       attempts: 2,
       lastResponseShape: summarizePlannerResponseShape(result.planner),
     });
@@ -173,6 +177,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     emitTurnTokenFlushTrace({
       tracer: options.tracer,
       turnId: options.turnId,
+      sessionId: options.sessionId,
       phase: "delib",
       fullText: result.planner.text,
     });
@@ -233,6 +238,7 @@ async function callPlannerAttempt(
   traceLlmCallStarted({
     tracer: options.tracer,
     turnId: options.turnId,
+    sessionId: options.sessionId,
     label: "s2_planner",
     model: options.model,
     systemPrompt,
@@ -273,6 +279,7 @@ async function callPlannerAttempt(
     traceLlmCallResponse({
       tracer: options.tracer,
       turnId: options.turnId,
+      sessionId: options.sessionId,
       label: "s2_planner",
       response: planner,
       responseShape: summarizePlannerResponseShape(planner),
@@ -288,6 +295,7 @@ async function callPlannerAttempt(
     });
     options.tracer.emit("deliberation.plan.completed", {
       turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       success: extraction.plan !== null,
       ...(extraction.reason === null ? {} : { reason: extraction.reason }),
     });

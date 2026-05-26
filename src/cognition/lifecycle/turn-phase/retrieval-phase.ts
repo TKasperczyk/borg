@@ -361,6 +361,7 @@ async function buildEvidenceLedgerFinalizerContext(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.input.turnId ?? "unknown",
+    sessionId: input.input.sessionId,
     phase: "ledger",
     run: () => buildEvidenceLedgerFinalizerContextInternal(input),
     completedSub: summarizeEvidenceLedgerContext,
@@ -391,6 +392,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
   emitSessionReentryContinuityTrace({
     options: input.options,
     turnId: input.input.turnId ?? "unknown",
+    sessionId: input.input.sessionId,
     continuity: sessionReentryContinuity,
   });
 
@@ -463,6 +465,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
   ) {
     input.options.tracer.emit("evidence_ledger.compaction.completed", {
       turnId: input.input.turnId,
+      session_id: input.input.sessionId,
       pre_dedupe_tokens: compacted.traceSummary.preDedupeTokens,
       post_dedupe_tokens: compacted.traceSummary.postDedupeTokens,
       pre_cap_tokens: compacted.traceSummary.preCapTokens,
@@ -479,6 +482,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {
     input.options.tracer.emit("evidence_ledger.completed", {
       turnId: input.input.turnId,
+      session_id: input.input.sessionId,
       entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
       transcript_included: traceSummary.transcriptIncluded,
       transcript_compacted: traceSummary.transcriptCompacted,
@@ -498,6 +502,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     input.options.tracer.emit("evidence_ledger.built", {
       turnId: input.input.turnId,
       turn_id: input.input.turnId,
+      session_id: input.input.sessionId,
       entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
       image_attachment_count: ledger.imageAttachments?.length ?? 0,
       shared_state_entry_count: ledger.sharedState?.entries.length ?? 0,
@@ -719,6 +724,7 @@ function buildIndexedSharedStateSourceTrustValidator(input: {
 function emitSessionReentryContinuityTrace(input: {
   options: TurnPhaseCoordinatorOptions;
   turnId: string | undefined;
+  sessionId: SessionId;
   continuity: SessionReentryContinuityPrompt;
 }): void {
   if (!input.options.tracer.enabled || input.turnId === undefined) {
@@ -729,6 +735,7 @@ function emitSessionReentryContinuityTrace(input: {
 
   const traceData = {
     turnId: input.turnId,
+    session_id: input.sessionId,
     status: summary.status,
     audience_entity_id: summary.audienceEntityId,
     active_entry_count: summary.activeEntryCount,
@@ -769,6 +776,7 @@ export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.input.turnId ?? "unknown",
+    sessionId: input.input.sessionId,
     phase: "shared",
     run: () => compileSharedStateArtifactForEvidenceLedgerResultInternal(input),
     completedSub: (result) =>
@@ -982,12 +990,14 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
         nowMs: input.options.clock.now(),
         tracer: input.options.tracer,
         turnId: input.input.turnId,
+        sessionId: input.input.sessionId,
       });
     }
 
     if (input.options.tracer.enabled && input.input.turnId !== undefined) {
       input.options.tracer.emit("shared_state.compile.skipped", {
         turnId: input.input.turnId,
+        session_id: input.input.sessionId,
         reason: skip.reason,
         previous_active_entry_count: skip.previousActiveEntryCount,
         perception_mode: skip.perceptionMode,
@@ -1015,6 +1025,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   ) {
     input.options.tracer.emit("shared_state.compile.transitioned", {
       turnId: input.input.turnId,
+      session_id: input.input.sessionId,
       transition: "unblocked",
       shared_state_compile_transition_reason: "unsettled_reconciliation",
       ...unsettledReconciliation.summary,
@@ -1047,6 +1058,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {
     input.options.tracer.emit("shared_state.canonicalization.completed", {
       turnId: input.input.turnId,
+      session_id: input.input.sessionId,
       candidate_count_by_scope: actionCanonicalizationCandidates.countByScope,
       candidate_count_total: (actionCanonicalizationCandidates.candidates ?? []).length,
     });
@@ -1112,6 +1124,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     clock: input.options.clock,
     tracer: input.options.tracer,
     turnId: input.input.turnId,
+    sessionId: input.input.sessionId,
     turnCounter,
     lifecycle: {
       maxActiveEntries: sharedStateConfig.maxActiveEntries,

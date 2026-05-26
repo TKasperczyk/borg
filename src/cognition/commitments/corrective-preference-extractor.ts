@@ -24,6 +24,7 @@ import {
   streamEntryIdHelpers,
   type CommitmentId,
   type EntityId,
+  type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
@@ -214,6 +215,7 @@ export type CorrectivePreferenceExtractorOptions = {
   model?: string;
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   onDegraded?: (
     reason: CorrectivePreferenceExtractorDegradedReason,
     error?: unknown,
@@ -503,6 +505,7 @@ export class CorrectivePreferenceExtractor {
     traceLlmCallStarted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "corrective_preference_extractor",
       model: this.options.model,
       systemPrompt: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
@@ -526,6 +529,7 @@ export class CorrectivePreferenceExtractor {
       traceLlmCallError({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         label: "corrective_preference_extractor",
         error,
       });
@@ -541,6 +545,7 @@ export class CorrectivePreferenceExtractor {
     traceLlmCallResponse({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
       label: "corrective_preference_extractor",
       response,
       responseShape: summarizeCorrectivePreferenceResponseShape(response),

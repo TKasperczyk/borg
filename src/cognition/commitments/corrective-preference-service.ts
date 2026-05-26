@@ -314,6 +314,7 @@ export class CorrectivePreferenceTurnService {
       model: this.options.model,
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       onDegraded: (reason, error, metadata) => {
         if (!this.options.tracer.enabled) {
           return;

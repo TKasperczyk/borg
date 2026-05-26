@@ -696,9 +696,39 @@ export type StateSnapshot = {
 
 export type TurnStakes = "low" | "medium" | "high";
 
+export type SessionSourceType = "demo" | "slack" | "discord" | "imessage" | "autonomy";
+
+export type ConversationKind = "dm" | "channel" | "thread" | "demo";
+
+export type SessionStatus = "active" | "idle" | "archived";
+
+export type SessionPrivacyLevel = "payload_off" | "payload_on";
+
+export type SessionRecord = {
+  session_id: string;
+  source_type: SessionSourceType;
+  source_external_id: string | null;
+  source_url: string | null;
+  label: string;
+  audience_label: string;
+  audience_entity_id: string | null;
+  conversation_kind: ConversationKind;
+  created_at: number;
+  last_activity_at: number;
+  last_turn_id: string | null;
+  message_count: number;
+  status: SessionStatus;
+  privacy_level: SessionPrivacyLevel;
+};
+
+export type SessionsResponse = {
+  sessions: SessionRecord[];
+};
+
 export type TurnRequest = {
   message: string;
   audience: string;
+  session?: string;
   stakes?: TurnStakes;
   attachments?: readonly File[];
 };
@@ -728,6 +758,7 @@ export type TurnPhaseName =
 export type PhaseEventData = {
   turnId: string;
   turn_id?: string;
+  session_id?: string;
   phase?: TurnPhaseName;
   ts?: number;
   duration_ms?: number;
@@ -746,6 +777,7 @@ export type TurnTerminalOutcome =
 export type TurnTerminalData = {
   turnId: string;
   turn_id?: string;
+  session_id?: string;
   outcome: TurnTerminalOutcome;
   ts?: number;
   duration_ms?: number;
@@ -755,6 +787,7 @@ export type TurnTerminalData = {
 export type LiveFrameBase = {
   type: string;
   ts: number;
+  session_id?: string;
 };
 
 export type StreamAppendFrame = LiveFrameBase & {
@@ -824,6 +857,10 @@ export type DreamProcessCompletedFrame = LiveFrameBase & {
   candidates_accepted: number;
 };
 
+export type BorgResetFrame = LiveFrameBase & {
+  type: "borg:reset";
+};
+
 export type LiveFrame =
   | StreamAppendFrame
   | TurnPhaseFrame
@@ -834,6 +871,28 @@ export type LiveFrame =
   | TurnDelibPathFrame
   | TurnFinalAttemptFrame
   | DreamProcessStartedFrame
-  | DreamProcessCompletedFrame;
+  | DreamProcessCompletedFrame
+  | BorgResetFrame;
 
 export type WsState = "live" | "reconnecting" | "down";
+
+export type PromptKey =
+  | "base_identity_preamble"
+  | "voice_and_posture"
+  | "epistemic_posture"
+  | "identity_posture"
+  | "host_capabilities";
+
+export type PromptBlockView = {
+  key: PromptKey;
+  label: string;
+  description: string;
+  default_text: string;
+  current_text: string;
+  overridden: boolean;
+  updated_at: number | null;
+};
+
+export type PromptBlocksResponse = {
+  blocks: PromptBlockView[];
+};

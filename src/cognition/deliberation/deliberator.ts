@@ -359,6 +359,7 @@ export class Deliberator {
       tracer: this.tracer,
       clock: this.clock,
       turnId: turnId ?? "unknown",
+      sessionId: options.sessionId,
       phase: "final",
       sub: options.path,
       run: () => runFinalizer(options),
@@ -381,9 +382,10 @@ export class Deliberator {
     const trace =
       this.tracer.enabled && context.turnId !== undefined
         ? {
-            tracer: this.tracer,
-            turnId: context.turnId,
-          }
+          tracer: this.tracer,
+          turnId: context.turnId,
+          sessionId: context.sessionId,
+        }
         : undefined;
     const retrievalConfidence =
       context.retrievalConfidence ??
@@ -425,6 +427,9 @@ export class Deliberator {
       ...(this.options.hostCapabilities === undefined
         ? {}
         : { hostCapabilities: this.options.hostCapabilities }),
+      ...(this.options.promptBlocks === undefined
+        ? {}
+        : { promptBlocks: this.options.promptBlocks }),
     };
     const baseSystemPrompt = buildBaseSystemPrompt(effectiveContext, baseSystemPromptOptions);
     const cacheableBaseSystemPrompt = buildCacheableBaseSystemPromptParts(
@@ -574,6 +579,7 @@ export class Deliberator {
     if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
       this.tracer.emit("deliberation.planner_ledger.completed", {
         turnId: context.turnId,
+        session_id: context.sessionId,
         entry_counts: toTraceJsonValue(compactPlannerLedger.traceSummary.entryCountsBySection),
         omitted_entry_counts: toTraceJsonValue(
           compactPlannerLedger.traceSummary.omittedEntryCountsBySection,
@@ -604,6 +610,7 @@ export class Deliberator {
       ...(thinking === undefined ? {} : { thinking }),
       tracer: this.tracer,
       turnId: context.turnId,
+      sessionId: context.sessionId,
     });
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
@@ -618,11 +625,13 @@ export class Deliberator {
       if (persistedEntry !== undefined) {
         this.tracer.emit("deliberation.plan_persistence.completed", {
           turnId: context.turnId,
+          session_id: context.sessionId,
           streamEntryId: persistedEntry.id,
         });
       } else {
         this.tracer.emit("deliberation.plan_persistence.skipped", {
           turnId: context.turnId,
+          session_id: context.sessionId,
           reason:
             plan === null
               ? "no_plan_extracted"

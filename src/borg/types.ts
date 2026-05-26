@@ -9,6 +9,7 @@ import type {
 } from "../attachments/index.js";
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
+import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { Config } from "../config/index.js";
 import type { CorrectionService } from "../correction/index.js";
@@ -60,6 +61,7 @@ import type {
   RetrievalPipeline,
   RetrievalSearchOptions,
 } from "../retrieval/index.js";
+import type { SessionsRepository } from "../sessions/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import type { StreamEntry, StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
@@ -104,10 +106,12 @@ export type BorgDependencies = {
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
   autonomyWakesRepository: AutonomyWakesRepository;
+  sessionsRepository: SessionsRepository;
   attachmentRepository: AttachmentRepository;
   imagePerceptionRepository: ImagePerceptionRepository;
   imageAttachmentLifecycleService: ImageAttachmentLifecycleService;
   attachmentService: AttachmentService;
+  promptOverrideRepository: PromptOverrideRepository;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
   maintenanceScheduler: MaintenanceScheduler;

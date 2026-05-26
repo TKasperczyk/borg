@@ -22,6 +22,7 @@ import type { TurnReflectionCoordinator } from "../../reflection/turn-reflection
 import type { TurnRetrievalCoordinator } from "../../retrieval/turn-coordinator.js";
 import type { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
 import type { TurnTerminalOutcome, TurnTracer } from "../../tracing/tracer.js";
+import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
 import type { CognitiveMode, IntentRecord } from "../../types.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
@@ -124,6 +125,7 @@ export type TurnPhaseCoordinatorOptions = {
   turnReflectionCoordinator: TurnReflectionCoordinator;
   clock: Clock;
   tracer: TurnTracer;
+  promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
 };
 
 export type RunTurnPhasesInput = {

@@ -5,6 +5,7 @@ import {
   type SharedStateUnsettledReconciliation,
 } from "../../shared-state/index.js";
 import type { SharedStateSourceTrustValidator } from "../../../memory/decision-artifacts/index.js";
+import type { SessionId } from "../../../util/ids.js";
 import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 
 function sharedStateReconciliationOutcomeCounts(
@@ -45,6 +46,7 @@ export function runSharedStateArtifactRetryOnlyReconciliation(input: {
   nowMs: number;
   tracer: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
 }): void {
   const result = reconcileSharedStateCanonicalizations({
     entries: input.unsettledReconciliation.entries,
@@ -58,6 +60,7 @@ export function runSharedStateArtifactRetryOnlyReconciliation(input: {
   if (input.tracer.enabled && input.turnId !== undefined) {
     input.tracer.emit("shared_state.reconcile.completed", {
       turnId: input.turnId,
+      ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
       mode: "retry_only",
       unsettled_entry_count: input.unsettledReconciliation.entries.length,
       outcome_counts: toTraceJsonValue(sharedStateReconciliationOutcomeCounts(result)),

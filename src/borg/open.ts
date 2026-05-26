@@ -209,6 +209,7 @@ export async function openBorgDependencies(
       imagePerceptionService,
       clock,
       tracer,
+      promptOverrideRepository: repositories.promptOverrideRepository,
     });
     const autonomyScheduler = buildAutonomyScheduler({
       config,
@@ -244,6 +245,8 @@ export async function openBorgDependencies(
       attachmentService,
       imagePerceptionRepository: repositories.imagePerceptionRepository,
       imageAttachmentLifecycleService,
+      promptOverrideRepository: repositories.promptOverrideRepository,
+      sessionsRepository: repositories.sessionsRepository,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,

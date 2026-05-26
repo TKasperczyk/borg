@@ -16,7 +16,7 @@ import type { RecencyMessage } from "../../recency/index.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import { QUARANTINED_USER_ENTRY_EVENT, type StreamWriter } from "../../../stream/index.js";
-import type { StreamEntryId } from "../../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
 
 export async function classifyFrameAnomalyPhase(input: {
@@ -29,6 +29,7 @@ export async function classifyFrameAnomalyPhase(input: {
   ) => Promise<void>;
   llmClient: LLMClient;
   turnId: string;
+  sessionId: SessionId;
   isUserTurn: boolean;
   userMessage: string;
   recentHistory: readonly RecencyMessage[];
@@ -45,6 +46,7 @@ export async function classifyFrameAnomalyPhase(input: {
     model: input.options.config.anthropic.models.recallExpansion,
     tracer: input.options.tracer,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     onDegraded: (reason, error) => {
       if (!input.options.tracer.enabled) {
         return;
@@ -52,6 +54,7 @@ export async function classifyFrameAnomalyPhase(input: {
 
       input.options.tracer.emit("frame_anomaly.degraded", {
         turnId: input.turnId,
+        session_id: input.sessionId,
         reason,
         ...(input.options.tracer.includePayloads && error !== undefined
           ? { error: error instanceof Error ? error.message : String(error) }
@@ -70,6 +73,7 @@ export async function classifyFrameAnomalyPhase(input: {
   if (classification.status === "degraded" && input.options.tracer.enabled) {
     input.options.tracer.emit("frame_anomaly.degraded_fail_open", {
       turnId: input.turnId,
+      session_id: input.sessionId,
       reason: classification.reason,
     });
   }
@@ -80,6 +84,7 @@ export async function classifyFrameAnomalyPhase(input: {
       appendHookFailureEvent: input.appendHookFailureEvent,
       streamWriter: input.streamWriter,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       persistedUserEntryId: input.persistedUserEntryId,
       classification,
     });
@@ -98,6 +103,7 @@ export async function classifyClosureLoopPhase(input: {
   ) => Promise<void>;
   llmClient: LLMClient;
   turnId: string;
+  sessionId: SessionId;
   isUserTurn: boolean;
   userMessage: string;
   recentHistory: readonly RecencyMessage[];
@@ -131,6 +137,7 @@ export async function classifyClosureLoopPhase(input: {
     model: input.options.config.anthropic.models.recallExpansion,
     tracer: input.options.tracer,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     onDegraded: (reason, error, metadata) => {
       if (!input.options.tracer.enabled) {
         return;
@@ -138,6 +145,7 @@ export async function classifyClosureLoopPhase(input: {
 
       input.options.tracer.emit("closure_loop.degraded", {
         turnId: input.turnId,
+        session_id: input.sessionId,
         label: "closure_loop_classifier",
         reason,
         stopReason: metadata?.stopReason ?? null,
@@ -181,6 +189,7 @@ async function appendFrameAnomalyEvents(input: {
   ) => Promise<void>;
   streamWriter: StreamWriter;
   turnId: string;
+  sessionId: SessionId;
   persistedUserEntryId: StreamEntryId;
   classification: ActualFrameAnomalyClassification;
 }): Promise<void> {
@@ -217,6 +226,7 @@ async function appendFrameAnomalyEvents(input: {
     if (input.options.tracer.enabled) {
       input.options.tracer.emit("frame_anomaly.transitioned", {
         turnId: input.turnId,
+        session_id: input.sessionId,
         kind: input.classification.kind,
         sourceStreamEntryId: input.persistedUserEntryId,
       });

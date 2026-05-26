@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { File } from "node:buffer";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import {
   Borg,
   DEFAULT_SESSION_ID,
   ManualClock,
+  createSessionId,
   createEpisodeId,
   createMaintenanceRunId,
   createSemanticEdgeId,
@@ -17,6 +18,7 @@ import {
   type AttachmentId,
   type BorgOpenOptions,
   type StreamEntry,
+  type TurnResult,
 } from "borg";
 
 import {
@@ -33,6 +35,7 @@ import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import { createDemoServerApp } from "../app.js";
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
+import { createResetBorgController, type BorgHandle } from "../reset.js";
 
 const PNG_1X1 = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -51,6 +54,22 @@ type BorgTestInternals = {
     reviewQueueRepository: ReviewQueueRepository;
   };
 };
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function createEmptyReflectionResponse() {
   return {
@@ -96,16 +115,19 @@ function createImagePerceptionResponse() {
   ];
 }
 
-async function openHarness(input: { tempDir: string; llmClient?: FakeLLMClient }): Promise<{
-  borg: Borg;
-  clock: ManualClock;
+function createHarnessOpenOptions(input: {
+  tempDir: string;
   live: ReturnType<typeof createLiveBridge>;
-}> {
-  const live = createLiveBridge();
-  const clock = new ManualClock(1_800_000_000_000);
-  const options: BorgOpenOptions = {
+  clock: ManualClock;
+  llmClient?: FakeLLMClient;
+  hostCapabilities?: string;
+}): BorgOpenOptions {
+  return {
     config: createTestConfig({
       dataDir: input.tempDir,
+      ...(input.hostCapabilities === undefined
+        ? {}
+        : { host_capabilities: input.hostCapabilities }),
       perception: {
         llmEnabled: false,
       },
@@ -134,17 +156,38 @@ async function openHarness(input: { tempDir: string; llmClient?: FakeLLMClient }
         },
       },
     }),
-    clock,
+    clock: input.clock,
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
     llmClient: input.llmClient ?? new FakeLLMClient(),
-    tracer: live.tracer,
-    onStreamAppend: live.onStreamAppend,
+    tracer: input.live.tracer,
+    onStreamAppend: input.live.onStreamAppend,
     liveExtraction: false,
   };
+}
+
+async function openHarness(input: {
+  tempDir: string;
+  llmClient?: FakeLLMClient;
+  hostCapabilities?: string;
+}): Promise<{
+  borg: Borg;
+  clock: ManualClock;
+  live: ReturnType<typeof createLiveBridge>;
+}> {
+  const live = createLiveBridge();
+  const clock = new ManualClock(1_800_000_000_000);
 
   return {
-    borg: await Borg.open(options),
+    borg: await Borg.open(
+      createHarnessOpenOptions({
+        tempDir: input.tempDir,
+        live,
+        clock,
+        llmClient: input.llmClient,
+        hostCapabilities: input.hostCapabilities,
+      }),
+    ),
     clock,
     live,
   };
@@ -170,14 +213,19 @@ function collectLiveFrames(live: ReturnType<typeof createLiveBridge>): {
 } {
   const frames: LiveFrame[] = [];
   let closed = false;
-
-  live.broadcaster.add({
+  const client = {
     send(data: string): void {
       frames.push(JSON.parse(data) as LiveFrame);
     },
     close(): void {
       closed = true;
     },
+  };
+
+  live.broadcaster.add(client);
+  live.broadcaster.handleSubscriptionMessage(client, {
+    type: "subscribe",
+    session_id: DEFAULT_SESSION_ID,
   });
 
   return {
@@ -365,11 +413,120 @@ describe("demo server", () => {
     expect(secondClosed).toBe(true);
   });
 
+  it("filters live frames by subscribed session and keeps global frames global", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    const sessionA = createSessionId();
+    const sessionB = createSessionId();
+    const framesA: LiveFrame[] = [];
+    const framesB: LiveFrame[] = [];
+    const clientA = { send: (data: string) => framesA.push(JSON.parse(data) as LiveFrame) };
+    const clientB = { send: (data: string) => framesB.push(JSON.parse(data) as LiveFrame) };
+
+    broadcaster.add(clientA);
+    broadcaster.add(clientB);
+    broadcaster.handleSubscriptionMessage(clientA, { type: "subscribe", session_id: sessionA });
+    broadcaster.handleSubscriptionMessage(clientB, { type: "subscribe", session_id: sessionB });
+
+    broadcaster.broadcast({ type: "turn:terminal", ts: 1, session_id: sessionA });
+    broadcaster.broadcast({ type: "turn:terminal", ts: 2, session_id: sessionB });
+    broadcaster.broadcast({ type: "borg:reset", ts: 3 });
+
+    expect(framesA.map((frame) => frame.ts)).toEqual([1, 3]);
+    expect(framesB.map((frame) => frame.ts)).toEqual([2, 3]);
+  });
+
+  it("delivers reset to clients that unsubscribed from global frames", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    const frames: LiveFrame[] = [];
+    const client = { send: (data: string) => frames.push(JSON.parse(data) as LiveFrame) };
+
+    broadcaster.add(client);
+    broadcaster.handleSubscriptionMessage(client, { type: "unsubscribe_global" });
+    broadcaster.broadcast({ type: "borg:reset", ts: 1 });
+
+    expect(frames).toEqual([expect.objectContaining({ type: "borg:reset", ts: 1 })]);
+  });
+
+  it("flushes buffered session frames when a client subscribes", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    const sessionId = createSessionId();
+    const frames: LiveFrame[] = [];
+    const client = { send: (data: string) => frames.push(JSON.parse(data) as LiveFrame) };
+
+    broadcaster.broadcast({ type: "turn:phase:started", ts: Date.now(), session_id: sessionId });
+    broadcaster.add(client);
+    broadcaster.handleSubscriptionMessage(client, { type: "subscribe", session_id: sessionId });
+
+    expect(frames).toEqual([
+      expect.objectContaining({ type: "turn:phase:started", session_id: sessionId }),
+    ]);
+  });
+
+  it("does not re-flush buffered session frames on duplicate subscribe", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    const sessionId = createSessionId();
+    const now = Date.now();
+    const frames: LiveFrame[] = [];
+    const client = { send: (data: string) => frames.push(JSON.parse(data) as LiveFrame) };
+
+    broadcaster.broadcast({ type: "turn:phase:started", ts: now, session_id: sessionId });
+    broadcaster.add(client);
+    broadcaster.handleSubscriptionMessage(client, { type: "subscribe", session_id: sessionId });
+    broadcaster.handleSubscriptionMessage(client, { type: "subscribe", session_id: sessionId });
+    broadcaster.broadcast({ type: "turn:terminal", ts: now + 1, session_id: sessionId });
+
+    expect(frames.map((frame) => frame.ts)).toEqual([now, now + 1]);
+  });
+
+  it("keeps final attempt frames scoped to their subscribed session", () => {
+    const live = createLiveBridge();
+    const sessionA = createSessionId();
+    const sessionB = createSessionId();
+    const framesA: LiveFrame[] = [];
+    const framesB: LiveFrame[] = [];
+    const clientA = { send: (data: string) => framesA.push(JSON.parse(data) as LiveFrame) };
+    const clientB = { send: (data: string) => framesB.push(JSON.parse(data) as LiveFrame) };
+
+    live.broadcaster.add(clientA);
+    live.broadcaster.add(clientB);
+    live.broadcaster.handleSubscriptionMessage(clientA, { type: "subscribe", session_id: sessionA });
+    live.broadcaster.handleSubscriptionMessage(clientB, { type: "subscribe", session_id: sessionB });
+    live.tracer.emit("commitment_guard.regeneration_requested", {
+      turnId: "turn_final_attempt",
+      session_id: sessionA,
+      mode: "enforce",
+      verdict: "requires_regeneration",
+      violationCount: 1,
+      commitmentIds: [],
+      commitmentKinds: [],
+      commitmentEnforcementClasses: [],
+      criticalDomains: [],
+    });
+
+    expect(framesA).toEqual([
+      expect.objectContaining({
+        type: "turn:final_attempt",
+        turn_id: "turn_final_attempt",
+        session_id: sessionA,
+      }),
+    ]);
+    expect(framesB).toEqual([]);
+  });
+
   it("serves REST endpoint contract shapes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
     const llm = new FakeLLMClient({
-      responses: [createFakeEmitAnswerResponse("demo ok"), createEmptyReflectionResponse()],
+      responses: [
+        createFakeEmitAnswerResponse("demo ok"),
+        createEmptyReflectionResponse(),
+        createFakeEmitAnswerResponse("custom session ok"),
+        createEmptyReflectionResponse(),
+        createFakeEmitAnswerResponse("custom session retry ok"),
+        createEmptyReflectionResponse(),
+        createFakeEmitAnswerResponse("custom session final ok"),
+        createEmptyReflectionResponse(),
+      ],
     });
     const { borg, clock, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
@@ -408,7 +565,15 @@ describe("demo server", () => {
       { kind: "manual" },
       { throughReview: true },
     );
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const customSessionId = createSessionId();
+    borg.sessions.ensure({
+      session_id: customSessionId,
+      source_type: "demo",
+      label: "demo custom",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
 
     const state = await app.request("/api/state");
     expect(state.status).toBe(200);
@@ -421,6 +586,39 @@ describe("demo server", () => {
         dream_audit_rows: expect.any(Number),
       }),
       version: expect.any(String),
+    });
+
+    const customState = await app.request(`/api/state?session=${customSessionId}`);
+    expect(customState.status).toBe(200);
+    expect(await customState.json()).toMatchObject({
+      active_session: customSessionId,
+    });
+
+    const sessions = await app.request("/api/sessions");
+    expect(sessions.status).toBe(200);
+    expect(await sessions.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({
+          session_id: DEFAULT_SESSION_ID,
+          source_type: "demo",
+          conversation_kind: "demo",
+          privacy_level: "payload_off",
+        }),
+        expect.objectContaining({ session_id: customSessionId, label: "demo custom" }),
+      ]),
+    });
+
+    await borg.stream.append(
+      { kind: "user_msg", content: "custom session seed", turn_id: "turn_custom_seed" },
+      { session: customSessionId },
+    );
+    const customStream = await app.request(
+      `/api/stream?session=${customSessionId}&kind=user_msg&limit=10`,
+    );
+    expect(customStream.status).toBe(200);
+    expect(await customStream.json()).toMatchObject({
+      entries: [expect.objectContaining({ session_id: customSessionId })],
+      next_cursor: null,
     });
 
     const stream = await app.request("/api/stream?kind=user_msg,agent_msg&limit=10");
@@ -614,6 +812,25 @@ describe("demo server", () => {
     });
     expect(turn.status).toBe(200);
     expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+
+    const customTurn = await app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "hello custom",
+        audience: "Alice",
+        stakes: "low",
+        session: customSessionId,
+      }),
+    });
+    const customTurnText = await customTurn.text();
+    expect(customTurn.status, customTurnText).toBe(200);
+    const customTurnBody = JSON.parse(customTurnText) as { turn_id: string };
+    expect(borg.sessions.get(customSessionId)).toMatchObject({
+      session_id: customSessionId,
+      last_turn_id: customTurnBody.turn_id,
+      message_count: 1,
+    });
   });
 
   it("accepts multipart turn uploads and writes image attachment stream entries", async () => {
@@ -628,7 +845,7 @@ describe("demo server", () => {
     });
     const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const formData = new FormData();
     formData.set("message", "please look at this");
     formData.set("audience", "Alice");
@@ -664,7 +881,7 @@ describe("demo server", () => {
     tempDirs.push(tempDir);
     const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const dreamPlanSpy = vi.spyOn(borg.dream, "plan");
     const dreamApplySpy = vi.spyOn(borg.dream, "apply");
     const valueAddSpy = vi.spyOn(borg.self.values, "add");
@@ -918,7 +1135,7 @@ describe("demo server", () => {
     tempDirs.push(tempDir);
     const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     let older = await borg.stream.append({ kind: "internal_event", content: { index: 0 } });
     let cursorEntry = null as Awaited<ReturnType<typeof borg.stream.append>> | null;
 
@@ -956,7 +1173,7 @@ describe("demo server", () => {
     tempDirs.push(tempDir);
     const { borg, clock, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     await seedSemanticGraph(borg, clock);
 
     const response = await app.request("/api/semantic/graph?limit=3");
@@ -1000,7 +1217,7 @@ describe("demo server", () => {
     tempDirs.push(tempDir);
     const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borg, live });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const entry = await borg.stream.append({ kind: "internal_event", content: { legacy: true } });
     const streamPath = join(tempDir, "stream", `${DEFAULT_SESSION_ID}.jsonl`);
     const rawLine = readFileSync(streamPath, "utf8").trimEnd();
@@ -1123,7 +1340,7 @@ describe("demo server", () => {
     });
     const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
-    const { app, injectWebSocket } = createDemoServerApp({ borg, live });
+    const { app, injectWebSocket } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     injectWebSocket(server);
     closers.push(
@@ -1144,6 +1361,7 @@ describe("demo server", () => {
       ws.addEventListener("open", () => resolve(), { once: true });
       ws.addEventListener("error", () => reject(new Error("websocket failed")), { once: true });
     });
+    ws.send(JSON.stringify({ type: "subscribe", session_id: DEFAULT_SESSION_ID }));
 
     const result = await borg.turn({
       userMessage: "hello websocket terminal",
@@ -1208,5 +1426,417 @@ describe("demo server", () => {
     });
     live.broadcaster.closeAll();
     expect(wasClosed()).toBe(true);
+  });
+
+  it("GET /api/prompts returns 5 blocks, each defaulted and not overridden", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const hostCapabilities = "Configured host capability block.";
+    const { borg, live } = await openHarness({ tempDir, hostCapabilities });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/prompts");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      blocks: Array<{ key: string; current_text: string; overridden: boolean }>;
+    };
+    expect(body.blocks.map((b) => b.key)).toEqual([
+      "base_identity_preamble",
+      "voice_and_posture",
+      "epistemic_posture",
+      "identity_posture",
+      "host_capabilities",
+    ]);
+    expect(body.blocks.every((b) => b.overridden === false)).toBe(true);
+    expect(body.blocks.find((b) => b.key === "host_capabilities")).toMatchObject({
+      current_text: hostCapabilities,
+    });
+  });
+
+  it("PUT /api/prompts/:key sets an override, DELETE clears it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const put = await app.request("/api/prompts/voice_and_posture", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Speak crisply." }),
+    });
+    expect(put.status).toBe(200);
+    const putBody = (await put.json()) as { current_text: string; overridden: boolean };
+    expect(putBody).toMatchObject({ current_text: "Speak crisply.", overridden: true });
+
+    const list = (await (await app.request("/api/prompts")).json()) as {
+      blocks: Array<{ key: string; current_text: string; overridden: boolean }>;
+    };
+    expect(list.blocks.find((b) => b.key === "voice_and_posture")).toMatchObject({
+      current_text: "Speak crisply.",
+      overridden: true,
+    });
+
+    const del = await app.request("/api/prompts/voice_and_posture", { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const delBody = (await del.json()) as { overridden: boolean };
+    expect(delBody.overridden).toBe(false);
+  });
+
+  it("PUT /api/prompts/:key rejects unknown keys with 404", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/prompts/not_a_real_key", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "anything" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("PUT /api/prompts/:key rejects whitespace-only prompt text", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/prompts/voice_and_posture", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "   \n\t" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("PUT /api/prompts/:key trims prompt text before storing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/prompts/voice_and_posture", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "  hello  " }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      current_text: "hello",
+      overridden: true,
+    });
+    expect(borg.prompts.list().find((block) => block.key === "voice_and_posture")).toMatchObject({
+      current_text: "hello",
+    });
+  });
+
+  it("reset is rejected while a Borg request is in flight", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const turnStarted = createDeferred<void>();
+    const turnRelease = createDeferred<TurnResult>();
+    const turnSpy = vi.spyOn(borg, "turn").mockImplementation(async () => {
+      turnStarted.resolve();
+      return turnRelease.promise;
+    });
+    const resetBorg = vi.fn(async () => {});
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      resetBorg,
+    });
+
+    const turn = app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hello" }),
+    });
+    await turnStarted.promise;
+
+    const reset = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    expect(reset.status).toBe(409);
+    expect(resetBorg).not.toHaveBeenCalled();
+
+    turnRelease.resolve({ turn_id: "turn_gate" } as TurnResult);
+    expect((await turn).status).toBe(200);
+    turnSpy.mockRestore();
+  });
+
+  it("Borg requests are rejected during reset and accepted after reset completes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const resetStarted = createDeferred<void>();
+    const resetRelease = createDeferred<void>();
+    const resetBorg = vi.fn(async () => {
+      resetStarted.resolve();
+      await resetRelease.promise;
+    });
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      resetBorg,
+    });
+
+    const reset = app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    await resetStarted.promise;
+
+    const turn = await app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hello during reset" }),
+    });
+    expect(turn.status).toBe(503);
+
+    resetRelease.resolve();
+    expect((await reset).status).toBe(200);
+    expect((await app.request("/api/state")).status).toBe(200);
+  });
+
+  it("reset controller wipes state, reopens Borg, clears ledger cache, and broadcasts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-reset-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    const borgHandle = { current: borg };
+    closers.push(() => borgHandle.current.close());
+    const { frames } = collectLiveFrames(live);
+
+    await borg.stream.append({ kind: "user_msg", content: "before reset" });
+    borg.prompts.set("voice_and_posture", "custom voice");
+    live.ledgerCache.set("turn_old", { sections: [] });
+    const streamPath = join(tempDir, "stream", `${DEFAULT_SESSION_ID}.jsonl`);
+    expect(existsSync(streamPath)).toBe(true);
+    mkdirSync(join(tempDir, "lancedb"), { recursive: true });
+    const lanceMarker = join(tempDir, "lancedb", "stale-marker");
+    writeFileSync(lanceMarker, "old");
+
+    const resetBorg = createResetBorgController({
+      dataDir: tempDir,
+      live,
+      borgHandle,
+      openBorg: () =>
+        Borg.open(
+          createHarnessOpenOptions({
+            tempDir,
+            live,
+            clock,
+          }),
+        ),
+    });
+    await resetBorg();
+
+    expect(borgHandle.current).not.toBe(borg);
+    expect(existsSync(streamPath)).toBe(false);
+    expect(existsSync(join(tempDir, "borg.db"))).toBe(true);
+    expect(existsSync(lanceMarker)).toBe(false);
+    expect(borgHandle.current.stream.tail(10)).toEqual([]);
+    expect(borgHandle.current.prompts.list().every((block) => !block.overridden)).toBe(true);
+    expect(live.ledgerCache.size).toBe(0);
+    expect(frames.some((frame) => frame.type === "borg:reset")).toBe(true);
+  });
+
+  it("reset controller clears buffered live session frames before reopening", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-reset-"));
+    tempDirs.push(tempDir);
+    const live = createLiveBridge();
+    const sessionId = createSessionId();
+    const borgHandle: BorgHandle = {
+      current: { close: vi.fn(async () => {}) } as unknown as Borg,
+    };
+    const nextBorg = { close: vi.fn(async () => {}) } as unknown as Borg;
+    const resetBorg = createResetBorgController({
+      dataDir: tempDir,
+      live,
+      borgHandle,
+      openBorg: async () => nextBorg,
+    });
+    const frames: LiveFrame[] = [];
+    const client = { send: (data: string) => frames.push(JSON.parse(data) as LiveFrame) };
+
+    live.broadcaster.broadcast({ type: "turn:phase:started", ts: 1, session_id: sessionId });
+    await resetBorg();
+    live.broadcaster.add(client);
+    live.broadcaster.handleSubscriptionMessage(client, { type: "subscribe", session_id: sessionId });
+
+    expect(frames).toEqual([]);
+  });
+
+  it("reset controller rejects concurrent reset calls", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-reset-"));
+    tempDirs.push(tempDir);
+    const live = createLiveBridge();
+    const openStarted = createDeferred<void>();
+    const openRelease = createDeferred<void>();
+    const nextBorg = { close: vi.fn(async () => {}) } as unknown as Borg;
+    const borgHandle = {
+      current: { close: vi.fn(async () => {}) } as unknown as Borg,
+    };
+    const resetBorg = createResetBorgController({
+      dataDir: tempDir,
+      live,
+      borgHandle,
+      openBorg: async () => {
+        openStarted.resolve();
+        await openRelease.promise;
+        return nextBorg;
+      },
+    });
+
+    const first = resetBorg();
+    await openStarted.promise;
+    await expect(resetBorg()).rejects.toThrow("Reset already in progress");
+    openRelease.resolve();
+    await first;
+    expect(borgHandle.current).toBe(nextBorg);
+  });
+
+  it("POST /api/admin/reset retries reopen after a post-wipe open failure", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-reset-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    const borgHandle: BorgHandle = { current: borg };
+    closers.push(() => borgHandle.current.close());
+    const closeSpy = vi.spyOn(borg, "close");
+    let openAttempts = 0;
+    const resetBorg = createResetBorgController({
+      dataDir: tempDir,
+      live,
+      borgHandle,
+      openBorg: async () => {
+        openAttempts += 1;
+        if (openAttempts === 1) {
+          throw new Error("reopen failed");
+        }
+        return Borg.open(
+          createHarnessOpenOptions({
+            tempDir,
+            live,
+            clock,
+          }),
+        );
+      },
+    });
+    const { app } = createDemoServerApp({ borgHandle, live, resetBorg });
+
+    const first = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    expect(first.status).toBe(500);
+    expect(await first.json()).toMatchObject({ error: { message: "reopen failed" } });
+    expect(borgHandle.state).toBe("dead");
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect((await app.request("/api/state")).status).toBe(503);
+
+    const second = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    expect(second.status).toBe(200);
+    expect(openAttempts).toBe(2);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(borgHandle.current).not.toBe(borg);
+    expect(borgHandle.state).toBe("open");
+    expect((await app.request("/api/state")).status).toBe(200);
+  });
+
+  it("POST /api/admin/reset rejects body without confirm token", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const resetBorg = vi.fn(async () => {});
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      resetBorg,
+    });
+
+    const missing = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(missing.status).toBe(400);
+
+    const wrongToken = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "reset" }),
+    });
+    expect(wrongToken.status).toBe(400);
+
+    expect(resetBorg).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/admin/reset invokes resetBorg and clears the dream plan cache", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const resetBorg = vi.fn(async () => {});
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      resetBorg,
+    });
+
+    const plan = await app.request("/api/dream/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(plan.status).toBe(200);
+    const planBody = (await plan.json()) as { plan_id: string };
+
+    const reset = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toEqual({ ok: true });
+    expect(resetBorg).toHaveBeenCalledTimes(1);
+
+    const apply = await app.request("/api/dream/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan_id: planBody.plan_id }),
+    });
+    expect(apply.status).toBe(404);
+  });
+
+  it("POST /api/admin/reset returns 501 when resetBorg is not configured", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    expect(response.status).toBe(501);
   });
 });

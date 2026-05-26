@@ -5,7 +5,7 @@ import type { IdentityService } from "../../memory/identity/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, ExecutiveStepId, GoalId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, ExecutiveStepId, GoalId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
@@ -39,6 +39,7 @@ export type TurnGoalPromotionServiceOptions = {
 export type ExtractTurnGoalPromotionsInput = {
   llmClient: LLMClient;
   turnId: string;
+  sessionId?: SessionId;
   isUserTurn: boolean;
   userMessage: string;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
@@ -69,6 +70,7 @@ export class TurnGoalPromotionService {
       model: this.options.model,
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       onDegraded: (reason, error) => {
         this.emitDegraded({
           turnId: input.turnId,

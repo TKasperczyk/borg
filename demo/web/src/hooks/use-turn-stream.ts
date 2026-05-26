@@ -117,6 +117,27 @@ function turnIdFromLiveFrame(frame: LiveFrame): string | null {
   return null;
 }
 
+function sessionIdFromLiveFrame(frame: LiveFrame): string | null {
+  if (frame.session_id !== undefined) {
+    return frame.session_id;
+  }
+
+  if (frame.type === "stream:append") {
+    return frame.entries[0]?.session_id ?? null;
+  }
+
+  if (
+    frame.type === "turn:phase:started" ||
+    frame.type === "turn:phase:completed" ||
+    frame.type === "turn:phase:failed" ||
+    frame.type === "turn:terminal"
+  ) {
+    return frame.data.session_id ?? null;
+  }
+
+  return null;
+}
+
 function tokenKey(turnId: string, phase: TurnPhaseName): string {
   return `${turnId}:${phase}`;
 }
@@ -199,6 +220,10 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
         isNew: true,
       },
     ];
+  }
+
+  if (frame.type === "borg:reset") {
+    return [];
   }
 
   if (frame.type === "dream:process:started") {
@@ -311,7 +336,10 @@ export type TurnStreamState = {
   replaceTailFromEntries: (entries: readonly StreamEntry[]) => void;
 };
 
-export function useTurnStream(live: LiveEvents): TurnStreamState {
+export function useTurnStream(
+  live: LiveEvents,
+  input: { sessionId?: string } = {},
+): TurnStreamState {
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [phases, setPhases] = useState<PhaseState[]>(initialPhases);
@@ -375,6 +403,23 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
     }
   }, []);
 
+  useEffect(() => {
+    pendingTurnRef.current = null;
+    activeTurnIdRef.current = null;
+    lastDrivenTurnIdRef.current = null;
+    clearReflectTimeout();
+    setActiveTurnId(null);
+    setRunning(false);
+    setPhases(initialPhases());
+    setTokenTextByPhase(new Map());
+    setTerminalOutcome(null);
+    setDelibPath(null);
+    setFinalAttempt(1);
+    setEventTail([]);
+    setLedgerByTurn(new Map());
+    setLastPhase("idle");
+  }, [clearReflectTimeout, input.sessionId]);
+
   const markTailSettled = useCallback((ids: readonly string[]) => {
     const timer = window.setTimeout(() => {
       setEventTail((current) =>
@@ -407,6 +452,15 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
 
   useEffect(() => {
     return live.subscribe((frame) => {
+      const frameSessionId = sessionIdFromLiveFrame(frame);
+      if (
+        input.sessionId !== undefined &&
+        frameSessionId !== null &&
+        frameSessionId !== input.sessionId
+      ) {
+        return;
+      }
+
       const frameTurnId = turnIdFromLiveFrame(frame);
 
       if (frameTurnId !== null && !acceptsTurnFrame(frameTurnId)) {
@@ -487,7 +541,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         setRunning(false);
       }
     });
-  }, [acceptsTurnFrame, clearReflectTimeout, live, pushTail]);
+  }, [acceptsTurnFrame, clearReflectTimeout, input.sessionId, live, pushTail]);
 
   const runTurn = useCallback(
     async (input: TurnRequest) => {

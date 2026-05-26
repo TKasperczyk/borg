@@ -146,6 +146,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "ingest",
       sub: "pre_turn_catchup",
       run: () =>
@@ -174,6 +175,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "audience",
       sub: "resolve_profile",
       run: async () => {
@@ -228,6 +230,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "perception",
       run: () =>
         turnPerception.perceive({
@@ -321,6 +324,7 @@ export class TurnPhaseCoordinator {
     ) {
       this.options.tracer.emit("participant_scan.skipped", {
         turnId,
+        session_id: sessionId,
         reason: "cap_reached",
         cap: participantScan.capReached,
         scanned_entries: participantScan.scannedEntries,
@@ -363,6 +367,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "frame",
       run: () =>
         classifyFrameAnomalyPhase({
@@ -370,6 +375,7 @@ export class TurnPhaseCoordinator {
           appendHookFailureEvent: appendHookFailure,
           llmClient,
           turnId,
+          sessionId,
           isUserTurn,
           userMessage: turnInput.userMessage,
           recentHistory: recencyWindow.messages,
@@ -387,6 +393,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "extract",
       run: () =>
         runExtractionPhase({
@@ -429,6 +436,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "closure_loop",
       run: () =>
         classifyClosureLoopPhase({
@@ -436,6 +444,7 @@ export class TurnPhaseCoordinator {
           appendHookFailureEvent: appendHookFailure,
           llmClient,
           turnId,
+          sessionId,
           isUserTurn,
           userMessage: turnInput.userMessage,
           recentHistory: recencyWindow.messages,
@@ -467,6 +476,7 @@ export class TurnPhaseCoordinator {
     ) {
       return suppressFromClosureLoopPhase({
         turnId,
+        sessionId,
         turnInput,
         streamWriter,
         appendHookFailureEvent: appendHookFailure,
@@ -501,6 +511,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "generation_gate",
       run: () =>
         generationGate.evaluate({
@@ -534,6 +545,7 @@ export class TurnPhaseCoordinator {
     if (gateResult.action === "suppress") {
       return suppressFromGenerationGatePhase({
         turnId,
+        sessionId,
         turnInput,
         streamWriter,
         appendHookFailureEvent: appendHookFailure,
@@ -551,6 +563,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "retrieval",
       run: () =>
         runRetrievalPhase({
@@ -585,6 +598,7 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
+      sessionId,
       phase: "delib",
       run: () =>
         runDeliberationPhase({

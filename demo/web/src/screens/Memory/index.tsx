@@ -127,12 +127,18 @@ function detailRows(
   }
 }
 
-export function MemoryScreen() {
-  const api = useApi(getMemoryBands, []);
+export function MemoryScreen({ sessionId }: { sessionId: string }) {
+  const api = useApi(() => getMemoryBands({ session: sessionId }), [sessionId]);
   const [activeBand, setActiveBand] = useState<MemoryBandId | null>(null);
 
   if (activeBand !== null) {
-    return <MemoryDrill band={activeBand} back={() => setActiveBand(null)} />;
+    return (
+      <MemoryDrill
+        band={activeBand}
+        sessionId={sessionId}
+        back={() => setActiveBand(null)}
+      />
+    );
   }
 
   if (api.loading && api.data === null) {
@@ -225,8 +231,16 @@ function BandCard({ band, onClick }: { band: MemoryBandSummary; onClick: () => v
   );
 }
 
-function MemoryDrill({ band, back }: { band: MemoryBandId; back: () => void }) {
-  const api = useApi(() => getMemoryBand(band), [band]);
+function MemoryDrill({
+  band,
+  sessionId,
+  back,
+}: {
+  band: MemoryBandId;
+  sessionId: string;
+  back: () => void;
+}) {
+  const api = useApi(() => getMemoryBand(band, { session: sessionId }), [band, sessionId]);
   const rows = useMemo(() => (api.data === null ? [] : detailRows(api.data)), [api.data]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null;
