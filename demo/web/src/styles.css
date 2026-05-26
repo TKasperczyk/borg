@@ -2413,6 +2413,19 @@ body {
   border: 1px solid var(--line);
   display: flex;
   flex-direction: column;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.dream-card.dream-card-running {
+  border-color: var(--warn);
+  background: oklch(0.835 0.135 85 / 0.05);
+  box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.18), 0 0 14px oklch(0.835 0.135 85 / 0.2);
+  animation: dreamCardPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dreamCardPulse {
+  0%, 100% { box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.18), 0 0 8px oklch(0.835 0.135 85 / 0.14); }
+  50% { box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.28), 0 0 18px oklch(0.835 0.135 85 / 0.28); }
 }
 .dream-card .h {
   display: flex;

@@ -204,6 +204,13 @@ export class MaintenanceOrchestrator {
         const startedAt = performance.now();
         let result: OfflineResult | null = null;
 
+        if (context.tracer?.enabled === true) {
+          context.tracer.emit("offline_process.started", {
+            turnId: runId,
+            process_name: process.name,
+          });
+        }
+
         try {
           result = await process.apply(context, processPlan);
         } catch (error) {

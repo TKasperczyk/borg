@@ -62,6 +62,10 @@ export function DreamScreen() {
   const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
   const [busy, setBusy] = useState<"plan" | "apply" | "review" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
+  // Per-process live status tracked across a dream apply. Keyed by
+  // process_name; value: "running" | "done" | "fail". Missing key = queued.
+  type DreamRunStatus = "running" | "done" | "fail";
+  const [runStatus, setRunStatus] = useState<Map<string, DreamRunStatus>>(() => new Map());
 
   useEffect(() => {
     return live.subscribe((frame) => {
@@ -70,6 +74,25 @@ export function DreamScreen() {
         frame.entries.some((entry) => entry.kind === "dream_report")
       ) {
         void refetch();
+        return;
+      }
+
+      if (frame.type === "dream:process:started") {
+        setRunStatus((current) => {
+          const next = new Map(current);
+          next.set(frame.process, "running");
+          return next;
+        });
+        return;
+      }
+
+      if (frame.type === "dream:process:completed") {
+        setRunStatus((current) => {
+          const next = new Map(current);
+          next.set(frame.process, frame.errors > 0 ? "fail" : "done");
+          return next;
+        });
+        return;
       }
     });
   }, [live, refetch]);
@@ -123,11 +146,16 @@ export function DreamScreen() {
   async function applyDreamPlan(): Promise<void> {
     setBusy("apply");
     setOperatorError(null);
+    // Close the modal immediately so the user can see per-process progress
+    // light up on the main Dream screen via the live WS dream:process:*
+    // frames. The apply call continues in the background.
+    setConfirmOpen(false);
+    setPlanOpen(false);
+    // Reset previous run's tile state so progress on this run starts clean.
+    setRunStatus(new Map());
     try {
       const result = await postDreamApply(plan === null ? {} : { plan_id: plan.plan_id });
       setApplyResult(result);
-      setConfirmOpen(false);
-      setPlanOpen(false);
       await Promise.all([refetch(), getDreamAudit()]);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
@@ -198,9 +226,13 @@ export function DreamScreen() {
           className="btn sm primary"
           disabled={busy !== null}
           aria-label="apply dream"
-          onClick={() => void openApplyConfirm()}
+          onClick={() => openApplyConfirm()}
         >
-          {busy === "apply" ? "applying" : "apply"}
+          {busy === "apply"
+            ? `running ${
+                Array.from(runStatus.values()).filter((s) => s === "done" || s === "fail").length
+              }/${processes.length}`
+            : "apply"}
         </button>
       </div>
 
@@ -287,6 +319,7 @@ export function DreamScreen() {
               process={process}
               selected={process.name === selectedProcess?.name}
               onSelect={() => setSelected(process.name)}
+              runStatus={runStatus.get(process.name)}
             />
           ))}
         </div>
@@ -597,14 +630,27 @@ function DreamCard({
   process,
   selected,
   onSelect,
+  runStatus,
 }: {
   process: DreamProcessSummary;
   selected: boolean;
   onSelect: () => void;
+  runStatus?: "running" | "done" | "fail";
 }) {
+  // Live run status takes precedence over the historical last_status when
+  // present, so the user sees the in-flight dream cycle progress on the tile.
+  const liveTag =
+    runStatus === undefined
+      ? null
+      : runStatus === "running"
+        ? { kind: "warn" as const, label: "running" }
+        : runStatus === "done"
+          ? { kind: "acc" as const, label: "just ran" }
+          : { kind: "bad" as const, label: "failed" };
+
   return (
     <div
-      className="dream-card"
+      className={`dream-card${runStatus === "running" ? " dream-card-running" : ""}`}
       onClick={onSelect}
       style={{ borderColor: selected ? "var(--acc-dim)" : undefined, cursor: "pointer" }}
     >
@@ -614,9 +660,15 @@ function DreamCard({
           <div className="sub">{process.description}</div>
         </div>
         <div style={{ flex: 1 }}></div>
-        <Tag kind={statusTag(process.last_status)} dot>
-          {process.last_status ?? "never"}
-        </Tag>
+        {liveTag === null ? (
+          <Tag kind={statusTag(process.last_status)} dot>
+            {process.last_status ?? "never"}
+          </Tag>
+        ) : (
+          <Tag kind={liveTag.kind} dot>
+            {liveTag.label}
+          </Tag>
+        )}
       </div>
       <div className="body">
         <div

@@ -175,6 +175,32 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     ];
   }
 
+  if (frame.type === "dream:process:started") {
+    return [
+      {
+        id: `${frame.type}:${frame.process}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: "dream",
+        body: `dream process started · ${frame.process}`,
+        isNew: true,
+      },
+    ];
+  }
+
+  if (frame.type === "dream:process:completed") {
+    return [
+      {
+        id: `${frame.type}:${frame.process}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: "dream",
+        body: `dream process ${frame.errors > 0 ? "failed" : "completed"} · ${frame.process}${
+          frame.duration_ms === undefined ? "" : ` · ${Math.round(frame.duration_ms)}ms`
+        }`,
+        isNew: true,
+      },
+    ];
+  }
+
   return [
     {
       id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,

@@ -147,7 +147,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "semantic_insert.skipped",
     "semantic_node.status.transitioned",
   ],
-  offline: ["offline_process.completed"],
+  offline: ["offline_process.started", "offline_process.completed"],
   maintenance: ["maintenance_snapshot.completed"],
   session: ["session.completed", "turn.rejected", "turn.terminal"],
 } as const satisfies Record<string, readonly TurnTraceEventName[]>;

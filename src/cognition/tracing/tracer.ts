@@ -120,6 +120,7 @@ export type TurnTraceEventName =
   | "open_question_resolution.rejected"
   | "reflector.intent_update.rejected"
   | "reflector.intent_update.completed"
+  | "offline_process.started"
   | "offline_process.completed"
   | "review_resolver.started"
   | "review_resolver.decision.completed"

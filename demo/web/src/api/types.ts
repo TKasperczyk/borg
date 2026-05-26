@@ -807,6 +807,21 @@ export type TurnFinalAttemptFrame = LiveFrameBase & {
   attempt: number;
 };
 
+export type DreamProcessStartedFrame = LiveFrameBase & {
+  type: "dream:process:started";
+  process: string;
+  run_id: string | null;
+};
+
+export type DreamProcessCompletedFrame = LiveFrameBase & {
+  type: "dream:process:completed";
+  process: string;
+  run_id: string | null;
+  duration_ms?: number;
+  errors: number;
+  candidates_accepted: number;
+};
+
 export type LiveFrame =
   | StreamAppendFrame
   | TurnPhaseFrame
@@ -815,6 +830,8 @@ export type LiveFrame =
   | TurnTerminalFrame
   | EvidenceLedgerBuiltFrame
   | TurnDelibPathFrame
-  | TurnFinalAttemptFrame;
+  | TurnFinalAttemptFrame
+  | DreamProcessStartedFrame
+  | DreamProcessCompletedFrame;
 
 export type WsState = "live" | "reconnecting" | "down";

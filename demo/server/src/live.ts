@@ -189,6 +189,30 @@ export class WsBridgeTracer implements TurnTracer {
       });
       return;
     }
+
+    if (event === "offline_process.started" && typeof data.process_name === "string") {
+      this.broadcaster.broadcast({
+        type: "dream:process:started",
+        ts: Date.now(),
+        process: data.process_name,
+        run_id: typeof data.turnId === "string" ? data.turnId : null,
+      });
+      return;
+    }
+
+    if (event === "offline_process.completed" && typeof data.process_name === "string") {
+      this.broadcaster.broadcast({
+        type: "dream:process:completed",
+        ts: Date.now(),
+        process: data.process_name,
+        run_id: typeof data.turnId === "string" ? data.turnId : null,
+        duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+        errors: typeof data.errors === "number" ? data.errors : 0,
+        candidates_accepted:
+          typeof data.candidates_accepted === "number" ? data.candidates_accepted : 0,
+      });
+      return;
+    }
   }
 }
 
