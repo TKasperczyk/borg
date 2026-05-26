@@ -121,6 +121,8 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
         activeTurnId={turnStream.activeTurnId}
         tokenTextByPhase={turnStream.tokenTextByPhase}
         terminalOutcome={turnStream.terminalOutcome}
+        delibPath={turnStream.delibPath}
+        finalAttempt={turnStream.finalAttempt}
       />
     </div>
   );

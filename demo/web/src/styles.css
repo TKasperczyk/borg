@@ -949,6 +949,64 @@ body {
   color: var(--text-mute);
 }
 
+/* S1/S2 deliberation lanes — horizontal pair inside the delib phase box. */
+.flow-lanes {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg-0);
+}
+
+.flow-lane {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-soft);
+  padding: 5px 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  background: transparent;
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.flow-lane-tag {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.flow-lane-desc {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.flow-lane.active {
+  color: var(--acc);
+  border-color: var(--acc-dim);
+  background: oklch(0.78 0.16 152 / 0.08);
+}
+
+.flow-lane.unchosen {
+  color: var(--text-faint);
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-decoration-color: var(--line-soft);
+}
+
+.flow-attempt-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--warn-dim);
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+  background: oklch(0.835 0.135 85 / 0.08);
+}
+
 .flow-gate {
   display: flex;
   flex-direction: column;

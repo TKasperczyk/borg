@@ -151,6 +151,30 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     ];
   }
 
+  if (frame.type === "turn:delib_path") {
+    return [
+      {
+        id: `${frame.type}:${frame.turn_id}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: "thought",
+        body: `deliberation path · ${frame.path}`,
+        isNew: true,
+      },
+    ];
+  }
+
+  if (frame.type === "turn:final_attempt") {
+    return [
+      {
+        id: `${frame.type}:${frame.turn_id}:${frame.attempt}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: "internal",
+        body: `finalizer re-attempt · #${frame.attempt}`,
+        isNew: true,
+      },
+    ];
+  }
+
   return [
     {
       id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,
@@ -225,6 +249,8 @@ export type TurnStreamState = {
   phases: PhaseState[];
   tokenTextByPhase: Map<string, string>;
   terminalOutcome: TurnTerminalOutcome | null;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
   eventTail: TailEvent[];
   ledgerByTurn: Map<string, EvidenceLedger>;
   lastPhase: string;
@@ -239,6 +265,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const [phases, setPhases] = useState<PhaseState[]>(initialPhases);
   const [tokenTextByPhase, setTokenTextByPhase] = useState(() => new Map<string, string>());
   const [terminalOutcome, setTerminalOutcome] = useState<TurnTerminalOutcome | null>(null);
+  const [delibPath, setDelibPath] = useState<"system_1" | "system_2" | null>(null);
+  const [finalAttempt, setFinalAttempt] = useState(1);
   const [eventTail, setEventTail] = useState<TailEvent[]>([]);
   const [ledgerByTurn, setLedgerByTurn] = useState(() => new Map<string, EvidenceLedger>());
   const [lastPhase, setLastPhase] = useState("idle");
@@ -308,6 +336,18 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         return;
       }
 
+      if (frame.type === "turn:delib_path") {
+        setActiveTurnId((current) => current ?? frame.turn_id);
+        setDelibPath(frame.path);
+        return;
+      }
+
+      if (frame.type === "turn:final_attempt") {
+        setActiveTurnId((current) => current ?? frame.turn_id);
+        setFinalAttempt(frame.attempt);
+        return;
+      }
+
       if (frame.type === "turn:terminal") {
         const frameTurnId = turnIdFromTerminal(frame);
         const currentTurnId = activeTurnIdRef.current;
@@ -371,6 +411,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       setPhases(initialPhases());
       setTokenTextByPhase(new Map());
       setTerminalOutcome(null);
+      setDelibPath(null);
+      setFinalAttempt(1);
       setLastPhase("turn queued");
       clearReflectTimeout();
       reflectTimeoutRef.current = window.setTimeout(() => {
@@ -406,6 +448,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       phases,
       tokenTextByPhase,
       terminalOutcome,
+      delibPath,
+      finalAttempt,
       eventTail,
       ledgerByTurn,
       lastPhase,
@@ -415,7 +459,9 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
     }),
     [
       activeTurnId,
+      delibPath,
       eventTail,
+      finalAttempt,
       lastPhase,
       ledgerByTurn,
       phases,

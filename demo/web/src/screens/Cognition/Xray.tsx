@@ -7,9 +7,18 @@ export type XrayProps = {
   activeTurnId: string | null;
   tokenTextByPhase: Map<string, string>;
   terminalOutcome: TurnTerminalOutcome | null;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
 };
 
-export function Xray({ phases, activeTurnId, tokenTextByPhase, terminalOutcome }: XrayProps) {
+export function Xray({
+  phases,
+  activeTurnId,
+  tokenTextByPhase,
+  terminalOutcome,
+  delibPath,
+  finalAttempt,
+}: XrayProps) {
   return (
     <div className="xray">
       <FlowChart
@@ -17,6 +26,8 @@ export function Xray({ phases, activeTurnId, tokenTextByPhase, terminalOutcome }
         activeTurnId={activeTurnId}
         tokenTextByPhase={tokenTextByPhase}
         terminalOutcome={terminalOutcome}
+        delibPath={delibPath}
+        finalAttempt={finalAttempt}
       />
     </div>
   );

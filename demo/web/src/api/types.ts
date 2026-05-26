@@ -794,12 +794,26 @@ export type EvidenceLedgerBuiltFrame = LiveFrameBase & {
   ledger: EvidenceLedger | null;
 };
 
+export type TurnDelibPathFrame = LiveFrameBase & {
+  type: "turn:delib_path";
+  turn_id: string;
+  path: "system_1" | "system_2";
+};
+
+export type TurnFinalAttemptFrame = LiveFrameBase & {
+  type: "turn:final_attempt";
+  turn_id: string;
+  attempt: number;
+};
+
 export type LiveFrame =
   | StreamAppendFrame
   | TurnPhaseFrame
   | LiveTokenFrame
   | LiveTokenFlushFrame
   | TurnTerminalFrame
-  | EvidenceLedgerBuiltFrame;
+  | EvidenceLedgerBuiltFrame
+  | TurnDelibPathFrame
+  | TurnFinalAttemptFrame;
 
 export type WsState = "live" | "reconnecting" | "down";

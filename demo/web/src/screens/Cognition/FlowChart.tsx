@@ -6,6 +6,8 @@ export type FlowChartProps = {
   activeTurnId: string | null;
   tokenTextByPhase: Map<string, string>;
   terminalOutcome: TurnTerminalOutcome | null;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
 };
 
 const STREAM_PHASES = new Set(["delib", "final"]);
@@ -47,18 +49,34 @@ function terminalLabel(outcome: TurnTerminalOutcome | null): string {
   return outcome === null ? "waiting" : outcome;
 }
 
+// True once a phase has fired anything (running or terminal); used to gate the
+// S1/S2 lanes so they don't visually 'choose' until delib actually starts.
+function isPhaseTouched(status: PhaseState["status"]): boolean {
+  return status !== "queue";
+}
+
 function PhaseNode({
   phase,
   activeTurnId,
   tokenTextByPhase,
+  delibPath,
+  finalAttempt,
 }: {
   phase: PhaseState;
   activeTurnId: string | null;
   tokenTextByPhase: Map<string, string>;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
 }) {
   const tokenText = phaseTokenText(phase, activeTurnId, tokenTextByPhase);
   const showTokenBlock =
     STREAM_PHASES.has(phase.id) && (phase.status === "running" || tokenText.length > 0);
+  const touched = isPhaseTouched(phase.status);
+
+  // delib renders two horizontal lanes (S1 / S2). Once delib is touched and we
+  // know the path, the matching lane lights up; the other stays dim.
+  const renderDelibLanes = phase.id === "delib";
+  const renderFinalAttempt = phase.id === "final" && finalAttempt > 1;
 
   return (
     <div className={`flow-phase ${phase.status}`} data-testid={`phase-${phase.id}`}>
@@ -67,13 +85,43 @@ function PhaseNode({
           {phaseGlyph(phase.status)}
         </div>
         <div className="flow-copy">
-          <div className="flow-name">{phase.name}</div>
+          <div className="flow-name">
+            {phase.name}
+            {renderFinalAttempt ? (
+              <span
+                className="flow-attempt-badge"
+                title="finalizer re-invoked after a commitment-guard regeneration"
+              >
+                attempt {finalAttempt}
+              </span>
+            ) : null}
+          </div>
           <div className="flow-sub">{phase.sub === "waiting" ? "queued" : phase.sub}</div>
         </div>
         <div className="flow-time">
           {phase.durationMs === undefined ? "—" : `${Math.round(phase.durationMs)}ms`}
         </div>
       </div>
+      {renderDelibLanes ? (
+        <div className="flow-lanes">
+          <div
+            className={`flow-lane${touched && delibPath === "system_1" ? " active" : ""}${
+              touched && delibPath !== null && delibPath !== "system_1" ? " unchosen" : ""
+            }`}
+          >
+            <span className="flow-lane-tag">S1</span>
+            <span className="flow-lane-desc">fast path · ledger sufficient</span>
+          </div>
+          <div
+            className={`flow-lane${touched && delibPath === "system_2" ? " active" : ""}${
+              touched && delibPath !== null && delibPath !== "system_2" ? " unchosen" : ""
+            }`}
+          >
+            <span className="flow-lane-tag">S2</span>
+            <span className="flow-lane-desc">EmitTurnPlan · reasoning before answer</span>
+          </div>
+        </div>
+      ) : null}
       {showTokenBlock ? (
         <pre className={`flow-token ${phase.status === "done" ? "muted" : ""}`}>
           {tokenText.length > 0 ? tokenText : "stream open..."}
@@ -88,6 +136,8 @@ export function FlowChart({
   activeTurnId,
   tokenTextByPhase,
   terminalOutcome,
+  delibPath,
+  finalAttempt,
 }: FlowChartProps) {
   const gateSuppressed = terminalOutcome === "suppressed_generation_gate";
   const guardsSuppressed = terminalOutcome === "suppressed_action";
@@ -110,6 +160,8 @@ export function FlowChart({
               phase={phase}
               activeTurnId={activeTurnId}
               tokenTextByPhase={tokenTextByPhase}
+              delibPath={delibPath}
+              finalAttempt={finalAttempt}
             />
 
             {phase.id === "closure_loop" ? (

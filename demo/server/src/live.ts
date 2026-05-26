@@ -161,6 +161,33 @@ export class WsBridgeTracer implements TurnTracer {
         turn_id: turnId,
         ledger,
       });
+      return;
+    }
+
+    if (
+      event === "deliberation.path.completed" &&
+      turnId !== null &&
+      (data.path === "system_1" || data.path === "system_2")
+    ) {
+      this.broadcaster.broadcast({
+        type: "turn:delib_path",
+        ts: Date.now(),
+        turn_id: turnId,
+        path: data.path,
+      });
+      return;
+    }
+
+    if (event === "commitment_guard.regeneration_requested" && turnId !== null) {
+      // Each regeneration_requested is a finalizer re-attempt. Increment in the
+      // UI; first attempt is implicit (no event fires for the initial call).
+      this.broadcaster.broadcast({
+        type: "turn:final_attempt",
+        ts: Date.now(),
+        turn_id: turnId,
+        attempt: 2,
+      });
+      return;
     }
   }
 }
