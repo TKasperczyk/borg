@@ -713,6 +713,8 @@ export type TurnPhaseName =
   | "perception"
   | "frame"
   | "extract"
+  | "closure_loop"
+  | "generation_gate"
   | "retrieval"
   | "ledger"
   | "shared"

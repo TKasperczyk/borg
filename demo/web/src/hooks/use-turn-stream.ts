@@ -44,6 +44,8 @@ const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
   { id: "perception", name: "perception" },
   { id: "frame", name: "frame gate" },
   { id: "extract", name: "extraction" },
+  { id: "closure_loop", name: "closure-loop check" },
+  { id: "generation_gate", name: "generation gate" },
   { id: "retrieval", name: "retrieval" },
   { id: "ledger", name: "evidence ledger" },
   { id: "shared", name: "shared state" },

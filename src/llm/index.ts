@@ -194,6 +194,68 @@ type LLMCallOptions = {
 
 export type LLMStreamTextHandler = (text: string) => void;
 
+// Tools whose primary user-content lives in a specific string field. When
+// streaming these tools' inputs, we extract that field's incremental value so
+// the UI shows clean answer text rather than raw `{"text":"..."}` JSON. Tools
+// not in this map have their entire partial_json forwarded as-is (good for
+// surfacing structured CoT-shaped tools like EmitTurnPlan).
+const TOOL_STREAM_TEXT_FIELDS: Record<string, string> = {
+  EmitAnswer: "text",
+  EmitObserve: "reason",
+  EmitNoOutput: "reason",
+};
+
+// Walk a (possibly unclosed) JSON string looking for `"fieldName": "..."` and
+// return the value's current contents. Handles \" and \n / \t / \\ escapes.
+// Returns the partial string when the closing quote hasn't arrived yet.
+function extractPartialStringField(json: string, fieldName: string): string | null {
+  const key = `"${fieldName}"`;
+  const keyAt = json.indexOf(key);
+  if (keyAt === -1) {
+    return null;
+  }
+
+  let cursor = keyAt + key.length;
+  while (cursor < json.length && (json[cursor] === " " || json[cursor] === "\t")) {
+    cursor += 1;
+  }
+  if (json[cursor] !== ":") {
+    return null;
+  }
+  cursor += 1;
+  while (
+    cursor < json.length &&
+    (json[cursor] === " " || json[cursor] === "\t" || json[cursor] === "\n")
+  ) {
+    cursor += 1;
+  }
+  if (json[cursor] !== '"') {
+    return null;
+  }
+  cursor += 1;
+
+  let out = "";
+  while (cursor < json.length) {
+    const c = json[cursor];
+    if (c === "\\" && cursor + 1 < json.length) {
+      const next = json[cursor + 1];
+      if (next === "n") out += "\n";
+      else if (next === "t") out += "\t";
+      else if (next === "r") out += "\r";
+      else if (next === '"') out += '"';
+      else if (next === "\\") out += "\\";
+      else out += next;
+      cursor += 2;
+    } else if (c === '"') {
+      return out;
+    } else {
+      out += c;
+      cursor += 1;
+    }
+  }
+  return out;
+}
+
 export type LLMCompleteOptions = LLMCallOptions & {
   messages: readonly LLMMessage[];
 };
@@ -1174,9 +1236,64 @@ export class AnthropicLLMClient implements LLMClient {
     try {
       const stream = client.messages.stream(this.rawMessageParams(options, messages));
 
+      // Track per-content-block tool state so input_json_delta events can be
+      // forwarded as token chunks. For tools whose primary user-content lives in
+      // a known field (EmitAnswer.text, EmitObserve.reason, EmitNoOutput.reason)
+      // we extract that field's incremental value so the UI sees clean answer
+      // text. For other tools (S2's EmitTurnPlan, etc.) we forward the raw
+      // partial JSON so the structured thinking is visible as it forms.
+      const toolBlocks = new Map<
+        number,
+        { name: string; partial: string; lastExtracted: string; textFieldName?: string }
+      >();
+
       for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          onTextDelta?.(event.delta.text);
+        if (event.type === "content_block_start") {
+          if (event.content_block.type === "tool_use") {
+            toolBlocks.set(event.index, {
+              name: event.content_block.name,
+              partial: "",
+              lastExtracted: "",
+              textFieldName: TOOL_STREAM_TEXT_FIELDS[event.content_block.name],
+            });
+          }
+          continue;
+        }
+
+        if (event.type === "content_block_delta") {
+          if (event.delta.type === "text_delta") {
+            onTextDelta?.(event.delta.text);
+            continue;
+          }
+
+          if (event.delta.type === "input_json_delta") {
+            const block = toolBlocks.get(event.index);
+            if (block === undefined) {
+              continue;
+            }
+
+            block.partial += event.delta.partial_json;
+
+            if (block.textFieldName === undefined) {
+              // Unknown tool — forward raw partial JSON so the user sees
+              // structured thinking accumulating.
+              if (event.delta.partial_json.length > 0) {
+                onTextDelta?.(event.delta.partial_json);
+              }
+              continue;
+            }
+
+            const extracted = extractPartialStringField(block.partial, block.textFieldName);
+            if (extracted !== null && extracted.length > block.lastExtracted.length) {
+              onTextDelta?.(extracted.slice(block.lastExtracted.length));
+              block.lastExtracted = extracted;
+            }
+            continue;
+          }
+        }
+
+        if (event.type === "content_block_stop") {
+          toolBlocks.delete(event.index);
         }
       }
 

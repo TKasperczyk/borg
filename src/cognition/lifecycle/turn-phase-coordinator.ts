@@ -425,17 +425,34 @@ export class TurnPhaseCoordinator {
     lifecycleTracker.trackCreatedGoalIds(extraction.persistedPromotions.goalIds);
     lifecycleTracker.trackCreatedExecutiveStepIds(extraction.persistedPromotions.executiveStepIds);
 
-    const closureLoopAssessment = await classifyClosureLoopPhase({
-      options: this.options,
-      appendHookFailureEvent: appendHookFailure,
-      llmClient,
+    const closureLoopAssessment = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId,
-      isUserTurn,
-      userMessage: turnInput.userMessage,
-      recentHistory: recencyWindow.messages,
-      persistedUserEntryId,
-      workingMemory,
-      streamWriter,
+      phase: "closure_loop",
+      run: () =>
+        classifyClosureLoopPhase({
+          options: this.options,
+          appendHookFailureEvent: appendHookFailure,
+          llmClient,
+          turnId,
+          isUserTurn,
+          userMessage: turnInput.userMessage,
+          recentHistory: recencyWindow.messages,
+          persistedUserEntryId,
+          workingMemory,
+          streamWriter,
+        }),
+      completedSub: (result) =>
+        result === null
+          ? "skipped"
+          : result.closureLoopDetected === true
+            ? "closure-loop detected"
+            : result.currentUserSubstantive === true
+              ? "substantive"
+              : result.currentUserClosureShaped === true
+                ? "closure-shaped"
+                : "no-op",
     });
 
     if (closureLoopAssessment?.currentUserSubstantive === true) {
@@ -480,10 +497,19 @@ export class TurnPhaseCoordinator {
           reason,
         }),
     });
-    const gateResult = await generationGate.evaluate({
-      userMessage: turnInput.userMessage,
-      workingMemory,
-      recencyMessages: recencyWindow.messages,
+    const gateResult = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
+      turnId,
+      phase: "generation_gate",
+      run: () =>
+        generationGate.evaluate({
+          userMessage: turnInput.userMessage,
+          workingMemory,
+          recencyMessages: recencyWindow.messages,
+        }),
+      completedSub: (result) =>
+        result.action === "suppress" ? `suppress: ${result.explanation ?? ""}` : "allow",
     });
 
     if (gateResult.signals.hardCapDue) {

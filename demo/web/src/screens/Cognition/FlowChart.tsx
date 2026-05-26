@@ -112,23 +112,17 @@ export function FlowChart({
               tokenTextByPhase={tokenTextByPhase}
             />
 
-            {phase.id === "frame" ? (
+            {phase.id === "closure_loop" ? (
               <div className={branchClass(closureSuppressed)}>
                 <span className="flow-branch-line">╺╴</span>
-                <span>anomaly/closure terminal</span>
+                <span>closure-loop suppression terminal</span>
               </div>
             ) : null}
 
-            {phase.id === "delib" ? (
-              <div className="flow-gate">
-                <div className="flow-arrow">↓</div>
-                <div className={`flow-gate-node${gateSuppressed ? " active" : ""}`}>
-                  generation gate
-                </div>
-                <div className={branchClass(gateSuppressed)}>
-                  <span className="flow-branch-line">╺╴</span>
-                  <span>suppression terminal</span>
-                </div>
+            {phase.id === "generation_gate" ? (
+              <div className={branchClass(gateSuppressed)}>
+                <span className="flow-branch-line">╺╴</span>
+                <span>generation-gate suppression terminal</span>
               </div>
             ) : null}
 

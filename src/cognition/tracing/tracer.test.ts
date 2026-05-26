@@ -459,6 +459,10 @@ describe("TurnTracer", () => {
       "extraction.goals.completed",
       "turn_phase.completed",
       "turn_phase.started",
+      "turn_phase.completed",
+      "turn_phase.started",
+      "turn_phase.completed",
+      "turn_phase.started",
       "retrieval.started",
       "llm_call.started",
       "llm_call.completed",
@@ -501,7 +505,17 @@ describe("TurnTracer", () => {
     ]);
     expect(
       events.filter((event) => event.event === "turn_phase.completed").map((event) => event.phase),
-    ).toEqual(expect.arrayContaining(["ingest", "audience", "final", "guards", "persist"]));
+    ).toEqual(
+      expect.arrayContaining([
+        "ingest",
+        "audience",
+        "closure_loop",
+        "generation_gate",
+        "final",
+        "guards",
+        "persist",
+      ]),
+    );
     expect(events.find((event) => event.event === "turn.terminal")).toMatchObject({
       outcome: "reflected",
       turn_id: expect.any(String),
