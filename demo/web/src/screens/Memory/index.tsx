@@ -1,18 +1,29 @@
 import { useMemo, useState } from "react";
 
-import { getMemoryBand, getMemoryBands } from "../../api/client";
+import {
+  getCorrectionReviews,
+  getMemoryBand,
+  getMemoryBands,
+  patchCorrectionReview,
+  postCorrectionCorrect,
+  postCorrectionForget,
+  postSemanticEdgeInvalidate,
+} from "../../api/client";
 import type {
   EpisodeMemoryItem,
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandSummary,
+  ReviewRow,
 } from "../../api/types";
+import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { Spark } from "../../components/Spark";
 import { Tag } from "../../components/Tag";
+import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
-import { dateLabel, jsonText, shortId } from "../screen-utils";
+import { dateLabel, jsonText, parseJsonPatch, shortId } from "../screen-utils";
 
 const BAND_ORDER: MemoryBandId[] = [
   "episodic",
@@ -35,6 +46,62 @@ const BAND_DESCRIPTIONS: Record<MemoryBandId, string> = {
   social: "per-entity trust and history",
   relational: "evidence-backed relationship facts",
 };
+
+type MemoryCorrectionAction =
+  | { kind: "forget"; id: string; title: string }
+  | { kind: "correct"; id: string; title: string; patch: string; reason: string }
+  | { kind: "invalidate-edge"; id: string; title: string; reason: string; at: string };
+
+function correctionActionKind(id: string): "episode" | "semantic_node" | "semantic_edge" | null {
+  if (id.startsWith("ep_")) {
+    return "episode";
+  }
+  if (id.startsWith("semn_")) {
+    return "semantic_node";
+  }
+  if (id.startsWith("seme_")) {
+    return "semantic_edge";
+  }
+  return null;
+}
+
+function defaultMemoryPatch(
+  row: { title: string; body: string },
+  kind: NonNullable<ReturnType<typeof correctionActionKind>>,
+): string {
+  if (kind === "episode") {
+    return JSON.stringify(
+      {
+        title: row.title,
+        narrative: row.body,
+      },
+      null,
+      2,
+    );
+  }
+
+  if (kind === "semantic_node") {
+    return JSON.stringify(
+      {
+        label: row.title,
+        description: row.body,
+      },
+      null,
+      2,
+    );
+  }
+
+  return "{}";
+}
+
+function reviewPatchSummary(row: ReviewRow): string {
+  return JSON.stringify(row.refs.patch ?? {}, null, 2);
+}
+
+function reviewOperatorReason(row: ReviewRow): string | null {
+  const reason = row.refs.operator_reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
 
 function detailRows(
   detail: MemoryBandDetail,
@@ -137,6 +204,7 @@ export function MemoryScreen({ sessionId }: { sessionId: string }) {
         band={activeBand}
         sessionId={sessionId}
         back={() => setActiveBand(null)}
+        onMemoryChanged={api.refetch}
       />
     );
   }
@@ -196,12 +264,8 @@ export function MemoryScreen({ sessionId }: { sessionId: string }) {
             </div>
           </div>
         </Panel>
-        <Panel title="review queue" badge="hint">
-          <div style={{ padding: 12 }}>
-            <div style={{ fontSize: 11.5, color: "var(--text-dim)" }}>
-              P2 keeps review visibility light here; dream renders belief-revision rows in detail.
-            </div>
-          </div>
+        <Panel title="correction queue" badge="open">
+          <CorrectionQueuePanel onResolved={api.refetch} />
         </Panel>
       </div>
     </div>
@@ -235,15 +299,77 @@ function MemoryDrill({
   band,
   sessionId,
   back,
+  onMemoryChanged,
 }: {
   band: MemoryBandId;
   sessionId: string;
   back: () => void;
+  onMemoryChanged: () => Promise<void>;
 }) {
   const api = useApi(() => getMemoryBand(band, { session: sessionId }), [band, sessionId]);
   const rows = useMemo(() => (api.data === null ? [] : detailRows(api.data)), [api.data]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [whyId, setWhyId] = useState<string | null>(null);
+  const [action, setAction] = useState<MemoryCorrectionAction | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
   const selected = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null;
+  const selectedCorrectionKind = selected === null ? null : correctionActionKind(selected.id);
+
+  async function refetchAfterMemoryCorrection(): Promise<void> {
+    // Invalidates GET /api/memory/bands and GET /api/memory/bands/:band.
+    // Semantic node/edge changes also affect GET /api/semantic/graph; Graph is not live-wired this sprint.
+    await Promise.all([api.refetch(), onMemoryChanged()]);
+  }
+
+  async function runMemoryAction(label: string, callback: () => Promise<void>): Promise<void> {
+    setBusy(label);
+    setOperatorError(null);
+    try {
+      await callback();
+      setAction(null);
+      await refetchAfterMemoryCorrection();
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitMemoryAction(): Promise<void> {
+    if (action === null) {
+      return;
+    }
+
+    if (action.kind === "forget") {
+      await runMemoryAction("forget", async () => {
+        await postCorrectionForget(action.id);
+      });
+      return;
+    }
+
+    if (action.kind === "correct") {
+      await runMemoryAction("correct", async () => {
+        const patch = parseJsonPatch(action.patch);
+        await postCorrectionCorrect(action.id, {
+          patch,
+          ...(action.reason.trim().length === 0 ? {} : { reason: action.reason.trim() }),
+        });
+      });
+      return;
+    }
+
+    await runMemoryAction("invalidate-edge", async () => {
+      const parsedAt = action.at.trim().length === 0 ? undefined : Number(action.at);
+      if (parsedAt !== undefined && !Number.isFinite(parsedAt)) {
+        throw new Error("at must be a finite number");
+      }
+      await postSemanticEdgeInvalidate(action.id, {
+        ...(parsedAt === undefined ? {} : { at: parsedAt }),
+        ...(action.reason.trim().length === 0 ? {} : { reason: action.reason.trim() }),
+      });
+    });
+  }
 
   return (
     <div className="full-page">
@@ -256,6 +382,11 @@ function MemoryDrill({
         <span className="spacer"></span>
         <Tag>{rows.length} rows</Tag>
       </div>
+      {operatorError === null ? null : (
+        <div className="notice bad" style={{ padding: 12 }}>
+          {operatorError}
+        </div>
+      )}
       <div className="band-detail" style={{ flex: 1 }}>
         <div className="list">
           <div
@@ -353,16 +484,248 @@ function MemoryDrill({
               operations
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              <button className="btn sm" disabled title="v1 read-only">
-                view stream chain
-              </button>
-              <button className="btn sm ghost" disabled title="v1 read-only">
-                flag for review
-              </button>
+              {selected !== null && selectedCorrectionKind !== null ? (
+                <>
+                  <button
+                    className="btn sm"
+                    disabled={busy !== null}
+                    onClick={() => setWhyId(selected.id)}
+                  >
+                    why
+                  </button>
+                  {selectedCorrectionKind === "semantic_edge" ? (
+                    <button
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        setAction({
+                          kind: "invalidate-edge",
+                          id: selected.id,
+                          title: selected.title,
+                          reason: "",
+                          at: "",
+                        })
+                      }
+                    >
+                      invalidate
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        className="btn sm ghost"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          setAction({ kind: "forget", id: selected.id, title: selected.title })
+                        }
+                      >
+                        forget
+                      </button>
+                      <button
+                        className="btn sm ghost"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          setAction({
+                            kind: "correct",
+                            id: selected.id,
+                            title: selected.title,
+                            patch: defaultMemoryPatch(selected, selectedCorrectionKind),
+                            reason: "",
+                          })
+                        }
+                      >
+                        correct
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <span className="dim" style={{ fontSize: 11 }}>
+                  no correction actions for this row
+                </span>
+              )}
             </div>
           </div>
         </div>
       </div>
+      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
+      <Modal
+        open={action !== null}
+        title={action === null ? "correction" : `${action.kind} ${action.id}`}
+        onClose={() => {
+          if (busy === null) {
+            setAction(null);
+          }
+        }}
+        footer={
+          <>
+            <button
+              className="btn sm ghost"
+              disabled={busy !== null}
+              onClick={() => setAction(null)}
+            >
+              cancel
+            </button>
+            <button
+              className="btn sm primary"
+              disabled={busy !== null}
+              onClick={() => void submitMemoryAction()}
+            >
+              {busy === null
+                ? action?.kind === "invalidate-edge"
+                  ? "invalidate"
+                  : action?.kind === "correct"
+                    ? "queue"
+                    : action?.kind
+                : "saving"}
+            </button>
+          </>
+        }
+      >
+        {action?.kind === "forget" ? (
+          <div className="modal-form">
+            <div className="dim">{action.title}</div>
+          </div>
+        ) : null}
+        {action?.kind === "correct" ? (
+          <div className="modal-form">
+            <div className="dim">{action.title}</div>
+            <label className="modal-field">
+              <span>reason</span>
+              <textarea
+                value={action.reason}
+                onChange={(event) => setAction({ ...action, reason: event.target.value })}
+              />
+            </label>
+            <label className="modal-field">
+              <span>json patch</span>
+              <textarea
+                value={action.patch}
+                onChange={(event) => setAction({ ...action, patch: event.target.value })}
+              />
+            </label>
+          </div>
+        ) : null}
+        {action?.kind === "invalidate-edge" ? (
+          <div className="modal-form">
+            <div className="dim">{action.title}</div>
+            <label className="modal-field">
+              <span>reason</span>
+              <textarea
+                value={action.reason}
+                onChange={(event) => setAction({ ...action, reason: event.target.value })}
+              />
+            </label>
+            <label className="modal-field">
+              <span>at ms</span>
+              <input
+                type="number"
+                value={action.at}
+                onChange={(event) => setAction({ ...action, at: event.target.value })}
+              />
+            </label>
+          </div>
+        ) : null}
+      </Modal>
+    </div>
+  );
+}
+
+function CorrectionQueuePanel({ onResolved }: { onResolved: () => Promise<void> }) {
+  const api = useApi(getCorrectionReviews, []);
+  const [notes, setNotes] = useState<Record<number, string>>({});
+  const [busy, setBusy] = useState<number | null>(null);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
+  const rows = api.data?.rows ?? [];
+
+  async function resolveCorrection(row: ReviewRow, action: "accept" | "reject"): Promise<void> {
+    setBusy(row.id);
+    setOperatorError(null);
+    try {
+      await patchCorrectionReview(row.id, {
+        action,
+        ...(notes[row.id]?.trim() ? { note: notes[row.id]!.trim() } : {}),
+      });
+      setNotes((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      // Invalidates GET /api/correction/reviews plus any band touched by the accepted patch.
+      await Promise.all([api.refetch(), onResolved()]);
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (api.loading && api.data === null) {
+    return <div className="notice">loading corrections</div>;
+  }
+
+  if (api.error !== null) {
+    return <div className="notice bad">{api.error.message}</div>;
+  }
+
+  return (
+    <div style={{ padding: 12 }}>
+      {operatorError === null ? null : (
+        <div className="notice bad" style={{ padding: 8 }}>
+          {operatorError}
+        </div>
+      )}
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: "var(--text-dim)" }}>No pending corrections.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map((row) => {
+            const operatorReason = reviewOperatorReason(row);
+            return (
+              <div key={row.id} className="item">
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Tag>{String(row.refs.target_type ?? "target")}</Tag>
+                  <span className="acc">{String(row.refs.target_id ?? "unknown")}</span>
+                  <span className="dim">review {row.id}</span>
+                </div>
+                <div style={{ color: "var(--text-dim)", fontSize: 11.5, marginTop: 6 }}>
+                  {String(row.refs.prompt_summary ?? row.reason)}
+                </div>
+                {operatorReason === null ? null : (
+                  <div style={{ color: "var(--text)", fontSize: 11.5, marginTop: 6 }}>
+                    {operatorReason}
+                  </div>
+                )}
+                <pre className="why-pre" style={{ marginTop: 8 }}>
+                  {reviewPatchSummary(row)}
+                </pre>
+                <label className="modal-field" style={{ marginTop: 8 }}>
+                  <span>note</span>
+                  <input
+                    value={notes[row.id] ?? ""}
+                    onChange={(event) => setNotes({ ...notes, [row.id]: event.target.value })}
+                  />
+                </label>
+                <div className="operator-actions" style={{ marginTop: 8 }}>
+                  <button
+                    className="btn sm primary"
+                    disabled={busy !== null}
+                    onClick={() => void resolveCorrection(row, "accept")}
+                  >
+                    accept
+                  </button>
+                  <button
+                    className="btn sm ghost"
+                    disabled={busy !== null}
+                    onClick={() => void resolveCorrection(row, "reject")}
+                  >
+                    reject
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

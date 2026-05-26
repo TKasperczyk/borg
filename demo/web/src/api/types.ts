@@ -482,6 +482,34 @@ export type ReviewRow = {
   resolution: string | null;
 };
 
+export type WhyResponse = Record<string, unknown>;
+
+export type CorrectionForgetResponse = {
+  id: string;
+  target_type: string;
+  archived: true;
+  provenance: { kind: "manual" };
+};
+
+export type CorrectionReviewsResponse = {
+  rows: ReviewRow[];
+};
+
+export type CorrectMemoryRequest = {
+  patch: Record<string, unknown>;
+  reason?: string;
+};
+
+export type InvalidateSemanticEdgeRequest = {
+  at?: number;
+  reason?: string;
+};
+
+export type PatchCorrectionReviewRequest = {
+  action: "accept" | "reject";
+  note?: string;
+};
+
 export type DreamProcessName =
   | "consolidator"
   | "reflector"

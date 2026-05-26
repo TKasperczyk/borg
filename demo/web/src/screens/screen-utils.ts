@@ -26,6 +26,14 @@ export function jsonText(value: unknown): string {
   }
 }
 
+export function parseJsonPatch(text: string): Record<string, unknown> {
+  const parsed = JSON.parse(text) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error("patch must be a JSON object");
+  }
+  return parsed;
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

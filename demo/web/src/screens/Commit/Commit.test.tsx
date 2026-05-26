@@ -168,4 +168,22 @@ describe("CommitScreen operator actions", () => {
       reason: "creator changed the instruction",
     });
   });
+
+  it("does not expose forget for commitments", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [commitment()] }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CommitScreen />);
+
+    expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "forget" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "revoke" })).toHaveLength(2);
+  });
 });

@@ -209,6 +209,9 @@ function installFetch(): ReturnType<typeof vi.fn> {
         }),
       );
     }
+    if (url.pathname === "/api/correction/reviews") {
+      return Promise.resolve(jsonResponse({ rows: [] }));
+    }
     if (url.pathname === "/api/memory/bands/procedural") {
       return Promise.resolve(
         jsonResponse({

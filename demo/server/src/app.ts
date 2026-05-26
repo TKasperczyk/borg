@@ -355,6 +355,27 @@ const reviewPatchBodySchema = z
   })
   .strict();
 
+const correctionCorrectBodySchema = z
+  .object({
+    patch: z.record(z.string(), z.unknown()),
+    reason: optionalTextFieldSchema,
+  })
+  .strict();
+
+const correctionSemanticEdgeInvalidateBodySchema = z
+  .object({
+    at: z.number().finite().optional(),
+    reason: optionalTextFieldSchema,
+  })
+  .strict();
+
+const correctionReviewPatchBodySchema = z
+  .object({
+    action: z.enum(["accept", "reject"]),
+    note: optionalTextFieldSchema,
+  })
+  .strict();
+
 const goalParamSchema = z.object({
   id: z.string().transform((value, ctx) => {
     try {
@@ -718,7 +739,9 @@ async function readStream(input: {
 async function countTurns(borg: Borg, sessionId: SessionId): Promise<number> {
   let count = 0;
 
-  for await (const entry of borg.stream.reader({ session: sessionId }).iterate({ kinds: ["user_msg"] })) {
+  for await (const entry of borg.stream
+    .reader({ session: sessionId })
+    .iterate({ kinds: ["user_msg"] })) {
     if (entry.turn_status !== "aborted") {
       count += 1;
     }
@@ -1662,6 +1685,100 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.get("/api/dream/state", (c) => c.json(dreamState(input.borg)));
+
+  app.get("/api/correction/reviews", (c) =>
+    c.json({
+      rows: input.borg.review
+        .list({ kind: "correction", openOnly: true })
+        .map((row) => mapReviewRow(row)),
+    }),
+  );
+
+  app.get("/api/correction/:id/why", async (c) => {
+    try {
+      return c.json(await input.borg.correction.why(c.req.param("id")));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/correction/:id/forget", async (c) => {
+    try {
+      return c.json(await input.borg.correction.forget(c.req.param("id")));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/correction/:id/correct", async (c) => {
+    const body = parseRequest(correctionCorrectBodySchema, await parseJsonBody(c));
+
+    try {
+      const queued = await input.borg.correction.correct(
+        c.req.param("id"),
+        body.patch,
+        {
+          kind: "manual",
+        },
+        {
+          reason: body.reason,
+        },
+      );
+
+      return c.json(mapReviewRow(queued));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/correction/semantic-edges/:id/invalidate", async (c) => {
+    const body = parseRequest(correctionSemanticEdgeInvalidateBodySchema, await parseJsonBody(c));
+
+    try {
+      return c.json(
+        input.borg.correction.invalidateSemanticEdge(c.req.param("id"), {
+          at: body.at,
+          reason: body.reason,
+        }),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.patch("/api/correction/reviews/:id", async (c) => {
+    const params = parseRequest(reviewParamSchema, c.req.param());
+    const body = parseRequest(correctionReviewPatchBodySchema, await parseJsonBody(c));
+
+    try {
+      const correctionReview = input.borg.review
+        .list({ kind: "correction", openOnly: true })
+        .find((row) => row.id === params.id);
+
+      if (correctionReview === undefined) {
+        throw new HTTPException(404, { message: "correction review item not found" });
+      }
+
+      const resolved = await input.borg.review.resolve(
+        params.id,
+        {
+          decision: body.action,
+          reason: body.note ?? `${body.action}ed from demo correction queue`,
+        },
+        {
+          source: "manual",
+        },
+      );
+
+      if (resolved === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      return c.json(mapReviewRow(resolved));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
 
   app.post("/api/dream/plan", async (c) => {
     const body = parseRequest(dreamPlanBodySchema, await parseJsonBody(c));

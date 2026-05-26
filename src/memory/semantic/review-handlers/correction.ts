@@ -24,6 +24,7 @@ const correctionBaseShape = {
   proposed_provenance: provenanceSchema.optional(),
   audience_entity_id: entityIdSchema.nullable().optional(),
   prompt_summary: z.string().min(1).optional(),
+  operator_reason: z.string().min(1).optional(),
 };
 
 export const correctionReviewRefsSchema = z.discriminatedUnion("target_type", [

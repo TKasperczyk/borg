@@ -48,6 +48,10 @@ type CorrectionTargetDescriptor = (typeof correctionTargetIdKindDescriptors)[num
 
 type CorrectionTargetType = CorrectionTargetDescriptor["kind"];
 
+type CorrectionSubmitOptions = {
+  reason?: string;
+};
+
 type ParsedCorrectionTarget<
   TDescriptor extends CorrectionTargetDescriptor = CorrectionTargetDescriptor,
 > = TDescriptor extends CorrectionTargetDescriptor
@@ -196,6 +200,15 @@ function reviewPromptSummary(
   patch: Record<string, unknown>,
 ): string {
   return `user proposed changing ${targetType} ${targetLabel} to ${summarizePatch(patch)} (review pending)`;
+}
+
+function normalizeOptionalReason(reason: string | undefined): string | undefined {
+  const trimmed = reason?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function correctionApplyReason(item: ReviewQueueItem, refs: { operator_reason?: string }): string {
+  return refs.operator_reason ?? item.reason;
 }
 
 export type CorrectionServiceOptions = {
@@ -799,6 +812,7 @@ export class CorrectionService {
     id: string,
     patch: Record<string, unknown>,
     provenance: Provenance = MANUAL_PROVENANCE,
+    options: CorrectionSubmitOptions = {},
   ): Promise<ReviewQueueItem> {
     if (!isPlainRecord(patch)) {
       throw new StorageError("Correction patch must be a JSON object", {
@@ -819,6 +833,7 @@ export class CorrectionService {
 
     const metadata = await this.resolveTargetMetadata(target);
     const createdAtIso = new Date(this.clock.now()).toISOString();
+    const operatorReason = normalizeOptionalReason(options.reason);
 
     return this.options.reviewQueueRepository.enqueue({
       kind: "correction",
@@ -829,6 +844,7 @@ export class CorrectionService {
         proposed_provenance: provenanceSchema.parse(provenance),
         audience_entity_id: metadata.audienceEntityId,
         prompt_summary: reviewPromptSummary(target.type, metadata.targetLabel, patch),
+        ...(operatorReason === undefined ? {} : { operator_reason: operatorReason }),
       },
       reason: `user corrected ${id} at ${createdAtIso}`,
     });
@@ -908,6 +924,7 @@ export class CorrectionService {
     const refs = correctionReviewRefsSchema.parse(item.refs);
     const patch = refs.patch;
     const proposedProvenance = parseReviewProvenance(item.refs);
+    const applyReason = correctionApplyReason(item, refs);
 
     if (!isPlainRecord(patch)) {
       throw new StorageError("Correction review item is missing an object patch", {
@@ -946,7 +963,7 @@ export class CorrectionService {
             action: "correction_apply",
             old_value: toIdentityJsonValue(current),
             new_value: next === null ? null : toIdentityJsonValue(next),
-            reason: item.reason,
+            reason: applyReason,
             provenance: proposedProvenance,
             review_item_id: item.id,
           });
@@ -983,7 +1000,7 @@ export class CorrectionService {
             action: "correction_apply",
             old_value: toIdentityJsonValue(current),
             new_value: next === null ? null : toIdentityJsonValue(next),
-            reason: item.reason,
+            reason: applyReason,
             provenance: proposedProvenance,
             review_item_id: item.id,
           });
@@ -1005,7 +1022,7 @@ export class CorrectionService {
           proposedProvenance,
           {
             throughReview: true,
-            reason: item.reason,
+            reason: applyReason,
             reviewItemId: item.id,
           },
         );
@@ -1025,7 +1042,7 @@ export class CorrectionService {
           proposedProvenance,
           {
             throughReview: true,
-            reason: item.reason,
+            reason: applyReason,
             reviewItemId: item.id,
           },
         );
@@ -1045,7 +1062,7 @@ export class CorrectionService {
           proposedProvenance,
           {
             throughReview: true,
-            reason: item.reason,
+            reason: applyReason,
             reviewItemId: item.id,
           },
         );
@@ -1065,7 +1082,7 @@ export class CorrectionService {
           proposedProvenance,
           {
             throughReview: true,
-            reason: item.reason,
+            reason: applyReason,
             reviewItemId: item.id,
           },
         );
@@ -1088,7 +1105,7 @@ export class CorrectionService {
           proposedProvenance,
           {
             throughReview: true,
-            reason: item.reason,
+            reason: applyReason,
             reviewItemId: item.id,
           },
         );

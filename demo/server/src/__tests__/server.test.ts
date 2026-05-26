@@ -28,6 +28,7 @@ import {
 } from "../../../../src/llm/test-support/fake-client.js";
 import type { AttachmentService } from "../../../../src/attachments/index.js";
 import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/perception.js";
+import type { Episode, EpisodicRepository } from "../../../../src/memory/episodic/index.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
 import type { ReviewQueueRepository } from "../../../../src/memory/semantic/review-queue.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
@@ -50,6 +51,7 @@ type BorgTestInternals = {
     attachmentService: AttachmentService;
     auditLog: AuditLog;
     createStreamWriter(sessionId: typeof DEFAULT_SESSION_ID): StreamWriter;
+    episodicRepository: EpisodicRepository;
     relationalSlotRepository: RelationalSlotRepository;
     reviewQueueRepository: ReviewQueueRepository;
   };
@@ -254,6 +256,47 @@ async function requestJson(
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+async function seedCorrectionEpisode(
+  borg: Borg,
+  clock: ManualClock,
+  input: {
+    title?: string;
+    narrative?: string;
+  } = {},
+): Promise<Episode> {
+  const internal = borg as unknown as BorgTestInternals;
+  const sourceEntry = await borg.stream.append({
+    kind: "user_msg",
+    content: input.narrative ?? "operator correction source",
+    turn_id: "turn_correction_seed",
+  });
+  const now = clock.now();
+
+  return internal.deps.episodicRepository.insert({
+    id: createEpisodeId(),
+    title: input.title ?? "Correction seed episode",
+    narrative: input.narrative ?? "A correction endpoint seed episode.",
+    participants: ["operator"],
+    location: null,
+    start_time: now,
+    end_time: now,
+    source_stream_ids: [sourceEntry.id],
+    significance: 0.5,
+    tags: ["demo"],
+    confidence: 0.8,
+    lineage: {
+      derived_from: [],
+      supersedes: [],
+    },
+    emotional_arc: null,
+    audience_entity_id: null,
+    shared: false,
+    embedding: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+    created_at: now,
+    updated_at: now,
   });
 }
 
@@ -489,8 +532,14 @@ describe("demo server", () => {
 
     live.broadcaster.add(clientA);
     live.broadcaster.add(clientB);
-    live.broadcaster.handleSubscriptionMessage(clientA, { type: "subscribe", session_id: sessionA });
-    live.broadcaster.handleSubscriptionMessage(clientB, { type: "subscribe", session_id: sessionB });
+    live.broadcaster.handleSubscriptionMessage(clientA, {
+      type: "subscribe",
+      session_id: sessionA,
+    });
+    live.broadcaster.handleSubscriptionMessage(clientB, {
+      type: "subscribe",
+      session_id: sessionB,
+    });
     live.tracer.emit("commitment_guard.regeneration_requested", {
       turnId: "turn_final_attempt",
       session_id: sessionA,
@@ -1130,6 +1179,216 @@ describe("demo server", () => {
     });
   });
 
+  it("exposes correction endpoints for why, forget, correct, edge invalidation, and review resolution", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const episode = await seedCorrectionEpisode(borg, clock, {
+      title: "Correction why fixture",
+      narrative: "The operator needs provenance for this remembered event.",
+    });
+
+    const why = await app.request(`/api/correction/${episode.id}/why`);
+    expect(why.status).toBe(200);
+    expect(await why.json()).toMatchObject({
+      target_type: "episode",
+      record: {
+        id: episode.id,
+        title: "Correction why fixture",
+      },
+      source_stream_ids: episode.source_stream_ids,
+      citation_chain: expect.any(Array),
+    });
+
+    const firstNode = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "correction endpoint source",
+      description: "Source node for correction endpoint tests.",
+      sourceEpisodeIds: [episode.id],
+    });
+    const secondNode = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "correction endpoint target",
+      description: "Target node for correction endpoint tests.",
+      sourceEpisodeIds: [episode.id],
+    });
+    const edge = borg.semantic.edges.add({
+      from_node_id: firstNode.id,
+      to_node_id: secondNode.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episode.id],
+      created_at: clock.now(),
+      last_verified_at: clock.now(),
+    });
+    const invalidatedAt = clock.now() + 12_345;
+    const invalidated = await requestJson(
+      app,
+      `/api/correction/semantic-edges/${edge.id}/invalidate`,
+      "POST",
+      {
+        at: invalidatedAt,
+        reason: "operator found edge stale",
+      },
+    );
+    expect(invalidated.status).toBe(200);
+    expect(await invalidated.json()).toMatchObject({
+      id: edge.id,
+      valid_to: invalidatedAt,
+      invalidated_at: clock.now(),
+      invalidated_by_process: "manual",
+      invalidated_reason: "operator found edge stale",
+    });
+
+    const forgotten = await requestJson(app, `/api/correction/${episode.id}/forget`, "POST", {});
+    expect(forgotten.status).toBe(200);
+    expect(await forgotten.json()).toMatchObject({
+      id: episode.id,
+      target_type: "episode",
+      archived: true,
+      provenance: { kind: "manual" },
+    });
+    expect(
+      borg.correction.listIdentityEvents({
+        recordType: "episode",
+        recordId: episode.id,
+      }),
+    ).toEqual([expect.objectContaining({ action: "forget", record_id: episode.id })]);
+
+    const acceptedValue = borg.self.values.add({
+      label: "accuracy",
+      description: "keep memories accurate",
+      priority: 1,
+      provenance: { kind: "manual" },
+    });
+    const correct = await requestJson(app, `/api/correction/${acceptedValue.id}/correct`, "POST", {
+      patch: { description: "keep corrected memories accurate" },
+      reason: "operator correction",
+    });
+    expect(correct.status).toBe(200);
+    const correctBody = (await correct.json()) as { id: number; refs: Record<string, unknown> };
+    expect(correctBody.refs).toMatchObject({
+      operator_reason: "operator correction",
+    });
+    const reviews = await app.request("/api/correction/reviews");
+    expect(reviews.status).toBe(200);
+    expect(await reviews.json()).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: correctBody.id,
+          kind: "correction",
+          refs: expect.objectContaining({
+            target_id: acceptedValue.id,
+            target_type: "value",
+            patch: { description: "keep corrected memories accurate" },
+            operator_reason: "operator correction",
+          }),
+        }),
+      ],
+    });
+
+    const accepted = await requestJson(app, `/api/correction/reviews/${correctBody.id}`, "PATCH", {
+      action: "accept",
+      note: "looks right",
+    });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({
+      id: correctBody.id,
+      resolved_at: expect.any(Number),
+      resolution: "accept",
+    });
+    expect(borg.self.values.get(acceptedValue.id)?.description).toBe(
+      "keep corrected memories accurate",
+    );
+    expect(
+      borg.correction.listIdentityEvents({
+        recordType: "value",
+        recordId: acceptedValue.id,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "correction_apply",
+          reason: "operator correction",
+          review_item_id: correctBody.id,
+        }),
+      ]),
+    );
+
+    const rejectedValue = borg.self.values.add({
+      label: "unchanged",
+      description: "leave this alone",
+      priority: 1,
+      provenance: { kind: "manual" },
+    });
+    const rejectCorrect = await requestJson(
+      app,
+      `/api/correction/${rejectedValue.id}/correct`,
+      "POST",
+      {
+        patch: { description: "should not apply" },
+      },
+    );
+    expect(rejectCorrect.status).toBe(200);
+    const rejectCorrectBody = (await rejectCorrect.json()) as { id: number };
+    const rejected = await requestJson(
+      app,
+      `/api/correction/reviews/${rejectCorrectBody.id}`,
+      "PATCH",
+      {
+        action: "reject",
+        note: "not valid",
+      },
+    );
+    expect(rejected.status).toBe(200);
+    expect(await rejected.json()).toMatchObject({
+      id: rejectCorrectBody.id,
+      resolved_at: expect.any(Number),
+      resolution: "reject",
+    });
+    expect(borg.self.values.get(rejectedValue.id)?.description).toBe("leave this alone");
+  });
+
+  it("does not resolve non-correction review rows through the correction queue endpoint", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "relationship_label_ungrounded",
+      refs: {
+        target_type: "semantic_node_candidate",
+        label: "parent",
+        description: "Ungrounded relationship label fixture.",
+        protected_relationship_labels: ["parent"],
+        relationship_evidence_relational_slot_ids: [],
+      },
+      reason: "non-correction review fixture",
+    });
+
+    const response = await requestJson(app, `/api/correction/reviews/${review.id}`, "PATCH", {
+      action: "accept",
+      note: "wrong queue",
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: {
+        message: "correction review item not found",
+      },
+    });
+    expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
+      id: review.id,
+      kind: "relationship_label_ungrounded",
+      resolved_at: null,
+      resolution: null,
+    });
+  });
+
   it("POST /api/commitments creates an operator-authored commitment and lists it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
@@ -1286,14 +1545,9 @@ describe("demo server", () => {
       provenance: { kind: "manual" },
     });
 
-    const response = await requestJson(
-      app,
-      `/api/commitments/${commitment.id}/revoke`,
-      "POST",
-      {
-        reason: "operator changed the standing instruction",
-      },
-    );
+    const response = await requestJson(app, `/api/commitments/${commitment.id}/revoke`, "POST", {
+      reason: "operator changed the standing instruction",
+    });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -1869,7 +2123,10 @@ describe("demo server", () => {
     live.broadcaster.broadcast({ type: "turn:phase:started", ts: 1, session_id: sessionId });
     await resetBorg();
     live.broadcaster.add(client);
-    live.broadcaster.handleSubscriptionMessage(client, { type: "subscribe", session_id: sessionId });
+    live.broadcaster.handleSubscriptionMessage(client, {
+      type: "subscribe",
+      session_id: sessionId,
+    });
 
     expect(frames).toEqual([]);
   });

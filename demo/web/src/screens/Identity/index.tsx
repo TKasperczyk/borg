@@ -4,15 +4,18 @@ import {
   getIdentity,
   patchGoal,
   patchOpenQuestion,
+  postCorrectionCorrect,
+  postCorrectionForget,
   postGoal,
   postGrowthMarker,
   postValue,
 } from "../../api/client";
-import type { IdentityGoal, OpenQuestion } from "../../api/types";
+import type { IdentityGoal, IdentityTrait, IdentityValue, OpenQuestion } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
+import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
-import { clamp01, dateLabel } from "../screen-utils";
+import { clamp01, dateLabel, parseJsonPatch } from "../screen-utils";
 
 type QuestionFilter = "all" | OpenQuestion["status"];
 
@@ -22,7 +25,25 @@ type IdentityModal =
   | { kind: "growth"; description: string; source: string }
   | { kind: "goal-progress"; goal: IdentityGoal; note: string; progress: string }
   | { kind: "question-resolve"; question: OpenQuestion; text: string }
-  | { kind: "question-abandon"; question: OpenQuestion; text: string };
+  | { kind: "question-abandon"; question: OpenQuestion; text: string }
+  | { kind: "forget"; id: string; label: string }
+  | { kind: "correct"; id: string; label: string; patch: string; reason: string };
+
+function valuePatch(value: IdentityValue): string {
+  return JSON.stringify({ description: value.description }, null, 2);
+}
+
+function goalPatch(goal: IdentityGoal): string {
+  return JSON.stringify({ description: goal.description }, null, 2);
+}
+
+function traitPatch(trait: IdentityTrait): string {
+  return JSON.stringify({ label: trait.label }, null, 2);
+}
+
+function questionPatch(question: OpenQuestion): string {
+  return JSON.stringify({ question: question.question }, null, 2);
+}
 
 function questionTag(status: OpenQuestion["status"]) {
   if (status === "open") {
@@ -34,10 +55,49 @@ function questionTag(status: OpenQuestion["status"]) {
   return "warn";
 }
 
+function IdentityCorrectionButtons({
+  busy,
+  id,
+  label,
+  patch,
+  onWhy,
+  onModal,
+}: {
+  busy: boolean;
+  id: string;
+  label: string;
+  patch: string;
+  onWhy: (id: string) => void;
+  onModal: (modal: IdentityModal) => void;
+}) {
+  return (
+    <>
+      <button className="btn sm" disabled={busy} onClick={() => onWhy(id)}>
+        why
+      </button>
+      <button
+        className="btn sm ghost"
+        disabled={busy}
+        onClick={() => onModal({ kind: "forget", id, label })}
+      >
+        forget
+      </button>
+      <button
+        className="btn sm ghost"
+        disabled={busy}
+        onClick={() => onModal({ kind: "correct", id, label, patch, reason: "" })}
+      >
+        correct
+      </button>
+    </>
+  );
+}
+
 export function IdentityScreen() {
   const api = useApi(getIdentity, []);
   const [questionFilter, setQuestionFilter] = useState<QuestionFilter>("all");
   const [modal, setModal] = useState<IdentityModal | null>(null);
+  const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const identity = api.data;
@@ -121,10 +181,30 @@ export function IdentityScreen() {
       return;
     }
 
-    await runAction("question-abandon", async () => {
-      await patchOpenQuestion(modal.question.id, {
-        action: "abandon",
-        reason: modal.text,
+    if (modal.kind === "question-abandon") {
+      await runAction("question-abandon", async () => {
+        await patchOpenQuestion(modal.question.id, {
+          action: "abandon",
+          reason: modal.text,
+        });
+      });
+      return;
+    }
+
+    if (modal.kind === "forget") {
+      await runAction("forget", async () => {
+        // Invalidates GET /api/identity and the self memory band.
+        await postCorrectionForget(modal.id);
+      });
+      return;
+    }
+
+    await runAction("correct", async () => {
+      const patch = parseJsonPatch(modal.patch);
+      // Invalidates GET /api/correction/reviews; accepted reviews later invalidate identity.
+      await postCorrectionCorrect(modal.id, {
+        patch,
+        ...(modal.reason.trim().length === 0 ? {} : { reason: modal.reason.trim() }),
       });
     });
   }
@@ -249,6 +329,14 @@ export function IdentityScreen() {
                 <span className="dim" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
                   {value.support_count} src · {dateLabel(value.created_at)}
                 </span>
+                <IdentityCorrectionButtons
+                  busy={busy !== null}
+                  id={value.id}
+                  label={value.label}
+                  patch={valuePatch(value)}
+                  onWhy={setWhyId}
+                  onModal={setModal}
+                />
               </div>
             </div>
           ))}
@@ -322,6 +410,14 @@ export function IdentityScreen() {
                 >
                   progress
                 </button>
+                <IdentityCorrectionButtons
+                  busy={busy !== null}
+                  id={goal.id}
+                  label={goal.description}
+                  patch={goalPatch(goal)}
+                  onWhy={setWhyId}
+                  onModal={setModal}
+                />
               </div>
             </div>
           ))}
@@ -407,6 +503,14 @@ export function IdentityScreen() {
                 >
                   bump
                 </button>
+                <IdentityCorrectionButtons
+                  busy={busy !== null}
+                  id={question.id}
+                  label={question.question}
+                  patch={questionPatch(question)}
+                  onWhy={setWhyId}
+                  onModal={setModal}
+                />
               </div>
               <div className="bar-meter" style={{ marginTop: 4 }}>
                 <div
@@ -441,9 +545,19 @@ export function IdentityScreen() {
               >
                 {trait.label}
               </span>
-              <span className="dim" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
-                {trait.support_count} obs
-              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="dim" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
+                  {trait.support_count} obs
+                </span>
+                <IdentityCorrectionButtons
+                  busy={busy !== null}
+                  id={trait.id}
+                  label={trait.label}
+                  patch={traitPatch(trait)}
+                  onWhy={setWhyId}
+                  onModal={setModal}
+                />
+              </div>
             </div>
           ))}
         </div>
@@ -557,7 +671,13 @@ export function IdentityScreen() {
               disabled={busy !== null || modal === null}
               onClick={() => void submitModal()}
             >
-              {busy === null ? "save" : "saving"}
+              {busy === null
+                ? modal?.kind === "forget"
+                  ? "forget"
+                  : modal?.kind === "correct"
+                    ? "queue"
+                    : "save"
+                : "saving"}
             </button>
           </>
         }
@@ -664,7 +784,32 @@ export function IdentityScreen() {
             </label>
           </div>
         ) : null}
+        {modal?.kind === "forget" ? (
+          <div className="modal-form">
+            <div className="dim">{modal.label}</div>
+          </div>
+        ) : null}
+        {modal?.kind === "correct" ? (
+          <div className="modal-form">
+            <div className="dim">{modal.label}</div>
+            <label className="modal-field">
+              <span>reason</span>
+              <textarea
+                value={modal.reason}
+                onChange={(event) => setModal({ ...modal, reason: event.target.value })}
+              />
+            </label>
+            <label className="modal-field">
+              <span>json patch</span>
+              <textarea
+                value={modal.patch}
+                onChange={(event) => setModal({ ...modal, patch: event.target.value })}
+              />
+            </label>
+          </div>
+        ) : null}
       </Modal>
+      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
     </div>
   );
 }

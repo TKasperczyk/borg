@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 
-import { getCommitments, postCommitment, postCommitmentRevoke } from "../../api/client";
+import {
+  getCommitments,
+  postCommitment,
+  postCommitmentRevoke,
+  postCorrectionCorrect,
+} from "../../api/client";
 import {
   COMMITMENT_CREATE_TYPES,
   COMMITMENT_KINDS,
@@ -13,8 +18,9 @@ import {
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
+import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
-import { dateLabel, shortId } from "../screen-utils";
+import { dateLabel, parseJsonPatch, shortId } from "../screen-utils";
 
 type StateFilter = CommitmentState | "all";
 type EnforcementFilter = CommitmentEnforcement | "all";
@@ -31,7 +37,19 @@ type CommitModal =
       directive_family: string;
       expires_at: string;
     }
-  | { kind: "revoke"; commitment: CommitmentItem; reason: string };
+  | { kind: "revoke"; commitment: CommitmentItem; reason: string }
+  | { kind: "correct"; commitment: CommitmentItem; patch: string; reason: string };
+
+function commitmentPatch(commitment: CommitmentItem): string {
+  return JSON.stringify(
+    {
+      directive: commitment.text,
+      priority: commitment.priority,
+    },
+    null,
+    2,
+  );
+}
 
 function stateTag(state: CommitmentState) {
   if (state === "active") {
@@ -95,6 +113,10 @@ function canSubmitModal(modal: CommitModal | null): boolean {
     return true;
   }
 
+  if (modal.kind === "correct") {
+    return modal.patch.trim().length > 0;
+  }
+
   const priority = Number(modal.priority);
   const expiresAt = dateInputToUnixMs(modal.expires_at);
 
@@ -146,12 +168,13 @@ export function CommitScreen() {
   const [audience, setAudience] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<CommitModal | null>(null);
+  const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const commitments = api.data?.commitments ?? [];
   const audiences = useMemo(
     () => ["all", ...[...new Set(commitments.map((item) => item.audience ?? "global"))].sort()],
-    [commitments]
+    [commitments],
   );
   const filtered = useMemo(
     () =>
@@ -167,7 +190,7 @@ export function CommitScreen() {
         }
         return true;
       }),
-    [audience, commitments, enforcement, state]
+    [audience, commitments, enforcement, state],
   );
   const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0] ?? null;
 
@@ -197,12 +220,21 @@ export function CommitScreen() {
       return;
     }
 
+    if (modal.kind === "correct") {
+      await runAction("commitment-correct", async () => {
+        const patch = parseJsonPatch(modal.patch);
+        // Invalidates GET /api/correction/reviews; accepted reviews later invalidate commitments.
+        await postCorrectionCorrect(modal.commitment.id, {
+          patch,
+          ...(modal.reason.trim().length === 0 ? {} : { reason: modal.reason.trim() }),
+        });
+      });
+      return;
+    }
+
     await runAction("commitment-revoke", async () => {
       const reason = optionalText(modal.reason);
-      await postCommitmentRevoke(
-        modal.commitment.id,
-        reason === undefined ? {} : { reason },
-      );
+      await postCommitmentRevoke(modal.commitment.id, reason === undefined ? {} : { reason });
     });
   }
 
@@ -230,7 +262,11 @@ export function CommitScreen() {
         </button>
         <div className="filter-pills">
           {(["all", "active", "revoked", "expired"] as const).map((value) => (
-            <span key={value} className={`pill ${state === value ? "on" : ""}`} onClick={() => setState(value)}>
+            <span
+              key={value}
+              className={`pill ${state === value ? "on" : ""}`}
+              onClick={() => setState(value)}
+            >
               {value}
             </span>
           ))}
@@ -250,7 +286,11 @@ export function CommitScreen() {
         <span className="sep">|</span>
         <div className="filter-pills">
           {audiences.map((value) => (
-            <span key={value} className={`pill ${audience === value ? "on" : ""}`} onClick={() => setAudience(value)}>
+            <span
+              key={value}
+              className={`pill ${audience === value ? "on" : ""}`}
+              onClick={() => setAudience(value)}
+            >
               {value}
             </span>
           ))}
@@ -263,7 +303,10 @@ export function CommitScreen() {
         </div>
       )}
 
-      <div className="page-body" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px" }}>
+      <div
+        className="page-body"
+        style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px" }}
+      >
         <div style={{ overflow: "auto", borderRight: "1px solid var(--line)" }}>
           <table className="tbl">
             <thead>
@@ -289,7 +332,10 @@ export function CommitScreen() {
                   <td>
                     <span className="acc">{shortId(item.id)}</span>
                   </td>
-                  <td className="wrap" style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}>
+                  <td
+                    className="wrap"
+                    style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
+                  >
                     {item.text}
                     <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
                       {item.type} · {item.kind}
@@ -297,7 +343,9 @@ export function CommitScreen() {
                     </div>
                   </td>
                   <td>
-                    <span className={item.audience === null ? "mute" : "acc"}>{item.audience ?? "global"}</span>
+                    <span className={item.audience === null ? "mute" : "acc"}>
+                      {item.audience ?? "global"}
+                    </span>
                   </td>
                   <td>
                     <Tag kind={item.enforcement_class === "critical" ? "bad" : ""} dot>
@@ -313,7 +361,7 @@ export function CommitScreen() {
                     className="tab-num"
                     style={{
                       textAlign: "right",
-                      color: item.priority >= 8 ? "var(--bad)" : "var(--text-dim)"
+                      color: item.priority >= 8 ? "var(--bad)" : "var(--text-dim)",
                     }}
                   >
                     {item.priority}
@@ -349,6 +397,15 @@ export function CommitScreen() {
               commitment={selected}
               busy={busy !== null}
               onRevoke={(commitment) => setModal({ kind: "revoke", commitment, reason: "" })}
+              onWhy={(commitment) => setWhyId(commitment.id)}
+              onCorrect={(commitment) =>
+                setModal({
+                  kind: "correct",
+                  commitment,
+                  patch: commitmentPatch(commitment),
+                  reason: "",
+                })
+              }
             />
           )}
         </div>
@@ -356,7 +413,13 @@ export function CommitScreen() {
 
       <Modal
         open={modal !== null}
-        title={modal?.kind === "revoke" ? "revoke commitment" : "add commitment"}
+        title={
+          modal?.kind === "revoke"
+            ? "revoke commitment"
+            : modal?.kind === "correct"
+              ? "correct commitment"
+              : "add commitment"
+        }
         onClose={() => {
           if (busy === null) {
             setModal(null);
@@ -379,7 +442,13 @@ export function CommitScreen() {
               disabled={busy !== null || !canSubmitModal(modal)}
               onClick={() => void submitModal()}
             >
-              {busy === null ? (modal?.kind === "revoke" ? "revoke" : "save") : "saving"}
+              {busy === null
+                ? modal?.kind === "revoke"
+                  ? "revoke"
+                  : modal?.kind === "correct"
+                    ? "queue"
+                    : "save"
+                : "saving"}
             </button>
           </>
         }
@@ -468,9 +537,7 @@ export function CommitScreen() {
               <input
                 maxLength={COMMITMENT_DIRECTIVE_FAMILY_MAX_LENGTH}
                 value={modal.directive_family}
-                onChange={(event) =>
-                  setModal({ ...modal, directive_family: event.target.value })
-                }
+                onChange={(event) => setModal({ ...modal, directive_family: event.target.value })}
               />
             </label>
             <label className="modal-field">
@@ -496,7 +563,29 @@ export function CommitScreen() {
             </label>
           </div>
         ) : null}
+        {modal?.kind === "correct" ? (
+          <div className="modal-form">
+            <div className="dim">{modal.commitment.text}</div>
+            <label className="modal-field">
+              <span>reason</span>
+              <textarea
+                maxLength={2000}
+                value={modal.reason}
+                onChange={(event) => setModal({ ...modal, reason: event.target.value })}
+              />
+            </label>
+            <label className="modal-field">
+              <span>json patch</span>
+              <textarea
+                maxLength={COMMITMENT_TEXT_MAX_LENGTH}
+                value={modal.patch}
+                onChange={(event) => setModal({ ...modal, patch: event.target.value })}
+              />
+            </label>
+          </div>
+        ) : null}
       </Modal>
+      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
     </div>
   );
 }
@@ -505,16 +594,27 @@ function CommitmentDetail({
   commitment,
   busy,
   onRevoke,
+  onWhy,
+  onCorrect,
 }: {
   commitment: CommitmentItem;
   busy: boolean;
   onRevoke: (commitment: CommitmentItem) => void;
+  onWhy: (commitment: CommitmentItem) => void;
+  onCorrect: (commitment: CommitmentItem) => void;
 }) {
   return (
     <>
       <div style={{ padding: "16px 16px 10px 16px", borderBottom: "1px solid var(--line)" }}>
         <div style={{ fontSize: 10.5, color: "var(--text-mute)" }}>commitment</div>
-        <div style={{ fontSize: 14, color: "var(--text)", fontFamily: "var(--sans)", margin: "6px 0 10px 0" }}>
+        <div
+          style={{
+            fontSize: 14,
+            color: "var(--text)",
+            fontFamily: "var(--sans)",
+            margin: "6px 0 10px 0",
+          }}
+        >
           {commitment.text}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -591,7 +691,15 @@ function CommitmentDetail({
         </div>
 
         <div className="divider">provenance</div>
-        <div style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: 4 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--text-dim)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
           {commitment.source_stream_entry_ids.length === 0 ? (
             <div className="dim">no stream source ids recorded</div>
           ) : (
@@ -605,12 +713,18 @@ function CommitmentDetail({
 
         <div className="divider">operations</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          <button className="btn sm" disabled={busy} onClick={() => onWhy(commitment)}>
+            why
+          </button>
           <button
             className="btn sm ghost"
             disabled={busy || commitment.state !== "active"}
             onClick={() => onRevoke(commitment)}
           >
             revoke
+          </button>
+          <button className="btn sm ghost" disabled={busy} onClick={() => onCorrect(commitment)}>
+            correct
           </button>
           <button className="btn sm ghost" disabled title="v1 read-only">
             supersede

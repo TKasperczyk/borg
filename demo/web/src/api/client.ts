@@ -5,6 +5,9 @@ import type {
   CommitmentItem,
   CommitmentState,
   CommitmentsResponse,
+  CorrectionForgetResponse,
+  CorrectionReviewsResponse,
+  CorrectMemoryRequest,
   CreateCommitmentRequest,
   CreateGoalRequest,
   CreateGrowthMarkerRequest,
@@ -19,10 +22,12 @@ import type {
   IdentityGoal,
   IdentityResponse,
   IdentityValue,
+  InvalidateSemanticEdgeRequest,
   LedgerResponse,
   MemoryBandDetail,
   MemoryBandId,
   OpenQuestion,
+  PatchCorrectionReviewRequest,
   PatchGoalRequest,
   PatchOpenQuestionRequest,
   PatchReviewItemRequest,
@@ -40,6 +45,7 @@ import type {
   StreamResponse,
   TurnRequest,
   TurnResponse,
+  WhyResponse,
 } from "./types";
 
 const DEFAULT_API_BASE = "";
@@ -222,6 +228,54 @@ export async function getSemanticGraph(limit = 300): Promise<SemanticGraphRespon
     undefined,
     new URLSearchParams({ limit: String(limit) }),
   );
+}
+
+export async function getWhy(id: string): Promise<WhyResponse> {
+  return fetchJson<WhyResponse>(`api/correction/${encodeURIComponent(id)}/why`);
+}
+
+export async function postCorrectionForget(id: string): Promise<CorrectionForgetResponse> {
+  return fetchJson<CorrectionForgetResponse>(`api/correction/${encodeURIComponent(id)}/forget`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function postCorrectionCorrect(
+  id: string,
+  input: CorrectMemoryRequest,
+): Promise<ReviewRow> {
+  return fetchJson<ReviewRow>(`api/correction/${encodeURIComponent(id)}/correct`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postSemanticEdgeInvalidate(
+  id: string,
+  input: InvalidateSemanticEdgeRequest,
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `api/correction/semantic-edges/${encodeURIComponent(id)}/invalidate`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getCorrectionReviews(): Promise<CorrectionReviewsResponse> {
+  return fetchJson<CorrectionReviewsResponse>("api/correction/reviews");
+}
+
+export async function patchCorrectionReview(
+  id: number,
+  input: PatchCorrectionReviewRequest,
+): Promise<ReviewRow> {
+  return fetchJson<ReviewRow>(`api/correction/reviews/${encodeURIComponent(String(id))}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getIdentity(): Promise<IdentityResponse> {

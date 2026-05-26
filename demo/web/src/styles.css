@@ -265,7 +265,9 @@ body {
   color: var(--text-mute);
   cursor: pointer;
   border-radius: 3px;
-  transition: color 120ms, background 120ms;
+  transition:
+    color 120ms,
+    background 120ms;
 }
 .topbar-reset:hover {
   color: var(--warn, #e0a050);
@@ -2491,6 +2493,56 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.why-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.why-section {
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.why-section summary {
+  cursor: pointer;
+  padding: 9px 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--line-soft);
+}
+.why-kv {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.why-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.why-key {
+  color: var(--text-mute);
+  font-size: 10.5px;
+  font-family: var(--mono);
+  word-break: break-word;
+}
+.why-scalar {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  word-break: break-word;
+}
+.why-pre {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .notice {

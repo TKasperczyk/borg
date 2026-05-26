@@ -821,6 +821,7 @@ export type BorgCorrectionFacade = {
     id: string,
     patch: Record<string, unknown>,
     provenance?: Provenance,
+    options?: { reason?: string },
   ): Promise<BorgReviewQueueItem>;
   rememberAboutMe(options?: { entity?: string }): Promise<BorgRememberAboutMeResult>;
   listIdentityEvents(options?: BorgIdentityEventListOptions): IdentityEvent[];
