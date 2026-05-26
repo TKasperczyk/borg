@@ -21,6 +21,7 @@ function session(
     message_count: 0,
     status: "active",
     privacy_level: "payload_off",
+    participation_policy: "active",
     ...input,
   };
 }
@@ -28,11 +29,7 @@ function session(
 function Harness({ sessions }: { sessions: readonly SessionRecord[] }) {
   const { sessionId, setSessionId } = useSession();
   return (
-    <SessionsSidebar
-      sessions={sessions}
-      activeSessionId={sessionId}
-      onSelect={setSessionId}
-    />
+    <SessionsSidebar sessions={sessions} activeSessionId={sessionId} onSelect={setSessionId} />
   );
 }
 
@@ -63,8 +60,6 @@ describe("SessionsSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Slack #planning/ }));
 
-    expect(new URL(window.location.href).searchParams.get("session")).toBe(
-      "sess_aaaaaaaaaaaaaaaa",
-    );
+    expect(new URL(window.location.href).searchParams.get("session")).toBe("sess_aaaaaaaaaaaaaaaa");
   });
 });

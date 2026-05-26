@@ -57,6 +57,7 @@ describe("SessionsRepository", () => {
       message_count: 0,
       status: "active",
       privacy_level: "payload_off",
+      participation_policy: "active",
     });
 
     harness.repo.touch(DEFAULT_SESSION_ID, { at: 2_000, lastTurnId: "turn_1" });
@@ -79,8 +80,62 @@ describe("SessionsRepository", () => {
       last_turn_id: "turn_1",
       message_count: 1,
       privacy_level: "payload_on",
+      participation_policy: "active",
     });
     expect(harness.repo.get(DEFAULT_SESSION_ID)).toEqual(updated);
+  });
+
+  it("sets and reads participation policy", () => {
+    const harness = openRepo();
+    db = harness.db;
+
+    harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "demo",
+      audience_label: "alice",
+      conversation_kind: "demo",
+    });
+
+    expect(harness.repo.setParticipationPolicy(DEFAULT_SESSION_ID, "observing")).toMatchObject({
+      session_id: DEFAULT_SESSION_ID,
+      participation_policy: "observing",
+    });
+    expect(harness.repo.get(DEFAULT_SESSION_ID)?.participation_policy).toBe("observing");
+  });
+
+  it("preserves participation policy when ensuring an existing session", () => {
+    const harness = openRepo();
+    db = harness.db;
+
+    harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "demo",
+      audience_label: "alice",
+      conversation_kind: "demo",
+    });
+    harness.repo.setParticipationPolicy(DEFAULT_SESSION_ID, "muted");
+
+    const ensured = harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "demo renamed",
+      audience_label: "alice",
+      conversation_kind: "demo",
+    });
+
+    expect(ensured).toMatchObject({
+      label: "demo renamed",
+      participation_policy: "muted",
+    });
+  });
+
+  it("returns null when setting policy for a missing session", () => {
+    const harness = openRepo();
+    db = harness.db;
+
+    expect(harness.repo.setParticipationPolicy(createSessionId(), "paused")).toBeNull();
   });
 
   it("touches activity, turn id, and message count", () => {

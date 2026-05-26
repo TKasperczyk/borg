@@ -723,8 +723,13 @@ describe("demo server", () => {
           source_type: "demo",
           conversation_kind: "demo",
           privacy_level: "payload_off",
+          participation_policy: "active",
         }),
-        expect.objectContaining({ session_id: customSessionId, label: "demo custom" }),
+        expect.objectContaining({
+          session_id: customSessionId,
+          label: "demo custom",
+          participation_policy: "active",
+        }),
       ]),
     });
 
@@ -951,6 +956,80 @@ describe("demo server", () => {
       last_turn_id: customTurnBody.turn_id,
       message_count: 1,
     });
+  });
+
+  it("POST /api/sessions/:id/participation updates session policy", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const sessionId = createSessionId();
+    borg.sessions.ensure({
+      session_id: sessionId,
+      source_type: "demo",
+      label: "demo policy",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+
+    const updateResponse = await requestJson(
+      app,
+      `/api/sessions/${sessionId}/participation`,
+      "POST",
+      {
+        policy: "observing",
+        reason: "too much visible output",
+      },
+    );
+
+    expect(updateResponse.status).toBe(200);
+    expect(await updateResponse.json()).toMatchObject({
+      session_id: sessionId,
+      participation_policy: "observing",
+    });
+
+    const sessionsResponse = await app.request("/api/sessions");
+    expect(sessionsResponse.status).toBe(200);
+    expect(await sessionsResponse.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({
+          session_id: sessionId,
+          participation_policy: "observing",
+        }),
+      ]),
+    });
+  });
+
+  it("POST /api/sessions/:id/participation rejects invalid policy", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(app, "/api/sessions/default/participation", "POST", {
+      policy: "loud",
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("POST /api/sessions/:id/participation returns 404 for a missing session", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(
+      app,
+      `/api/sessions/${createSessionId()}/participation`,
+      "POST",
+      { policy: "muted" },
+    );
+
+    expect(response.status).toBe(404);
   });
 
   it("accepts multipart turn uploads and writes image attachment stream entries", async () => {

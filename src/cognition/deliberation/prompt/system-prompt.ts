@@ -9,6 +9,7 @@ import type {
   OpenQuestion,
 } from "../../../memory/self/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
+import type { SessionParticipationPolicy } from "../../../sessions/index.js";
 import type {
   SkillSelectionCandidate,
   SkillSelectionResult,
@@ -52,6 +53,7 @@ export type BuildBaseSystemPromptOptions = {
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
   operatorAdvice?: { text: string; ids: readonly string[] } | null;
+  participationPolicy?: SessionParticipationPolicy;
   nowMs?: number;
 };
 
@@ -91,6 +93,19 @@ function renderTaggedPromptSections(sections: readonly TaggedPromptSection[]): s
     .filter((section): section is string => section !== null);
 
   return rendered.length === 0 ? null : rendered.join("\n\n");
+}
+
+function renderParticipationPolicy(policy: SessionParticipationPolicy): string | null {
+  switch (policy) {
+    case "active":
+      return null;
+    case "paused":
+      return "The operator has paused your participation in this conversation. The only available emission is EmitNoOutput.";
+    case "observing":
+      return "The operator has set you to observing for this conversation. The available emissions are EmitObserve or EmitNoOutput.";
+    case "muted":
+      return "The operator has muted you in this conversation. The only available emission is EmitNoOutput.";
+  }
 }
 
 function buildBaseSystemPromptSections(
@@ -236,7 +251,12 @@ function buildBaseSystemPromptSections(
     tag: "borg_operator_advice",
     content: options.operatorAdvice?.text ?? null,
   };
+  const participationPolicySection = {
+    tag: "borg_participation_policy",
+    content: renderParticipationPolicy(options.participationPolicy ?? "active"),
+  };
   const trustedDynamicGuidanceSections: TaggedPromptSection[] = [
+    participationPolicySection,
     operatorAdviceSection,
     heldPreferencesSection,
     commitmentRecordsSection,
@@ -249,6 +269,7 @@ function buildBaseSystemPromptSections(
   return {
     untrustedSections,
     trustedGuidanceSections: [
+      participationPolicySection,
       operatorAdviceSection,
       heldPreferencesSection,
       commitmentRecordsSection,

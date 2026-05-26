@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   EvidenceLedger,
   LiveFrame,
+  SessionRecord,
   StreamEntry,
   TurnTerminalOutcome,
   TurnPhaseName,
@@ -62,12 +63,38 @@ function streamEntry(
   };
 }
 
+function sessionRecord(input: Partial<SessionRecord> = {}): SessionRecord {
+  return {
+    session_id: "default",
+    source_type: "demo",
+    source_external_id: null,
+    source_url: null,
+    label: "demo",
+    audience_label: "alice",
+    audience_entity_id: null,
+    conversation_kind: "demo",
+    created_at: 1,
+    last_activity_at: 1,
+    last_turn_id: null,
+    message_count: 0,
+    status: "active",
+    privacy_level: "payload_off",
+    participation_policy: "active",
+    ...input,
+  };
+}
+
 function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
     turnResponse?: Response | Promise<Response>;
     pendingAdvice?: Array<{ id: string; text: string }>;
-    historyAdvice?: Array<{ id: string; text: string; consumed_at: number | null; canceled_at: number | null }>;
+    historyAdvice?: Array<{
+      id: string;
+      text: string;
+      consumed_at: number | null;
+      canceled_at: number | null;
+    }>;
   } = {},
 ): { fetchMock: ReturnType<typeof vi.fn>; streamCalls: () => number } {
   const streamResponses = input.streamEntries ?? [[]];
@@ -114,6 +141,27 @@ function installCognitionFetch(
     }
     if (url.includes("/api/advice")) {
       return Promise.resolve(jsonResponse({ items: pendingAdvice }));
+    }
+    if (
+      url.includes("/api/sessions/") &&
+      url.endsWith("/participation") &&
+      init?.method === "POST"
+    ) {
+      const body = JSON.parse(String(init.body)) as {
+        policy: SessionRecord["participation_policy"];
+      };
+      const sessionId = decodeURIComponent(
+        url.split("/api/sessions/")[1]?.replace("/participation", "") ?? "default",
+      );
+
+      return Promise.resolve(
+        jsonResponse(
+          sessionRecord({
+            session_id: sessionId,
+            participation_policy: body.policy,
+          }),
+        ),
+      );
     }
     if (url.endsWith("/api/turn") && init?.method === "POST") {
       return Promise.resolve(input.turnResponse ?? jsonResponse({ ok: true, turn_id: "turn_abc" }));
@@ -213,11 +261,27 @@ function ledgerWithText(text: string): EvidenceLedger {
   };
 }
 
-function Harness({ live, sessionId = "default" }: { live: LiveEvents; sessionId?: string }) {
+function Harness({
+  live,
+  sessionId = "default",
+  session = sessionRecord({ session_id: sessionId }),
+  onSessionPolicyChanged = async () => undefined,
+}: {
+  live: LiveEvents;
+  sessionId?: string;
+  session?: SessionRecord | null;
+  onSessionPolicyChanged?: () => Promise<void>;
+}) {
   const turnStream = useTurnStream(live, { sessionId });
   return (
     <LiveEventsProvider value={live}>
-      <CognitionScreen sessionId={sessionId} audience="alice" turnStream={turnStream} />
+      <CognitionScreen
+        sessionId={sessionId}
+        audience="alice"
+        turnStream={turnStream}
+        session={session}
+        onSessionPolicyChanged={onSessionPolicyChanged}
+      />
     </LiveEventsProvider>
   );
 }
@@ -381,6 +445,47 @@ describe("cognition screen", () => {
 
     await waitFor(() => expect(screen.queryByText("Firm next turn.")).not.toBeInTheDocument());
     expect(screen.getByText("No pending advice.")).toBeInTheDocument();
+  });
+
+  it("renders the current participation policy", () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(
+      <Harness live={source.live()} session={sessionRecord({ participation_policy: "muted" })} />,
+    );
+
+    expect(screen.getByRole("button", { name: "participation policy muted" })).toHaveTextContent(
+      "muted",
+    );
+  });
+
+  it("posts participation policy changes with a reason", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch();
+    const onSessionPolicyChanged = vi.fn(async () => undefined);
+
+    render(<Harness live={source.live()} onSessionPolicyChanged={onSessionPolicyChanged} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "participation policy active" }));
+    fireEvent.change(screen.getByLabelText("participation policy selection"), {
+      target: { value: "observing" },
+    });
+    fireEvent.change(screen.getByLabelText("participation policy reason"), {
+      target: { value: "  needs space  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "apply" }));
+
+    await waitFor(() => expect(onSessionPolicyChanged).toHaveBeenCalledTimes(1));
+    const postCall = fetchMock.mock.calls.find(
+      ([request, init]) =>
+        String(request).endsWith("/api/sessions/default/participation") && init?.method === "POST",
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse(String((postCall?.[1] as RequestInit).body))).toEqual({
+      policy: "observing",
+      reason: "needs space",
+    });
   });
 
   it("stages uploaded images and posts turns as multipart form data", async () => {

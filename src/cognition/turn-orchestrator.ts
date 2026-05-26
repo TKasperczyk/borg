@@ -32,6 +32,7 @@ import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { OperatorAdviceConsumerFacade } from "../operator-advice/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
+import type { SessionsRepository } from "../sessions/index.js";
 import {
   ABORTED_TURN_EVENT,
   StreamReader,
@@ -162,6 +163,7 @@ export type TurnOrchestratorOptions = {
   tracer?: TurnTracer;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
   operatorAdviceFacade?: OperatorAdviceConsumerFacade;
+  sessionsRepository?: Pick<SessionsRepository, "get">;
 };
 
 export class TurnOrchestrator {
@@ -338,6 +340,9 @@ export class TurnOrchestrator {
       ...(options.operatorAdviceFacade === undefined
         ? {}
         : { operatorAdviceFacade: options.operatorAdviceFacade }),
+      ...(options.sessionsRepository === undefined
+        ? {}
+        : { sessionsRepository: options.sessionsRepository }),
     });
   }
 

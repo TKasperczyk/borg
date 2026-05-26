@@ -217,6 +217,7 @@ export async function openBorgDependencies(
       tracer,
       promptOverrideRepository: repositories.promptOverrideRepository,
       operatorAdviceFacade,
+      sessionsRepository: repositories.sessionsRepository,
     });
     const autonomyScheduler = buildAutonomyScheduler({
       config,

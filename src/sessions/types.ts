@@ -1,21 +1,18 @@
 import { z } from "zod";
 
-import {
-  entityIdHelpers,
-  isSessionId,
-  parseSessionId,
-  type EntityId,
-} from "../util/ids.js";
+import { entityIdHelpers, isSessionId, parseSessionId, type EntityId } from "../util/ids.js";
 
 export const SESSION_SOURCE_TYPES = ["demo", "slack", "discord", "imessage", "autonomy"] as const;
 export const CONVERSATION_KINDS = ["dm", "channel", "thread", "demo"] as const;
 export const SESSION_STATUSES = ["active", "idle", "archived"] as const;
 export const SESSION_PRIVACY_LEVELS = ["payload_off", "payload_on"] as const;
+export const SESSION_PARTICIPATION_POLICIES = ["active", "paused", "observing", "muted"] as const;
 
 export const sessionSourceTypeSchema = z.enum(SESSION_SOURCE_TYPES);
 export const conversationKindSchema = z.enum(CONVERSATION_KINDS);
 export const sessionStatusSchema = z.enum(SESSION_STATUSES);
 export const sessionPrivacyLevelSchema = z.enum(SESSION_PRIVACY_LEVELS);
+export const sessionParticipationPolicySchema = z.enum(SESSION_PARTICIPATION_POLICIES);
 
 export const sessionIdSchema = z
   .string()
@@ -46,6 +43,7 @@ export const sessionRecordSchema = z.object({
   message_count: z.number().int().nonnegative(),
   status: sessionStatusSchema,
   privacy_level: sessionPrivacyLevelSchema,
+  participation_policy: sessionParticipationPolicySchema,
 });
 
 export const sessionEnsureInputSchema = z.object({
@@ -80,6 +78,7 @@ export type SessionSourceType = z.infer<typeof sessionSourceTypeSchema>;
 export type ConversationKind = z.infer<typeof conversationKindSchema>;
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 export type SessionPrivacyLevel = z.infer<typeof sessionPrivacyLevelSchema>;
+export type SessionParticipationPolicy = z.infer<typeof sessionParticipationPolicySchema>;
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 export type SessionEnsureInput = z.infer<typeof sessionEnsureInputSchema>;
 export type SessionTouchUpdate = z.infer<typeof sessionTouchUpdateSchema>;

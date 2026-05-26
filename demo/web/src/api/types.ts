@@ -758,6 +758,8 @@ export type SessionStatus = "active" | "idle" | "archived";
 
 export type SessionPrivacyLevel = "payload_off" | "payload_on";
 
+export type SessionParticipationPolicy = "active" | "paused" | "observing" | "muted";
+
 export type SessionRecord = {
   session_id: string;
   source_type: SessionSourceType;
@@ -773,6 +775,7 @@ export type SessionRecord = {
   message_count: number;
   status: SessionStatus;
   privacy_level: SessionPrivacyLevel;
+  participation_policy: SessionParticipationPolicy;
 };
 
 export type SessionsResponse = {

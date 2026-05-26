@@ -18,7 +18,14 @@ import {
   withLedgerImageContentBlocks,
 } from "./dialogue.js";
 import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
-import { runFinalizer, type FinalizerResult, type RunFinalizerOptions } from "./finalizer.js";
+import {
+  EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
+  EMIT_OBSERVE_FINALIZER_TOOL_NAME,
+  runFinalizer,
+  type EmissionToolName,
+  type FinalizerResult,
+  type RunFinalizerOptions,
+} from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
@@ -51,6 +58,7 @@ import type {
   DeliberationUsage,
   DeliberatorOptions,
 } from "./types.js";
+import type { SessionParticipationPolicy } from "../../sessions/index.js";
 
 export type {
   DeliberationContext,
@@ -343,6 +351,20 @@ function cognitionThinkingOption(
   };
 }
 
+function allowedEmissionsForParticipationPolicy(
+  policy: SessionParticipationPolicy | undefined,
+): readonly EmissionToolName[] | undefined {
+  switch (policy ?? "active") {
+    case "active":
+      return undefined;
+    case "paused":
+    case "muted":
+      return [EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME];
+    case "observing":
+      return [EMIT_OBSERVE_FINALIZER_TOOL_NAME, EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME];
+  }
+}
+
 export class Deliberator {
   private readonly tracer: TurnTracer;
   private readonly clock: Clock;
@@ -383,10 +405,10 @@ export class Deliberator {
     const trace =
       this.tracer.enabled && context.turnId !== undefined
         ? {
-          tracer: this.tracer,
-          turnId: context.turnId,
-          sessionId: context.sessionId,
-        }
+            tracer: this.tracer,
+            turnId: context.turnId,
+            sessionId: context.sessionId,
+          }
         : undefined;
     const retrievalConfidence =
       context.retrievalConfidence ??
@@ -429,6 +451,7 @@ export class Deliberator {
       retrievalContextBudget,
       semanticContextBudget,
       nowMs: this.clock.now(),
+      participationPolicy: effectiveContext.participationPolicy ?? "active",
       ...(deliveredOperatorAdvice?.text === null || deliveredOperatorAdvice?.text === undefined
         ? {}
         : {
@@ -489,6 +512,9 @@ export class Deliberator {
       { maxImagesPerLlmCall: this.options.maxImagesPerLlmCall },
     );
     const thinking = cognitionThinkingOption(this.options);
+    const allowedEmissions = allowedEmissionsForParticipationPolicy(
+      effectiveContext.participationPolicy,
+    );
 
     if (decision.path === "system_1") {
       const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext);
@@ -505,6 +531,7 @@ export class Deliberator {
         maxTokens: systemOneMaxTokens,
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_1",
+        ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
         ...(finalizerGroundingPromptSections.length === 0
           ? {}
           : { additionalPromptSections: finalizerGroundingPromptSections }),
@@ -545,6 +572,7 @@ export class Deliberator {
           maxTokens: systemOneMaxTokens,
           ...(thinking === undefined ? {} : { thinking }),
           path: "system_1",
+          ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
           additionalPromptSections: appendFinalizerPromptSections(
             finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
             regeneration.additionalPromptSections,
@@ -704,6 +732,7 @@ export class Deliberator {
       maxTokens: systemTwoMaxTokens,
       ...(thinking === undefined ? {} : { thinking }),
       path: "system_2",
+      ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
       additionalPromptSections,
       structuralNoOutputFlags: finalizerStructuralFlags,
       tracer: this.tracer,
@@ -747,6 +776,7 @@ export class Deliberator {
         maxTokens: systemTwoMaxTokens,
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_2",
+        ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
         additionalPromptSections: appendFinalizerPromptSections(
           additionalPromptSections,
           regeneration.additionalPromptSections,

@@ -11,6 +11,7 @@ import {
   DEFAULT_SESSION_ID,
   MAX_ADVICE_TEXT_LENGTH,
   OFFLINE_PROCESS_NAMES,
+  SESSION_PARTICIPATION_POLICIES,
   STREAM_ENTRY_KINDS,
   VERSION,
   type AttachmentId,
@@ -125,6 +126,29 @@ const sessionQuerySchema = z.object({
     .optional()
     .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
 });
+
+const sessionParamSchema = z.object({
+  id: z.string().transform((value, ctx) => {
+    try {
+      return parseSessionId(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid session id" });
+      return z.NEVER;
+    }
+  }),
+});
+
+const sessionParticipationBodySchema = z
+  .object({
+    policy: z.enum(SESSION_PARTICIPATION_POLICIES),
+    reason: z
+      .string()
+      .trim()
+      .max(500)
+      .optional()
+      .transform((value) => (value === undefined || value.length === 0 ? undefined : value)),
+  })
+  .strict();
 
 const optionalBooleanQuerySchema = z
   .enum(["true", "false"])
@@ -1460,6 +1484,21 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.get("/api/sessions", (c) => c.json({ sessions: input.borg.sessions.list({ limit: 1000 }) }));
+
+  app.post("/api/sessions/:id/participation", async (c) => {
+    const params = parseRequest(sessionParamSchema, c.req.param());
+    const body = parseRequest(sessionParticipationBodySchema, await parseJsonBody(c));
+
+    try {
+      const session = await input.borg.sessions.setParticipationPolicy(params.id, body.policy, {
+        reason: body.reason,
+      });
+
+      return c.json(session);
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
 
   app.post("/api/advice", async (c) => {
     const body = parseRequest(adviceQueueBodySchema, await parseJsonBody(c));

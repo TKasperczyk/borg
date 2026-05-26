@@ -36,6 +36,7 @@ async function runEmissionFinalizer(
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
+    allowedEmissions?: Parameters<typeof runFinalizer>[0]["allowedEmissions"];
   } = {},
 ) {
   return runFinalizer({
@@ -68,9 +69,33 @@ async function runEmissionFinalizer(
     ...(options.structuralNoOutputFlags === undefined
       ? {}
       : { structuralNoOutputFlags: options.structuralNoOutputFlags }),
+    ...(options.allowedEmissions === undefined
+      ? {}
+      : { allowedEmissions: options.allowedEmissions }),
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
+}
+
+function requestSystemText(system: unknown): string {
+  if (typeof system === "string") {
+    return system;
+  }
+
+  if (!Array.isArray(system)) {
+    return "";
+  }
+
+  return system
+    .map((block) =>
+      block !== null &&
+      typeof block === "object" &&
+      "text" in block &&
+      typeof block.text === "string"
+        ? block.text
+        : "",
+    )
+    .join("\n\n");
 }
 
 describe("runFinalizer emission tools", () => {
@@ -128,6 +153,84 @@ describe("runFinalizer emission tools", () => {
         text: "Base dynamic prompt.",
       }),
     ]);
+  });
+
+  it("filters finalizer emission tools when allowed emissions are provided", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_observe",
+              name: "EmitObserve",
+              input: { reason: "Operator set observing mode." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      allowedEmissions: ["EmitObserve", "EmitNoOutput"],
+    });
+
+    expect(result.decision).toEqual({
+      kind: "observe",
+      reason: "Operator set observing mode.",
+    });
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitObserve",
+      "EmitNoOutput",
+    ]);
+    const system = requestSystemText(llm.requests[0]?.system);
+    expect(system).toContain("Your available terminal tools are EmitObserve and EmitNoOutput.");
+    expect(system).not.toContain("EmitAnswer");
+    expect(system).not.toContain("EmitSelfReport");
+  });
+
+  it("describes only EmitNoOutput when it is the only allowed emission", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_no_output",
+              name: "EmitNoOutput",
+              input: {
+                reason: "Operator policy leaves no visible emission.",
+                primary_no_output_reason: "other",
+                no_output_categories: [],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      allowedEmissions: ["EmitNoOutput"],
+    });
+
+    expect(result.decision).toEqual({
+      kind: "no_output",
+      reason: "Operator policy leaves no visible emission.",
+      primary_no_output_reason: "other",
+      no_output_categories: [],
+    });
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    const system = requestSystemText(llm.requests[0]?.system);
+    expect(system).toContain("Your only available terminal tool is EmitNoOutput.");
+    expect(system).not.toContain("EmitAnswer");
+    expect(system).not.toContain("EmitObserve");
+    expect(system).not.toContain("EmitSelfReport");
   });
 
   it("emits ordered token chunks and a final flush while preserving the tool decision", async () => {

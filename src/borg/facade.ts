@@ -57,7 +57,9 @@ function renderOperatorAdviceText(records: readonly OperatorAdviceRecord[]): str
   return `${OPERATOR_ADVICE_HEADER}\n\n${renderedItems.join("\n")}`;
 }
 
-function validateOperatorAdviceQueueInput(input: OperatorAdviceQueueInput): OperatorAdviceQueueInput {
+function validateOperatorAdviceQueueInput(
+  input: OperatorAdviceQueueInput,
+): OperatorAdviceQueueInput {
   const parsed = operatorAdviceQueueInputSchema.safeParse(input);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -73,6 +75,36 @@ function validateOperatorAdviceQueueInput(input: OperatorAdviceQueueInput): Oper
   }
 
   return parsed.data;
+}
+
+function errorCode(error: unknown): unknown {
+  return error !== null && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+}
+
+function isCommittedStreamIndexUpdateFailure(error: unknown): boolean {
+  return errorCode(error) === "STREAM_INDEX_UPDATE_FAILED";
+}
+
+function describeCaughtError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function participationPolicyRollbackFailedError(
+  originalError: unknown,
+  rollbackError: unknown,
+): StorageError {
+  return new StorageError(
+    [
+      "Failed to roll back participation policy after audit append failed.",
+      `Original append error: ${describeCaughtError(originalError)}.`,
+      `Rollback error: ${describeCaughtError(rollbackError)}.`,
+    ].join(" "),
+    {
+      cause: originalError,
+    },
+  );
 }
 
 function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
@@ -97,8 +129,7 @@ export function createOperatorAdviceFacade(
   deps: OperatorAdviceFacadeDeps,
 ): BorgOperatorAdviceFacade {
   return {
-    queue: (input) =>
-      deps.operatorAdviceRepository.queue(validateOperatorAdviceQueueInput(input)),
+    queue: (input) => deps.operatorAdviceRepository.queue(validateOperatorAdviceQueueInput(input)),
     list: (filter) => deps.operatorAdviceRepository.list(filter),
     cancel: (id) => deps.operatorAdviceRepository.cancel(id),
     consumePending: async (scope, options) => {
@@ -157,9 +188,12 @@ export function createOperatorAdviceFacade(
           auditEntryId: auditEntry.id,
         };
       } catch (error) {
-        deps.operatorAdviceRepository.unconsume(consumed.map((record) => record.id), {
-          turn_id: parsedOptions.turn_id,
-        });
+        deps.operatorAdviceRepository.unconsume(
+          consumed.map((record) => record.id),
+          {
+            turn_id: parsedOptions.turn_id,
+          },
+        );
         throw error;
       } finally {
         writer.close();
@@ -806,6 +840,55 @@ function createSessionsFacade(deps: BorgDependencies): BorgFacades["sessions"] {
   return {
     ensure: (...args) => deps.sessionsRepository.ensure(...args),
     touch: (...args) => deps.sessionsRepository.touch(...args),
+    setParticipationPolicy: async (sessionId, policy, opts) => {
+      const current = deps.sessionsRepository.get(sessionId);
+
+      if (current === null) {
+        throw new StorageError(`Session ${sessionId} not found`, {
+          code: "SESSION_NOT_FOUND",
+        });
+      }
+
+      const previousPolicy = current.participation_policy;
+      const updated = deps.sessionsRepository.setParticipationPolicy(sessionId, policy);
+
+      if (updated === null) {
+        throw new StorageError(`Session ${sessionId} not found`, {
+          code: "SESSION_NOT_FOUND",
+        });
+      }
+
+      const writer = deps.createStreamWriter(sessionId);
+      try {
+        await writer.append({
+          kind: "internal_event",
+          content: {
+            event: "participation_policy.changed",
+            session_id: sessionId,
+            previous: previousPolicy,
+            next: policy,
+            reason: opts?.reason ?? null,
+            operator: true,
+          },
+        });
+      } catch (error) {
+        if (isCommittedStreamIndexUpdateFailure(error)) {
+          throw error;
+        }
+
+        try {
+          deps.sessionsRepository.setParticipationPolicy(sessionId, previousPolicy);
+        } catch (rollbackError) {
+          throw participationPolicyRollbackFailedError(error, rollbackError);
+        }
+
+        throw error;
+      } finally {
+        writer.close();
+      }
+
+      return updated;
+    },
     get: (...args) => deps.sessionsRepository.get(...args),
     list: (...args) => deps.sessionsRepository.list(...args),
   };

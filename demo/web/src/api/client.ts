@@ -41,6 +41,8 @@ import type {
   ReviewRow,
   MemoryBandsResponse,
   SemanticGraphResponse,
+  SessionParticipationPolicy,
+  SessionRecord,
   SessionsResponse,
   SharedStateResponse,
   StateSnapshot,
@@ -168,6 +170,24 @@ export async function getState(input: { session?: string } = {}): Promise<StateS
 
 export async function getSessions(): Promise<SessionsResponse> {
   return fetchJson<SessionsResponse>("api/sessions");
+}
+
+export async function setSessionPolicy(
+  sessionId: string,
+  policy: SessionParticipationPolicy,
+  reason?: string,
+): Promise<SessionRecord> {
+  const trimmedReason = reason?.trim();
+
+  return fetchJson<SessionRecord>(`api/sessions/${encodeURIComponent(sessionId)}/participation`, {
+    method: "POST",
+    body: JSON.stringify({
+      policy,
+      ...(trimmedReason === undefined || trimmedReason.length === 0
+        ? {}
+        : { reason: trimmedReason }),
+    }),
+  });
 }
 
 export async function postAdvice(input: QueueAdviceRequest): Promise<OperatorAdviceRecord> {

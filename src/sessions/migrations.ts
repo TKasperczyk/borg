@@ -37,4 +37,16 @@ export const sessionMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "sessions_participation_policy",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE sessions
+          ADD COLUMN participation_policy TEXT NOT NULL DEFAULT 'active' CHECK (
+            participation_policy IN ('active', 'paused', 'observing', 'muted')
+          );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

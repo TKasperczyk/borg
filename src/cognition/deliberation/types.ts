@@ -47,6 +47,7 @@ import type { ActiveParticipant, ParticipantProfileContext } from "../participan
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { PromptKey } from "../prompts/registry.js";
+import type { SessionParticipationPolicy } from "../../sessions/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -99,6 +100,7 @@ export type SelfSnapshot = {
 
 export type DeliberationContext = {
   sessionId: SessionId;
+  participationPolicy?: SessionParticipationPolicy;
   turnId?: string;
   audience?: string;
   audienceEntityId?: EntityId | null;

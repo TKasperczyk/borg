@@ -121,22 +121,123 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
 ] as const;
 
-const EMISSION_FINALIZER_INSTRUCTIONS = [
-  "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
-  "",
-  "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.",
-  "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal. In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.",
-  "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
+export type EmissionToolName = (typeof EMISSION_FINALIZER_TOOL_NAMES)[number];
+
+const EMIT_ANSWER_FINALIZER_INSTRUCTION =
+  "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.";
+const EMIT_OBSERVE_FINALIZER_INSTRUCTION =
+  "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal.";
+const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION =
+  "Use EmitNoOutput to produce no assistant message for this turn. Put a concise reason in reason.";
+const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
+  "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
+const EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS = [
   'When emitting EmitNoOutput, choose ONE primary_no_output_reason that best captures why silence is the right output: "closure" when the message is a closure-shaped wrap-up, goodbye, sign-off, or terminal beat; "user_to_user" when the current message is between two human participants and Borg was not addressed; "when_borg_addressed" when Borg was explicitly addressed but no useful response is warranted (rare); "low_value_echo" when any visible response would only acknowledge or echo with no new content; "other" for any other principled reason for silence.',
   'When emitting EmitNoOutput, classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and Borg was not addressed; "when_borg_addressed" if Borg was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, list all. Use [] if uncertain.',
-  "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
-  "",
+] as const;
+
+const COMMON_FINALIZER_INSTRUCTIONS = [
   "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
   RELATIONSHIP_LABELS_PROMPT,
   "Use the Attribution Matrix and Attribution Sidebar as authoritative for who said, committed, decided, or reasoned what. Assistant rationale entries are Borg's prior reasoning, not participant claims.",
   "When a named entity is supported by evidence that uses only a pronoun or descriptive noun phrase for the predicate, do not present the name and predicate together unless the prompt-visible evidence also establishes that the name belongs to that entity.",
   "If the discourse-state section declares HARD CONSTRAINT - CLOSURE PRESSURE, treat it as binding. Do not append a sign-off, valediction, weather observation, single-line noted/held acknowledgment, or any sentence that reads as a coda. End on substantive content or call EmitNoOutput.",
-].join("\n");
+] as const;
+
+function resolveAvailableEmissionNames(
+  allowedEmissions: readonly EmissionToolName[] | undefined,
+): EmissionToolName[] {
+  if (allowedEmissions === undefined) {
+    return [...EMISSION_FINALIZER_TOOL_NAMES];
+  }
+
+  const allowed = new Set(allowedEmissions);
+  return EMISSION_FINALIZER_TOOL_NAMES.filter((name) => allowed.has(name));
+}
+
+function formatEmissionToolList(names: readonly EmissionToolName[]): string {
+  if (names.length === 0) {
+    return "no terminal tools";
+  }
+
+  if (names.length === 1) {
+    return names[0]!;
+  }
+
+  if (names.length === 2) {
+    return `${names[0]!} and ${names[1]!}`;
+  }
+
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]!}`;
+}
+
+function buildEmissionToolInstructions(
+  availableEmissionNames: readonly EmissionToolName[],
+): string {
+  const available = new Set(availableEmissionNames);
+  const noOutputInstructions = [
+    EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION,
+    ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
+  ];
+
+  if (availableEmissionNames.length === 1 && available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)) {
+    return ["Your only available terminal tool is EmitNoOutput.", "", ...noOutputInstructions].join(
+      "\n",
+    );
+  }
+
+  if (
+    availableEmissionNames.length === 2 &&
+    available.has(EMIT_OBSERVE_FINALIZER_TOOL_NAME) &&
+    available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)
+  ) {
+    return [
+      "Your available terminal tools are EmitObserve and EmitNoOutput.",
+      "",
+      EMIT_OBSERVE_FINALIZER_INSTRUCTION,
+      ...noOutputInstructions,
+    ].join("\n");
+  }
+
+  if (availableEmissionNames.length === EMISSION_FINALIZER_TOOL_NAMES.length) {
+    return [
+      "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
+      "",
+      EMIT_ANSWER_FINALIZER_INSTRUCTION,
+      `${EMIT_OBSERVE_FINALIZER_INSTRUCTION} In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.`,
+      "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
+      ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
+      EMIT_SELF_REPORT_FINALIZER_INSTRUCTION,
+    ].join("\n");
+  }
+
+  if (availableEmissionNames.length === 0) {
+    return "No terminal emission tools are available.";
+  }
+
+  return [
+    `Your available terminal tools are ${formatEmissionToolList(availableEmissionNames)}.`,
+    "",
+    ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ? [EMIT_ANSWER_FINALIZER_INSTRUCTION] : []),
+    ...(available.has(EMIT_OBSERVE_FINALIZER_TOOL_NAME)
+      ? [EMIT_OBSERVE_FINALIZER_INSTRUCTION]
+      : []),
+    ...(available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME) ? noOutputInstructions : []),
+    ...(available.has(EMIT_SELF_REPORT_FINALIZER_TOOL_NAME)
+      ? [EMIT_SELF_REPORT_FINALIZER_INSTRUCTION]
+      : []),
+  ].join("\n");
+}
+
+function buildEmissionFinalizerInstructions(
+  allowedEmissions: readonly EmissionToolName[] | undefined,
+): string {
+  return [
+    buildEmissionToolInstructions(resolveAvailableEmissionNames(allowedEmissions)),
+    "",
+    ...COMMON_FINALIZER_INSTRUCTIONS,
+  ].join("\n");
+}
 
 // Sprint 9.9: the static prefix is currently ~1,845 estimated tokens, below
 // Opus's 4,096-token cache minimum. The marker is a no-op today but is kept
@@ -167,6 +268,7 @@ export type RunFinalizerOptions = {
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
+  allowedEmissions?: readonly EmissionToolName[];
   structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
   tracer?: TurnTracer;
   turnId?: string;
@@ -219,9 +321,11 @@ function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
 }
 
 function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
+  const finalizerInstructions = buildEmissionFinalizerInstructions(options.allowedEmissions);
+
   return options.cacheableSystemPrompt === undefined
-    ? EMISSION_FINALIZER_INSTRUCTIONS
-    : [EMISSION_FINALIZER_INSTRUCTIONS, options.cacheableSystemPrompt.staticPrefix].join("\n\n");
+    ? finalizerInstructions
+    : [finalizerInstructions, options.cacheableSystemPrompt.staticPrefix].join("\n\n");
 }
 
 function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {
@@ -398,6 +502,13 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
   const systemPrompt = buildSystemPrompt(options);
+  const allowedEmissionNames = new Set<string>(
+    resolveAvailableEmissionNames(options.allowedEmissions),
+  );
+  const emissionTools = EMISSION_FINALIZER_TOOLS.filter((tool) =>
+    allowedEmissionNames.has(tool.name),
+  );
+  const terminalToolNames = emissionTools.map((tool) => tool.name);
   let tokenSequence = 0;
 
   const result = await executeToolLoop({
@@ -408,17 +519,17 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     model: options.model,
     systemPrompt,
     initialMessages: options.initialMessages,
-    tools: [...EMISSION_FINALIZER_TOOLS],
+    tools: emissionTools,
     origin: "deliberator",
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    toolChoice: { type: "any" as const },
+    ...(emissionTools.length === 0 ? {} : { toolChoice: { type: "any" as const } }),
     budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
     tracer: options.tracer,
     turnId: options.turnId,
     traceLabel: `${options.path}_finalizer`,
-    terminalToolNames: EMISSION_FINALIZER_TOOL_NAMES,
+    terminalToolNames,
     stream: true,
     onTextDelta: (chunkText) => {
       tokenSequence += 1;

@@ -60,6 +60,8 @@ export async function runDeliberationPhase(input: {
   participantRoster: ParticipantRoster | null;
 }): Promise<TurnDeliberationPhaseResult> {
   const promptBlocks = resolvePromptBlockOverrides(input.options.promptOverrideRepository);
+  const participationPolicy =
+    input.options.sessionsRepository?.get(input.sessionId)?.participation_policy ?? "active";
   const deliberator = new Deliberator({
     llmClient: input.llmClient,
     toolDispatcher: input.options.toolDispatcher,
@@ -90,6 +92,7 @@ export async function runDeliberationPhase(input: {
   const deliberation = await deliberator.run(
     {
       sessionId: input.sessionId,
+      participationPolicy,
       turnId: input.turnId,
       audience: input.turnInput.audience,
       audienceEntityId: input.audienceEntityId,

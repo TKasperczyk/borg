@@ -1303,6 +1303,47 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
   });
 
+  it("renders participation policy guidance above operator advice and omits active policy", () => {
+    const activePrompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      participationPolicy: "active",
+    });
+
+    expect(activePrompt).not.toContain("<borg_participation_policy>");
+
+    const policyCases = [
+      {
+        policy: "paused" as const,
+        text: "The operator has paused your participation in this conversation. The only available emission is EmitNoOutput.",
+      },
+      {
+        policy: "observing" as const,
+        text: "The operator has set you to observing for this conversation. The available emissions are EmitObserve or EmitNoOutput.",
+      },
+      {
+        policy: "muted" as const,
+        text: "The operator has muted you in this conversation. The only available emission is EmitNoOutput.",
+      },
+    ];
+
+    for (const { policy, text } of policyCases) {
+      const prompt = buildBaseSystemPrompt(makeContext(), {
+        ...PROMPT_OPTIONS,
+        participationPolicy: policy,
+        operatorAdvice: {
+          text: "Operator advice text.",
+          ids: ["adv_test"],
+        },
+      });
+
+      expect(prompt).toContain("<borg_participation_policy>");
+      expect(prompt).toContain(text);
+      expect(prompt.indexOf("<borg_participation_policy>")).toBeLessThan(
+        prompt.indexOf("<borg_operator_advice>"),
+      );
+    }
+  });
+
   it("substitutes operator-provided prompt block overrides for the 5 editable sections", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), {
       ...PROMPT_OPTIONS,

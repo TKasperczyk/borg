@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 
-import { deleteAdvice, getAdviceHistory, getAdvicePending, getStream, postAdvice } from "../../api/client";
+import {
+  deleteAdvice,
+  getAdviceHistory,
+  getAdvicePending,
+  getStream,
+  postAdvice,
+  setSessionPolicy,
+} from "../../api/client";
 import type {
   OperatorAdviceRecord,
+  SessionParticipationPolicy,
+  SessionRecord,
   StreamChatKind,
   StreamEntry,
   TurnStakes,
@@ -23,6 +32,8 @@ export type CognitionScreenProps = {
   sessionId: string;
   audience: string;
   turnStream: TurnStreamState;
+  session?: SessionRecord | null;
+  onSessionPolicyChanged?: () => Promise<void>;
 };
 
 function isChatEntry(entry: StreamEntry, sessionId: string, audience: string): boolean {
@@ -33,7 +44,9 @@ function isChatEntry(entry: StreamEntry, sessionId: string, audience: string): b
   );
 }
 
-function adviceStatus(record: OperatorAdviceRecord): "pending" | "consumed" | "canceled" | "expired" {
+function adviceStatus(
+  record: OperatorAdviceRecord,
+): "pending" | "consumed" | "canceled" | "expired" {
   if (record.consumed_at !== null) {
     return "consumed";
   }
@@ -168,11 +181,111 @@ function OperatorAdvicePanel({
   );
 }
 
-export function CognitionScreen({ sessionId, audience, turnStream }: CognitionScreenProps) {
+const PARTICIPATION_POLICIES: readonly SessionParticipationPolicy[] = [
+  "active",
+  "paused",
+  "observing",
+  "muted",
+];
+
+function ParticipationPolicyControl({
+  sessionId,
+  policy,
+  onChanged,
+}: {
+  sessionId: string;
+  policy: SessionParticipationPolicy;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedPolicy, setSelectedPolicy] = useState<SessionParticipationPolicy>(policy);
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedPolicy(policy);
+    setReason("");
+  }, [policy, sessionId]);
+
+  const submit = () => {
+    if (submitting) {
+      return;
+    }
+
+    void (async () => {
+      setSubmitting(true);
+      setError(null);
+      try {
+        await setSessionPolicy(sessionId, selectedPolicy, reason);
+        setReason("");
+        setOpen(false);
+        await onChanged();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  };
+
+  return (
+    <section className="participation-policy" aria-label="Participation policy">
+      <div className="participation-policy-head">
+        <span className="participation-policy-title">Participation</span>
+        <button
+          className={`participation-policy-badge ${policy === "active" ? "active" : "warn"}`}
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          aria-label={`participation policy ${policy}`}
+        >
+          {policy}
+        </button>
+      </div>
+      {open ? (
+        <div className="participation-policy-editor">
+          <select
+            aria-label="participation policy selection"
+            value={selectedPolicy}
+            onChange={(event) =>
+              setSelectedPolicy(event.target.value as SessionParticipationPolicy)
+            }
+          >
+            {PARTICIPATION_POLICIES.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label="participation policy reason"
+            value={reason}
+            maxLength={500}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="reason"
+          />
+          <button className="btn sm primary" type="button" onClick={submit} disabled={submitting}>
+            apply
+          </button>
+        </div>
+      ) : null}
+      {error === null ? null : <div className="participation-policy-error">{error}</div>}
+    </section>
+  );
+}
+
+export function CognitionScreen({
+  sessionId,
+  audience,
+  turnStream,
+  session = null,
+  onSessionPolicyChanged,
+}: CognitionScreenProps) {
   const live = useLiveEventsContext();
   const [chatEntries, setChatEntries] = useState<StreamEntry[]>([]);
   const previousConnectionCountRef = useRef(live.connectionCount);
   const adviceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const participationPolicy = session?.participation_policy ?? "active";
 
   const streamApi = useApi(
     () => getStream({ session: sessionId, audience, kinds: CHAT_KINDS, limit: 50 }),
@@ -299,6 +412,11 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
           sessionId={sessionId}
           audience={audience}
           running={turnStream.running}
+        />
+        <ParticipationPolicyControl
+          sessionId={sessionId}
+          policy={participationPolicy}
+          onChanged={onSessionPolicyChanged ?? (async () => undefined)}
         />
         <OperatorAdvicePanel
           sessionId={sessionId}

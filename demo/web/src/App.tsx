@@ -38,6 +38,12 @@ export function App() {
   const refetchSessions = sessionsApi.refetch;
   const live = useLiveEvents({ onReconnected: refetchState, sessionId });
   const turnStream = useTurnStream(live, { sessionId });
+  const activeSession =
+    sessionsApi.data?.sessions.find((session) => session.session_id === sessionId) ?? null;
+
+  const refetchSessionState = async () => {
+    await Promise.all([refetchSessions(), refetchState()]);
+  };
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(formatNow()), 1_000);
@@ -79,6 +85,8 @@ export function App() {
                 sessionId={sessionId}
                 audience={AUDIENCE}
                 turnStream={turnStream}
+                session={activeSession}
+                onSessionPolicyChanged={refetchSessionState}
               />
             ) : null}
             {route === "stream" ? <StreamScreen sessionId={sessionId} /> : null}

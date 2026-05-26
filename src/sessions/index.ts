@@ -1,11 +1,9 @@
 export { sessionMigrations } from "./migrations.js";
-export {
-  SessionsRepository,
-  type SessionsRepositoryOptions,
-} from "./repository.js";
+export { SessionsRepository, type SessionsRepositoryOptions } from "./repository.js";
 export {
   CONVERSATION_KINDS,
   SESSION_PRIVACY_LEVELS,
+  SESSION_PARTICIPATION_POLICIES,
   SESSION_SOURCE_TYPES,
   SESSION_STATUSES,
   conversationKindSchema,
@@ -13,6 +11,7 @@ export {
   sessionEnsureInputSchema,
   sessionIdSchema,
   sessionListOptionsSchema,
+  sessionParticipationPolicySchema,
   sessionPrivacyLevelSchema,
   sessionRecordSchema,
   sessionSourceTypeSchema,
@@ -21,6 +20,7 @@ export {
   type ConversationKind,
   type SessionEnsureInput,
   type SessionListOptions,
+  type SessionParticipationPolicy,
   type SessionPrivacyLevel,
   type SessionRecord,
   type SessionSourceType,

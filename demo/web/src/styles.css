@@ -796,6 +796,76 @@ body {
   padding: 16px 18px 12px 18px;
   font-size: var(--fs-md);
 }
+.participation-policy {
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 8px 18px;
+  flex: 0 0 auto;
+}
+.participation-policy-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.participation-policy-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.participation-policy-badge {
+  margin-left: auto;
+  min-width: 78px;
+  height: 22px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.participation-policy-badge.active {
+  color: var(--acc);
+  border-color: var(--acc-dim);
+  background: oklch(0.84 0.155 142 / 0.08);
+}
+.participation-policy-badge.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: oklch(0.835 0.135 85 / 0.16);
+}
+.participation-policy-editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 8px;
+}
+.participation-policy-editor select,
+.participation-policy-editor input {
+  min-width: 0;
+  height: 26px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  outline: none;
+}
+.participation-policy-editor select:focus,
+.participation-policy-editor input:focus {
+  border-color: var(--acc-dim);
+  box-shadow: 0 0 0 1px var(--acc-dim);
+}
+.participation-policy-editor input::placeholder {
+  color: var(--text-faint);
+}
+.participation-policy-error {
+  margin-top: 8px;
+  color: var(--bad);
+  font-size: 11px;
+}
 .operator-advice {
   border-top: 1px solid var(--line);
   background: var(--bg-1);

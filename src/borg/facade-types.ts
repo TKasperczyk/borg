@@ -52,6 +52,7 @@ import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/inde
 import type {
   SessionEnsureInput,
   SessionListOptions,
+  SessionParticipationPolicy,
   SessionRecord,
   SessionTouchUpdate,
 } from "../sessions/index.js";
@@ -483,6 +484,11 @@ export type BorgPromptsFacade = {
 export type BorgSessionsFacade = {
   ensure(input: SessionEnsureInput): SessionRecord;
   touch(sessionId: SessionId, update?: SessionTouchUpdate): SessionRecord | null;
+  setParticipationPolicy(
+    sessionId: SessionId,
+    policy: SessionParticipationPolicy,
+    opts?: { reason?: string },
+  ): Promise<SessionRecord>;
   get(sessionId: SessionId): SessionRecord | null;
   list(options?: SessionListOptions): SessionRecord[];
 };

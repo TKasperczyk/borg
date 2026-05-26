@@ -127,6 +127,31 @@ function requestSystemText(system: unknown): string {
     .join("\n\n");
 }
 
+function firstSystemBlockText(system: unknown): string {
+  if (typeof system === "string") {
+    return system;
+  }
+
+  if (!Array.isArray(system)) {
+    return "";
+  }
+
+  const first = system[0];
+  return first !== null &&
+    typeof first === "object" &&
+    "text" in first &&
+    typeof first.text === "string"
+    ? first.text
+    : "";
+}
+
+function finalizerInstructionPrefix(system: unknown): string {
+  const firstBlock = firstSystemBlockText(system);
+  const basePromptStart = firstBlock.indexOf("\n\nYou are an AI being");
+
+  return basePromptStart === -1 ? firstBlock : firstBlock.slice(0, basePromptStart);
+}
+
 function createToolDispatcher(tempDirs: string[]): ToolDispatcher {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
   tempDirs.push(tempDir);
@@ -1444,6 +1469,125 @@ describe("deliberator", () => {
     ]);
     expect(result.response).toBe("Answer");
     expect(result.tool_calls).toEqual([]);
+  });
+
+  it("filters finalizer emission tools to observation tools when participation is observing", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_observe",
+          name: "EmitObserve",
+          input: { reason: "The operator set observing mode." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        participationPolicy: "observing",
+      }),
+    );
+
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitObserve",
+      "EmitNoOutput",
+    ]);
+    const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
+    expect(finalizerInstructions).toContain(
+      "Your available terminal tools are EmitObserve and EmitNoOutput.",
+    );
+    expect(finalizerInstructions).not.toContain("EmitAnswer");
+    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "observed",
+      reason: "The operator set observing mode.",
+    });
+  });
+
+  it("filters finalizer emission tools to no-output only when participation is paused", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_no_output",
+          name: "EmitNoOutput",
+          input: {
+            reason: "The operator paused participation.",
+            primary_no_output_reason: "other",
+            no_output_categories: [],
+          },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        participationPolicy: "paused",
+      }),
+    );
+
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
+    expect(finalizerInstructions).toContain("Your only available terminal tool is EmitNoOutput.");
+    expect(finalizerInstructions).not.toContain("EmitAnswer");
+    expect(finalizerInstructions).not.toContain("EmitObserve");
+    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    const system = requestSystemText(llm.converseRequests[0]?.system);
+    expect(system).toContain(
+      "The operator has paused your participation in this conversation. The only available emission is EmitNoOutput.",
+    );
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_no_output",
+      no_output_categories: [],
+      primary_no_output_reason: "other",
+      structural_no_output_flags: [],
+    });
+  });
+
+  it("filters finalizer emission tools to no-output only when participation is muted", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_no_output",
+          name: "EmitNoOutput",
+          input: {
+            reason: "The operator muted participation.",
+            primary_no_output_reason: "other",
+            no_output_categories: [],
+          },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        participationPolicy: "muted",
+      }),
+    );
+
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
+    expect(finalizerInstructions).toContain("Your only available terminal tool is EmitNoOutput.");
+    expect(finalizerInstructions).not.toContain("EmitAnswer");
+    expect(finalizerInstructions).not.toContain("EmitObserve");
+    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    const system = requestSystemText(llm.converseRequests[0]?.system);
+    expect(system).toContain(
+      "The operator has muted you in this conversation. The only available emission is EmitNoOutput.",
+    );
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_no_output",
+      no_output_categories: [],
+      primary_no_output_reason: "other",
+      structural_no_output_flags: [],
+    });
   });
 
   it("prepends recency messages on the S2 planner and finalizer", async () => {

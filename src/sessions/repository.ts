@@ -7,10 +7,12 @@ import {
   sessionEnsureInputSchema,
   sessionIdSchema,
   sessionListOptionsSchema,
+  sessionParticipationPolicySchema,
   sessionRecordSchema,
   sessionTouchUpdateSchema,
   type SessionEnsureInput,
   type SessionListOptions,
+  type SessionParticipationPolicy,
   type SessionRecord,
   type SessionTouchUpdate,
 } from "./types.js";
@@ -33,6 +35,7 @@ type SessionRow = {
   message_count: number;
   status: string;
   privacy_level: string;
+  participation_policy: string;
 };
 
 export type SessionsRepositoryOptions = {
@@ -145,6 +148,28 @@ export class SessionsRepository {
     return this.get(parsedSessionId);
   }
 
+  setParticipationPolicy(
+    sessionId: SessionId,
+    policy: SessionParticipationPolicy,
+    options?: { now?: number },
+  ): SessionRecord | null {
+    const parsedSessionId = sessionIdSchema.parse(sessionId);
+    const parsedPolicy = sessionParticipationPolicySchema.parse(policy);
+    void options;
+
+    this.db
+      .prepare(
+        `
+          UPDATE sessions
+          SET participation_policy = ?
+          WHERE session_id = ?
+        `,
+      )
+      .run(parsedPolicy, parsedSessionId);
+
+    return this.get(parsedSessionId);
+  }
+
   get(sessionId: SessionId): SessionRecord | null {
     const parsedSessionId = sessionIdSchema.parse(sessionId);
     const row = this.db
@@ -153,7 +178,7 @@ export class SessionsRepository {
           SELECT
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
-            message_count, status, privacy_level
+            message_count, status, privacy_level, participation_policy
           FROM sessions
           WHERE session_id = ?
         `,
@@ -187,7 +212,7 @@ export class SessionsRepository {
           SELECT
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
-            message_count, status, privacy_level
+            message_count, status, privacy_level, participation_policy
           FROM sessions
           ${where}
           ORDER BY last_activity_at DESC, session_id ASC
