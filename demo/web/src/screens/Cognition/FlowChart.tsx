@@ -40,23 +40,116 @@ function terminalLabel(outcome: TurnTerminalOutcome | null): string {
   return outcome === null ? "waiting" : outcome;
 }
 
+type BranchInfo = { label: string; active: boolean };
+
 function suppressionFor(
   phaseId: string,
   outcome: TurnTerminalOutcome | null,
-): { label: string; active: boolean } | null {
+): BranchInfo | null {
   if (phaseId === "closure_loop") {
-    return { label: "→ closure suppress", active: outcome === "suppressed_closure" };
+    return { label: "closure suppress", active: outcome === "suppressed_closure" };
   }
   if (phaseId === "generation_gate") {
-    return { label: "→ gate suppress", active: outcome === "suppressed_generation_gate" };
+    return { label: "gate suppress", active: outcome === "suppressed_generation_gate" };
   }
   if (phaseId === "guards") {
-    return { label: "→ guards trip", active: outcome === "suppressed_action" };
+    return { label: "guards trip", active: outcome === "suppressed_action" };
   }
   return null;
 }
 
 function PhasePill({
+  phase,
+  finalAttempt,
+}: {
+  phase: PhaseState;
+  finalAttempt: number;
+}) {
+  return (
+    <div className={`flow-pill ${phase.status}`} data-testid={`phase-${phase.id}`}>
+      <div className="flow-pill-head">
+        <span className="flow-pill-glyph" aria-hidden="true">
+          {phaseGlyph(phase.status)}
+        </span>
+        <span className="flow-pill-name">{phase.name}</span>
+      </div>
+      <div className="flow-pill-foot">
+        {phase.id === "final" && finalAttempt > 1 ? (
+          <span className="flow-attempt-badge" title="finalizer re-invoked after a guard trip">
+            attempt {finalAttempt}
+          </span>
+        ) : phase.durationMs !== undefined ? (
+          <span className="flow-pill-time">{Math.round(phase.durationMs)}ms</span>
+        ) : (
+          <span className="flow-pill-sub-text">{phase.sub === "waiting" ? "queued" : phase.sub}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DelibLanesBelow({
+  delibPath,
+  touched,
+}: {
+  delibPath: "system_1" | "system_2" | null;
+  touched: boolean;
+}) {
+  return (
+    <div className="flow-down-group" aria-label="deliberation path">
+      <span className="flow-down-connector" aria-hidden="true">
+        │
+      </span>
+      <div className="flow-fork">
+        <div
+          className={`flow-fork-lane${touched && delibPath === "system_1" ? " active" : ""}${
+            touched && delibPath !== null && delibPath !== "system_1" ? " unchosen" : ""
+          }`}
+          title="System 1: ledger sufficient, no LLM planning"
+        >
+          <span className="flow-fork-tag">S1</span>
+          <span className="flow-fork-desc">fast path</span>
+        </div>
+        <div
+          className={`flow-fork-lane${touched && delibPath === "system_2" ? " active" : ""}${
+            touched && delibPath !== null && delibPath !== "system_2" ? " unchosen" : ""
+          }`}
+          title="System 2: EmitTurnPlan reasoning before answer"
+        >
+          <span className="flow-fork-tag">S2</span>
+          <span className="flow-fork-desc">EmitTurnPlan</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BranchBelow({ branch }: { branch: BranchInfo }) {
+  return (
+    <div className={`flow-down-group${branch.active ? " active" : ""}`} aria-label={branch.label}>
+      <span className="flow-down-connector" aria-hidden="true">
+        │
+      </span>
+      <div className={`flow-branch-terminal${branch.active ? " active" : ""}`}>{branch.label}</div>
+    </div>
+  );
+}
+
+function RegenBacklink({ active }: { active: boolean }) {
+  return (
+    <div className={`flow-down-group regen${active ? " active" : ""}`} aria-label="regeneration loop">
+      <span className="flow-down-connector" aria-hidden="true">
+        │
+      </span>
+      <div className={`flow-branch-terminal regen${active ? " active" : ""}`}>
+        <span aria-hidden="true">↻</span>
+        <span>regen → final</span>
+      </div>
+    </div>
+  );
+}
+
+function PhaseColumn({
   phase,
   delibPath,
   finalAttempt,
@@ -67,60 +160,15 @@ function PhasePill({
   finalAttempt: number;
   terminalOutcome: TurnTerminalOutcome | null;
 }) {
+  const branch = suppressionFor(phase.id, terminalOutcome);
   const touched = isTouched(phase.status);
-  const suppression = suppressionFor(phase.id, terminalOutcome);
 
   return (
-    <div
-      className={`flow-pill ${phase.status}${touched ? " touched" : ""}`}
-      data-testid={`phase-${phase.id}`}
-    >
-      <div className="flow-pill-head">
-        <span className="flow-pill-glyph" aria-hidden="true">
-          {phaseGlyph(phase.status)}
-        </span>
-        <span className="flow-pill-name">{phase.name}</span>
-        <span className="flow-pill-time">
-          {phase.durationMs === undefined ? "" : `${Math.round(phase.durationMs)}ms`}
-        </span>
-      </div>
-
-      {phase.id === "delib" ? (
-        <div className="flow-pill-lanes">
-          <span
-            className={`flow-mini-lane${touched && delibPath === "system_1" ? " active" : ""}${
-              touched && delibPath !== null && delibPath !== "system_1" ? " unchosen" : ""
-            }`}
-            title="System 1: ledger sufficient, no LLM planning"
-          >
-            S1
-          </span>
-          <span
-            className={`flow-mini-lane${touched && delibPath === "system_2" ? " active" : ""}${
-              touched && delibPath !== null && delibPath !== "system_2" ? " unchosen" : ""
-            }`}
-            title="System 2: EmitTurnPlan before answer"
-          >
-            S2
-          </span>
-        </div>
-      ) : phase.id === "final" && finalAttempt > 1 ? (
-        <div className="flow-pill-sub">
-          <span className="flow-attempt-badge" title="finalizer re-invoked after a guard trip">
-            attempt {finalAttempt}
-          </span>
-        </div>
-      ) : (
-        <div className="flow-pill-sub">
-          <span className="flow-pill-sub-text">{phase.sub === "waiting" ? "queued" : phase.sub}</span>
-        </div>
-      )}
-
-      {suppression !== null ? (
-        <div className={`flow-pill-branch${suppression.active ? " active" : ""}`}>
-          {suppression.label}
-        </div>
-      ) : null}
+    <div className="flow-col">
+      <PhasePill phase={phase} finalAttempt={finalAttempt} />
+      {phase.id === "delib" ? <DelibLanesBelow delibPath={delibPath} touched={touched} /> : null}
+      {branch !== null ? <BranchBelow branch={branch} /> : null}
+      {phase.id === "guards" ? <RegenBacklink active={finalAttempt > 1} /> : null}
     </div>
   );
 }
@@ -138,8 +186,6 @@ function ActiveStreamPane({
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
 }) {
-  // Pick the streaming phase to show — preference: final if running, then delib
-  // if running, else the most recent streaming phase that has any text.
   const finalPhase = phases.find((p) => p.id === "final");
   const delibPhase = phases.find((p) => p.id === "delib");
 
@@ -215,17 +261,20 @@ export function FlowChart({
 
       <div className="flow-pipeline-wrap">
         <div className="flow-pipeline">
-          <div className="flow-pill input-pill" data-testid="phase-input">
-            <div className="flow-pill-head">
-              <span className="flow-pill-glyph" aria-hidden="true">
-                ▸
-              </span>
-              <span className="flow-pill-name">input</span>
+          {/* input start node */}
+          <div className="flow-col">
+            <div className="flow-pill input-pill" data-testid="phase-input">
+              <div className="flow-pill-head">
+                <span className="flow-pill-glyph" aria-hidden="true">
+                  ▸
+                </span>
+                <span className="flow-pill-name">input</span>
+              </div>
             </div>
           </div>
 
           {phases.map((phase) => (
-            <PhasePill
+            <PhaseColumn
               key={phase.id}
               phase={phase}
               delibPath={delibPath}
@@ -234,18 +283,21 @@ export function FlowChart({
             />
           ))}
 
-          <div
-            className={`flow-pill terminal-pill${terminalOutcome === null ? "" : " active touched"}`}
-            data-testid="phase-terminal"
-          >
-            <div className="flow-pill-head">
-              <span className="flow-pill-glyph" aria-hidden="true">
-                ⊙
-              </span>
-              <span className="flow-pill-name">terminal</span>
-            </div>
-            <div className="flow-pill-sub">
-              <span className="flow-pill-sub-text">{terminalLabel(terminalOutcome)}</span>
+          {/* terminal node */}
+          <div className="flow-col">
+            <div
+              className={`flow-pill terminal-pill${terminalOutcome === null ? "" : " active touched"}`}
+              data-testid="phase-terminal"
+            >
+              <div className="flow-pill-head">
+                <span className="flow-pill-glyph" aria-hidden="true">
+                  ⊙
+                </span>
+                <span className="flow-pill-name">terminal</span>
+              </div>
+              <div className="flow-pill-foot">
+                <span className="flow-pill-sub-text">{terminalLabel(terminalOutcome)}</span>
+              </div>
             </div>
           </div>
         </div>
