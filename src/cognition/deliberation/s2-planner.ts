@@ -10,7 +10,12 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
+import {
+  buildUsageTraceBlock,
+  emitTurnTokenFlushTrace,
+  emitTurnTokenTrace,
+  toTraceJsonValue,
+} from "../tracing/tracer.js";
 import { traceLlmCallResponse, traceLlmCallStarted } from "../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
@@ -115,17 +120,40 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     .filter((section): section is string => section !== null)
     .join("\n\n");
   const tools = [TURN_PLAN_TOOL];
-  let result = await callPlannerAttempt(options, systemPrompt, tools, options.dialogueMessages);
+  let tokenSequence = 0;
+  const onTextDelta = (chunkText: string) => {
+    tokenSequence += 1;
+    emitTurnTokenTrace({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      phase: "delib",
+      chunkText,
+      sequence: tokenSequence,
+    });
+  };
+  let result = await callPlannerAttempt(
+    options,
+    systemPrompt,
+    tools,
+    options.dialogueMessages,
+    onTextDelta,
+  );
   let usage = result.usage;
 
   if (result.extraction.plan === null) {
-    result = await callPlannerAttempt(options, systemPrompt, tools, [
-      ...options.dialogueMessages,
-      {
-        role: "user",
-        content: PLANNER_RETRY_HINT,
-      },
-    ]);
+    result = await callPlannerAttempt(
+      options,
+      systemPrompt,
+      tools,
+      [
+        ...options.dialogueMessages,
+        {
+          role: "user",
+          content: PLANNER_RETRY_HINT,
+        },
+      ],
+      onTextDelta,
+    );
     usage = aggregatePlannerUsage(usage, result.usage);
   }
 
@@ -138,6 +166,15 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       turnId: options.turnId,
       attempts: 2,
       lastResponseShape: summarizePlannerResponseShape(result.planner),
+    });
+  }
+
+  if (tokenSequence > 0) {
+    emitTurnTokenFlushTrace({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      phase: "delib",
+      fullText: result.planner.text,
     });
   }
 
@@ -191,6 +228,7 @@ async function callPlannerAttempt(
   systemPrompt: string,
   tools: readonly LLMToolDefinition[],
   messages: readonly LLMMessage[],
+  onTextDelta: (chunkText: string) => void,
 ): Promise<PlannerAttemptResult> {
   traceLlmCallStarted({
     tracer: options.tracer,
@@ -212,7 +250,7 @@ async function callPlannerAttempt(
         : undefined,
   });
 
-  const planner = await options.llmClient.complete({
+  const completeOptions = {
     model: options.model,
     system: systemPrompt,
     messages,
@@ -221,7 +259,14 @@ async function callPlannerAttempt(
     max_tokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
     budget: "cognition-plan",
-  });
+  } satisfies LLMCompleteOptions;
+  const planner =
+    options.llmClient.streamComplete === undefined
+      ? await options.llmClient.complete(completeOptions)
+      : await options.llmClient.streamComplete({
+          ...completeOptions,
+          onTextDelta,
+        });
   const extraction = extractTurnPlan(planner.tool_calls);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {

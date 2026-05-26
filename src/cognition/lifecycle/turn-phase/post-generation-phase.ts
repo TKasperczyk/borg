@@ -241,38 +241,48 @@ export async function runPostGenerationPhase(input: {
   const actionEmission: PendingTurnEmission = actionCoordinatorResult.actionEmission;
   const deliberation = actionCoordinatorResult.deliberation;
   input.lifecycleTracker.trackPendingActionMerges(actionResult.pending_action_merge_count ?? 0);
-  const persistedAgentEntry =
-    actionEmission.kind === "message"
-      ? await input.streamWriter.append({
-          kind: "agent_msg",
-          turn_id: input.turnId,
-          turn_status: ACTIVE_TURN_STATUS,
-          content: actionResult.response,
-          tool_calls: actionResult.tool_calls,
-          reply_target_entity_id: replyTargetEntityId(actionEmission.reply_target),
-          ...(actionEmission.persistence_class === undefined
-            ? {}
-            : { persistence_class: actionEmission.persistence_class }),
-          ...(input.turnInput.audience === undefined ? {} : { audience: input.turnInput.audience }),
-        })
-      : actionEmission.kind === "observed"
-        ? await input.options.discourseStateService.appendObservationMarker({
-            streamWriter: input.streamWriter,
-            reason: actionEmission.reason,
-            userEntryId: input.persistedUserEntryId,
-            turnId: input.turnId,
-            audience: input.turnInput.audience,
+  const persistedAgentEntry = await traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
+    turnId: input.turnId,
+    phase: "persist",
+    sub: `emission=${actionEmission.kind}`,
+    run: async () =>
+      actionEmission.kind === "message"
+        ? await input.streamWriter.append({
+            kind: "agent_msg",
+            turn_id: input.turnId,
+            turn_status: ACTIVE_TURN_STATUS,
+            content: actionResult.response,
+            tool_calls: actionResult.tool_calls,
+            reply_target_entity_id: replyTargetEntityId(actionEmission.reply_target),
+            ...(actionEmission.persistence_class === undefined
+              ? {}
+              : { persistence_class: actionEmission.persistence_class }),
+            ...(input.turnInput.audience === undefined
+              ? {}
+              : { audience: input.turnInput.audience }),
           })
-        : await input.options.discourseStateService.appendSuppressionMarker({
-            streamWriter: input.streamWriter,
-            reason: actionEmission.reason,
-            userEntryId: input.persistedUserEntryId,
-            turnId: input.turnId,
-            audience: input.turnInput.audience,
-            noOutputCategories: actionEmission.no_output_categories,
-            primaryNoOutputReason: actionEmission.primary_no_output_reason,
-            structuralNoOutputFlags: actionEmission.structural_no_output_flags,
-          });
+        : actionEmission.kind === "observed"
+          ? await input.options.discourseStateService.appendObservationMarker({
+              streamWriter: input.streamWriter,
+              reason: actionEmission.reason,
+              userEntryId: input.persistedUserEntryId,
+              turnId: input.turnId,
+              audience: input.turnInput.audience,
+            })
+          : await input.options.discourseStateService.appendSuppressionMarker({
+              streamWriter: input.streamWriter,
+              reason: actionEmission.reason,
+              userEntryId: input.persistedUserEntryId,
+              turnId: input.turnId,
+              audience: input.turnInput.audience,
+              noOutputCategories: actionEmission.no_output_categories,
+              primaryNoOutputReason: actionEmission.primary_no_output_reason,
+              structuralNoOutputFlags: actionEmission.structural_no_output_flags,
+            }),
+    completedSub: (entry) => `entry=${entry.kind}`,
+  });
 
   if (actionEmission.kind === "suppressed") {
     return suppressFromActionPhase({
@@ -502,12 +512,21 @@ export async function suppressFromClosureLoopPhase(input: {
       updated_at: input.options.clock.now(),
     },
   });
-  const suppressionMarker = await input.options.discourseStateService.appendSuppressionMarker({
-    streamWriter: input.streamWriter,
-    reason: "finalizer_no_output",
-    userEntryId: input.persistedUserEntryId,
+  const suppressionMarker = await traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
     turnId: input.turnId,
-    audience: input.turnInput.audience,
+    phase: "persist",
+    sub: "suppressed_closure",
+    run: () =>
+      input.options.discourseStateService.appendSuppressionMarker({
+        streamWriter: input.streamWriter,
+        reason: "finalizer_no_output",
+        userEntryId: input.persistedUserEntryId,
+        turnId: input.turnId,
+        audience: input.turnInput.audience,
+      }),
+    completedSub: (entry) => `entry=${entry.kind}`,
   });
   const suppressionEmission: TurnEmission = {
     kind: "suppressed",
@@ -606,12 +625,21 @@ export async function suppressFromGenerationGatePhase(input: {
       updated_at: input.options.clock.now(),
     },
   });
-  const suppressionMarker = await input.options.discourseStateService.appendSuppressionMarker({
-    streamWriter: input.streamWriter,
-    reason: suppressionReason,
-    userEntryId: input.persistedUserEntryId,
+  const suppressionMarker = await traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
     turnId: input.turnId,
-    audience: input.turnInput.audience,
+    phase: "persist",
+    sub: "suppressed_generation_gate",
+    run: () =>
+      input.options.discourseStateService.appendSuppressionMarker({
+        streamWriter: input.streamWriter,
+        reason: suppressionReason,
+        userEntryId: input.persistedUserEntryId,
+        turnId: input.turnId,
+        audience: input.turnInput.audience,
+      }),
+    completedSub: (entry) => `entry=${entry.kind}`,
   });
   const suppressionEmission: TurnEmission = {
     kind: "suppressed",

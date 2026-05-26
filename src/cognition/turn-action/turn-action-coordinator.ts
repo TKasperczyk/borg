@@ -11,6 +11,7 @@ import type { DeliberationResult } from "../deliberation/deliberator.js";
 import type { ClosureLoopDialogueAct } from "../generation/closure-loop.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
+import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
 import {
@@ -223,62 +224,17 @@ export class TurnActionCoordinator {
       onPendingActionRejected: (event: PendingActionRejection) => void;
     },
   ): Promise<{ actionResult: ActionResult; deliberation: DeliberationResult }> {
-    let currentDeliberation = input.deliberation;
-    let currentDeliberationEmission: Extract<PendingTurnEmission, { kind: "message" }> =
-      input.deliberationEmission;
-    let commitmentCheck = await this.options.commitmentGuardRunner.run({
-      llmClient: input.llmClient,
+    const guarded = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
       turnId: input.turnId,
-      response: currentDeliberation.response,
-      userMessage: input.userMessage,
-      cognitionInput: input.cognitionInput,
-      origin: input.origin,
-      autonomyTrigger: input.autonomyTrigger,
-      commitments: input.applicableCommitments,
-      relevantEntities: input.perceptionEntities,
-    });
-
-    if (commitmentCheck.emission.kind === "requires_regeneration") {
-      if (currentDeliberation.regenerateFinalResponse === undefined) {
-        emitRegenerationFailedTrace({
-          tracer: this.options.tracer,
-          turnId: input.turnId,
-          reason: "regeneration_not_supported",
-          regeneration: commitmentCheck.emission.regeneration,
-          commitments: input.applicableCommitments,
-        });
-        commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
-      } else {
-        currentDeliberation = await currentDeliberation.regenerateFinalResponse({
-          additionalPromptSections: [commitmentCheck.emission.regeneration.promptSection],
-        });
-        const regeneratedEmission = pendingEmissionFromDeliberation(currentDeliberation);
-
-        if (regeneratedEmission.kind !== "message") {
-          emitRegenerationFailedTrace({
-            tracer: this.options.tracer,
-            turnId: input.turnId,
-            reason: "regenerated_non_message_emission",
-            regeneration: commitmentCheck.emission.regeneration,
-            commitments: input.applicableCommitments,
-            regeneratedEmissionKind: regeneratedEmission.kind,
-            regeneratedEmissionReason: regeneratedEmission.reason,
-          });
-
-          return {
-            deliberation: currentDeliberation,
-            actionResult: await performAction({
-              response: "",
-              emission: regeneratedEmission,
-              toolCalls: currentDeliberation.tool_calls,
-              intents: currentDeliberation.intents,
-              workingMemory: input.workingMemory,
-            }),
-          };
-        }
-
-        currentDeliberationEmission = regeneratedEmission;
-        commitmentCheck = await this.options.commitmentGuardRunner.run({
+      phase: "guards",
+      sub: "commitment_post_generation",
+      run: async () => {
+        let currentDeliberation = input.deliberation;
+        let currentDeliberationEmission: Extract<PendingTurnEmission, { kind: "message" }> =
+          input.deliberationEmission;
+        let commitmentCheck = await this.options.commitmentGuardRunner.run({
           llmClient: input.llmClient,
           turnId: input.turnId,
           response: currentDeliberation.response,
@@ -288,50 +244,120 @@ export class TurnActionCoordinator {
           autonomyTrigger: input.autonomyTrigger,
           commitments: input.applicableCommitments,
           relevantEntities: input.perceptionEntities,
-          regenerationAttempted: true,
         });
-      }
-    }
 
-    if (commitmentCheck.emission.kind === "requires_regeneration") {
-      commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
-    }
+        if (commitmentCheck.emission.kind === "requires_regeneration") {
+          if (currentDeliberation.regenerateFinalResponse === undefined) {
+            emitRegenerationFailedTrace({
+              tracer: this.options.tracer,
+              turnId: input.turnId,
+              reason: "regeneration_not_supported",
+              regeneration: commitmentCheck.emission.regeneration,
+              commitments: input.applicableCommitments,
+            });
+            commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
+          } else {
+            currentDeliberation = await currentDeliberation.regenerateFinalResponse({
+              additionalPromptSections: [commitmentCheck.emission.regeneration.promptSection],
+            });
+            const regeneratedEmission = pendingEmissionFromDeliberation(currentDeliberation);
 
-    const rawCommitmentEmission = commitmentEmissionForAction(commitmentCheck);
-    const commitmentEmission =
-      rawCommitmentEmission.kind === "message"
-        ? withMessageMetadata(rawCommitmentEmission, currentDeliberationEmission)
-        : rawCommitmentEmission;
-    const guardedEmission =
-      commitmentEmission.kind === "suppressed"
-        ? commitmentEmission
-        : withMessageMetadata(
-            await this.options.postGenerationGuardRunner.run({
+            if (regeneratedEmission.kind !== "message") {
+              emitRegenerationFailedTrace({
+                tracer: this.options.tracer,
+                turnId: input.turnId,
+                reason: "regenerated_non_message_emission",
+                regeneration: commitmentCheck.emission.regeneration,
+                commitments: input.applicableCommitments,
+                regeneratedEmissionKind: regeneratedEmission.kind,
+                regeneratedEmissionReason: regeneratedEmission.reason,
+              });
+
+              return {
+                deliberation: currentDeliberation,
+                guardedEmission: regeneratedEmission,
+                performActionInsideGuard: true,
+              };
+            }
+
+            currentDeliberationEmission = regeneratedEmission;
+            commitmentCheck = await this.options.commitmentGuardRunner.run({
               llmClient: input.llmClient,
               turnId: input.turnId,
-              response: commitmentEmission.content,
-              sessionId: input.sessionId,
-              persistedUserEntry: input.persistedUserEntry,
-              retrievedEpisodes: input.retrievedEpisodes,
-              activeCommitments: input.applicableCommitments,
-              closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
-              closurePressureHistory:
-                input.workingMemory.discourse_state?.closure_pressure_history ?? [],
-              recentSuppressions: input.workingMemory.discourse_state?.recent_suppressions ?? [],
-              currentUserClosureKind: input.currentUserClosureKind,
-              currentTurn: input.workingMemory.turn_counter,
-              audienceEntityId: input.audienceEntityId,
-            }),
-            commitmentEmission,
-          );
+              response: currentDeliberation.response,
+              userMessage: input.userMessage,
+              cognitionInput: input.cognitionInput,
+              origin: input.origin,
+              autonomyTrigger: input.autonomyTrigger,
+              commitments: input.applicableCommitments,
+              relevantEntities: input.perceptionEntities,
+              regenerationAttempted: true,
+            });
+          }
+        }
+
+        if (commitmentCheck.emission.kind === "requires_regeneration") {
+          commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
+        }
+
+        const rawCommitmentEmission = commitmentEmissionForAction(commitmentCheck);
+        const commitmentEmission =
+          rawCommitmentEmission.kind === "message"
+            ? withMessageMetadata(rawCommitmentEmission, currentDeliberationEmission)
+            : rawCommitmentEmission;
+        const guardedEmission =
+          commitmentEmission.kind === "suppressed"
+            ? commitmentEmission
+            : withMessageMetadata(
+                await this.options.postGenerationGuardRunner.run({
+                  llmClient: input.llmClient,
+                  turnId: input.turnId,
+                  response: commitmentEmission.content,
+                  sessionId: input.sessionId,
+                  persistedUserEntry: input.persistedUserEntry,
+                  retrievedEpisodes: input.retrievedEpisodes,
+                  activeCommitments: input.applicableCommitments,
+                  closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
+                  closurePressureHistory:
+                    input.workingMemory.discourse_state?.closure_pressure_history ?? [],
+                  recentSuppressions:
+                    input.workingMemory.discourse_state?.recent_suppressions ?? [],
+                  currentUserClosureKind: input.currentUserClosureKind,
+                  currentTurn: input.workingMemory.turn_counter,
+                  audienceEntityId: input.audienceEntityId,
+                }),
+                commitmentEmission,
+              );
+
+        return {
+          deliberation: currentDeliberation,
+          guardedEmission,
+          performActionInsideGuard: false,
+        };
+      },
+      completedSub: (result) => `emission=${result.guardedEmission.kind}`,
+    });
+
+    if (guarded.performActionInsideGuard) {
+      return {
+        deliberation: guarded.deliberation,
+        actionResult: await performAction({
+          response: "",
+          emission: guarded.guardedEmission,
+          toolCalls: guarded.deliberation.tool_calls,
+          intents: guarded.deliberation.intents,
+          workingMemory: input.workingMemory,
+        }),
+      };
+    }
 
     return {
-      deliberation: currentDeliberation,
+      deliberation: guarded.deliberation,
       actionResult: await performAction({
-        response: guardedEmission.kind === "message" ? guardedEmission.content : "",
-        emission: guardedEmission,
-        toolCalls: currentDeliberation.tool_calls,
-        intents: currentDeliberation.intents,
+        response: guarded.guardedEmission.kind === "message" ? guarded.guardedEmission.content : "",
+        emission: guarded.guardedEmission,
+        toolCalls: guarded.deliberation.tool_calls,
+        intents: guarded.deliberation.intents,
         workingMemory: input.workingMemory,
         pendingActionJudge: input.pendingActionJudge,
         pendingActionEmbeddingClient: this.options.embeddingClient,

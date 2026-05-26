@@ -708,6 +708,8 @@ export type TurnResponse = {
 };
 
 export type TurnPhaseName =
+  | "ingest"
+  | "audience"
   | "perception"
   | "frame"
   | "extract"
@@ -715,6 +717,9 @@ export type TurnPhaseName =
   | "ledger"
   | "shared"
   | "delib"
+  | "final"
+  | "guards"
+  | "persist"
   | "reflect";
 
 export type PhaseEventData = {
@@ -766,6 +771,21 @@ export type TurnTerminalFrame = LiveFrameBase & {
   data: TurnTerminalData;
 };
 
+export type LiveTokenFrame = LiveFrameBase & {
+  type: "turn:token";
+  turn_id: string;
+  phase: TurnPhaseName;
+  chunk_text: string;
+  sequence: number;
+};
+
+export type LiveTokenFlushFrame = LiveFrameBase & {
+  type: "turn:token:flush";
+  turn_id: string;
+  phase: TurnPhaseName;
+  full_text: string;
+};
+
 export type EvidenceLedgerBuiltFrame = LiveFrameBase & {
   type: "evidence_ledger:built";
   turn_id: string;
@@ -775,6 +795,8 @@ export type EvidenceLedgerBuiltFrame = LiveFrameBase & {
 export type LiveFrame =
   | StreamAppendFrame
   | TurnPhaseFrame
+  | LiveTokenFrame
+  | LiveTokenFlushFrame
   | TurnTerminalFrame
   | EvidenceLedgerBuiltFrame;
 

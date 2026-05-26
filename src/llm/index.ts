@@ -3,6 +3,7 @@ import type {
   JSONOutputFormat,
   Message,
   MessageParam,
+  MessageStreamEvent,
   OutputConfig,
   TextBlock,
   TextBlockParam,
@@ -191,8 +192,14 @@ type LLMCallOptions = {
   budget: string;
 };
 
+export type LLMStreamTextHandler = (text: string) => void;
+
 export type LLMCompleteOptions = LLMCallOptions & {
   messages: readonly LLMMessage[];
+};
+
+export type LLMCompleteStreamOptions = LLMCompleteOptions & {
+  onTextDelta?: LLMStreamTextHandler;
 };
 
 export type LLMCompleteResult = {
@@ -208,6 +215,10 @@ export type LLMCompleteResult = {
 
 export type LLMConverseOptions = LLMCallOptions & {
   messages: readonly LLMContentBlockMessage[];
+};
+
+export type LLMConverseStreamOptions = LLMConverseOptions & {
+  onTextDelta?: LLMStreamTextHandler;
 };
 
 export type LLMConverseResult = {
@@ -234,6 +245,8 @@ export type TokenUsageSink = (event: TokenUsageEvent) => void | Promise<void>;
 export type LLMClient = {
   complete(options: LLMCompleteOptions): Promise<LLMCompleteResult>;
   converse(options: LLMConverseOptions): Promise<LLMConverseResult>;
+  streamComplete?(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult>;
+  streamConverse?(options: LLMConverseStreamOptions): Promise<LLMConverseResult>;
 };
 
 export {
@@ -257,6 +270,17 @@ type AnthropicClientLike = {
       temperature?: number;
       thinking?: ThinkingConfigParam;
     }): Promise<Message>;
+    stream?(params: {
+      model: string;
+      system?: string | TextBlockParam[];
+      messages: MessageParam[];
+      tools?: Tool[];
+      tool_choice?: ToolChoice;
+      output_config?: OutputConfig;
+      max_tokens: number;
+      temperature?: number;
+      thinking?: ThinkingConfigParam;
+    }): AsyncIterable<MessageStreamEvent> & { finalMessage(): Promise<Message> };
   };
 };
 
@@ -1023,6 +1047,37 @@ export class AnthropicLLMClient implements LLMClient {
     ];
   }
 
+  private rawMessageParams(
+    options: LLMCallOptions,
+    messages: MessageParam[],
+  ): {
+    model: string;
+    system?: string | TextBlockParam[];
+    messages: MessageParam[];
+    tools?: Tool[];
+    tool_choice?: ToolChoice;
+    output_config?: OutputConfig;
+    max_tokens: number;
+    temperature?: number;
+    thinking?: ThinkingConfigParam;
+  } {
+    return {
+      model: options.model,
+      system: this.resolveSystemPrompt(options.system),
+      messages,
+      tools: toAnthropicTools(options.tools),
+      tool_choice: toAnthropicToolChoice(options.tool_choice),
+      ...(options.output_config === undefined ? {} : { output_config: options.output_config }),
+      max_tokens: resolveMaxTokens(options),
+      ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
+        ? { temperature: options.temperature }
+        : {}),
+      ...(options.thinking !== undefined && !shouldOmitThinking(this.auth, options)
+        ? { thinking: options.thinking }
+        : {}),
+    };
+  }
+
   private async refreshOauthClient(): Promise<void> {
     const credentials = await getFreshCredentials({
       env: this.options.env,
@@ -1059,21 +1114,7 @@ export class AnthropicLLMClient implements LLMClient {
     }
 
     try {
-      return await client.messages.create({
-        model: options.model,
-        system: this.resolveSystemPrompt(options.system),
-        messages,
-        tools: toAnthropicTools(options.tools),
-        tool_choice: toAnthropicToolChoice(options.tool_choice),
-        ...(options.output_config === undefined ? {} : { output_config: options.output_config }),
-        max_tokens: resolveMaxTokens(options),
-        ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
-          ? { temperature: options.temperature }
-          : {}),
-        ...(options.thinking !== undefined && !shouldOmitThinking(this.auth, options)
-          ? { thinking: options.thinking }
-          : {}),
-      });
+      return await client.messages.create(this.rawMessageParams(options, messages));
     } catch (error) {
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {
@@ -1091,6 +1132,72 @@ export class AnthropicLLMClient implements LLMClient {
         }
 
         return this.createRawMessage(options, messages, true);
+      }
+
+      if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
+        throw new LLMError("Failed to complete Anthropic request", {
+          cause: new AuthError("Claude OAuth authentication failed", {
+            code: "AUTH_REFRESH_FAILED",
+            cause: error,
+          }),
+        });
+      }
+
+      if (error instanceof ConfigError || error instanceof AuthError) {
+        throw error;
+      }
+
+      throw new LLMError("Failed to complete Anthropic request", {
+        cause: error,
+      });
+    }
+  }
+
+  private async streamRawMessage(
+    options: LLMCallOptions,
+    messages: MessageParam[],
+    onTextDelta: LLMStreamTextHandler | undefined,
+    retrying = false,
+  ): Promise<Message> {
+    await this.ensureInitialized();
+
+    const client = this.client;
+
+    if (client === undefined) {
+      throw new LLMError("Anthropic client failed to initialize");
+    }
+
+    if (client.messages.stream === undefined) {
+      return this.createRawMessage(options, messages, retrying);
+    }
+
+    try {
+      const stream = client.messages.stream(this.rawMessageParams(options, messages));
+
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          onTextDelta?.(event.delta.text);
+        }
+      }
+
+      return await stream.finalMessage();
+    } catch (error) {
+      if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
+        try {
+          await this.refreshOauthClient();
+        } catch (authError) {
+          throw new LLMError("Failed to complete Anthropic request", {
+            cause:
+              authError instanceof AuthError
+                ? authError
+                : new AuthError("Failed to refresh Claude OAuth credentials", {
+                    code: "AUTH_REFRESH_FAILED",
+                    cause: authError,
+                  }),
+          });
+        }
+
+        return this.streamRawMessage(options, messages, onTextDelta, true);
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -1167,6 +1274,40 @@ export class AnthropicLLMClient implements LLMClient {
     return result;
   }
 
+  private async streamMessage(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult> {
+    const response = await this.streamRawMessage(
+      options,
+      toAnthropicMessages(options.messages),
+      options.onTextDelta,
+    );
+    let structuredOutput: unknown;
+
+    try {
+      structuredOutput = extractStructuredOutput(response, options.output_config);
+    } catch (error) {
+      if (error instanceof LLMStructuredOutputParseError) {
+        throw error;
+      }
+
+      throw new LLMError("Failed to parse Anthropic structured output", {
+        cause: error,
+        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+      });
+    }
+
+    const result = {
+      text: extractText(response),
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      ...extractCacheUsage(response),
+      stop_reason: response.stop_reason,
+      tool_calls: extractToolCalls(response),
+      ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
+    } satisfies LLMCompleteResult;
+    await this.emitUsage(options, result);
+    return result;
+  }
+
   private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
     const response = await this.createRawMessage(
       options,
@@ -1201,11 +1342,54 @@ export class AnthropicLLMClient implements LLMClient {
     return result;
   }
 
+  private async streamConversation(options: LLMConverseStreamOptions): Promise<LLMConverseResult> {
+    const response = await this.streamRawMessage(
+      options,
+      toAnthropicContentBlockMessages(options.messages, {
+        attachmentResolver: this.options.attachmentResolver,
+      }),
+      options.onTextDelta,
+    );
+    let structuredOutput: unknown;
+
+    try {
+      structuredOutput = extractStructuredOutput(response, options.output_config);
+    } catch (error) {
+      if (error instanceof LLMStructuredOutputParseError) {
+        throw error;
+      }
+
+      throw new LLMError("Failed to parse Anthropic structured output", {
+        cause: error,
+        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+      });
+    }
+
+    const result = {
+      messageBlocks: extractMessageBlocks(response),
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      ...extractCacheUsage(response),
+      stop_reason: response.stop_reason,
+      ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
+    } satisfies LLMConverseResult;
+    await this.emitUsage(options, result);
+    return result;
+  }
+
   complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     return this.createMessage(options);
   }
 
   converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
     return this.createConversation(options);
+  }
+
+  streamComplete(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult> {
+    return this.streamMessage(options);
+  }
+
+  streamConverse(options: LLMConverseStreamOptions): Promise<LLMConverseResult> {
+    return this.streamConversation(options);
   }
 }

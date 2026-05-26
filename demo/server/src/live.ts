@@ -108,6 +108,40 @@ export class WsBridgeTracer implements TurnTracer {
       return;
     }
 
+    if (
+      event === "turn.token" &&
+      turnId !== null &&
+      typeof data.phase === "string" &&
+      typeof data.chunk_text === "string" &&
+      typeof data.sequence === "number"
+    ) {
+      this.broadcaster.broadcast({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: turnId,
+        phase: data.phase,
+        chunk_text: data.chunk_text,
+        sequence: data.sequence,
+      });
+      return;
+    }
+
+    if (
+      event === "turn.token.flush" &&
+      turnId !== null &&
+      typeof data.phase === "string" &&
+      typeof data.full_text === "string"
+    ) {
+      this.broadcaster.broadcast({
+        type: "turn:token:flush",
+        ts: Date.now(),
+        turn_id: turnId,
+        phase: data.phase,
+        full_text: data.full_text,
+      });
+      return;
+    }
+
     if (event === "turn.terminal") {
       this.broadcaster.broadcast({
         type: "turn:terminal",

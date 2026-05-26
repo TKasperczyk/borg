@@ -142,12 +142,21 @@ export class TurnPhaseCoordinator {
       });
     }
 
-    await catchUpStreamIngestion({
-      coordinator: this.options.streamIngestionCoordinator,
-      sessionId,
-      streamWriter,
-      maxEntries: this.options.config.streamIngestion.preTurnCatchup.maxEntries,
-      appendHookFailureEvent: appendHookFailure,
+    await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
+      turnId,
+      phase: "ingest",
+      sub: "pre_turn_catchup",
+      run: () =>
+        catchUpStreamIngestion({
+          coordinator: this.options.streamIngestionCoordinator,
+          sessionId,
+          streamWriter,
+          maxEntries: this.options.config.streamIngestion.preTurnCatchup.maxEntries,
+          appendHookFailureEvent: appendHookFailure,
+        }),
+      completedSub: () => "pre_turn_catchup",
     });
     let workingMemory = this.options.workingMemoryStore.load(sessionId);
     lifecycleTracker.captureInitialWorkingMemory(workingMemory);
@@ -161,27 +170,60 @@ export class TurnPhaseCoordinator {
       turnInput.autonomyTrigger === null || turnInput.autonomyTrigger === undefined
         ? turnInput.userMessage
         : formatAutonomyTriggerContext(turnInput.autonomyTrigger);
-    const audienceEntityId =
-      turnInput.audience === undefined || isSelfAudience
-        ? null
-        : this.options.entityRepository.resolve(turnInput.audience, {
-            provenance: "transport_audience_label",
-          });
-    const audienceEntity =
-      audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
-    let audienceProfile =
-      audienceEntityId === null ? null : this.options.socialRepository.getProfile(audienceEntityId);
+    const audienceResolution = await traceTurnPhase({
+      tracer: this.options.tracer,
+      clock: this.options.clock,
+      turnId,
+      phase: "audience",
+      sub: "resolve_profile",
+      run: async () => {
+        const resolvedAudienceEntityId =
+          turnInput.audience === undefined || isSelfAudience
+            ? null
+            : this.options.entityRepository.resolve(turnInput.audience, {
+                provenance: "transport_audience_label",
+              });
+        const resolvedAudienceEntity =
+          resolvedAudienceEntityId === null
+            ? null
+            : this.options.entityRepository.get(resolvedAudienceEntityId);
+        const resolvedAudienceProfile =
+          resolvedAudienceEntityId === null
+            ? null
+            : this.options.socialRepository.getProfile(resolvedAudienceEntityId);
 
-    // In a group channel the social exchange belongs to the current speaker,
-    // not to the abstract channel entity. Updating the group too is deferred.
-    const socialInteractionEntityId =
-      audienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : audienceEntityId;
-    const groupSpeakerEntityId =
-      audienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : null;
-    const groupSpeakerDisplayName =
-      groupSpeakerEntityId === null
-        ? null
-        : (this.options.entityRepository.get(groupSpeakerEntityId)?.canonical_name ?? null);
+        // In a group channel the social exchange belongs to the current speaker,
+        // not to the abstract channel entity. Updating the group too is deferred.
+        const resolvedSocialInteractionEntityId =
+          resolvedAudienceEntity?.kind === "group"
+            ? (turnInput.senderEntityId ?? null)
+            : resolvedAudienceEntityId;
+        const resolvedGroupSpeakerEntityId =
+          resolvedAudienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : null;
+        const resolvedGroupSpeakerDisplayName =
+          resolvedGroupSpeakerEntityId === null
+            ? null
+            : (this.options.entityRepository.get(resolvedGroupSpeakerEntityId)?.canonical_name ??
+              null);
+
+        return {
+          audienceEntityId: resolvedAudienceEntityId,
+          audienceEntity: resolvedAudienceEntity,
+          audienceProfile: resolvedAudienceProfile,
+          socialInteractionEntityId: resolvedSocialInteractionEntityId,
+          groupSpeakerEntityId: resolvedGroupSpeakerEntityId,
+          groupSpeakerDisplayName: resolvedGroupSpeakerDisplayName,
+        };
+      },
+      completedSub: (result) =>
+        `entity=${result.audienceEntityId ?? "self"} kind=${result.audienceEntity?.kind ?? "self"}`,
+    });
+    const audienceEntityId = audienceResolution.audienceEntityId;
+    const audienceEntity = audienceResolution.audienceEntity;
+    let audienceProfile = audienceResolution.audienceProfile;
+    const socialInteractionEntityId = audienceResolution.socialInteractionEntityId;
+    const groupSpeakerEntityId = audienceResolution.groupSpeakerEntityId;
+    const groupSpeakerDisplayName = audienceResolution.groupSpeakerDisplayName;
     const perceptionResult = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,
@@ -259,6 +301,9 @@ export class TurnPhaseCoordinator {
       });
     }
 
+    // Audience tracing happens before perception because that is the clean
+    // resolution boundary. Group participant rostering stays here: it relies
+    // on current-turn persistence and feeds the frame/extraction context.
     const activeParticipantLimit = this.options.config.generation.activeParticipantLimit;
     const participantScan =
       audienceEntity?.kind === "group"

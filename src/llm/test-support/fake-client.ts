@@ -4,9 +4,11 @@ import {
   type LLMClient,
   type LLMCompleteOptions,
   type LLMCompleteResult,
+  type LLMCompleteStreamOptions,
   type LLMContentBlock,
   type LLMConverseOptions,
   type LLMConverseResult,
+  type LLMConverseStreamOptions,
   type LLMMessage,
   type LLMTextBlock,
   type LLMToolDefinition,
@@ -21,7 +23,13 @@ type FakeLLMResponseValue =
   | LLMCompleteResult
   | LLMConverseResult;
 
+export type FakeLLMStreamingResponse = {
+  streamTextChunks: readonly string[];
+  response: FakeLLMResponseValue;
+};
+
 export type FakeLLMResponse =
+  | FakeLLMStreamingResponse
   | FakeLLMResponseValue
   | ((options: LLMCompleteOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)
   | ((options: LLMConverseOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>);
@@ -48,6 +56,16 @@ export function createFakeEmitAnswerResponse(
         input: { text },
       },
     ],
+  };
+}
+
+export function createFakeStreamingResponse(
+  streamTextChunks: readonly string[],
+  response: FakeLLMResponseValue,
+): FakeLLMStreamingResponse {
+  return {
+    streamTextChunks: [...streamTextChunks],
+    response,
   };
 }
 
@@ -180,11 +198,27 @@ function isFakeBlockArray(response: FakeLLMResponseValue): response is readonly 
   return Array.isArray(response);
 }
 
+function isFakeStreamingResponse(response: unknown): response is FakeLLMStreamingResponse {
+  return (
+    response !== null &&
+    typeof response === "object" &&
+    "streamTextChunks" in response &&
+    "response" in response &&
+    Array.isArray((response as { streamTextChunks?: unknown }).streamTextChunks)
+  );
+}
+
 function isFakeConverseResult(response: FakeLLMResponseValue): response is LLMConverseResult {
   return typeof response === "object" && response !== null && "messageBlocks" in response;
 }
 
-function normalizeFakeConverseResponse(response: FakeLLMResponseValue): LLMConverseResult {
+function normalizeFakeConverseResponse(
+  response: FakeLLMResponseValue | FakeLLMStreamingResponse,
+): LLMConverseResult {
+  if (isFakeStreamingResponse(response)) {
+    return normalizeFakeConverseResponse(response.response);
+  }
+
   if (typeof response === "string") {
     return {
       messageBlocks: [
@@ -220,7 +254,13 @@ function normalizeFakeConverseResponse(response: FakeLLMResponseValue): LLMConve
   };
 }
 
-function normalizeFakeCompleteResponse(response: FakeLLMResponseValue): LLMCompleteResult {
+function normalizeFakeCompleteResponse(
+  response: FakeLLMResponseValue | FakeLLMStreamingResponse,
+): LLMCompleteResult {
+  if (isFakeStreamingResponse(response)) {
+    return normalizeFakeCompleteResponse(response.response);
+  }
+
   if (typeof response === "string") {
     return {
       text: response,
@@ -606,6 +646,10 @@ function isRecallExpansionResponse(response: FakeLLMResponse | undefined): boole
   }
 
   return false;
+}
+
+function streamTextChunksForResponse(response: FakeLLMResponse | undefined): readonly string[] {
+  return isFakeStreamingResponse(response) ? response.streamTextChunks : [];
 }
 
 function defaultProceduralContextResponse(): LLMCompleteResult {
@@ -1077,5 +1121,29 @@ export class FakeLLMClient implements LLMClient {
     }
 
     return normalized;
+  }
+
+  async streamComplete(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult> {
+    const streamTextChunks = streamTextChunksForResponse(this.responses[0]);
+    const { onTextDelta: _, ...completeOptions } = options;
+    const result = await this.complete(completeOptions);
+
+    for (const chunk of streamTextChunks) {
+      options.onTextDelta?.(chunk);
+    }
+
+    return result;
+  }
+
+  async streamConverse(options: LLMConverseStreamOptions): Promise<LLMConverseResult> {
+    const streamTextChunks = streamTextChunksForResponse(this.responses[0]);
+    const { onTextDelta: _, ...converseOptions } = options;
+    const result = await this.converse(converseOptions);
+
+    for (const chunk of streamTextChunks) {
+      options.onTextDelta?.(chunk);
+    }
+
+    return result;
   }
 }

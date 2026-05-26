@@ -6,6 +6,7 @@ import type {
   LiveFrame,
   StreamEntry,
   TurnTerminalOutcome,
+  TurnPhaseName,
   WsState,
 } from "../../api/types";
 import { LiveEventsProvider } from "../../hooks/live-context";
@@ -101,6 +102,32 @@ function reflectFrame(turnId = "turn_abc"): LiveFrame {
       phase: "reflect",
       duration_ms: 12,
       sub: "done",
+    },
+  };
+}
+
+function phaseFrame(
+  type: "turn:phase:started" | "turn:phase:completed" | "turn:phase:failed",
+  phase: TurnPhaseName,
+  turnId = "turn_abc",
+): LiveFrame {
+  const event =
+    type === "turn:phase:started"
+      ? "turn_phase.started"
+      : type === "turn:phase:completed"
+        ? "turn_phase.completed"
+        : "turn_phase.failed";
+
+  return {
+    type,
+    event,
+    ts: Date.now(),
+    data: {
+      turnId,
+      turn_id: turnId,
+      phase,
+      duration_ms: type === "turn:phase:started" ? undefined : 12,
+      sub: type === "turn:phase:started" ? "running" : "done",
     },
   };
 }
@@ -259,6 +286,61 @@ describe("cognition screen", () => {
     await waitFor(() => expect(screen.queryByText(/borg is thinking/)).not.toBeInTheDocument());
   });
 
+  it("renders all flow phases upfront and tracks state transitions", () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("queue");
+    expect(screen.getByTestId("phase-audience")).toHaveClass("queue");
+    expect(screen.getByTestId("phase-final")).toHaveClass("queue");
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest"));
+    });
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("running");
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:completed", "ingest"));
+      source.emit(phaseFrame("turn:phase:started", "audience"));
+      source.emit(phaseFrame("turn:phase:failed", "final"));
+    });
+
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("done");
+    expect(screen.getByTestId("phase-audience")).toHaveClass("running");
+    expect(screen.getByTestId("phase-final")).toHaveClass("fail");
+  });
+
+  it("renders accumulated token text inside the active streaming phase", () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "final"));
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_abc",
+        phase: "final",
+        chunk_text: "Hello ",
+        sequence: 1,
+      });
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_abc",
+        phase: "final",
+        chunk_text: "world",
+        sequence: 2,
+      });
+    });
+
+    expect(screen.getByTestId("phase-final")).toHaveTextContent("Hello world");
+  });
+
   it("merges initial fetch results over live stream appends", async () => {
     const source = makeLiveSource();
     let resolveStream: ((response: Response) => void) | undefined;
@@ -358,8 +440,6 @@ describe("cognition screen", () => {
     rerender(<Harness live={source.live(2, "live")} />);
 
     await waitFor(() => expect(streamCalls()).toBe(2));
-    fireEvent.click(screen.getByText("tail"));
-
-    expect(await screen.findByText("agent_msg · tail rebuilt")).toBeInTheDocument();
+    expect(await screen.findByText("tail rebuilt")).toBeInTheDocument();
   });
 });

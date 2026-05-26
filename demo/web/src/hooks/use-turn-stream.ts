@@ -4,9 +4,12 @@ import { postTurn } from "../api/client";
 import type {
   EvidenceLedger,
   LiveFrame,
+  LiveTokenFlushFrame,
+  LiveTokenFrame,
   PhaseEventData,
   StreamEntry,
   TurnTerminalFrame,
+  TurnTerminalOutcome,
   TurnPhaseFrame,
   TurnPhaseName,
   TurnRequest,
@@ -36,6 +39,8 @@ export type TailEvent = {
 const TURN_REFLECT_TIMEOUT_MS = 60_000;
 
 const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
+  { id: "ingest", name: "ingest" },
+  { id: "audience", name: "audience" },
   { id: "perception", name: "perception" },
   { id: "frame", name: "frame gate" },
   { id: "extract", name: "extraction" },
@@ -43,6 +48,9 @@ const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
   { id: "ledger", name: "evidence ledger" },
   { id: "shared", name: "shared state" },
   { id: "delib", name: "deliberation" },
+  { id: "final", name: "finalizer" },
+  { id: "guards", name: "guards" },
+  { id: "persist", name: "persistence" },
   { id: "reflect", name: "reflection" },
 ];
 
@@ -81,6 +89,10 @@ function turnIdFromTerminal(frame: TurnTerminalFrame): string {
   return frame.data.turn_id ?? frame.data.turnId;
 }
 
+function tokenKey(turnId: string, phase: TurnPhaseName): string {
+  return `${turnId}:${phase}`;
+}
+
 function phaseTailKind(frame: TurnPhaseFrame): string {
   const phase = frame.data.phase;
   if (phase === "perception" || phase === "frame" || phase === "extract") {
@@ -96,6 +108,10 @@ function phaseTailKind(frame: TurnPhaseFrame): string {
 }
 
 function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
+  if (frame.type === "turn:token" || frame.type === "turn:token:flush") {
+    return [];
+  }
+
   if (frame.type === "stream:append") {
     return frame.entries.map((entry) => ({
       id: `${frame.type}:${entry.id}`,
@@ -185,10 +201,28 @@ function updatePhase(phases: PhaseState[], frame: TurnPhaseFrame): PhaseState[] 
   });
 }
 
+function appendTokenText(
+  current: Map<string, string>,
+  frame: LiveTokenFrame | LiveTokenFlushFrame,
+): Map<string, string> {
+  const next = new Map(current);
+  const key = tokenKey(frame.turn_id, frame.phase);
+
+  if (frame.type === "turn:token:flush") {
+    next.set(key, frame.full_text);
+    return next;
+  }
+
+  next.set(key, `${next.get(key) ?? ""}${frame.chunk_text}`);
+  return next;
+}
+
 export type TurnStreamState = {
   activeTurnId: string | null;
   running: boolean;
   phases: PhaseState[];
+  tokenTextByPhase: Map<string, string>;
+  terminalOutcome: TurnTerminalOutcome | null;
   eventTail: TailEvent[];
   ledgerByTurn: Map<string, EvidenceLedger>;
   lastPhase: string;
@@ -201,6 +235,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [phases, setPhases] = useState<PhaseState[]>(initialPhases);
+  const [tokenTextByPhase, setTokenTextByPhase] = useState(() => new Map<string, string>());
+  const [terminalOutcome, setTerminalOutcome] = useState<TurnTerminalOutcome | null>(null);
   const [eventTail, setEventTail] = useState<TailEvent[]>([]);
   const [ledgerByTurn, setLedgerByTurn] = useState(() => new Map<string, EvidenceLedger>());
   const [lastPhase, setLastPhase] = useState("idle");
@@ -264,12 +300,20 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         return;
       }
 
+      if (frame.type === "turn:token" || frame.type === "turn:token:flush") {
+        setActiveTurnId((current) => current ?? frame.turn_id);
+        setTokenTextByPhase((current) => appendTokenText(current, frame));
+        return;
+      }
+
       if (frame.type === "turn:terminal") {
         const frameTurnId = turnIdFromTerminal(frame);
         const currentTurnId = activeTurnIdRef.current;
 
         setActiveTurnId((current) => current ?? frameTurnId);
         setLastPhase(`terminal ${frame.data.outcome}`);
+        setTerminalOutcome(frame.data.outcome);
+        setTokenTextByPhase(new Map());
 
         if (currentTurnId === null || currentTurnId === frameTurnId) {
           clearReflectTimeout();
@@ -323,6 +367,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       setRunning(true);
       setActiveTurnId(null);
       setPhases(initialPhases());
+      setTokenTextByPhase(new Map());
+      setTerminalOutcome(null);
       setLastPhase("turn queued");
       clearReflectTimeout();
       reflectTimeoutRef.current = window.setTimeout(() => {
@@ -356,6 +402,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       activeTurnId,
       running,
       phases,
+      tokenTextByPhase,
+      terminalOutcome,
       eventTail,
       ledgerByTurn,
       lastPhase,
@@ -369,6 +417,8 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       lastPhase,
       ledgerByTurn,
       phases,
+      terminalOutcome,
+      tokenTextByPhase,
       replaceTailFromEntries,
       resetForReconnect,
       runTurn,

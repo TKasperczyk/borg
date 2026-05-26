@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { runS2Planner } from "./s2-planner.js";
 
@@ -122,6 +122,67 @@ describe("s2 planner", () => {
     });
 
     expect(result.plan?.emission_recommendation).toBe("no_output");
+  });
+
+  it("emits ordered token chunks and flushes the assembled planner text", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeStreamingResponse(["plan ", "tokens"], {
+          text: "plan tokens",
+          input_tokens: 5,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_stream",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "stay direct",
+                emission_recommendation: "emit",
+                intents: [],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+    const tracer = createTracer();
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 512,
+      tracer,
+      turnId: "turn-plan-stream",
+    });
+
+    expect(result.reasoning).toBe("plan tokens");
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
+      turnId: "turn-plan-stream",
+      turn_id: "turn-plan-stream",
+      phase: "delib",
+      chunk_text: "plan ",
+      sequence: 1,
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
+      turnId: "turn-plan-stream",
+      turn_id: "turn-plan-stream",
+      phase: "delib",
+      chunk_text: "tokens",
+      sequence: 2,
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token.flush", {
+      turnId: "turn-plan-stream",
+      turn_id: "turn-plan-stream",
+      phase: "delib",
+      full_text: "plan tokens",
+    });
   });
 
   it("emits exhaustion trace when both planner attempts omit EmitTurnPlan", async () => {

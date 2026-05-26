@@ -20,6 +20,7 @@ import {
 import {
   FakeLLMClient,
   createFakeEmitAnswerResponse,
+  createFakeStreamingResponse,
 } from "../../../../src/llm/test-support/fake-client.js";
 import type { AttachmentService } from "../../../../src/attachments/index.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
@@ -993,6 +994,50 @@ describe("demo server", () => {
     });
     live.broadcaster.closeAll();
     expect(wasClosed()).toBe(true);
+  });
+
+  it("broadcasts token frames between finalizer phase start and completion", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeStreamingResponse(["ws ", "token"], createFakeEmitAnswerResponse("ws token ok")),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const { borg, live } = await openHarness({ tempDir, llmClient: llm });
+    closers.push(() => borg.close());
+    const { frames } = collectLiveFrames(live);
+
+    await borg.turn({
+      userMessage: "hello token ws",
+      audience: "Alice",
+      stakes: "low",
+    });
+
+    await waitFor(() => frames.some((frame) => frame.type === "turn:token"));
+
+    const finalStart = frames.findIndex(
+      (frame) =>
+        frame.type === "turn:phase:started" &&
+        (frame.data as { phase?: unknown } | undefined)?.phase === "final",
+    );
+    const tokenFrame = frames.findIndex((frame) => frame.type === "turn:token");
+    const finalComplete = frames.findIndex(
+      (frame) =>
+        frame.type === "turn:phase:completed" &&
+        (frame.data as { phase?: unknown } | undefined)?.phase === "final",
+    );
+
+    expect(finalStart).toBeGreaterThanOrEqual(0);
+    expect(tokenFrame).toBeGreaterThan(finalStart);
+    expect(finalComplete).toBeGreaterThan(tokenFrame);
+    expect(frames[tokenFrame]).toMatchObject({
+      type: "turn:token",
+      phase: "final",
+      chunk_text: "ws ",
+      sequence: 1,
+    });
   });
 
   it("broadcasts turn terminal frames to /api/live WebSocket clients after phase frames", async () => {

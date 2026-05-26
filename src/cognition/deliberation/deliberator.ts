@@ -17,7 +17,8 @@ import {
   withCurrentUserContentBlocks,
   withLedgerImageContentBlocks,
 } from "./dialogue.js";
-import { runFinalizer, type FinalizerResult } from "./finalizer.js";
+import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
+import { runFinalizer, type FinalizerResult, type RunFinalizerOptions } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
@@ -350,6 +351,22 @@ export class Deliberator {
     this.clock = options.clock ?? new SystemClock();
   }
 
+  private async runFinalizerPhase(
+    turnId: string | undefined,
+    options: RunFinalizerOptions,
+  ): Promise<FinalizerResult> {
+    return traceTurnPhase({
+      tracer: this.tracer,
+      clock: this.clock,
+      turnId: turnId ?? "unknown",
+      phase: "final",
+      sub: options.path,
+      run: () => runFinalizer(options),
+      completedSub: (result) =>
+        `path=${options.path} decision=${result.decision.kind} stop=${result.usage.stop_reason ?? "none"}`,
+    });
+  }
+
   async run(
     context: DeliberationContext,
     streamWriter?: StreamWriter,
@@ -457,7 +474,7 @@ export class Deliberator {
 
     if (decision.path === "system_1") {
       const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext);
-      const response = await runFinalizer({
+      const response = await this.runFinalizerPhase(context.turnId, {
         llmClient: this.options.llmClient,
         dispatcher: this.options.toolDispatcher,
         sessionId: context.sessionId,
@@ -497,7 +514,7 @@ export class Deliberator {
       };
 
       return attachRegenerator(result, async (regeneration) => {
-        const regeneratedResponse = await runFinalizer({
+        const regeneratedResponse = await this.runFinalizerPhase(context.turnId, {
           llmClient: this.options.llmClient,
           dispatcher: this.options.toolDispatcher,
           sessionId: context.sessionId,
@@ -652,7 +669,7 @@ export class Deliberator {
       additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
     });
 
-    const finalResponse = await runFinalizer({
+    const finalResponse = await this.runFinalizerPhase(context.turnId, {
       llmClient: this.options.llmClient,
       dispatcher: this.options.toolDispatcher,
       sessionId: context.sessionId,
@@ -695,7 +712,7 @@ export class Deliberator {
     };
 
     return attachRegenerator(result, async (regeneration) => {
-      const regeneratedResponse = await runFinalizer({
+      const regeneratedResponse = await this.runFinalizerPhase(context.turnId, {
         llmClient: this.options.llmClient,
         dispatcher: this.options.toolDispatcher,
         sessionId: context.sessionId,

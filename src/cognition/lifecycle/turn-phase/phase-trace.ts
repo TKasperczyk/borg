@@ -4,6 +4,8 @@ import type { Clock } from "../../../util/clock.js";
 import type { TurnTraceData, TurnTracer } from "../../tracing/tracer.js";
 
 export type TurnPhaseName =
+  | "ingest"
+  | "audience"
   | "perception"
   | "frame"
   | "extract"
@@ -11,6 +13,9 @@ export type TurnPhaseName =
   | "ledger"
   | "shared"
   | "delib"
+  | "final"
+  | "guards"
+  | "persist"
   | "reflect";
 
 export type TraceTurnPhaseOptions<T> = {

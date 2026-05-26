@@ -11,6 +11,8 @@ export type TurnTraceEventName =
   | "attachment.fetch_for_ledger"
   | "attachment.rejected"
   | "attachment.blob_corrupted"
+  | "turn.token"
+  | "turn.token.flush"
   | "turn.terminal"
   | "turn_phase.started"
   | "turn_phase.completed"
@@ -164,6 +166,50 @@ export type TurnTracer = {
   emit(event: TurnTraceEventName, data: TurnTraceData): void;
 };
 
+export type TurnTokenTracePhase = "delib" | "final";
+
+export function emitTurnTokenTrace(input: {
+  tracer: TurnTracer | undefined;
+  turnId: string | undefined;
+  phase: TurnTokenTracePhase;
+  chunkText: string;
+  sequence: number;
+}): void {
+  if (
+    input.tracer?.enabled !== true ||
+    input.turnId === undefined ||
+    input.chunkText.length === 0
+  ) {
+    return;
+  }
+
+  input.tracer.emit("turn.token", {
+    turnId: input.turnId,
+    turn_id: input.turnId,
+    phase: input.phase,
+    chunk_text: input.chunkText,
+    sequence: input.sequence,
+  });
+}
+
+export function emitTurnTokenFlushTrace(input: {
+  tracer: TurnTracer | undefined;
+  turnId: string | undefined;
+  phase: TurnTokenTracePhase;
+  fullText: string;
+}): void {
+  if (input.tracer?.enabled !== true || input.turnId === undefined) {
+    return;
+  }
+
+  input.tracer.emit("turn.token.flush", {
+    turnId: input.turnId,
+    turn_id: input.turnId,
+    phase: input.phase,
+    full_text: input.fullText,
+  });
+}
+
 export class NoopTracer implements TurnTracer {
   readonly enabled = false;
   readonly includePayloads = false;
@@ -177,6 +223,7 @@ export const NOOP_TRACER = new NoopTracer();
 
 const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "candidate_description",
+  "chunk_text",
   "contextText",
   "conversationContext",
   "description",
@@ -192,6 +239,7 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "response",
   "rewritten_response",
   "skipped_promotions",
+  "full_text",
 ]);
 
 function stripPayloadGatedTraceData(data: TurnTraceData): TurnTraceData {

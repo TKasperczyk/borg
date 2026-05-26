@@ -3,6 +3,7 @@ import type {
   LLMContentBlock,
   LLMContentBlockMessage,
   LLMConverseOptions,
+  LLMStreamTextHandler,
   LLMToolDefinition,
   LLMToolUseBlock,
 } from "../../llm/index.js";
@@ -59,6 +60,8 @@ export type ExecuteToolLoopOptions = {
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
   terminalToolNames?: readonly string[];
+  stream?: boolean;
+  onTextDelta?: LLMStreamTextHandler;
   tracer?: TurnTracer;
   turnId?: string;
   traceLabel?: string;
@@ -250,7 +253,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       });
     }
 
-    const response = await options.llmClient.converse({
+    const converseOptions = {
       model: options.model,
       system: options.systemPrompt,
       messages,
@@ -264,7 +267,14 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
       budget: options.budget,
-    });
+    } satisfies LLMConverseOptions;
+    const response =
+      options.stream === true && options.llmClient.streamConverse !== undefined
+        ? await options.llmClient.streamConverse({
+            ...converseOptions,
+            ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
+          })
+        : await options.llmClient.converse(converseOptions);
     usage = aggregateUsage(usage, response);
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);

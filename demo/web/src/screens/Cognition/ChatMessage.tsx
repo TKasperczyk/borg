@@ -1,5 +1,4 @@
 import { AttachmentChip } from "../../components/AttachmentChip";
-import { Tag } from "../../components/Tag";
 import { formatTime } from "../../lib/stream-utils";
 import type { ChatTurn } from "./chat-utils";
 
@@ -18,7 +17,6 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
           <span className="role borg">borg ⟶ {audience}</span>
         )}
         <span className="dim">{formatTime(turn.entry.timestamp)}</span>
-        {turn.refs === undefined ? null : <span className="dim">· {turn.refs.length} refs</span>}
         {turn.attachments.length === 0 ? null : (
           <span className="dim">
             · {turn.attachments.length} attachment{turn.attachments.length > 1 ? "s" : ""}
@@ -35,20 +33,6 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
               mediaType={attachment.mediaType}
               audience={turn.entry.audience}
             />
-          ))}
-        </div>
-      )}
-      {turn.thought === undefined ? null : (
-        <div className="thought">
-          <span className="purple">thought ▸</span> {turn.thought}
-        </div>
-      )}
-      {turn.refs === undefined || turn.refs.length === 0 ? null : (
-        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {turn.refs.map((ref) => (
-            <Tag key={`${ref.kind}:${ref.id}`} kind={ref.kind === "cm" ? "bad" : ""}>
-              [{ref.kind}:{ref.id}] {ref.label}
-            </Tag>
           ))}
         </div>
       )}

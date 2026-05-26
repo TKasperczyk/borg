@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
 import {
   FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
@@ -385,10 +385,19 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
   });
 }
 
+function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision): string {
+  if (decision.kind === "answer" || decision.kind === "self_report") {
+    return decision.text;
+  }
+
+  return result.text;
+}
+
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
   const systemPrompt = buildSystemPrompt(options);
+  let tokenSequence = 0;
 
   const result = await executeToolLoop({
     llmClient: options.llmClient,
@@ -409,9 +418,28 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     turnId: options.turnId,
     traceLabel: `${options.path}_finalizer`,
     terminalToolNames: EMISSION_FINALIZER_TOOL_NAMES,
+    stream: true,
+    onTextDelta: (chunkText) => {
+      tokenSequence += 1;
+      emitTurnTokenTrace({
+        tracer: options.tracer,
+        turnId: options.turnId,
+        phase: "final",
+        chunkText,
+        sequence: tokenSequence,
+      });
+    },
   });
   const decision = decisionFromEmissionToolResult(result);
 
+  if (tokenSequence > 0) {
+    emitTurnTokenFlushTrace({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      phase: "final",
+      fullText: finalizerFlushText(result, decision),
+    });
+  }
   emitFinalizerTrace(options, decision);
 
   return {

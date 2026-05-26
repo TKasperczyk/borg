@@ -144,13 +144,48 @@ describe("TurnTracer", () => {
       summary: "safe metadata",
     });
 
+    tracer.emit("turn.token", {
+      turnId: "turn_payload",
+      turn_id: "turn_payload",
+      phase: "final",
+      chunk_text: "hidden chunk",
+      sequence: 1,
+    });
+    tracer.emit("turn.token.flush", {
+      turnId: "turn_payload",
+      turn_id: "turn_payload",
+      phase: "final",
+      full_text: "hidden full text",
+    });
+
+    expect(withPayloads[1]).toMatchObject({
+      chunk_text: "hidden chunk",
+      sequence: 1,
+    });
+    expect(withoutPayloads[1]).toMatchObject({
+      turnId: "turn_payload",
+      turn_id: "turn_payload",
+      phase: "final",
+      sequence: 1,
+    });
+    expect(withoutPayloads[1]).not.toHaveProperty("chunk_text");
+    expect(withPayloads[2]).toMatchObject({
+      full_text: "hidden full text",
+    });
+    expect(withoutPayloads[2]).toMatchObject({
+      turnId: "turn_payload",
+      turn_id: "turn_payload",
+      phase: "final",
+    });
+    expect(withoutPayloads[2]).not.toHaveProperty("full_text");
+
     tracer.emit("closure_response_guard.completed", {
       turnId: "turn_spans",
       reason: "mixed_closure_observed",
       spans: [{ text: "kept", kind: "farewell", rationale: "mixed" }],
     });
 
-    expect(withoutPayloads[1]).toMatchObject({
+    expect(withoutPayloads[3]).toMatchObject({
       reason: "mixed_closure_observed",
       spans: [{ text: "kept" }],
     });
@@ -398,6 +433,10 @@ describe("TurnTracer", () => {
     expect(new Set(events.map((event) => event.turnId)).size).toBe(1);
     expect(events.map((event) => event.event)).toEqual([
       "turn_phase.started",
+      "turn_phase.completed",
+      "turn_phase.started",
+      "turn_phase.completed",
+      "turn_phase.started",
       "recency.completed",
       "perception.started",
       "perception.classifier.degraded",
@@ -442,18 +481,27 @@ describe("TurnTracer", () => {
       "llm_call.completed",
       "deliberation.plan.completed",
       "deliberation.plan_persistence.completed",
+      "turn_phase.started",
       "llm_call.started",
       "llm_call.completed",
       "finalizer.completed",
       "turn_phase.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
       "commitment_check.completed",
       "closure_response_guard.completed",
+      "turn_phase.completed",
+      "turn_phase.started",
+      "turn_phase.completed",
       "turn_phase.started",
       "reflection.completed",
       "turn_phase.completed",
       "action_archive_scan.completed",
       "turn.terminal",
     ]);
+    expect(
+      events.filter((event) => event.event === "turn_phase.completed").map((event) => event.phase),
+    ).toEqual(expect.arrayContaining(["ingest", "audience", "final", "guards", "persist"]));
     expect(events.find((event) => event.event === "turn.terminal")).toMatchObject({
       outcome: "reflected",
       turn_id: expect.any(String),

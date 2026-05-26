@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -128,6 +128,66 @@ describe("runFinalizer emission tools", () => {
         text: "Base dynamic prompt.",
       }),
     ]);
+  });
+
+  it("emits ordered token chunks and a final flush while preserving the tool decision", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeStreamingResponse(["draft ", "tokens"], {
+          messageBlocks: [
+            {
+              type: "text",
+              text: "draft tokens",
+            },
+            {
+              type: "tool_use",
+              id: "toolu_answer_stream",
+              name: "EmitAnswer",
+              input: { text: "Final answer." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 3,
+          stop_reason: "tool_use",
+        }),
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      tracer,
+      turnId: "turn-final-stream",
+    });
+
+    expect(result.decision).toEqual({
+      kind: "answer",
+      text: "Final answer.",
+      source: "tool",
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
+      turnId: "turn-final-stream",
+      turn_id: "turn-final-stream",
+      phase: "final",
+      chunk_text: "draft ",
+      sequence: 1,
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
+      turnId: "turn-final-stream",
+      turn_id: "turn-final-stream",
+      phase: "final",
+      chunk_text: "tokens",
+      sequence: 2,
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token.flush", {
+      turnId: "turn-final-stream",
+      turn_id: "turn-final-stream",
+      phase: "final",
+      full_text: "Final answer.",
+    });
   });
 
   it("accepts an optional entity reply target on EmitAnswer", async () => {
