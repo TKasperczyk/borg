@@ -2503,6 +2503,28 @@ body {
   display: grid;
   gap: 10px;
 }
+
+/* Dream "applying..." state — visible spinner while the offline cycle runs. */
+.dream-running {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.dream-running-spinner {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-top-color: var(--acc);
+  border-radius: 50%;
+  animation: dreamSpin 0.9s linear infinite;
+  margin-top: 2px;
+}
+
+@keyframes dreamSpin {
+  to { transform: rotate(360deg); }
+}
 .modal-field {
   display: grid;
   gap: 5px;

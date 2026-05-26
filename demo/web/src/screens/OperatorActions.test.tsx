@@ -186,7 +186,7 @@ describe("operator actions", () => {
     });
   });
 
-  it("plans then applies dream maintenance from the header button", async () => {
+  it("applies dream maintenance directly from the header (no upstream plan)", async () => {
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);
       if (path === "/api/dream/state" && init?.method === undefined) {
@@ -248,7 +248,10 @@ describe("operator actions", () => {
     );
 
     fireEvent.click(await screen.findByLabelText("apply dream"));
-    expect(await screen.findByText(/Apply 2 changes from 1 processes/)).toBeInTheDocument();
+    // Apply opens the confirm modal IMMEDIATELY with a generic "run the
+    // dream cycle?" prompt rather than blocking on a dry-run plan call
+    // (which takes ~1 minute and made the modal feel non-responsive).
+    expect(await screen.findByText(/Run the dream cycle\?/i)).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "apply" }));
 
     await waitFor(() => {
@@ -259,5 +262,9 @@ describe("operator actions", () => {
         true,
       );
     });
+    // The plan endpoint must NOT have been hit by the apply-from-header path.
+    expect(fetchMock.mock.calls.some((call) => requestPath(call[0]) === "/api/dream/plan")).toBe(
+      false,
+    );
   });
 });

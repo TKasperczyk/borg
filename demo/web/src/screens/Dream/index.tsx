@@ -108,24 +108,23 @@ export function DreamScreen() {
     }
   }
 
-  async function openApplyConfirm(): Promise<void> {
-    if (plan === null) {
-      await loadPlan(true);
-      return;
-    }
-
+  function openApplyConfirm(): void {
+    // Apply opens the confirm modal immediately — no upstream plan call.
+    // A dream cycle runs all 10 offline processes (~30-120s); making the
+    // user wait that long for the confirm dialog to appear is bad UX.
+    // Users who want a preview can hit the `plan` button first; the
+    // cached plan_id (if any) is passed through, otherwise the server
+    // runs a fresh dry-run inside the apply path.
+    setOperatorError(null);
+    setApplyResult(null);
     setConfirmOpen(true);
   }
 
   async function applyDreamPlan(): Promise<void> {
-    if (plan === null) {
-      return;
-    }
-
     setBusy("apply");
     setOperatorError(null);
     try {
-      const result = await postDreamApply({ plan_id: plan.plan_id });
+      const result = await postDreamApply(plan === null ? {} : { plan_id: plan.plan_id });
       setApplyResult(result);
       setConfirmOpen(false);
       setPlanOpen(false);
@@ -490,35 +489,65 @@ export function DreamScreen() {
       </Modal>
       <Modal
         open={confirmOpen}
-        title="apply dream plan"
-        onClose={() => setConfirmOpen(false)}
+        title={busy === "apply" ? "running dream cycle..." : "apply dream cycle"}
+        onClose={busy === "apply" ? () => undefined : () => setConfirmOpen(false)}
         footer={
-          <>
-            <button
-              className="btn sm ghost"
-              disabled={busy !== null}
-              onClick={() => setConfirmOpen(false)}
-            >
-              cancel
-            </button>
-            <button
-              className="btn sm primary"
-              disabled={busy !== null || plan === null}
-              onClick={() => void applyDreamPlan()}
-            >
-              {busy === "apply" ? "applying" : "apply"}
-            </button>
-          </>
+          busy === "apply" ? null : (
+            <>
+              <button className="btn sm ghost" onClick={() => setConfirmOpen(false)}>
+                cancel
+              </button>
+              <button
+                className="btn sm primary"
+                onClick={() => void applyDreamPlan()}
+              >
+                apply
+              </button>
+            </>
+          )
         }
       >
-        <div className="modal-form">
-          <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
-            Apply {plan?.changes ?? 0} changes from {plan?.processes.length ?? 0} processes?
+        {busy === "apply" ? (
+          <div className="modal-form" aria-live="polite">
+            <div className="dream-running">
+              <span className="dream-running-spinner" aria-hidden="true" />
+              <div>
+                <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
+                  Running all 10 maintenance processes. Typical runtime is
+                  30-120 seconds depending on substrate size.
+                </div>
+                <div className="dim" style={{ marginTop: 4 }}>
+                  The dialog will close and the audit table will refresh when
+                  apply completes.
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="dim">
-            This writes audit rows and a dream report for the default maintenance substrate.
+        ) : (
+          <div className="modal-form">
+            <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
+              {plan === null ? (
+                <>
+                  Run the dream cycle? This executes all 10 offline
+                  maintenance processes (consolidator, reflector, semantic
+                  extractor, curator, overseer, review resolver, ruminator,
+                  self-narrator, procedural synthesizer, belief reviser) and
+                  takes roughly 30-120 seconds.
+                </>
+              ) : (
+                <>
+                  Apply {plan.changes} changes from {plan.processes.length}{" "}
+                  processes?
+                </>
+              )}
+            </div>
+            <div className="dim">
+              This writes audit rows and a dream report for the default
+              maintenance substrate. Audit rows can be reverted via
+              `borg audit revert &lt;id&gt;`.
+            </div>
           </div>
-        </div>
+        )}
       </Modal>
       <Modal
         open={reviewAction !== null}
