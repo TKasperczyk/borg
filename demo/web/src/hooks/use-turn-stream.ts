@@ -254,7 +254,7 @@ export type TurnStreamState = {
   eventTail: TailEvent[];
   ledgerByTurn: Map<string, EvidenceLedger>;
   lastPhase: string;
-  runTurn: (input: TurnRequest) => Promise<void>;
+  runTurn: (input: TurnRequest) => Promise<boolean>;
   resetForReconnect: () => void;
   replaceTailFromEntries: (entries: readonly StreamEntry[]) => void;
 };
@@ -403,7 +403,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const runTurn = useCallback(
     async (input: TurnRequest) => {
       if (running) {
-        return;
+        return false;
       }
 
       setRunning(true);
@@ -424,10 +424,12 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       try {
         const result = await postTurn(input);
         setActiveTurnId(result.turn_id);
+        return true;
       } catch {
         clearReflectTimeout();
         setRunning(false);
         setLastPhase("turn failed");
+        return false;
       }
     },
     [clearReflectTimeout, running],

@@ -104,6 +104,10 @@ function apiUrl(path: string, params?: URLSearchParams): string {
   return base.length > 0 ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
 }
 
+function isFormDataBody(body: BodyInit | null | undefined): body is FormData {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
 async function fetchJson<T>(
   path: string,
   init?: RequestInit,
@@ -112,7 +116,9 @@ async function fetchJson<T>(
   const response = await fetch(apiUrl(path, params), {
     ...init,
     headers: {
-      ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(init?.body === undefined || isFormDataBody(init.body)
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...init?.headers,
     },
   });
@@ -305,9 +311,30 @@ export async function getAttachmentStatuses(
 }
 
 export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
+  if (input.attachments !== undefined && input.attachments.length > 0) {
+    const body = new FormData();
+    body.set("message", input.message);
+    body.set("audience", input.audience);
+    if (input.stakes !== undefined) {
+      body.set("stakes", input.stakes);
+    }
+    for (const attachment of input.attachments) {
+      body.append("attachments[]", attachment, attachment.name);
+    }
+
+    return fetchJson<TurnResponse>("api/turn", {
+      method: "POST",
+      body,
+    });
+  }
+
   return fetchJson<TurnResponse>("api/turn", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      message: input.message,
+      audience: input.audience,
+      stakes: input.stakes,
+    }),
   });
 }
 

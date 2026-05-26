@@ -700,6 +700,7 @@ export type TurnRequest = {
   message: string;
   audience: string;
   stakes?: TurnStakes;
+  attachments?: readonly File[];
 };
 
 export type TurnResponse = {

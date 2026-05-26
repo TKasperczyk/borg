@@ -100,8 +100,8 @@ export function CognitionScreen({ sessionId, audience, turnStream }: CognitionSc
     };
   }, [audience, live.connectionCount, replaceTailFromEntries, resetForReconnect]);
 
-  const send = ({ message, stakes }: { message: string; stakes: TurnStakes }) => {
-    void turnStream.runTurn({ message, audience, stakes });
+  const send = (input: { message: string; stakes: TurnStakes; attachments?: readonly File[] }) => {
+    return turnStream.runTurn({ ...input, audience });
   };
 
   return (

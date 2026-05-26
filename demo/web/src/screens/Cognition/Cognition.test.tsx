@@ -67,7 +67,7 @@ function installCognitionFetch(
     streamEntries?: StreamEntry[][];
     turnResponse?: Response | Promise<Response>;
   } = {},
-): { streamCalls: () => number } {
+): { fetchMock: ReturnType<typeof vi.fn>; streamCalls: () => number } {
   const streamResponses = input.streamEntries ?? [[]];
   let streamCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
@@ -87,6 +87,7 @@ function installCognitionFetch(
   });
   vi.stubGlobal("fetch", fetchMock);
   return {
+    fetchMock,
     streamCalls: () => streamCallCount,
   };
 }
@@ -257,6 +258,44 @@ describe("cognition screen", () => {
     });
 
     await waitFor(() => expect(screen.queryByText(/borg is thinking/)).not.toBeInTheDocument());
+  });
+
+  it("stages uploaded images and posts turns as multipart form data", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch({
+      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "pixel.png", { type: "image/png" });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "+ attach" }));
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [file] },
+    });
+
+    expect(screen.getAllByText("pixel.png").length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "see this image" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      const init = call?.[1] as RequestInit;
+      expect(init.body).toBeInstanceOf(FormData);
+      const body = init.body as FormData;
+      expect(body.get("message")).toBe("see this image");
+      expect(body.get("audience")).toBe("alice");
+      expect(body.get("stakes")).toBe("low");
+      expect(body.getAll("attachments[]")).toEqual([file]);
+    });
+
+    await waitFor(() => expect(screen.queryByText("pixel.png")).not.toBeInTheDocument());
   });
 
   it("clears the in-flight placeholder on terminal turn frames", async () => {

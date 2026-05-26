@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { File } from "node:buffer";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import {
   createSemanticNodeId,
   type AttachmentId,
   type BorgOpenOptions,
+  type StreamEntry,
 } from "borg";
 
 import {
@@ -23,6 +25,7 @@ import {
   createFakeStreamingResponse,
 } from "../../../../src/llm/test-support/fake-client.js";
 import type { AttachmentService } from "../../../../src/attachments/index.js";
+import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/perception.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
 import type { ReviewQueueRepository } from "../../../../src/memory/semantic/review-queue.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
@@ -68,6 +71,29 @@ function createEmptyReflectionResponse() {
       },
     ],
   };
+}
+
+function createImagePerceptionResponse() {
+  return [
+    {
+      type: "tool_use" as const,
+      id: "toolu_image",
+      name: IMAGE_PERCEPTION_TOOL_NAME,
+      input: {
+        caption: "A tiny uploaded test image.",
+        image_kind: "photo",
+        visible_text: [],
+        objects: ["single pixel"],
+        people_or_roles: [],
+        scene: "A minimal image fixture.",
+        colors_and_visual_attributes: ["transparent or white pixel"],
+        spatial_relationships: ["one pixel fills the image"],
+        possible_user_relevant_details: ["multipart upload smoke test"],
+        search_terms: ["test image", "uploaded pixel", "multipart attachment"],
+        uncertainties: [],
+      },
+    },
+  ];
 }
 
 async function openHarness(input: { tempDir: string; llmClient?: FakeLLMClient }): Promise<{
@@ -583,6 +609,49 @@ describe("demo server", () => {
     });
     expect(turn.status).toBe(200);
     expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+  });
+
+  it("accepts multipart turn uploads and writes image attachment stream entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient({
+      responses: [
+        createImagePerceptionResponse(),
+        createFakeEmitAnswerResponse("demo image ok"),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const { borg, live } = await openHarness({ tempDir, llmClient: llm });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borg, live });
+    const formData = new FormData();
+    formData.set("message", "please look at this");
+    formData.set("audience", "Alice");
+    formData.set("stakes", "low");
+    formData.append("attachments[]", new File([PNG_1X1], "pixel.png", { type: "image/png" }));
+
+    const turn = await app.request("/api/turn", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(turn.status).toBe(200);
+    expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+
+    const attachments: StreamEntry[] = [];
+    for await (const entry of borg.stream.reader().iterate({ kinds: ["user_image_attachment"] })) {
+      attachments.push(entry);
+    }
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      kind: "user_image_attachment",
+      audience: "Alice",
+      content: expect.objectContaining({
+        type: "image_ref",
+        media_type: "image/png",
+      }),
+    });
   });
 
   it("wires operator mutation endpoints to Borg facade calls", async () => {

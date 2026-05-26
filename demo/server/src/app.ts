@@ -16,6 +16,7 @@ import {
   type CommitmentEnforcementClass,
   type CommitmentRecord,
   type EntityId,
+  type ImageMediaType,
   type ImagePerceptionRecord,
   type MaintenanceAuditRecord,
   type MaintenancePlan,
@@ -30,6 +31,7 @@ import {
   type StreamEntry,
   type StreamEntryKind,
   type StoredAttachmentRecord,
+  type TurnInputAttachment,
   parseGoalId,
   parseOpenQuestionId,
 } from "borg";
@@ -180,9 +182,18 @@ const relationalStateQuerySchema = z.object({
   limit: limitSchema.default(100),
 });
 
+const DEMO_TURN_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
+const DEMO_TURN_ATTACHMENT_MEDIA_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const satisfies readonly ImageMediaType[];
+
+const turnAttachmentMediaTypeSchema = z.enum(DEMO_TURN_ATTACHMENT_MEDIA_TYPES);
 const turnBodySchema = z.object({
-  message: z.string().min(1),
-  audience: z.string().min(1),
+  message: z.string().trim().min(1),
+  audience: z.string().trim().min(1).optional(),
   stakes: z.enum(["low", "medium", "high"]).optional(),
 });
 
@@ -323,6 +334,71 @@ async function parseJsonBody(c: Context): Promise<unknown> {
   } catch {
     throw new HTTPException(400, { message: "Malformed JSON body" });
   }
+}
+
+type ParsedTurnBody = z.infer<typeof turnBodySchema> & {
+  attachments: TurnInputAttachment[];
+};
+
+function isMultipartRequest(c: Context): boolean {
+  const contentType = c.req.header("content-type") ?? "";
+  return contentType.split(";")[0]?.trim().toLowerCase() === "multipart/form-data";
+}
+
+function optionalFormValue(value: ReturnType<FormData["get"]>) {
+  return value === null || value === "" ? undefined : value;
+}
+
+async function parseMultipartAttachments(formData: FormData): Promise<TurnInputAttachment[]> {
+  const files = [...formData.getAll("attachments[]"), ...formData.getAll("attachments")];
+  const attachments: TurnInputAttachment[] = [];
+
+  for (const value of files) {
+    if (typeof value === "string") {
+      throw new HTTPException(400, { message: "attachments must be image files" });
+    }
+
+    const mediaType = parseRequest(turnAttachmentMediaTypeSchema, value.type);
+    if (value.size > DEMO_TURN_ATTACHMENT_MAX_BYTES) {
+      throw new HTTPException(400, {
+        message: `image attachment exceeds ${DEMO_TURN_ATTACHMENT_MAX_BYTES} bytes`,
+      });
+    }
+
+    attachments.push({
+      mediaType,
+      bytes: new Uint8Array(await value.arrayBuffer()),
+    });
+  }
+
+  return attachments;
+}
+
+async function parseTurnBody(c: Context): Promise<ParsedTurnBody> {
+  if (!isMultipartRequest(c)) {
+    return {
+      ...parseRequest(turnBodySchema, await parseJsonBody(c)),
+      attachments: [],
+    };
+  }
+
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch {
+    throw new HTTPException(400, { message: "Malformed multipart body" });
+  }
+
+  const body = parseRequest(turnBodySchema, {
+    message: formData.get("message"),
+    audience: optionalFormValue(formData.get("audience")),
+    stakes: optionalFormValue(formData.get("stakes")),
+  });
+
+  return {
+    ...body,
+    attachments: await parseMultipartAttachments(formData),
+  };
 }
 
 function jsonError(status: number, message: string): Response {
@@ -1629,14 +1705,21 @@ export function createDemoServerApp(input: {
   });
 
   app.post("/api/turn", async (c) => {
-    const body = parseRequest(turnBodySchema, await parseJsonBody(c));
-    const result = await input.borg.turn({
-      userMessage: body.message,
-      audience: body.audience,
-      stakes: body.stakes,
-    });
+    const body = await parseTurnBody(c);
 
-    return c.json({ turn_id: result.turn_id, ok: true });
+    try {
+      // Demo uploads accept png/jpeg/gif/webp images up to 8 MiB; Borg revalidates before persistence.
+      const result = await input.borg.turn({
+        userMessage: body.message,
+        audience: body.audience,
+        stakes: body.stakes,
+        attachments: body.attachments,
+      });
+
+      return c.json({ turn_id: result.turn_id, ok: true });
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
   });
 
   return { app, injectWebSocket };
