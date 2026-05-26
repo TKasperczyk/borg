@@ -811,12 +811,14 @@ export type DreamProcessStartedFrame = LiveFrameBase & {
   type: "dream:process:started";
   process: string;
   run_id: string | null;
+  phase: "plan" | "apply";
 };
 
 export type DreamProcessCompletedFrame = LiveFrameBase & {
   type: "dream:process:completed";
   process: string;
   run_id: string | null;
+  phase: "plan" | "apply";
   duration_ms?: number;
   errors: number;
   candidates_accepted: number;

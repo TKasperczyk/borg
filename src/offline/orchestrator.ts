@@ -136,6 +136,7 @@ export class MaintenanceOrchestrator {
     input.context.tracer.emit("offline_process.completed", {
       turnId: input.context.runId,
       process_name: input.result.process,
+      phase: "apply",
       candidates_proposed: stats.proposed,
       candidates_accepted: stats.accepted,
       candidates_rejected: stats.rejected,
@@ -157,12 +158,42 @@ export class MaintenanceOrchestrator {
       for (const process of input.processes) {
         const override = input.opts?.processOverrides?.[process.name];
         const context = this.createContext(runId, streamWriter);
-        const plan = await process.plan(context, {
-          dryRun: override?.dryRun ?? input.opts?.dryRun,
-          budget: override?.budget ?? input.opts?.budget,
-          params: override?.params,
-        });
-        plans.push(plan);
+        const startedAt = performance.now();
+
+        if (context.tracer?.enabled === true) {
+          context.tracer.emit("offline_process.started", {
+            turnId: runId,
+            process_name: process.name,
+            phase: "plan",
+          });
+        }
+
+        let succeeded = false;
+        try {
+          const plan = await process.plan(context, {
+            dryRun: override?.dryRun ?? input.opts?.dryRun,
+            budget: override?.budget ?? input.opts?.budget,
+            params: override?.params,
+          });
+          plans.push(plan);
+          succeeded = true;
+        } finally {
+          if (context.tracer?.enabled === true) {
+            context.tracer.emit("offline_process.completed", {
+              turnId: runId,
+              process_name: process.name,
+              phase: "plan",
+              candidates_proposed: 0,
+              candidates_accepted: 0,
+              candidates_rejected: 0,
+              errors: succeeded ? 0 : 1,
+              error_details: [],
+              tokens_used: 0,
+              budget_exhausted: false,
+              duration_ms: Math.round(performance.now() - startedAt),
+            });
+          }
+        }
       }
 
       return maintenancePlanSchema.parse({
@@ -208,6 +239,7 @@ export class MaintenanceOrchestrator {
           context.tracer.emit("offline_process.started", {
             turnId: runId,
             process_name: process.name,
+            phase: "apply",
           });
         }
 

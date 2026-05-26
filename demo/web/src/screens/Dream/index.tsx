@@ -62,9 +62,12 @@ export function DreamScreen() {
   const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
   const [busy, setBusy] = useState<"plan" | "apply" | "review" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
-  // Per-process live status tracked across a dream apply. Keyed by
-  // process_name; value: "running" | "done" | "fail". Missing key = queued.
-  type DreamRunStatus = "running" | "done" | "fail";
+  // Per-process live status tracked across a dream run. A run does TWO sweeps
+  // through every process: plan (dry-run, possibly LLM work) then apply
+  // (commit). We surface both so the user sees activity through the full
+  // ~30-120s cycle instead of only the apply phase.
+  // queued (no key) → planning → planned → running → done | fail
+  type DreamRunStatus = "planning" | "planned" | "running" | "done" | "fail";
   const [runStatus, setRunStatus] = useState<Map<string, DreamRunStatus>>(() => new Map());
 
   useEffect(() => {
@@ -80,7 +83,7 @@ export function DreamScreen() {
       if (frame.type === "dream:process:started") {
         setRunStatus((current) => {
           const next = new Map(current);
-          next.set(frame.process, "running");
+          next.set(frame.process, frame.phase === "plan" ? "planning" : "running");
           return next;
         });
         return;
@@ -89,7 +92,14 @@ export function DreamScreen() {
       if (frame.type === "dream:process:completed") {
         setRunStatus((current) => {
           const next = new Map(current);
-          next.set(frame.process, frame.errors > 0 ? "fail" : "done");
+          if (frame.phase === "plan") {
+            // Plan completed — apply hasn't started yet for this process. Mark
+            // "planned" so the tile shows it's ready, then "running" will
+            // overwrite when apply sweep reaches it.
+            next.set(frame.process, frame.errors > 0 ? "fail" : "planned");
+          } else {
+            next.set(frame.process, frame.errors > 0 ? "fail" : "done");
+          }
           return next;
         });
         return;
@@ -229,9 +239,19 @@ export function DreamScreen() {
           onClick={() => openApplyConfirm()}
         >
           {busy === "apply"
-            ? `running ${
-                Array.from(runStatus.values()).filter((s) => s === "done" || s === "fail").length
-              }/${processes.length}`
+            ? (() => {
+                const states = Array.from(runStatus.values());
+                const planned = states.filter(
+                  (s) => s === "planned" || s === "running" || s === "done" || s === "fail",
+                ).length;
+                const applied = states.filter((s) => s === "done" || s === "fail").length;
+                const total = processes.length;
+                // Two sweeps: plan then apply. Show whichever sweep is in flight.
+                if (planned < total) {
+                  return `planning ${planned}/${total}`;
+                }
+                return `applying ${applied}/${total}`;
+              })()
             : "apply"}
         </button>
       </div>
@@ -635,22 +655,28 @@ function DreamCard({
   process: DreamProcessSummary;
   selected: boolean;
   onSelect: () => void;
-  runStatus?: "running" | "done" | "fail";
+  runStatus?: "planning" | "planned" | "running" | "done" | "fail";
 }) {
   // Live run status takes precedence over the historical last_status when
   // present, so the user sees the in-flight dream cycle progress on the tile.
   const liveTag =
     runStatus === undefined
       ? null
-      : runStatus === "running"
-        ? { kind: "warn" as const, label: "running" }
-        : runStatus === "done"
-          ? { kind: "acc" as const, label: "just ran" }
-          : { kind: "bad" as const, label: "failed" };
+      : runStatus === "planning"
+        ? { kind: "warn" as const, label: "planning" }
+        : runStatus === "planned"
+          ? { kind: "info" as const, label: "planned" }
+          : runStatus === "running"
+            ? { kind: "warn" as const, label: "applying" }
+            : runStatus === "done"
+              ? { kind: "acc" as const, label: "just ran" }
+              : { kind: "bad" as const, label: "failed" };
+
+  const activeRun = runStatus === "planning" || runStatus === "running";
 
   return (
     <div
-      className={`dream-card${runStatus === "running" ? " dream-card-running" : ""}`}
+      className={`dream-card${activeRun ? " dream-card-running" : ""}`}
       onClick={onSelect}
       style={{ borderColor: selected ? "var(--acc-dim)" : undefined, cursor: "pointer" }}
     >

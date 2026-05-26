@@ -196,6 +196,7 @@ export class WsBridgeTracer implements TurnTracer {
         ts: Date.now(),
         process: data.process_name,
         run_id: typeof data.turnId === "string" ? data.turnId : null,
+        phase: data.phase === "plan" || data.phase === "apply" ? data.phase : "apply",
       });
       return;
     }
@@ -206,6 +207,7 @@ export class WsBridgeTracer implements TurnTracer {
         ts: Date.now(),
         process: data.process_name,
         run_id: typeof data.turnId === "string" ? data.turnId : null,
+        phase: data.phase === "plan" || data.phase === "apply" ? data.phase : "apply",
         duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
         errors: typeof data.errors === "number" ? data.errors : 0,
         candidates_accepted:
