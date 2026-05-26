@@ -338,7 +338,11 @@ describe("cognition screen", () => {
       });
     });
 
-    expect(screen.getByTestId("phase-final")).toHaveTextContent("Hello world");
+    // Token text now lives in the active-stream pane below the pipeline,
+    // not inside the phase pill itself. The active phase's name shows in
+    // the head label so we can disambiguate which phase is being streamed.
+    expect(document.querySelector(".flow-active-body")?.textContent).toContain("Hello world");
+    expect(document.querySelector(".flow-active-head")?.textContent).toMatch(/finalizer/i);
   });
 
   it("merges initial fetch results over live stream appends", async () => {

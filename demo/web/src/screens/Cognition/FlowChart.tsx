@@ -13,15 +13,9 @@ export type FlowChartProps = {
 const STREAM_PHASES = new Set(["delib", "final"]);
 
 function phaseGlyph(status: PhaseState["status"]): string {
-  if (status === "running") {
-    return "●";
-  }
-  if (status === "done") {
-    return "✓";
-  }
-  if (status === "fail") {
-    return "×";
-  }
+  if (status === "running") return "●";
+  if (status === "done") return "✓";
+  if (status === "fail") return "×";
   return "—";
 }
 
@@ -30,103 +24,176 @@ function tokenKey(turnId: string, phase: string): string {
 }
 
 function phaseTokenText(
-  phase: PhaseState,
+  phaseId: string,
   activeTurnId: string | null,
   tokenTextByPhase: Map<string, string>,
 ): string {
-  if (activeTurnId === null) {
-    return "";
-  }
-
-  return tokenTextByPhase.get(tokenKey(activeTurnId, phase.id)) ?? "";
+  if (activeTurnId === null) return "";
+  return tokenTextByPhase.get(tokenKey(activeTurnId, phaseId)) ?? "";
 }
 
-function branchClass(active: boolean): string {
-  return `flow-branch${active ? " active" : ""}`;
+function isTouched(status: PhaseState["status"]): boolean {
+  return status !== "queue";
 }
 
 function terminalLabel(outcome: TurnTerminalOutcome | null): string {
   return outcome === null ? "waiting" : outcome;
 }
 
-// True once a phase has fired anything (running or terminal); used to gate the
-// S1/S2 lanes so they don't visually 'choose' until delib actually starts.
-function isPhaseTouched(status: PhaseState["status"]): boolean {
-  return status !== "queue";
+function suppressionFor(
+  phaseId: string,
+  outcome: TurnTerminalOutcome | null,
+): { label: string; active: boolean } | null {
+  if (phaseId === "closure_loop") {
+    return { label: "→ closure suppress", active: outcome === "suppressed_closure" };
+  }
+  if (phaseId === "generation_gate") {
+    return { label: "→ gate suppress", active: outcome === "suppressed_generation_gate" };
+  }
+  if (phaseId === "guards") {
+    return { label: "→ guards trip", active: outcome === "suppressed_action" };
+  }
+  return null;
 }
 
-function PhaseNode({
+function PhasePill({
   phase,
+  delibPath,
+  finalAttempt,
+  terminalOutcome,
+}: {
+  phase: PhaseState;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
+  terminalOutcome: TurnTerminalOutcome | null;
+}) {
+  const touched = isTouched(phase.status);
+  const suppression = suppressionFor(phase.id, terminalOutcome);
+
+  return (
+    <div
+      className={`flow-pill ${phase.status}${touched ? " touched" : ""}`}
+      data-testid={`phase-${phase.id}`}
+    >
+      <div className="flow-pill-head">
+        <span className="flow-pill-glyph" aria-hidden="true">
+          {phaseGlyph(phase.status)}
+        </span>
+        <span className="flow-pill-name">{phase.name}</span>
+        <span className="flow-pill-time">
+          {phase.durationMs === undefined ? "" : `${Math.round(phase.durationMs)}ms`}
+        </span>
+      </div>
+
+      {phase.id === "delib" ? (
+        <div className="flow-pill-lanes">
+          <span
+            className={`flow-mini-lane${touched && delibPath === "system_1" ? " active" : ""}${
+              touched && delibPath !== null && delibPath !== "system_1" ? " unchosen" : ""
+            }`}
+            title="System 1: ledger sufficient, no LLM planning"
+          >
+            S1
+          </span>
+          <span
+            className={`flow-mini-lane${touched && delibPath === "system_2" ? " active" : ""}${
+              touched && delibPath !== null && delibPath !== "system_2" ? " unchosen" : ""
+            }`}
+            title="System 2: EmitTurnPlan before answer"
+          >
+            S2
+          </span>
+        </div>
+      ) : phase.id === "final" && finalAttempt > 1 ? (
+        <div className="flow-pill-sub">
+          <span className="flow-attempt-badge" title="finalizer re-invoked after a guard trip">
+            attempt {finalAttempt}
+          </span>
+        </div>
+      ) : (
+        <div className="flow-pill-sub">
+          <span className="flow-pill-sub-text">{phase.sub === "waiting" ? "queued" : phase.sub}</span>
+        </div>
+      )}
+
+      {suppression !== null ? (
+        <div className={`flow-pill-branch${suppression.active ? " active" : ""}`}>
+          {suppression.label}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ActiveStreamPane({
+  phases,
   activeTurnId,
   tokenTextByPhase,
   delibPath,
   finalAttempt,
 }: {
-  phase: PhaseState;
+  phases: readonly PhaseState[];
   activeTurnId: string | null;
   tokenTextByPhase: Map<string, string>;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
 }) {
-  const tokenText = phaseTokenText(phase, activeTurnId, tokenTextByPhase);
-  const showTokenBlock =
-    STREAM_PHASES.has(phase.id) && (phase.status === "running" || tokenText.length > 0);
-  const touched = isPhaseTouched(phase.status);
+  // Pick the streaming phase to show — preference: final if running, then delib
+  // if running, else the most recent streaming phase that has any text.
+  const finalPhase = phases.find((p) => p.id === "final");
+  const delibPhase = phases.find((p) => p.id === "delib");
 
-  // delib renders two horizontal lanes (S1 / S2). Once delib is touched and we
-  // know the path, the matching lane lights up; the other stays dim.
-  const renderDelibLanes = phase.id === "delib";
-  const renderFinalAttempt = phase.id === "final" && finalAttempt > 1;
+  let activePhase: PhaseState | undefined;
+  if (finalPhase?.status === "running") {
+    activePhase = finalPhase;
+  } else if (delibPhase?.status === "running") {
+    activePhase = delibPhase;
+  } else {
+    activePhase = phases
+      .filter(
+        (p) =>
+          STREAM_PHASES.has(p.id) &&
+          phaseTokenText(p.id, activeTurnId, tokenTextByPhase).length > 0,
+      )
+      .pop();
+  }
 
-  return (
-    <div className={`flow-phase ${phase.status}`} data-testid={`phase-${phase.id}`}>
-      <div className="flow-phase-head">
-        <div className="flow-status" aria-hidden="true">
-          {phaseGlyph(phase.status)}
+  if (activePhase === undefined) {
+    return (
+      <div className="flow-active-stream idle">
+        <div className="flow-active-head">
+          <span>active stream</span>
+          <span className="dim">no streaming phase</span>
         </div>
-        <div className="flow-copy">
-          <div className="flow-name">
-            {phase.name}
-            {renderFinalAttempt ? (
-              <span
-                className="flow-attempt-badge"
-                title="finalizer re-invoked after a commitment-guard regeneration"
-              >
-                attempt {finalAttempt}
-              </span>
-            ) : null}
-          </div>
-          <div className="flow-sub">{phase.sub === "waiting" ? "queued" : phase.sub}</div>
-        </div>
-        <div className="flow-time">
-          {phase.durationMs === undefined ? "—" : `${Math.round(phase.durationMs)}ms`}
+        <div className="flow-active-body empty">
+          waiting for delib or final to produce tokens
         </div>
       </div>
-      {renderDelibLanes ? (
-        <div className="flow-lanes">
-          <div
-            className={`flow-lane${touched && delibPath === "system_1" ? " active" : ""}${
-              touched && delibPath !== null && delibPath !== "system_1" ? " unchosen" : ""
-            }`}
-          >
-            <span className="flow-lane-tag">S1</span>
-            <span className="flow-lane-desc">fast path · ledger sufficient</span>
-          </div>
-          <div
-            className={`flow-lane${touched && delibPath === "system_2" ? " active" : ""}${
-              touched && delibPath !== null && delibPath !== "system_2" ? " unchosen" : ""
-            }`}
-          >
-            <span className="flow-lane-tag">S2</span>
-            <span className="flow-lane-desc">EmitTurnPlan · reasoning before answer</span>
-          </div>
-        </div>
-      ) : null}
-      {showTokenBlock ? (
-        <pre className={`flow-token ${phase.status === "done" ? "muted" : ""}`}>
-          {tokenText.length > 0 ? tokenText : "stream open..."}
-        </pre>
-      ) : null}
+    );
+  }
+
+  const text = phaseTokenText(activePhase.id, activeTurnId, tokenTextByPhase);
+  const status = activePhase.status;
+  const meta =
+    activePhase.id === "delib"
+      ? delibPath === null
+        ? "path pending"
+        : delibPath === "system_2"
+          ? "S2 · EmitTurnPlan"
+          : "S1 · fast path"
+      : `attempt ${finalAttempt}`;
+
+  return (
+    <div className={`flow-active-stream ${status}`}>
+      <div className="flow-active-head">
+        <span>
+          active stream · <strong>{activePhase.name}</strong>
+        </span>
+        <span className="dim">{meta}</span>
+      </div>
+      <pre className={`flow-active-body ${status === "done" ? "muted" : ""}`}>
+        {text.length > 0 ? text : "stream open..."}
+      </pre>
     </div>
   );
 }
@@ -139,10 +206,6 @@ export function FlowChart({
   delibPath,
   finalAttempt,
 }: FlowChartProps) {
-  const gateSuppressed = terminalOutcome === "suppressed_generation_gate";
-  const guardsSuppressed = terminalOutcome === "suppressed_action";
-  const closureSuppressed = terminalOutcome === "suppressed_closure";
-
   return (
     <div className="flow-shell">
       <div className="flow-topline">
@@ -150,53 +213,51 @@ export function FlowChart({
         <span className="flow-topline-status">{terminalLabel(terminalOutcome)}</span>
       </div>
 
-      <div className="flow-canvas">
-        <div className="flow-input">input message</div>
-        <div className="flow-arrow">↓</div>
+      <div className="flow-pipeline-wrap">
+        <div className="flow-pipeline">
+          <div className="flow-pill input-pill" data-testid="phase-input">
+            <div className="flow-pill-head">
+              <span className="flow-pill-glyph" aria-hidden="true">
+                ▸
+              </span>
+              <span className="flow-pill-name">input</span>
+            </div>
+          </div>
 
-        {phases.map((phase) => (
-          <div key={phase.id} className="flow-step">
-            <PhaseNode
+          {phases.map((phase) => (
+            <PhasePill
+              key={phase.id}
               phase={phase}
-              activeTurnId={activeTurnId}
-              tokenTextByPhase={tokenTextByPhase}
               delibPath={delibPath}
               finalAttempt={finalAttempt}
+              terminalOutcome={terminalOutcome}
             />
+          ))}
 
-            {phase.id === "closure_loop" ? (
-              <div className={branchClass(closureSuppressed)}>
-                <span className="flow-branch-line">╺╴</span>
-                <span>closure-loop suppression terminal</span>
-              </div>
-            ) : null}
-
-            {phase.id === "generation_gate" ? (
-              <div className={branchClass(gateSuppressed)}>
-                <span className="flow-branch-line">╺╴</span>
-                <span>generation-gate suppression terminal</span>
-              </div>
-            ) : null}
-
-            {phase.id === "guards" ? (
-              <div className={branchClass(guardsSuppressed)}>
-                <span className="flow-branch-line">╺╴</span>
-                <span>guards-trip terminal</span>
-              </div>
-            ) : null}
-
-            {phase.id !== phases[phases.length - 1]?.id ? (
-              <div className="flow-arrow">↓</div>
-            ) : null}
+          <div
+            className={`flow-pill terminal-pill${terminalOutcome === null ? "" : " active touched"}`}
+            data-testid="phase-terminal"
+          >
+            <div className="flow-pill-head">
+              <span className="flow-pill-glyph" aria-hidden="true">
+                ⊙
+              </span>
+              <span className="flow-pill-name">terminal</span>
+            </div>
+            <div className="flow-pill-sub">
+              <span className="flow-pill-sub-text">{terminalLabel(terminalOutcome)}</span>
+            </div>
           </div>
-        ))}
-
-        <div className="flow-arrow">↓</div>
-        <div className={`flow-terminal${terminalOutcome === null ? "" : " active"}`}>
-          <span>terminal</span>
-          <span>{terminalLabel(terminalOutcome)}</span>
         </div>
       </div>
+
+      <ActiveStreamPane
+        phases={phases}
+        activeTurnId={activeTurnId}
+        tokenTextByPhase={tokenTextByPhase}
+        delibPath={delibPath}
+        finalAttempt={finalAttempt}
+      />
     </div>
   );
 }
