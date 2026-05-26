@@ -1130,6 +1130,202 @@ describe("demo server", () => {
     });
   });
 
+  it("POST /api/commitments creates an operator-authored commitment and lists it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "Prefer direct answers when speaking with Alice.",
+      priority: 7,
+      audience: "Alice",
+      made_to: "Tom",
+      about: "Project Atlas",
+      directive_family: "creator guidance",
+    });
+
+    expect(response.status).toBe(200);
+    const created = (await response.json()) as { id: string; source: string };
+    expect(created).toMatchObject({
+      id: expect.stringMatching(/^cmt_/),
+      source: "manual",
+    });
+
+    const list = await app.request("/api/commitments?audience=Alice&state=all");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({
+      commitments: [
+        expect.objectContaining({
+          id: created.id,
+          text: "Prefer direct answers when speaking with Alice.",
+          state: "active",
+          audience: "Alice",
+          made_to: "Tom",
+          about: "Project Atlas",
+          directive_family: "creator_guidance",
+        }),
+      ],
+    });
+  });
+
+  it("POST /api/commitments rejects invalid bodies", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "",
+      priority: 11,
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("POST /api/commitments rejects critical enforcement at the operator boundary", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      enforcement_class: "critical",
+      directive: "This should not become a hard guard.",
+      priority: 5,
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("POST /api/commitments rejects fractional or negative expiration timestamps", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const fractional = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "Fractional expiry should be rejected.",
+      priority: 5,
+      expires_at: 1.5,
+    });
+    const negative = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "Negative expiry should be rejected.",
+      priority: 5,
+      expires_at: -1,
+    });
+
+    expect(fractional.status).toBe(400);
+    expect(negative.status).toBe(400);
+  });
+
+  it("POST /api/commitments is rejected while reset is in progress", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const resetStarted = createDeferred<void>();
+    const resetRelease = createDeferred<void>();
+    const resetBorg = vi.fn(async () => {
+      resetStarted.resolve();
+      await resetRelease.promise;
+    });
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      resetBorg,
+    });
+
+    const reset = app.request("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET" }),
+    });
+    await resetStarted.promise;
+
+    const response = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "This should wait until reset completes.",
+      priority: 5,
+    });
+    expect(response.status).toBe(503);
+
+    resetRelease.resolve();
+    expect((await reset).status).toBe(200);
+  });
+
+  it("POST /api/commitments/:id/revoke revokes an active commitment", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const commitment = borg.commitments.add({
+      type: "preference",
+      kind: "participant_preference",
+      enforcementClass: "advisory",
+      directiveFamily: "revocation_fixture",
+      directive: "Use short answers for Alice.",
+      priority: 4,
+      audience: "Alice",
+      provenance: { kind: "manual" },
+    });
+
+    const response = await requestJson(
+      app,
+      `/api/commitments/${commitment.id}/revoke`,
+      "POST",
+      {
+        reason: "operator changed the standing instruction",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: commitment.id,
+      state: "revoked",
+      revoked_reason: "operator changed the standing instruction",
+      source: "manual",
+    });
+    const stored = borg.commitments
+      .list({ activeOnly: false })
+      .find((record) => record.id === commitment.id);
+    expect(stored?.revoked_reason).toBe("operator changed the standing instruction");
+    expect(stored?.revoke_provenance).toMatchObject({ kind: "manual" });
+  });
+
+  it("POST /api/commitments/:id/revoke returns 404 for a missing commitment", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await requestJson(
+      app,
+      "/api/commitments/cmt_0000000000000000/revoke",
+      "POST",
+      {},
+    );
+
+    expect(response.status).toBe(404);
+  });
+
   it("paginates stream entries with same-timestamp file order", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

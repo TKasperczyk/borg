@@ -340,6 +340,16 @@ export type IdentityResponse = {
 };
 
 export type CommitmentState = "active" | "revoked" | "expired";
+export const COMMITMENT_CREATE_TYPES = ["rule", "preference", "boundary"] as const;
+export const COMMITMENT_KINDS = [
+  "assistant_commitment",
+  "audience_rule",
+  "participant_preference",
+  "boundary",
+  "process_norm",
+] as const;
+export type CommitmentCreateType = (typeof COMMITMENT_CREATE_TYPES)[number];
+export type CommitmentKind = (typeof COMMITMENT_KINDS)[number];
 export type CommitmentEnforcement = "critical" | "advisory";
 
 export type CommitmentItem = {
@@ -583,6 +593,22 @@ export type CreateValueRequest = {
 export type CreateGoalRequest = {
   description: string;
   priority?: number;
+};
+
+export type CreateCommitmentRequest = {
+  type: CommitmentCreateType;
+  kind: CommitmentKind;
+  directive: string;
+  priority: number;
+  audience?: string;
+  made_to?: string;
+  about?: string;
+  directive_family?: string;
+  expires_at?: number;
+};
+
+export type RevokeCommitmentRequest = {
+  reason?: string;
 };
 
 export type PatchGoalRequest =

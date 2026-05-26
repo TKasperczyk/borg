@@ -2,8 +2,10 @@ import type {
   AttachmentMetadataResponse,
   AttachmentStatusItem,
   CommitmentEnforcement,
+  CommitmentItem,
   CommitmentState,
   CommitmentsResponse,
+  CreateCommitmentRequest,
   CreateGoalRequest,
   CreateGrowthMarkerRequest,
   CreateValueRequest,
@@ -27,6 +29,7 @@ import type {
   PromptBlockView,
   PromptBlocksResponse,
   PromptKey,
+  RevokeCommitmentRequest,
   ReviewRow,
   MemoryBandsResponse,
   SemanticGraphResponse,
@@ -244,6 +247,23 @@ export async function getCommitments(
   }
 
   return fetchJson<CommitmentsResponse>("api/commitments", undefined, params);
+}
+
+export async function postCommitment(input: CreateCommitmentRequest): Promise<CommitmentItem> {
+  return fetchJson<CommitmentItem>("api/commitments", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postCommitmentRevoke(
+  id: string,
+  input: RevokeCommitmentRequest,
+): Promise<CommitmentItem> {
+  return fetchJson<CommitmentItem>(`api/commitments/${encodeURIComponent(id)}/revoke`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {

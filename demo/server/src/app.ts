@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import {
   BorgError,
+  COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
   STREAM_ENTRY_KINDS,
@@ -33,6 +34,7 @@ import {
   type StreamEntryKind,
   type StoredAttachmentRecord,
   type TurnInputAttachment,
+  parseCommitmentId,
   parseGoalId,
   parseOpenQuestionId,
   parseSessionId,
@@ -247,6 +249,51 @@ const identityGoalBodySchema = z
     priority: z.number().finite().optional(),
   })
   .strict();
+
+const COMMITMENT_TEXT_MAX_LENGTH = 2_000;
+const COMMITMENT_DIRECTIVE_FAMILY_MAX_LENGTH = 64;
+const demoCommitmentTypeSchema = z.enum(["rule", "preference", "boundary"]);
+const commitmentOptionalLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(COMMITMENT_TEXT_MAX_LENGTH)
+  .optional();
+const commitmentCreateBodySchema = z
+  .object({
+    type: demoCommitmentTypeSchema,
+    kind: z.enum(COMMITMENT_KINDS),
+    directive: z.string().trim().min(1).max(COMMITMENT_TEXT_MAX_LENGTH),
+    priority: z.number().int().min(1).max(10),
+    audience: commitmentOptionalLabelSchema,
+    made_to: commitmentOptionalLabelSchema,
+    about: commitmentOptionalLabelSchema,
+    directive_family: z
+      .string()
+      .trim()
+      .min(1)
+      .max(COMMITMENT_DIRECTIVE_FAMILY_MAX_LENGTH)
+      .optional(),
+    expires_at: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+const commitmentRevokeBodySchema = z
+  .object({
+    reason: z.string().trim().max(COMMITMENT_TEXT_MAX_LENGTH).optional(),
+  })
+  .strict();
+
+const commitmentParamSchema = z.object({
+  id: z.string().transform((value, ctx) => {
+    try {
+      return parseCommitmentId(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid commitment id" });
+      return z.NEVER;
+    }
+  }),
+});
 
 const goalPatchBodySchema = z.discriminatedUnion("action", [
   z
@@ -1257,15 +1304,22 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     { plan: MaintenancePlan; applied?: ReturnType<typeof mapDreamApply> }
   >();
   let dreamPlanCounter = 0;
+  let commitmentFamilyCounter = 0;
 
   function clearAppCaches(): void {
     dreamPlans.clear();
     dreamPlanCounter = 0;
+    commitmentFamilyCounter = 0;
   }
 
   function nextDreamPlanId(): string {
     dreamPlanCounter += 1;
     return `demo_plan_${Date.now()}_${dreamPlanCounter}`;
+  }
+
+  function nextOperatorDirectiveFamily(): string {
+    commitmentFamilyCounter += 1;
+    return `demo_operator_manual_${Date.now()}_${commitmentFamilyCounter}`;
   }
 
   app.onError((error) => {
@@ -1546,6 +1600,52 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       );
 
     return c.json({ commitments });
+  });
+
+  app.post("/api/commitments", async (c) => {
+    const body = parseRequest(commitmentCreateBodySchema, await parseJsonBody(c));
+
+    try {
+      const commitment = input.borg.commitments.add({
+        type: body.type,
+        kind: body.kind,
+        // Operator standing instructions are trusted advice, not hard guard constraints.
+        enforcementClass: "advisory",
+        directiveFamily: body.directive_family ?? nextOperatorDirectiveFamily(),
+        directive: body.directive,
+        priority: body.priority,
+        audience: body.audience,
+        madeTo: body.made_to,
+        about: body.about,
+        provenance: {
+          kind: "manual",
+        },
+        expiresAt: body.expires_at ?? null,
+      });
+
+      return c.json(mapCommitment(input.borg, commitment));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/commitments/:id/revoke", async (c) => {
+    const params = parseRequest(commitmentParamSchema, c.req.param());
+    const body = parseRequest(commitmentRevokeBodySchema, await parseJsonBody(c));
+
+    try {
+      const commitment = input.borg.commitments.revoke(params.id, body.reason ?? "", {
+        kind: "manual",
+      });
+
+      if (commitment === null) {
+        throw new HTTPException(404, { message: "commitment not found" });
+      }
+
+      return c.json(mapCommitment(input.borg, commitment));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
   });
 
   app.get("/api/shared-state", (c) => {
