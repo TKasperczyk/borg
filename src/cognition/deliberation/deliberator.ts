@@ -26,6 +26,7 @@ import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
+  type BuildBaseSystemPromptOptions,
 } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
@@ -420,10 +421,22 @@ export class Deliberator {
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
-    const baseSystemPromptOptions = {
+    const deliveredOperatorAdvice = await this.options.operatorAdviceConsumer?.({
+      session_id: effectiveContext.sessionId,
+      audience_entity_id: effectiveContext.audienceEntityId ?? null,
+    });
+    const baseSystemPromptOptions: BuildBaseSystemPromptOptions = {
       retrievalContextBudget,
       semanticContextBudget,
       nowMs: this.clock.now(),
+      ...(deliveredOperatorAdvice?.text === null || deliveredOperatorAdvice?.text === undefined
+        ? {}
+        : {
+            operatorAdvice: {
+              text: deliveredOperatorAdvice.text,
+              ids: deliveredOperatorAdvice.ids,
+            },
+          }),
       ...(this.options.hostCapabilities === undefined
         ? {}
         : { hostCapabilities: this.options.hostCapabilities }),

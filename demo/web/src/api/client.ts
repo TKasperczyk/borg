@@ -27,6 +27,8 @@ import type {
   MemoryBandDetail,
   MemoryBandId,
   OpenQuestion,
+  OperatorAdviceListResponse,
+  OperatorAdviceRecord,
   PatchCorrectionReviewRequest,
   PatchGoalRequest,
   PatchOpenQuestionRequest,
@@ -34,6 +36,7 @@ import type {
   PromptBlockView,
   PromptBlocksResponse,
   PromptKey,
+  QueueAdviceRequest,
   RevokeCommitmentRequest,
   ReviewRow,
   MemoryBandsResponse,
@@ -165,6 +168,45 @@ export async function getState(input: { session?: string } = {}): Promise<StateS
 
 export async function getSessions(): Promise<SessionsResponse> {
   return fetchJson<SessionsResponse>("api/sessions");
+}
+
+export async function postAdvice(input: QueueAdviceRequest): Promise<OperatorAdviceRecord> {
+  return fetchJson<OperatorAdviceRecord>("api/advice", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getAdvicePending(
+  session: string,
+  audienceEntityId?: string,
+): Promise<OperatorAdviceListResponse> {
+  const params = new URLSearchParams({
+    session,
+    pending_only: "true",
+  });
+  if (audienceEntityId !== undefined && audienceEntityId.length > 0) {
+    params.set("audience_entity_id", audienceEntityId);
+  }
+
+  return fetchJson<OperatorAdviceListResponse>("api/advice", undefined, params);
+}
+
+export async function deleteAdvice(id: string): Promise<OperatorAdviceRecord> {
+  return fetchJson<OperatorAdviceRecord>(`api/advice/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getAdviceHistory(
+  session: string,
+  limit = 20,
+): Promise<OperatorAdviceListResponse> {
+  return fetchJson<OperatorAdviceListResponse>(
+    "api/advice/history",
+    undefined,
+    new URLSearchParams({ session, limit: String(limit) }),
+  );
 }
 
 export async function getStream(input: {

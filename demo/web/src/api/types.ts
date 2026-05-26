@@ -779,6 +779,29 @@ export type SessionsResponse = {
   sessions: SessionRecord[];
 };
 
+export type OperatorAdviceRecord = {
+  id: string;
+  session_id: string | null;
+  audience_entity_id: string | null;
+  text: string;
+  created_at: number;
+  expires_at: number | null;
+  consumed_at: number | null;
+  consumed_by_turn_id: string | null;
+  canceled_at: number | null;
+};
+
+export type QueueAdviceRequest = {
+  text: string;
+  session_id?: string;
+  audience_entity_id?: string;
+  expires_at?: number | null;
+};
+
+export type OperatorAdviceListResponse = {
+  items: OperatorAdviceRecord[];
+};
+
 export type TurnRequest = {
   message: string;
   audience: string;

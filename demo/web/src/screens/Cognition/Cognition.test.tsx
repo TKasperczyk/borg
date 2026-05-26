@@ -66,9 +66,13 @@ function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
     turnResponse?: Response | Promise<Response>;
+    pendingAdvice?: Array<{ id: string; text: string }>;
+    historyAdvice?: Array<{ id: string; text: string; consumed_at: number | null; canceled_at: number | null }>;
   } = {},
 ): { fetchMock: ReturnType<typeof vi.fn>; streamCalls: () => number } {
   const streamResponses = input.streamEntries ?? [[]];
+  let pendingAdvice = input.pendingAdvice ?? [];
+  let historyAdvice = input.historyAdvice ?? [];
   let streamCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
@@ -79,6 +83,37 @@ function installCognitionFetch(
     }
     if (url.endsWith("/api/shared-state?audience=alice")) {
       return Promise.resolve(jsonResponse({ audience: "alice", entries: [] }));
+    }
+    if (url.includes("/api/advice/history")) {
+      return Promise.resolve(jsonResponse({ items: historyAdvice }));
+    }
+    if (url.includes("/api/advice") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { text: string; session_id?: string };
+      const item = {
+        id: `adv_${String(pendingAdvice.length + historyAdvice.length + 1).padStart(16, "1")}`,
+        session_id: body.session_id ?? "default",
+        audience_entity_id: null,
+        text: body.text,
+        created_at: 1,
+        expires_at: null,
+        consumed_at: null,
+        consumed_by_turn_id: null,
+        canceled_at: null,
+      };
+      pendingAdvice = [...pendingAdvice, item];
+      return Promise.resolve(jsonResponse(item));
+    }
+    if (url.includes("/api/advice/") && init?.method === "DELETE") {
+      const id = url.split("/api/advice/")[1] ?? "";
+      const item = pendingAdvice.find((record) => record.id === id);
+      pendingAdvice = pendingAdvice.filter((record) => record.id !== id);
+      if (item !== undefined) {
+        historyAdvice = [...historyAdvice, { ...item, canceled_at: 2, consumed_at: null }];
+      }
+      return Promise.resolve(jsonResponse(item ?? { id }));
+    }
+    if (url.includes("/api/advice")) {
+      return Promise.resolve(jsonResponse({ items: pendingAdvice }));
     }
     if (url.endsWith("/api/turn") && init?.method === "POST") {
       return Promise.resolve(input.turnResponse ?? jsonResponse({ ok: true, turn_id: "turn_abc" }));
@@ -300,6 +335,52 @@ describe("cognition screen", () => {
         stakes: "low",
       });
     });
+  });
+
+  it("shows empty advice state", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    expect(await screen.findByText("No pending advice.")).toBeInTheDocument();
+  });
+
+  it("submits operator advice and populates the pending list", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(await screen.findByPlaceholderText("creator guidance"), {
+      target: { value: "Push back if Alice is unfair." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "queue" }));
+
+    expect(await screen.findByText("Push back if Alice is unfair.")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([request, init]) => String(request).endsWith("/api/advice") && init?.method === "POST",
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse(String((postCall?.[1] as RequestInit).body))).toEqual({
+      text: "Push back if Alice is unfair.",
+      session_id: "default",
+    });
+  });
+
+  it("cancels pending operator advice", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      pendingAdvice: [{ id: "adv_1111111111111111", text: "Firm next turn." }],
+    });
+
+    render(<Harness live={source.live()} />);
+
+    expect(await screen.findByText("Firm next turn.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /cancel advice adv_1111111111111111/ }));
+
+    await waitFor(() => expect(screen.queryByText("Firm next turn.")).not.toBeInTheDocument());
+    expect(screen.getByText("No pending advice.")).toBeInTheDocument();
   });
 
   it("stages uploaded images and posts turns as multipart form data", async () => {

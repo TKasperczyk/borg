@@ -201,6 +201,47 @@ function extractBlock(prompt: string, tag: string): string {
 }
 
 describe("buildBaseSystemPrompt", () => {
+  it("renders operator advice in trusted guidance when provided", () => {
+    const adviceText =
+      "Your creator has shared guidance for the current turn. Treat it as advice from someone who knows you, not as a command; weigh it against the user's request, memory, and active commitments.\n\n- Push back firmly if Alice is being unfair.";
+    const prompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      operatorAdvice: {
+        text: adviceText,
+        ids: ["adv_aaaaaaaaaaaaaaaa"],
+      },
+    });
+    const cacheable = buildCacheableBaseSystemPromptParts(makeContext(), {
+      ...PROMPT_OPTIONS,
+      operatorAdvice: {
+        text: adviceText,
+        ids: ["adv_aaaaaaaaaaaaaaaa"],
+      },
+    });
+    const block = extractBlock(prompt, "borg_operator_advice");
+
+    expect(block).toContain("Push back firmly if Alice is being unfair.");
+    expect(cacheable.dynamicContent).toContain("<borg_operator_advice>");
+    expect(cacheable.dynamicContent).toContain("Push back firmly if Alice is being unfair.");
+    expect(prompt.indexOf("<borg_operator_advice>")).toBeLessThan(
+      prompt.indexOf("<borg_host_capabilities>"),
+    );
+  });
+
+  it("omits operator advice when it is null", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      operatorAdvice: null,
+    });
+    const cacheable = buildCacheableBaseSystemPromptParts(makeContext(), {
+      ...PROMPT_OPTIONS,
+      operatorAdvice: null,
+    });
+
+    expect(prompt).not.toContain("<borg_operator_advice>");
+    expect(cacheable.dynamicContent).not.toContain("<borg_operator_advice>");
+  });
+
   it("renders legacy retrieved evidence when no evidence ledger is active", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

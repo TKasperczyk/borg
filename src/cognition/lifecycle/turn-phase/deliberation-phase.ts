@@ -71,6 +71,21 @@ export async function runDeliberationPhase(input: {
     promptBlocks,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
     maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
+    ...(input.options.operatorAdviceFacade === undefined
+      ? {}
+      : {
+          operatorAdviceConsumer: async (scope) => {
+            const delivery = await input.options.operatorAdviceFacade!.consumePending(scope, {
+              turn_id: input.turnId,
+              now: input.options.clock.now(),
+            });
+
+            return {
+              text: delivery.renderedText,
+              ids: delivery.records.map((record) => record.id),
+            };
+          },
+        }),
   });
   const deliberation = await deliberator.run(
     {

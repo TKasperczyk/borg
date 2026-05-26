@@ -51,6 +51,7 @@ export type BuildBaseSystemPromptOptions = {
   semanticContextBudget: number;
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
+  operatorAdvice?: { text: string; ids: readonly string[] } | null;
   nowMs?: number;
 };
 
@@ -231,7 +232,12 @@ function buildBaseSystemPromptSections(
     tag: "borg_frame_anomaly_gate",
     content: summarizeFrameAnomalyGate(context.frameAnomaly ?? null),
   };
+  const operatorAdviceSection = {
+    tag: "borg_operator_advice",
+    content: options.operatorAdvice?.text ?? null,
+  };
   const trustedDynamicGuidanceSections: TaggedPromptSection[] = [
+    operatorAdviceSection,
     heldPreferencesSection,
     commitmentRecordsSection,
     proceduralGuidanceSection,
@@ -243,6 +249,7 @@ function buildBaseSystemPromptSections(
   return {
     untrustedSections,
     trustedGuidanceSections: [
+      operatorAdviceSection,
       heldPreferencesSection,
       commitmentRecordsSection,
       hostCapabilitiesSection,

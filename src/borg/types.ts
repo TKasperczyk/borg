@@ -56,6 +56,7 @@ import type {
   OfflineProcessName,
   OrchestratorResult,
 } from "../offline/index.js";
+import type { OperatorAdviceRepository } from "../operator-advice/index.js";
 import type {
   RetrievalGetEpisodeOptions,
   RetrievalPipeline,
@@ -112,6 +113,7 @@ export type BorgDependencies = {
   imageAttachmentLifecycleService: ImageAttachmentLifecycleService;
   attachmentService: AttachmentService;
   promptOverrideRepository: PromptOverrideRepository;
+  operatorAdviceRepository: OperatorAdviceRepository;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
   maintenanceScheduler: MaintenanceScheduler;

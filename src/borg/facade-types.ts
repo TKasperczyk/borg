@@ -39,6 +39,15 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
+import type {
+  OperatorAdviceConsumePendingScope,
+  OperatorAdviceDelivery,
+  OperatorAdviceId,
+  OperatorAdviceListFilter,
+  OperatorAdviceMarkConsumedInput,
+  OperatorAdviceQueueInput,
+  OperatorAdviceRecord,
+} from "../operator-advice/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
 import type {
   SessionEnsureInput,
@@ -478,6 +487,16 @@ export type BorgSessionsFacade = {
   list(options?: SessionListOptions): SessionRecord[];
 };
 
+export type BorgOperatorAdviceFacade = {
+  queue(input: OperatorAdviceQueueInput): OperatorAdviceRecord;
+  list(filter?: OperatorAdviceListFilter): OperatorAdviceRecord[];
+  cancel(id: OperatorAdviceId): OperatorAdviceRecord | null;
+  consumePending(
+    scope: OperatorAdviceConsumePendingScope,
+    options: OperatorAdviceMarkConsumedInput,
+  ): Promise<OperatorAdviceDelivery>;
+};
+
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
@@ -502,4 +521,5 @@ export type BorgFacades = {
   workmem: BorgWorkmemFacade;
   prompts: BorgPromptsFacade;
   sessions: BorgSessionsFacade;
+  advice: BorgOperatorAdviceFacade;
 };

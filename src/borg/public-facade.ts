@@ -79,6 +79,15 @@ import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
 import type {
+  OperatorAdviceConsumePendingScope,
+  OperatorAdviceDelivery,
+  OperatorAdviceId,
+  OperatorAdviceListFilter,
+  OperatorAdviceMarkConsumedInput,
+  OperatorAdviceQueueInput,
+  OperatorAdviceRecord,
+} from "../operator-advice/types.js";
+import type {
   StreamCursor,
   StreamEntry,
   StreamEntryInput,
@@ -1111,6 +1120,16 @@ export type BorgSessionsFacade = {
   list(options?: SessionListOptions): SessionRecord[];
 };
 
+export type BorgOperatorAdviceFacade = {
+  queue(input: OperatorAdviceQueueInput): OperatorAdviceRecord;
+  list(filter?: OperatorAdviceListFilter): OperatorAdviceRecord[];
+  cancel(id: OperatorAdviceId): OperatorAdviceRecord | null;
+  consumePending(
+    scope: OperatorAdviceConsumePendingScope,
+    options: OperatorAdviceMarkConsumedInput,
+  ): Promise<OperatorAdviceDelivery>;
+};
+
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
@@ -1135,4 +1154,5 @@ export type BorgFacades = {
   workmem: BorgWorkmemFacade;
   prompts: BorgPromptsFacade;
   sessions: BorgSessionsFacade;
+  advice: BorgOperatorAdviceFacade;
 };

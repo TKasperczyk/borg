@@ -23,6 +23,7 @@ import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/i
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
+import { operatorAdviceMigrations } from "../operator-advice/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { sessionMigrations } from "../sessions/index.js";
 import { LanceDbStore, type LanceDbTable } from "../storage/lancedb/index.js";
@@ -226,6 +227,7 @@ export function createMigrations(): Migration[] {
     imagePerceptionMigrations,
     promptOverrideMigrations,
     sessionMigrations,
+    operatorAdviceMigrations,
   );
 }
 

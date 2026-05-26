@@ -9,6 +9,7 @@ import {
   BorgError,
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
+  MAX_ADVICE_TEXT_LENGTH,
   OFFLINE_PROCESS_NAMES,
   STREAM_ENTRY_KINDS,
   VERSION,
@@ -35,8 +36,10 @@ import {
   type StoredAttachmentRecord,
   type TurnInputAttachment,
   parseCommitmentId,
+  parseEntityId,
   parseGoalId,
   parseOpenQuestionId,
+  parseOperatorAdviceId,
   parseSessionId,
   PROMPT_KEYS,
   type PromptKey,
@@ -121,6 +124,27 @@ const sessionQuerySchema = z.object({
     .min(1)
     .optional()
     .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
+});
+
+const optionalBooleanQuerySchema = z
+  .enum(["true", "false"])
+  .optional()
+  .transform((value) => (value === undefined ? undefined : value === "true"));
+
+const adviceQueueBodySchema = z
+  .object({
+    text: z.string().trim().min(1).max(MAX_ADVICE_TEXT_LENGTH),
+    session_id: z.string().trim().min(1).optional(),
+    audience_entity_id: z.string().trim().min(1).optional(),
+    expires_at: z.number().int().finite().nullable().optional(),
+  })
+  .strict();
+
+const adviceListQuerySchema = z.object({
+  session: z.string().trim().min(1).optional(),
+  pending_only: optionalBooleanQuerySchema,
+  audience_entity_id: z.string().trim().min(1).optional(),
+  limit: limitSchema.optional(),
 });
 
 const auditQuerySchema = z.object({
@@ -443,6 +467,38 @@ function parseOptionalSessionQuery(value: string | undefined, ctx: z.RefinementC
   } catch {
     ctx.addIssue({ code: "custom", message: "Invalid session id" });
     return z.NEVER;
+  }
+}
+
+function parseOptionalSessionId(value: string | undefined): SessionId | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseSessionId(value);
+  } catch {
+    throw new HTTPException(400, { message: "Invalid session id" });
+  }
+}
+
+function parseOptionalEntityId(value: string | undefined): EntityId | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseEntityId(value);
+  } catch {
+    throw new HTTPException(400, { message: "Invalid audience entity id" });
+  }
+}
+
+function parseAdviceIdParam(value: string) {
+  try {
+    return parseOperatorAdviceId(value);
+  } catch {
+    throw new HTTPException(404, { message: "Advice not found" });
   }
 }
 
@@ -1404,6 +1460,74 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.get("/api/sessions", (c) => c.json({ sessions: input.borg.sessions.list({ limit: 1000 }) }));
+
+  app.post("/api/advice", async (c) => {
+    const body = parseRequest(adviceQueueBodySchema, await parseJsonBody(c));
+
+    try {
+      const item = input.borg.advice.queue({
+        text: body.text,
+        session_id: parseOptionalSessionId(body.session_id),
+        audience_entity_id: parseOptionalEntityId(body.audience_entity_id),
+        expires_at: body.expires_at,
+      });
+
+      return c.json(item);
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.get("/api/advice", (c) => {
+    const query = parseRequest(adviceListQuerySchema, c.req.query());
+    const items = input.borg.advice.list({
+      pendingOnly: query.pending_only ?? true,
+      session_id: parseOptionalSessionId(query.session),
+      audience_entity_id: parseOptionalEntityId(query.audience_entity_id),
+      limit: query.limit,
+    });
+
+    return c.json({ items });
+  });
+
+  app.get("/api/advice/history", (c) => {
+    const query = parseRequest(adviceListQuerySchema, c.req.query());
+    const limit = query.limit ?? 50;
+    const items = input.borg.advice
+      .list({
+        pendingOnly: false,
+        session_id: parseOptionalSessionId(query.session),
+        audience_entity_id: parseOptionalEntityId(query.audience_entity_id),
+        limit: Math.min(limit * 4, 1_000),
+      })
+      .filter(
+        (item) =>
+          item.consumed_at !== null ||
+          item.canceled_at !== null ||
+          (item.expires_at !== null && item.expires_at <= Date.now()),
+      )
+      .sort((left, right) => {
+        const leftTs = left.consumed_at ?? left.canceled_at ?? left.expires_at ?? left.created_at;
+        const rightTs =
+          right.consumed_at ?? right.canceled_at ?? right.expires_at ?? right.created_at;
+
+        return rightTs - leftTs;
+      })
+      .slice(0, limit);
+
+    return c.json({ items });
+  });
+
+  app.delete("/api/advice/:id", (c) => {
+    const id = parseAdviceIdParam(c.req.param("id"));
+    const item = input.borg.advice.cancel(id);
+
+    if (item === null) {
+      throw new HTTPException(404, { message: "Advice not found" });
+    }
+
+    return c.json(item);
+  });
 
   app.get("/api/stream", async (c) => {
     const query = parseRequest(streamQuerySchema, c.req.query());

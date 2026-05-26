@@ -562,6 +562,77 @@ describe("demo server", () => {
     expect(framesB).toEqual([]);
   });
 
+  it("serves operator advice queue, pending, cancel, and history endpoints", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-advice-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeEmitAnswerResponse("I can answer directly."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const { borg, live } = await openHarness({ tempDir, llmClient: llm });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const invalidResponse = await requestJson(app, "/api/advice", "POST", {});
+    expect(invalidResponse.status).toBe(400);
+    const oversizedResponse = await requestJson(app, "/api/advice", "POST", {
+      text: "x".repeat(5_000),
+      session_id: DEFAULT_SESSION_ID,
+    });
+    expect(oversizedResponse.status).toBe(400);
+
+    const queuedResponse = await requestJson(app, "/api/advice", "POST", {
+      text: "Push back if Alice is unfair.",
+      session_id: DEFAULT_SESSION_ID,
+    });
+    expect(queuedResponse.status).toBe(200);
+    const queued = (await queuedResponse.json()) as { id: string; text: string };
+    expect(queued.text).toBe("Push back if Alice is unfair.");
+
+    const pendingResponse = await app.request(
+      `/api/advice?session=${DEFAULT_SESSION_ID}&pending_only=true`,
+    );
+    expect(pendingResponse.status).toBe(200);
+    const pending = (await pendingResponse.json()) as { items: Array<{ id: string }> };
+    expect(pending.items.map((item) => item.id)).toContain(queued.id);
+
+    const deleteResponse = await app.request(`/api/advice/${queued.id}`, { method: "DELETE" });
+    expect(deleteResponse.status).toBe(200);
+    const pendingAfterDeleteResponse = await app.request(
+      `/api/advice?session=${DEFAULT_SESSION_ID}&pending_only=true`,
+    );
+    const pendingAfterDelete = (await pendingAfterDeleteResponse.json()) as {
+      items: Array<{ id: string }>;
+    };
+    expect(pendingAfterDelete.items.map((item) => item.id)).not.toContain(queued.id);
+
+    const consumedQueueResponse = await requestJson(app, "/api/advice", "POST", {
+      text: "Do not soften a fair pushback.",
+      session_id: DEFAULT_SESSION_ID,
+    });
+    const consumedQueue = (await consumedQueueResponse.json()) as { id: string };
+    const turnResponse = await requestJson(app, "/api/turn", "POST", {
+      message: "Alice is being unfair.",
+      session: DEFAULT_SESSION_ID,
+    });
+    expect(turnResponse.status).toBe(200);
+
+    const historyResponse = await app.request(
+      `/api/advice/history?session=${DEFAULT_SESSION_ID}&limit=10`,
+    );
+    expect(historyResponse.status).toBe(200);
+    const history = (await historyResponse.json()) as {
+      items: Array<{ id: string; consumed_at: number | null; canceled_at: number | null }>;
+    };
+    const consumedHistoryItem = history.items.find((item) => item.id === consumedQueue.id);
+    expect(consumedHistoryItem?.consumed_at).toEqual(expect.any(Number));
+    expect(history.items.find((item) => item.id === queued.id)?.canceled_at).toEqual(
+      expect.any(Number),
+    );
+  });
+
   it("serves REST endpoint contract shapes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

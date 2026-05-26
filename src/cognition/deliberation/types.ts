@@ -6,6 +6,10 @@ import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
+  OperatorAdviceConsumePendingScope,
+  OperatorAdvicePromptDelivery,
+} from "../../operator-advice/index.js";
+import type {
   AutobiographicalPeriod,
   GoalRecord,
   GrowthMarker,
@@ -240,4 +244,7 @@ export type DeliberatorOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
+  operatorAdviceConsumer?: (
+    scope: OperatorAdviceConsumePendingScope,
+  ) => Promise<OperatorAdvicePromptDelivery>;
 };

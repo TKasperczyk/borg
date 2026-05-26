@@ -796,6 +796,114 @@ body {
   padding: 16px 18px 12px 18px;
   font-size: var(--fs-md);
 }
+.operator-advice {
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 10px 18px;
+  flex: 0 0 auto;
+}
+.operator-advice-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.operator-advice-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.operator-advice-count {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-family: var(--mono);
+}
+.operator-advice-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+.operator-advice-compose textarea {
+  min-width: 0;
+  resize: vertical;
+  min-height: 42px;
+  max-height: 96px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  outline: none;
+}
+.operator-advice-compose textarea:focus {
+  border-color: var(--acc-dim);
+  box-shadow: 0 0 0 1px var(--acc-dim);
+}
+.operator-advice-compose textarea::placeholder {
+  color: var(--text-faint);
+}
+.operator-advice-error {
+  margin-top: 8px;
+  color: var(--bad);
+  font-size: 11px;
+}
+.operator-advice-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+.operator-advice-empty {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.operator-advice-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.operator-advice-item p,
+.operator-advice-history-row p {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.operator-advice-history {
+  margin-top: 8px;
+  color: var(--text-mute);
+  font-size: 11px;
+}
+.operator-advice-history summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
+.operator-advice-history-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.operator-advice-history-row span {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
 .chat-msg {
   margin-bottom: 16px;
 }

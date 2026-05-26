@@ -35,6 +35,7 @@ import type {
 import type { ReviewQueueRepository, SemanticNodeRepository } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
+import type { OperatorAdviceConsumerFacade } from "../operator-advice/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
@@ -82,6 +83,7 @@ export type BuildTurnOrchestratorOptions = {
   clock: Clock;
   tracer?: TurnTracer;
   promptOverrideRepository?: PromptOverrideRepository;
+  operatorAdviceFacade?: OperatorAdviceConsumerFacade;
 };
 
 export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): TurnOrchestrator {
@@ -146,5 +148,8 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.promptOverrideRepository === undefined
       ? {}
       : { promptOverrideRepository: options.promptOverrideRepository }),
+    ...(options.operatorAdviceFacade === undefined
+      ? {}
+      : { operatorAdviceFacade: options.operatorAdviceFacade }),
   });
 }
