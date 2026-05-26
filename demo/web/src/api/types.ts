@@ -180,6 +180,36 @@ export type SemanticMemoryEdge = {
   invalidated_reason: string | null;
 };
 
+export type SemanticGraphNodeStatus = "active" | "contested" | "contradicted" | "quarantined";
+
+export type SemanticGraphNode = {
+  id: string;
+  label: string;
+  status: SemanticGraphNodeStatus;
+  kind?: string;
+  salience?: number;
+  edge_count: number;
+};
+
+export type SemanticGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  weight?: number;
+};
+
+export type SemanticGraphResponse = {
+  nodes: SemanticGraphNode[];
+  edges: SemanticGraphEdge[];
+  total_nodes: number;
+  total_edges: number;
+  rendered: {
+    nodes: number;
+    edges: number;
+  };
+};
+
 export type ProceduralMemoryItem = {
   id: string;
   applies_when: string;

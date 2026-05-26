@@ -248,6 +248,46 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   };
 }
 
+async function seedSemanticGraph(borg: Borg, clock: ManualClock) {
+  const sourceEpisodeId = createEpisodeId();
+  const nodes: Array<Awaited<ReturnType<Borg["semantic"]["nodes"]["add"]>>> = [];
+
+  for (const input of [
+    { kind: "entity" as const, label: "alice", description: "Alice entity" },
+    { kind: "entity" as const, label: "borg", description: "Borg entity" },
+    { kind: "concept" as const, label: "semantic graph", description: "Semantic graph concept" },
+    { kind: "proposition" as const, label: "supports memory", description: "Memory support claim" },
+    { kind: "concept" as const, label: "retrieval", description: "Retrieval concept" },
+  ]) {
+    nodes.push(
+      await borg.semantic.nodes.add({
+        ...input,
+        sourceEpisodeIds: [sourceEpisodeId],
+      }),
+    );
+  }
+
+  const edgeInputs = [
+    { from: 0, to: 1, relation: "supports" as const, confidence: 0.9 },
+    { from: 0, to: 2, relation: "causes" as const, confidence: 0.7 },
+    { from: 0, to: 3, relation: "related_to" as const, confidence: 0.5 },
+    { from: 1, to: 2, relation: "is_a" as const, confidence: 0.6 },
+    { from: 1, to: 4, relation: "prevents" as const, confidence: 0.4 },
+  ];
+
+  for (const edge of edgeInputs) {
+    borg.semantic.edges.add({
+      from_node_id: nodes[edge.from]!.id,
+      to_node_id: nodes[edge.to]!.id,
+      relation: edge.relation,
+      confidence: edge.confidence,
+      evidence_episode_ids: [sourceEpisodeId],
+      created_at: clock.now(),
+      last_verified_at: clock.now(),
+    });
+  }
+}
+
 describe("demo server", () => {
   const tempDirs: string[] = [];
   const closers: Array<() => Promise<void>> = [];
@@ -565,6 +605,50 @@ describe("demo server", () => {
     expect(secondPage.status).toBe(200);
     const secondBody = (await secondPage.json()) as { entries: Array<{ id: string }> };
     expect(secondBody.entries[0]?.id).toBe(older.id);
+  });
+
+  it("serves capped semantic graph visualization data", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borg, live });
+    await seedSemanticGraph(borg, clock);
+
+    const response = await app.request("/api/semantic/graph?limit=3");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          label: expect.any(String),
+          status: "active",
+          kind: expect.any(String),
+          edge_count: expect.any(Number),
+        }),
+      ]),
+      edges: expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          source: expect.any(String),
+          target: expect.any(String),
+          type: expect.any(String),
+          weight: expect.any(Number),
+        }),
+      ]),
+      total_nodes: 5,
+      total_edges: 5,
+      rendered: { nodes: 3, edges: 3 },
+    });
+
+    const capped = await app.request("/api/semantic/graph?limit=999");
+
+    expect(capped.status).toBe(200);
+    expect(await capped.json()).toMatchObject({
+      total_nodes: 5,
+      rendered: { nodes: 5, edges: 5 },
+    });
   });
 
   it("surfaces indexed entry_index for legacy stream JSONL rows", async () => {

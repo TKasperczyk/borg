@@ -11,6 +11,7 @@ import type {
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandsResponse,
+  SemanticGraphResponse,
   SharedStateResponse,
   StateSnapshot,
   StreamEntryKind,
@@ -19,7 +20,7 @@ import type {
   TurnResponse
 } from "./types";
 
-const DEFAULT_API_BASE = "http://localhost:7740";
+const DEFAULT_API_BASE = "";
 
 export type ApiErrorPayload = {
   status: number;
@@ -60,15 +61,29 @@ export function wsBase(): string {
   if (base.startsWith("http://")) {
     return `ws://${base.slice("http://".length)}`;
   }
+
+  // Same-origin: derive from the current page so WebSocket gets an absolute URL.
+  if (base === "" && typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  }
   return base;
 }
 
 function apiUrl(path: string, params?: URLSearchParams): string {
-  const url = new URL(path, `${apiBase()}/`);
+  const base = apiBase();
+  const origin = base.length > 0
+    ? base
+    : typeof window === "undefined"
+      ? "http://localhost"
+      : window.location.origin;
+  const url = new URL(path, `${origin}/`);
   if (params !== undefined) {
     url.search = params.toString();
   }
-  return url.toString();
+  // When apiBase is empty, callers (and the test fixture) want the same-origin
+  // relative URL the browser actually used, not the resolved absolute one.
+  return base.length > 0 ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit, params?: URLSearchParams): Promise<T> {
@@ -136,6 +151,14 @@ export async function getMemoryBands(): Promise<MemoryBandsResponse> {
 
 export async function getMemoryBand(id: MemoryBandId): Promise<MemoryBandDetail> {
   return fetchJson<MemoryBandDetail>(`api/memory/bands/${encodeURIComponent(id)}`);
+}
+
+export async function getSemanticGraph(limit = 300): Promise<SemanticGraphResponse> {
+  return fetchJson<SemanticGraphResponse>(
+    "api/semantic/graph",
+    undefined,
+    new URLSearchParams({ limit: String(limit) })
+  );
 }
 
 export async function getIdentity(): Promise<IdentityResponse> {

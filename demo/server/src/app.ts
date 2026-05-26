@@ -19,6 +19,9 @@ import {
   type OfflineProcessName,
   type RelationalSlotState,
   type ReviewQueueItem,
+  type SemanticEdge,
+  type SemanticNode,
+  type SemanticNodeStatus,
   type StreamCursor,
   type StreamEntry,
   type StreamEntryKind,
@@ -94,6 +97,19 @@ const audienceQuerySchema = z.object({
 
 const auditQuerySchema = z.object({
   limit: limitSchema.default(50),
+});
+
+const SEMANTIC_GRAPH_DEFAULT_LIMIT = 300;
+const SEMANTIC_GRAPH_MAX_LIMIT = 500;
+const semanticGraphQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .transform((value) =>
+      Math.min(value ?? SEMANTIC_GRAPH_DEFAULT_LIMIT, SEMANTIC_GRAPH_MAX_LIMIT),
+    ),
 });
 
 const commitmentQuerySchema = z.object({
@@ -399,6 +415,75 @@ function mapReviewRow(row: ReviewQueueItem) {
     created_at: row.created_at,
     resolved_at: row.resolved_at,
     resolution: row.resolution,
+  };
+}
+
+type SemanticGraphNodeStatus = "active" | "contested" | "contradicted" | "quarantined";
+
+function mapSemanticGraphStatus(status: SemanticNodeStatus): SemanticGraphNodeStatus {
+  if (status === "superseded") {
+    return "contested";
+  }
+
+  return status;
+}
+
+async function semanticGraphSnapshot(borg: Borg, limit: number) {
+  const statusCounts = borg.semantic.nodes.countByStatus();
+  const totalNodes = sumRecord(statusCounts);
+  const nodes = totalNodes === 0 ? [] : await borg.semantic.nodes.list({ limit: totalNodes });
+  const edges = borg.semantic.edges.list();
+  const edgeCounts = new Map<string, number>();
+
+  for (const edge of edges) {
+    edgeCounts.set(edge.from_node_id, (edgeCounts.get(edge.from_node_id) ?? 0) + 1);
+    edgeCounts.set(edge.to_node_id, (edgeCounts.get(edge.to_node_id) ?? 0) + 1);
+  }
+
+  const selectedNodes = nodes
+    .map((node) => ({
+      node,
+      edgeCount: edgeCounts.get(node.id) ?? 0,
+    }))
+    .sort(
+      (left, right) =>
+        right.edgeCount - left.edgeCount || right.node.updated_at - left.node.updated_at,
+    )
+    .slice(0, limit);
+  const selectedIds = new Set(selectedNodes.map((entry) => entry.node.id));
+  const selectedEdges = edges.filter(
+    (edge) => selectedIds.has(edge.from_node_id) && selectedIds.has(edge.to_node_id),
+  );
+
+  return {
+    nodes: selectedNodes.map(({ node, edgeCount }) => mapSemanticGraphNode(node, edgeCount)),
+    edges: selectedEdges.map((edge) => mapSemanticGraphEdge(edge)),
+    total_nodes: totalNodes,
+    total_edges: edges.length,
+    rendered: {
+      nodes: selectedNodes.length,
+      edges: selectedEdges.length,
+    },
+  };
+}
+
+function mapSemanticGraphNode(node: SemanticNode, edgeCount: number) {
+  return {
+    id: node.id,
+    label: node.label,
+    status: mapSemanticGraphStatus(node.status),
+    kind: node.kind,
+    edge_count: edgeCount,
+  };
+}
+
+function mapSemanticGraphEdge(edge: SemanticEdge) {
+  return {
+    id: edge.id,
+    source: edge.from_node_id,
+    target: edge.to_node_id,
+    type: edge.relation,
+    weight: edge.confidence,
   };
 }
 
@@ -751,6 +836,11 @@ export function createDemoServerApp(input: {
   });
 
   app.get("/api/memory/bands", async (c) => c.json({ bands: await memoryBands(input.borg) }));
+
+  app.get("/api/semantic/graph", async (c) => {
+    const query = parseRequest(semanticGraphQuerySchema, c.req.query());
+    return c.json(await semanticGraphSnapshot(input.borg, query.limit));
+  });
 
   app.get("/api/memory/bands/:id", async (c) => {
     const band = parseRequest(memoryBandIdSchema, c.req.param("id"));

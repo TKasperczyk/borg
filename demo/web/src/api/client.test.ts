@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, getStream, postTurn } from "./client";
+import { ApiError, getSemanticGraph, getStream, postTurn } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,8 +27,11 @@ describe("api client", () => {
       limit: 50
     });
 
-    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
-    expect(url.origin).toBe("http://localhost:7740");
+    const requested = String(fetchMock.mock.calls[0]?.[0]);
+    // Default API base is same-origin (empty) so the browser sends a relative URL
+    // that goes through the dev proxy / production host as configured.
+    expect(requested.startsWith("/api/stream?")).toBe(true);
+    const url = new URL(requested, "http://test.invalid");
     expect(url.pathname).toBe("/api/stream");
     expect(url.searchParams.get("audience")).toBe("alice");
     expect(url.searchParams.get("kind")).toBe("user_msg,agent_msg,user_image_attachment");
@@ -46,13 +49,38 @@ describe("api client", () => {
     await postTurn({ message: "hello", audience: "alice", stakes: "low" });
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:7740/api/turn");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/turn");
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       message: "hello",
       audience: "alice",
       stakes: "low"
     });
+  });
+
+  it("constructs semantic graph query strings", async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        JSON.stringify({
+          nodes: [],
+          edges: [],
+          total_nodes: 0,
+          total_edges: 0,
+          rendered: { nodes: 0, edges: 0 }
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await getSemanticGraph(300);
+
+    const requested = String(fetchMock.mock.calls[0]?.[0]);
+    const url = new URL(requested, "http://test.invalid");
+    expect(url.pathname).toBe("/api/semantic/graph");
+    expect(url.searchParams.get("limit")).toBe("300");
   });
 
   it("throws structured errors on non-2xx responses", async () => {

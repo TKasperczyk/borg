@@ -58,7 +58,8 @@ function streamEntry(input: Partial<StreamEntry> & Pick<StreamEntry, "id" | "kin
 
 function installFetch(): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((request: RequestInfo | URL) => {
-    const url = new URL(String(request));
+    // Client defaults to same-origin (relative) URLs; provide a base so URL parses them.
+    const url = new URL(String(request), "http://test.invalid");
     if (url.pathname === "/api/stream") {
       return Promise.resolve(
         jsonResponse({
@@ -350,6 +351,24 @@ function installFetch(): ReturnType<typeof vi.fn> {
         })
       );
     }
+    if (url.pathname === "/api/semantic/graph") {
+      return Promise.resolve(
+        jsonResponse({
+          nodes: [
+            { id: "semn_alice", label: "alice", status: "active", kind: "entity", edge_count: 2 },
+            { id: "semn_borg", label: "borg", status: "contested", kind: "entity", edge_count: 1 },
+            { id: "semn_memory", label: "semantic memory", status: "contradicted", kind: "concept", edge_count: 1 }
+          ],
+          edges: [
+            { id: "seme_support", source: "semn_alice", target: "semn_borg", type: "supports", weight: 0.9 },
+            { id: "seme_contradict", source: "semn_borg", target: "semn_memory", type: "contradicts", weight: 0.4 }
+          ],
+          total_nodes: 3,
+          total_edges: 2,
+          rendered: { nodes: 3, edges: 2 }
+        })
+      );
+    }
     return Promise.resolve(new Response("{}", { status: 404 }));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -449,11 +468,18 @@ describe("P2 screens", () => {
     expect(screen.getByText(/semantic_node:sn_1/)).toBeInTheDocument();
   });
 
-  it("keeps graph mocked and interactive", () => {
-    render(<GraphScreen />);
+  it("renders semantic graph endpoint data", async () => {
+    installFetch();
+    const { container } = render(<GraphScreen />);
 
-    expect(screen.getByText("mock")).toBeInTheDocument();
-    fireEvent.click(screen.getAllByText("tom")[0]!);
-    expect(screen.getByText("[n_tom]")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        (content) => content.includes("3 nodes") && content.includes("showing 3 of 3"),
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(container.querySelectorAll(".graph-node")).toHaveLength(3);
+      expect(container.querySelectorAll(".graph-edge")).toHaveLength(2);
+    });
   });
 });
