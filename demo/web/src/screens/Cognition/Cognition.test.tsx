@@ -292,14 +292,14 @@ describe("cognition screen", () => {
 
     render(<Harness live={source.live()} />);
 
-    expect(screen.getByTestId("phase-ingest")).toHaveClass("queue");
-    expect(screen.getByTestId("phase-audience")).toHaveClass("queue");
-    expect(screen.getByTestId("phase-final")).toHaveClass("queue");
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-queue");
+    expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-queue");
+    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-queue");
 
     act(() => {
       source.emit(phaseFrame("turn:phase:started", "ingest"));
     });
-    expect(screen.getByTestId("phase-ingest")).toHaveClass("running");
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
 
     act(() => {
       source.emit(phaseFrame("turn:phase:completed", "ingest"));
@@ -307,9 +307,9 @@ describe("cognition screen", () => {
       source.emit(phaseFrame("turn:phase:failed", "final"));
     });
 
-    expect(screen.getByTestId("phase-ingest")).toHaveClass("done");
-    expect(screen.getByTestId("phase-audience")).toHaveClass("running");
-    expect(screen.getByTestId("phase-final")).toHaveClass("fail");
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-done");
+    expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-running");
+    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-fail");
   });
 
   it("renders accumulated token text inside the active streaming phase", () => {
