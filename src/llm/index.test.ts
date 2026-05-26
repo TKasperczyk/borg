@@ -1029,6 +1029,99 @@ describe("llm", () => {
     expect(refreshCalls).toBe(1);
   });
 
+  it("streams EmitSelfReport text without forwarding raw partial JSON", async () => {
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_self_report",
+            name: "EmitSelfReport",
+            input: {},
+          },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "input_json_delta",
+            partial_json: '{"kind":"self_report","text":"I am ',
+          },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "input_json_delta",
+            partial_json: 'steady","persistence_class":"assistant_self_report"}',
+          },
+        };
+        yield {
+          type: "content_block_stop",
+          index: 0,
+        };
+      },
+      finalMessage: vi.fn(async () =>
+        createMessageBody({
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_self_report",
+              caller: { type: "direct" },
+              name: "EmitSelfReport",
+              input: {
+                kind: "self_report",
+                text: "I am steady",
+                persistence_class: "assistant_self_report",
+              },
+            },
+          ],
+          stop_reason: "tool_use",
+        }),
+      ),
+    };
+    const create = vi.fn();
+    const streamFactory = vi.fn(() => stream as never);
+    const deltas: string[] = [];
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create,
+          stream: streamFactory,
+        },
+      },
+    });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "report" }],
+        tools: [
+          {
+            name: "EmitSelfReport",
+            inputSchema: {
+              type: "object",
+            },
+          },
+        ],
+        tool_choice: { type: "tool", name: "EmitSelfReport" },
+        max_tokens: 64,
+        budget: "test",
+        onTextDelta: (text) => deltas.push(text),
+      }),
+    ).resolves.toMatchObject({
+      stop_reason: "tool_use",
+    });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+    expect(deltas.join("")).toBe("I am steady");
+    expect(deltas.join("")).not.toContain("{");
+    expect(deltas.join("")).not.toContain("self_report");
+  });
+
   it("supports scripted fake llm responses", async () => {
     const usageSink = vi.fn();
     const client = new FakeLLMClient({

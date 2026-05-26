@@ -9,7 +9,7 @@ import {
   type GrowthMarkerId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { episodeIdSchema } from "../episodic/types.js";
+import { episodeIdSchema, streamEntryIdSchema } from "../episodic/types.js";
 import {
   assertIdentityCasUpdated,
   expectedRecordVersion,
@@ -38,6 +38,7 @@ export const growthMarkerIdSchema = z
   .transform((value) => value as GrowthMarkerId);
 
 export const growthMarkerCategorySchema = z.enum(GROWTH_MARKER_CATEGORIES);
+const growthMarkerEvidenceIdSchema = z.union([episodeIdSchema, streamEntryIdSchema]);
 
 export const growthMarkerSchema = z.object({
   id: growthMarkerIdSchema,
@@ -47,7 +48,7 @@ export const growthMarkerSchema = z.object({
   what_changed: z.string().min(1),
   before_description: z.string().nullable(),
   after_description: z.string().nullable(),
-  evidence_episode_ids: z.array(episodeIdSchema),
+  evidence_episode_ids: z.array(growthMarkerEvidenceIdSchema),
   confidence: z.number().min(0).max(1),
   source_process: z.string().min(1),
   provenance: provenanceSchema,
@@ -77,7 +78,7 @@ export type GrowthMarkersRepositoryOptions = {
   clock?: Clock;
 };
 
-function parseEpisodeIds(value: string) {
+function parseEvidenceIds(value: string) {
   let parsed: unknown;
 
   try {
@@ -89,7 +90,7 @@ function parseEpisodeIds(value: string) {
     });
   }
 
-  const result = z.array(episodeIdSchema).safeParse(parsed);
+  const result = z.array(growthMarkerEvidenceIdSchema).safeParse(parsed);
 
   if (!result.success) {
     throw new StorageError("Invalid growth marker evidence_episode_ids", {
@@ -116,7 +117,7 @@ function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
       row.after_description === null || row.after_description === undefined
         ? null
         : String(row.after_description),
-    evidence_episode_ids: parseEpisodeIds(String(row.evidence_episode_ids ?? "[]")),
+    evidence_episode_ids: parseEvidenceIds(String(row.evidence_episode_ids ?? "[]")),
     confidence: Number(row.confidence),
     source_process: row.source_process,
     provenance: parseStoredProvenance({
@@ -155,13 +156,13 @@ export class GrowthMarkersRepository {
     what_changed: string;
     before_description?: string | null;
     after_description?: string | null;
-    evidence_episode_ids: readonly z.infer<typeof episodeIdSchema>[];
+    evidence_episode_ids: readonly z.infer<typeof growthMarkerEvidenceIdSchema>[];
     confidence: number;
     source_process: string;
     provenance: z.infer<typeof provenanceSchema>;
     created_at?: number;
   }): GrowthMarker {
-    if (input.evidence_episode_ids.length === 0 && input.provenance.kind !== "manual") {
+    if (input.evidence_episode_ids.length === 0) {
       throw new StorageError("Growth marker requires at least one evidence episode", {
         code: "GROWTH_MARKER_INVALID",
       });

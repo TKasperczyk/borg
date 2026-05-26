@@ -91,6 +91,32 @@ function turnIdFromTerminal(frame: TurnTerminalFrame): string {
   return frame.data.turn_id ?? frame.data.turnId;
 }
 
+function turnIdFromLiveFrame(frame: LiveFrame): string | null {
+  if (
+    frame.type === "turn:token" ||
+    frame.type === "turn:token:flush" ||
+    frame.type === "evidence_ledger:built" ||
+    frame.type === "turn:delib_path" ||
+    frame.type === "turn:final_attempt"
+  ) {
+    return frame.turn_id;
+  }
+
+  if (frame.type === "turn:terminal") {
+    return turnIdFromTerminal(frame);
+  }
+
+  if (
+    frame.type === "turn:phase:started" ||
+    frame.type === "turn:phase:completed" ||
+    frame.type === "turn:phase:failed"
+  ) {
+    return turnIdFromPhase(frame.data);
+  }
+
+  return null;
+}
+
 function tokenKey(turnId: string, phase: TurnPhaseName): string {
   return `${turnId}:${phase}`;
 }
@@ -299,10 +325,48 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
   const clearTimersRef = useRef<number[]>([]);
   const reflectTimeoutRef = useRef<number | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
+  const lastDrivenTurnIdRef = useRef<string | null>(null);
+  const pendingTurnRef = useRef<{
+    requestSeq: number;
+    turnId: string | null;
+    ignoredTurnIds: ReadonlySet<string>;
+  } | null>(null);
+  const runSeqRef = useRef(0);
 
   useEffect(() => {
     activeTurnIdRef.current = activeTurnId;
+    if (activeTurnId !== null) {
+      lastDrivenTurnIdRef.current = activeTurnId;
+    }
   }, [activeTurnId]);
+
+  const acceptsTurnFrame = useCallback((turnId: string): boolean => {
+    const activeTurnId = activeTurnIdRef.current;
+
+    if (activeTurnId !== null) {
+      return turnId === activeTurnId;
+    }
+
+    const pendingTurn = pendingTurnRef.current;
+
+    if (pendingTurn === null) {
+      return false;
+    }
+
+    if (pendingTurn.turnId !== null) {
+      return turnId === pendingTurn.turnId;
+    }
+
+    if (pendingTurn.ignoredTurnIds.has(turnId)) {
+      return false;
+    }
+
+    pendingTurn.turnId = turnId;
+    activeTurnIdRef.current = turnId;
+    lastDrivenTurnIdRef.current = turnId;
+    setActiveTurnId(turnId);
+    return true;
+  }, []);
 
   const clearReflectTimeout = useCallback(() => {
     if (reflectTimeoutRef.current !== null) {
@@ -343,6 +407,12 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
 
   useEffect(() => {
     return live.subscribe((frame) => {
+      const frameTurnId = turnIdFromLiveFrame(frame);
+
+      if (frameTurnId !== null && !acceptsTurnFrame(frameTurnId)) {
+        return;
+      }
+
       pushTail(tailRowsFromFrame(frame));
 
       if (frame.type === "evidence_ledger:built" && frame.ledger !== null) {
@@ -352,24 +422,20 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
           next.set(frame.turn_id, ledger);
           return next;
         });
-        setActiveTurnId((current) => current ?? frame.turn_id);
         return;
       }
 
       if (frame.type === "turn:token" || frame.type === "turn:token:flush") {
-        setActiveTurnId((current) => current ?? frame.turn_id);
         setTokenTextByPhase((current) => appendTokenText(current, frame));
         return;
       }
 
       if (frame.type === "turn:delib_path") {
-        setActiveTurnId((current) => current ?? frame.turn_id);
         setDelibPath(frame.path);
         return;
       }
 
       if (frame.type === "turn:final_attempt") {
-        setActiveTurnId((current) => current ?? frame.turn_id);
         setFinalAttempt(frame.attempt);
         return;
       }
@@ -378,7 +444,6 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         const frameTurnId = turnIdFromTerminal(frame);
         const currentTurnId = activeTurnIdRef.current;
 
-        setActiveTurnId((current) => current ?? frameTurnId);
         setLastPhase(`terminal ${frame.data.outcome}`);
         setTerminalOutcome(frame.data.outcome);
         setTokenTextByPhase(new Map());
@@ -396,8 +461,6 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
       }
 
       const phaseFrame = frame as TurnPhaseFrame;
-      const frameTurnId = turnIdFromPhase(phaseFrame.data);
-      setActiveTurnId((current) => current ?? frameTurnId);
       setPhases((current) => updatePhase(current, phaseFrame));
 
       if (phaseFrame.data.phase !== undefined) {
@@ -424,7 +487,7 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         setRunning(false);
       }
     });
-  }, [clearReflectTimeout, live, pushTail]);
+  }, [acceptsTurnFrame, clearReflectTimeout, live, pushTail]);
 
   const runTurn = useCallback(
     async (input: TurnRequest) => {
@@ -432,6 +495,18 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
         return false;
       }
 
+      const requestSeq = runSeqRef.current + 1;
+      runSeqRef.current = requestSeq;
+      pendingTurnRef.current = {
+        requestSeq,
+        turnId: null,
+        ignoredTurnIds: new Set(
+          [activeTurnIdRef.current, lastDrivenTurnIdRef.current].filter(
+            (turnId): turnId is string => turnId !== null,
+          ),
+        ),
+      };
+      activeTurnIdRef.current = null;
       setRunning(true);
       setActiveTurnId(null);
       setPhases(initialPhases());
@@ -449,12 +524,24 @@ export function useTurnStream(live: LiveEvents): TurnStreamState {
 
       try {
         const result = await postTurn(input);
-        setActiveTurnId(result.turn_id);
+        const pendingTurn = pendingTurnRef.current;
+
+        if (runSeqRef.current === requestSeq && pendingTurn?.requestSeq === requestSeq) {
+          if (pendingTurn.turnId === null) {
+            pendingTurn.turnId = result.turn_id;
+            activeTurnIdRef.current = result.turn_id;
+            lastDrivenTurnIdRef.current = result.turn_id;
+            setActiveTurnId(result.turn_id);
+          }
+        }
         return true;
       } catch {
-        clearReflectTimeout();
-        setRunning(false);
-        setLastPhase("turn failed");
+        if (runSeqRef.current === requestSeq) {
+          pendingTurnRef.current = null;
+          clearReflectTimeout();
+          setRunning(false);
+          setLastPhase("turn failed");
+        }
         return false;
       }
     },

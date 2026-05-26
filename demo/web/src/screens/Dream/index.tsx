@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import {
   getDreamAudit,
@@ -54,6 +54,7 @@ export function DreamScreen() {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
   const refetch = api.refetch;
+  const previousConnectionCountRef = useRef(live.connectionCount);
   const [selected, setSelected] = useState<DreamProcessName>("belief-reviser");
   const [plan, setPlan] = useState<DreamPlanResponse | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
@@ -106,6 +107,17 @@ export function DreamScreen() {
       }
     });
   }, [live, refetch]);
+
+  useEffect(() => {
+    const previousConnectionCount = previousConnectionCountRef.current;
+    previousConnectionCountRef.current = live.connectionCount;
+
+    if (live.connectionCount <= 1 || live.connectionCount === previousConnectionCount) {
+      return;
+    }
+
+    void refetch();
+  }, [live.connectionCount, refetch]);
 
   const state = api.data;
   const processes = PROCESS_NAMES.map(
@@ -550,10 +562,7 @@ export function DreamScreen() {
               <button className="btn sm ghost" onClick={() => setConfirmOpen(false)}>
                 cancel
               </button>
-              <button
-                className="btn sm primary"
-                onClick={() => void applyDreamPlan()}
-              >
+              <button className="btn sm primary" onClick={() => void applyDreamPlan()}>
                 apply
               </button>
             </>
@@ -566,12 +575,11 @@ export function DreamScreen() {
               <span className="dream-running-spinner" aria-hidden="true" />
               <div>
                 <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
-                  Running all 10 maintenance processes. Typical runtime is
-                  30-120 seconds depending on substrate size.
+                  Running all 10 maintenance processes. Typical runtime is 30-120 seconds depending
+                  on substrate size.
                 </div>
                 <div className="dim" style={{ marginTop: 4 }}>
-                  The dialog will close and the audit table will refresh when
-                  apply completes.
+                  The dialog will close and the audit table will refresh when apply completes.
                 </div>
               </div>
             </div>
@@ -581,23 +589,20 @@ export function DreamScreen() {
             <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
               {plan === null ? (
                 <>
-                  Run the dream cycle? This executes all 10 offline
-                  maintenance processes (consolidator, reflector, semantic
-                  extractor, curator, overseer, review resolver, ruminator,
-                  self-narrator, procedural synthesizer, belief reviser) and
-                  takes roughly 30-120 seconds.
+                  Run the dream cycle? This executes all 10 offline maintenance processes
+                  (consolidator, reflector, semantic extractor, curator, overseer, review resolver,
+                  ruminator, self-narrator, procedural synthesizer, belief reviser) and takes
+                  roughly 30-120 seconds.
                 </>
               ) : (
                 <>
-                  Apply {plan.changes} changes from {plan.processes.length}{" "}
-                  processes?
+                  Apply {plan.changes} changes from {plan.processes.length} processes?
                 </>
               )}
             </div>
             <div className="dim">
-              This writes audit rows and a dream report for the default
-              maintenance substrate. Audit rows can be reverted via
-              `borg audit revert &lt;id&gt;`.
+              This writes audit rows and a dream report for the default maintenance substrate. Audit
+              rows can be reverted via `borg audit revert &lt;id&gt;`.
             </div>
           </div>
         )}

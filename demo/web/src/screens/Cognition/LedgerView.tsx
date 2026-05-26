@@ -10,6 +10,7 @@ export type LedgerViewProps = {
   turnId: string | null;
   cachedLedger?: EvidenceLedger;
   active: boolean;
+  audience: string;
 };
 
 type LedgerGroup = {
@@ -77,7 +78,7 @@ function trustKind(entry: EvidenceLedgerEntry): TagKind {
   return "";
 }
 
-export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
+export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerViewProps) {
   const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
     turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
   );
@@ -195,6 +196,7 @@ export function LedgerView({ turnId, cachedLedger, active }: LedgerViewProps) {
               <AttachmentChip
                 key={image.attachment_id}
                 attachmentId={image.attachment_id}
+                audience={audience}
                 expanded
               />
             ))}

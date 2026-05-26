@@ -127,7 +127,7 @@ const commitmentQuerySchema = z.object({
 });
 
 const attachmentQuerySchema = z.object({
-  audience: z.string().min(1).nullable().optional(),
+  audience: z.string().min(1),
 });
 const attachmentIdParamSchema = z
   .string()
@@ -284,7 +284,7 @@ const openQuestionPatchBodySchema = z.discriminatedUnion("action", [
 
 const reviewPatchBodySchema = z
   .object({
-    action: z.enum(["resolve", "dismiss"]),
+    action: z.literal("dismiss"),
     note: optionalTextFieldSchema,
   })
   .strict();
@@ -1541,13 +1541,22 @@ export function createDemoServerApp(input: {
     const body = parseRequest(identityGrowthMarkerBodySchema, await parseJsonBody(c));
 
     try {
+      const evidence = await input.borg.stream.append({
+        kind: "internal_event",
+        content: {
+          event: "demo_operator.growth_marker.add",
+          description: body.description,
+          source: body.source ?? "manual",
+        },
+      });
+
       // borg.self.growthMarkers.add(...); demo v1 writes default/global identity scope.
       return c.json(
         input.borg.self.growthMarkers.add({
           ts: Date.now(),
           category: DEFAULT_GROWTH_MARKER_CATEGORY,
           what_changed: body.description,
-          evidence_episode_ids: [],
+          evidence_episode_ids: [evidence.id],
           confidence: 0.6,
           source_process: body.source ?? "manual",
           provenance: {

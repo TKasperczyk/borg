@@ -342,7 +342,7 @@ export function liveUrl(): string {
   return `${wsBase()}/api/live`;
 }
 
-export function attachmentBytesUrl(attachmentId: string, audience?: string): string {
-  const params = audience === undefined ? undefined : new URLSearchParams({ audience });
+export function attachmentBytesUrl(attachmentId: string, audience: string): string {
+  const params = new URLSearchParams({ audience });
   return apiUrl(`api/attachments/${encodeURIComponent(attachmentId)}/bytes`, params);
 }

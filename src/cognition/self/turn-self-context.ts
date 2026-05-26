@@ -19,7 +19,13 @@ import {
   type SelfScoringFeatureSet,
 } from "../../retrieval/scoring-features.js";
 import type { Clock } from "../../util/clock.js";
-import { goalIdHelpers, type EntityId, type EpisodeId, type GoalId } from "../../util/ids.js";
+import {
+  episodeIdHelpers,
+  goalIdHelpers,
+  type EntityId,
+  type EpisodeId,
+  type GoalId,
+} from "../../util/ids.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -31,7 +37,7 @@ type ProvenanceScopedSelfRecord = {
     kind: string;
     episode_ids?: readonly EpisodeId[];
   } | null;
-  evidence_episode_ids?: readonly EpisodeId[] | null;
+  evidence_episode_ids?: readonly string[] | null;
   key_episode_ids?: readonly EpisodeId[] | null;
 };
 
@@ -136,7 +142,7 @@ function getSelfRecordEvidenceEpisodeIds(record: ProvenanceScopedSelfRecord): Ep
   const explicitEpisodeIds = [
     ...(record.evidence_episode_ids ?? []),
     ...(record.key_episode_ids ?? []),
-  ];
+  ].filter((id): id is EpisodeId => episodeIdHelpers.is(id));
 
   if (hasExplicitEvidence && explicitEpisodeIds.length === 0) {
     return [];

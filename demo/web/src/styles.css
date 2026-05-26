@@ -1009,222 +1009,6 @@ body {
   opacity: 1;
 }
 
-/* Legacy pill rules kept temporarily until tests stop referencing them. */
-.flow-pill {
-  display: none;
-}
-
-.flow-pill-head {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
-  padding: 5px 7px;
-}
-
-.flow-pill-glyph {
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line);
-  color: var(--text-faint);
-  background: var(--bg-0);
-  font-size: 9px;
-}
-
-.flow-pill-name {
-  color: var(--text);
-  font-size: 10.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.flow-pill-foot {
-  padding: 3px 7px 4px 7px;
-  border-top: 1px solid var(--line-soft);
-  min-height: 18px;
-  display: flex;
-  align-items: center;
-}
-
-.flow-pill-time {
-  color: var(--text-mute);
-  font-size: 9px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.flow-pill-sub-text {
-  color: var(--text-mute);
-  font-size: 9px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-.flow-pill.running {
-  opacity: 1;
-  border-color: var(--acc);
-  background: oklch(0.84 0.155 142 / 0.07);
-  box-shadow:
-    0 0 0 1px oklch(0.84 0.155 142 / 0.16),
-    0 0 12px oklch(0.84 0.155 142 / 0.18);
-  animation: flowPulse 1.25s ease-in-out infinite;
-}
-
-.flow-pill.running .flow-pill-glyph {
-  color: var(--acc);
-  border-color: var(--acc);
-  box-shadow: 0 0 6px oklch(0.84 0.155 142 / 0.22);
-}
-
-.flow-pill.done {
-  opacity: 0.9;
-  border-color: var(--acc-dim);
-}
-
-.flow-pill.done .flow-pill-glyph {
-  color: var(--acc);
-  border-color: var(--acc-dim);
-}
-
-.flow-pill.fail {
-  opacity: 1;
-  border-color: var(--bad);
-  background: oklch(0.7 0.195 26 / 0.08);
-}
-
-.flow-pill.fail .flow-pill-glyph {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-.flow-pill.input-pill,
-.flow-pill.terminal-pill {
-  width: 100px;
-  color: var(--text-dim);
-  opacity: 0.7;
-}
-
-.flow-pill.terminal-pill.active {
-  opacity: 1;
-  border-color: var(--acc-dim);
-  color: var(--acc);
-}
-
-/* Group containing a vertical connector and a perpendicular branch element
-   hanging below the spine pill. Used for: suppression terminals (closure /
-   gate / guards), the S1/S2 fork below delib, and the regen back-link
-   below guards. */
-.flow-down-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-top: 2px;
-}
-
-.flow-down-connector {
-  width: 1px;
-  height: 12px;
-  border-left: 1px dashed var(--line);
-  display: block;
-  color: transparent;
-}
-
-.flow-down-group.active .flow-down-connector {
-  border-left-color: var(--bad);
-}
-
-.flow-down-group.regen.active .flow-down-connector {
-  border-left-color: var(--warn);
-}
-
-.flow-branch-terminal {
-  border: 1px dashed var(--line);
-  background: transparent;
-  color: var(--text-faint);
-  padding: 3px 6px;
-  font-family: var(--mono);
-  font-size: 9px;
-  white-space: nowrap;
-  opacity: 0.55;
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.flow-branch-terminal.active {
-  opacity: 1;
-  border-color: var(--bad);
-  color: var(--bad);
-  background: oklch(0.7 0.195 26 / 0.08);
-}
-
-.flow-branch-terminal.regen {
-  border-color: var(--line-soft);
-  color: var(--text-faint);
-}
-
-.flow-branch-terminal.regen.active {
-  opacity: 1;
-  border-color: var(--warn);
-  color: var(--warn);
-  background: oklch(0.835 0.135 85 / 0.08);
-}
-
-/* S1/S2 fork: two horizontal lanes side-by-side below the delib pill,
-   sharing a single connector line up to the spine. */
-.flow-fork {
-  display: flex;
-  gap: 4px;
-}
-
-.flow-fork-lane {
-  border: 1px solid var(--line-soft);
-  padding: 3px 5px;
-  font-family: var(--mono);
-  font-size: 9px;
-  color: var(--text-faint);
-  background: transparent;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  min-width: 48px;
-  transition:
-    color 180ms ease,
-    border-color 180ms ease,
-    background 180ms ease;
-}
-
-.flow-fork-tag {
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.flow-fork-desc {
-  font-size: 8.5px;
-  color: inherit;
-  opacity: 0.85;
-}
-
-.flow-fork-lane.active {
-  color: var(--acc);
-  border-color: var(--acc-dim);
-  background: oklch(0.78 0.16 152 / 0.1);
-}
-
-.flow-fork-lane.unchosen {
-  opacity: 0.42;
-  text-decoration: line-through;
-  text-decoration-color: var(--line-soft);
-}
-
 /* Active stream pane — large readable text area for whichever streaming
    phase is currently producing tokens. Sits below the pipeline. */
 .flow-active-stream {
@@ -1279,73 +1063,6 @@ body {
 
 .flow-active-stream.idle .flow-active-head {
   color: var(--text-faint);
-}
-
-.flow-attempt-badge {
-  padding: 1px 5px;
-  border: 1px solid var(--warn-dim);
-  color: var(--warn);
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  background: oklch(0.835 0.135 85 / 0.08);
-}
-
-.flow-gate {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.flow-gate-node {
-  width: 72%;
-  color: var(--text-faint);
-  border-style: dashed;
-  background: transparent;
-}
-
-.flow-gate-node.active {
-  color: var(--warn);
-  border-color: var(--warn-dim);
-  background: oklch(0.835 0.135 85 / 0.08);
-}
-
-.flow-branch {
-  align-self: flex-end;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0 0 0;
-  color: var(--text-faint);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.flow-branch-line {
-  color: var(--line);
-}
-
-.flow-branch.active {
-  color: var(--warn);
-}
-
-.flow-branch.active .flow-branch-line {
-  color: var(--warn);
-}
-
-@keyframes flowPulse {
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 1px oklch(0.84 0.155 142 / 0.12),
-      0 0 12px oklch(0.84 0.155 142 / 0.12);
-  }
-  50% {
-    box-shadow:
-      0 0 0 1px oklch(0.84 0.155 142 / 0.26),
-      0 0 24px oklch(0.84 0.155 142 / 0.22);
-  }
 }
 
 .xray-tabs {
@@ -2413,19 +2130,33 @@ body {
   border: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
 .dream-card.dream-card-running {
   border-color: var(--warn);
   background: oklch(0.835 0.135 85 / 0.05);
-  box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.18), 0 0 14px oklch(0.835 0.135 85 / 0.2);
+  box-shadow:
+    0 0 0 1px oklch(0.835 0.135 85 / 0.18),
+    0 0 14px oklch(0.835 0.135 85 / 0.2);
   animation: dreamCardPulse 1.4s ease-in-out infinite;
 }
 
 @keyframes dreamCardPulse {
-  0%, 100% { box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.18), 0 0 8px oklch(0.835 0.135 85 / 0.14); }
-  50% { box-shadow: 0 0 0 1px oklch(0.835 0.135 85 / 0.28), 0 0 18px oklch(0.835 0.135 85 / 0.28); }
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px oklch(0.835 0.135 85 / 0.18),
+      0 0 8px oklch(0.835 0.135 85 / 0.14);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px oklch(0.835 0.135 85 / 0.28),
+      0 0 18px oklch(0.835 0.135 85 / 0.28);
+  }
 }
 .dream-card .h {
   display: flex;
@@ -2536,7 +2267,9 @@ body {
 }
 
 @keyframes dreamSpin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 .modal-field {
   display: grid;

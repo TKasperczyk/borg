@@ -422,7 +422,8 @@ export class JsonlTracer implements TurnTracer {
   }
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
-    const { turnId, ...payload } = data;
+    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(data);
+    const { turnId, ...payload } = emittedData;
     // ts uses the injected logical clock (ManualClock in tests, SystemClock
     // in prod) so trace event ordering follows Borg's logical time.
     // wallMs is high-resolution monotonic real time -- needed for intra-

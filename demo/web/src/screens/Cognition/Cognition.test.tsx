@@ -220,12 +220,17 @@ describe("cognition screen", () => {
     const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
     vi.stubGlobal("fetch", fetchMock);
     const { rerender } = render(
-      <LedgerView turnId="turn_a" cachedLedger={ledgerWithText("ledger A")} active />,
+      <LedgerView
+        turnId="turn_a"
+        cachedLedger={ledgerWithText("ledger A")}
+        active
+        audience="alice"
+      />,
     );
 
     expect(screen.getByText("ledger A")).toBeInTheDocument();
 
-    rerender(<LedgerView turnId="turn_b" cachedLedger={undefined} active />);
+    rerender(<LedgerView turnId="turn_b" cachedLedger={undefined} active audience="alice" />);
 
     expect(screen.queryByText("ledger A")).not.toBeInTheDocument();
     expect(screen.getByText("ledger not loaded yet")).toBeInTheDocument();
@@ -325,7 +330,7 @@ describe("cognition screen", () => {
     await waitFor(() => expect(screen.queryByText(/borg is thinking/)).not.toBeInTheDocument());
   });
 
-  it("renders all flow phases upfront and tracks state transitions", () => {
+  it("renders all flow phases upfront and tracks state transitions", async () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
@@ -334,6 +339,12 @@ describe("cognition screen", () => {
     expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-queue");
     expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-queue");
     expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-queue");
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    expect(await screen.findByText(/borg is thinking/)).toBeInTheDocument();
 
     act(() => {
       source.emit(phaseFrame("turn:phase:started", "ingest"));
@@ -351,11 +362,17 @@ describe("cognition screen", () => {
     expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-fail");
   });
 
-  it("renders accumulated token text inside the active streaming phase", () => {
+  it("renders accumulated token text inside the active streaming phase", async () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
     render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    expect(await screen.findByText(/borg is thinking/)).toBeInTheDocument();
 
     act(() => {
       source.emit(phaseFrame("turn:phase:started", "final"));
@@ -382,6 +399,48 @@ describe("cognition screen", () => {
     // the head label so we can disambiguate which phase is being streamed.
     expect(document.querySelector(".flow-active-body")?.textContent).toContain("Hello world");
     expect(document.querySelector(".flow-active-head")?.textContent).toMatch(/finalizer/i);
+  });
+
+  it("ignores stale turn frames after a newer turn starts", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnResponse: jsonResponse({ ok: true, turn_id: "turn_new" }),
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    expect(await screen.findByText(/borg is thinking/)).toBeInTheDocument();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "final", "turn_new"));
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_new",
+        phase: "final",
+        chunk_text: "fresh",
+        sequence: 1,
+      });
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_old",
+        phase: "final",
+        chunk_text: "stale",
+        sequence: 2,
+      });
+      source.emit(phaseFrame("turn:phase:failed", "final", "turn_old"));
+      source.emit(terminalFrame("turn_old", "error"));
+    });
+
+    expect(document.querySelector(".flow-active-body")?.textContent).toContain("fresh");
+    expect(document.querySelector(".flow-active-body")?.textContent).not.toContain("stale");
+    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-running");
+    expect(screen.queryByText(/terminal error/)).not.toBeInTheDocument();
   });
 
   it("merges initial fetch results over live stream appends", async () => {

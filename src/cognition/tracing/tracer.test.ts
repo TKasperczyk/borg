@@ -191,6 +191,59 @@ describe("TurnTracer", () => {
     });
   });
 
+  it("strips payload-gated keys for a lone JsonlTracer without payloads", () => {
+    const tempDir = createTempDir();
+    const tracePath = join(tempDir, "jsonl-no-payloads.jsonl");
+    const tracer = new JsonlTracer({
+      path: tracePath,
+      clock: new FixedClock(700),
+      includePayloads: false,
+    });
+
+    tracer.emit("evidence_ledger.built", {
+      turnId: "turn_jsonl_payload",
+      turn_id: "turn_jsonl_payload",
+      prompt: "full prompt",
+      response: "full response",
+      ledger: { sections: [] },
+      chunk_text: "token chunk",
+      full_text: "complete answer",
+      rawToolInput: { text: "raw" },
+      normalizedPayload: { text: "normalized" },
+      original_response: "before",
+      rewritten_response: "after",
+      dropped_facets: [{ query: "hidden", priority: 1 }],
+      description: "candidate text",
+      candidate_description: "goal candidate text",
+      description_excerpt: "action excerpt",
+      skipped_promotions: [{ description_excerpt: "skipped goal" }],
+      record: { id: "record" },
+      error: "stack-like detail",
+      spans: [{ text: "hidden span" }],
+      reason: "ordinary_reason",
+      summary: "safe metadata",
+    });
+
+    const event = readTraceEvents(tracePath)[0];
+
+    expect(event).toMatchObject({
+      ts: 700,
+      turnId: "turn_jsonl_payload",
+      event: "evidence_ledger.built",
+      turn_id: "turn_jsonl_payload",
+      reason: "ordinary_reason",
+      summary: "safe metadata",
+    });
+    expect(event).not.toHaveProperty("prompt");
+    expect(event).not.toHaveProperty("response");
+    expect(event).not.toHaveProperty("ledger");
+    expect(event).not.toHaveProperty("chunk_text");
+    expect(event).not.toHaveProperty("full_text");
+    expect(event).not.toHaveProperty("rawToolInput");
+    expect(event).not.toHaveProperty("normalizedPayload");
+    expect(event).not.toHaveProperty("spans");
+  });
+
   it("writes valid JSONL with turn correlation", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "trace.jsonl");

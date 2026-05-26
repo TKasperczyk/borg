@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { liveUrl } from "../api/client";
 import type { LiveFrame, WsState } from "../api/types";
@@ -124,5 +124,8 @@ export function useLiveEvents(input: { onReconnected?: () => void } = {}): LiveE
     };
   }, []);
 
-  return { wsState, connectionCount, subscribe };
+  return useMemo(
+    () => ({ wsState, connectionCount, subscribe }),
+    [connectionCount, subscribe, wsState],
+  );
 }

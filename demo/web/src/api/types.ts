@@ -601,7 +601,7 @@ export type PatchOpenQuestionRequest =
   | { action: "bump"; delta?: number };
 
 export type PatchReviewItemRequest = {
-  action: "resolve" | "dismiss";
+  action: "dismiss";
   note?: string;
 };
 

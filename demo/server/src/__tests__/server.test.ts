@@ -578,7 +578,12 @@ describe("demo server", () => {
     expect(missingAttachmentMeta.status).toBe(404);
 
     const attachment = await app.request("/api/attachments/att_0000000000000000/bytes");
-    expect(attachment.status).toBe(404);
+    expect(attachment.status).toBe(400);
+
+    const missingAttachmentWithAudience = await app.request(
+      "/api/attachments/att_0000000000000000/bytes?audience=Alice",
+    );
+    expect(missingAttachmentWithAudience.status).toBe(404);
 
     const badCommitmentQuery = await app.request("/api/commitments?state=missing");
     expect(badCommitmentQuery.status).toBe(400);
@@ -791,6 +796,7 @@ describe("demo server", () => {
     expect(growthAddSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         what_changed: "operator surface exists",
+        evidence_episode_ids: [expect.stringMatching(/^strm_/)],
         source_process: "demo",
       }),
     );

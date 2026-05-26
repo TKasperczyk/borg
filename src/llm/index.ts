@@ -203,6 +203,7 @@ const TOOL_STREAM_TEXT_FIELDS: Record<string, string> = {
   EmitAnswer: "text",
   EmitObserve: "reason",
   EmitNoOutput: "reason",
+  EmitSelfReport: "text",
 };
 
 // Walk a (possibly unclosed) JSON string looking for `"fieldName": "..."` and

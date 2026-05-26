@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, getSemanticGraph, getStream, postTurn } from "./client";
+import { ApiError, attachmentBytesUrl, getSemanticGraph, getStream, postTurn } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -17,14 +17,14 @@ describe("api client", () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ entries: [], next_cursor: null }), {
         status: 200,
-        headers: { "Content-Type": "application/json" }
-      })
+        headers: { "Content-Type": "application/json" },
+      }),
     );
 
     await getStream({
       audience: "alice",
       kinds: ["user_msg", "agent_msg", "user_image_attachment"],
-      limit: 50
+      limit: 50,
     });
 
     const requested = String(fetchMock.mock.calls[0]?.[0]);
@@ -42,8 +42,8 @@ describe("api client", () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ ok: true, turn_id: "turn_123" }), {
         status: 200,
-        headers: { "Content-Type": "application/json" }
-      })
+        headers: { "Content-Type": "application/json" },
+      }),
     );
 
     await postTurn({ message: "hello", audience: "alice", stakes: "low" });
@@ -54,7 +54,7 @@ describe("api client", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       message: "hello",
       audience: "alice",
-      stakes: "low"
+      stakes: "low",
     });
   });
 
@@ -66,13 +66,13 @@ describe("api client", () => {
           edges: [],
           total_nodes: 0,
           total_edges: 0,
-          rendered: { nodes: 0, edges: 0 }
+          rendered: { nodes: 0, edges: 0 },
         }),
         {
           status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
     );
 
     await getSemanticGraph(300);
@@ -83,17 +83,24 @@ describe("api client", () => {
     expect(url.searchParams.get("limit")).toBe("300");
   });
 
+  it("requires audience when constructing attachment byte URLs", () => {
+    const url = new URL(attachmentBytesUrl("att_1111111111111111", "alice"), "http://test.invalid");
+
+    expect(url.pathname).toBe("/api/attachments/att_1111111111111111/bytes");
+    expect(url.searchParams.get("audience")).toBe("alice");
+  });
+
   it("throws structured errors on non-2xx responses", async () => {
     mockFetch(
       new Response(JSON.stringify({ error: { status: 400, message: "kind rejected" } }), {
         status: 400,
-        headers: { "Content-Type": "application/json" }
-      })
+        headers: { "Content-Type": "application/json" },
+      }),
     );
 
     await expect(getStream({ kinds: ["user_msg"], limit: 10 })).rejects.toMatchObject({
       status: 400,
-      payload: { status: 400, message: "kind rejected" }
+      payload: { status: 400, message: "kind rejected" },
     });
   });
 });

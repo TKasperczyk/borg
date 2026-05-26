@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getAttachmentMetadata, getAttachmentStatuses, getStream } from "../../api/client";
 import type {
@@ -54,6 +54,21 @@ function attachmentId(entry: StreamEntry): string | undefined {
   return contentField(entry.content, "attachment_id");
 }
 
+function attachmentStatusInvalidationIds(entries: readonly StreamEntry[]): string[] {
+  return [
+    ...new Set(
+      entries.flatMap((entry) => {
+        if (entry.kind !== "user_image_attachment" && entry.kind !== "internal_event") {
+          return [];
+        }
+
+        const id = attachmentId(entry);
+        return id === undefined ? [] : [id];
+      }),
+    ),
+  ];
+}
+
 function mediaType(entry: StreamEntry): string | undefined {
   return contentField(entry.content, "media_type");
 }
@@ -74,6 +89,8 @@ function summarizeStatus(
 export function StreamScreen() {
   const live = useLiveEventsContext();
   const streamApi = useApi(() => getStream({ limit: 120 }), []);
+  const refetchStream = streamApi.refetch;
+  const previousConnectionCountRef = useRef(live.connectionCount);
   const [entries, setEntries] = useState<StreamEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [kinds, setKinds] = useState<Set<StreamEntryKind>>(() => new Set(STREAM_KINDS));
@@ -98,8 +115,29 @@ export function StreamScreen() {
       }
       setEntries((current) => mergeEntries(current, frame.entries, "desc"));
       setSelectedId((current) => current ?? frame.entries.at(-1)?.id ?? null);
+      const invalidatedAttachmentIds = attachmentStatusInvalidationIds(frame.entries);
+      if (invalidatedAttachmentIds.length > 0) {
+        setAttachmentStatusById((current) => {
+          const next = { ...current };
+          for (const id of invalidatedAttachmentIds) {
+            delete next[id];
+          }
+          return next;
+        });
+      }
     });
   }, [live]);
+
+  useEffect(() => {
+    const previousConnectionCount = previousConnectionCountRef.current;
+    previousConnectionCountRef.current = live.connectionCount;
+
+    if (live.connectionCount <= 1 || live.connectionCount === previousConnectionCount) {
+      return;
+    }
+
+    void refetchStream();
+  }, [live.connectionCount, refetchStream]);
 
   const windowAudiences = useMemo(
     () =>

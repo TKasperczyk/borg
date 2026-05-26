@@ -300,7 +300,7 @@ export type BorgGrowthMarkerAddInput = {
   what_changed: string;
   before_description?: string | null;
   after_description?: string | null;
-  evidence_episode_ids: readonly EpisodeId[];
+  evidence_episode_ids: readonly (EpisodeId | StreamEntryId)[];
   confidence: number;
   source_process: string;
   provenance: Provenance;
@@ -820,7 +820,11 @@ export type BorgCorrectionFacade = {
 };
 
 export type BorgRelationalSlotsFacade = {
-  list(options?: { subjectEntityId?: EntityId; states?: readonly RelationalSlotState[]; limit?: number }): RelationalSlot[];
+  list(options?: {
+    subjectEntityId?: EntityId;
+    states?: readonly RelationalSlotState[];
+    limit?: number;
+  }): RelationalSlot[];
   countByState(): Record<RelationalSlotState, number>;
 };
 

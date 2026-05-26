@@ -7,7 +7,7 @@ const IMG_SIZES = {
   sm: [44, 44],
   md: [88, 64],
   lg: [160, 100],
-  xl: [260, 160]
+  xl: [260, 160],
 } as const;
 
 export type ImagePlaceholderProps = {
@@ -28,6 +28,12 @@ function seedFrom(value: string): number {
   return acc / 997;
 }
 
+function revokeObjectUrl(url: string | null): void {
+  if (url !== null && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function ImagePlaceholder({
   attachmentId,
   mediaType,
@@ -35,14 +41,22 @@ export function ImagePlaceholder({
   size = "md",
   quarantined = false,
   onClick,
-  style
+  style,
 }: ImagePlaceholderProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [width, height] = IMG_SIZES[size] ?? IMG_SIZES.md;
-  const seed = useMemo(() => seedFrom(attachmentId ?? mediaType ?? "image"), [attachmentId, mediaType]);
+  const seed = useMemo(
+    () => seedFrom(attachmentId ?? mediaType ?? "image"),
+    [attachmentId, mediaType],
+  );
 
   useEffect(() => {
-    if (attachmentId === undefined) {
+    setObjectUrl((current) => {
+      revokeObjectUrl(current);
+      return null;
+    });
+
+    if (attachmentId === undefined || audience === undefined) {
       return undefined;
     }
 
@@ -53,20 +67,39 @@ export function ImagePlaceholder({
       .then((response) => (response.ok ? response.blob() : null))
       .then((blob) => {
         if (blob === null || cancelled) {
+          if (!cancelled) {
+            setObjectUrl((current) => {
+              revokeObjectUrl(current);
+              return null;
+            });
+          }
+          return;
+        }
+        if (typeof URL.createObjectURL !== "function") {
+          setObjectUrl((current) => {
+            revokeObjectUrl(current);
+            return null;
+          });
           return;
         }
         localUrl = URL.createObjectURL(blob);
-        setObjectUrl(localUrl);
+        setObjectUrl((current) => {
+          revokeObjectUrl(current);
+          return localUrl;
+        });
       })
       .catch(() => {
-        setObjectUrl(null);
+        if (!cancelled) {
+          setObjectUrl((current) => {
+            revokeObjectUrl(current);
+            return null;
+          });
+        }
       });
 
     return () => {
       cancelled = true;
-      if (localUrl !== null) {
-        URL.revokeObjectURL(localUrl);
-      }
+      revokeObjectUrl(localUrl);
     };
   }, [attachmentId, audience]);
 
@@ -78,7 +111,13 @@ export function ImagePlaceholder({
         style={{ width, height, cursor: onClick === undefined ? "default" : "pointer", ...style }}
         title={attachmentId}
       >
-        <img src={objectUrl} alt={attachmentId ?? "attachment"} width={width} height={height} style={{ objectFit: "cover" }} />
+        <img
+          src={objectUrl}
+          alt={attachmentId ?? "attachment"}
+          width={width}
+          height={height}
+          style={{ objectFit: "cover" }}
+        />
         <div className="img-ph-label">{attachmentId ?? "image"}</div>
         {quarantined ? <div className="img-ph-quar">quarantined</div> : null}
       </div>
@@ -95,7 +134,7 @@ export function ImagePlaceholder({
     return {
       x: Math.floor(f * width),
       y: Math.floor(((f * 11.3) % 1) * height),
-      r: 1 + ((f * 7) % 3)
+      r: 1 + ((f * 7) % 3),
     };
   });
 
@@ -106,7 +145,12 @@ export function ImagePlaceholder({
       style={{ width, height, cursor: onClick === undefined ? "default" : "pointer", ...style }}
       title={short}
     >
-      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} preserveAspectRatio="none">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width={width}
+        height={height}
+        preserveAspectRatio="none"
+      >
         <defs>
           <pattern
             id={`stripe-${short.replace(/[^a-zA-Z0-9_-]/g, "_")}`}
@@ -119,7 +163,11 @@ export function ImagePlaceholder({
             <line x1="0" y1="0" x2="0" y2="6" stroke={c2} strokeWidth="1" />
           </pattern>
         </defs>
-        <rect width={width} height={height} fill={`url(#stripe-${short.replace(/[^a-zA-Z0-9_-]/g, "_")})`} />
+        <rect
+          width={width}
+          height={height}
+          fill={`url(#stripe-${short.replace(/[^a-zA-Z0-9_-]/g, "_")})`}
+        />
         {dots.map((dot, index) => (
           <circle key={index} cx={dot.x} cy={dot.y} r={dot.r} fill={c3} opacity="0.6" />
         ))}

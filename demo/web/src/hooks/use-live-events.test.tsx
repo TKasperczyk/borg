@@ -26,9 +26,20 @@ function installFakeWebSocket(): void {
   vi.spyOn(Math, "random").mockReturnValue(0);
 }
 
-function Probe({ onReconnected }: { onReconnected?: () => void }) {
+function Probe({
+  onLive,
+  onReconnected,
+}: {
+  onLive?: (live: ReturnType<typeof useLiveEvents>) => void;
+  onReconnected?: () => void;
+}) {
   const live = useLiveEvents({ onReconnected });
-  return <div data-testid="ws-state">{live.wsState}:{live.connectionCount}</div>;
+  onLive?.(live);
+  return (
+    <div data-testid="ws-state">
+      {live.wsState}:{live.connectionCount}
+    </div>
+  );
 }
 
 afterEach(() => {
@@ -89,5 +100,22 @@ describe("useLiveEvents", () => {
     }
 
     expect(screen.getByTestId("ws-state")).toHaveTextContent("down:0");
+  });
+
+  it("returns a stable object across unrelated rerenders", () => {
+    vi.useFakeTimers();
+    installFakeWebSocket();
+    const seen: ReturnType<typeof useLiveEvents>[] = [];
+    const { rerender } = render(<Probe onLive={(live) => seen.push(live)} />);
+
+    rerender(<Probe onLive={(live) => seen.push(live)} />);
+
+    expect(seen[1]).toBe(seen[0]);
+
+    act(() => {
+      FakeWebSocket.sockets[0]?.open();
+    });
+
+    expect(seen.at(-1)).not.toBe(seen[0]);
   });
 });
