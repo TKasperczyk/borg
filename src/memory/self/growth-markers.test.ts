@@ -68,13 +68,30 @@ describe("GrowthMarkersRepository", () => {
     db.close();
   });
 
-  it("rejects empty evidence", () => {
+  it("allows manual markers without episode evidence but rejects derived empty evidence", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,
     });
     const repository = new GrowthMarkersRepository({
       db,
       clock: new FixedClock(10_000),
+    });
+
+    expect(
+      repository.add({
+        ts: 5_000,
+        category: "understanding",
+        what_changed: "Manual marker",
+        evidence_episode_ids: [],
+        confidence: 0.4,
+        source_process: "manual",
+        provenance: {
+          kind: "manual",
+        },
+      }),
+    ).toMatchObject({
+      what_changed: "Manual marker",
+      evidence_episode_ids: [],
     });
 
     expect(() =>
@@ -84,9 +101,10 @@ describe("GrowthMarkersRepository", () => {
         what_changed: "Invalid marker",
         evidence_episode_ids: [],
         confidence: 0.4,
-        source_process: "manual",
+        source_process: "self-narrator",
         provenance: {
-          kind: "manual",
+          kind: "offline",
+          process: "self-narrator",
         },
       }),
     ).toThrow();

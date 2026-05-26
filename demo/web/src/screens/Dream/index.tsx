@@ -1,7 +1,20 @@
 import { Fragment, useEffect, useState } from "react";
 
-import { getDreamState } from "../../api/client";
-import type { DreamProcessName, DreamProcessSummary } from "../../api/types";
+import {
+  getDreamAudit,
+  getDreamState,
+  patchReviewItem,
+  postDreamApply,
+  postDreamPlan,
+} from "../../api/client";
+import type {
+  DreamApplyResponse,
+  DreamPlanResponse,
+  DreamProcessName,
+  DreamProcessSummary,
+  ReviewRow,
+} from "../../api/types";
+import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
@@ -31,11 +44,24 @@ function statusTag(status: DreamProcessSummary["last_status"]) {
   return "";
 }
 
+type ReviewAction = {
+  row: ReviewRow;
+  action: "dismiss";
+  note: string;
+};
+
 export function DreamScreen() {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
   const refetch = api.refetch;
   const [selected, setSelected] = useState<DreamProcessName>("belief-reviser");
+  const [plan, setPlan] = useState<DreamPlanResponse | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [applyResult, setApplyResult] = useState<DreamApplyResponse | null>(null);
+  const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
+  const [busy, setBusy] = useState<"plan" | "apply" | "review" | null>(null);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
 
   useEffect(() => {
     return live.subscribe((frame) => {
@@ -62,6 +88,75 @@ export function DreamScreen() {
       },
   );
   const selectedProcess = processes.find((process) => process.name === selected) ?? processes[0];
+
+  async function loadPlan(openConfirm: boolean): Promise<void> {
+    setBusy("plan");
+    setOperatorError(null);
+    setApplyResult(null);
+    try {
+      const nextPlan = await postDreamPlan({});
+      setPlan(nextPlan);
+      if (openConfirm) {
+        setConfirmOpen(true);
+      } else {
+        setPlanOpen(true);
+      }
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openApplyConfirm(): Promise<void> {
+    if (plan === null) {
+      await loadPlan(true);
+      return;
+    }
+
+    setConfirmOpen(true);
+  }
+
+  async function applyDreamPlan(): Promise<void> {
+    if (plan === null) {
+      return;
+    }
+
+    setBusy("apply");
+    setOperatorError(null);
+    try {
+      const result = await postDreamApply({ plan_id: plan.plan_id });
+      setApplyResult(result);
+      setConfirmOpen(false);
+      setPlanOpen(false);
+      await Promise.all([refetch(), getDreamAudit()]);
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitReviewAction(): Promise<void> {
+    if (reviewAction === null) {
+      return;
+    }
+
+    setBusy("review");
+    setOperatorError(null);
+    try {
+      await patchReviewItem(reviewAction.row.id, {
+        action: reviewAction.action,
+        ...(reviewAction.note.trim().length === 0 ? {} : { note: reviewAction.note.trim() }),
+      });
+      setReviewAction(null);
+      await refetch();
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   if (api.loading && state === null) {
     return <div className="notice">loading dream cycle</div>;
@@ -92,15 +187,26 @@ export function DreamScreen() {
             {state?.scheduler.enabled === true ? "scheduler enabled" : "scheduler disabled"}
           </span>
         </span>
-        <button className="btn sm" disabled title="v1 read-only">
-          dry-run all
+        <button
+          className="btn sm"
+          disabled={busy !== null}
+          aria-label="plan dream"
+          onClick={() => void loadPlan(false)}
+        >
+          {busy === "plan" ? "planning" : "plan"}
         </button>
-        <button className="btn sm primary" disabled title="v1 read-only">
-          trigger dream
+        <button
+          className="btn sm primary"
+          disabled={busy !== null}
+          aria-label="apply dream"
+          onClick={() => void openApplyConfirm()}
+        >
+          {busy === "apply" ? "applying" : "apply"}
         </button>
       </div>
 
       <div className="page-body">
+        {operatorError === null ? null : <div className="notice bad">{operatorError}</div>}
         <div style={{ padding: "14px 20px 16px 20px", borderBottom: "1px solid var(--line)" }}>
           <div
             style={{
@@ -232,6 +338,7 @@ export function DreamScreen() {
                 <th>invalidated edge</th>
                 <th>reason</th>
                 <th>created</th>
+                <th>actions</th>
               </tr>
             </thead>
             <tbody>
@@ -246,11 +353,28 @@ export function DreamScreen() {
                     {row.reason}
                   </td>
                   <td className="dim">{formatTime(row.created_at)}</td>
+                  <td>
+                    <div className="operator-actions">
+                      {/*
+                        belief_revision review rows only allow the "dismiss"
+                        resolution (BELIEF_REVISION_REVIEW_RESOLUTIONS) — applying
+                        a revision goes through the belief-reviser apply step,
+                        not the review queue. Single dismiss button reflects that.
+                      */}
+                      <button
+                        className="btn sm ghost"
+                        disabled={busy !== null}
+                        onClick={() => setReviewAction({ row, action: "dismiss", note: "" })}
+                      >
+                        dismiss
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {(state?.belief_revision_rows.length ?? 0) === 0 ? (
                 <tr>
-                  <td colSpan={5} className="dim">
+                  <td colSpan={6} className="dim">
                     no open belief-revision rows
                   </td>
                 </tr>
@@ -308,6 +432,134 @@ export function DreamScreen() {
           </table>
         </div>
       </div>
+      <Modal
+        open={planOpen}
+        title="dream plan"
+        onClose={() => setPlanOpen(false)}
+        footer={
+          <>
+            <button className="btn sm ghost" onClick={() => setPlanOpen(false)}>
+              close
+            </button>
+            <button
+              className="btn sm primary"
+              disabled={busy !== null || plan === null}
+              onClick={() => setConfirmOpen(true)}
+            >
+              apply
+            </button>
+          </>
+        }
+      >
+        {plan === null ? (
+          <div className="dim">no plan loaded</div>
+        ) : (
+          <div className="modal-form">
+            <div className="dim">
+              {plan.changes} proposed changes · {plan.total_budget_used} tokens ·{" "}
+              {plan.processes.length} processes
+            </div>
+            {plan.processes.map((process) => (
+              <div key={process.name} className="item">
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <span className="acc">{process.name}</span>
+                  <Tag kind={process.would_change ? "acc" : ""}>{process.summary}</Tag>
+                  <span className="dim tab-num">{process.budget_used} tok</span>
+                </div>
+                {process.changes.length === 0 ? (
+                  <div className="dim">no proposed changes</div>
+                ) : (
+                  <div className="props">
+                    {process.changes.map((change, index) => (
+                      <div key={`${process.name}-${change.action}-${index}`} className="row">
+                        <span className="k">{change.action}</span>
+                        <span className="v">{jsonText(change.targets)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {applyResult === null ? null : (
+              <div className="dim">
+                applied {applyResult.applied.length} processes · {applyResult.duration_ms} ms
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+      <Modal
+        open={confirmOpen}
+        title="apply dream plan"
+        onClose={() => setConfirmOpen(false)}
+        footer={
+          <>
+            <button
+              className="btn sm ghost"
+              disabled={busy !== null}
+              onClick={() => setConfirmOpen(false)}
+            >
+              cancel
+            </button>
+            <button
+              className="btn sm primary"
+              disabled={busy !== null || plan === null}
+              onClick={() => void applyDreamPlan()}
+            >
+              {busy === "apply" ? "applying" : "apply"}
+            </button>
+          </>
+        }
+      >
+        <div className="modal-form">
+          <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
+            Apply {plan?.changes ?? 0} changes from {plan?.processes.length ?? 0} processes?
+          </div>
+          <div className="dim">
+            This writes audit rows and a dream report for the default maintenance substrate.
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={reviewAction !== null}
+        title={
+          reviewAction === null
+            ? "review row"
+            : `${reviewAction.action} review ${reviewAction.row.id}`
+        }
+        onClose={() => setReviewAction(null)}
+        footer={
+          <>
+            <button
+              className="btn sm ghost"
+              disabled={busy !== null}
+              onClick={() => setReviewAction(null)}
+            >
+              cancel
+            </button>
+            <button
+              className="btn sm primary"
+              disabled={busy !== null}
+              onClick={() => void submitReviewAction()}
+            >
+              {busy === "review" ? "saving" : (reviewAction?.action ?? "save")}
+            </button>
+          </>
+        }
+      >
+        {reviewAction === null ? null : (
+          <div className="modal-form">
+            <label className="modal-field">
+              <span>note</span>
+              <textarea
+                value={reviewAction.note}
+                onChange={(event) => setReviewAction({ ...reviewAction, note: event.target.value })}
+                placeholder="operator note"
+              />
+            </label>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

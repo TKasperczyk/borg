@@ -1,0 +1,45 @@
+import { useEffect, type ReactNode } from "react";
+
+export type ModalProps = {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+};
+
+export function Modal({ open, title, onClose, children, footer }: ModalProps) {
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, open]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-title">{title}</div>
+        <div className="modal-body">{children}</div>
+        {footer === undefined ? null : <div className="modal-footer">{footer}</div>}
+      </div>
+    </div>
+  );
+}

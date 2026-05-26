@@ -4,13 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { serve } from "@hono/node-server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Borg,
   DEFAULT_SESSION_ID,
   ManualClock,
   createEpisodeId,
   createMaintenanceRunId,
+  createSemanticEdgeId,
+  createSemanticNodeId,
   type AttachmentId,
   type BorgOpenOptions,
 } from "borg";
@@ -165,6 +167,19 @@ function serverPort(server: ReturnType<typeof serve>): number {
   }
 
   return address.port;
+}
+
+async function requestJson(
+  app: ReturnType<typeof createDemoServerApp>["app"],
+  path: string,
+  method: "POST" | "PATCH",
+  body: unknown,
+): Promise<Response> {
+  return app.request(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
@@ -567,6 +582,259 @@ describe("demo server", () => {
     });
     expect(turn.status).toBe(200);
     expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+  });
+
+  it("wires operator mutation endpoints to Borg facade calls", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borg, live });
+    const dreamPlanSpy = vi.spyOn(borg.dream, "plan");
+    const dreamApplySpy = vi.spyOn(borg.dream, "apply");
+    const valueAddSpy = vi.spyOn(borg.self.values, "add");
+    const goalAddSpy = vi.spyOn(borg.self.goals, "add");
+    const goalStatusSpy = vi.spyOn(borg.self.goals, "updateStatus");
+    const goalProgressSpy = vi.spyOn(borg.self.goals, "updateProgress");
+    const growthAddSpy = vi.spyOn(borg.self.growthMarkers, "add");
+    const questionResolveSpy = vi.spyOn(borg.self.openQuestions, "resolve");
+    const questionAbandonSpy = vi.spyOn(borg.self.openQuestions, "abandon");
+    const questionBumpSpy = vi.spyOn(borg.self.openQuestions, "bumpUrgency");
+    const reviewResolveSpy = vi.spyOn(borg.review, "resolve");
+
+    const plan = await requestJson(app, "/api/dream/plan", "POST", {
+      processes: ["curator"],
+      budget: 100,
+    });
+    expect(plan.status).toBe(200);
+    const planBody = (await plan.json()) as { plan_id: string; processes: unknown[] };
+    expect(planBody).toMatchObject({
+      plan_id: expect.any(String),
+      processes: [expect.objectContaining({ name: "curator" })],
+    });
+    expect(dreamPlanSpy).toHaveBeenCalledWith({
+      processes: ["curator"],
+      budget: 100,
+    });
+
+    const apply = await requestJson(app, "/api/dream/apply", "POST", {
+      plan_id: planBody.plan_id,
+    });
+    expect(apply.status).toBe(200);
+    expect(await apply.json()).toMatchObject({
+      applied: [expect.objectContaining({ name: "curator" })],
+      duration_ms: expect.any(Number),
+    });
+    expect(dreamApplySpy).toHaveBeenCalledTimes(1);
+
+    const repeatedApply = await requestJson(app, "/api/dream/apply", "POST", {
+      plan_id: planBody.plan_id,
+    });
+    expect(repeatedApply.status).toBe(200);
+    expect(dreamApplySpy).toHaveBeenCalledTimes(1);
+
+    const value = await requestJson(app, "/api/identity/values", "POST", {
+      name: "care",
+      description: "care about operator-visible state",
+    });
+    expect(value.status).toBe(200);
+    expect(await value.json()).toMatchObject({ id: expect.stringMatching(/^val_/), label: "care" });
+    expect(valueAddSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "care",
+        description: "care about operator-visible state",
+      }),
+    );
+
+    const goal = await requestJson(app, "/api/identity/goals", "POST", {
+      description: "ship sprint B",
+      priority: 2,
+    });
+    expect(goal.status).toBe(200);
+    const goalBody = (await goal.json()) as { id: string };
+    expect(goalAddSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "ship sprint B", priority: 2 }),
+    );
+
+    const completeGoal = await requestJson(app, `/api/identity/goals/${goalBody.id}`, "PATCH", {
+      action: "complete",
+    });
+    expect(completeGoal.status).toBe(200);
+    expect(await completeGoal.json()).toMatchObject({ id: goalBody.id, status: "done" });
+
+    const blockedGoal = borg.self.goals.add({
+      description: "blocked endpoint fixture",
+      priority: 1,
+      provenance: { kind: "manual" },
+    });
+    const block = await requestJson(app, `/api/identity/goals/${blockedGoal.id}`, "PATCH", {
+      action: "block",
+      note: "blocked by test fixture",
+    });
+    expect(block.status).toBe(200);
+    expect(await block.json()).toMatchObject({ id: blockedGoal.id, status: "blocked" });
+
+    const progressGoal = borg.self.goals.add({
+      description: "progress endpoint fixture",
+      priority: 1,
+      provenance: { kind: "manual" },
+    });
+    const progress = await requestJson(app, `/api/identity/goals/${progressGoal.id}`, "PATCH", {
+      action: "progress",
+      progress: 50,
+      note: "halfway",
+    });
+    expect(progress.status).toBe(200);
+    expect(await progress.json()).toMatchObject({
+      id: progressGoal.id,
+      progress_notes: "progress 50%: halfway",
+    });
+    expect(goalStatusSpy).toHaveBeenCalledWith(
+      goalBody.id,
+      "done",
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+    expect(goalStatusSpy).toHaveBeenCalledWith(
+      blockedGoal.id,
+      "blocked",
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+    expect(goalProgressSpy).toHaveBeenCalledWith(
+      progressGoal.id,
+      "progress 50%: halfway",
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+
+    const growth = await requestJson(app, "/api/identity/growth-markers", "POST", {
+      description: "operator surface exists",
+      source: "demo",
+    });
+    expect(growth.status).toBe(200);
+    expect(await growth.json()).toMatchObject({
+      id: expect.stringMatching(/^grw_/),
+      what_changed: "operator surface exists",
+      source_process: "demo",
+    });
+    expect(growthAddSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        what_changed: "operator surface exists",
+        source_process: "demo",
+      }),
+    );
+
+    const resolveQuestion = borg.self.openQuestions.add({
+      question: "what gets resolved?",
+      urgency: 0.4,
+      provenance: { kind: "manual" },
+      source: "user",
+    });
+    const resolvedQuestion = await requestJson(
+      app,
+      `/api/identity/open-questions/${resolveQuestion.id}`,
+      "PATCH",
+      {
+        action: "resolve",
+        resolution: "operator supplied resolution",
+      },
+    );
+    expect(resolvedQuestion.status).toBe(200);
+    expect(await resolvedQuestion.json()).toMatchObject({
+      id: resolveQuestion.id,
+      status: "resolved",
+      resolution_note: "operator supplied resolution",
+    });
+    expect(questionResolveSpy).toHaveBeenCalledWith(
+      resolveQuestion.id,
+      expect.objectContaining({
+        resolution_note: "operator supplied resolution",
+        resolution_evidence_stream_entry_ids: [expect.stringMatching(/^strm_/)],
+      }),
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+
+    const abandonQuestion = borg.self.openQuestions.add({
+      question: "what gets abandoned?",
+      urgency: 0.4,
+      provenance: { kind: "manual" },
+      source: "user",
+    });
+    const abandonedQuestion = await requestJson(
+      app,
+      `/api/identity/open-questions/${abandonQuestion.id}`,
+      "PATCH",
+      {
+        action: "abandon",
+        reason: "operator abandoned it",
+      },
+    );
+    expect(abandonedQuestion.status).toBe(200);
+    expect(await abandonedQuestion.json()).toMatchObject({
+      id: abandonQuestion.id,
+      status: "abandoned",
+      abandoned_reason: "operator abandoned it",
+    });
+    expect(questionAbandonSpy).toHaveBeenCalledWith(
+      abandonQuestion.id,
+      "operator abandoned it",
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+
+    const bumpQuestion = borg.self.openQuestions.add({
+      question: "what gets bumped?",
+      urgency: 0.4,
+      provenance: { kind: "manual" },
+      source: "user",
+    });
+    const bumpedQuestion = await requestJson(
+      app,
+      `/api/identity/open-questions/${bumpQuestion.id}`,
+      "PATCH",
+      {
+        action: "bump",
+      },
+    );
+    expect(bumpedQuestion.status).toBe(200);
+    expect(await bumpedQuestion.json()).toMatchObject({ id: bumpQuestion.id, urgency: 0.5 });
+    expect(questionBumpSpy).toHaveBeenCalledWith(
+      bumpQuestion.id,
+      0.1,
+      { kind: "manual" },
+      expect.objectContaining({ throughReview: true }),
+    );
+
+    const internal = borg as unknown as BorgTestInternals;
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "belief_revision",
+      refs: {
+        target_type: "semantic_node",
+        target_id: createSemanticNodeId(),
+        invalidated_edge_id: createSemanticEdgeId(),
+        dependency_path_edge_ids: [],
+        surviving_support_edge_ids: [],
+        evidence_episode_ids: [],
+      },
+      reason: "operator review fixture",
+      sourceProcess: "belief-reviser",
+    });
+    const reviewResponse = await requestJson(app, `/api/dream/review/${review.id}`, "PATCH", {
+      action: "dismiss",
+      note: "not actionable",
+    });
+    expect(reviewResponse.status).toBe(200);
+    expect(await reviewResponse.json()).toMatchObject({
+      id: review.id,
+      resolved_at: expect.any(Number),
+      resolution: "dismiss",
+    });
+    expect(reviewResolveSpy).toHaveBeenCalledWith(review.id, {
+      decision: "dismiss",
+      reason: "not actionable",
+    });
   });
 
   it("paginates stream entries with same-timestamp file order", async () => {

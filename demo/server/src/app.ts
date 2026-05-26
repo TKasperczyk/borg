@@ -1,10 +1,12 @@
 import { Buffer } from "node:buffer";
+import { performance } from "node:perf_hooks";
 
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import {
+  BorgError,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
   STREAM_ENTRY_KINDS,
@@ -16,7 +18,9 @@ import {
   type EntityId,
   type ImagePerceptionRecord,
   type MaintenanceAuditRecord,
+  type MaintenancePlan,
   type OfflineProcessName,
+  type OrchestratorResult,
   type RelationalSlotState,
   type ReviewQueueItem,
   type SemanticEdge,
@@ -26,6 +30,8 @@ import {
   type StreamEntry,
   type StreamEntryKind,
   type StoredAttachmentRecord,
+  parseGoalId,
+  parseOpenQuestionId,
 } from "borg";
 import { z } from "zod";
 
@@ -129,30 +135,33 @@ const attachmentParamSchema = z.object({
   id: attachmentIdParamSchema,
 });
 const attachmentBatchQuerySchema = z.object({
-  ids: z.string().min(1).transform((value, ctx) => {
-    const ids = value
-      .split(",")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
+  ids: z
+    .string()
+    .min(1)
+    .transform((value, ctx) => {
+      const ids = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
 
-    if (ids.length === 0) {
-      ctx.addIssue({ code: "custom", message: "ids must include at least one attachment id" });
-      return z.NEVER;
-    }
+      if (ids.length === 0) {
+        ctx.addIssue({ code: "custom", message: "ids must include at least one attachment id" });
+        return z.NEVER;
+      }
 
-    if (ids.length > 200) {
-      ctx.addIssue({ code: "custom", message: "ids must include at most 200 attachment ids" });
-      return z.NEVER;
-    }
+      if (ids.length > 200) {
+        ctx.addIssue({ code: "custom", message: "ids must include at most 200 attachment ids" });
+        return z.NEVER;
+      }
 
-    const parsed = z.array(attachmentIdParamSchema).safeParse(ids);
-    if (!parsed.success) {
-      ctx.addIssue({ code: "custom", message: "ids contains an invalid attachment id" });
-      return z.NEVER;
-    }
+      const parsed = z.array(attachmentIdParamSchema).safeParse(ids);
+      if (!parsed.success) {
+        ctx.addIssue({ code: "custom", message: "ids contains an invalid attachment id" });
+        return z.NEVER;
+      }
 
-    return [...new Set(parsed.data)];
-  }),
+      return [...new Set(parsed.data)];
+    }),
 });
 
 const memoryBandIdSchema = z.enum([
@@ -167,9 +176,7 @@ const memoryBandIdSchema = z.enum([
 ]);
 
 const relationalStateQuerySchema = z.object({
-  state: z
-    .enum(["established", "contested", "quarantined", "revoked"])
-    .optional(),
+  state: z.enum(["established", "contested", "quarantined", "revoked"]).optional(),
   limit: limitSchema.default(100),
 });
 
@@ -178,6 +185,127 @@ const turnBodySchema = z.object({
   audience: z.string().min(1),
   stakes: z.enum(["low", "medium", "high"]).optional(),
 });
+
+const offlineProcessNameSchema = z.enum(OFFLINE_PROCESS_NAMES);
+
+const dreamPlanBodySchema = z
+  .object({
+    processes: z.array(offlineProcessNameSchema).min(1).optional(),
+    budget: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const dreamApplyBodySchema = dreamPlanBodySchema
+  .extend({
+    plan_id: z.string().min(1).optional(),
+  })
+  .strict();
+
+const textFieldSchema = z.string().trim().min(1);
+const optionalTextFieldSchema = z.string().trim().min(1).optional();
+
+const identityValueBodySchema = z
+  .object({
+    name: textFieldSchema,
+    description: optionalTextFieldSchema,
+  })
+  .strict();
+
+const identityGoalBodySchema = z
+  .object({
+    description: textFieldSchema,
+    priority: z.number().finite().optional(),
+  })
+  .strict();
+
+const goalPatchBodySchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("complete"),
+      note: optionalTextFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("block"),
+      note: optionalTextFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("progress"),
+      note: optionalTextFieldSchema,
+      progress: z.number().min(0).max(100).optional(),
+    })
+    .strict()
+    .refine((value) => value.note !== undefined || value.progress !== undefined, {
+      message: "progress requires note or progress",
+    }),
+]);
+
+const identityGrowthMarkerBodySchema = z
+  .object({
+    description: textFieldSchema,
+    source: optionalTextFieldSchema,
+  })
+  .strict();
+
+const openQuestionPatchBodySchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("resolve"),
+      resolution: textFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("abandon"),
+      reason: textFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("bump"),
+      delta: z.number().min(-1).max(1).optional(),
+    })
+    .strict(),
+]);
+
+const reviewPatchBodySchema = z
+  .object({
+    action: z.enum(["resolve", "dismiss"]),
+    note: optionalTextFieldSchema,
+  })
+  .strict();
+
+const goalParamSchema = z.object({
+  id: z.string().transform((value, ctx) => {
+    try {
+      return parseGoalId(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid goal id" });
+      return z.NEVER;
+    }
+  }),
+});
+
+const openQuestionParamSchema = z.object({
+  id: z.string().transform((value, ctx) => {
+    try {
+      return parseOpenQuestionId(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid open question id" });
+      return z.NEVER;
+    }
+  }),
+});
+
+const reviewParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+const DEFAULT_OPEN_QUESTION_BUMP_DELTA = 0.1;
+const DEFAULT_GROWTH_MARKER_CATEGORY = "understanding";
 
 function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -212,6 +340,119 @@ function jsonError(status: number, message: string): Response {
       },
     },
   );
+}
+
+function mapBorgErrorToHttp(error: unknown): never {
+  if (error instanceof BorgError) {
+    const status = error.code.endsWith("_NOT_FOUND") ? 404 : 400;
+    throw new HTTPException(status, { message: error.message });
+  }
+
+  throw error;
+}
+
+function requireIdentityApplied<T>(
+  result:
+    | {
+        status: "applied";
+        record: T;
+      }
+    | {
+        status: "requires_review";
+        current: T;
+      },
+  action: string,
+): T {
+  if (result.status === "applied") {
+    return result.record;
+  }
+
+  throw new HTTPException(400, { message: `${action} requires identity review` });
+}
+
+function dreamPlanProcessSummary(result: OrchestratorResult["results"][number]): string {
+  if (result.changes.length === 0 && result.errors.length === 0) {
+    return "no changes";
+  }
+
+  const changeCount = `${result.changes.length} ${
+    result.changes.length === 1 ? "change" : "changes"
+  }`;
+
+  if (result.errors.length === 0) {
+    return changeCount;
+  }
+
+  return `${changeCount}, ${result.errors.length} ${
+    result.errors.length === 1 ? "error" : "errors"
+  }`;
+}
+
+function mapDreamPreview(planId: string, preview: OrchestratorResult) {
+  return {
+    plan_id: planId,
+    processes: preview.results.map((result) => ({
+      name: result.process,
+      would_change: result.changes.length > 0,
+      summary: dreamPlanProcessSummary(result),
+      budget_used: result.tokens_used,
+      changes: result.changes,
+      errors: result.errors,
+      budget_exhausted: result.budget_exhausted,
+    })),
+    total_budget_used: preview.tokens_used,
+    changes: preview.changes.length,
+  };
+}
+
+function mapDreamApply(
+  result: OrchestratorResult,
+  beforeAuditIds: ReadonlySet<number>,
+  afterAuditRows: ReadonlyArray<{ id: number; process: string }>,
+  durationMs: number,
+) {
+  const auditIdsByProcess = new Map<OfflineProcessName, number[]>();
+
+  for (const row of afterAuditRows) {
+    if (
+      !beforeAuditIds.has(row.id) &&
+      OFFLINE_PROCESS_NAMES.includes(row.process as OfflineProcessName)
+    ) {
+      const process = row.process as OfflineProcessName;
+      auditIdsByProcess.set(process, [...(auditIdsByProcess.get(process) ?? []), row.id]);
+    }
+  }
+
+  return {
+    run_id: result.run_id,
+    applied: result.results
+      .filter((processResult) => processResult.errors.length === 0)
+      .map((processResult) => {
+        const auditIds = auditIdsByProcess.get(processResult.process) ?? [];
+        return {
+          name: processResult.process,
+          audit_id: auditIds[0] ?? null,
+          audit_ids: auditIds,
+          changes: processResult.changes.length,
+        };
+      }),
+    failed: result.errors.map((error) => ({
+      name: error.process,
+      message: error.message,
+      ...(error.code === undefined ? {} : { code: error.code }),
+    })),
+    duration_ms: Math.round(durationMs),
+    total_budget_used: result.tokens_used,
+  };
+}
+
+function progressNote(input: { note?: string; progress?: number }): string {
+  if (input.progress === undefined) {
+    return input.note ?? "progress updated";
+  }
+
+  const progress = `progress ${input.progress}%`;
+  return input.note === undefined ? progress : `${progress}: ${input.note}`;
 }
 
 function encodeCursor(entry: Pick<StreamEntry, "timestamp" | "id">): string {
@@ -300,7 +541,9 @@ function sumRecord(record: Record<string, number>): number {
 
 function sparkFrom(count: number): number[] {
   const base = Math.max(1, Math.min(12, count));
-  return Array.from({ length: 15 }, (_, index) => Math.max(1, Math.round(base * (0.45 + index / 20))));
+  return Array.from({ length: 15 }, (_, index) =>
+    Math.max(1, Math.round(base * (0.45 + index / 20))),
+  );
 }
 
 function entityLabel(borg: Borg, id: EntityId | string | null | undefined): string | null {
@@ -351,7 +594,10 @@ function mapCommitment(borg: Borg, record: CommitmentRecord) {
   };
 }
 
-function mapEpisode(borg: Borg, item: Awaited<ReturnType<Borg["episodic"]["list"]>>["items"][number]) {
+function mapEpisode(
+  borg: Borg,
+  item: Awaited<ReturnType<Borg["episodic"]["list"]>>["items"][number],
+) {
   return {
     id: item.id,
     title: item.title,
@@ -505,7 +751,11 @@ function processDescription(name: OfflineProcessName): string {
 }
 
 function streamDreamProcesses(entry: StreamEntry): OfflineProcessName[] {
-  if (entry.kind !== "dream_report" || entry.content === null || typeof entry.content !== "object") {
+  if (
+    entry.kind !== "dream_report" ||
+    entry.content === null ||
+    typeof entry.content !== "object"
+  ) {
     return [];
   }
 
@@ -540,7 +790,9 @@ function streamDreamHasProcessError(entry: StreamEntry, process: OfflineProcessN
   });
 }
 
-function dreamScheduleFromAudit(rows: ReadonlyArray<Pick<MaintenanceAuditRecord, "id" | "applied_at"> & { process: string }>) {
+function dreamScheduleFromAudit(
+  rows: ReadonlyArray<Pick<MaintenanceAuditRecord, "id" | "applied_at"> & { process: string }>,
+) {
   return rows.flatMap((row) => {
     if (!OFFLINE_PROCESS_NAMES.includes(row.process as OfflineProcessName)) {
       return [];
@@ -562,7 +814,9 @@ function latestDreamRunForProcess(
   dreamReports: readonly StreamEntry[],
   auditRows: ReadonlyArray<Pick<MaintenanceAuditRecord, "id" | "applied_at"> & { process: string }>,
 ) {
-  const streamMatches = dreamReports.filter((entry) => streamDreamProcesses(entry).includes(process));
+  const streamMatches = dreamReports.filter((entry) =>
+    streamDreamProcesses(entry).includes(process),
+  );
   const auditMatches = auditRows.filter((row) => row.process === process);
   const lastRunAt = Math.max(
     ...streamMatches.map((entry) => entry.timestamp),
@@ -586,7 +840,11 @@ function latestDreamRunForProcess(
   return {
     last_run_at: lastRunAt,
     last_status:
-      latestStream === undefined ? "ok" : streamDreamHasProcessError(latestStream, process) ? "error" : "ok",
+      latestStream === undefined
+        ? "ok"
+        : streamDreamHasProcessError(latestStream, process)
+          ? "error"
+          : "ok",
     last_audit_id: latestAudit?.id ?? null,
   };
 }
@@ -768,6 +1026,16 @@ export function createDemoServerApp(input: {
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const allowedOrigins = input.corsOrigins ?? ["http://localhost:5173"];
+  const dreamPlans = new Map<
+    string,
+    { plan: MaintenancePlan; applied?: ReturnType<typeof mapDreamApply> }
+  >();
+  let dreamPlanCounter = 0;
+
+  function nextDreamPlanId(): string {
+    dreamPlanCounter += 1;
+    return `demo_plan_${Date.now()}_${dreamPlanCounter}`;
+  }
 
   app.onError((error) => {
     if (error instanceof HTTPException) {
@@ -928,7 +1196,9 @@ export function createDemoServerApp(input: {
     if (band === "commitments") {
       return c.json({
         band,
-        items: input.borg.commitments.list({ activeOnly: false }).map((record) => mapCommitment(input.borg, record)),
+        items: input.borg.commitments
+          .list({ activeOnly: false })
+          .map((record) => mapCommitment(input.borg, record)),
       });
     }
 
@@ -1017,7 +1287,8 @@ export function createDemoServerApp(input: {
       .map((record) => mapCommitment(input.borg, record))
       .filter((record) => filterByState === undefined || record.state === filterByState)
       .filter(
-        (record) => query.enforcement === undefined || record.enforcement_class === query.enforcement,
+        (record) =>
+          query.enforcement === undefined || record.enforcement_class === query.enforcement,
       );
 
     return c.json({ commitments });
@@ -1037,6 +1308,282 @@ export function createDemoServerApp(input: {
   });
 
   app.get("/api/dream/state", (c) => c.json(dreamState(input.borg)));
+
+  app.post("/api/dream/plan", async (c) => {
+    const body = parseRequest(dreamPlanBodySchema, await parseJsonBody(c));
+
+    try {
+      // borg.dream.plan(...) + borg.dream.preview(...); demo v1 writes no audience-scoped state.
+      const plan = await input.borg.dream.plan({
+        processes: body.processes,
+        budget: body.budget,
+      });
+      const planId = nextDreamPlanId();
+      dreamPlans.set(planId, { plan });
+
+      return c.json(mapDreamPreview(planId, input.borg.dream.preview(plan)));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/dream/apply", async (c) => {
+    const body = parseRequest(dreamApplyBodySchema, await parseJsonBody(c));
+    const cachedPlan = body.plan_id === undefined ? undefined : dreamPlans.get(body.plan_id);
+
+    if (body.plan_id !== undefined && cachedPlan === undefined) {
+      throw new HTTPException(404, { message: "dream plan not found" });
+    }
+
+    if (cachedPlan?.applied !== undefined) {
+      return c.json(cachedPlan.applied);
+    }
+
+    try {
+      const plan =
+        cachedPlan?.plan ??
+        (await input.borg.dream.plan({
+          processes: body.processes,
+          budget: body.budget,
+        }));
+      const beforeAuditIds = new Set(input.borg.audit.list().map((row) => row.id));
+      const startedAt = performance.now();
+      // borg.dream.apply(...); demo v1 uses the default/global maintenance substrate.
+      const result = await input.borg.dream.apply(plan);
+      const response = mapDreamApply(
+        result,
+        beforeAuditIds,
+        input.borg.audit.list(),
+        performance.now() - startedAt,
+      );
+
+      if (body.plan_id !== undefined) {
+        dreamPlans.set(body.plan_id, { plan, applied: response });
+      }
+
+      return c.json(response);
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/identity/values", async (c) => {
+    const body = parseRequest(identityValueBodySchema, await parseJsonBody(c));
+
+    try {
+      // borg.self.values.add(...); demo v1 writes default/global identity scope.
+      return c.json(
+        input.borg.self.values.add({
+          label: body.name,
+          description: body.description ?? body.name,
+          priority: 0,
+          provenance: {
+            kind: "manual",
+          },
+        }),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/identity/goals", async (c) => {
+    const body = parseRequest(identityGoalBodySchema, await parseJsonBody(c));
+
+    try {
+      // borg.self.goals.add(...); demo v1 writes default/global identity scope.
+      return c.json(
+        input.borg.self.goals.add({
+          description: body.description,
+          priority: body.priority ?? 0,
+          parentId: null,
+          provenance: {
+            kind: "manual",
+          },
+        }),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.patch("/api/identity/goals/:id", async (c) => {
+    const params = parseRequest(goalParamSchema, c.req.param());
+    const body = parseRequest(goalPatchBodySchema, await parseJsonBody(c));
+
+    if (input.borg.self.goals.get(params.id) === null) {
+      throw new HTTPException(404, { message: "goal not found" });
+    }
+
+    try {
+      // borg.self.goals.updateStatus/updateProgress(...); demo operator actions apply through review.
+      if (body.action === "complete") {
+        return c.json(
+          requireIdentityApplied(
+            input.borg.self.goals.updateStatus(
+              params.id,
+              "done",
+              { kind: "manual" },
+              { throughReview: true, reason: body.note ?? null },
+            ),
+            "Completing goal",
+          ),
+        );
+      }
+
+      if (body.action === "block") {
+        return c.json(
+          requireIdentityApplied(
+            input.borg.self.goals.updateStatus(
+              params.id,
+              "blocked",
+              { kind: "manual" },
+              { throughReview: true, reason: body.note ?? null },
+            ),
+            "Blocking goal",
+          ),
+        );
+      }
+
+      return c.json(
+        requireIdentityApplied(
+          input.borg.self.goals.updateProgress(
+            params.id,
+            progressNote(body),
+            { kind: "manual" },
+            { throughReview: true, reason: body.note ?? null },
+          ),
+          "Updating goal progress",
+        ),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/identity/growth-markers", async (c) => {
+    const body = parseRequest(identityGrowthMarkerBodySchema, await parseJsonBody(c));
+
+    try {
+      // borg.self.growthMarkers.add(...); demo v1 writes default/global identity scope.
+      return c.json(
+        input.borg.self.growthMarkers.add({
+          ts: Date.now(),
+          category: DEFAULT_GROWTH_MARKER_CATEGORY,
+          what_changed: body.description,
+          evidence_episode_ids: [],
+          confidence: 0.6,
+          source_process: body.source ?? "manual",
+          provenance: {
+            kind: "manual",
+          },
+        }),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.patch("/api/identity/open-questions/:id", async (c) => {
+    const params = parseRequest(openQuestionParamSchema, c.req.param());
+    const body = parseRequest(openQuestionPatchBodySchema, await parseJsonBody(c));
+    const current =
+      input.borg.self.openQuestions
+        .list({ limit: 500 })
+        .find((question) => question.id === params.id) ?? null;
+
+    if (current === null) {
+      throw new HTTPException(404, { message: "open question not found" });
+    }
+
+    if (current.status !== "open") {
+      throw new HTTPException(400, { message: `open question is already ${current.status}` });
+    }
+
+    try {
+      // borg.self.openQuestions.resolve/abandon/bumpUrgency(...); demo operator actions apply through review.
+      if (body.action === "resolve") {
+        const evidence = await input.borg.stream.append({
+          kind: "internal_event",
+          content: {
+            event: "demo_operator.open_question.resolve",
+            open_question_id: params.id,
+            resolution: body.resolution,
+          },
+        });
+
+        return c.json(
+          requireIdentityApplied(
+            input.borg.self.openQuestions.resolve(
+              params.id,
+              {
+                resolution_evidence_stream_entry_ids: [evidence.id],
+                resolution_note: body.resolution,
+              },
+              { kind: "manual" },
+              { throughReview: true, reason: "demo operator resolution" },
+            ),
+            "Resolving open question",
+          ),
+        );
+      }
+
+      if (body.action === "abandon") {
+        return c.json(
+          requireIdentityApplied(
+            input.borg.self.openQuestions.abandon(
+              params.id,
+              body.reason,
+              { kind: "manual" },
+              {
+                throughReview: true,
+                reason: body.reason,
+              },
+            ),
+            "Abandoning open question",
+          ),
+        );
+      }
+
+      return c.json(
+        requireIdentityApplied(
+          input.borg.self.openQuestions.bumpUrgency(
+            params.id,
+            body.delta ?? DEFAULT_OPEN_QUESTION_BUMP_DELTA,
+            { kind: "manual" },
+            { throughReview: true, reason: "demo operator urgency bump" },
+          ),
+          "Bumping open question urgency",
+        ),
+      );
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.patch("/api/dream/review/:id", async (c) => {
+    const params = parseRequest(reviewParamSchema, c.req.param());
+    const body = parseRequest(reviewPatchBodySchema, await parseJsonBody(c));
+
+    try {
+      // borg.review.resolve(...): belief_revision rows currently only allow the
+      // "dismiss" resolution (see BELIEF_REVISION_REVIEW_RESOLUTIONS); applying a
+      // revision happens through the belief-reviser apply step, not the review
+      // queue. The demo's UI exposes a single dismiss action.
+      const resolved = await input.borg.review.resolve(params.id, {
+        decision: "dismiss",
+        reason: body.note ?? "Dismissed from demo operator",
+      });
+
+      if (resolved === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      return c.json(mapReviewRow(resolved));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
 
   app.get("/api/attachments", (c) => {
     const query = parseRequest(attachmentBatchQuerySchema, c.req.query());

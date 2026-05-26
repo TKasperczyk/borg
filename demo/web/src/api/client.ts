@@ -4,12 +4,27 @@ import type {
   CommitmentEnforcement,
   CommitmentState,
   CommitmentsResponse,
+  CreateGoalRequest,
+  CreateGrowthMarkerRequest,
+  CreateValueRequest,
+  DreamApplyRequest,
+  DreamApplyResponse,
   DreamAuditResponse,
+  DreamPlanRequest,
+  DreamPlanResponse,
   DreamStateResponse,
+  GrowthMarker,
+  IdentityGoal,
   IdentityResponse,
+  IdentityValue,
   LedgerResponse,
   MemoryBandDetail,
   MemoryBandId,
+  OpenQuestion,
+  PatchGoalRequest,
+  PatchOpenQuestionRequest,
+  PatchReviewItemRequest,
+  ReviewRow,
   MemoryBandsResponse,
   SemanticGraphResponse,
   SharedStateResponse,
@@ -17,7 +32,7 @@ import type {
   StreamEntryKind,
   StreamResponse,
   TurnRequest,
-  TurnResponse
+  TurnResponse,
 } from "./types";
 
 const DEFAULT_API_BASE = "";
@@ -45,7 +60,9 @@ function trimTrailingSlash(value: string): string {
 
 export function apiBase(): string {
   const configured = import.meta.env.VITE_BORG_API_BASE;
-  return trimTrailingSlash(configured === undefined || configured.length === 0 ? DEFAULT_API_BASE : configured);
+  return trimTrailingSlash(
+    configured === undefined || configured.length === 0 ? DEFAULT_API_BASE : configured,
+  );
 }
 
 export function wsBase(): string {
@@ -72,11 +89,12 @@ export function wsBase(): string {
 
 function apiUrl(path: string, params?: URLSearchParams): string {
   const base = apiBase();
-  const origin = base.length > 0
-    ? base
-    : typeof window === "undefined"
-      ? "http://localhost"
-      : window.location.origin;
+  const origin =
+    base.length > 0
+      ? base
+      : typeof window === "undefined"
+        ? "http://localhost"
+        : window.location.origin;
   const url = new URL(path, `${origin}/`);
   if (params !== undefined) {
     url.search = params.toString();
@@ -86,13 +104,17 @@ function apiUrl(path: string, params?: URLSearchParams): string {
   return base.length > 0 ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
 }
 
-async function fetchJson<T>(path: string, init?: RequestInit, params?: URLSearchParams): Promise<T> {
+async function fetchJson<T>(
+  path: string,
+  init?: RequestInit,
+  params?: URLSearchParams,
+): Promise<T> {
   const response = await fetch(apiUrl(path, params), {
     ...init,
     headers: {
       ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...init?.headers
-    }
+      ...init?.headers,
+    },
   });
 
   if (!response.ok) {
@@ -157,7 +179,7 @@ export async function getSemanticGraph(limit = 300): Promise<SemanticGraphRespon
   return fetchJson<SemanticGraphResponse>(
     "api/semantic/graph",
     undefined,
-    new URLSearchParams({ limit: String(limit) })
+    new URLSearchParams({ limit: String(limit) }),
   );
 }
 
@@ -165,11 +187,13 @@ export async function getIdentity(): Promise<IdentityResponse> {
   return fetchJson<IdentityResponse>("api/identity");
 }
 
-export async function getCommitments(input: {
-  state?: CommitmentState | "all";
-  enforcement?: CommitmentEnforcement | "all";
-  audience?: string;
-} = {}): Promise<CommitmentsResponse> {
+export async function getCommitments(
+  input: {
+    state?: CommitmentState | "all";
+    enforcement?: CommitmentEnforcement | "all";
+    audience?: string;
+  } = {},
+): Promise<CommitmentsResponse> {
   const params = new URLSearchParams();
   if (input.state !== undefined) {
     params.set("state", input.state);
@@ -188,7 +212,7 @@ export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {
   return fetchJson<DreamAuditResponse>(
     "api/dream/audit",
     undefined,
-    new URLSearchParams({ limit: String(limit) })
+    new URLSearchParams({ limit: String(limit) }),
   );
 }
 
@@ -196,11 +220,79 @@ export async function getDreamState(): Promise<DreamStateResponse> {
   return fetchJson<DreamStateResponse>("api/dream/state");
 }
 
-export async function getAttachmentMetadata(attachmentId: string): Promise<AttachmentMetadataResponse> {
-  return fetchJson<AttachmentMetadataResponse>(`api/attachments/${encodeURIComponent(attachmentId)}`);
+export async function postDreamPlan(input: DreamPlanRequest = {}): Promise<DreamPlanResponse> {
+  return fetchJson<DreamPlanResponse>("api/dream/plan", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
-export async function getAttachmentStatuses(attachmentIds: readonly string[]): Promise<AttachmentStatusItem[]> {
+export async function postDreamApply(input: DreamApplyRequest = {}): Promise<DreamApplyResponse> {
+  return fetchJson<DreamApplyResponse>("api/dream/apply", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postValue(input: CreateValueRequest): Promise<IdentityValue> {
+  return fetchJson<IdentityValue>("api/identity/values", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postGoal(input: CreateGoalRequest): Promise<IdentityGoal> {
+  return fetchJson<IdentityGoal>("api/identity/goals", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function patchGoal(id: string, input: PatchGoalRequest): Promise<IdentityGoal> {
+  return fetchJson<IdentityGoal>(`api/identity/goals/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postGrowthMarker(input: CreateGrowthMarkerRequest): Promise<GrowthMarker> {
+  return fetchJson<GrowthMarker>("api/identity/growth-markers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function patchOpenQuestion(
+  id: string,
+  input: PatchOpenQuestionRequest,
+): Promise<OpenQuestion> {
+  return fetchJson<OpenQuestion>(`api/identity/open-questions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function patchReviewItem(
+  id: number,
+  input: PatchReviewItemRequest,
+): Promise<ReviewRow> {
+  return fetchJson<ReviewRow>(`api/dream/review/${encodeURIComponent(String(id))}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getAttachmentMetadata(
+  attachmentId: string,
+): Promise<AttachmentMetadataResponse> {
+  return fetchJson<AttachmentMetadataResponse>(
+    `api/attachments/${encodeURIComponent(attachmentId)}`,
+  );
+}
+
+export async function getAttachmentStatuses(
+  attachmentIds: readonly string[],
+): Promise<AttachmentStatusItem[]> {
   if (attachmentIds.length === 0) {
     return [];
   }
@@ -208,14 +300,14 @@ export async function getAttachmentStatuses(attachmentIds: readonly string[]): P
   return fetchJson<AttachmentStatusItem[]>(
     "api/attachments",
     undefined,
-    new URLSearchParams({ ids: attachmentIds.join(",") })
+    new URLSearchParams({ ids: attachmentIds.join(",") }),
   );
 }
 
 export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
   return fetchJson<TurnResponse>("api/turn", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
   });
 }
 

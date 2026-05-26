@@ -521,6 +521,90 @@ export type DreamAuditResponse = {
   rows: MaintenanceAuditRow[];
 };
 
+export type DreamPlanRequest = {
+  processes?: DreamProcessName[];
+  budget?: number;
+};
+
+export type DreamPlanProcess = {
+  name: DreamProcessName;
+  would_change: boolean;
+  summary: string;
+  budget_used: number;
+  changes: Array<{
+    process: DreamProcessName;
+    action: string;
+    targets: Record<string, unknown>;
+    preview?: Record<string, unknown>;
+  }>;
+  errors: Array<{
+    process: DreamProcessName;
+    message: string;
+    code?: string;
+    target_type?: string;
+    target_id?: string;
+  }>;
+  budget_exhausted: boolean;
+};
+
+export type DreamPlanResponse = {
+  plan_id: string;
+  processes: DreamPlanProcess[];
+  total_budget_used: number;
+  changes: number;
+};
+
+export type DreamApplyRequest = DreamPlanRequest & {
+  plan_id?: string;
+};
+
+export type DreamApplyResponse = {
+  run_id: string;
+  applied: Array<{
+    name: DreamProcessName;
+    audit_id: number | null;
+    audit_ids: number[];
+    changes: number;
+  }>;
+  failed: Array<{
+    name: DreamProcessName;
+    message: string;
+    code?: string;
+  }>;
+  duration_ms: number;
+  total_budget_used: number;
+};
+
+export type CreateValueRequest = {
+  name: string;
+  description?: string;
+};
+
+export type CreateGoalRequest = {
+  description: string;
+  priority?: number;
+};
+
+export type PatchGoalRequest =
+  | { action: "complete"; note?: string }
+  | { action: "block"; note?: string }
+  | { action: "progress"; note?: string; progress?: number };
+
+export type CreateGrowthMarkerRequest = {
+  description: string;
+  source?: string;
+};
+
+export type PatchOpenQuestionRequest =
+  | { action: "resolve"; resolution: string }
+  | { action: "abandon"; reason: string }
+  | { action: "bump"; delta?: number };
+
+export type PatchReviewItemRequest = {
+  action: "resolve" | "dismiss";
+  note?: string;
+};
+
 export type EvidenceLedgerSourceType =
   | "current_user_message"
   | "current_session_stream"

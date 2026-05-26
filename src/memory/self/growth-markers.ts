@@ -161,7 +161,7 @@ export class GrowthMarkersRepository {
     provenance: z.infer<typeof provenanceSchema>;
     created_at?: number;
   }): GrowthMarker {
-    if (input.evidence_episode_ids.length === 0) {
+    if (input.evidence_episode_ids.length === 0 && input.provenance.kind !== "manual") {
       throw new StorageError("Growth marker requires at least one evidence episode", {
         code: "GROWTH_MARKER_INVALID",
       });
