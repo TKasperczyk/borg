@@ -314,18 +314,23 @@ export function FlowChart({
   const TURN_LANE_Y = 185;
   const turnAroundPath = `M${gateRightX} ${gateRightY} H${TURN_LANE_X} V${TURN_LANE_Y} H${retrievalEntryX} V${retrievalEntryY}`;
 
-  // delib → final: down through the fork area then left to final's top.
+  // delib → final: down past the fork pills, then left to final's top.
+  // The horizontal segment sits just above row 3 (y=365) so the regen arc
+  // below has room to live in the same strip without colliding with it.
   const delibCenterX = delibNode.x + delibNode.w / 2;
   const finalCenterX = finalNode.x + finalNode.w / 2;
-  const delibToFinal = `M${delibCenterX} ${delibNode.y + delibNode.h} V340 H${finalCenterX} V${finalNode.y - 4}`;
+  const FORK_TO_FINAL_Y = 365;
+  const delibToFinal = `M${delibCenterX} ${delibNode.y + delibNode.h} V${FORK_TO_FINAL_Y} H${finalCenterX} V${finalNode.y - 4}`;
 
-  // Regen loop: arcs ABOVE row 3 from guards' TOP vertex back to final's TOP
-  // vertex. Tall arc peaks near y=308 so it's clearly a feedback loop, not
-  // just another inline arrow between final and guards.
+  // Regen loop: small arc from guards' TOP vertex back to final's TOP vertex.
+  // The S1/S2 fork pills occupy y=290-324 in the gap between row 2 and row 3,
+  // so the arc has to live in the strip BETWEEN the fork bottom and row 3
+  // (y range ~325-378). Peak at y=348 keeps the arc inside that strip and
+  // clear of the delib→final horizontal segment at y=365.
   const guardsCenterX = guardsNode.x + guardsNode.w / 2;
   const guardsTopY = guardsNode.y;
   const finalTopY = finalNode.y;
-  const ARC_PEAK_Y = 308;
+  const ARC_PEAK_Y = 348;
   const regenLoop = `M${guardsCenterX} ${guardsTopY} C${guardsCenterX} ${ARC_PEAK_Y}, ${finalCenterX} ${ARC_PEAK_Y}, ${finalCenterX} ${finalTopY - 4}`;
   const regenLabelX = (guardsCenterX + finalCenterX) / 2;
   const regenLabelY = ARC_PEAK_Y - 6;
