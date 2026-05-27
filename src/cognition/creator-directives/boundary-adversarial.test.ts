@@ -97,7 +97,6 @@ function createScenario(): {
         currentAudienceEntityId: input.audienceEntityId,
         participantEntityIds:
           input.participantEntityIds === undefined ? undefined : [...input.participantEntityIds],
-        perceivedEntityIds: [],
         topicTags: input.topicTags === undefined ? ["workplace_planning"] : [...input.topicTags],
         sessionRole: input.sessionRole ?? "participant",
       });

@@ -14,6 +14,9 @@ import { CreatorDirectiveRepository } from "./repository.js";
 import { creatorDirectiveQueueInputSchema } from "./types.js";
 import type { CreatorDirective, CreatorDirectiveQueueInput, DisclosurePolicy } from "./types.js";
 
+const BOUNDARY_PROMPT =
+  "A creator-defined confidentiality boundary applies. Decline to discuss confidential details.";
+
 function createRepository(clock = new ManualClock(1_000)) {
   const db = openDatabase(":memory:", {
     migrations: creatorDirectiveMigrations,
@@ -260,6 +263,71 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
+  it("rejects malformed disclosure policy cardinality", () => {
+    const { db, repository } = createRepository();
+    const entity = createEntityId();
+    const cases = [
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+          }),
+        }),
+        path: ["disclosurePolicy", "allowed_entity_ids"],
+        message: "allow_list requires at least one allowed entity",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+          }),
+        }),
+        path: ["disclosurePolicy", "excluded_entity_ids"],
+        message: "all_except requires at least one excluded entity",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [entity],
+            denied_audience_behavior: "render_boundary_when_relevant",
+          }),
+        }),
+        path: ["disclosurePolicy", "boundary_prompt"],
+        message: "render_boundary_when_relevant requires boundary_prompt",
+      },
+    ];
+
+    try {
+      for (const testCase of cases) {
+        const schemaResult = creatorDirectiveQueueInputSchema.safeParse(testCase.input);
+        expect(schemaResult.success).toBe(false);
+        if (schemaResult.success) {
+          throw new Error("expected malformed disclosure policy to fail schema validation");
+        }
+        expect(schemaResult.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: testCase.path,
+              message: testCase.message,
+            }),
+          ]),
+        );
+
+        let error: unknown = null;
+        try {
+          repository.queue(testCase.input);
+        } catch (caught) {
+          error = caught;
+        }
+        expect(error).toBeInstanceOf(StorageError);
+        expect(error).toMatchObject({ code: "CREATOR_DIRECTIVE_INVALID" });
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("preserves empty topic tags across queue and get", () => {
     const { db, repository } = createRepository();
 
@@ -303,6 +371,7 @@ describe("CreatorDirectiveRepository", () => {
         content_scope: "public",
         excluded_entity_ids: [audience],
         denied_audience_behavior: "render_boundary_when_relevant",
+        boundary_prompt: BOUNDARY_PROMPT,
         topic_tags: ["atlas"],
       });
       const publicDirective = queue(9, {
@@ -337,24 +406,27 @@ describe("CreatorDirectiveRepository", () => {
         content_scope: "all_except",
         excluded_entity_ids: [audience],
         denied_audience_behavior: "render_boundary_when_relevant",
+        boundary_prompt: BOUNDARY_PROMPT,
         topic_tags: ["atlas"],
       });
-      const allExceptExcludedWithOmit = queue(4, {
+      const allExceptExcludedWithoutTopicOverlap = queue(4, {
         content_scope: "all_except",
         excluded_entity_ids: [audience],
         denied_audience_behavior: "render_boundary_when_relevant",
+        boundary_prompt: BOUNDARY_PROMPT,
         topic_tags: ["private"],
       });
       const deniedWithBoundary = queue(4, {
         content_scope: "allow_list",
         allowed_entity_ids: [other],
         denied_audience_behavior: "render_boundary_when_relevant",
+        boundary_prompt: BOUNDARY_PROMPT,
         topic_tags: ["atlas"],
       });
       const deniedWithOmit = queue(3, {
         content_scope: "allow_list",
         allowed_entity_ids: [other],
-        denied_audience_behavior: "render_boundary_when_relevant",
+        denied_audience_behavior: "omit",
         topic_tags: ["private"],
       });
 
@@ -374,7 +446,7 @@ describe("CreatorDirectiveRepository", () => {
         [operatorOnly.id]: "omit",
         [allExcept.id]: "content",
         [allExceptExcludedWithBoundary.id]: "boundary",
-        [allExceptExcludedWithOmit.id]: "omit",
+        [allExceptExcludedWithoutTopicOverlap.id]: "boundary",
         [deniedWithBoundary.id]: "boundary",
         [deniedWithOmit.id]: "omit",
       });
@@ -415,6 +487,7 @@ describe("CreatorDirectiveRepository", () => {
             content_scope: "all_except",
             excluded_entity_ids: [bob],
             denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
             topic_tags: ["atlas"],
           }),
           priority: 10,
@@ -426,6 +499,7 @@ describe("CreatorDirectiveRepository", () => {
             content_scope: "all_except",
             excluded_entity_ids: [bob],
             denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
             topic_tags: ["private"],
           }),
           priority: 9,
@@ -437,6 +511,7 @@ describe("CreatorDirectiveRepository", () => {
             content_scope: "allow_list",
             allowed_entity_ids: [alice],
             denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
             topic_tags: ["atlas"],
           }),
           priority: 8,
@@ -461,7 +536,7 @@ describe("CreatorDirectiveRepository", () => {
       );
       expect(groupModes).toMatchObject({
         [excludedWithBoundary.id]: "boundary",
-        [excludedWithoutTopicOverlap.id]: "omit",
+        [excludedWithoutTopicOverlap.id]: "boundary",
         [allowListAliceOnly.id]: "omit",
         [publicDirective.id]: "content",
       });
@@ -474,6 +549,38 @@ describe("CreatorDirectiveRepository", () => {
         }),
       );
       expect(singleRecipientModes[allowListAliceOnly.id]).toBe("content");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("evaluates exactly one concrete group participant instead of the group entity", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const excludedBob = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [bob],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+        }),
+      );
+
+      const modes = modeById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [bob],
+          sessionRole: "participant",
+        }),
+      );
+
+      expect(modes[excludedBob.id]).toBe("boundary");
+      expect(modes[excludedBob.id]).not.toBe("content");
     } finally {
       db.close();
     }

@@ -482,16 +482,25 @@ describe("buildBaseSystemPrompt", () => {
           subjectKind: "entity",
           subjectLabel: "Alice & <pilot>",
           canonicalFact:
-            'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd.',
+            'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd turn_eeeeeeeeeeeeeeee dart_ffffffffffffffff.',
           mentionPolicy: "answer_if_asked",
           priority: 5,
           createdAt: 1,
+        },
+        {
+          renderMode: "boundary",
+          boundaryPrompt:
+            "Confidential boundary references turn_eeeeeeeeeeeeeeee and dart_ffffffffffffffff.",
+          topicTags: [],
+          priority: 4,
+          createdAt: 2,
         },
       ],
     });
 
     expect(section).toContain("<subject_label>Alice &amp; &lt;pilot&gt;</subject_label>");
     expect(section).toContain('"blue"');
+    expect(section).toContain("<boundary_prompt>Confidential boundary references");
     expect(section).not.toMatch(INTERNAL_ID_PATTERN);
     expect(section).toContain("[internal_id]");
   });

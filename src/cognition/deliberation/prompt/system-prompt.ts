@@ -172,7 +172,7 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
 }
 
-const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm)_[a-z0-9]+\b/g;
+const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart)_[a-z0-9]+\b/g;
 
 function escapeCreatorDirectiveXmlText(value: string): string {
   return escapeXmlText(value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]"));

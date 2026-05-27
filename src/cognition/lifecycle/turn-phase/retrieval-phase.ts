@@ -187,27 +187,6 @@ function participantEntityIds(input: {
   return input.audienceEntityId === null ? [] : [input.audienceEntityId];
 }
 
-function perceivedEntityIds(input: {
-  entityNames: readonly string[];
-  entityRepository: Pick<EntityRepository, "resolve">;
-}): EntityId[] {
-  const ids: EntityId[] = [];
-
-  for (const name of input.entityNames) {
-    try {
-      ids.push(
-        input.entityRepository.resolve(name, {
-          provenance: "assistant_seeded",
-        }),
-      );
-    } catch {
-      continue;
-    }
-  }
-
-  return uniqueEntityIds(ids);
-}
-
 function subjectLabelForCreatorDirective(
   directive: CreatorDirective,
   entityRepository: Pick<EntityRepository, "get">,
@@ -449,10 +428,6 @@ export async function runRetrievalPhase(input: {
             audienceEntityId: input.audienceEntityId,
             audienceEntityKind: input.audienceEntity?.kind ?? null,
             activeParticipants: input.activeParticipants,
-          }),
-          perceivedEntityIds: perceivedEntityIds({
-            entityNames: input.perception.entities,
-            entityRepository: input.options.entityRepository,
           }),
           topicTags: input.perception.entities,
           sessionRole: input.sessionAudienceRole ?? "participant",

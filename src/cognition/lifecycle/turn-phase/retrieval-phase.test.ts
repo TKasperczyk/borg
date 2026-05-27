@@ -109,7 +109,6 @@ describe("creator directive retrieval briefing", () => {
       const applicable = repository.listApplicable({
         currentAudienceEntityId: audienceId,
         participantEntityIds: [audienceId],
-        perceivedEntityIds: [],
         topicTags: [],
         sessionRole: "participant",
       });
@@ -177,7 +176,6 @@ describe("creator directive retrieval briefing", () => {
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
-          perceivedEntityIds: [],
           topicTags: [],
           sessionRole: "operator",
         }),
@@ -187,7 +185,6 @@ describe("creator directive retrieval briefing", () => {
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
-          perceivedEntityIds: [],
           topicTags: [],
           sessionRole: "participant",
         }),

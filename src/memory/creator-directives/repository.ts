@@ -129,26 +129,12 @@ function hasEntity(values: readonly EntityId[], entityId: EntityId | null): bool
   return entityId !== null && values.includes(entityId);
 }
 
-function hasTopicOverlap(
-  policy: DisclosurePolicy,
-  topicTags: readonly string[] | undefined,
-): boolean {
-  if (topicTags === undefined || topicTags.length === 0 || policy.topic_tags.length === 0) {
-    return false;
+function boundaryOrOmit(directive: CreatorDirective): CreatorDirectiveRenderMode {
+  if (directive.disclosure_policy.denied_audience_behavior !== "render_boundary_when_relevant") {
+    return "omit";
   }
 
-  const requestedTags = new Set(topicTags);
-  return policy.topic_tags.some((tag) => requestedTags.has(tag));
-}
-
-function boundaryOrOmit(
-  directive: CreatorDirective,
-  topicTags: readonly string[] | undefined,
-): CreatorDirectiveRenderMode {
-  return directive.disclosure_policy.denied_audience_behavior === "render_boundary_when_relevant" &&
-    hasTopicOverlap(directive.disclosure_policy, topicTags)
-    ? "boundary"
-    : "omit";
+  return "boundary";
 }
 
 function evaluateRenderMode(
@@ -159,7 +145,7 @@ function evaluateRenderMode(
   const policy = directive.disclosure_policy;
 
   if (hasEntity(policy.excluded_entity_ids, audienceId)) {
-    return boundaryOrOmit(directive, options.topicTags);
+    return boundaryOrOmit(directive);
   }
 
   if (policy.content_scope === "public") {
@@ -187,7 +173,7 @@ function evaluateRenderMode(
   }
 
   if (policy.content_scope === "allow_list") {
-    return boundaryOrOmit(directive, options.topicTags);
+    return boundaryOrOmit(directive);
   }
 
   return "omit";
@@ -198,7 +184,7 @@ function effectiveRecipientEntityIds(
 ): readonly (EntityId | null)[] {
   const participantEntityIds = options.participantEntityIds ?? [];
 
-  if (participantEntityIds.length <= 1) {
+  if (participantEntityIds.length === 0) {
     return [options.currentAudienceEntityId];
   }
 

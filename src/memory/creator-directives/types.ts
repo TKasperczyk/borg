@@ -89,16 +89,45 @@ export const creatorDirectiveTopicTagSchema = z
   .transform((value) => value.normalize("NFKC").trim().toLowerCase())
   .pipe(z.string().min(1).max(64));
 
-export const disclosurePolicySchema = z.object({
-  content_scope: creatorDirectiveContentScopeSchema,
-  allowed_entity_ids: z.array(creatorDirectiveEntityIdSchema),
-  excluded_entity_ids: z.array(creatorDirectiveEntityIdSchema),
-  subject_may_know: z.boolean().nullable(),
-  mention_policy: creatorDirectiveMentionPolicySchema,
-  denied_audience_behavior: creatorDirectiveDeniedAudienceBehaviorSchema,
-  boundary_prompt: z.string().trim().min(1).nullable(),
-  topic_tags: z.array(creatorDirectiveTopicTagSchema).max(32),
-});
+export const disclosurePolicySchema = z
+  .object({
+    content_scope: creatorDirectiveContentScopeSchema,
+    allowed_entity_ids: z.array(creatorDirectiveEntityIdSchema),
+    excluded_entity_ids: z.array(creatorDirectiveEntityIdSchema),
+    subject_may_know: z.boolean().nullable(),
+    mention_policy: creatorDirectiveMentionPolicySchema,
+    denied_audience_behavior: creatorDirectiveDeniedAudienceBehaviorSchema,
+    boundary_prompt: z.string().trim().min(1).nullable(),
+    topic_tags: z.array(creatorDirectiveTopicTagSchema).max(32),
+  })
+  .superRefine((value, ctx) => {
+    if (value.content_scope === "allow_list" && value.allowed_entity_ids.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "allow_list requires at least one allowed entity",
+      });
+    }
+
+    if (value.content_scope === "all_except" && value.excluded_entity_ids.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["excluded_entity_ids"],
+        message: "all_except requires at least one excluded entity",
+      });
+    }
+
+    if (
+      value.denied_audience_behavior === "render_boundary_when_relevant" &&
+      value.boundary_prompt === null
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["boundary_prompt"],
+        message: "render_boundary_when_relevant requires boundary_prompt",
+      });
+    }
+  });
 
 export const creatorDirectiveSchema = z
   .object({
@@ -177,7 +206,6 @@ export const creatorDirectiveApplicableOptionsSchema = z
   .object({
     currentAudienceEntityId: creatorDirectiveEntityIdSchema.nullable(),
     participantEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
-    perceivedEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
     topicTags: z.array(creatorDirectiveTopicTagSchema).optional(),
     sessionRole: sessionAudienceRoleSchema,
   })
