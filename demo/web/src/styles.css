@@ -8,21 +8,21 @@
 */
 
 :root {
-  /* surfaces */
-  --bg-0: oklch(0.135 0.006 80); /* canvas (almost black, warm) */
-  --bg-1: oklch(0.175 0.006 80); /* panels */
-  --bg-2: oklch(0.218 0.006 80); /* raised */
-  --bg-3: oklch(0.265 0.006 80); /* hover */
-  --line: oklch(0.295 0.006 80); /* borders */
-  --line-soft: oklch(0.225 0.006 80);
+  /* surfaces — warm near-black */
+  --bg-0: oklch(0.145 0.006 80); /* canvas */
+  --bg-1: oklch(0.19 0.006 80); /* panels */
+  --bg-2: oklch(0.235 0.006 80); /* raised */
+  --bg-3: oklch(0.29 0.006 80); /* hover */
+  --line: oklch(0.37 0.006 80); /* borders */
+  --line-soft: oklch(0.295 0.006 80);
 
-  /* text — six-step ramp */
-  --text: oklch(0.945 0.004 90);
-  --text-dim: oklch(0.78 0.006 90);
-  --text-mid: oklch(0.62 0.006 90);
-  --text-mute: oklch(0.485 0.006 90);
-  --text-faint: oklch(0.385 0.006 90);
-  --text-ghost: oklch(0.305 0.006 90);
+  /* text — six-step ramp, calibrated for legibility on bg-0 (~0.145) */
+  --text: oklch(0.97 0.004 90);
+  --text-dim: oklch(0.86 0.006 90);
+  --text-mid: oklch(0.74 0.006 90);
+  --text-mute: oklch(0.62 0.006 90);
+  --text-faint: oklch(0.515 0.008 90);
+  --text-ghost: oklch(0.42 0.008 90);
 
   /* signal */
   --acc: oklch(0.84 0.155 142); /* phosphor green */
@@ -1525,40 +1525,40 @@ body {
 
 /* Background ornaments */
 .fc-bg-dots {
-  fill: oklch(0.305 0.006 80 / 0.75);
+  fill: oklch(0.4 0.006 80 / 0.7);
 }
 .fc-membrane {
-  stroke: oklch(0.305 0.006 80);
+  stroke: oklch(0.39 0.006 80);
   stroke-width: 0.5;
   stroke-dasharray: 1 7;
-  opacity: 0.55;
+  opacity: 0.7;
 }
 
 .fc-tier-label {
-  fill: var(--text-faint);
+  fill: var(--text-mute);
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
 }
 .fc-tier-bar {
-  stroke: var(--line-soft);
+  stroke: var(--line);
   stroke-width: 1;
-  opacity: 0.5;
+  opacity: 0.7;
 }
 
 /* Edges */
 .fc-edge {
   fill: none;
-  stroke: oklch(0.305 0.006 80);
-  stroke-width: 1.2;
-  opacity: 0.65;
+  stroke: oklch(0.4 0.006 80);
+  stroke-width: 1.3;
+  opacity: 0.75;
   transition:
     stroke 240ms,
     opacity 240ms;
 }
 .fc-edge.dim {
-  opacity: 0.32;
+  opacity: 0.5;
 }
 .fc-edge.done {
   stroke: oklch(0.55 0.1 142 / 0.65);
@@ -1639,7 +1639,7 @@ body {
   fill: none;
   stroke: var(--line);
   stroke-width: 1;
-  opacity: 0.4;
+  opacity: 0.55;
   transition:
     opacity 220ms,
     stroke 220ms;
@@ -1647,15 +1647,15 @@ body {
 .fc-node-body {
   fill: var(--bg-1);
   stroke: var(--line);
-  stroke-width: 1;
+  stroke-width: 1.2;
   transition:
     fill 220ms,
     stroke 220ms,
     filter 220ms;
 }
 .fc-node-core {
-  fill: var(--text-faint);
-  opacity: 0.35;
+  fill: var(--text-mute);
+  opacity: 0.55;
   transition:
     fill 220ms,
     opacity 220ms,
@@ -1664,10 +1664,10 @@ body {
 .fc-dendrite {
   stroke: var(--line);
   stroke-width: 1;
-  opacity: 0.4;
+  opacity: 0.6;
 }
 .fc-node-label {
-  fill: var(--text-mute);
+  fill: var(--text-mid);
   font-family: var(--mono);
   font-size: 9.5px;
   text-anchor: middle;
@@ -1686,7 +1686,7 @@ body {
     fill 220ms;
 }
 .fc-node-time {
-  fill: var(--text-faint);
+  fill: var(--text-mute);
   font-family: var(--mono);
   font-size: 8.5px;
   text-anchor: middle;
@@ -1702,12 +1702,12 @@ body {
   stroke: var(--line-soft);
 }
 .fc-node[data-status="queue"] .fc-node-core {
-  fill: var(--bg-2);
-  opacity: 0.5;
+  fill: var(--bg-3);
+  opacity: 0.7;
 }
 .fc-node[data-status="queue"] .fc-node-halo {
   stroke: var(--line-soft);
-  opacity: 0.25;
+  opacity: 0.4;
 }
 
 .fc-node[data-status="done"] .fc-node-body {
@@ -1830,10 +1830,10 @@ body {
 .fc-endpoint-body {
   fill: var(--bg-1);
   stroke: var(--line);
-  stroke-width: 1;
+  stroke-width: 1.2;
 }
 .fc-endpoint-label {
-  fill: var(--text-dim);
+  fill: var(--text);
   font-family: var(--mono);
   font-size: 10px;
   text-anchor: middle;
@@ -1857,14 +1857,14 @@ body {
 
 /* Suppression thorn */
 .fc-thorn-shape {
-  fill: var(--bg-0);
-  stroke: var(--line-soft);
+  fill: var(--bg-1);
+  stroke: var(--line);
   stroke-width: 1;
   stroke-dasharray: 2 2;
-  opacity: 0.55;
+  opacity: 0.8;
 }
 .fc-thorn-label {
-  fill: var(--text-faint);
+  fill: var(--text-mute);
   font-family: var(--mono);
   font-size: 8.5px;
   text-anchor: middle;
@@ -1895,10 +1895,10 @@ body {
 /* S1/S2 fork lanes */
 .fc-fork-lane-path {
   fill: none;
-  stroke: var(--line-soft);
-  stroke-width: 1.2;
+  stroke: var(--line);
+  stroke-width: 1.3;
   stroke-dasharray: 2 3;
-  opacity: 0.45;
+  opacity: 0.65;
   transition:
     stroke 240ms,
     opacity 240ms;
@@ -1912,10 +1912,10 @@ body {
   filter: drop-shadow(0 0 4px oklch(0.84 0.155 142 / 0.55));
 }
 .fc-fork-lane.unchosen .fc-fork-lane-path {
-  opacity: 0.2;
+  opacity: 0.3;
 }
 .fc-fork-tag {
-  fill: var(--text-faint);
+  fill: var(--text-mute);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
