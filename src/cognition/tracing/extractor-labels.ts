@@ -5,6 +5,8 @@ export const EXTRACTOR_MAX_TOKEN_LLM_LABELS = [
   "closure-loop-classifier",
   "corrective_preference_extractor",
   "corrective-preference-extractor",
+  "creator_directive_extractor",
+  "creator-directive-extractor",
   "entity_extractor",
   "frame_anomaly_classifier",
   "frame-anomaly-classifier",

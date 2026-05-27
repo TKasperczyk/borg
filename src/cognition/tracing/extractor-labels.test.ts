@@ -14,6 +14,7 @@ const EXTRACTOR_MAX_TOKEN_CONSUMER_LABELS = {
     "corrective-preference-extractor",
     "corrective_preference_extractor",
   ],
+  "creator-directives/extractor.ts": ["creator-directive-extractor", "creator_directive_extractor"],
   "frame-anomaly/classifier.ts": ["frame-anomaly-classifier", "frame_anomaly_classifier"],
   "generation/closure-loop.ts": ["closure-loop-classifier", "closure_loop_classifier"],
   "goals/goal-promotion-extractor.ts": ["goal-promotion-extractor", "goal_promotion_extractor"],

@@ -172,6 +172,12 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
 }
 
+const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm)_[a-z0-9]+\b/g;
+
+function escapeCreatorDirectiveXmlText(value: string): string {
+  return escapeXmlText(value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]"));
+}
+
 export function buildSessionStatusSnapshotSection(
   snapshot: OperatorSessionSnapshot | null,
 ): string | null {
@@ -201,6 +207,34 @@ export function buildSessionStatusSnapshotSection(
   }
 
   lines.push("</borg_session_status_snapshot>");
+
+  return lines.join("\n");
+}
+
+export function buildCreatorDirectiveBriefingSection(
+  briefing: DeliberationContext["creatorDirectiveBriefing"],
+): string | null {
+  if (briefing === null || briefing === undefined || briefing.directives.length === 0) {
+    return null;
+  }
+
+  const lines = ["<borg_creator_directive_briefing>"];
+  const sorted = [...briefing.directives].sort(
+    (left, right) => right.priority - left.priority || left.createdAt - right.createdAt,
+  );
+
+  for (const [index, directive] of sorted.entries()) {
+    lines.push(
+      `  <directive id_alias="cd_${index + 1}" kind="${escapeXmlAttribute(directive.kind)}">`,
+      `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
+      `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
+      `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`,
+      `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
+      "  </directive>",
+    );
+  }
+
+  lines.push("</borg_creator_directive_briefing>");
 
   return lines.join("\n");
 }
@@ -352,12 +386,16 @@ function buildBaseSystemPromptSections(
     tag: "borg_creator_context",
     content: renderCreatorContext(context.creatorContext),
   };
+  const creatorDirectiveBriefingSection = buildCreatorDirectiveBriefingSection(
+    context.creatorDirectiveBriefing ?? null,
+  );
   const sessionStatusSnapshotSection = buildSessionStatusSnapshotSection(
     context.operatorSessionSnapshot ?? null,
   );
   const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,
     creatorContextSection,
+    creatorDirectiveBriefingSection,
     sessionStatusSnapshotSection,
     heldPreferencesSection,
     commitmentRecordsSection,
@@ -372,6 +410,7 @@ function buildBaseSystemPromptSections(
     trustedGuidanceSections: [
       participationPolicySection,
       creatorContextSection,
+      creatorDirectiveBriefingSection,
       sessionStatusSnapshotSection,
       heldPreferencesSection,
       commitmentRecordsSection,

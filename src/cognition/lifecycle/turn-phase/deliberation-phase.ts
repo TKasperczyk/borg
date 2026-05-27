@@ -83,6 +83,7 @@ export async function runDeliberationPhase(input: {
       sessionId: input.sessionId,
       participationPolicy: input.participationPolicy,
       creatorContext: input.creatorContext,
+      creatorDirectiveBriefing: input.retrievalPhase.creatorDirectiveBriefing,
       operatorSessionSnapshot: input.operatorSessionSnapshot,
       turnId: input.turnId,
       audience: input.turnInput.audience,

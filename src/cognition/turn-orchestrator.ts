@@ -14,6 +14,7 @@ import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -49,6 +50,7 @@ import { AttributionLifecycleService } from "./attribution/lifecycle-service.js"
 import type { AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { CorrectivePreferenceTurnService } from "./commitments/corrective-preference-service.js";
+import { CreatorDirectiveTurnService } from "./creator-directives/service.js";
 import type { SelfSnapshot, TurnStakes } from "./deliberation/deliberator.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
 import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
@@ -124,6 +126,7 @@ export type TurnOrchestratorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
@@ -250,6 +253,12 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
     });
+    const creatorDirectiveTurnService = new CreatorDirectiveTurnService({
+      model: options.config.anthropic.models.recallExpansion,
+      creatorDirectiveRepository: options.creatorDirectiveRepository,
+      entityRepository: options.entityRepository,
+      tracer: this.tracer,
+    });
     const turnActionStateService = new TurnActionStateService({
       model: options.config.anthropic.models.recallExpansion,
       actionRepository: options.actionRepository,
@@ -309,6 +318,7 @@ export class TurnOrchestrator {
       relationalSlotRepository: options.relationalSlotRepository,
       actionRepository: options.actionRepository,
       commitmentRepository: options.commitmentRepository,
+      creatorDirectiveRepository: options.creatorDirectiveRepository,
       sharedStateRepository: options.sharedStateRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
@@ -324,6 +334,7 @@ export class TurnOrchestrator {
       turnOpeningPersistence,
       attributionLifecycleService,
       correctivePreferenceTurnService,
+      creatorDirectiveTurnService,
       turnActionStateService,
       turnGoalPromotionService,
       selfContextBuilder: this.selfContextBuilder,

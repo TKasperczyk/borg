@@ -10,6 +10,11 @@ import type {
   EntityRepository,
 } from "../../memory/commitments/index.js";
 import type {
+  CreatorDirectiveKind,
+  CreatorDirectiveMentionPolicy,
+  CreatorDirectiveSubjectKind,
+} from "../../memory/creator-directives/index.js";
+import type {
   AutobiographicalPeriod,
   GoalRecord,
   GrowthMarker,
@@ -74,6 +79,20 @@ export type TrustedCreatorContext = {
   sessionAudienceRole: SessionAudienceRole;
 };
 
+export type CreatorDirectiveBriefingDirective = {
+  kind: CreatorDirectiveKind;
+  subjectKind: CreatorDirectiveSubjectKind;
+  subjectLabel: string;
+  canonicalFact: string;
+  mentionPolicy: CreatorDirectiveMentionPolicy;
+  priority: number;
+  createdAt: number;
+};
+
+export type CreatorDirectiveBriefing = {
+  directives: readonly CreatorDirectiveBriefingDirective[];
+};
+
 export type DeliberationRoutingOverride = {
   forceSystem2: boolean;
   reason: DeliberationRoutingForcedBy;
@@ -110,6 +129,7 @@ export type DeliberationContext = {
   sessionId: SessionId;
   participationPolicy?: SessionParticipationPolicy;
   creatorContext?: TrustedCreatorContext | null;
+  creatorDirectiveBriefing?: CreatorDirectiveBriefing | null;
   operatorSessionSnapshot?: OperatorSessionSnapshot | null;
   turnId?: string;
   audience?: string;

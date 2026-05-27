@@ -2,7 +2,10 @@ import {
   appendCommitmentIfMissing,
   type CorrectivePreferenceTurnService,
 } from "../../commitments/corrective-preference-service.js";
-import type { DeliberationRoutingOverride } from "../../deliberation/types.js";
+import type {
+  CreatorDirectiveBriefing,
+  DeliberationRoutingOverride,
+} from "../../deliberation/types.js";
 import {
   EvidenceLedgerBuilder,
   compactEvidenceLedger,
@@ -35,8 +38,13 @@ import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import {
   effectiveCommitmentEnforcementClass,
+  type EntityRepository,
   type CommitmentRecord,
 } from "../../../memory/commitments/index.js";
+import type {
+  CreatorDirective,
+  CreatorDirectiveApplicable,
+} from "../../../memory/creator-directives/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
@@ -53,6 +61,7 @@ import type {
 } from "../../../util/ids.js";
 import { dedupePreservingOrder } from "../../../util/collections.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { SessionAudienceRole } from "../../../sessions/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import {
@@ -133,6 +142,7 @@ export type TurnRetrievalPhaseResult = {
   >["selectedSkill"];
   relationalSlots: ReturnType<typeof listConstrainedRelationalSlotsForParticipants>;
   participantRoster: ParticipantRoster | null;
+  creatorDirectiveBriefing: CreatorDirectiveBriefing | null;
   evidenceLedgerContext: EvidenceLedgerFinalizerContext;
   routingOverride: DeliberationRoutingOverride | null;
 };
@@ -151,6 +161,108 @@ function summarizeEvidenceLedgerContext(context: EvidenceLedgerFinalizerContext)
 
 function uniqueStreamEntryIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   return dedupePreservingOrder(ids);
+}
+
+function uniqueEntityIds(ids: readonly EntityId[]): EntityId[] {
+  return dedupePreservingOrder(ids);
+}
+
+function participantEntityIds(input: {
+  audienceEntityId: EntityId | null;
+  activeParticipants: readonly ActiveParticipant[];
+}): EntityId[] {
+  return uniqueEntityIds([
+    ...(input.audienceEntityId === null ? [] : [input.audienceEntityId]),
+    ...input.activeParticipants.map((participant) => participant.entityId),
+  ]);
+}
+
+function perceivedEntityIds(input: {
+  entityNames: readonly string[];
+  entityRepository: Pick<EntityRepository, "resolve">;
+}): EntityId[] {
+  const ids: EntityId[] = [];
+
+  for (const name of input.entityNames) {
+    try {
+      ids.push(
+        input.entityRepository.resolve(name, {
+          provenance: "assistant_seeded",
+        }),
+      );
+    } catch {
+      continue;
+    }
+  }
+
+  return uniqueEntityIds(ids);
+}
+
+function subjectLabelForCreatorDirective(
+  directive: CreatorDirective,
+  entityRepository: Pick<EntityRepository, "get">,
+): string {
+  switch (directive.subject_kind) {
+    case "borg_self":
+      return "Borg";
+    case "system":
+      return "system";
+    case "unknown":
+      return "unknown";
+    case "entity":
+      return directive.subject_entity_id === null
+        ? "unknown"
+        : (entityRepository.get(directive.subject_entity_id)?.canonical_name ?? "unknown");
+  }
+}
+
+export function buildCreatorDirectiveBriefing(input: {
+  applicable: readonly CreatorDirectiveApplicable[];
+  entityRepository: Pick<EntityRepository, "get">;
+}): CreatorDirectiveBriefing | null {
+  const directives = input.applicable
+    .filter((item) => item.render_mode === "content" && item.directive.canonical_fact !== null)
+    .map((item) => ({
+      kind: item.directive.kind,
+      subjectKind: item.directive.subject_kind,
+      subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
+      canonicalFact: item.directive.canonical_fact!,
+      mentionPolicy: item.directive.disclosure_policy.mention_policy,
+      priority: item.directive.priority,
+      createdAt: item.directive.created_at,
+    }))
+    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+
+  return directives.length === 0 ? null : { directives };
+}
+
+function currentTurnEligibleCreatorDirectives(input: {
+  applicable: readonly CreatorDirectiveApplicable[];
+  currentUserEntryId?: StreamEntryId;
+}): CreatorDirectiveApplicable[] {
+  const currentUserEntryId = input.currentUserEntryId;
+
+  if (currentUserEntryId === undefined) {
+    return [...input.applicable];
+  }
+
+  return input.applicable.filter(
+    (item) => !item.directive.authorization_stream_entry_ids.includes(currentUserEntryId),
+  );
+}
+
+export function buildCreatorDirectiveBriefingForTurn(input: {
+  applicable: readonly CreatorDirectiveApplicable[];
+  currentUserEntryId?: StreamEntryId;
+  entityRepository: Pick<EntityRepository, "get">;
+}): CreatorDirectiveBriefing | null {
+  return buildCreatorDirectiveBriefing({
+    applicable: currentTurnEligibleCreatorDirectives({
+      applicable: input.applicable,
+      currentUserEntryId: input.currentUserEntryId,
+    }),
+    entityRepository: input.entityRepository,
+  });
 }
 
 function retrievedStreamEntryIds(
@@ -226,6 +338,7 @@ export async function runRetrievalPhase(input: {
   audienceEntityId: EntityId | null;
   audienceEntity: ReturnType<TurnPhaseCoordinatorOptions["entityRepository"]["get"]> | null;
   audienceProfile: ReturnType<TurnPhaseCoordinatorOptions["socialRepository"]["getProfile"]>;
+  sessionAudienceRole?: SessionAudienceRole;
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
   suppressionSet: Parameters<
@@ -301,6 +414,27 @@ export async function runRetrievalPhase(input: {
     input.options.relationalSlotRepository,
     input.activeParticipants,
   );
+  const creatorDirectiveApplicable =
+    input.options.creatorDirectiveRepository === undefined
+      ? []
+      : input.options.creatorDirectiveRepository.listApplicable({
+          currentAudienceEntityId: input.audienceEntityId,
+          participantEntityIds: participantEntityIds({
+            audienceEntityId: input.audienceEntityId,
+            activeParticipants: input.activeParticipants,
+          }),
+          perceivedEntityIds: perceivedEntityIds({
+            entityNames: input.perception.entities,
+            entityRepository: input.options.entityRepository,
+          }),
+          topicTags: input.perception.entities,
+          sessionRole: input.sessionAudienceRole ?? "participant",
+        });
+  const creatorDirectiveBriefing = buildCreatorDirectiveBriefingForTurn({
+    applicable: creatorDirectiveApplicable,
+    currentUserEntryId: input.persistedUserEntry?.id,
+    entityRepository: input.options.entityRepository,
+  });
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({
     options: input.options,
     input: {
@@ -349,6 +483,7 @@ export async function runRetrievalPhase(input: {
     selectedSkill,
     relationalSlots,
     participantRoster: input.participantRoster,
+    creatorDirectiveBriefing,
     evidenceLedgerContext,
     routingOverride,
   };

@@ -35,6 +35,7 @@ import type { DeliberationContext } from "../types.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
+  buildCreatorDirectiveBriefingSection,
   buildSessionStatusSnapshotSection,
   formatRelativeAge,
 } from "./system-prompt.js";
@@ -45,7 +46,7 @@ const PROMPT_OPTIONS = {
   semanticContextBudget: 1_000,
 };
 const INTERNAL_ID_PATTERN =
-  /\b(?:ent|sess|strm|turn|ep|cmt|goal|val|trt|abp|grw|oq|semn|seme|act|rslot|dart|skl|procevi|run|exstep|att|imgp)_[a-z0-9]+\b/;
+  /\b(?:cdir|ent|sess|strm|turn|ep|cmt|goal|val|trt|abp|grw|oq|semn|seme|act|rslot|dart|skl|procevi|run|exstep|att|imgp)_[a-z0-9]+\b/;
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
   problem_kind: "code_debugging",
   domain_tags: ["typescript"],
@@ -416,6 +417,139 @@ describe("buildBaseSystemPrompt", () => {
       cacheable.dynamicContent.indexOf(UNTRUSTED_DATA_PREAMBLE),
     );
     expect(block).not.toMatch(INTERNAL_ID_PATTERN);
+  });
+
+  it("renders creator directive briefing between creator context and session status", () => {
+    const context = makeContext({
+      creatorContext: {
+        currentSenderEntityId: createEntityId(),
+        currentSenderDisplayName: "Tom",
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
+      },
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            kind: "self_identity",
+            subjectKind: "borg_self",
+            subjectLabel: "Borg",
+            canonicalFact: "Borg's self-chosen name is Kestrel.",
+            mentionPolicy: "answer_if_asked",
+            priority: 8,
+            createdAt: 2,
+          },
+        ],
+      },
+      operatorSessionSnapshot: makeOperatorSessionSnapshot(),
+    });
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_creator_directive_briefing");
+
+    expect(block).toBe(
+      [
+        "<borg_creator_directive_briefing>",
+        '  <directive id_alias="cd_1" kind="self_identity">',
+        "    <subject_kind>borg_self</subject_kind>",
+        "    <subject_label>Borg</subject_label>",
+        "    <canonical_fact>Borg's self-chosen name is Kestrel.</canonical_fact>",
+        "    <mention_policy>answer_if_asked</mention_policy>",
+        "  </directive>",
+        "</borg_creator_directive_briefing>",
+      ].join("\n"),
+    );
+    expect(prompt.indexOf("<borg_creator_context>")).toBeLessThan(
+      prompt.indexOf("<borg_creator_directive_briefing>"),
+    );
+    expect(prompt.indexOf("<borg_creator_directive_briefing>")).toBeLessThan(
+      prompt.indexOf("<borg_session_status_snapshot"),
+    );
+    expect(cacheable.dynamicContent.indexOf("<borg_creator_context>")).toBeLessThan(
+      cacheable.dynamicContent.indexOf("<borg_creator_directive_briefing>"),
+    );
+    expect(cacheable.dynamicContent.indexOf("<borg_creator_directive_briefing>")).toBeLessThan(
+      cacheable.dynamicContent.indexOf("<borg_session_status_snapshot"),
+    );
+  });
+
+  it("escapes creator directive briefing text and keeps internal ids out", () => {
+    const section = buildCreatorDirectiveBriefingSection({
+      directives: [
+        {
+          kind: "subject_fact",
+          subjectKind: "entity",
+          subjectLabel: "Alice & <pilot>",
+          canonicalFact:
+            'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd.',
+          mentionPolicy: "answer_if_asked",
+          priority: 5,
+          createdAt: 1,
+        },
+      ],
+    });
+
+    expect(section).toContain("<subject_label>Alice &amp; &lt;pilot&gt;</subject_label>");
+    expect(section).toContain('"blue"');
+    expect(section).not.toMatch(INTERNAL_ID_PATTERN);
+    expect(section).toContain("[internal_id]");
+  });
+
+  it("omits creator directive briefing when no content directives are present", () => {
+    expect(buildCreatorDirectiveBriefingSection(null)).toBeNull();
+    expect(buildCreatorDirectiveBriefingSection({ directives: [] })).toBeNull();
+
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorDirectiveBriefing: {
+          directives: [],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<borg_creator_directive_briefing>");
+  });
+
+  it("renders creator directive aliases in priority and age order", () => {
+    const section = buildCreatorDirectiveBriefingSection({
+      directives: [
+        {
+          kind: "subject_fact",
+          subjectKind: "entity",
+          subjectLabel: "Alice",
+          canonicalFact: "Alice has blue hair.",
+          mentionPolicy: "answer_if_asked",
+          priority: 4,
+          createdAt: 1,
+        },
+        {
+          kind: "self_identity",
+          subjectKind: "borg_self",
+          subjectLabel: "Borg",
+          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          mentionPolicy: "answer_if_asked",
+          priority: 9,
+          createdAt: 3,
+        },
+        {
+          kind: "response_policy",
+          subjectKind: "system",
+          subjectLabel: "system",
+          canonicalFact: "Use the quiet introduction with everyone.",
+          mentionPolicy: "only_if_topic_raised",
+          priority: 9,
+          createdAt: 2,
+        },
+      ],
+    });
+
+    expect(section).toContain('id_alias="cd_1" kind="response_policy"');
+    expect(section).toContain('id_alias="cd_2" kind="self_identity"');
+    expect(section).toContain('id_alias="cd_3" kind="subject_fact"');
+    expect(section?.indexOf("Use the quiet introduction")).toBeLessThan(
+      section?.indexOf("Kestrel") ?? -1,
+    );
+    expect(section?.indexOf("Kestrel")).toBeLessThan(section?.indexOf("blue hair") ?? -1);
   });
 
   it("omits operator session status snapshot when the input is null", () => {

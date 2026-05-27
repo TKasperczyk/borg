@@ -10,6 +10,7 @@ import type { TurnActionStateService } from "../../actions/turn-action-state-ser
 import type { AttributionLifecycleService } from "../../attribution/lifecycle-service.js";
 import type { AutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
+import type { CreatorDirectiveTurnService } from "../../creator-directives/service.js";
 import type { TurnStakes } from "../../deliberation/deliberator.js";
 import type { TurnDiscourseStateService } from "../../generation/turn-discourse-state.js";
 import type { TurnEmission } from "../../generation/types.js";
@@ -29,6 +30,7 @@ import type { EmbeddingClient } from "../../../embeddings/index.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { ActionRepository } from "../../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../../../memory/creator-directives/index.js";
 import type { SharedStateRepository } from "../../../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../../../memory/episodic/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
@@ -95,6 +97,7 @@ export type TurnPhaseCoordinatorOptions = {
   actionRepository: Pick<ActionRepository, "get" | "list" | "update"> &
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<
@@ -116,6 +119,7 @@ export type TurnPhaseCoordinatorOptions = {
   turnOpeningPersistence: TurnOpeningPersistence;
   attributionLifecycleService: AttributionLifecycleService;
   correctivePreferenceTurnService: CorrectivePreferenceTurnService;
+  creatorDirectiveTurnService: CreatorDirectiveTurnService;
   turnActionStateService: TurnActionStateService;
   turnGoalPromotionService: TurnGoalPromotionService;
   selfContextBuilder: TurnSelfContextBuilder;

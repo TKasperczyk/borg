@@ -8,6 +8,11 @@ import { DEFAULT_CONFIG } from "../../../config/index.js";
 import { FakeLLMClient } from "../../../llm/test-support/fake-client.js";
 import { sharedStateMigrations } from "../../../memory/decision-artifacts/index.js";
 import { SharedStateRepository } from "../../../memory/decision-artifacts/repository.js";
+import {
+  CreatorDirectiveRepository,
+  creatorDirectiveMigrations,
+  type DisclosurePolicy,
+} from "../../../memory/creator-directives/index.js";
 import { openDatabase } from "../../../storage/sqlite/index.js";
 import { FixedClock } from "../../../util/clock.js";
 import {
@@ -40,9 +45,165 @@ import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity
 import {
   compileSharedStateArtifactForEvidenceLedger,
   compileSharedStateArtifactForEvidenceLedgerResult,
+  buildCreatorDirectiveBriefingForTurn,
   runRetrievalPhase,
 } from "./retrieval-phase.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
+
+function disclosurePolicy(overrides: Partial<DisclosurePolicy> = {}): DisclosurePolicy {
+  return {
+    content_scope: "public" as const,
+    allowed_entity_ids: [],
+    excluded_entity_ids: [],
+    subject_may_know: true,
+    mention_policy: "answer_if_asked" as const,
+    denied_audience_behavior: "omit" as const,
+    boundary_prompt: null,
+    topic_tags: [],
+    ...overrides,
+  };
+}
+
+describe("creator directive retrieval briefing", () => {
+  it("filters current-turn authorized directives from the briefing", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+    const currentUserEntryId = createStreamEntryId();
+    const priorUserEntryId = createStreamEntryId();
+
+    try {
+      repository.queue({
+        kind: "self_identity",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [currentUserEntryId],
+        contentSourceStreamEntryIds: [currentUserEntryId],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's same-turn name is Kestrel.",
+        operationalDirective: "Answer with the same-turn name when asked.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 10,
+        createdAt: 2_000,
+      });
+      repository.queue({
+        kind: "self_identity",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [priorUserEntryId],
+        contentSourceStreamEntryIds: [priorUserEntryId],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's prior name is Kestrel.",
+        operationalDirective: "Answer with the prior name when asked.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 5,
+        createdAt: 1_000,
+      });
+
+      const applicable = repository.listApplicable({
+        currentAudienceEntityId: audienceId,
+        participantEntityIds: [audienceId],
+        perceivedEntityIds: [],
+        topicTags: [],
+        sessionRole: "participant",
+      });
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable,
+        currentUserEntryId,
+        entityRepository: { get: () => null },
+      });
+
+      expect(briefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
+        "Borg's prior name is Kestrel.",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("builds briefing content for operator and participant sessions via listApplicable", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+    const publicEntryId = createStreamEntryId();
+    const operatorEntryId = createStreamEntryId();
+
+    try {
+      repository.queue({
+        kind: "self_identity",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [publicEntryId],
+        contentSourceStreamEntryIds: [publicEntryId],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's public name is Kestrel.",
+        operationalDirective: "Answer any audience with the public name when asked.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 8,
+        createdAt: 1_000,
+      });
+      repository.queue({
+        kind: "subject_fact",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [operatorEntryId],
+        contentSourceStreamEntryIds: [operatorEntryId],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's operator-only diagnostic label is Kestrel-debug.",
+        operationalDirective: "Use the diagnostic label only in operator sessions.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: null,
+        }),
+        priority: 7,
+        createdAt: 1_500,
+      });
+
+      const operatorBriefing = buildCreatorDirectiveBriefingForTurn({
+        applicable: repository.listApplicable({
+          currentAudienceEntityId: audienceId,
+          participantEntityIds: [audienceId],
+          perceivedEntityIds: [],
+          topicTags: [],
+          sessionRole: "operator",
+        }),
+        entityRepository: { get: () => null },
+      });
+      const participantBriefing = buildCreatorDirectiveBriefingForTurn({
+        applicable: repository.listApplicable({
+          currentAudienceEntityId: audienceId,
+          participantEntityIds: [audienceId],
+          perceivedEntityIds: [],
+          topicTags: [],
+          sessionRole: "participant",
+        }),
+        entityRepository: { get: () => null },
+      });
+
+      expect(operatorBriefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
+        "Borg's public name is Kestrel.",
+        "Borg's operator-only diagnostic label is Kestrel-debug.",
+      ]);
+      expect(participantBriefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
+        "Borg's public name is Kestrel.",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("compileSharedStateArtifactForEvidenceLedger", () => {
   const cleanup: Array<() => void> = [];

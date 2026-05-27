@@ -83,6 +83,22 @@ export {
   type ExtractCorrectivePreferenceInput,
 } from "./commitments/corrective-preference-extractor.js";
 export {
+  CREATOR_DIRECTIVE_TOOL_NAME,
+  CreatorDirectiveExtractor,
+  creatorDirectiveExtractionOutputSchema,
+  type CreatorDirectiveCandidate,
+  type CreatorDirectiveExtractorDegradedReason,
+  type CreatorDirectiveExtractorDisclosurePolicy,
+  type CreatorDirectiveExtractorOptions,
+  type ExtractCreatorDirectivesInput,
+  type KnownCreatorDirectiveEntity,
+} from "./creator-directives/extractor.js";
+export {
+  CreatorDirectiveTurnService,
+  type CreatorDirectiveTurnServiceOptions,
+  type ExtractCreatorDirectivesForTurnInput,
+} from "./creator-directives/service.js";
+export {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   ActionStateExtractor,
   actionCandidateClassificationSchema,

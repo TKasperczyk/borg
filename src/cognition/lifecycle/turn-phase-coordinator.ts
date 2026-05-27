@@ -88,7 +88,7 @@ function summarizeFrameClassification(
 }
 
 function summarizeExtraction(result: TurnExtractionPhaseResult): string {
-  return `actions=${result.createdActionIds.length} goals=${result.persistedPromotions.goalIds.length} steps=${result.persistedPromotions.executiveStepIds.length} commitment=${result.correctiveCommitment === null ? "none" : "candidate"}`;
+  return `actions=${result.createdActionIds.length} goals=${result.persistedPromotions.goalIds.length} steps=${result.persistedPromotions.executiveStepIds.length} creator_directives=${result.creatorDirectives.length} commitment=${result.correctiveCommitment === null ? "none" : "candidate"}`;
 }
 
 function summarizeRetrieval(result: TurnRetrievalPhaseResult): string {
@@ -450,6 +450,10 @@ export class TurnPhaseCoordinator {
           audienceEntityId,
           groupSpeakerEntityId,
           groupSpeakerDisplayName,
+          currentSenderEntityId,
+          currentSenderDisplayName: creatorContext.currentSenderDisplayName,
+          currentSenderBorgRole: creatorContext.currentSenderBorgRole,
+          sessionAudienceRole,
           participantRoster,
           persistedUserEntryId,
           frameAnomalyClassification,
@@ -622,6 +626,7 @@ export class TurnPhaseCoordinator {
           audienceEntityId,
           audienceEntity,
           audienceProfile,
+          sessionAudienceRole,
           perception,
           workingMemory,
           suppressionSet,
