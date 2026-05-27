@@ -4,6 +4,7 @@ import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { operatorAdviceMigrations, OperatorAdviceRepository } from "../../operator-advice/index.js";
 import type { StreamWriter } from "../../stream/index.js";
+import { StreamError } from "../../util/errors.js";
 import { createOperatorAdviceFacade } from "../facade.js";
 
 import {
@@ -117,6 +118,65 @@ describe("operator advice", () => {
       expect(repository.list({ pendingOnly: true, session_id: DEFAULT_SESSION_ID })).toHaveLength(
         1,
       );
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps consumed advice when delivery audit committed but index update failed", async () => {
+    const db = openDatabase(":memory:", { migrations: operatorAdviceMigrations });
+    const repository = new OperatorAdviceRepository(db, new ManualClock(1_000));
+    const failure = new StreamError("stream index update failed after committed append", {
+      code: "STREAM_INDEX_UPDATE_FAILED",
+    });
+    const append = vi.fn(async () => {
+      throw failure;
+    });
+    const close = vi.fn();
+    const facade = createOperatorAdviceFacade({
+      operatorAdviceRepository: repository,
+      createStreamWriter: () =>
+        ({
+          append,
+          close,
+        }) as unknown as StreamWriter,
+      clock: new ManualClock(1_000),
+    });
+
+    try {
+      const advice = facade.queue({
+        text: "Push back if Alice is unfair.",
+        session_id: DEFAULT_SESSION_ID,
+      });
+
+      await expect(
+        facade.consumePending(
+          { session_id: DEFAULT_SESSION_ID },
+          {
+            turn_id: "turn-index-failure",
+            now: 1_050,
+          },
+        ),
+      ).rejects.toBe(failure);
+
+      expect(repository.get(advice.id)).toMatchObject({
+        consumed_at: 1_050,
+        consumed_by_turn_id: "turn-index-failure",
+      });
+      expect(repository.list({ pendingOnly: true, session_id: DEFAULT_SESSION_ID })).toEqual([]);
+      expect(append).toHaveBeenCalledWith({
+        kind: "internal_event",
+        turn_id: "turn-index-failure",
+        content: {
+          event: "operator_advice.delivered",
+          advice_ids: [advice.id],
+          session_id: DEFAULT_SESSION_ID,
+          audience_entity_id: null,
+          rendered_text: expect.stringContaining("Push back if Alice is unfair."),
+          operator: true,
+        },
+      });
       expect(close).toHaveBeenCalledTimes(1);
     } finally {
       db.close();

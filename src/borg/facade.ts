@@ -189,6 +189,10 @@ export function createOperatorAdviceFacade(
           auditEntryId: auditEntry.id,
         };
       } catch (error) {
+        if (isCommittedStreamIndexUpdateFailure(error)) {
+          throw error;
+        }
+
         deps.operatorAdviceRepository.unconsume(
           consumed.map((record) => record.id),
           {
