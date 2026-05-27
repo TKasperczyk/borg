@@ -137,7 +137,7 @@ export class SessionsRepository {
         `
           UPDATE sessions
           SET
-            last_activity_at = ?,
+            last_activity_at = MAX(sessions.last_activity_at, ?),
             last_turn_id = CASE WHEN ? = 1 THEN ? ELSE last_turn_id END,
             message_count = message_count + ?
           WHERE session_id = ?

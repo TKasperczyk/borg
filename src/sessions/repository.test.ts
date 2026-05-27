@@ -164,6 +164,32 @@ describe("SessionsRepository", () => {
     expect(harness.repo.touch(createSessionId())).toBeNull();
   });
 
+  it("preserves newer activity while applying touch side effects", () => {
+    const harness = openRepo();
+    db = harness.db;
+
+    harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "demo",
+      audience_label: "alice",
+      conversation_kind: "demo",
+    });
+
+    harness.repo.touch(DEFAULT_SESSION_ID, { at: 3_000 });
+    expect(
+      harness.repo.touch(DEFAULT_SESSION_ID, {
+        at: 2_000,
+        lastTurnId: "turn_b",
+        messageCountDelta: 2,
+      }),
+    ).toMatchObject({
+      last_activity_at: 3_000,
+      last_turn_id: "turn_b",
+      message_count: 3,
+    });
+  });
+
   it("lists by activity, source type, and bounded recency order", () => {
     const harness = openRepo();
     db = harness.db;
