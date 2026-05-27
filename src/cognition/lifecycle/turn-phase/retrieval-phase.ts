@@ -250,6 +250,7 @@ export async function runRetrievalPhase(input: {
       ? input.actionLinkSelfContext
       : await input.options.selfContextBuilder.build({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           cognitionInput: input.cognitionInput,
           perception: input.perception,
           autonomyTrigger: input.turnInput.autonomyTrigger,

@@ -109,6 +109,7 @@ describe("PerceptionGateway", () => {
     );
     expect(tracer.emit).toHaveBeenCalledWith("recency.completed", {
       turnId: "turn-1",
+      session_id: DEFAULT_SESSION_ID,
       messageCount: 2,
       sourceEntryIds: ["strm_abcdefghijklmnop", "strm_bcdefghijklmnopa"],
     });

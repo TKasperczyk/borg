@@ -123,6 +123,7 @@ export class TurnReflectionCoordinator {
     const reflection = await reflector.reflect(
       {
         turnId: input.turnId,
+        sessionId: input.sessionId,
         actionLifecycleTurnCounter: input.actionLifecycleTurnCounter ?? null,
         origin: input.origin ?? "user",
         userMessage: input.userMessage,
@@ -195,6 +196,7 @@ export class TurnReflectionCoordinator {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("reflection.completed", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         attributions: {
           pending_social: nextPendingSocialAttribution !== null,
           pending_trait: reflectedWorkingMemory.pending_trait_attribution !== null,

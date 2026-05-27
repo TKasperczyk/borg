@@ -72,6 +72,8 @@ export class TurnActionStateService {
   constructor(private readonly options: TurnActionStateServiceOptions) {}
 
   async extract(input: ExtractTurnActionStatesInput): Promise<ActionId[]> {
+    const sessionId = input.sessionId ?? undefined;
+
     if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
       return [];
     }
@@ -88,7 +90,7 @@ export class TurnActionStateService {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,
-      sessionId: input.sessionId ?? undefined,
+      sessionId,
       onDegraded: (reason, error) => {
         if (!this.options.tracer.enabled) {
           return;
@@ -96,6 +98,7 @@ export class TurnActionStateService {
 
         this.options.tracer.emit("extraction.actions.degraded", {
           turnId: input.turnId,
+          ...(sessionId !== undefined ? { session_id: sessionId } : {}),
           reason,
           ...(this.options.tracer.includePayloads && error !== undefined
             ? { error: error instanceof Error ? error.message : String(error) }
@@ -142,6 +145,8 @@ export class TurnActionStateService {
   }
 
   async closeBorgSelfPerformedActions(input: CloseBorgSelfPerformedActionsInput): Promise<void> {
+    const sessionId = input.sessionId ?? undefined;
+
     const activeBorgActions = this.options.actionRepository.list({
       states: ACTIVE_ACTION_STATES,
       actor: "borg",
@@ -168,7 +173,7 @@ export class TurnActionStateService {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,
-      sessionId: input.sessionId ?? undefined,
+      sessionId,
       onDegraded: (reason, error) => {
         if (!this.options.tracer.enabled) {
           return;
@@ -176,6 +181,7 @@ export class TurnActionStateService {
 
         this.options.tracer.emit("extraction.actions.degraded", {
           turnId: input.turnId,
+          ...(sessionId !== undefined ? { session_id: sessionId } : {}),
           reason,
           ...(this.options.tracer.includePayloads && error !== undefined
             ? { error: error instanceof Error ? error.message : String(error) }

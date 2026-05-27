@@ -10,6 +10,7 @@ import {
 import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
+import type { SessionId } from "../../util/ids.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import type { PendingTurnEmission } from "./types.js";
@@ -90,6 +91,7 @@ export type ClosurePressureGuardOptions = {
 
 export type ClosurePressureGuardInput = {
   turnId: string;
+  sessionId?: SessionId;
   response: string;
   activeCommitments: readonly CommitmentRecord[];
   closureLoop: ClosureLoopState | null;
@@ -171,6 +173,7 @@ export function shouldEnforceClosurePressure(input: {
 function traceClosureGuard(input: {
   tracer?: TurnTracer;
   turnId: string;
+  sessionId?: SessionId;
   verdict: "passed" | "rewritten" | "suppressed";
   mode?: PostGenerationGuardMode;
   wouldHaveVerdict?: "passed" | "rewritten" | "suppressed";
@@ -192,6 +195,7 @@ function traceClosureGuard(input: {
   const wouldHaveVerdict = input.wouldHaveVerdict ?? input.verdict;
   const payload: TurnTraceData = {
     turnId: input.turnId,
+    ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
     mode,
     verdict: mode === "shadow" ? "passed" : input.verdict,
     wouldHaveVerdict,
@@ -232,6 +236,7 @@ function traceClosureGuard(input: {
 function traceClosureAuditInconsistent(input: {
   tracer?: TurnTracer;
   turnId: string;
+  sessionId?: SessionId;
   reason: string;
   audit: ClosureResponseAudit;
   activeClosureCommitments: readonly string[];
@@ -242,6 +247,7 @@ function traceClosureAuditInconsistent(input: {
 
   input.tracer.emit("closure_pressure_audit.degraded", {
     turnId: input.turnId,
+    ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
     reason: input.reason,
     spans_detected: input.audit.spans.length,
     response_shape: input.audit.response_shape,
@@ -334,6 +340,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
@@ -366,6 +373,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
@@ -397,6 +405,7 @@ export class ClosurePressureGuard {
       traceClosureAuditInconsistent({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         reason,
         audit,
         activeClosureCommitments: activeCommitmentLabels,
@@ -405,6 +414,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
@@ -439,6 +449,7 @@ export class ClosurePressureGuard {
       traceClosureAuditInconsistent({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         reason,
         audit,
         activeClosureCommitments: activeCommitmentLabels,
@@ -447,6 +458,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
@@ -480,6 +492,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         wouldHaveVerdict: "suppressed",
@@ -513,6 +526,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "passed",
         removedSpans: [],
@@ -544,6 +558,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         mode: effectiveMode,
         verdict: "suppressed",
         wouldHaveSuppressionReason: reason,
@@ -576,6 +591,7 @@ export class ClosurePressureGuard {
     traceClosureGuard({
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       mode: effectiveMode,
       verdict: "passed",
       wouldHaveVerdict: "suppressed",

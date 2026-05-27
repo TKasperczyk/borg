@@ -114,6 +114,7 @@ export class PerceptionGateway {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("recency.completed", {
         turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         messageCount: recencyWindow.messages.length,
         sourceEntryIds: recencyWindow.messages.map((message) => message.stream_entry_id),
       });
@@ -121,7 +122,11 @@ export class PerceptionGateway {
     const recentHistoryStrings = recencyWindow.messages.map(
       (message) => `${message.role}: ${message.content}`,
     );
-    const perception = await perceiver.perceive(input.cognitionInput, recentHistoryStrings);
+    const perception = await perceiver.perceive(
+      input.cognitionInput,
+      recentHistoryStrings,
+      input.sessionId,
+    );
     const workingMood =
       input.origin === "autonomous" || perception.affectiveSignalDegraded === true
         ? (input.workingMemory.mood ?? createNeutralAffectiveSignal())

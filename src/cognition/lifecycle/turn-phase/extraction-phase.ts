@@ -60,6 +60,7 @@ export async function runExtractionPhase(input: {
     input.isUserTurn && currentTurnFrameAnomaly === null
       ? await input.options.selfContextBuilder.build({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           cognitionInput: input.cognitionInput,
           perception: input.perception,
           autonomyTrigger: input.turnInput.autonomyTrigger,

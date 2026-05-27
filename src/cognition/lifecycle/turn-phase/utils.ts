@@ -40,6 +40,7 @@ export async function persistCorrectiveCommitment(input: {
   service: CorrectivePreferenceTurnService;
   streamWriter: StreamWriter;
   turnId: string;
+  sessionId: SessionId;
   commitment: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["commitment"];
   supersession: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["supersession"];
   appendHookFailureEvent: AppendHookFailureEvent;
@@ -48,6 +49,7 @@ export async function persistCorrectiveCommitment(input: {
     commitment: input.commitment,
     supersession: input.supersession,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     onHookFailure: (hook, error, details) =>
       input.appendHookFailureEvent(input.streamWriter, hook, error, details),
   });

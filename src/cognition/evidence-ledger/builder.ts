@@ -68,6 +68,7 @@ export class EvidenceLedgerBuilder {
     if (this.options.tracer?.enabled === true && input.turnId !== undefined) {
       this.options.tracer.emit("evidence_ledger.reverse_scan", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         ledger_reverse_scan_entries: streamEntries.length,
         ledger_reverse_scan_bytes: streamScan.scannedBytes,
         ledger_reverse_scan_entry_cap_hit: streamScan.capReached === "entries",
@@ -125,6 +126,7 @@ export class EvidenceLedgerBuilder {
         this.options.imageRenderMaxDimension ?? DEFAULT_IMAGE_RENDER_MAX_DIMENSION,
       tracer: this.options.tracer,
       turnId: input.turnId,
+      sessionId: input.sessionId,
     });
     const retrievedEvidence = applyImageBudgetAnnotations(input.retrievedEvidence, imageBudget);
     const sections = createSectionBuckets();
@@ -214,6 +216,7 @@ function collectLedgerImageAttachments(
     imageRenderMaxDimension: number;
     tracer?: EvidenceLedgerBuilderOptions["tracer"];
     turnId?: string;
+    sessionId?: EvidenceLedgerBuildInput["sessionId"];
   },
 ): ImageBudgetResult {
   const labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -300,13 +303,10 @@ function collectLedgerImageAttachments(
     }));
 
   const consideredCount = byAttachment.size + omittedInactive.size;
-  if (
-    consideredCount > 0 &&
-    options.tracer?.enabled === true &&
-    options.turnId !== undefined
-  ) {
+  if (consideredCount > 0 && options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("evidence_ledger.image_attach", {
       turnId: options.turnId,
+      ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
       considered_count: consideredCount,
       attached_count: attachments.length,
       omitted_count: omittedBudget.size + omittedInactive.size,
@@ -324,6 +324,7 @@ function collectLedgerImageAttachments(
     for (const attachmentId of omittedInactive) {
       options.tracer.emit("citation.image_filtered", {
         turnId: options.turnId,
+        ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
         attachment_id: attachmentId,
         reason: "inactive",
       });

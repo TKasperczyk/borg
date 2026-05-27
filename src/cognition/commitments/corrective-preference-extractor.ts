@@ -255,6 +255,7 @@ export type ExtractCorrectivePreferenceInput = {
 function traceClassificationDowngrade(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   kind: CorrectivePreferenceCandidate["kind"];
   type: CorrectivePreferenceCandidate["type"];
   directiveFamily: string;
@@ -271,6 +272,7 @@ function traceClassificationDowngrade(options: {
 
   options.tracer.emit("commitment_classification.downgraded", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     original_enforcement_class: options.normalization.downgraded_from.enforcement_class,
     original_critical_domain: options.normalization.downgraded_from.critical_domain,
     new_enforcement_class: options.normalization.enforcement_class,
@@ -284,7 +286,7 @@ function traceClassificationDowngrade(options: {
 
 function toCandidate(
   input: CorrectivePreferenceToolInput,
-  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId" | "sessionId"> = {},
 ): CorrectivePreferenceCandidate | null {
   if (input.classification !== "corrective_preference" || input.confidence < CONFIDENCE_THRESHOLD) {
     return null;
@@ -320,6 +322,7 @@ function toCandidate(
   traceClassificationDowngrade({
     tracer: traceOptions.tracer,
     turnId: traceOptions.turnId,
+    sessionId: traceOptions.sessionId,
     kind: input.kind,
     type: input.type,
     directiveFamily,
@@ -367,7 +370,7 @@ function slotNegationsFromInput(
 
 function toExtractionResult(
   input: CorrectivePreferenceToolInput,
-  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId" | "sessionId"> = {},
 ): CorrectivePreferenceExtractionResult {
   return {
     preference: toCandidate(input, traceOptions),
@@ -377,7 +380,7 @@ function toExtractionResult(
 
 function parseResponse(
   result: LLMCompleteResult,
-  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId"> = {},
+  traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId" | "sessionId"> = {},
 ): CorrectivePreferenceExtractionResult {
   const call = result.tool_calls.find(
     (toolCall) => toolCall.name === CORRECTIVE_PREFERENCE_TOOL_NAME,
@@ -555,6 +558,7 @@ export class CorrectivePreferenceExtractor {
       return parseResponse(response, {
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
       });
     } catch (error) {
       await this.degraded(

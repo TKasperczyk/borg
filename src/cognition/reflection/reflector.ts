@@ -42,6 +42,7 @@ import {
   type ExecutiveStepId,
   type GoalId,
   type OpenQuestionId,
+  type SessionId,
   type SkillId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -57,6 +58,7 @@ import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "..
 import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
   turnId?: string;
+  sessionId?: SessionId;
   actionLifecycleTurnCounter?: number | null;
   origin?: "user" | "autonomous";
   userMessage: string;
@@ -1042,6 +1044,7 @@ export class Reflector {
 
     tracer.emit("reflector.intent_update.completed", {
       turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       created_durable_actions_count: input.createdDurableActionsCount,
       by_state: input.byState,
       working_memory_pending_resolved_count: input.workingMemoryPendingResolvedCount,
@@ -1057,6 +1060,7 @@ export class Reflector {
 
     tracer.emit("reflector.intent_update.rejected", {
       turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       reason: "missing_group_sender_entity_id",
       description,
       count: 1,
@@ -1261,6 +1265,7 @@ export class Reflector {
     if (typeof details.question_id === "string") {
       tracer.emit("open_question_resolution.started", {
         turnId: context.turnId,
+        ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
         oq_id: details.question_id,
         source_path: "online_reflection",
         decision: "rejected",
@@ -1270,6 +1275,7 @@ export class Reflector {
 
     tracer.emit("open_question_resolution.degraded", {
       turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       ...details,
     });
   }
@@ -1290,6 +1296,7 @@ export class Reflector {
 
     tracer.emit("open_question_resolution.started", {
       turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       oq_id: input.oqId,
       source_path: "online_reflection",
       decision: input.decision,
@@ -1306,6 +1313,7 @@ export class Reflector {
 
     tracer.emit("reflector.intent_update.rejected", {
       turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       reason: "frame_anomaly",
       kind: isFrameAnomaly(context.frameAnomaly) ? context.frameAnomaly.kind : "unknown",
       count,

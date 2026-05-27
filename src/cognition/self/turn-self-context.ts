@@ -25,6 +25,7 @@ import {
   type EntityId,
   type EpisodeId,
   type GoalId,
+  type SessionId,
 } from "../../util/ids.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
@@ -61,6 +62,7 @@ export type TurnSelfContextOptions = {
 
 export type TurnSelfContextInput = {
   turnId: string;
+  sessionId?: SessionId;
   cognitionInput: string;
   perception: PerceptionResult;
   autonomyTrigger?: AutonomyTriggerContext | null;
@@ -239,6 +241,7 @@ export class TurnSelfContextBuilder {
       if (this.options.tracer.enabled) {
         this.options.tracer.emit("retrieval.degraded", {
           turnId: input.turnId,
+          ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
           subsystem: "scoring_features",
           reason: error instanceof Error ? error.message : String(error),
         });
@@ -255,6 +258,7 @@ export class TurnSelfContextBuilder {
       if (this.options.tracer.enabled) {
         this.options.tracer.emit("retrieval.degraded", {
           turnId: input.turnId,
+          ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
           subsystem: "executive_context_fit",
           reason: error instanceof Error ? error.message : String(error),
         });

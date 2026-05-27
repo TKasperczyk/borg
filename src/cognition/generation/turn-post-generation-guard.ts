@@ -173,6 +173,7 @@ function leakedInternalIdentifiers(
 
 function applyInternalIdentifierGuard(input: {
   turnId: string;
+  sessionId?: SessionId;
   emission: TurnPostGenerationGuardMessage;
   knownIdentifiers: readonly string[];
   tracer: TurnTracer;
@@ -189,6 +190,7 @@ function applyInternalIdentifierGuard(input: {
   if (input.tracer.enabled) {
     input.tracer.emit("internal_identifier_guard.completed", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       verdict: "suppressed",
       leaked_identifiers: leakedIdentifiers,
     });
@@ -222,6 +224,7 @@ export class TurnPostGenerationGuardRunner {
     });
     const closureResult = await closureGuard.run({
       turnId: input.turnId,
+      sessionId: input.sessionId,
       response: input.response,
       activeCommitments: input.activeCommitments,
       closureLoop: input.closureLoop,
@@ -237,6 +240,7 @@ export class TurnPostGenerationGuardRunner {
 
     return applyInternalIdentifierGuard({
       turnId: input.turnId,
+      sessionId: input.sessionId,
       emission: closureResult.emission,
       knownIdentifiers: collectInternalIdentifiers({
         turnId: input.turnId,

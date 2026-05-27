@@ -175,6 +175,7 @@ describe("CorrectivePreferenceTurnService", () => {
 
     await service.persistCommitment({
       commitment: result.commitment,
+      sessionId: DEFAULT_SESSION_ID,
       onHookFailure: vi.fn(),
     });
 
@@ -364,6 +365,7 @@ describe("CorrectivePreferenceTurnService", () => {
         commitment: result.commitment,
         supersession: result.commitmentSupersession,
         turnId,
+        sessionId: DEFAULT_SESSION_ID,
         onHookFailure: vi.fn(),
       });
 
@@ -792,6 +794,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitment: result.commitment,
       supersession: result.commitmentSupersession,
       turnId: "turn-valid-supersession",
+      sessionId: DEFAULT_SESSION_ID,
       onHookFailure: vi.fn(),
     });
 
@@ -803,6 +806,7 @@ describe("CorrectivePreferenceTurnService", () => {
     );
     expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.transitioned", {
       turnId: "turn-valid-supersession",
+      session_id: DEFAULT_SESSION_ID,
       supersededId,
       newId: addCommitment.mock.results[0]?.value.id,
       validationStatus: "accepted",
@@ -853,6 +857,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitment: result.commitment,
       supersession: result.commitmentSupersession,
       turnId: "turn-invalid-supersession",
+      sessionId: DEFAULT_SESSION_ID,
       onHookFailure: vi.fn(),
     });
 
@@ -860,6 +865,7 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(addCommitment.mock.calls[0]?.[0]).not.toHaveProperty("skipDirectiveFamilyMerge");
     expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
       turnId: "turn-invalid-supersession",
+      session_id: DEFAULT_SESSION_ID,
       supersededId,
       validationStatus: "rejected",
       reason: "not_in_allowed_active_commitments",
@@ -917,6 +923,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitment: result.commitment,
       supersession: result.commitmentSupersession,
       turnId: "turn-revoked-supersession",
+      sessionId: DEFAULT_SESSION_ID,
       onHookFailure: vi.fn(),
     });
 
@@ -924,6 +931,7 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(addCommitment.mock.calls[0]?.[0]).not.toHaveProperty("skipDirectiveFamilyMerge");
     expect(tracer.emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
       turnId: "turn-revoked-supersession",
+      session_id: DEFAULT_SESSION_ID,
       supersededId,
       validationStatus: "rejected",
       reason: "commitment_not_active",

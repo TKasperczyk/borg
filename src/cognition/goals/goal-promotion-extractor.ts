@@ -539,6 +539,7 @@ function degradedReasonForParseError(error: unknown): GoalPromotionExtractorDegr
 function traceExtractorCompleted(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   parseResult?: GoalPromotionParseResult;
   degraded: boolean;
   fatalReason?: GoalPromotionExtractorDegradedReason;
@@ -562,6 +563,7 @@ function traceExtractorCompleted(options: {
 
     options.tracer.emit("extraction.goals.rejected", {
       turnId: options.turnId,
+      ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
       classification: rejection.classification,
       description_excerpt: rejection.description_excerpt,
       reason: rejection.reason,
@@ -570,6 +572,7 @@ function traceExtractorCompleted(options: {
 
   options.tracer.emit("extraction.goals.completed", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     candidates_emitted: options.parseResult?.candidates.length ?? 0,
     valid_promotion_count: validPromotionCount,
     skipped_promotion_count: skippedPromotionCount,
@@ -675,6 +678,7 @@ export class GoalPromotionExtractor {
       traceExtractorCompleted({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         parseResult,
         degraded: false,
       });
@@ -686,6 +690,7 @@ export class GoalPromotionExtractor {
       traceExtractorCompleted({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
         degraded: true,
         fatalReason: reason,
       });

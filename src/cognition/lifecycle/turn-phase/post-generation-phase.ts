@@ -361,6 +361,7 @@ export async function runPostGenerationPhase(input: {
         sourceStreamEntryId: persistedAgentEntry.id,
         reason: stopCommitment.reason,
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
     }
 
@@ -370,6 +371,7 @@ export async function runPostGenerationPhase(input: {
         sourceStreamEntryId: persistedAgentEntry.id,
         reason: "Closure loop detected; assistant used the single allowed naming/output turn.",
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
       postActionWorkingMemory = input.options.discourseStateService.setStopState({
         workingMemory: postActionWorkingMemory,
@@ -378,6 +380,7 @@ export async function runPostGenerationPhase(input: {
         reason:
           "Closure loop was already named once; suppress further closure-only turns until substantive content.",
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
     }
   }
@@ -456,6 +459,7 @@ export async function runPostGenerationPhase(input: {
     service: input.options.correctivePreferenceTurnService,
     streamWriter: input.streamWriter,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
@@ -499,6 +503,7 @@ export async function suppressFromClosureLoopPhase(input: {
     reason: input.reason,
     turnId: input.turnId,
     sourceStreamEntryId: input.persistedUserEntryId,
+    sessionId: input.sessionId,
   });
   workingMemory = input.options.discourseStateService.setStopState({
     workingMemory,
@@ -506,6 +511,7 @@ export async function suppressFromClosureLoopPhase(input: {
     sourceStreamEntryId: input.persistedUserEntryId,
     reason: "Closure loop already named; suppressing another closure-only turn.",
     turnId: input.turnId,
+    sessionId: input.sessionId,
   });
   const suppressionActionResult = await performAction({
     response: "",
@@ -547,6 +553,7 @@ export async function suppressFromClosureLoopPhase(input: {
     reason: "finalizer_no_output",
     sourceStreamEntryId: suppressionMarker.id,
     turnId: input.turnId,
+    sessionId: input.sessionId,
   });
 
   if (input.options.tracer.enabled) {
@@ -568,6 +575,7 @@ export async function suppressFromClosureLoopPhase(input: {
     service: input.options.correctivePreferenceTurnService,
     streamWriter: input.streamWriter,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
@@ -621,6 +629,7 @@ export async function suppressFromGenerationGatePhase(input: {
       sourceStreamEntryId: input.persistedUserEntryId,
       reason: input.gateResult.explanation,
       turnId: input.turnId,
+      sessionId: input.sessionId,
     });
   }
 
@@ -664,6 +673,7 @@ export async function suppressFromGenerationGatePhase(input: {
     reason: suppressionReason,
     sourceStreamEntryId: suppressionMarker.id,
     turnId: input.turnId,
+    sessionId: input.sessionId,
   });
 
   if (input.options.tracer.enabled) {
@@ -685,6 +695,7 @@ export async function suppressFromGenerationGatePhase(input: {
     service: input.options.correctivePreferenceTurnService,
     streamWriter: input.streamWriter,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
@@ -747,6 +758,7 @@ async function suppressFromActionPhase(input: {
     reason: input.actionEmission.reason,
     sourceStreamEntryId: input.persistedAgentEntry.id,
     turnId: input.turnId,
+    sessionId: input.sessionId,
   });
   if (
     input.actionEmission.closure_pressure_history_reason !== undefined &&
@@ -786,6 +798,7 @@ async function suppressFromActionPhase(input: {
     service: input.options.correctivePreferenceTurnService,
     streamWriter: input.streamWriter,
     turnId: input.turnId,
+    sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,

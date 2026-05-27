@@ -220,6 +220,7 @@ export class TurnRetrievalCoordinator {
                 if (this.tracer.enabled) {
                   this.tracer.emit("perception.classifier.degraded", {
                     turnId: input.turnId,
+                    ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
                     classifier: "procedural_context",
                     reason,
                   });

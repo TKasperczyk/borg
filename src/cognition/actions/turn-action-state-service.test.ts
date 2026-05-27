@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
 import { FixedClock } from "../../util/clock.js";
-import { createStreamEntryId } from "../../util/ids.js";
+import { createSessionId, createStreamEntryId } from "../../util/ids.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 import { TurnActionStateService } from "./turn-action-state-service.js";
@@ -59,6 +59,50 @@ describe("TurnActionStateService", () => {
     } finally {
       extractSpy.mockRestore();
     }
+  });
+
+  it("emits degraded extraction traces with session scope", async () => {
+    const streamEntryId = createStreamEntryId();
+    const sessionId = createSessionId();
+    const emit = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        createActionStateResponse({
+          action_states: "invalid",
+        }),
+      ],
+    });
+    const service = new TurnActionStateService({
+      model: "test-recall",
+      actionRepository: {
+        add: vi.fn(),
+        list: vi.fn(() => []),
+      } as never,
+      embeddingClient: new TestEmbeddingClient(),
+      clock: new FixedClock(1_000),
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+
+    const ids = await service.extract({
+      llmClient: llm,
+      turnId: "turn_action_degraded_session",
+      sessionId,
+      isUserTurn: true,
+      userMessage: "I will send the Atlas follow-up.",
+      persistedUserEntryId: streamEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+    });
+
+    expect(ids).toEqual([]);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.actions.degraded",
+      expect.objectContaining({
+        turnId: "turn_action_degraded_session",
+        session_id: sessionId,
+        reason: "invalid_payload",
+      }),
+    );
   });
 
   it("persists goal-linked extracted actions so completion resolves linked open questions", async () => {

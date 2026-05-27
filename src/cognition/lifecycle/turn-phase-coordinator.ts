@@ -469,6 +469,7 @@ export class TurnPhaseCoordinator {
         workingMemory,
         reason: closureLoopAssessment.reason,
         turnId,
+        sessionId,
       });
     } else if (
       closureLoopAssessment?.currentUserClosureShaped === true &&
@@ -494,6 +495,7 @@ export class TurnPhaseCoordinator {
         sourceStreamEntryIds: closureLoopAssessment.sourceStreamEntryIds,
         reason: closureLoopAssessment.reason,
         turnId,
+        sessionId,
       });
     }
 
@@ -527,6 +529,7 @@ export class TurnPhaseCoordinator {
       await this.options.discourseStateService.appendHardCapEvent({
         streamWriter,
         turnId,
+        sessionId,
         activeTurns: gateResult.signals.hardCapActiveTurns,
         hardCapTurns: this.options.config.generation.discourseStateHardCapTurns,
         stateReason:
@@ -539,6 +542,7 @@ export class TurnPhaseCoordinator {
         workingMemory,
         reason: gateResult.explanation,
         turnId,
+        sessionId,
       });
     }
 

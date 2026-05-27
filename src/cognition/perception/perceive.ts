@@ -1,6 +1,7 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { AffectiveExtractorDegradedReason } from "../../memory/affective/index.js";
+import type { SessionId } from "../../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { perceptionResultSchema, type PerceptionResult } from "../types.js";
 import {
@@ -116,6 +117,7 @@ export class Perceiver {
   private async detectAffectiveSignalSafely(
     text: string,
     recentHistory: readonly string[],
+    sessionId?: SessionId,
   ): Promise<{ signal: AffectiveSignal; degraded: boolean }> {
     let degraded = false;
     const markDegraded = async (
@@ -127,6 +129,7 @@ export class Perceiver {
       if (this.tracer.enabled && this.turnId !== undefined) {
         this.tracer.emit("perception.classifier.degraded", {
           turnId: this.turnId,
+          ...(sessionId !== undefined ? { session_id: sessionId } : {}),
           classifier: "affective_signal",
           reason,
         });
@@ -157,10 +160,15 @@ export class Perceiver {
     }
   }
 
-  async perceive(text: string, recentHistory: readonly string[] = []): Promise<PerceptionResult> {
+  async perceive(
+    text: string,
+    recentHistory: readonly string[] = [],
+    sessionId?: SessionId,
+  ): Promise<PerceptionResult> {
     if (this.tracer.enabled && this.turnId !== undefined) {
       this.tracer.emit("perception.started", {
         turnId: this.turnId,
+        ...(sessionId !== undefined ? { session_id: sessionId } : {}),
         inputCharCount: text.length,
         recentHistoryCount: recentHistory.length,
       });
@@ -192,7 +200,7 @@ export class Perceiver {
         }),
         onFailure: this.onClassifierFailure,
       }),
-      this.detectAffectiveSignalSafely(text, recentHistory),
+      this.detectAffectiveSignalSafely(text, recentHistory, sessionId),
       // Temporal cue extraction is now LLM-backed; degrades to null when
       // no LLM client is configured. Runs in parallel with the rest of
       // perception so it doesn't add serial latency.
@@ -203,6 +211,7 @@ export class Perceiver {
           if (this.tracer.enabled && this.turnId !== undefined) {
             this.tracer.emit("perception.classifier.degraded", {
               turnId: this.turnId,
+              ...(sessionId !== undefined ? { session_id: sessionId } : {}),
               classifier: "temporal_cue",
               reason,
             });
@@ -236,6 +245,7 @@ export class Perceiver {
     if (this.tracer.enabled && this.turnId !== undefined) {
       this.tracer.emit("perception.completed", {
         turnId: this.turnId,
+        ...(sessionId !== undefined ? { session_id: sessionId } : {}),
         mode: perception.mode,
         isOperational: perception.isOperational === true,
         entities: perception.entities,
@@ -251,6 +261,7 @@ export async function perceive(
   text: string,
   options: PerceiverOptions = {},
   recentHistory: readonly string[] = [],
+  sessionId?: SessionId,
 ): Promise<PerceptionResult> {
-  return new Perceiver(options).perceive(text, recentHistory);
+  return new Perceiver(options).perceive(text, recentHistory, sessionId);
 }

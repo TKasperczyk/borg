@@ -1,6 +1,6 @@
 import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ClosurePressureHistoryReason, WorkingMemory } from "../../memory/working/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -57,6 +57,7 @@ export type SetTurnDiscourseStopStateInput = {
   sourceStreamEntryId?: StreamEntryId;
   reason: string;
   turnId: string;
+  sessionId?: SessionId;
 };
 
 export type AppendSuppressionMarkerInput = {
@@ -96,6 +97,7 @@ export class TurnDiscourseStateService {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: DISCOURSE_STATE_NAME,
         transition: "set",
         provenance: input.provenance,
@@ -113,6 +115,7 @@ export class TurnDiscourseStateService {
     workingMemory: WorkingMemory;
     reason: string;
     turnId: string;
+    sessionId?: SessionId;
   }): WorkingMemory {
     const active = input.workingMemory.discourse_state?.stop_until_substantive_content ?? null;
     const next = clearStopUntilSubstantiveContent(input.workingMemory);
@@ -120,6 +123,7 @@ export class TurnDiscourseStateService {
     if (active !== null && this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: DISCOURSE_STATE_NAME,
         transition: "cleared",
         provenance: active.provenance,
@@ -135,6 +139,7 @@ export class TurnDiscourseStateService {
     sourceStreamEntryIds: readonly StreamEntryId[];
     reason: string;
     turnId: string;
+    sessionId?: SessionId;
   }): WorkingMemory {
     const detected = setClosureLoopDetected(input.workingMemory, {
       sourceStreamEntryIds: input.sourceStreamEntryIds,
@@ -150,6 +155,7 @@ export class TurnDiscourseStateService {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: CLOSURE_LOOP_STATE_NAME,
         transition: "detected",
         provenance: "closure_loop_classifier",
@@ -178,6 +184,7 @@ export class TurnDiscourseStateService {
     reason: string;
     turnId: string;
     sourceStreamEntryId?: StreamEntryId;
+    sessionId?: SessionId;
   }): WorkingMemory {
     const next = markClosureLoopNamed(input.workingMemory, {
       sourceStreamEntryId: input.sourceStreamEntryId,
@@ -188,6 +195,7 @@ export class TurnDiscourseStateService {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: CLOSURE_LOOP_STATE_NAME,
         transition: "named",
         provenance: "closure_loop_named",
@@ -205,6 +213,7 @@ export class TurnDiscourseStateService {
     workingMemory: WorkingMemory;
     reason: string;
     turnId: string;
+    sessionId?: SessionId;
   }): WorkingMemory {
     const active = input.workingMemory.discourse_state?.closure_loop ?? null;
     const next = clearClosureLoop(input.workingMemory);
@@ -212,6 +221,7 @@ export class TurnDiscourseStateService {
     if (active !== null && this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.transitioned", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: CLOSURE_LOOP_STATE_NAME,
         transition: "cleared",
         provenance: "closure_loop_classifier",
@@ -228,10 +238,12 @@ export class TurnDiscourseStateService {
     activeTurns: number;
     hardCapTurns: number;
     stateReason: string;
+    sessionId?: SessionId;
   }): Promise<void> {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("discourse_state.rejected", {
         turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
         state: DISCOURSE_STATE_NAME,
         activeTurns: input.activeTurns,
         hardCapTurns: input.hardCapTurns,
@@ -296,6 +308,7 @@ export class TurnDiscourseStateService {
     reason: SuppressionReason;
     sourceStreamEntryId: StreamEntryId;
     turnId: string;
+    sessionId?: SessionId;
   }): WorkingMemory {
     let workingMemory = appendRecentSuppression(input.workingMemory, {
       turnId: input.turnId,
@@ -330,6 +343,7 @@ export class TurnDiscourseStateService {
             ? "Legacy finalizer emitted no_output for this turn."
             : "Finalizer called no_output for this turn.",
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
     }
 
@@ -352,6 +366,7 @@ export class TurnDiscourseStateService {
                 ? "Commitment guard suppressed this turn because revision still violated an active commitment."
                 : "Commitment guard suppressed this turn because rewrite produced no supported output.",
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
     }
 
@@ -369,6 +384,7 @@ export class TurnDiscourseStateService {
               ? "Closure loop detected; legacy finalizer chose no_output."
               : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
     }
 

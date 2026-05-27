@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { createEntityId, createGoalId } from "../../util/ids.js";
+import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -136,6 +136,40 @@ describe("GoalPromotionExtractor", () => {
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
+  });
+
+  it("emits extractor completion traces with session scope", async () => {
+    const sessionId = createSessionId();
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Track the session-scoped observability sweep",
+            priority: 7,
+            reason: "The user asked Borg to keep the sweep moving.",
+            confidence: 0.91,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-session-trace",
+      sessionId,
+    });
+
+    await expect(extractor.extract(createExtractorInput())).resolves.toHaveLength(1);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.goals.completed",
+      expect.objectContaining({
+        turnId: "turn-goal-session-trace",
+        session_id: sessionId,
+        degraded: false,
+      }),
+    );
   });
 
   it("rejects impossible-for-Borg capability classifications distinctly", async () => {

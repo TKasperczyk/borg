@@ -130,6 +130,7 @@ export class CorrectivePreferenceTurnService {
 
   private traceSupersessionRejected(input: {
     turnId?: string;
+    sessionId?: SessionId;
     supersededId: CommitmentRecord["id"];
     newId?: CommitmentRecord["id"];
     reason: string;
@@ -141,6 +142,7 @@ export class CorrectivePreferenceTurnService {
 
     this.options.tracer.emit("extraction.commitments.rejected", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       supersededId: input.supersededId,
       ...(input.newId === undefined ? {} : { newId: input.newId }),
       validationStatus: "rejected",
@@ -153,6 +155,7 @@ export class CorrectivePreferenceTurnService {
 
   private traceSupersededViaExtractor(input: {
     turnId?: string;
+    sessionId?: SessionId;
     supersededId: CommitmentRecord["id"];
     newId: CommitmentRecord["id"];
   }): void {
@@ -162,6 +165,7 @@ export class CorrectivePreferenceTurnService {
 
     this.options.tracer.emit("extraction.commitments.transitioned", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       supersededId: input.supersededId,
       newId: input.newId,
       validationStatus: "accepted",
@@ -170,6 +174,7 @@ export class CorrectivePreferenceTurnService {
 
   private traceCandidateRejectedUngrounded(input: {
     turnId?: string;
+    sessionId?: SessionId;
     candidate: CorrectivePreferenceCandidate;
     protectedLabels: readonly string[];
     rejectedRelationalSlotIds: readonly string[];
@@ -181,6 +186,7 @@ export class CorrectivePreferenceTurnService {
 
     this.options.tracer.emit("corrective_preference.candidate_rejected_ungrounded", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       validationStatus: "rejected",
       reason: "relationship_label_ungrounded",
       directive_family: input.candidate.directive_family,
@@ -200,6 +206,7 @@ export class CorrectivePreferenceTurnService {
   private candidateHasGroundedRelationshipLabels(input: {
     candidate: CorrectivePreferenceCandidate;
     turnId?: string;
+    sessionId?: SessionId;
     persistedUserEntryId?: StreamEntryId;
     participantRoster?: ParticipantRoster | null;
     relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
@@ -246,6 +253,7 @@ export class CorrectivePreferenceTurnService {
 
     this.traceCandidateRejectedUngrounded({
       turnId: input.turnId,
+      sessionId: input.sessionId,
       candidate: input.candidate,
       protectedLabels: check.protectedLabels,
       rejectedRelationalSlotIds: check.rejectedRelationalSlotIds,
@@ -322,6 +330,7 @@ export class CorrectivePreferenceTurnService {
 
         this.options.tracer.emit("extraction.commitments.degraded", {
           turnId: input.turnId,
+          ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
           label: "corrective_preference_extractor",
           reason,
           stopReason: metadata?.stopReason ?? null,
@@ -360,6 +369,7 @@ export class CorrectivePreferenceTurnService {
       this.candidateHasGroundedRelationshipLabels({
         candidate: correctiveCandidate,
         turnId: input.turnId,
+        sessionId: input.sessionId,
         persistedUserEntryId: input.persistedUserEntryId,
         participantRoster: input.participantRoster ?? null,
         relationshipEvidenceStreamEntries: input.relationshipEvidenceStreamEntries,
@@ -425,6 +435,7 @@ export class CorrectivePreferenceTurnService {
     commitment: CommitmentRecord | null;
     supersession?: CorrectivePreferenceSupersessionClaim | null;
     turnId?: string;
+    sessionId?: SessionId;
     onHookFailure: (
       hook: string,
       error: unknown,
@@ -449,6 +460,7 @@ export class CorrectivePreferenceTurnService {
     if (supersession !== null && validation !== null && !validation.accepted) {
       this.traceSupersessionRejected({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         supersededId: supersession.supersededId,
         reason: validation.reason,
       });
@@ -498,6 +510,7 @@ export class CorrectivePreferenceTurnService {
       if (superseded.status === "no_op") {
         this.traceSupersessionRejected({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           supersededId: supersession.supersededId,
           newId: persisted.id,
           reason: "unknown_commitment_id",
@@ -508,6 +521,7 @@ export class CorrectivePreferenceTurnService {
       if (superseded.status === "conflict") {
         this.traceSupersessionRejected({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           supersededId: supersession.supersededId,
           newId: persisted.id,
           reason: "supersede_failed",
@@ -518,12 +532,14 @@ export class CorrectivePreferenceTurnService {
 
       this.traceSupersededViaExtractor({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         supersededId: supersession.supersededId,
         newId: persisted.id,
       });
     } catch (error) {
       this.traceSupersessionRejected({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         supersededId: supersession.supersededId,
         newId: persisted.id,
         reason: "supersede_failed",

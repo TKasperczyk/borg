@@ -155,6 +155,7 @@ export async function runDeliberationPhase(input: {
         sourceStreamEntryId: deliberation.thoughtStreamEntryIds?.[0],
         reason: "S2 planner recommended no assistant message for this turn.",
         turnId: input.turnId,
+        sessionId: input.sessionId,
       }),
     };
   }

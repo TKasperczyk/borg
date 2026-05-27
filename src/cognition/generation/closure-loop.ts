@@ -584,6 +584,7 @@ function normalizeClosureLoopToolInput(
 function traceClosureLoopPayloadNormalized(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   rawToolInput: unknown;
   normalizedPayload: z.input<typeof closureLoopClassificationSchema>;
   normalizations: readonly ClosureLoopPayloadNormalization[];
@@ -598,6 +599,7 @@ function traceClosureLoopPayloadNormalized(options: {
 
   options.tracer.emit("closure_loop.transitioned", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     normalizations: options.normalizations.map((normalization) => ({ ...normalization })),
     rawToolInputShape: summarizeTraceValueShape(options.rawToolInput),
     normalizedPayloadShape: summarizeTraceValueShape(options.normalizedPayload),
@@ -616,6 +618,7 @@ function parseClosureLoopResponse(
   traceOptions: {
     tracer?: TurnTracer;
     turnId?: string;
+    sessionId?: SessionId;
   } = {},
 ): ClosureLoopClassification {
   const call = result.tool_calls.find(
@@ -848,6 +851,7 @@ export class ClosureLoopClassifier {
       return parseClosureLoopResponse(response, input.messages, {
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId: this.options.sessionId,
       });
     } catch (error) {
       return this.degraded(

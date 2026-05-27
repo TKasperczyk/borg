@@ -285,6 +285,7 @@ describe("post-generation guard shadow chain", () => {
     expect(emit).toHaveBeenCalledWith("closure_response_guard.completed", expect.any(Object));
     expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
       turnId: "turn-internal-id-leak",
+      session_id: DEFAULT_SESSION_ID,
       verdict: "suppressed",
       leaked_identifiers: [userEntryId],
     });
@@ -581,6 +582,7 @@ describe("post-generation guard shadow chain", () => {
     });
     expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
       turnId: "turn-discourse-uuid-leak",
+      session_id: DEFAULT_SESSION_ID,
       verdict: "suppressed",
       leaked_identifiers: [discourseTurnId],
     });

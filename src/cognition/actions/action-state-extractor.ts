@@ -566,6 +566,7 @@ function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[
 function traceExtractorCompleted(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   candidatesEmitted: number;
   validCandidateCount?: number;
   persisted: readonly ActionRecord[];
@@ -605,6 +606,7 @@ function traceExtractorCompleted(options: {
 
     options.tracer.emit("extraction.actions.rejected", {
       turnId: options.turnId,
+      ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
       classification: rejection.classification,
       description_excerpt: rejection.description_excerpt,
       reason: rejection.reason,
@@ -613,6 +615,7 @@ function traceExtractorCompleted(options: {
 
   options.tracer.emit("extraction.actions.completed", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     candidates_emitted: options.candidatesEmitted,
     valid_candidate_count: options.validCandidateCount ?? 0,
     persisted_count: options.persisted.length,
@@ -676,6 +679,7 @@ function sameActionDedupAxis(left: ActionDedupAxis, right: ActionDedupAxis): boo
 function traceDedupSkippedEmbedding(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   candidate: ActionCandidateRejected;
   matchedActionId?: ActionId;
   similarity: number;
@@ -686,6 +690,7 @@ function traceDedupSkippedEmbedding(options: {
 
   options.tracer.emit("action_persistence.dedup.skipped", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     classification: options.candidate.classification,
     description_excerpt: options.candidate.description_excerpt,
     reason: options.candidate.reason,
@@ -699,6 +704,7 @@ function traceDedupSkippedEmbedding(options: {
 function traceDedupDegraded(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   reason: string;
   error: unknown;
   candidateDescription?: string;
@@ -709,6 +715,7 @@ function traceDedupDegraded(options: {
 
   options.tracer.emit("action_persistence.dedup.degraded", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     reason: options.reason,
     error: options.error instanceof Error ? options.error.message : String(options.error),
     ...(options.candidateDescription === undefined
@@ -740,12 +747,14 @@ export class ActionStateExtractor {
   private async degradedWithTrace(
     reason: ActionStateExtractorDegradedReason,
     error?: unknown,
+    sessionId?: SessionId,
   ): Promise<ActionRecord[]> {
     const result = await this.degraded(reason, error);
 
     traceExtractorCompleted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId,
       candidatesEmitted: 0,
       persisted: result,
       skippedReasons: new Map(),
@@ -756,17 +765,18 @@ export class ActionStateExtractor {
   }
 
   async extract(input: ExtractActionStatesInput): Promise<ActionRecord[]> {
+    const sessionId = input.sessionId ?? this.options.sessionId;
+
     if (this.options.llmClient === undefined || this.options.model === undefined) {
-      return this.degradedWithTrace("llm_unavailable");
+      return this.degradedWithTrace("llm_unavailable", undefined, sessionId);
     }
 
     if (this.options.actionRepository === undefined) {
-      return this.degradedWithTrace("repository_unavailable");
+      return this.degradedWithTrace("repository_unavailable", undefined, sessionId);
     }
 
     const messages = buildActionStateMessages(input);
     const tools = [ACTION_STATE_TOOL];
-    const sessionId = input.sessionId ?? this.options.sessionId;
 
     traceLlmCallStarted({
       tracer: this.options.tracer,
@@ -800,7 +810,7 @@ export class ActionStateExtractor {
         error,
       });
 
-      return this.degradedWithTrace("llm_failed", error);
+      return this.degradedWithTrace("llm_failed", error, sessionId);
     }
 
     traceLlmCallResponse({
@@ -828,6 +838,7 @@ export class ActionStateExtractor {
       traceExtractorCompleted({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
+        sessionId,
         candidatesEmitted: 0,
         persisted: result,
         skippedReasons: new Map(),
@@ -931,6 +942,7 @@ export class ActionStateExtractor {
         traceDedupDegraded({
           tracer: this.options.tracer,
           turnId: this.options.turnId,
+          sessionId,
           reason: "active_action_embedding_failed",
           error,
         });
@@ -983,6 +995,7 @@ export class ActionStateExtractor {
             traceBorgSelfPerformanceClosure({
               tracer: this.options.tracer,
               turnId: this.options.turnId,
+              sessionId,
               candidateIndex: parsedCandidate.candidateIndex,
               matchedActionId: matchedExistingActionId,
               terminalState: candidate.state,
@@ -1034,6 +1047,7 @@ export class ActionStateExtractor {
           traceDedupDegraded({
             tracer: this.options.tracer,
             turnId: this.options.turnId,
+            sessionId,
             reason: "candidate_embedding_failed",
             error,
             candidateDescription: record.description,
@@ -1095,6 +1109,7 @@ export class ActionStateExtractor {
                   traceTerminalEmissionClosure({
                     tracer: this.options.tracer,
                     turnId: this.options.turnId,
+                    sessionId,
                     candidateIndex: parsedCandidate.candidateIndex,
                     matchedActionId: bestMatch.actionId,
                     terminalState: record.state,
@@ -1132,6 +1147,7 @@ export class ActionStateExtractor {
                   traceDedupDegraded({
                     tracer: this.options.tracer,
                     turnId: this.options.turnId,
+                    sessionId,
                     reason: "reference_touch_failed",
                     error,
                     candidateDescription: record.description,
@@ -1157,6 +1173,7 @@ export class ActionStateExtractor {
               traceDedupSkippedEmbedding({
                 tracer: this.options.tracer,
                 turnId: this.options.turnId,
+                sessionId,
                 candidate: rejection,
                 matchedActionId: bestMatch.actionId,
                 similarity: bestMatch.similarity,
@@ -1192,6 +1209,7 @@ export class ActionStateExtractor {
     traceExtractorCompleted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
+      sessionId,
       candidatesEmitted: parsed.candidatesEmitted,
       validCandidateCount: parsed.validCandidateCount,
       persisted,
@@ -1213,6 +1231,7 @@ export class ActionStateExtractor {
 function traceTerminalEmissionClosure(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   candidateIndex: number;
   matchedActionId: ActionId;
   terminalState: "completed" | "not_done";
@@ -1225,6 +1244,7 @@ function traceTerminalEmissionClosure(options: {
 
   options.tracer.emit("action_state.transitioned", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     action_id: options.matchedActionId,
     candidate_index: options.candidateIndex,
     terminal_state: options.terminalState,
@@ -1236,6 +1256,7 @@ function traceTerminalEmissionClosure(options: {
 function traceBorgSelfPerformanceClosure(options: {
   tracer?: TurnTracer;
   turnId?: string;
+  sessionId?: SessionId;
   candidateIndex: number;
   matchedActionId: ActionId;
   terminalState: "completed" | "not_done";
@@ -1247,6 +1268,7 @@ function traceBorgSelfPerformanceClosure(options: {
 
   options.tracer.emit("action_state.borg_self_performance.completed", {
     turnId: options.turnId,
+    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
     action_id: options.matchedActionId,
     candidate_index: options.candidateIndex,
     terminal_state: options.terminalState,

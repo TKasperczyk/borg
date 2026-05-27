@@ -5,7 +5,13 @@ import type { IdentityService } from "../../memory/identity/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, ExecutiveStepId, GoalId, SessionId, StreamEntryId } from "../../util/ids.js";
+import type {
+  EntityId,
+  ExecutiveStepId,
+  GoalId,
+  SessionId,
+  StreamEntryId,
+} from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
@@ -74,6 +80,7 @@ export class TurnGoalPromotionService {
       onDegraded: (reason, error) => {
         this.emitDegraded({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           reason,
           error,
         });
@@ -108,6 +115,7 @@ export class TurnGoalPromotionService {
       ownerEntityId: input.ownerEntityId ?? null,
       persistedUserEntryId: input.persistedUserEntryId,
       turnId: input.turnId,
+      sessionId: input.sessionId,
       onHookFailure: input.onHookFailure,
     });
   }
@@ -118,6 +126,7 @@ export class TurnGoalPromotionService {
     ownerEntityId: EntityId | null;
     persistedUserEntryId?: StreamEntryId;
     turnId: string;
+    sessionId?: SessionId;
     onHookFailure: (
       hook: string,
       error: unknown,
@@ -134,6 +143,7 @@ export class TurnGoalPromotionService {
       audienceEntityId: input.audienceEntityId,
       ownerEntityId: input.ownerEntityId,
       turnId: input.turnId,
+      sessionId: input.sessionId,
     });
     let embeddingDedupState:
       | {
@@ -169,6 +179,7 @@ export class TurnGoalPromotionService {
       } catch (error) {
         this.emitDedupDegraded({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           reason: "active_goal_embedding_failed",
           error,
         });
@@ -188,6 +199,7 @@ export class TurnGoalPromotionService {
       ) {
         this.emitSkippedAsDuplicate({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           candidateDescription: candidate.description,
           reason: "extractor_signal",
           duplicateOfGoalId: candidate.duplicate_of_goal_id,
@@ -200,6 +212,7 @@ export class TurnGoalPromotionService {
       if (dedupState !== null) {
         const embeddingMatch = await this.findEmbeddingDuplicate({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           candidate,
           state: dedupState,
         });
@@ -207,6 +220,7 @@ export class TurnGoalPromotionService {
         if (embeddingMatch.kind === "matched") {
           this.emitSkippedAsDuplicate({
             turnId: input.turnId,
+            sessionId: input.sessionId,
             candidateDescription: candidate.description,
             reason: "embedding",
             matchedExistingId: embeddingMatch.goalId,
@@ -232,6 +246,7 @@ export class TurnGoalPromotionService {
       } catch (error) {
         this.emitDegraded({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           reason: "goal_persist_failed",
           error,
           details: {
@@ -257,6 +272,7 @@ export class TurnGoalPromotionService {
         candidate,
         goal,
         turnId: input.turnId,
+        sessionId: input.sessionId,
       });
 
       if (initialStep === null) {
@@ -275,6 +291,7 @@ export class TurnGoalPromotionService {
       } catch (error) {
         this.emitDegraded({
           turnId: input.turnId,
+          sessionId: input.sessionId,
           reason: "initial_step_persist_failed",
           error,
           details: {
@@ -294,6 +311,7 @@ export class TurnGoalPromotionService {
     audienceEntityId: EntityId | null;
     ownerEntityId: EntityId | null;
     turnId: string;
+    sessionId?: SessionId;
   }): GoalRecord[] {
     try {
       return flattenGoals(
@@ -310,6 +328,7 @@ export class TurnGoalPromotionService {
     } catch (error) {
       this.emitDedupDegraded({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         reason: "active_goal_lookup_failed",
         error,
       });
@@ -319,6 +338,7 @@ export class TurnGoalPromotionService {
 
   private async findEmbeddingDuplicate(input: {
     turnId: string;
+    sessionId?: SessionId;
     candidate: GoalPromotionCandidate;
     state: {
       activeVectors: EmbeddedGoalVector[];
@@ -342,6 +362,7 @@ export class TurnGoalPromotionService {
     } catch (error) {
       this.emitDedupDegraded({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         reason: "candidate_embedding_failed",
         error,
         candidateDescription: input.candidate.description,
@@ -386,6 +407,7 @@ export class TurnGoalPromotionService {
     candidate: GoalPromotionCandidate;
     goal: GoalRecord;
     turnId: string;
+    sessionId?: SessionId;
   }): GoalPromotionInitialStep | null {
     const initialStep = input.candidate.initial_step;
 
@@ -396,6 +418,7 @@ export class TurnGoalPromotionService {
     if (initialStep.kind === "wait" && initialStep.due_at === null) {
       this.emitInitialStepDowngraded({
         turnId: input.turnId,
+        sessionId: input.sessionId,
         goalId: input.goal.id,
         description: initialStep.description,
       });
@@ -407,6 +430,7 @@ export class TurnGoalPromotionService {
 
   private emitInitialStepDowngraded(input: {
     turnId: string;
+    sessionId?: SessionId;
     goalId: GoalId;
     description: string;
   }): void {
@@ -416,6 +440,7 @@ export class TurnGoalPromotionService {
 
     this.options.tracer.emit("extraction.goals.transitioned", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       reason: "wait_without_due_at",
       goalId: input.goalId,
       ...(this.options.tracer.includePayloads ? { description: input.description } : {}),
@@ -424,6 +449,7 @@ export class TurnGoalPromotionService {
 
   private emitSkippedAsDuplicate(input: {
     turnId: string;
+    sessionId?: SessionId;
     candidateDescription: string;
     reason: "extractor_signal" | "embedding";
     duplicateOfGoalId?: GoalId;
@@ -436,6 +462,7 @@ export class TurnGoalPromotionService {
 
     this.options.tracer.emit("extraction.goals.skipped", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       candidate_description: input.candidateDescription,
       reason: input.reason,
       ...(input.duplicateOfGoalId === undefined
@@ -450,6 +477,7 @@ export class TurnGoalPromotionService {
 
   private emitDedupDegraded(input: {
     turnId: string;
+    sessionId?: SessionId;
     reason: string;
     error: unknown;
     candidateDescription?: string;
@@ -460,6 +488,7 @@ export class TurnGoalPromotionService {
 
     this.options.tracer.emit("extraction.goals.dedup.degraded", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       reason: input.reason,
       error: input.error instanceof Error ? input.error.message : String(input.error),
       ...(input.candidateDescription === undefined
@@ -470,6 +499,7 @@ export class TurnGoalPromotionService {
 
   private emitDegraded(input: {
     turnId: string;
+    sessionId?: SessionId;
     reason: string;
     error?: unknown;
     details?: Record<string, unknown>;
@@ -480,6 +510,7 @@ export class TurnGoalPromotionService {
 
     this.options.tracer.emit("extraction.goals.degraded", {
       turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       reason: input.reason,
       ...(input.details ?? {}),
       ...(this.options.tracer.includePayloads && input.error !== undefined
