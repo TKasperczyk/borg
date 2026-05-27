@@ -25,6 +25,7 @@ export type ParsedOptions = {
   turns?: string | number;
   checkEvery?: string | number;
   maintenanceEvery?: string | number;
+  maxSessions?: string | number;
   out?: string;
   metricsOut?: string;
   traceOut?: string;
@@ -203,6 +204,7 @@ function createSimulatorCli() {
     .option("--turns <n>", "Number of continuous turns", { default: 1000 })
     .option("--check-every <n>", "Run overseer every N turns", { default: 250 })
     .option("--maintenance-every <n>", "Run light maintenance every N turns", { default: 10 })
+    .option("--max-sessions <n>", "Cap on session count before max_sessions_reached", { default: 12 })
     .option("--out <path>", "Write markdown report to a file")
     .option("--metrics-out <path>", "Write metrics JSONL to a file")
     .option("--trace-out <path>", "Write per-turn trace JSONL to a file (default: /tmp)")
@@ -280,6 +282,7 @@ async function main(): Promise<void> {
     totalTurns: parsePositiveInteger(options.turns, "--turns", 1000),
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
     maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),
+    maxSessions: parsePositiveInteger(options.maxSessions, "--max-sessions", 12),
     metricsPath,
     tracePath,
     shadowPostGenGuards: options.shadowPostGenGuards === true,
