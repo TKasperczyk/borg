@@ -296,6 +296,7 @@ function makeEntity(
     canonical_name: canonicalName,
     aliases: [],
     kind,
+    borg_role: null,
     name_provenance: "user_declared",
     created_at: NOW_MS,
   };
@@ -558,13 +559,13 @@ describe("EvidenceLedgerBuilder", () => {
       attachmentRepository: {
         get: (id) =>
           ({
-          attachment_id: id,
-          active: false,
-          byte_size: 100,
-          width: 2,
-          height: 2,
-          created_turn_global: 4,
-        }) as never,
+            attachment_id: id,
+            active: false,
+            byte_size: 100,
+            width: 2,
+            height: 2,
+            created_turn_global: 4,
+          }) as never,
       },
     });
 
@@ -1919,6 +1920,7 @@ describe("EvidenceLedgerBuilder", () => {
               canonical_name: "Spain Trip Planning Channel",
               aliases: [],
               kind: "group",
+              borg_role: null,
               name_provenance: "user_declared",
               created_at: NOW_MS,
             };
@@ -1930,6 +1932,7 @@ describe("EvidenceLedgerBuilder", () => {
               canonical_name: "Alice",
               aliases: [],
               kind: "person",
+              borg_role: null,
               name_provenance: "user_declared",
               created_at: NOW_MS,
             };
@@ -1941,6 +1944,7 @@ describe("EvidenceLedgerBuilder", () => {
               canonical_name: "Ben",
               aliases: [],
               kind: "person",
+              borg_role: null,
               name_provenance: "user_declared",
               created_at: NOW_MS,
             };
@@ -1952,6 +1956,7 @@ describe("EvidenceLedgerBuilder", () => {
               canonical_name: "Private Planning Channel",
               aliases: [],
               kind: "group",
+              borg_role: null,
               name_provenance: "user_declared",
               created_at: NOW_MS,
             };
@@ -2146,6 +2151,7 @@ describe("EvidenceLedgerBuilder", () => {
                 canonical_name: "Alice",
                 aliases: [],
                 kind: "person",
+                borg_role: null,
                 created_at: NOW_MS,
               }
             : null,
@@ -2222,6 +2228,7 @@ describe("EvidenceLedgerBuilder", () => {
                 canonical_name: "Alice",
                 aliases: [],
                 kind: "person",
+                borg_role: null,
                 created_at: NOW_MS,
               }
             : null,

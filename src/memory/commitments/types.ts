@@ -31,6 +31,7 @@ export const COMMITMENT_CRITICAL_DOMAINS = [
 ] as const;
 export const CLOSURE_PRESSURE_RELEVANCE = ["no_closure", "neutral", "closure_seeking"] as const;
 export const ENTITY_KINDS = ["person", "group", "self", "abstract"] as const;
+export const BORG_ROLES = ["creator"] as const;
 export const NAME_PROVENANCES = [
   "user_declared",
   "user_confirmed",
@@ -103,6 +104,7 @@ export const commitmentEnforcementClassSchema = z.enum(COMMITMENT_ENFORCEMENT_CL
 export const commitmentCriticalDomainSchema = z.enum(COMMITMENT_CRITICAL_DOMAINS);
 export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
 export const entityKindSchema = z.enum(ENTITY_KINDS);
+export const borgRoleSchema = z.enum(BORG_ROLES);
 export const nameProvenanceSchema = z.enum(NAME_PROVENANCES);
 
 export const directiveFamilySchema = z
@@ -116,6 +118,7 @@ export const entityRecordSchema = z.object({
   canonical_name: z.string().min(1),
   aliases: z.array(z.string().min(1)),
   kind: entityKindSchema.nullable(),
+  borg_role: borgRoleSchema.nullable(),
   name_provenance: nameProvenanceSchema.optional(),
   created_at: z.number().finite(),
 });
@@ -221,6 +224,7 @@ export type CommitmentEnforcementClass = z.infer<typeof commitmentEnforcementCla
 export type CommitmentCriticalDomain = z.infer<typeof commitmentCriticalDomainSchema>;
 export type ClosurePressureRelevance = z.infer<typeof closurePressureRelevanceSchema>;
 export type EntityKind = z.infer<typeof entityKindSchema>;
+export type BorgRole = z.infer<typeof borgRoleSchema>;
 export type NameProvenance = z.infer<typeof nameProvenanceSchema>;
 export type CommitmentProvenance = Provenance;
 

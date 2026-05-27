@@ -36,6 +36,7 @@ type SessionRow = {
   status: string;
   privacy_level: string;
   participation_policy: string;
+  audience_role: string;
 };
 
 export type SessionsRepositoryOptions = {
@@ -76,6 +77,7 @@ export class SessionsRepository {
     const nowMs = this.clock.now();
     const createdAt = parsed.created_at ?? nowMs;
     const lastActivityAt = parsed.last_activity_at ?? createdAt;
+    const audienceRoleSupplied = "audience_role" in parsed;
 
     this.db
       .prepare(
@@ -83,8 +85,8 @@ export class SessionsRepository {
           INSERT INTO sessions (
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
-            message_count, status, privacy_level
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            message_count, status, privacy_level, audience_role
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
           ON CONFLICT(session_id) DO UPDATE SET
             source_type = excluded.source_type,
             source_external_id = excluded.source_external_id,
@@ -96,7 +98,8 @@ export class SessionsRepository {
             last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at),
             last_turn_id = COALESCE(excluded.last_turn_id, sessions.last_turn_id),
             status = excluded.status,
-            privacy_level = excluded.privacy_level
+            privacy_level = excluded.privacy_level,
+            audience_role = CASE WHEN ? = 1 THEN excluded.audience_role ELSE sessions.audience_role END
         `,
       )
       .run(
@@ -113,6 +116,8 @@ export class SessionsRepository {
         parsed.last_turn_id ?? null,
         parsed.status ?? "active",
         parsed.privacy_level ?? "payload_off",
+        parsed.audience_role ?? "participant",
+        audienceRoleSupplied ? 1 : 0,
       );
 
     const record = this.get(parsed.session_id);
@@ -178,7 +183,7 @@ export class SessionsRepository {
           SELECT
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
-            message_count, status, privacy_level, participation_policy
+            message_count, status, privacy_level, participation_policy, audience_role
           FROM sessions
           WHERE session_id = ?
         `,
@@ -212,7 +217,7 @@ export class SessionsRepository {
           SELECT
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
-            message_count, status, privacy_level, participation_policy
+            message_count, status, privacy_level, participation_policy, audience_role
           FROM sessions
           ${where}
           ORDER BY last_activity_at DESC, session_id ASC

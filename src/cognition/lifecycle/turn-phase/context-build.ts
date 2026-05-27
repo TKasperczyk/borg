@@ -6,9 +6,10 @@ import type {
 } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import type { PerceptionResult } from "../../types.js";
-import type { EntityRepository } from "../../../memory/commitments/index.js";
+import type { BorgRole, EntityRepository } from "../../../memory/commitments/index.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../../../memory/self/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
+import type { SessionAudienceRole } from "../../../sessions/index.js";
 import type { StreamEntry } from "../../../stream/index.js";
 import type { EntityId, StreamEntryId } from "../../../util/ids.js";
 
@@ -216,16 +217,15 @@ export function buildFrameAnomalyConversationContext(input: {
   activeParticipants: readonly ActiveParticipant[];
   participantStreamEntries: readonly StreamEntry[];
   entityRepository: Pick<EntityRepository, "get" | "resolve">;
+  currentSenderEntityId: EntityId | null;
+  currentSenderBorgRole: BorgRole | null;
+  sessionAudienceRole: SessionAudienceRole;
 }): FrameAnomalyConversationContext | undefined {
-  if (
-    input.audienceEntity?.kind !== "group" ||
-    input.currentUserEntry === null ||
-    input.currentUserEntry === undefined
-  ) {
+  if (input.currentUserEntry === null || input.currentUserEntry === undefined) {
     return undefined;
   }
 
-  const currentSenderEntityId = input.currentUserEntry.sender_entity_id ?? null;
+  const currentSenderEntityId = input.currentSenderEntityId;
   const previousUserSender = previousUserSenderContext({
     currentUserEntryId: input.currentUserEntry.id,
     streamEntries: input.participantStreamEntries,
@@ -239,13 +239,15 @@ export function buildFrameAnomalyConversationContext(input: {
   return {
     audience: {
       id: input.audienceEntityId,
-      display_name: input.audienceEntity.canonical_name,
-      kind: input.audienceEntity.kind,
+      display_name: input.audienceEntity?.canonical_name ?? null,
+      kind: input.audienceEntity?.kind ?? null,
     },
     current_sender: {
       id: currentSenderEntityId,
       display_name: entityDisplayName(input.entityRepository, currentSenderEntityId),
     },
+    current_sender_borg_role: input.currentSenderBorgRole,
+    session_audience_role: input.sessionAudienceRole,
     participants: input.activeParticipants,
     assistant_identity: {
       id: assistantEntityId,

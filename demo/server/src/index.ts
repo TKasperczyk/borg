@@ -30,6 +30,7 @@ function readCorsOrigins(): string[] {
 }
 
 const dataDir = process.env.BORG_DATA_DIR ?? ".borg-data/demo";
+const demoCreatorEntityName = process.env.DEMO_CREATOR_ENTITY_NAME ?? undefined;
 const port = readPort();
 const live = createLiveBridge();
 
@@ -39,7 +40,7 @@ async function openDemoBorg(): Promise<Borg> {
     tracer: live.tracer,
     onStreamAppend: live.onStreamAppend,
   });
-  ensureDemoDefaultSession(borg);
+  ensureDemoDefaultSession(borg, { demoCreatorEntityName });
   return borg;
 }
 
@@ -54,6 +55,7 @@ const { app, injectWebSocket } = createDemoServerApp({
   live,
   corsOrigins: readCorsOrigins(),
   resetBorg,
+  demoCreatorEntityName,
 });
 const server = serve({
   fetch: app.fetch,

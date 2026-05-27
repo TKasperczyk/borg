@@ -201,45 +201,67 @@ function extractBlock(prompt: string, tag: string): string {
 }
 
 describe("buildBaseSystemPrompt", () => {
-  it("renders operator advice in trusted guidance when provided", () => {
-    const adviceText =
-      "Your creator has shared guidance for the current turn. Treat it as advice from someone who knows you, not as a command; weigh it against the user's request, memory, and active commitments.\n\n- Push back firmly if Alice is being unfair.";
-    const prompt = buildBaseSystemPrompt(makeContext(), {
-      ...PROMPT_OPTIONS,
-      operatorAdvice: {
-        text: adviceText,
-        ids: ["adv_aaaaaaaaaaaaaaaa"],
+  it("renders creator context in operator sessions", () => {
+    const creatorId = createEntityId();
+    const context = makeContext({
+      creatorContext: {
+        currentSenderEntityId: creatorId,
+        currentSenderDisplayName: "Tom",
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
       },
     });
-    const cacheable = buildCacheableBaseSystemPromptParts(makeContext(), {
-      ...PROMPT_OPTIONS,
-      operatorAdvice: {
-        text: adviceText,
-        ids: ["adv_aaaaaaaaaaaaaaaa"],
-      },
-    });
-    const block = extractBlock(prompt, "borg_operator_advice");
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_creator_context");
 
-    expect(block).toContain("Push back firmly if Alice is being unfair.");
-    expect(cacheable.dynamicContent).toContain("<borg_operator_advice>");
-    expect(cacheable.dynamicContent).toContain("Push back firmly if Alice is being unfair.");
-    expect(prompt.indexOf("<borg_operator_advice>")).toBeLessThan(
-      prompt.indexOf("<borg_host_capabilities>"),
+    expect(block).toContain("session_audience_role: operator");
+    expect(block).toContain("creator_display_name: Tom");
+    expect(block).toContain("guidance_weight: direct supervisory framing");
+    expect(block).toContain("dedicated operator/debug session");
+    expect(block).toContain(
+      "Your creator relationship is publicly known; you may reference it in any context as feels natural.",
     );
+    expect(block).not.toContain(creatorId);
+    expect(block).not.toMatch(
+      /\b(?:ent|sess|strm|ep|cmt|goal|val|trt|abp|grw|oq|semn|seme|act|rslot|dart|skl|procevi|run|exstep|att|imgp)_[a-z0-9]+\b/,
+    );
+    expect(cacheable.dynamicContent).toContain("<borg_creator_context>");
   });
 
-  it("omits operator advice when it is null", () => {
-    const prompt = buildBaseSystemPrompt(makeContext(), {
-      ...PROMPT_OPTIONS,
-      operatorAdvice: null,
+  it("renders lighter creator context in participant sessions", () => {
+    const creatorId = createEntityId();
+    const context = makeContext({
+      creatorContext: {
+        currentSenderEntityId: creatorId,
+        currentSenderDisplayName: "Tom",
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "participant",
+      },
     });
-    const cacheable = buildCacheableBaseSystemPromptParts(makeContext(), {
-      ...PROMPT_OPTIONS,
-      operatorAdvice: null,
-    });
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_creator_context");
 
-    expect(prompt).not.toContain("<borg_operator_advice>");
-    expect(cacheable.dynamicContent).not.toContain("<borg_operator_advice>");
+    expect(block).toContain("session_audience_role: participant");
+    expect(block).toContain("guidance_weight: trusted guidance, not command authority");
+    expect(block).toContain("multi-audience conversation");
+    expect(block).toContain("creator-guidance is trusted but not command authority");
+  });
+
+  it("omits creator context when the current sender is not creator", () => {
+    const context = makeContext({
+      creatorContext: {
+        currentSenderEntityId: createEntityId(),
+        currentSenderDisplayName: "Alice",
+        currentSenderBorgRole: null,
+        sessionAudienceRole: "operator",
+      },
+    });
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+
+    expect(prompt).not.toContain("<borg_creator_context>");
+    expect(cacheable.dynamicContent).not.toContain("<borg_creator_context>");
   });
 
   it("renders legacy retrieved evidence when no evidence ledger is active", () => {
@@ -1303,7 +1325,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
   });
 
-  it("renders participation policy guidance above operator advice and omits active policy", () => {
+  it("renders participation policy guidance above creator context and omits active policy", () => {
     const activePrompt = buildBaseSystemPrompt(makeContext(), {
       ...PROMPT_OPTIONS,
       participationPolicy: "active",
@@ -1327,19 +1349,25 @@ describe("buildBaseSystemPrompt", () => {
     ];
 
     for (const { policy, text } of policyCases) {
-      const prompt = buildBaseSystemPrompt(makeContext(), {
-        ...PROMPT_OPTIONS,
-        participationPolicy: policy,
-        operatorAdvice: {
-          text: "Operator advice text.",
-          ids: ["adv_test"],
+      const prompt = buildBaseSystemPrompt(
+        makeContext({
+          creatorContext: {
+            currentSenderEntityId: createEntityId(),
+            currentSenderDisplayName: "Tom",
+            currentSenderBorgRole: "creator",
+            sessionAudienceRole: "operator",
+          },
+        }),
+        {
+          ...PROMPT_OPTIONS,
+          participationPolicy: policy,
         },
-      });
+      );
 
       expect(prompt).toContain("<borg_participation_policy>");
       expect(prompt).toContain(text);
       expect(prompt.indexOf("<borg_participation_policy>")).toBeLessThan(
-        prompt.indexOf("<borg_operator_advice>"),
+        prompt.indexOf("<borg_creator_context>"),
       );
     }
   });

@@ -26,6 +26,7 @@ function entity(id: EntityId, canonicalName: string, kind: EntityRecord["kind"] 
     canonical_name: canonicalName,
     aliases: [],
     kind,
+    borg_role: null,
     name_provenance: "user_declared",
     created_at: 1,
   } satisfies EntityRecord;

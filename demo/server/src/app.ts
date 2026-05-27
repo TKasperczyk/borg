@@ -9,7 +9,6 @@ import {
   BorgError,
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
-  MAX_ADVICE_TEXT_LENGTH,
   OFFLINE_PROCESS_NAMES,
   SESSION_PARTICIPATION_POLICIES,
   STREAM_ENTRY_KINDS,
@@ -36,11 +35,11 @@ import {
   type StreamEntryKind,
   type StoredAttachmentRecord,
   type TurnInputAttachment,
+  createSessionId,
   parseCommitmentId,
   parseEntityId,
   parseGoalId,
   parseOpenQuestionId,
-  parseOperatorAdviceId,
   parseSessionId,
   PROMPT_KEYS,
   type PromptKey,
@@ -150,29 +149,28 @@ const sessionParticipationBodySchema = z
   })
   .strict();
 
-const optionalBooleanQuerySchema = z
-  .enum(["true", "false"])
-  .optional()
-  .transform((value) => (value === undefined ? undefined : value === "true"));
+const entityParamSchema = z.object({
+  id: z.string().transform((value, ctx) => {
+    try {
+      return parseEntityId(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid entity id" });
+      return z.NEVER;
+    }
+  }),
+});
 
-const adviceQueueBodySchema = z
+const entityBorgRoleBodySchema = z
   .object({
-    text: z.string().trim().min(1).max(MAX_ADVICE_TEXT_LENGTH),
-    session_id: z.string().trim().min(1).optional(),
-    audience_entity_id: z.string().trim().min(1).optional(),
-    expires_at: z.number().int().finite().nullable().optional(),
+    role: z.literal("creator").nullable(),
   })
   .strict();
-const adviceParamSchema = z.object({
-  id: z.string().min(1),
-});
 
-const adviceListQuerySchema = z.object({
-  session: z.string().trim().min(1).optional(),
-  pending_only: optionalBooleanQuerySchema,
-  audience_entity_id: z.string().trim().min(1).optional(),
-  limit: limitSchema.optional(),
-});
+const creatorNameBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+  })
+  .strict();
 
 const auditQuerySchema = z.object({
   limit: limitSchema.default(50),
@@ -265,6 +263,7 @@ const turnAttachmentMediaTypeSchema = z.enum(DEMO_TURN_ATTACHMENT_MEDIA_TYPES);
 const turnBodySchema = z.object({
   message: z.string().trim().min(1),
   audience: z.string().trim().min(1).optional(),
+  audience_entity_id: z.string().trim().min(1).optional(),
   stakes: z.enum(["low", "medium", "high"]).optional(),
   session: z.string().trim().min(1).optional(),
 });
@@ -458,9 +457,12 @@ const DEFAULT_GROWTH_MARKER_CATEGORY = "understanding";
 const RESET_CONFIRM_TOKEN = "RESET";
 const BORG_UNAVAILABLE_MESSAGE = "Borg is unavailable after a failed reset; retry /api/admin/reset";
 export const DEMO_DEFAULT_AUDIENCE_LABEL = "alice";
+export const DEMO_DEFAULT_CREATOR_ENTITY_NAME = "Tom";
 const DEMO_SOURCE_TYPE = "demo";
 const DEMO_CONVERSATION_KIND = "demo";
 const DEMO_DEFAULT_SESSION_LABEL = "demo (default)";
+const DEMO_OPERATOR_SESSION_EXTERNAL_ID = "operator";
+const DEMO_OPERATOR_SESSION_LABEL = "operator chat";
 
 const promptKeyParamSchema = z.enum(PROMPT_KEYS);
 const promptPutBodySchema = z
@@ -497,62 +499,88 @@ function parseOptionalSessionQuery(value: string | undefined, ctx: z.RefinementC
   }
 }
 
-function parseOptionalSessionId(value: string | undefined): SessionId | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  try {
-    return parseSessionId(value);
-  } catch {
-    throw new HTTPException(400, { message: "Invalid session id" });
-  }
-}
-
-function parseOptionalEntityId(value: string | undefined): EntityId | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  try {
-    return parseEntityId(value);
-  } catch {
-    throw new HTTPException(400, { message: "Invalid audience entity id" });
-  }
-}
-
-function parseAdviceIdParam(value: string) {
-  try {
-    return parseOperatorAdviceId(value);
-  } catch {
-    throw new HTTPException(404, { message: "Advice not found" });
-  }
-}
-
 function demoSessionLabel(sessionId: SessionId): string {
   return sessionId === DEFAULT_SESSION_ID ? DEMO_DEFAULT_SESSION_LABEL : `demo (${sessionId})`;
 }
 
 export function ensureDemoSession(
   borg: Borg,
-  input: { sessionId: SessionId; audienceLabel?: string },
+  input: {
+    sessionId: SessionId;
+    audienceLabel?: string;
+    audienceEntityId?: EntityId | null;
+    audienceRole?: "participant" | "operator";
+    label?: string;
+    sourceExternalId?: string | null;
+  },
 ) {
   return borg.sessions.ensure({
     session_id: input.sessionId,
     source_type: DEMO_SOURCE_TYPE,
-    source_external_id: null,
+    source_external_id: input.sourceExternalId ?? null,
     source_url: null,
-    label: demoSessionLabel(input.sessionId),
+    label: input.label ?? demoSessionLabel(input.sessionId),
     audience_label: input.audienceLabel ?? DEMO_DEFAULT_AUDIENCE_LABEL,
-    audience_entity_id: null,
+    audience_entity_id: input.audienceEntityId ?? null,
     conversation_kind: DEMO_CONVERSATION_KIND,
+    ...(input.audienceRole === undefined ? {} : { audience_role: input.audienceRole }),
   });
 }
 
-export function ensureDemoDefaultSession(borg: Borg) {
+export function ensureDemoCreator(borg: Borg, name = DEMO_DEFAULT_CREATOR_ENTITY_NAME) {
+  const existing = borg.entities.getCreator();
+
+  if (existing !== null) {
+    return existing;
+  }
+
+  const entityId = borg.entities.resolve(name, {
+    kind: "person",
+    provenance: "config_default_user",
+  });
+  const creator = borg.entities.setBorgRole(entityId, "creator");
+
+  if (creator === null) {
+    throw new HTTPException(500, { message: "Failed to initialize demo creator" });
+  }
+
+  return creator;
+}
+
+export function ensureDemoDefaultSession(
+  borg: Borg,
+  options: { demoCreatorEntityName?: string } = {},
+) {
+  ensureDemoCreator(borg, options.demoCreatorEntityName ?? DEMO_DEFAULT_CREATOR_ENTITY_NAME);
+
   return ensureDemoSession(borg, {
     sessionId: DEFAULT_SESSION_ID,
     audienceLabel: DEMO_DEFAULT_AUDIENCE_LABEL,
+  });
+}
+
+export function ensureDemoOperatorSession(borg: Borg) {
+  const creator = borg.entities.getCreator();
+
+  if (creator === null) {
+    throw new HTTPException(409, { message: "Mark a creator first" });
+  }
+
+  const existing = borg.sessions
+    .list({ limit: 1000 })
+    .find((session) => session.audience_role === "operator");
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  return ensureDemoSession(borg, {
+    sessionId: createSessionId(),
+    audienceLabel: creator.canonical_name,
+    audienceEntityId: creator.id,
+    audienceRole: "operator",
+    label: DEMO_OPERATOR_SESSION_LABEL,
+    sourceExternalId: DEMO_OPERATOR_SESSION_EXTERNAL_ID,
   });
 }
 
@@ -620,6 +648,7 @@ async function parseTurnBody(c: Context): Promise<ParsedTurnBody> {
   const body = parseRequest(turnBodySchema, {
     message: formData.get("message"),
     audience: optionalFormValue(formData.get("audience")),
+    audience_entity_id: optionalFormValue(formData.get("audience_entity_id")),
     stakes: optionalFormValue(formData.get("stakes")),
     session: optionalFormValue(formData.get("session")),
   });
@@ -1332,6 +1361,7 @@ export type DemoServerAppInput = {
   corsOrigins?: readonly string[];
   resetBorg?: () => Promise<void>;
   requestGate?: BorgRequestGate;
+  demoCreatorEntityName?: string;
 };
 
 type BorgRequestGateLease = {
@@ -1400,10 +1430,13 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     corsOrigins: args.corsOrigins,
     resetBorg: args.resetBorg,
     requestGate: args.requestGate ?? new BorgRequestGate(),
+    demoCreatorEntityName: args.demoCreatorEntityName ?? DEMO_DEFAULT_CREATOR_ENTITY_NAME,
   };
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-  ensureDemoDefaultSession(input.borg);
+  ensureDemoDefaultSession(input.borg, {
+    demoCreatorEntityName: input.demoCreatorEntityName,
+  });
   const allowedOrigins = input.corsOrigins ?? ["http://localhost:5173"];
   const dreamPlans = new Map<
     string,
@@ -1488,6 +1521,37 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/sessions", (c) => c.json({ sessions: input.borg.sessions.list({ limit: 1000 }) }));
 
+  app.get("/api/entities/creator", (c) => c.json(input.borg.entities.getCreator()));
+
+  app.post("/api/entities/creator", async (c) => {
+    const body = parseRequest(creatorNameBodySchema, await parseJsonBody(c));
+    const entityId = input.borg.entities.resolve(body.name, {
+      kind: "person",
+      provenance: "user_declared",
+    });
+    const entity = input.borg.entities.setBorgRole(entityId, "creator");
+
+    if (entity === null) {
+      throw new HTTPException(404, { message: "Entity not found" });
+    }
+
+    return c.json(entity);
+  });
+
+  app.post("/api/entities/:id/borg-role", async (c) => {
+    const params = parseRequest(entityParamSchema, c.req.param());
+    const body = parseRequest(entityBorgRoleBodySchema, await parseJsonBody(c));
+    const entity = input.borg.entities.setBorgRole(params.id, body.role);
+
+    if (entity === null) {
+      throw new HTTPException(404, { message: "Entity not found" });
+    }
+
+    return c.json(entity);
+  });
+
+  app.post("/api/sessions/operator", (c) => c.json(ensureDemoOperatorSession(input.borg)));
+
   app.post("/api/sessions/:id/participation", async (c) => {
     const params = parseRequest(sessionParamSchema, c.req.param());
     const body = parseRequest(sessionParticipationBodySchema, await parseJsonBody(c));
@@ -1501,75 +1565,6 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     } catch (error) {
       mapBorgErrorToHttp(error);
     }
-  });
-
-  app.post("/api/advice", async (c) => {
-    const body = parseRequest(adviceQueueBodySchema, await parseJsonBody(c));
-
-    try {
-      const item = input.borg.advice.queue({
-        text: body.text,
-        session_id: parseOptionalSessionId(body.session_id),
-        audience_entity_id: parseOptionalEntityId(body.audience_entity_id),
-        expires_at: body.expires_at,
-      });
-
-      return c.json(item);
-    } catch (error) {
-      mapBorgErrorToHttp(error);
-    }
-  });
-
-  app.get("/api/advice", (c) => {
-    const query = parseRequest(adviceListQuerySchema, c.req.query());
-    const items = input.borg.advice.list({
-      pendingOnly: query.pending_only ?? true,
-      session_id: parseOptionalSessionId(query.session),
-      audience_entity_id: parseOptionalEntityId(query.audience_entity_id),
-      limit: query.limit,
-    });
-
-    return c.json({ items });
-  });
-
-  app.get("/api/advice/history", (c) => {
-    const query = parseRequest(adviceListQuerySchema, c.req.query());
-    const limit = query.limit ?? 50;
-    const items = input.borg.advice
-      .list({
-        pendingOnly: false,
-        session_id: parseOptionalSessionId(query.session),
-        audience_entity_id: parseOptionalEntityId(query.audience_entity_id),
-        limit: Math.min(limit * 4, 1_000),
-      })
-      .filter(
-        (item) =>
-          item.consumed_at !== null ||
-          item.canceled_at !== null ||
-          (item.expires_at !== null && item.expires_at <= Date.now()),
-      )
-      .sort((left, right) => {
-        const leftTs = left.consumed_at ?? left.canceled_at ?? left.expires_at ?? left.created_at;
-        const rightTs =
-          right.consumed_at ?? right.canceled_at ?? right.expires_at ?? right.created_at;
-
-        return rightTs - leftTs;
-      })
-      .slice(0, limit);
-
-    return c.json({ items });
-  });
-
-  app.delete("/api/advice/:id", (c) => {
-    const params = parseRequest(adviceParamSchema, c.req.param());
-    const id = parseAdviceIdParam(params.id);
-    const item = input.borg.advice.cancel(id);
-
-    if (item === null) {
-      throw new HTTPException(404, { message: "Advice not found" });
-    }
-
-    return c.json(item);
   });
 
   app.get("/api/stream", async (c) => {
@@ -2285,14 +2280,22 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     }
 
     try {
+      const existingSession = input.borg.sessions.get(sessionId);
+      const audienceLabel =
+        body.audience ?? existingSession?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL;
+      const audienceEntityId =
+        body.audience_entity_id === undefined
+          ? (existingSession?.audience_entity_id ?? null)
+          : parseRequest(entityParamSchema, { id: body.audience_entity_id }).id;
       // Demo uploads accept png/jpeg/gif/webp images up to 8 MiB; Borg revalidates before persistence.
       ensureDemoSession(input.borg, {
         sessionId,
-        audienceLabel: body.audience ?? DEMO_DEFAULT_AUDIENCE_LABEL,
+        audienceLabel,
+        audienceEntityId,
       });
       const result = await input.borg.turn({
         userMessage: body.message,
-        audience: body.audience,
+        audience: audienceLabel,
         stakes: body.stakes,
         sessionId,
         attachments: body.attachments,
@@ -2347,7 +2350,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     try {
       clearAppCaches();
       await input.resetBorg();
-      ensureDemoDefaultSession(input.borg);
+      ensureDemoDefaultSession(input.borg, {
+        demoCreatorEntityName: input.demoCreatorEntityName,
+      });
       return c.json({ ok: true });
     } catch (error) {
       if (error instanceof HTTPException) {

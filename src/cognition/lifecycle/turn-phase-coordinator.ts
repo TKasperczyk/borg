@@ -226,6 +226,21 @@ export class TurnPhaseCoordinator {
     const socialInteractionEntityId = audienceResolution.socialInteractionEntityId;
     const groupSpeakerEntityId = audienceResolution.groupSpeakerEntityId;
     const groupSpeakerDisplayName = audienceResolution.groupSpeakerDisplayName;
+    const sessionRecord = this.options.sessionsRepository?.get(sessionId) ?? null;
+    const sessionAudienceRole = sessionRecord?.audience_role ?? "participant";
+    const participationPolicy = sessionRecord?.participation_policy ?? "active";
+    const currentSenderEntityId =
+      audienceEntity?.kind === "group" ? groupSpeakerEntityId : audienceEntityId;
+    const currentSenderEntity =
+      currentSenderEntityId === null
+        ? null
+        : this.options.entityRepository.get(currentSenderEntityId);
+    const creatorContext = {
+      currentSenderEntityId,
+      currentSenderDisplayName: currentSenderEntity?.canonical_name ?? null,
+      currentSenderBorgRole: currentSenderEntity?.borg_role ?? null,
+      sessionAudienceRole,
+    };
     const perceptionResult = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,
@@ -362,6 +377,9 @@ export class TurnPhaseCoordinator {
       activeParticipants,
       participantStreamEntries: participantScan?.entries ?? [],
       entityRepository: this.options.entityRepository,
+      currentSenderEntityId,
+      currentSenderBorgRole: currentSenderEntity?.borg_role ?? null,
+      sessionAudienceRole,
     });
     const frameAnomalyClassification = await traceTurnPhase({
       tracer: this.options.tracer,
@@ -613,6 +631,8 @@ export class TurnPhaseCoordinator {
           turnInput,
           streamWriter,
           audienceEntityId,
+          participationPolicy,
+          creatorContext,
           persistedUserEntryId,
           currentUserContent,
           perception,

@@ -23,7 +23,6 @@ import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/i
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
-import { operatorAdviceMigrations } from "../operator-advice/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { sessionMigrations } from "../sessions/index.js";
 import { LanceDbStore, type LanceDbTable } from "../storage/lancedb/index.js";
@@ -48,6 +47,16 @@ export type BorgLanceTables = {
   actionRecordsTable: LanceDbTable;
   imagePerceptionsTable: LanceDbTable;
 };
+
+const sprintCRemovalMigrations = [
+  {
+    id: 2,
+    name: "drop_operator_advice_table",
+    up: (db) => {
+      db.exec("DROP TABLE IF EXISTS operator_advice;");
+    },
+  },
+] as const satisfies readonly Migration[];
 
 export function resolveBorgConfig(options: {
   config?: Config;
@@ -227,7 +236,7 @@ export function createMigrations(): Migration[] {
     imagePerceptionMigrations,
     promptOverrideMigrations,
     sessionMigrations,
-    operatorAdviceMigrations,
+    sprintCRemovalMigrations,
   );
 }
 

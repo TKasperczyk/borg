@@ -49,4 +49,16 @@ export const sessionMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "sessions_audience_role",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE sessions
+          ADD COLUMN audience_role TEXT NOT NULL DEFAULT 'participant' CHECK (
+            audience_role IN ('participant', 'operator')
+          );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

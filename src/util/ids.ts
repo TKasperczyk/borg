@@ -34,7 +34,6 @@ export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
 export type ExecutiveStepId = BrandedId<"ExecutiveStepId">;
 export type AttachmentId = BrandedId<"AttachmentId">;
 export type ImagePerceptionId = BrandedId<"ImagePerceptionId">;
-export type OperatorAdviceId = BrandedId<"OperatorAdviceId">;
 export type AuditId = number & {
   readonly __brand: "AuditId";
 };
@@ -109,7 +108,6 @@ export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run"
 export const executiveStepIdHelpers = createIdHelpers<"ExecutiveStepId">("exstep");
 export const attachmentIdHelpers = createIdHelpers<"AttachmentId">("att");
 export const imagePerceptionIdHelpers = createIdHelpers<"ImagePerceptionId">("imgp");
-export const operatorAdviceIdHelpers = createIdHelpers<"OperatorAdviceId">("adv");
 export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
   prefix: "autonomy_wake_",
   pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
@@ -150,7 +148,6 @@ export const createExecutiveStepId = (): ExecutiveStepId => executiveStepIdHelpe
 export const createAutonomyWakeId = (): AutonomyWakeId => autonomyWakeIdHelpers.create();
 export const createAttachmentId = (): AttachmentId => attachmentIdHelpers.create();
 export const createImagePerceptionId = (): ImagePerceptionId => imagePerceptionIdHelpers.create();
-export const createOperatorAdviceId = (): OperatorAdviceId => operatorAdviceIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);
@@ -214,10 +211,6 @@ export function parseCommitmentId(value: string): CommitmentId {
 
 export function parseEntityId(value: string): EntityId {
   return entityIdHelpers.parse(value);
-}
-
-export function parseOperatorAdviceId(value: string): OperatorAdviceId {
-  return operatorAdviceIdHelpers.parse(value);
 }
 
 export function parseActionId(value: string): ActionId {

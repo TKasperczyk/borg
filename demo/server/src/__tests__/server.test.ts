@@ -562,75 +562,72 @@ describe("demo server", () => {
     expect(framesB).toEqual([]);
   });
 
-  it("serves operator advice queue, pending, cancel, and history endpoints", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-advice-"));
+  it("serves creator and operator session endpoints", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-creator-"));
     tempDirs.push(tempDir);
-    const llm = new FakeLLMClient({
-      responses: [
-        createFakeEmitAnswerResponse("I can answer directly."),
-        createEmptyReflectionResponse(),
-      ],
-    });
-    const { borg, live } = await openHarness({ tempDir, llmClient: llm });
+    const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
 
-    const invalidResponse = await requestJson(app, "/api/advice", "POST", {});
-    expect(invalidResponse.status).toBe(400);
-    const oversizedResponse = await requestJson(app, "/api/advice", "POST", {
-      text: "x".repeat(5_000),
-      session_id: DEFAULT_SESSION_ID,
-    });
-    expect(oversizedResponse.status).toBe(400);
-
-    const queuedResponse = await requestJson(app, "/api/advice", "POST", {
-      text: "Push back if Alice is unfair.",
-      session_id: DEFAULT_SESSION_ID,
-    });
-    expect(queuedResponse.status).toBe(200);
-    const queued = (await queuedResponse.json()) as { id: string; text: string };
-    expect(queued.text).toBe("Push back if Alice is unfair.");
-
-    const pendingResponse = await app.request(
-      `/api/advice?session=${DEFAULT_SESSION_ID}&pending_only=true`,
-    );
-    expect(pendingResponse.status).toBe(200);
-    const pending = (await pendingResponse.json()) as { items: Array<{ id: string }> };
-    expect(pending.items.map((item) => item.id)).toContain(queued.id);
-
-    const deleteResponse = await app.request(`/api/advice/${queued.id}`, { method: "DELETE" });
-    expect(deleteResponse.status).toBe(200);
-    const pendingAfterDeleteResponse = await app.request(
-      `/api/advice?session=${DEFAULT_SESSION_ID}&pending_only=true`,
-    );
-    const pendingAfterDelete = (await pendingAfterDeleteResponse.json()) as {
-      items: Array<{ id: string }>;
+    const initialCreatorResponse = await app.request("/api/entities/creator");
+    expect(initialCreatorResponse.status).toBe(200);
+    const initialCreator = (await initialCreatorResponse.json()) as {
+      id: string;
+      canonical_name: string;
+      borg_role: string | null;
     };
-    expect(pendingAfterDelete.items.map((item) => item.id)).not.toContain(queued.id);
-
-    const consumedQueueResponse = await requestJson(app, "/api/advice", "POST", {
-      text: "Do not soften a fair pushback.",
-      session_id: DEFAULT_SESSION_ID,
+    expect(initialCreator).toMatchObject({
+      canonical_name: "Tom",
+      borg_role: "creator",
     });
-    const consumedQueue = (await consumedQueueResponse.json()) as { id: string };
-    const turnResponse = await requestJson(app, "/api/turn", "POST", {
-      message: "Alice is being unfair.",
-      session: DEFAULT_SESSION_ID,
-    });
-    expect(turnResponse.status).toBe(200);
 
-    const historyResponse = await app.request(
-      `/api/advice/history?session=${DEFAULT_SESSION_ID}&limit=10`,
-    );
-    expect(historyResponse.status).toBe(200);
-    const history = (await historyResponse.json()) as {
-      items: Array<{ id: string; consumed_at: number | null; canceled_at: number | null }>;
+    const updatedCreatorResponse = await requestJson(app, "/api/entities/creator", "POST", {
+      name: "Dana",
+    });
+    expect(updatedCreatorResponse.status).toBe(200);
+    const updatedCreator = (await updatedCreatorResponse.json()) as {
+      id: string;
+      canonical_name: string;
+      borg_role: string | null;
     };
-    const consumedHistoryItem = history.items.find((item) => item.id === consumedQueue.id);
-    expect(consumedHistoryItem?.consumed_at).toEqual(expect.any(Number));
-    expect(history.items.find((item) => item.id === queued.id)?.canceled_at).toEqual(
-      expect.any(Number),
-    );
+    expect(updatedCreator).toMatchObject({
+      canonical_name: "Dana",
+      borg_role: "creator",
+    });
+    expect(
+      borg.entities.list().find((entity) => entity.id === initialCreator.id)?.borg_role,
+    ).toBeNull();
+
+    const operatorSessionResponse = await requestJson(app, "/api/sessions/operator", "POST", {});
+    expect(operatorSessionResponse.status).toBe(200);
+    expect(await operatorSessionResponse.json()).toMatchObject({
+      audience_label: "Dana",
+      audience_entity_id: updatedCreator.id,
+      audience_role: "operator",
+      label: "operator chat",
+    });
+  });
+
+  it("returns 409 for operator session creation when no creator is set", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-no-creator-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const creator = borg.entities.getCreator();
+
+    if (creator !== null) {
+      borg.entities.setBorgRole(creator.id, null);
+    }
+
+    const response = await requestJson(app, "/api/sessions/operator", "POST", {});
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        message: "Mark a creator first",
+      },
+    });
   });
 
   it("serves REST endpoint contract shapes", async () => {

@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { getSessions, getState } from "./api/client";
+import {
+  ApiError,
+  getCreatorEntity,
+  getSessions,
+  getState,
+  openOperatorSession,
+  setCreatorByName,
+} from "./api/client";
 import { LiveEventsProvider } from "./hooks/live-context";
 import { useApi } from "./hooks/use-api";
 import { useLiveEvents } from "./hooks/use-live-events";
@@ -20,7 +27,7 @@ import { PromptsScreen } from "./screens/Prompts";
 import { SharedScreen } from "./screens/Shared";
 import { StreamScreen } from "./screens/Stream";
 
-const AUDIENCE = "alice";
+const DEFAULT_AUDIENCE = "alice";
 
 function formatNow(): string {
   const date = new Date();
@@ -34,15 +41,40 @@ export function App() {
   const { sessionId, setSessionId } = useSession();
   const stateApi = useApi(() => getState({ session: sessionId }), [sessionId]);
   const sessionsApi = useApi(getSessions, []);
+  const creatorApi = useApi(getCreatorEntity, []);
   const refetchState = stateApi.refetch;
   const refetchSessions = sessionsApi.refetch;
+  const refetchCreator = creatorApi.refetch;
+  const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
   const live = useLiveEvents({ onReconnected: refetchState, sessionId });
   const turnStream = useTurnStream(live, { sessionId });
   const activeSession =
     sessionsApi.data?.sessions.find((session) => session.session_id === sessionId) ?? null;
+  const activeAudience = activeSession?.audience_label ?? DEFAULT_AUDIENCE;
 
   const refetchSessionState = async () => {
     await Promise.all([refetchSessions(), refetchState()]);
+  };
+
+  const openOperatorChat = async () => {
+    try {
+      const session = await openOperatorSession();
+      setSessionId(session.session_id);
+      setOperatorChatError(null);
+      await Promise.all([refetchSessions(), refetchState(), refetchCreator()]);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setOperatorChatError("mark a creator first");
+        return;
+      }
+      throw error;
+    }
+  };
+
+  const markCreatorByName = async (name: string) => {
+    await setCreatorByName(name);
+    setOperatorChatError(null);
+    await Promise.all([refetchCreator(), refetchSessions(), refetchState()]);
   };
 
   useEffect(() => {
@@ -68,7 +100,7 @@ export function App() {
         <Rail route={route} setRoute={setRoute} />
         <Topbar
           session_id={sessionId}
-          audience={AUDIENCE}
+          audience={activeAudience}
           turns={stateApi.data?.counts.turns ?? 0}
           ws_state={live.wsState}
           now={now}
@@ -79,12 +111,17 @@ export function App() {
             sessions={sessionsApi.data?.sessions ?? []}
             activeSessionId={sessionId}
             onSelect={setSessionId}
+            creator={creatorApi.data ?? null}
+            operatorChatError={operatorChatError}
+            onOpenOperatorChat={openOperatorChat}
+            onSetCreatorByName={markCreatorByName}
           />
           <div className="screen-shell">
             {route === "cognition" ? (
               <CognitionScreen
                 sessionId={sessionId}
-                audience={AUDIENCE}
+                audience={activeAudience}
+                audienceEntityId={activeSession?.audience_entity_id ?? null}
                 turnStream={turnStream}
                 session={activeSession}
                 onSessionPolicyChanged={refetchSessionState}

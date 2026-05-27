@@ -54,7 +54,6 @@ import {
   type ReviewQueueItem,
 } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
-import { OperatorAdviceRepository } from "../operator-advice/index.js";
 import { WorkingMemoryStore } from "../memory/working/index.js";
 import { RecallStateRepository, RetrievalPipeline } from "../retrieval/index.js";
 import { SessionsRepository } from "../sessions/index.js";
@@ -106,7 +105,6 @@ export type BorgRepositorySetup = Pick<
   | "attachmentRepository"
   | "imagePerceptionRepository"
   | "promptOverrideRepository"
-  | "operatorAdviceRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -448,7 +446,6 @@ export async function buildBorgRepositories(
     clock,
   });
   const promptOverrideRepository = new PromptOverrideRepository(sqlite, clock);
-  const operatorAdviceRepository = new OperatorAdviceRepository(sqlite, clock);
   return {
     entryIndex,
     episodicRepository,
@@ -486,7 +483,6 @@ export async function buildBorgRepositories(
     attachmentRepository: options.attachmentRepository,
     imagePerceptionRepository,
     promptOverrideRepository,
-    operatorAdviceRepository,
     createStreamWriter,
   };
 }

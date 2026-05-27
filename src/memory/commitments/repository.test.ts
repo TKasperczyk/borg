@@ -9,6 +9,7 @@ import { FixedClock, ManualClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
 import {
   createCommitmentId,
+  createEntityId,
   createSharedStateEntryId,
   createStreamEntryId,
 } from "../../util/ids.js";
@@ -18,6 +19,38 @@ import { CommitmentRepository, EntityRepository } from "./repository.js";
 
 describe("commitment repository", () => {
   const manualProvenance = { kind: "manual" } as const;
+
+  it("keeps borg_role creator as a single repository-level role", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    const tom = entities.add({
+      id: createEntityId(),
+      canonicalName: "Tom",
+    });
+    const ada = entities.add({
+      id: createEntityId(),
+      canonicalName: "Ada",
+    });
+
+    try {
+      expect(entities.setBorgRole(tom.id, "creator")?.borg_role).toBe("creator");
+      expect(entities.getCreator()?.id).toBe(tom.id);
+
+      expect(entities.setBorgRole(ada.id, "creator")?.borg_role).toBe("creator");
+      expect(entities.getCreator()?.id).toBe(ada.id);
+      expect(entities.get(tom.id)?.borg_role).toBeNull();
+
+      expect(entities.setBorgRole(ada.id, null)?.borg_role).toBeNull();
+      expect(entities.getCreator()).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
 
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {

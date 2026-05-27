@@ -30,7 +30,6 @@ import {
 import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
-import type { OperatorAdviceConsumerFacade } from "../operator-advice/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { SessionsRepository } from "../sessions/index.js";
 import {
@@ -162,7 +161,6 @@ export type TurnOrchestratorOptions = {
   sessionLock?: SessionLock;
   tracer?: TurnTracer;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
-  operatorAdviceFacade?: OperatorAdviceConsumerFacade;
   sessionsRepository?: Pick<SessionsRepository, "get">;
 };
 
@@ -337,9 +335,6 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
       promptOverrideRepository: options.promptOverrideRepository,
-      ...(options.operatorAdviceFacade === undefined
-        ? {}
-        : { operatorAdviceFacade: options.operatorAdviceFacade }),
       ...(options.sessionsRepository === undefined
         ? {}
         : { sessionsRepository: options.sessionsRepository }),

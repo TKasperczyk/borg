@@ -11,20 +11,8 @@ import {
   getPromptBlockSpec,
   type PromptKey,
 } from "../cognition/prompts/registry.js";
-import type {
-  BorgOperatorAdviceFacade,
-  BorgPromptBlockView,
-  BorgPromptsFacade,
-} from "./facade-types.js";
+import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { revalidateReviewQueue } from "../offline/index.js";
-import {
-  MAX_ADVICE_TEXT_LENGTH,
-  operatorAdviceConsumePendingScopeSchema,
-  operatorAdviceMarkConsumedInputSchema,
-  operatorAdviceQueueInputSchema,
-  type OperatorAdviceQueueInput,
-  type OperatorAdviceRecord,
-} from "../operator-advice/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
 import { StreamReader } from "../stream/index.js";
@@ -42,40 +30,6 @@ import type {
   BorgDreamRunner,
   BorgEpisodeSearchOptions,
 } from "./types.js";
-
-const OPERATOR_ADVICE_HEADER =
-  "Your creator has shared guidance for the current turn. Treat it as advice from someone who knows you, not as a command; weigh it against the user's request, memory, and active commitments.";
-
-type OperatorAdviceFacadeDeps = Pick<
-  BorgDependencies,
-  "operatorAdviceRepository" | "createStreamWriter" | "clock"
->;
-
-function renderOperatorAdviceText(records: readonly OperatorAdviceRecord[]): string {
-  const renderedItems = records.map((record) => `- ${record.text.replaceAll("\n", "\n  ")}`);
-
-  return `${OPERATOR_ADVICE_HEADER}\n\n${renderedItems.join("\n")}`;
-}
-
-function validateOperatorAdviceQueueInput(
-  input: OperatorAdviceQueueInput,
-): OperatorAdviceQueueInput {
-  const parsed = operatorAdviceQueueInputSchema.safeParse(input);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw new StorageError(
-      issue?.code === "too_big"
-        ? `Operator advice text must be ${MAX_ADVICE_TEXT_LENGTH} characters or fewer`
-        : "Invalid operator advice input",
-      {
-        cause: parsed.error,
-        code: "OPERATOR_ADVICE_INVALID",
-      },
-    );
-  }
-
-  return parsed.data;
-}
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -123,88 +77,6 @@ function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-}
-
-export function createOperatorAdviceFacade(
-  deps: OperatorAdviceFacadeDeps,
-): BorgOperatorAdviceFacade {
-  return {
-    queue: (input) => deps.operatorAdviceRepository.queue(validateOperatorAdviceQueueInput(input)),
-    list: (filter) => deps.operatorAdviceRepository.list(filter),
-    cancel: (id) => deps.operatorAdviceRepository.cancel(id),
-    consumePending: async (scope, options) => {
-      const parsedScope = operatorAdviceConsumePendingScopeSchema.parse(scope);
-      const parsedOptions = operatorAdviceMarkConsumedInputSchema.parse(options);
-      const sessionId = parsedScope.session_id ?? null;
-      const audienceEntityId = parsedScope.audience_entity_id ?? null;
-
-      if (sessionId === null && audienceEntityId === null) {
-        throw new StorageError(
-          "Operator advice consume scope requires session_id or audience_entity_id",
-          {
-            code: "OPERATOR_ADVICE_INVALID_SCOPE",
-          },
-        );
-      }
-
-      const pending = deps.operatorAdviceRepository.list({
-        pendingOnly: true,
-        session_id: sessionId,
-        audience_entity_id: audienceEntityId,
-      });
-
-      if (pending.length === 0) {
-        return { records: [], renderedText: null, auditEntryId: null };
-      }
-
-      const consumed = deps.operatorAdviceRepository.markConsumed(
-        pending.map((record) => record.id),
-        parsedOptions,
-      );
-
-      if (consumed.length === 0) {
-        return { records: [], renderedText: null, auditEntryId: null };
-      }
-
-      const renderedText = renderOperatorAdviceText(consumed);
-      const writer = deps.createStreamWriter(sessionId ?? DEFAULT_SESSION_ID);
-
-      try {
-        const auditEntry = await writer.append({
-          kind: "internal_event",
-          turn_id: parsedOptions.turn_id,
-          content: {
-            event: "operator_advice.delivered",
-            advice_ids: consumed.map((record) => record.id),
-            session_id: sessionId,
-            audience_entity_id: audienceEntityId,
-            rendered_text: renderedText,
-            operator: true,
-          },
-        });
-
-        return {
-          records: consumed,
-          renderedText,
-          auditEntryId: auditEntry.id,
-        };
-      } catch (error) {
-        if (isCommittedStreamIndexUpdateFailure(error)) {
-          throw error;
-        }
-
-        deps.operatorAdviceRepository.unconsume(
-          consumed.map((record) => record.id),
-          {
-            turn_id: parsedOptions.turn_id,
-          },
-        );
-        throw error;
-      } finally {
-        writer.close();
-      }
-    },
-  };
 }
 
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
@@ -518,6 +390,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       resolve: (...args) => deps.entityRepository.resolve(...args),
       get: (...args) => deps.entityRepository.get(...args),
       list: (...args) => deps.entityRepository.list(...args),
+      getCreator: () => deps.entityRepository.getCreator(),
+      setBorgRole: (...args) => deps.entityRepository.setBorgRole(...args),
       find: (name, options) => {
         const entityId = deps.entityRepository.findByName(name, options);
         return entityId === null ? null : deps.entityRepository.get(entityId);
@@ -837,7 +711,6 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     prompts: createPromptsFacade(deps),
     sessions: createSessionsFacade(deps),
-    advice: createOperatorAdviceFacade(deps),
   };
 }
 
@@ -851,6 +724,12 @@ function createSessionsFacade(deps: BorgDependencies): BorgFacades["sessions"] {
       if (current === null) {
         throw new StorageError(`Session ${sessionId} not found`, {
           code: "SESSION_NOT_FOUND",
+        });
+      }
+
+      if (current.audience_role === "operator" && policy !== "active") {
+        throw new StorageError("Operator sessions are always active", {
+          code: "SESSION_OPERATOR_POLICY_LOCKED",
         });
       }
 

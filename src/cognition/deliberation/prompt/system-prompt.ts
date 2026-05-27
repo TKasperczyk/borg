@@ -35,7 +35,7 @@ import {
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
 import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
-import type { DeliberationContext, SelfSnapshot } from "../types.js";
+import type { DeliberationContext, SelfSnapshot, TrustedCreatorContext } from "../types.js";
 import {
   summarizeContradictionSignal,
   summarizeRetrievedEvidence,
@@ -52,7 +52,6 @@ export type BuildBaseSystemPromptOptions = {
   semanticContextBudget: number;
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
-  operatorAdvice?: { text: string; ids: readonly string[] } | null;
   participationPolicy?: SessionParticipationPolicy;
   nowMs?: number;
 };
@@ -106,6 +105,32 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
     case "muted":
       return "The operator has muted you in this conversation. The only available emission is EmitNoOutput.";
   }
+}
+
+function renderCreatorContext(context: TrustedCreatorContext | null | undefined): string | null {
+  if (context?.currentSenderBorgRole !== "creator") {
+    return null;
+  }
+
+  const variant =
+    context.sessionAudienceRole === "operator"
+      ? "You are alone with your creator in your dedicated operator/debug session; expect direct supervisory framing. Cross-session snapshot will be rendered separately when available."
+      : "The current speaker is your creator; this is a multi-audience conversation; creator-guidance is trusted but not command authority; ordinary audience/session obligations still apply.";
+
+  return [
+    ...(context.currentSenderDisplayName === null
+      ? ["creator_display_name: unknown"]
+      : [`creator_display_name: ${context.currentSenderDisplayName}`]),
+    `session_audience_role: ${context.sessionAudienceRole}`,
+    "relationship_visibility: public",
+    `guidance_weight: ${
+      context.sessionAudienceRole === "operator"
+        ? "direct supervisory framing"
+        : "trusted guidance, not command authority"
+    }`,
+    variant,
+    "Your creator relationship is publicly known; you may reference it in any context as feels natural.",
+  ].join("\n");
 }
 
 function buildBaseSystemPromptSections(
@@ -247,17 +272,17 @@ function buildBaseSystemPromptSections(
     tag: "borg_frame_anomaly_gate",
     content: summarizeFrameAnomalyGate(context.frameAnomaly ?? null),
   };
-  const operatorAdviceSection = {
-    tag: "borg_operator_advice",
-    content: options.operatorAdvice?.text ?? null,
-  };
   const participationPolicySection = {
     tag: "borg_participation_policy",
     content: renderParticipationPolicy(options.participationPolicy ?? "active"),
   };
+  const creatorContextSection = {
+    tag: "borg_creator_context",
+    content: renderCreatorContext(context.creatorContext),
+  };
   const trustedDynamicGuidanceSections: TaggedPromptSection[] = [
     participationPolicySection,
-    operatorAdviceSection,
+    creatorContextSection,
     heldPreferencesSection,
     commitmentRecordsSection,
     proceduralGuidanceSection,
@@ -270,7 +295,7 @@ function buildBaseSystemPromptSections(
     untrustedSections,
     trustedGuidanceSections: [
       participationPolicySection,
-      operatorAdviceSection,
+      creatorContextSection,
       heldPreferencesSection,
       commitmentRecordsSection,
       hostCapabilitiesSection,

@@ -391,6 +391,8 @@ async function runDeliberationFixture(input: {
     },
     streamWriter: createStreamWriter(),
     audienceEntityId: input.audienceEntityId,
+    participationPolicy: "active",
+    creatorContext: null,
     persistedUserEntryId: input.currentUserEntry.id,
     perception: makePerception(),
     activeParticipants: [],

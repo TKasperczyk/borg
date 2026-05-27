@@ -318,6 +318,7 @@ describe("TurnRetrievalCoordinator", () => {
       canonical_name: "Alice",
       aliases: ["Al"],
       kind: "person",
+      borg_role: null,
       created_at: 100,
     };
     const temporalCue = {

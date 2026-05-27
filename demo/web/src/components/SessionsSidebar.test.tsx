@@ -22,6 +22,7 @@ function session(
     status: "active",
     privacy_level: "payload_off",
     participation_policy: "active",
+    audience_role: "participant",
     ...input,
   };
 }
@@ -61,5 +62,36 @@ describe("SessionsSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: /Slack #planning/ }));
 
     expect(new URL(window.location.href).searchParams.get("session")).toBe("sess_aaaaaaaaaaaaaaaa");
+  });
+
+  it("renders the operator chat preset and opens it when clicked", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(session({ session_id: "sess_operator", label: "operator" })), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SessionsSidebar
+        sessions={[session({ session_id: "default", label: "demo (default)" })]}
+        activeSessionId="default"
+        onSelect={() => undefined}
+        onOpenOperatorChat={async () => {
+          await fetch("/api/sessions/operator", {
+            method: "POST",
+          });
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "operator chat" }));
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/operator", {
+      method: "POST",
+    });
   });
 });

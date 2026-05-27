@@ -759,6 +759,19 @@ export type SessionStatus = "active" | "idle" | "archived";
 export type SessionPrivacyLevel = "payload_off" | "payload_on";
 
 export type SessionParticipationPolicy = "active" | "paused" | "observing" | "muted";
+export type SessionAudienceRole = "participant" | "operator";
+
+export type EntityBorgRole = "creator" | null;
+
+export type EntityRecord = {
+  id: string;
+  canonical_name: string;
+  aliases: string[];
+  kind: "person" | "group" | "self" | "abstract" | null;
+  borg_role: EntityBorgRole;
+  name_provenance?: string;
+  created_at: number;
+};
 
 export type SessionRecord = {
   session_id: string;
@@ -776,38 +789,17 @@ export type SessionRecord = {
   status: SessionStatus;
   privacy_level: SessionPrivacyLevel;
   participation_policy: SessionParticipationPolicy;
+  audience_role: SessionAudienceRole;
 };
 
 export type SessionsResponse = {
   sessions: SessionRecord[];
 };
 
-export type OperatorAdviceRecord = {
-  id: string;
-  session_id: string | null;
-  audience_entity_id: string | null;
-  text: string;
-  created_at: number;
-  expires_at: number | null;
-  consumed_at: number | null;
-  consumed_by_turn_id: string | null;
-  canceled_at: number | null;
-};
-
-export type QueueAdviceRequest = {
-  text: string;
-  session_id?: string;
-  audience_entity_id?: string;
-  expires_at?: number | null;
-};
-
-export type OperatorAdviceListResponse = {
-  items: OperatorAdviceRecord[];
-};
-
 export type TurnRequest = {
   message: string;
   audience: string;
+  audience_entity_id?: string | null;
   session?: string;
   stakes?: TurnStakes;
   attachments?: readonly File[];

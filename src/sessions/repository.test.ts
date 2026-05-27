@@ -58,6 +58,7 @@ describe("SessionsRepository", () => {
       status: "active",
       privacy_level: "payload_off",
       participation_policy: "active",
+      audience_role: "participant",
     });
 
     harness.repo.touch(DEFAULT_SESSION_ID, { at: 2_000, lastTurnId: "turn_1" });
@@ -81,8 +82,47 @@ describe("SessionsRepository", () => {
       message_count: 1,
       privacy_level: "payload_on",
       participation_policy: "active",
+      audience_role: "participant",
     });
     expect(harness.repo.get(DEFAULT_SESSION_ID)).toEqual(updated);
+  });
+
+  it("preserves audience role when ensuring an existing session without one", () => {
+    const harness = openRepo();
+    db = harness.db;
+
+    harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "operator",
+      audience_label: "Tom",
+      conversation_kind: "demo",
+      audience_role: "operator",
+    });
+
+    const ensured = harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "operator renamed",
+      audience_label: "Tom",
+      conversation_kind: "demo",
+    });
+
+    expect(ensured).toMatchObject({
+      label: "operator renamed",
+      audience_role: "operator",
+    });
+
+    const downgraded = harness.repo.ensure({
+      session_id: DEFAULT_SESSION_ID,
+      source_type: "demo",
+      label: "ordinary",
+      audience_label: "alice",
+      conversation_kind: "demo",
+      audience_role: "participant",
+    });
+
+    expect(downgraded.audience_role).toBe("participant");
   });
 
   it("sets and reads participation policy", () => {

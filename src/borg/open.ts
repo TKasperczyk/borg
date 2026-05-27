@@ -15,7 +15,6 @@ import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamEntryIndexRepository, StreamWatermarkRepository } from "../stream/index.js";
 import { buildAutonomyScheduler } from "./autonomy-setup.js";
 import { buildMaintenanceScheduler } from "./maintenance-setup.js";
-import { createOperatorAdviceFacade } from "./facade.js";
 import { createEmbeddingClient, createLazyLlmClient, createLlmFactory } from "./clients.js";
 import { buildStreamIngestionCoordinator } from "./ingestion-setup.js";
 import { closeBestEffort } from "./lifecycle.js";
@@ -127,11 +126,6 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
-    const operatorAdviceFacade = createOperatorAdviceFacade({
-      operatorAdviceRepository: repositories.operatorAdviceRepository,
-      createStreamWriter: repositories.createStreamWriter,
-      clock,
-    });
     const offline = buildOfflineSetup({
       config,
       sqlite,
@@ -216,7 +210,6 @@ export async function openBorgDependencies(
       clock,
       tracer,
       promptOverrideRepository: repositories.promptOverrideRepository,
-      operatorAdviceFacade,
       sessionsRepository: repositories.sessionsRepository,
     });
     const autonomyScheduler = buildAutonomyScheduler({
@@ -254,7 +247,6 @@ export async function openBorgDependencies(
       imagePerceptionRepository: repositories.imagePerceptionRepository,
       imageAttachmentLifecycleService,
       promptOverrideRepository: repositories.promptOverrideRepository,
-      operatorAdviceRepository: repositories.operatorAdviceRepository,
       sessionsRepository: repositories.sessionsRepository,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,

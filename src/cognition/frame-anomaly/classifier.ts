@@ -7,7 +7,8 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { EntityKind } from "../../memory/commitments/index.js";
+import type { BorgRole, EntityKind } from "../../memory/commitments/index.js";
+import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { isPlainRecord } from "../../util/guards.js";
@@ -82,6 +83,8 @@ export type FrameAnomalyConversationContext = {
     kind: EntityKind | null;
   };
   current_sender: FrameAnomalyConversationEntityContext;
+  current_sender_borg_role: BorgRole | null;
+  session_audience_role: SessionAudienceRole;
   participants: readonly ActiveParticipant[];
   assistant_identity: FrameAnomalyConversationEntityContext;
   previous_user_sender: FrameAnomalyConversationEntityContext | null;
@@ -285,6 +288,8 @@ function buildConversationContextPayload(
       id: context.current_sender.id,
       display_name: context.current_sender.display_name,
     },
+    current_sender_borg_role: context.current_sender_borg_role,
+    session_audience_role: context.session_audience_role,
     participants: context.participants.map((participant) => ({
       id: participant.entityId,
       display_name: participant.displayName,

@@ -30,6 +30,7 @@ function entity(id: EntityId, name: string, kind: EntityRecord["kind"]): EntityR
     canonical_name: name,
     aliases: [],
     kind,
+    borg_role: null,
     name_provenance: "unknown",
     created_at: BASE_TS,
   };

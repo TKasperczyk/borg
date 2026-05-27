@@ -304,4 +304,20 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 12,
+    name: "entity_borg_role",
+    up: (db) => {
+      if (!tableExists(db, "entities") || tableHasColumn(db, "entities", "borg_role")) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE entities
+          ADD COLUMN borg_role TEXT NULL CHECK (
+            borg_role IS NULL OR borg_role IN ('creator')
+          );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

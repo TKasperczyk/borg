@@ -96,6 +96,30 @@ describe("sessions facade", () => {
     }
   });
 
+  it("rejects inactive participation policies for operator sessions", async () => {
+    const borg = await openTestBorg();
+
+    try {
+      borg.sessions.ensure({
+        session_id: DEFAULT_SESSION_ID,
+        source_type: "demo",
+        label: "operator",
+        audience_label: "Tom",
+        conversation_kind: "demo",
+        audience_role: "operator",
+      });
+
+      await expect(
+        borg.sessions.setParticipationPolicy(DEFAULT_SESSION_ID, "paused"),
+      ).rejects.toMatchObject({
+        code: "SESSION_OPERATOR_POLICY_LOCKED",
+      });
+      expect(borg.sessions.get(DEFAULT_SESSION_ID)?.participation_policy).toBe("active");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("rolls participation policy back when audit append fails", async () => {
     const borg = await openTestBorg();
     const failure = new Error("audit append failed");

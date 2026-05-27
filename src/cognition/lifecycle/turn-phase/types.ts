@@ -36,7 +36,6 @@ import type { GoalsRepository, OpenQuestionsRepository } from "../../../memory/s
 import type { SemanticNodeRepository } from "../../../memory/semantic/index.js";
 import type { SocialRepository } from "../../../memory/social/index.js";
 import type { WorkingMemoryStore } from "../../../memory/working/index.js";
-import type { OperatorAdviceConsumerFacade } from "../../../operator-advice/index.js";
 import type { SessionsRepository } from "../../../sessions/index.js";
 import type {
   StreamEntryIndexRepository,
@@ -128,7 +127,6 @@ export type TurnPhaseCoordinatorOptions = {
   clock: Clock;
   tracer: TurnTracer;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
-  operatorAdviceFacade?: OperatorAdviceConsumerFacade;
   sessionsRepository?: Pick<SessionsRepository, "get">;
 };
 

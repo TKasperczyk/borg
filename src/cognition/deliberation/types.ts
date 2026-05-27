@@ -4,11 +4,11 @@ import type { BorgUserContentBlock } from "../../attachments/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
-import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
-  OperatorAdviceConsumePendingScope,
-  OperatorAdvicePromptDelivery,
-} from "../../operator-advice/index.js";
+  BorgRole,
+  CommitmentRecord,
+  EntityRepository,
+} from "../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
   GoalRecord,
@@ -47,7 +47,7 @@ import type { ActiveParticipant, ParticipantProfileContext } from "../participan
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { PromptKey } from "../prompts/registry.js";
-import type { SessionParticipationPolicy } from "../../sessions/index.js";
+import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -64,6 +64,13 @@ export type ContradictionRoutingTier =
 export type DeliberationContradictionRoutingConfig = {
   enabled: boolean;
   cooldownTurns: number;
+};
+
+export type TrustedCreatorContext = {
+  currentSenderEntityId: EntityId | null;
+  currentSenderDisplayName: string | null;
+  currentSenderBorgRole: BorgRole | null;
+  sessionAudienceRole: SessionAudienceRole;
 };
 
 export type DeliberationRoutingOverride = {
@@ -101,6 +108,7 @@ export type SelfSnapshot = {
 export type DeliberationContext = {
   sessionId: SessionId;
   participationPolicy?: SessionParticipationPolicy;
+  creatorContext?: TrustedCreatorContext | null;
   turnId?: string;
   audience?: string;
   audienceEntityId?: EntityId | null;
@@ -246,7 +254,4 @@ export type DeliberatorOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
-  operatorAdviceConsumer?: (
-    scope: OperatorAdviceConsumePendingScope,
-  ) => Promise<OperatorAdvicePromptDelivery>;
 };

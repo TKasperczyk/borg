@@ -9,7 +9,11 @@ import type {
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
-import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type {
+  BorgRole,
+  CommitmentRepository,
+  EntityRepository,
+} from "../memory/commitments/index.js";
 import type { Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -39,15 +43,6 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
-import type {
-  OperatorAdviceConsumePendingScope,
-  OperatorAdviceDelivery,
-  OperatorAdviceId,
-  OperatorAdviceListFilter,
-  OperatorAdviceMarkConsumedInput,
-  OperatorAdviceQueueInput,
-  OperatorAdviceRecord,
-} from "../operator-advice/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
 import type {
   SessionEnsureInput,
@@ -61,6 +56,7 @@ import type {
   AuditId,
   AttachmentId,
   AutobiographicalPeriodId,
+  EntityId,
   EpisodeId,
   MaintenanceRunId,
   SessionId,
@@ -249,6 +245,8 @@ export type BorgEntitiesFacade = {
   ) => ReturnType<EntityRepository["resolve"]>;
   get: (...args: Parameters<EntityRepository["get"]>) => ReturnType<EntityRepository["get"]>;
   list: (...args: Parameters<EntityRepository["list"]>) => ReturnType<EntityRepository["list"]>;
+  getCreator: () => ReturnType<EntityRepository["getCreator"]>;
+  setBorgRole: (id: EntityId, role: BorgRole | null) => ReturnType<EntityRepository["setBorgRole"]>;
   find: (
     name: string,
     options?: Parameters<EntityRepository["findByName"]>[1],
@@ -493,16 +491,6 @@ export type BorgSessionsFacade = {
   list(options?: SessionListOptions): SessionRecord[];
 };
 
-export type BorgOperatorAdviceFacade = {
-  queue(input: OperatorAdviceQueueInput): OperatorAdviceRecord;
-  list(filter?: OperatorAdviceListFilter): OperatorAdviceRecord[];
-  cancel(id: OperatorAdviceId): OperatorAdviceRecord | null;
-  consumePending(
-    scope: OperatorAdviceConsumePendingScope,
-    options: OperatorAdviceMarkConsumedInput,
-  ): Promise<OperatorAdviceDelivery>;
-};
-
 export type BorgFacades = {
   stream: BorgStreamFacade;
   episodic: BorgEpisodicFacade;
@@ -527,5 +515,4 @@ export type BorgFacades = {
   workmem: BorgWorkmemFacade;
   prompts: BorgPromptsFacade;
   sessions: BorgSessionsFacade;
-  advice: BorgOperatorAdviceFacade;
 };

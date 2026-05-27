@@ -1,4 +1,5 @@
 import { Deliberator } from "../../deliberation/deliberator.js";
+import type { TrustedCreatorContext } from "../../deliberation/types.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
 import type { ContradictionRoutingCooldown } from "../../deliberation/contradiction-routing-cooldown.js";
@@ -12,6 +13,7 @@ import type { BorgUserContentBlock } from "../../../attachments/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { SessionParticipationPolicy } from "../../../sessions/index.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import { sharedStateRenderOptions } from "./utils.js";
 import type { TurnRetrievalPhaseResult } from "./retrieval-phase.js";
@@ -46,6 +48,8 @@ export async function runDeliberationPhase(input: {
   turnInput: TurnPhaseInput;
   streamWriter: StreamWriter;
   audienceEntityId: EntityId | null;
+  participationPolicy: SessionParticipationPolicy;
+  creatorContext: TrustedCreatorContext | null;
   persistedUserEntryId?: StreamEntry["id"];
   currentUserContent?: readonly BorgUserContentBlock[];
   perception: PerceptionResult;
@@ -60,8 +64,6 @@ export async function runDeliberationPhase(input: {
   participantRoster: ParticipantRoster | null;
 }): Promise<TurnDeliberationPhaseResult> {
   const promptBlocks = resolvePromptBlockOverrides(input.options.promptOverrideRepository);
-  const participationPolicy =
-    input.options.sessionsRepository?.get(input.sessionId)?.participation_policy ?? "active";
   const deliberator = new Deliberator({
     llmClient: input.llmClient,
     toolDispatcher: input.options.toolDispatcher,
@@ -73,26 +75,12 @@ export async function runDeliberationPhase(input: {
     promptBlocks,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
     maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
-    ...(input.options.operatorAdviceFacade === undefined
-      ? {}
-      : {
-          operatorAdviceConsumer: async (scope) => {
-            const delivery = await input.options.operatorAdviceFacade!.consumePending(scope, {
-              turn_id: input.turnId,
-              now: input.options.clock.now(),
-            });
-
-            return {
-              text: delivery.renderedText,
-              ids: delivery.records.map((record) => record.id),
-            };
-          },
-        }),
   });
   const deliberation = await deliberator.run(
     {
       sessionId: input.sessionId,
-      participationPolicy,
+      participationPolicy: input.participationPolicy,
+      creatorContext: input.creatorContext,
       turnId: input.turnId,
       audience: input.turnInput.audience,
       audienceEntityId: input.audienceEntityId,

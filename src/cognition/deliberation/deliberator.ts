@@ -443,23 +443,11 @@ export class Deliberator {
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
-    const deliveredOperatorAdvice = await this.options.operatorAdviceConsumer?.({
-      session_id: effectiveContext.sessionId,
-      audience_entity_id: effectiveContext.audienceEntityId ?? null,
-    });
     const baseSystemPromptOptions: BuildBaseSystemPromptOptions = {
       retrievalContextBudget,
       semanticContextBudget,
       nowMs: this.clock.now(),
       participationPolicy: effectiveContext.participationPolicy ?? "active",
-      ...(deliveredOperatorAdvice?.text === null || deliveredOperatorAdvice?.text === undefined
-        ? {}
-        : {
-            operatorAdvice: {
-              text: deliveredOperatorAdvice.text,
-              ids: deliveredOperatorAdvice.ids,
-            },
-          }),
       ...(this.options.hostCapabilities === undefined
         ? {}
         : { hostCapabilities: this.options.hostCapabilities }),

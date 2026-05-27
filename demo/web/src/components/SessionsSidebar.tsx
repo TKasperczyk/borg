@@ -1,9 +1,15 @@
-import type { SessionRecord } from "../api/types";
+import { useState, type FormEvent } from "react";
+
+import type { EntityRecord, SessionRecord } from "../api/types";
 
 export type SessionsSidebarProps = {
   sessions: readonly SessionRecord[];
   activeSessionId: string;
   onSelect: (sessionId: string) => void;
+  creator?: EntityRecord | null;
+  operatorChatError?: string | null;
+  onOpenOperatorChat?: () => Promise<void> | void;
+  onSetCreatorByName?: (name: string) => Promise<void> | void;
 };
 
 type GroupKey = "today" | "yesterday" | "earlier";
@@ -97,7 +103,13 @@ export function SessionsSidebar({
   sessions,
   activeSessionId,
   onSelect,
+  creator,
+  operatorChatError,
+  onOpenOperatorChat,
+  onSetCreatorByName,
 }: SessionsSidebarProps) {
+  const [creatorName, setCreatorName] = useState(creator?.canonical_name ?? "");
+  const [creatorBusy, setCreatorBusy] = useState(false);
   const grouped = new Map<GroupKey, SessionRecord[]>();
   for (const key of GROUP_ORDER) {
     grouped.set(key, []);
@@ -106,11 +118,30 @@ export function SessionsSidebar({
     grouped.get(groupKey(session.last_activity_at))!.push(session);
   }
 
+  const submitCreator = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = creatorName.trim();
+    if (name.length === 0 || onSetCreatorByName === undefined) {
+      return;
+    }
+    setCreatorBusy(true);
+    try {
+      await onSetCreatorByName(name);
+    } finally {
+      setCreatorBusy(false);
+    }
+  };
+
   return (
     <aside className="sessions-sidebar" aria-label="sessions">
       <div className="sessions-head">
         <span className="title">sessions</span>
         <span className="count">{sessions.length}</span>
+      </div>
+      <div className="sessions-presets">
+        <button type="button" className="operator-chat-button" onClick={onOpenOperatorChat}>
+          operator chat
+        </button>
       </div>
       <div className="sessions-list">
         {GROUP_ORDER.map((key) => {
@@ -132,9 +163,7 @@ export function SessionsSidebar({
                   >
                     <span className="session-row-top">
                       <span className="session-label">{session.label}</span>
-                      <span className="session-time">
-                        {relativeTime(session.last_activity_at)}
-                      </span>
+                      <span className="session-time">{relativeTime(session.last_activity_at)}</span>
                     </span>
                     <span className="session-preview">{previewLine(session)}</span>
                     <span className="session-foot">
@@ -152,6 +181,22 @@ export function SessionsSidebar({
             </div>
           );
         })}
+      </div>
+      <div className="sessions-creator-admin">
+        {operatorChatError === null || operatorChatError === undefined ? null : (
+          <div className="sessions-creator-error">{operatorChatError}</div>
+        )}
+        <form onSubmit={submitCreator}>
+          <input
+            value={creatorName}
+            onChange={(event) => setCreatorName(event.target.value)}
+            placeholder={creator?.canonical_name ?? "creator name"}
+            aria-label="creator name"
+          />
+          <button type="submit" disabled={creatorBusy || creatorName.trim().length === 0}>
+            mark creator
+          </button>
+        </form>
       </div>
     </aside>
   );

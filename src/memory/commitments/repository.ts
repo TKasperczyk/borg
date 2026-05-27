@@ -30,6 +30,7 @@ import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
   COMMITMENT_KINDS,
   COMMITMENT_ENFORCEMENT_CLASSES,
+  borgRoleSchema,
   commitmentCriticalDomainSchema,
   commitmentEnforcementClassSchema,
   commitmentKindSchema,
@@ -49,6 +50,7 @@ import {
   type CommitmentPatch,
   type CommitmentRecord,
   type CommitmentType,
+  type BorgRole,
   type EntityKind,
   type EntityRecord,
   type NameProvenance,
@@ -94,6 +96,10 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
       parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", COMMITMENT_JSON_ARRAY_CODEC),
     ),
     kind: row.kind === null || row.kind === undefined ? null : entityKindSchema.parse(row.kind),
+    borg_role:
+      row.borg_role === null || row.borg_role === undefined
+        ? null
+        : borgRoleSchema.parse(row.borg_role),
     name_provenance: nameProvenanceSchema.parse(row.name_provenance ?? "unknown"),
     created_at: Number(row.created_at),
   });
@@ -207,6 +213,7 @@ export type EntityAddInput = {
   canonicalName: string;
   aliases?: readonly string[];
   kind?: EntityKind;
+  borg_role?: BorgRole | null;
   provenance?: NameProvenance;
   createdAt?: number;
 };
@@ -238,7 +245,7 @@ export class EntityRepository {
         ? (this.db
             .prepare(
               `
-                SELECT id, canonical_name, aliases, kind, name_provenance, created_at
+                SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
                 ORDER BY created_at ASC
               `,
@@ -247,7 +254,7 @@ export class EntityRepository {
         : (this.db
             .prepare(
               `
-                SELECT id, canonical_name, aliases, kind, name_provenance, created_at
+                SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
                 WHERE kind = ?
                 ORDER BY created_at ASC
@@ -277,25 +284,40 @@ export class EntityRepository {
       canonical_name: canonicalName,
       aliases: uniqueStrings(input.aliases ?? []),
       kind: input.kind ?? "person",
+      borg_role: input.borg_role ?? null,
       name_provenance: provenance,
       created_at: input.createdAt ?? this.clock.now(),
     });
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO entities (id, canonical_name, aliases, kind, name_provenance, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
+    const insert = this.db.prepare(
+      `
+        INSERT INTO entities (
+          id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    );
+
+    const insertEntity = () => {
+      insert.run(
         entity.id,
         entity.canonical_name,
         serializeJsonValue(entity.aliases),
         entity.kind,
+        entity.borg_role,
         entity.name_provenance,
         entity.created_at,
       );
+    };
+
+    if (entity.borg_role === "creator") {
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE entities SET borg_role = NULL WHERE borg_role = 'creator'").run();
+        insertEntity();
+      })();
+    } else {
+      insertEntity();
+    }
 
     return entity;
   }
@@ -361,6 +383,47 @@ export class EntityRepository {
       | undefined;
 
     return row === undefined ? null : mapEntityRow(row);
+  }
+
+  getCreator(): EntityRecord | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM entities
+          WHERE borg_role = 'creator'
+          ORDER BY created_at ASC
+          LIMIT 1
+        `,
+      )
+      .get() as Record<string, unknown> | undefined;
+
+    return row === undefined ? null : mapEntityRow(row);
+  }
+
+  setBorgRole(id: EntityId, role: BorgRole | null): EntityRecord | null {
+    const parsedId = parseEntityId(id);
+    const parsedRole = role === null ? null : borgRoleSchema.parse(role);
+
+    const update = this.db.transaction(() => {
+      const current = this.get(parsedId);
+
+      if (current === null) {
+        return null;
+      }
+
+      if (parsedRole === "creator") {
+        this.db
+          .prepare("UPDATE entities SET borg_role = NULL WHERE borg_role = 'creator' AND id != ?")
+          .run(parsedId);
+      }
+
+      this.db.prepare("UPDATE entities SET borg_role = ? WHERE id = ?").run(parsedRole, parsedId);
+
+      return this.get(parsedId);
+    });
+
+    return update();
   }
 
   rename(id: EntityId, canonicalName: string): EntityRecord | null {
