@@ -467,14 +467,20 @@ export function FlowChart({
     return out;
   }, []);
 
-  const topStatusClass =
-    terminalOutcome !== null && terminalOutcome.startsWith("suppressed") ? "bad" : "";
+  const outcomeTone = (() => {
+    if (terminalOutcome === null) return "idle";
+    if (terminalOutcome === "reflected") return "";
+    if (terminalOutcome === "aborted") return "warn";
+    return "bad";
+  })();
+  const outcomeLabel =
+    terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
 
   return (
     <div className="flow-shell">
       <div className="flow-topline">
         <div className="left">
-          <span>turn</span>
+          <span className="eyebrow">turn</span>
           <span className="turn-id">
             {activeTurnId === null ? (
               <span className="dim">idle</span>
@@ -482,18 +488,18 @@ export function FlowChart({
               <span className="acc">{activeTurnId}</span>
             )}
           </span>
-        </div>
-        <div className="flow-legend">
-          <span className="leg queue">queue</span>
-          <span className="leg run">running</span>
-          <span className="leg done">done</span>
-          <span className="leg fail">suppress</span>
+          <span className="eyebrow">outcome</span>
+          <span className={`flow-topline-status ${outcomeTone}`.trim()}>
+            {outcomeLabel}
+          </span>
         </div>
         <div className="right">
-          <span>outcome</span>
-          <span className={`flow-topline-status ${topStatusClass}`}>
-            {terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ")}
-          </span>
+          <div className="flow-legend" aria-label="phase legend">
+            <span className="leg queue">queue</span>
+            <span className="leg run">run</span>
+            <span className="leg done">done</span>
+            <span className="leg fail">fail</span>
+          </div>
         </div>
       </div>
 

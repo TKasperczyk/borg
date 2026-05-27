@@ -12,6 +12,13 @@ export type ChatStreamProps = {
   running: boolean;
 };
 
+function shortSession(sessionId: string): string {
+  if (sessionId.length <= 10) {
+    return sessionId;
+  }
+  return sessionId.slice(0, 10);
+}
+
 export function ChatStream({ entries, sessionId, audience, running }: ChatStreamProps) {
   const chatRef = useRef<HTMLDivElement | null>(null);
   const turns = useMemo(() => streamEntriesToChatTurns(entries), [entries]);
@@ -23,53 +30,38 @@ export function ChatStream({ entries, sessionId, audience, running }: ChatStream
   }, [turns.length, running]);
 
   return (
-    <div className="chat-stream" ref={chatRef}>
-      <div
-        style={{
-          marginBottom: 22,
-          padding: "8px 12px",
-          border: "1px solid var(--line-soft)",
-          background: "var(--bg-1)",
-          fontSize: "10.5px",
-          color: "var(--text-mute)",
-          display: "flex",
-          gap: 14,
-          alignItems: "center",
-          whiteSpace: "nowrap",
-          overflow: "hidden"
-        }}
-      >
-        <span>
-          <span className="dim">session</span> <span className="acc">{sessionId}</span>
+    <>
+      <div className="chat-head">
+        <span className="title">transcript · {shortSession(sessionId)}</span>
+        <span className="stakes">
+          <span className="label">audience</span>
+          <span className="val">{audience}</span>
         </span>
-        <span className="dim">·</span>
-        <span>
-          <span className="dim">audience</span> <span className="acc">{audience}</span>
-        </span>
-        <span className="dim">·</span>
-        <span>
-          <span className="dim">kind</span> 1:1
-        </span>
-        <span style={{ flex: 1 }}></span>
-        <span className="acc">loop attached ▸</span>
       </div>
-
-      {turns.length === 0 ? <Empty>no chat history for this audience</Empty> : null}
-      {turns.map((turn) => (
-        <ChatMessage key={turn.entry.id} turn={turn} audience={audience} />
-      ))}
-      {running ? (
-        <div className="chat-msg borg">
-          <div className="meta">
-            <span className="role borg">borg ⟶ {audience}</span>
-            <span className="acc">· thinking</span>
+      <div className="chat-stream" ref={chatRef}>
+        {turns.length === 0 ? <Empty>no chat history for this audience</Empty> : null}
+        {turns.map((turn) => (
+          <ChatMessage key={turn.entry.id} turn={turn} audience={audience} />
+        ))}
+        {running ? (
+          <div className="chat-msg borg">
+            <div className="avatar" aria-hidden="true">
+              ψ
+            </div>
+            <div className="content">
+              <div className="meta">
+                <span className="role borg">borg</span>
+                <span className="sep">·</span>
+                <span className="acc">thinking</span>
+              </div>
+              <div className="body" style={{ minHeight: 22 }}>
+                borg is thinking...
+                <span className="acc">▍</span>
+              </div>
+            </div>
           </div>
-          <div className="body" style={{ minHeight: 22 }}>
-            borg is thinking...
-            <span className="acc">▍</span>
-          </div>
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </>
   );
 }

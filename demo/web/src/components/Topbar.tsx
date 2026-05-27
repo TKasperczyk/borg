@@ -1,4 +1,3 @@
-import { apiBase } from "../api/client";
 import type { WsState } from "../api/types";
 import { ResetButton } from "./ResetButton";
 
@@ -8,6 +7,8 @@ export type TopbarProps = {
   turns: number;
   ws_state: WsState;
   now: string;
+  route?: string;
+  stakes?: string;
 };
 
 function wsLabel(state: WsState): string {
@@ -20,36 +21,71 @@ function wsLabel(state: WsState): string {
   return "down";
 }
 
-export function Topbar({ session_id, audience, turns, ws_state, now }: TopbarProps) {
+function wsToneClass(state: WsState): string {
+  if (state === "live") {
+    return "acc";
+  }
+  if (state === "reconnecting") {
+    return "warn";
+  }
+  return "bad";
+}
+
+function formatTurns(turns: number): string {
+  return turns.toString().padStart(3, "0");
+}
+
+export function Topbar({
+  session_id,
+  audience,
+  turns,
+  ws_state,
+  now,
+  route = "cognition",
+  stakes = "routine",
+}: TopbarProps) {
   return (
     <div className="topbar">
-      <div className="topbar-group">
-        <span className="topbar-key">session</span>
-        <span className="topbar-val">{session_id}</span>
-        <span className="topbar-sep">·</span>
-        <span className="topbar-key">audience</span>
-        <span className="topbar-val acc">{audience}</span>
-        <span className="topbar-sep">·</span>
-        <span className="topbar-key">turns</span>
-        <span className="topbar-val tab-num">{turns}</span>
-      </div>
-      <div className="topbar-group">
-        <span className={ws_state === "live" ? "live-dot" : "dot warn"}></span>
-        <span className={ws_state === "live" ? "acc upper" : "warn upper"} style={{ fontSize: "10.5px" }}>
-          {wsLabel(ws_state)}
+      <div className="topbar-brand">
+        <span>
+          <span className="accent">[</span>borg<span className="accent">]</span>
         </span>
-        <span className="topbar-sep">·</span>
-        <span className="topbar-key">api</span>
-        <span className="topbar-val">{apiBase().replace(/^https?:\/\//, "")}</span>
       </div>
-      <div className="topbar-group flex"></div>
-      <div className="topbar-group end">
+      <div className="topbar-crumb">
+        <span className="seg">console</span>
+        <span className="sep">›</span>
+        <span className="seg">{session_id}</span>
+        <span className="sep">›</span>
+        <span className="seg here">{route}</span>
+      </div>
+      <div className="topbar-spacer"></div>
+      <div className="topbar-pills">
+        <div className="topbar-pill">
+          <span className="k">audience</span>
+          <span className="v">{audience}</span>
+        </div>
+        <div className="topbar-pill">
+          <span className="k">stakes</span>
+          <span className="v">{stakes}</span>
+        </div>
+        <div className="topbar-pill">
+          <span className="k">turn</span>
+          <span className="v">{formatTurns(turns)}</span>
+        </div>
+        <div className="topbar-pill">
+          <span className="k">ws</span>
+          <span className={`v ${wsToneClass(ws_state)}`}>{wsLabel(ws_state)}</span>
+        </div>
+        <div className="topbar-pill">
+          <span className="k">utc</span>
+          <span className="v">{now}</span>
+        </div>
+        <span className="topbar-live" aria-hidden="true">
+          <span className={ws_state === "live" ? "live-dot" : "dot warn"}></span>
+        </span>
+      </div>
+      <div className="topbar-end">
         <ResetButton />
-        <span className="topbar-sep">·</span>
-        <span className="kbd">⌘K</span>
-        <span className="topbar-key">command</span>
-        <span className="topbar-sep">·</span>
-        <span className="topbar-val tab-num">{now}</span>
       </div>
     </div>
   );

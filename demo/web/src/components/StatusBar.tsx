@@ -15,36 +15,49 @@ function moodLabel(state: StateSnapshot | null): string {
   return `v ${valence} · a ${arousal}`;
 }
 
+function countValue(count: number | undefined): string {
+  return count === undefined ? "—" : count.toString();
+}
+
 export function StatusBar({ state, lastPhase }: StatusBarProps) {
   return (
     <div className="statusbar">
-      <span>
-        <span className="ok">●</span> borg/main
+      <span className="seg">
+        <span className="v ok">●</span>
+        <span className="k">branch</span>
+        <span className="v">borg/main</span>
       </span>
-      <span className="sep">│</span>
-      <span>
-        dream <span className="dim">{state === null ? "—" : `${state.counts.dream_audit_rows} audit`}</span>
+      <span className="seg">
+        <span className="k">dream</span>
+        <span className="v">
+          {state === null ? "—" : `${state.counts.dream_audit_rows} audit`}
+        </span>
       </span>
-      <span className="sep">│</span>
-      <span>
-        mood <span className="dim">{moodLabel(state)}</span>
+      <span className="seg">
+        <span className="k">mood</span>
+        <span className="v">{moodLabel(state)}</span>
       </span>
-      <span className="sep">│</span>
-      <span>
-        review <span className="dim">{state?.counts.open_qs ?? "—"}</span>
+      <span className="seg">
+        <span className="k">review</span>
+        <span className="v">{countValue(state?.counts.open_qs)}</span>
       </span>
-      <span className="sep">│</span>
-      <span>
-        commit <span className="dim">{state?.counts.commitments ?? "—"}</span>
+      <span className="seg">
+        <span className="k">commit</span>
+        <span className="v">{countValue(state?.counts.commitments)}</span>
       </span>
-      <span className="sep">│</span>
-      <span>
-        last <span className="dim">{lastPhase ?? "idle"}</span>
+      <span className="seg">
+        <span className="k">last</span>
+        <span className="v">{lastPhase ?? "idle"}</span>
       </span>
-      <span className="grow"></span>
-      <span className="dim">opus-4.7</span>
-      <span className="sep">·</span>
-      <span className="dim">qwen3-8b · 4096d</span>
+      <span className="seg grow"></span>
+      <span className="seg">
+        <span className="k">model</span>
+        <span className="v">opus-4.7</span>
+      </span>
+      <span className="seg">
+        <span className="k">emb</span>
+        <span className="v">qwen3-8b · 4096d</span>
+      </span>
     </div>
   );
 }
