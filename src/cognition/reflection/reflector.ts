@@ -8,6 +8,7 @@ import type {
   ExecutiveStepsRepository,
 } from "../../executive/index.js";
 import {
+  canTransitionExecutiveStepStatus,
   executiveStepGoalIdSchema,
   executiveStepIdSchema,
   executiveStepKindSchema,
@@ -890,6 +891,17 @@ export class Reflector {
           step_id: outcome.step_id,
           goal_id: current.goal_id,
           selected_goal_id: selectedGoalId,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (!canTransitionExecutiveStepStatus(current.status, outcome.new_status)) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "invalid_transition",
+          step_id: outcome.step_id,
+          current_status: current.status,
           new_status: outcome.new_status,
         });
         continue;

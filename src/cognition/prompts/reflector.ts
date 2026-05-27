@@ -3,6 +3,7 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
   "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
   "For step_outcomes, update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",
+  "A queued step may be marked doing or abandoned, but not done. Mark done only for a step that is already doing and whose completed turn directly finished it.",
   "For autonomous turns, never mark an executive step done; autonomous turns may only start, block, or abandon a step.",
   "If executive_focus has a selected goal and next_step is null, proposed_steps may include a small concrete next step only when the completed turn revealed one for that selected goal. Otherwise omit proposed_steps.",
   "If pending_procedural_attempts has any entries, emit a procedural_outcome per attempt the current turn provides evidence about. Identify each by its attempt_turn_counter and classify success, failure, or unclear.",

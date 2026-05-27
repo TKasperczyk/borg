@@ -13,6 +13,7 @@ import {
   executiveStepPatchSchema,
   executiveStepSchema,
   executiveStepStatusSchema,
+  canTransitionExecutiveStepStatus,
   type ExecutiveStep,
   type ExecutiveStepKind,
   type ExecutiveStepPatch,
@@ -41,14 +42,6 @@ export type ExecutiveStepAbandonReason = "goal_closed";
 
 const OPEN_STATUSES = new Set<ExecutiveStepStatus>(["queued", "doing"]);
 const MAX_OPEN_STEPS_PER_GOAL = 3;
-
-const VALID_TRANSITIONS: Record<ExecutiveStepStatus, ReadonlySet<ExecutiveStepStatus>> = {
-  queued: new Set(["queued", "doing", "abandoned"]),
-  doing: new Set(["doing", "done", "blocked", "abandoned"]),
-  blocked: new Set(["blocked", "doing", "abandoned"]),
-  done: new Set(["done"]),
-  abandoned: new Set(["abandoned"]),
-};
 
 function requireProvenance(
   provenance: ExecutiveStepProvenance | undefined,
@@ -89,7 +82,7 @@ function mapExecutiveStepRow(row: Record<string, unknown>): ExecutiveStep {
 }
 
 function assertTransition(current: ExecutiveStepStatus, next: ExecutiveStepStatus): void {
-  if (VALID_TRANSITIONS[current].has(next)) {
+  if (canTransitionExecutiveStepStatus(current, next)) {
     return;
   }
 

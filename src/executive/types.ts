@@ -62,6 +62,21 @@ export type ExecutiveStepStatus = z.infer<typeof executiveStepStatusSchema>;
 export type ExecutiveStepKind = z.infer<typeof executiveStepKindSchema>;
 export type ExecutiveStepProvenance = Provenance;
 
+export const VALID_TRANSITIONS: Record<ExecutiveStepStatus, ReadonlySet<ExecutiveStepStatus>> = {
+  queued: new Set(["queued", "doing", "abandoned"]),
+  doing: new Set(["doing", "done", "blocked", "abandoned"]),
+  blocked: new Set(["blocked", "doing", "abandoned"]),
+  done: new Set(["done"]),
+  abandoned: new Set(["abandoned"]),
+};
+
+export function canTransitionExecutiveStepStatus(
+  current: ExecutiveStepStatus,
+  next: ExecutiveStepStatus,
+): boolean {
+  return VALID_TRANSITIONS[current].has(next);
+}
+
 export type ExecutiveGoalScoreComponents = {
   priority: number;
   deadline_pressure: number;

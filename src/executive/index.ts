@@ -5,6 +5,7 @@ export {
 } from "./goal-competition.js";
 export { computeExecutiveContextFits, type ExecutiveContextFitByGoalId } from "./context-fit.js";
 export { executiveMigrations } from "./migrations.js";
+export { canTransitionExecutiveStepStatus, VALID_TRANSITIONS } from "./types.js";
 export {
   ExecutiveStepsRepository,
   type ExecutiveStepAbandonReason,

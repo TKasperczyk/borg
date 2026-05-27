@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
 import { Reflector, type ReflectorOptions } from "./reflector.js";
@@ -529,6 +529,7 @@ describe("reflector", () => {
       traitsRepository: harness.traitsRepository,
       executiveStepsRepository: harness.executiveStepsRepository,
     });
+    const updateSpy = vi.spyOn(harness.executiveStepsRepository, "update");
 
     await reflector.reflect(
       createExecutiveReflectionContext({
@@ -544,17 +545,33 @@ describe("reflector", () => {
     });
     expect(harness.executiveStepsRepository.get(illegal.id)?.status).toBe("queued");
     expect(harness.executiveStepsRepository.get(emptyEvidence.id)?.status).toBe("queued");
+    expect(updateSpy).not.toHaveBeenCalledWith(
+      illegal.id,
+      expect.objectContaining({ status: "done" }),
+    );
 
-    const droppedReasons = new StreamReader({
+    const droppedEvents = new StreamReader({
       dataDir: harness.tempDir,
       sessionId: DEFAULT_SESSION_ID,
     })
       .tail(10)
       .filter((entry) => entry.kind === "internal_event")
-      .map((entry) => (entry.content as { reason?: string }).reason);
+      .map((entry) => entry.content as { reason?: string });
+    const droppedReasons = droppedEvents.map((event) => event.reason);
 
     expect(droppedReasons).toEqual(
-      expect.arrayContaining(["repository_update_failed", "missing_step", "empty_evidence"]),
+      expect.arrayContaining(["invalid_transition", "missing_step", "empty_evidence"]),
+    );
+    expect(droppedReasons).not.toContain("repository_update_failed");
+    expect(droppedEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "invalid_transition",
+          step_id: illegal.id,
+          current_status: "queued",
+          new_status: "done",
+        }),
+      ]),
     );
   });
 
