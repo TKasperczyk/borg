@@ -625,6 +625,35 @@ describe("cognition screen", () => {
     expect(document.querySelector(".flow-active-head")?.textContent).toMatch(/finalizer/i);
   });
 
+  it("keeps the active-stream pane showing final text after the phase completes", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    expect(await screen.findByText(/borg is thinking/)).toBeInTheDocument();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "final"));
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_abc",
+        phase: "final",
+        chunk_text: "Settled answer.",
+        sequence: 1,
+      });
+      source.emit(phaseFrame("turn:phase:completed", "final"));
+    });
+
+    expect(document.querySelector(".flow-active-body")?.textContent).toContain("Settled answer.");
+    expect(document.querySelector(".flow-active-body")?.className).toMatch(/muted/);
+  });
+
   it("ignores stale turn frames after a newer turn starts", async () => {
     const source = makeLiveSource();
     installCognitionFetch({
