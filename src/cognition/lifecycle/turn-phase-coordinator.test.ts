@@ -1461,7 +1461,10 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       expect(requestPayload.source_trust?.off_limits_source_stream_entry_ids ?? []).not.toContain(
         quarantinedEntry.id,
       );
-      expect(requestPayload.source_trust?.citation_eligible_source_stream_entry_id_count).toBe(1);
+      expect(requestPayload.source_trust?.off_limits_source_stream_entry_ids ?? []).toContain(
+        nextEntry.id,
+      );
+      expect(requestPayload.source_trust?.citation_eligible_source_stream_entry_id_count).toBe(0);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1948,7 +1951,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         ledgerEntry({
           streamEntryId: currentSource,
           streamIndex: 1,
-          text: "Current trusted context remains citable",
+          text: "Current context remains visible",
         }),
       ]);
 
@@ -1986,8 +1989,8 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
 
       expect(upsertCount).toBe(0);
       expect(requestPayload.source_trust).toEqual({
-        citation_eligible_source_stream_entry_id_count: 1,
-        off_limits_source_stream_entry_ids: [quarantinedSource],
+        citation_eligible_source_stream_entry_id_count: 0,
+        off_limits_source_stream_entry_ids: [currentSource, quarantinedSource],
       });
       expect(completed?.data).toEqual(
         expect.objectContaining({

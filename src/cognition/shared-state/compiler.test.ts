@@ -1912,6 +1912,65 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
+  it("does not re-allow the current user turn through relational-slot evidence", async () => {
+    const trace = createTraceRecorder();
+    const trustedSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Current user sourced decision",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [trustedSource],
+      offLimitsSourceStreamEntryIds: [currentStreamEntryId],
+      relationalSlotsContext: [
+        {
+          id: createRelationalSlotId(),
+          subject_entity_id: alice,
+          slot_key: "context.current_turn",
+          value: "current turn",
+          state: "established",
+          evidence_stream_entry_ids: [currentStreamEntryId],
+          contradicted_by_stream_entry_ids: [],
+          alternate_values: [],
+        },
+      ],
+      sourceTrustValidator: () => ({ allowed: true }),
+      tracer: trace,
+    });
+
+    const requestPayload = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+      source_trust?: unknown;
+    };
+    const completed = trace.events.find(
+      (event) => event.event === "shared_state.compile.completed",
+    );
+
+    expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
+    expect(requestPayload.source_trust).toEqual({
+      citation_eligible_source_stream_entry_id_count: 1,
+      off_limits_source_stream_entry_ids: [currentStreamEntryId],
+    });
+    expect(completed?.data).toEqual(
+      expect.objectContaining({
+        rejectedCount: 1,
+        rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
+      }),
+    );
+  });
+
   it("advances safe prefilter skip markers so the next ledger delta starts after the skip turn", async () => {
     const firstSource = createStreamEntryId();
     const skippedSource = createStreamEntryId();

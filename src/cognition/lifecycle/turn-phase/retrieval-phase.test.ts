@@ -20,13 +20,14 @@ import {
   createSessionId,
   createStreamEntryId,
   type EntityId,
+  type SessionId,
 } from "../../../util/ids.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
+  StreamReader,
   StreamWriter,
   type StreamEntry,
-  type StreamReader,
 } from "../../../stream/index.js";
 import {
   makeLockedSharedStateEntry,
@@ -64,8 +65,19 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const audienceEntityId = createEntityId();
     const selfEntityId = createEntityId();
     const actionId = createActionId();
+    const priorSourceEntryId = createStreamEntryId();
     const streamEntryId = createStreamEntryId();
     const currentUserContent = "The clinic callback follow-up is locked.";
+    const priorSourceEntry = {
+      id: priorSourceEntryId,
+      kind: "user_msg",
+      content: "The clinic callback follow-up is locked.",
+      timestamp: 9_500,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
     const currentUserEntry = {
       id: streamEntryId,
       kind: "user_msg",
@@ -108,7 +120,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
                     kind: "locked",
                     text: "The clinic callback follow-up is locked.",
                     owner_entity_id: audienceEntityId,
-                    source_stream_entry_ids: [streamEntryId],
+                    source_stream_entry_ids: [priorSourceEntryId],
                     canonicalizes: {
                       action_ids: [actionId],
                     },
@@ -167,6 +179,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       createStreamReader: () =>
         ({
           async *iterate() {
+            yield priorSourceEntry;
             yield currentUserEntry;
           },
         }) as StreamReader,
@@ -210,6 +223,14 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
             id: "current_user_message",
             label: "1. Current User Message",
             entries: [
+              {
+                id: `current_session_stream:${priorSourceEntryId}`,
+                source_type: "current_session_stream",
+                session_scope: "current_session",
+                actor: "user",
+                trust_rank: 1,
+                text: "The clinic callback follow-up is locked.",
+              },
               {
                 id: `current_user_message:${streamEntryId}`,
                 source_type: "current_user_message",
@@ -1410,6 +1431,442 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
 
     expect(result.renderOptions?.recentlyRetrievedEntryIds).toEqual([entryId]);
     expect(sharedStateRepository.get(audienceEntityId)?.entries[0]?.kind).toBe("low_salience_live");
+  });
+
+  it("renders previous shared state to deliberation instead of a freshly compiled artifact", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-same-turn-shared-state-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(40_000);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+    });
+    cleanup.push(() => writer.close());
+    const priorSourceEntry = await writer.append({
+      kind: "user_msg",
+      turn_id: "turn-style-preference",
+      content: "The operator prefers plain prose.",
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      turn_id: "turn-name-choice",
+      content: "Choose a name for a cross-session persistence test.",
+    });
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    sharedStateRepository.upsert(
+      audienceEntityId,
+      [
+        {
+          type: "add",
+          state_key: "identity.style_preference",
+          kind: "locked",
+          text: "Use plain prose for operator-facing responses.",
+          provenance_stream_entry_ids: [priorSourceEntry.id],
+          last_updated_stream_entry_ids: [priorSourceEntry.id],
+          created_at: 30_000,
+          last_updated_at: 30_000,
+        },
+      ],
+      {
+        now: 30_000,
+        lastCompiledStreamEntryId: priorSourceEntry.id,
+      },
+    );
+    const compilerLlmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_shared_state",
+              name: SHARED_STATE_TOOL_NAME,
+              input: {
+                operations: [
+                  {
+                    type: "add",
+                    state_key: "identity.self_chosen_name",
+                    new_key_reason: "The self-chosen name is a distinct identity fact.",
+                    kind: "locked",
+                    text: "Borg's self-chosen name is Aria.",
+                    owner_entity_id: selfEntityId,
+                    source_stream_entry_ids: [priorSourceEntry.id],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const retrieval = {
+      evidence: [],
+      episodes: [],
+      semantic: null,
+      open_questions: [],
+      recall_intents: [],
+      contradiction_present: false,
+      contradictionRouting: {
+        contradictions: [],
+      },
+      confidence: null,
+    } as never;
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            enabled: true,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: false,
+              },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => compilerLlmClient,
+      clock,
+      tracer: {
+        enabled: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+        findByName: () => null,
+        get: () => null,
+      },
+      socialRepository: {
+        getProfile: () => null,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+        listConstrained: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+        update: vi.fn(),
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+        get: () => null,
+        resolve: () => null,
+        findByHandles: () => [],
+      },
+      attachmentRepository: {
+        get: () => null,
+        isActiveForStreamEntry: () => true,
+      },
+      selfContextBuilder: {
+        build: vi.fn(async () => ({
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+          },
+          activeScoringValues: [],
+          selfScoringFeatures: {
+            goalVectors: [],
+            valueVectors: [],
+          },
+          retrievalScoringFeatures: {
+            goalVectors: [],
+            valueVectors: [],
+          },
+          executiveFocus: {
+            selected_goal: null,
+            selected_score: null,
+            candidates: [],
+            threshold: 0,
+          },
+        })),
+      },
+      turnRetrievalCoordinator: {
+        coordinate: vi.fn(async () => ({
+          applicableCommitments: [],
+          pendingCorrections: [],
+          affectiveTrajectory: [],
+          retrieval,
+          retrievedEpisodes: [],
+          retrievedSemantic: null,
+          proceduralContext: null,
+          selectedSkill: null,
+          retrievalOptions: {},
+          reRetrieve: vi.fn(async () => retrieval),
+        })),
+      },
+      createStreamReader: (sessionId: SessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId }),
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await runRetrievalPhase({
+      options,
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-name-choice",
+      turnInput: {
+        userMessage: "Choose a name for a cross-session persistence test.",
+        audience: "operator",
+        origin: "user",
+        globalTurnCounter: 2,
+      },
+      isSelfAudience: false,
+      isUserTurn: true,
+      cognitionInput: "Choose a name for a cross-session persistence test.",
+      llmClient: new FakeLLMClient({ responses: [] }),
+      recencyMessages: [],
+      audienceEntityId,
+      audienceEntity: null,
+      audienceProfile: null,
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: {
+          valence: 0,
+          arousal: 0,
+          dominant_emotion: null,
+        },
+        temporalCue: null,
+      } satisfies PerceptionResult,
+      workingMemory: {
+        turn_counter: 2,
+      } as never,
+      suppressionSet: {} as never,
+      actionLinkSelfContext: null,
+      persistedPromotions: {
+        goalIds: [],
+        executiveStepIds: [],
+      },
+      correctiveCommitment: null,
+      activeParticipants: [],
+      participantRoster: null,
+      participantProfiles: [],
+      persistedUserEntry: currentUserEntry,
+      currentTurnFrameAnomaly: null,
+      closureLoopAssessment: null,
+    });
+    const persistedTexts =
+      sharedStateRepository.get(audienceEntityId)?.entries.map((entry) => entry.text) ?? [];
+    const rendered = result.evidenceLedgerContext.promptSection ?? "";
+    const renderedSharedStateTexts =
+      result.evidenceLedgerContext.ledger?.sharedState?.entries.map((entry) => entry.text) ?? [];
+
+    expect(persistedTexts).toEqual([
+      "Use plain prose for operator-facing responses.",
+      "Borg's self-chosen name is Aria.",
+    ]);
+    expect(renderedSharedStateTexts).toEqual(["Use plain prose for operator-facing responses."]);
+    expect(rendered).toContain("Use plain prose for operator-facing responses.");
+    expect(rendered).not.toContain("Borg's self-chosen name is Aria.");
+  });
+
+  it("rejects shared-state operations that cite the current user turn as source material", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-current-off-limits-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: sharedStateMigrations,
+    });
+    cleanup.push(() => db.close());
+    const clock = new FixedClock(50_000);
+    const sharedStateRepository = new SharedStateRepository({ db, clock });
+    const audienceEntityId = createEntityId();
+    const selfEntityId = createEntityId();
+    const currentSourceEntryId = createStreamEntryId();
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const currentUserEntry = {
+      id: currentSourceEntryId,
+      kind: "user_msg",
+      content: "Choose a name for a cross-session persistence test.",
+      timestamp: 50_000,
+      session_id: DEFAULT_SESSION_ID,
+      turn_id: "turn-current-off-limits",
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    } as StreamEntry;
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_shared_state",
+              name: SHARED_STATE_TOOL_NAME,
+              input: {
+                operations: [
+                  {
+                    type: "add",
+                    state_key: "identity.self_chosen_name",
+                    kind: "locked",
+                    text: "Borg's self-chosen name is Aria.",
+                    owner_entity_id: selfEntityId,
+                    source_stream_entry_ids: [currentSourceEntryId],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        generation: {
+          ...DEFAULT_CONFIG.generation,
+          evidenceLedger: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger,
+            decisionArtifact: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              compilerPrefilter: {
+                enabled: false,
+              },
+            },
+          },
+        },
+      },
+      sharedStateRepository,
+      llmFactory: () => llmClient,
+      clock,
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: vi.fn((event: string, data: Record<string, unknown>) => {
+          events.push({ event, data });
+        }),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+      },
+      attachmentRepository: {
+        get: () => null,
+        isActiveForStreamEntry: () => true,
+      },
+      createStreamReader: () =>
+        ({
+          async *iterate() {
+            yield currentUserEntry;
+          },
+        }) as StreamReader,
+    } as unknown as TurnPhaseCoordinatorOptions;
+
+    const result = await compileSharedStateArtifactForEvidenceLedgerResult({
+      options,
+      input: {
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-current-off-limits",
+        audienceEntityId,
+        currentUserMessage: "Choose a name for a cross-session persistence test.",
+        currentUserEntry,
+        globalTurnCounter: 50,
+        workingMemory: {
+          turn_counter: 50,
+        } as never,
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions: [],
+        pendingCorrections: [],
+        activeParticipants: [],
+        participantRoster: null,
+        isUserTurn: true,
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        closureLoopAssessment: null,
+      },
+      ledger: {
+        sections: [
+          {
+            id: "current_user_message",
+            label: "1. Current User Message",
+            entries: [
+              {
+                id: `current_user_message:${currentSourceEntryId}`,
+                source_type: "current_user_message",
+                session_scope: "current_session",
+                actor: "user",
+                trust_rank: 0,
+                text: "Choose a name for a cross-session persistence test.",
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+      promptVisibleLedger: "Choose a name for a cross-session persistence test.",
+    });
+    const requestPayload = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+      source_trust?: {
+        citation_eligible_source_stream_entry_id_count?: number | null;
+        off_limits_source_stream_entry_ids?: string[];
+      };
+    };
+    const completed = events.find((event) => event.event === "shared_state.compile.completed");
+
+    expect(result.appliedOperationCount).toBe(0);
+    expect(sharedStateRepository.get(audienceEntityId)?.entries ?? []).toHaveLength(0);
+    expect(requestPayload.source_trust).toEqual({
+      citation_eligible_source_stream_entry_id_count: 0,
+      off_limits_source_stream_entry_ids: [currentSourceEntryId],
+    });
+    expect(completed?.data).toEqual(
+      expect.objectContaining({
+        rejectionReasons: ["disallowed_source_stream_entry_id"],
+      }),
+    );
   });
 });
 

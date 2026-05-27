@@ -445,7 +445,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     sharedStateResult.renderOptions ?? sharedStateRenderOptions(input.options.config);
   const ledger = withSharedStateArtifact(
     ledgerWithoutSharedState,
-    sharedStateResult.artifact,
+    previousSharedState,
     renderOptions,
   );
   const rendered = renderEvidenceLedger(ledger, {
@@ -1071,6 +1071,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   const offLimitsRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
     (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
   );
+  const currentUserStreamEntryId = input.input.currentUserEntry.id;
   const sharedStateLlmClient = input.options.llmFactory();
   const semanticBeliefRevision =
     input.options.semanticNodeRepository === undefined ||
@@ -1096,15 +1097,16 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     })),
     participantRoster: input.input.participantRoster ?? null,
     currentUserMessage: input.input.currentUserMessage,
-    currentUserStreamEntryId: input.input.currentUserEntry.id,
+    currentUserStreamEntryId,
     promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
     previousArtifact,
     relationalSlotsContext,
     allowedSourceStreamEntryIds: uniqueStreamEntryIds([
       ...ledgerPromptContext.visibleStreamEntryIds,
       ...trustedRelationalSlotEvidenceStreamEntryIds,
-    ]),
+    ]).filter((id) => id !== currentUserStreamEntryId),
     offLimitsSourceStreamEntryIds: uniqueStreamEntryIds([
+      currentUserStreamEntryId,
       ...ledgerPromptContext.offLimitsSourceStreamEntryIds,
       ...offLimitsRelationalSlotEvidenceStreamEntryIds,
     ]),

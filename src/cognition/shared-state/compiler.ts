@@ -27,10 +27,7 @@ import {
   SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
 } from "./schema.js";
-import {
-  MAX_PATCH_OUTPUT_TOKENS,
-  SHARED_STATE_TOOL_NAME,
-} from "./constants.js";
+import { MAX_PATCH_OUTPUT_TOKENS, SHARED_STATE_TOOL_NAME } from "./constants.js";
 import {
   type EmptyUpdateDrop,
   type EmitSharedStatePatch,
@@ -627,7 +624,9 @@ export async function compileSharedStateArtifact(
       ? undefined
       : uniqueStreamEntryIds([
           ...input.allowedSourceStreamEntryIds,
-          ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
+          ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input).filter(
+            (streamEntryId) => streamEntryId !== input.currentUserStreamEntryId,
+          ),
         ]);
   const offLimitsSourceStreamEntryIdsForPrompt = uniqueStreamEntryIds([
     ...(input.offLimitsSourceStreamEntryIds ?? []),
