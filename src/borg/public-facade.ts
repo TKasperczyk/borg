@@ -26,6 +26,14 @@ import type {
   EntityRecord,
   NameProvenance,
 } from "../memory/commitments/types.js";
+import type {
+  CreatorDirective,
+  CreatorDirectiveApplicable,
+  CreatorDirectiveApplicableOptions,
+  CreatorDirectiveId,
+  CreatorDirectiveListFilter,
+  CreatorDirectiveQueueInput,
+} from "../memory/creator-directives/types.js";
 import type { Provenance } from "../memory/common/provenance.js";
 import type { SharedStateArtifact, SharedStateEntry } from "../memory/decision-artifacts/index.js";
 import type {
@@ -721,6 +729,15 @@ export type BorgCommitmentsFacade = {
   countCanonicalized(): number;
 };
 
+export type BorgCreatorDirectivesFacade = {
+  queue(input: CreatorDirectiveQueueInput): CreatorDirective;
+  get(id: CreatorDirectiveId): CreatorDirective | null;
+  list(filter?: CreatorDirectiveListFilter): CreatorDirective[];
+  listApplicable(options: CreatorDirectiveApplicableOptions): CreatorDirectiveApplicable[];
+  supersede(id: CreatorDirectiveId, replacementId: CreatorDirectiveId): CreatorDirective | null;
+  revoke(id: CreatorDirectiveId, reason: string): CreatorDirective | null;
+};
+
 export type BorgIdentityEventListOptions = {
   recordType?: IdentityRecordType;
   recordId?: string;
@@ -1134,6 +1151,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;
   review: BorgReviewFacade;

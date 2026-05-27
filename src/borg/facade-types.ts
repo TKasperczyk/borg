@@ -14,6 +14,7 @@ import type {
   CommitmentRepository,
   EntityRepository,
 } from "../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -361,6 +362,27 @@ export type BorgCommitmentsFacade = {
   countCanonicalized: () => ReturnType<CommitmentRepository["countCanonicalized"]>;
 };
 
+export type BorgCreatorDirectivesFacade = {
+  queue: (
+    ...args: Parameters<CreatorDirectiveRepository["queue"]>
+  ) => ReturnType<CreatorDirectiveRepository["queue"]>;
+  get: (
+    ...args: Parameters<CreatorDirectiveRepository["get"]>
+  ) => ReturnType<CreatorDirectiveRepository["get"]>;
+  list: (
+    ...args: Parameters<CreatorDirectiveRepository["list"]>
+  ) => ReturnType<CreatorDirectiveRepository["list"]>;
+  listApplicable: (
+    ...args: Parameters<CreatorDirectiveRepository["listApplicable"]>
+  ) => ReturnType<CreatorDirectiveRepository["listApplicable"]>;
+  supersede: (
+    ...args: Parameters<CreatorDirectiveRepository["supersede"]>
+  ) => ReturnType<CreatorDirectiveRepository["supersede"]>;
+  revoke: (
+    ...args: Parameters<CreatorDirectiveRepository["revoke"]>
+  ) => ReturnType<CreatorDirectiveRepository["revoke"]>;
+};
+
 export type BorgIdentityFacade = {
   updateValue: (
     ...args: Parameters<IdentityService["updateValue"]>
@@ -505,6 +527,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;
   review: BorgReviewFacade;

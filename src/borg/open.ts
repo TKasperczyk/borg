@@ -269,6 +269,7 @@ export async function openBorgDependencies(
       socialRepository: repositories.socialRepository,
       entityRepository: repositories.entityRepository,
       commitmentRepository: repositories.commitmentRepository,
+      creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       sharedStateRepository: repositories.sharedStateRepository,
       correctionService: repositories.correctionService,
       skillRepository: repositories.skillRepository,

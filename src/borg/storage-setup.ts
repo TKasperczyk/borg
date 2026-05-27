@@ -14,6 +14,7 @@ import { executiveMigrations } from "../executive/index.js";
 import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
 import { affectiveMigrations } from "../memory/affective/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
+import { creatorDirectiveMigrations } from "../memory/creator-directives/index.js";
 import { sharedStateMigrations } from "../memory/decision-artifacts/index.js";
 import { createEpisodesTableSchema, episodicMigrations } from "../memory/episodic/index.js";
 import { identityMigrations } from "../memory/identity/index.js";
@@ -237,6 +238,7 @@ export function createMigrations(): Migration[] {
     promptOverrideMigrations,
     sessionMigrations,
     sprintCRemovalMigrations,
+    creatorDirectiveMigrations,
   );
 }
 

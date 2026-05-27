@@ -19,6 +19,7 @@ import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
@@ -96,6 +97,7 @@ export type BorgDependencies = {
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;

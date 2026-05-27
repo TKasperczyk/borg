@@ -79,6 +79,21 @@ function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
   });
 }
 
+type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
+
+export function createCreatorDirectivesFacade(
+  deps: CreatorDirectivesFacadeDeps,
+): BorgFacades["creatorDirectives"] {
+  return {
+    queue: (...args) => deps.creatorDirectiveRepository.queue(...args),
+    get: (...args) => deps.creatorDirectiveRepository.get(...args),
+    list: (...args) => deps.creatorDirectiveRepository.list(...args),
+    listApplicable: (...args) => deps.creatorDirectiveRepository.listApplicable(...args),
+    supersede: (...args) => deps.creatorDirectiveRepository.supersede(...args),
+    revoke: (...args) => deps.creatorDirectiveRepository.revoke(...args),
+  };
+}
+
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   const resolveEpisodeAudienceEntityId = (
     options:
@@ -593,6 +608,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countExpired: () => deps.commitmentRepository.countExpired(),
       countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
     },
+    creatorDirectives: createCreatorDirectivesFacade(deps),
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),
       updateGoal: (...args) => deps.identityService.updateGoal(...args),

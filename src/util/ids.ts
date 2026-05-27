@@ -23,6 +23,7 @@ export type OpenQuestionId = BrandedId<"OpenQuestionId">;
 export type SemanticNodeId = BrandedId<"SemanticNodeId">;
 export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
+export type CreatorDirectiveId = BrandedId<"CreatorDirectiveId">;
 export type EntityId = BrandedId<"EntityId">;
 export type ActionId = BrandedId<"ActionId">;
 export type RelationalSlotId = BrandedId<"RelationalSlotId">;
@@ -85,6 +86,7 @@ export const openQuestionIdHelpers = createIdHelpers<"OpenQuestionId">("oq");
 export const semanticNodeIdHelpers = createIdHelpers<"SemanticNodeId">("semn");
 export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
+export const creatorDirectiveIdHelpers = createIdHelpers<"CreatorDirectiveId">("cdir");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const actionIdHelpers = createIdHelpers<"ActionId">("act");
 export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
@@ -135,6 +137,8 @@ export const createOpenQuestionId = (): OpenQuestionId => openQuestionIdHelpers.
 export const createSemanticNodeId = (): SemanticNodeId => semanticNodeIdHelpers.create();
 export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.create();
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
+export const createCreatorDirectiveId = (): CreatorDirectiveId =>
+  creatorDirectiveIdHelpers.create();
 export const createEntityId = (): EntityId => entityIdHelpers.create();
 export const createActionId = (): ActionId => actionIdHelpers.create();
 export const createRelationalSlotId = (): RelationalSlotId => relationalSlotIdHelpers.create();
@@ -207,6 +211,10 @@ export function parseSemanticEdgeId(value: string): SemanticEdgeId {
 
 export function parseCommitmentId(value: string): CommitmentId {
   return commitmentIdHelpers.parse(value);
+}
+
+export function parseCreatorDirectiveId(value: string): CreatorDirectiveId {
+  return creatorDirectiveIdHelpers.parse(value);
 }
 
 export function parseEntityId(value: string): EntityId {
