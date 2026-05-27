@@ -624,10 +624,8 @@ export async function compileSharedStateArtifact(
       ? undefined
       : uniqueStreamEntryIds([
           ...input.allowedSourceStreamEntryIds,
-          ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input).filter(
-            (streamEntryId) => streamEntryId !== input.currentUserStreamEntryId,
-          ),
-        ]);
+          ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
+        ]).filter((streamEntryId) => streamEntryId !== input.currentUserStreamEntryId);
   const offLimitsSourceStreamEntryIdsForPrompt = uniqueStreamEntryIds([
     ...(input.offLimitsSourceStreamEntryIds ?? []),
     ...offLimitsSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),

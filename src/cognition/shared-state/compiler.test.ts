@@ -222,6 +222,7 @@ describe("compileSharedStateArtifact", () => {
   let self: EntityId;
   let alice: EntityId;
   let currentStreamEntryId: StreamEntryId;
+  let priorAllowedStreamEntryId: StreamEntryId;
 
   beforeEach(() => {
     db = openDatabase(":memory:", {
@@ -236,6 +237,7 @@ describe("compileSharedStateArtifact", () => {
     self = createEntityId();
     alice = createEntityId();
     currentStreamEntryId = createStreamEntryId();
+    priorAllowedStreamEntryId = createStreamEntryId();
   });
 
   afterEach(() => {
@@ -254,7 +256,7 @@ describe("compileSharedStateArtifact", () => {
       currentUserMessage: "Madrid 3, SS 3, Seville 4, Granada 3 is locked.",
       currentUserStreamEntryId: currentStreamEntryId,
       promptVisibleLedger: "Commitments: route order confirmed.",
-      allowedSourceStreamEntryIds: [currentStreamEntryId],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId],
       clock,
       turnId: "turn_decision_artifact_test",
     };
@@ -296,7 +298,7 @@ describe("compileSharedStateArtifact", () => {
 
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [currentStreamEntryId, slotSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId, slotSource],
       relationalSlotsContext: [
         {
           id: createRelationalSlotId(),
@@ -348,7 +350,7 @@ describe("compileSharedStateArtifact", () => {
 
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [currentStreamEntryId],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId],
       participantRoster: {
         participants: [
           {
@@ -394,7 +396,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Madrid 3 / SS 3 / Seville 4 / Granada 3",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -409,7 +411,7 @@ describe("compileSharedStateArtifact", () => {
       kind: "locked",
       text: "Madrid 3 / SS 3 / Seville 4 / Granada 3",
       owner_entity_id: audience,
-      provenance_stream_entry_ids: [currentStreamEntryId],
+      provenance_stream_entry_ids: [priorAllowedStreamEntryId],
     });
     expect(llmClient.requests[0]).toMatchObject({
       model: "claude-haiku-test",
@@ -430,7 +432,7 @@ describe("compileSharedStateArtifact", () => {
                 kind: "live",
                 text: "Avery is waiting on the clinic callback.",
                 owner_entity_id: audience,
-                source_stream_entry_ids: [currentStreamEntryId],
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
               },
             ],
           },
@@ -463,7 +465,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Granada is locked for 3 nights",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goalId],
                 commitment_ids: [commitmentId],
@@ -523,7 +525,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Granada is locked for 3 nights",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: ["goal_invalid", unknownGoalId],
               },
@@ -583,7 +585,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Granada is locked for 3 nights",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goalId],
               },
@@ -593,7 +595,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Granada nights are canonical",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goalId],
               },
@@ -657,7 +659,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Older Granada lock duplicate",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goal.id],
               },
@@ -667,7 +669,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Surviving Granada lock",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goal.id],
               },
@@ -737,7 +739,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Granada is locked for 3 nights",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goal.id],
               },
@@ -808,7 +810,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Alice owns the clinic callback follow-up",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 action_ids: [actionId],
               },
@@ -877,7 +879,7 @@ describe("compileSharedStateArtifact", () => {
                 kind: "locked",
                 text: "Project runtime is Node 22",
                 owner_entity_id: audience,
-                source_stream_entry_ids: [currentStreamEntryId],
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
               },
             ],
           }),
@@ -913,7 +915,7 @@ describe("compileSharedStateArtifact", () => {
       });
       expect(updatedStaleNode).toMatchObject({
         status: "superseded",
-        corrected_by: currentStreamEntryId,
+        corrected_by: priorAllowedStreamEntryId,
         superseded_at: 2_000,
       });
 
@@ -989,7 +991,7 @@ describe("compileSharedStateArtifact", () => {
                   kind: "locked",
                   text: "Project runtime is Node 22",
                   owner_entity_id: audience,
-                  source_stream_entry_ids: [currentStreamEntryId],
+                  source_stream_entry_ids: [priorAllowedStreamEntryId],
                 },
               ],
             }),
@@ -1089,7 +1091,7 @@ describe("compileSharedStateArtifact", () => {
                 kind: "locked",
                 text: "Project runtime is Node 22",
                 owner_entity_id: audience,
-                source_stream_entry_ids: [currentStreamEntryId],
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
               },
             ],
           }),
@@ -1173,7 +1175,7 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
-      allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [strandedSource, priorAllowedStreamEntryId],
       reconciliation: {
         goalsRepository,
       },
@@ -1257,7 +1259,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Seville is locked for 4 nights",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [newGoal.id],
               },
@@ -1270,7 +1272,7 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       tracer: trace,
-      allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [strandedSource, priorAllowedStreamEntryId],
       canonicalizationCandidates: {
         goals: [{ id: newGoal.id, text: newGoal.description }],
       },
@@ -1322,7 +1324,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "live",
               text: "Granada is under discussion",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               canonicalizes: {
                 goal_ids: [goal.id],
               },
@@ -1388,7 +1390,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Madrid 3 / SS 3 / Seville 4 / Granada 3",
               owner_entity_id: createEntityId(),
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -1445,9 +1447,9 @@ describe("compileSharedStateArtifact", () => {
                 kind: "locked",
                 text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
                 owner_entity_id: audience,
-                source_stream_entry_ids: [currentStreamEntryId],
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
               },
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -1456,7 +1458,7 @@ describe("compileSharedStateArtifact", () => {
 
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [firstSource, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [firstSource, priorAllowedStreamEntryId],
     });
 
     const artifact = repository.get(audience);
@@ -1468,7 +1470,7 @@ describe("compileSharedStateArtifact", () => {
     expect(replacement).toMatchObject({
       kind: "locked",
       text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
-      provenance_stream_entry_ids: [currentStreamEntryId],
+      provenance_stream_entry_ids: [priorAllowedStreamEntryId],
     });
   });
 
@@ -1541,7 +1543,7 @@ describe("compileSharedStateArtifact", () => {
             type: "update",
             id: entry.id,
             state_key: entry.state_key,
-            source_stream_entry_ids: [currentStreamEntryId],
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
           })),
         }),
       ],
@@ -1604,7 +1606,7 @@ describe("compileSharedStateArtifact", () => {
               id: existing?.id,
               state_key: existing?.state_key,
               text: existing?.text,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
             {
               type: "add",
@@ -1612,7 +1614,7 @@ describe("compileSharedStateArtifact", () => {
               new_key_reason: "test fixture hotel decision",
               kind: "live",
               text: "Hotel selection is still open.",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -1674,7 +1676,7 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
-      allowedSourceStreamEntryIds: [firstSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId],
     });
 
     const artifact = repository.get(audience);
@@ -1713,7 +1715,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "live",
               text: "Live shared-state decision",
               owner_entity_id: audience,
-              source_stream_entry_ids: [firstSource],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -1724,14 +1726,14 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
-      allowedSourceStreamEntryIds: [firstSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId],
     });
     const afterFirst = repository.get(audience);
 
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: secondSource,
-      allowedSourceStreamEntryIds: [firstSource, secondSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId, firstSource],
     });
 
     const afterNoOp = repository.get(audience);
@@ -1971,6 +1973,53 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
+  it("does not re-allow the current user turn even when it appears in allowedSourceStreamEntryIds directly", async () => {
+    const trace = createTraceRecorder();
+    const trustedSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Current user sourced decision",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [trustedSource, currentStreamEntryId],
+      offLimitsSourceStreamEntryIds: [currentStreamEntryId],
+      sourceTrustValidator: () => ({ allowed: true }),
+      tracer: trace,
+    });
+
+    const requestPayload = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+      source_trust?: unknown;
+    };
+    const completed = trace.events.find(
+      (event) => event.event === "shared_state.compile.completed",
+    );
+
+    expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
+    expect(requestPayload.source_trust).toEqual({
+      citation_eligible_source_stream_entry_id_count: 1,
+      off_limits_source_stream_entry_ids: [currentStreamEntryId],
+    });
+    expect(completed?.data).toEqual(
+      expect.objectContaining({
+        rejectedCount: 1,
+        rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
+      }),
+    );
+  });
+
   it("advances safe prefilter skip markers so the next ledger delta starts after the skip turn", async () => {
     const firstSource = createStreamEntryId();
     const skippedSource = createStreamEntryId();
@@ -1984,7 +2033,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "live",
               text: "Live shared-state decision",
               owner_entity_id: audience,
-              source_stream_entry_ids: [firstSource],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -1994,7 +2043,7 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       currentUserStreamEntryId: firstSource,
-      allowedSourceStreamEntryIds: [firstSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId],
     });
 
     const afterFirst = repository.get(audience);
@@ -2200,7 +2249,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "live",
               text: "Corrected live shared-state entry",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2275,7 +2324,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "live",
               text: "Third parallel live observation",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2286,7 +2335,7 @@ describe("compileSharedStateArtifact", () => {
               id: targetEntryId,
               state_key: "observation.recurring",
               text: "Merged recurring observation cluster",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2369,7 +2418,7 @@ describe("compileSharedStateArtifact", () => {
               state_key: "observation.nora.video_call_repeated_question_reconfirm",
               kind: "live",
               text: "Reconfirmed repeated-question video call observation.",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2380,7 +2429,7 @@ describe("compileSharedStateArtifact", () => {
               id: targetEntryId,
               state_key: "observation.nora.video_call_repeated_question",
               text: "Merged repeated-question video call observation.",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2461,7 +2510,7 @@ describe("compileSharedStateArtifact", () => {
               state_key: "decision.architecture.api_boundary",
               kind: "live",
               text: "New architecture decision boundary.",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2472,7 +2521,7 @@ describe("compileSharedStateArtifact", () => {
               state_key: "decision.architecture.api_boundary",
               kind: "live",
               text: "New architecture decision boundary.",
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
               new_key_reason: "Represents a new architecture boundary thread.",
             },
           ],
@@ -2525,7 +2574,7 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Use the parent constraint for care planning.",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2536,8 +2585,8 @@ describe("compileSharedStateArtifact", () => {
               kind: "locked",
               text: "Use the parent constraint for care planning.",
               owner_entity_id: audience,
-              source_stream_entry_ids: [currentStreamEntryId],
-              relationship_evidence_stream_entry_ids: [currentStreamEntryId],
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+              relationship_evidence_stream_entry_ids: [priorAllowedStreamEntryId],
             },
           ],
         }),
@@ -2548,7 +2597,7 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       tracer: trace,
       relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
-        streamEntryId === currentStreamEntryId
+        streamEntryId === priorAllowedStreamEntryId
           ? { allowed: true }
           : { allowed: false, reason: "missing" },
     });
@@ -2691,7 +2740,7 @@ describe("compileSharedStateArtifact", () => {
     const trace = createTraceRecorder();
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [source, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [source, priorAllowedStreamEntryId],
       tracer: trace,
     });
 
@@ -2725,21 +2774,21 @@ describe("compileSharedStateArtifact", () => {
             kind: "locked",
             text: `Locked long-plan route invariant ${index}`,
             owner_entity_id: audience,
-            source_stream_entry_ids: [currentStreamEntryId],
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
           },
           {
             type: "add",
             kind: "live",
             text: `Live long-plan detail ${index}`,
             owner_entity_id: audience,
-            source_stream_entry_ids: [currentStreamEntryId],
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
           },
           {
             type: "add",
             kind: "pending",
             text: `Pending long-plan decision ${index}`,
             owner_entity_id: audience,
-            source_stream_entry_ids: [currentStreamEntryId],
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
           },
         ],
       }),
@@ -2878,7 +2927,12 @@ describe("compileSharedStateArtifact", () => {
 
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [firstSource, secondSource, extraSource, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [
+        firstSource,
+        secondSource,
+        extraSource,
+        priorAllowedStreamEntryId,
+      ],
       lifecycle: {
         maxActiveEntries: 1,
         kindSoftCaps: {
@@ -2953,7 +3007,7 @@ describe("compileSharedStateArtifact", () => {
     });
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [source, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [source, priorAllowedStreamEntryId],
       tracer: trace,
       lifecycle: {
         maxActiveEntries: 40,
@@ -3032,7 +3086,7 @@ describe("compileSharedStateArtifact", () => {
     });
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [firstSource, secondSource, currentStreamEntryId],
+      allowedSourceStreamEntryIds: [firstSource, secondSource, priorAllowedStreamEntryId],
     });
     const pruneIds = patch.operations
       .filter((operation) => operation.type === "prune")
@@ -3061,7 +3115,7 @@ describe("compileSharedStateArtifact", () => {
             kind,
             text: `Artifact entry kind ${kind}`,
             owner_entity_id: audience,
-            source_stream_entry_ids: [currentStreamEntryId],
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
           })),
         }),
       ],
@@ -3293,7 +3347,7 @@ describe("compileSharedStateArtifact", () => {
 
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
-      allowedSourceStreamEntryIds: [currentStreamEntryId, oldSource],
+      allowedSourceStreamEntryIds: [priorAllowedStreamEntryId, oldSource],
       tracer: trace,
       turnCounter: 30,
       renderOptions: {
