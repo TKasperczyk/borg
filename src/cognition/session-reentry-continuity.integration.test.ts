@@ -243,10 +243,12 @@ async function runRetrievalFixture(input: {
   artifact: SharedStateArtifact;
   audienceEntityId: EntityId;
   priorEntries?: readonly StreamEntry[];
+  userMessage?: string;
 }) {
   const tracer = makeTestTurnTraceRecorder();
+  const userMessage = input.userMessage ?? "Let's start a fresh incident handoff log.";
   const currentUserEntry = makeStreamEntry({
-    content: "Let's start a fresh incident handoff log.",
+    content: userMessage,
     timestamp: 10_000,
   });
   const options = makeRetrievalOptions({
@@ -266,13 +268,13 @@ async function runRetrievalFixture(input: {
     sessionId: DEFAULT_SESSION_ID,
     turnId: "turn-session-reentry-continuity",
     turnInput: {
-      userMessage: "Let's start a fresh incident handoff log.",
+      userMessage,
       audience: "incident-team",
       origin: "user",
     },
     isSelfAudience: false,
     isUserTurn: true,
-    cognitionInput: "Let's start a fresh incident handoff log.",
+    cognitionInput: userMessage,
     llmClient: new FakeLLMClient({ responses: [] }),
     recencyMessages: [],
     audienceEntityId: input.audienceEntityId,
@@ -534,6 +536,22 @@ describe("session re-entry continuity integration", () => {
     expect(finalizerSystem).toContain("state_key_bucket=incident.rollback");
     expect(plannerSystem).toContain("state_key_bucket=legacy bucket_source=unkeyed_legacy_state");
     expect(finalizerSystem).toContain("state_key_bucket=legacy bucket_source=unkeyed_legacy_state");
+  });
+
+  it("renders carryover as possible prior context for fresh-start framing", async () => {
+    const audienceEntityId = createEntityId();
+    const artifact = makeArtifactWithActiveAndSupersededEntries(audienceEntityId);
+    const { result } = await runRetrievalFixture({
+      audienceEntityId,
+      artifact,
+      userMessage: "I haven't told them yet; let's start a thread for the rollout decision.",
+    });
+    const promptSection = result.evidenceLedgerContext.sessionReentryContinuityPromptSection;
+
+    expect(promptSection).toContain(`<${SESSION_REENTRY_CONTINUITY_TAG}>`);
+    expect(promptSection).toContain(
+      "Surface the carryover as possible prior context and ask whether to continue that thread, reset it, or start a new one.",
+    );
   });
 
   it("renders for audiences with only legacy null-key active entries", async () => {

@@ -106,7 +106,7 @@ describe("buildSessionReentryContinuityPrompt", () => {
     });
     expect(result.promptSection).toContain(`<${SESSION_REENTRY_CONTINUITY_TAG}>`);
     expect(result.promptSection).toContain(
-      "the audience state is not blank; surface existing state before accepting fresh-start framing; only treat as blank if the user explicitly requests a reset.",
+      "This is prior-session carryover for the audience, not evidence that the current speaker remembers, endorsed, or participated in it.",
     );
     expect(result.promptSection).toContain(
       "matched_state_key_buckets=all_active_state_key_buckets active_state_key_bucket_count=3",

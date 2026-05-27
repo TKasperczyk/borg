@@ -1805,7 +1805,7 @@ describe("deliberator", () => {
 
   it("surfaces session re-entry continuity guidance to both S2 planner and finalizer", async () => {
     const continuityPrompt =
-      "The following tagged blocks mix substrate-owned guidance with memory-derived self-model records.\n\n<borg_session_reentry_continuity>\nSessionReentryContinuity: this is the first user-origin turn of a new session for this audience.\nInstruction: the audience state is not blank; surface existing state before accepting fresh-start framing; only treat as blank if the user explicitly requests a reset.\nstate_keys:\n- state_key=incident.rollback entries=2 kinds=locked=1 live=1 tentative=0 invalidated=0 pending=0 most_recent_update_at=2000 most_recent_ref=strm_reentry_ref\n</borg_session_reentry_continuity>";
+      "The following tagged blocks mix substrate-owned guidance with memory-derived self-model records.\n\n<borg_session_reentry_continuity>\nSessionReentryContinuity: this is the first user-origin turn of a new session for this audience.\nInstruction: This is prior-session carryover for the audience, not evidence that the current speaker remembers, endorsed, or participated in it. If the current user frames the situation as fresh, first-time, not-yet-shared, or says other participants have not been told, do not correct them with carryover as fact. Surface the carryover as possible prior context and ask whether to continue that thread, reset it, or start a new one.\nstate_keys:\n- state_key=incident.rollback entries=2 kinds=locked=1 live=1 tentative=0 invalidated=0 pending=0 most_recent_update_at=2000 most_recent_ref=strm_reentry_ref\n</borg_session_reentry_continuity>";
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -1854,8 +1854,8 @@ describe("deliberator", () => {
 
     expect(plannerSystem).toContain("<borg_session_reentry_continuity>");
     expect(finalizerSystem).toContain("<borg_session_reentry_continuity>");
-    expect(plannerSystem).toContain("the audience state is not blank");
-    expect(finalizerSystem).toContain("the audience state is not blank");
+    expect(plannerSystem).toContain("This is prior-session carryover for the audience");
+    expect(finalizerSystem).toContain("This is prior-session carryover for the audience");
     expect(plannerSystem).toContain("state_key=incident.rollback");
     expect(finalizerSystem).toContain("state_key=incident.rollback");
   });

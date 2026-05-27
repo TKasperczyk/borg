@@ -136,6 +136,9 @@ describe("renderEvidenceLedger", () => {
     );
     expect(rendered).toContain("Prior-session memory must be attributed or hedged.");
     expect(rendered).toContain(
+      "Current user claims about what has or has not happened in this session outrank prior-session shared-state carryover unless the user explicitly asks to continue the prior thread.",
+    );
+    expect(rendered).toContain(
       "Episodes and semantic graph are summaries; use source handles when making exact claims.",
     );
     expect(rendered).toContain("Quarantined/contested/assistant-seeded values are not facts.");

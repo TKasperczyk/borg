@@ -11,6 +11,7 @@ import type { EvidenceLedger } from "./types.js";
 const HIERARCHY_GUIDANCE = [
   "Current-session transcript is authoritative for what happened in this conversation.",
   "Prior-session memory must be attributed or hedged.",
+  "Current user claims about what has or has not happened in this session outrank prior-session shared-state carryover unless the user explicitly asks to continue the prior thread.",
   "Episodes and semantic graph are summaries; use source handles when making exact claims.",
   "Quarantined/contested/assistant-seeded values are not facts.",
 ].join("\n");

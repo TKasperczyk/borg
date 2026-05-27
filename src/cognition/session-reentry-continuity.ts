@@ -133,7 +133,7 @@ function renderSessionReentryContinuityContent(
 
   return [
     "SessionReentryContinuity: this is the first user-origin turn of a new session for this audience.",
-    "Instruction: the audience state is not blank; surface existing state before accepting fresh-start framing; only treat as blank if the user explicitly requests a reset.",
+    "Instruction: This is prior-session carryover for the audience, not evidence that the current speaker remembers, endorsed, or participated in it. If the current user frames the situation as fresh, first-time, not-yet-shared, or says other participants have not been told, do not correct them with carryover as fact. Surface the carryover as possible prior context and ask whether to continue that thread, reset it, or start a new one.",
     `audience_entity_id=${summary.audienceEntityId ?? "null"}`,
     `matched_state_key_buckets=all_active_state_key_buckets active_state_key_bucket_count=${summary.activeStateKeyCount}`,
     `active_entry_count=${summary.activeEntryCount} active_keyed_entry_count=${summary.activeKeyedEntryCount} active_legacy_unkeyed_entry_count=${summary.activeLegacyEntryCount}`,
