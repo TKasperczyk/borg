@@ -393,6 +393,7 @@ async function runDeliberationFixture(input: {
     audienceEntityId: input.audienceEntityId,
     participationPolicy: "active",
     creatorContext: null,
+    operatorSessionSnapshot: null,
     persistedUserEntryId: input.currentUserEntry.id,
     perception: makePerception(),
     activeParticipants: [],

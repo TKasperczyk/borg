@@ -72,9 +72,14 @@ export const sessionTouchUpdateSchema = z.object({
   messageCountDelta: z.number().int().nonnegative().optional(),
 });
 
-export const sessionListOptionsSchema = z.object({
+export const sessionQueryOptionsSchema = z.object({
   activeSince: z.number().int().finite().optional(),
   sourceType: sessionSourceTypeSchema.optional(),
+  status: sessionStatusSchema.optional(),
+  excludeSessionId: sessionIdSchema.optional(),
+});
+
+export const sessionListOptionsSchema = sessionQueryOptionsSchema.extend({
   limit: z.number().int().positive().optional(),
 });
 
@@ -87,4 +92,5 @@ export type SessionAudienceRole = z.infer<typeof sessionAudienceRoleSchema>;
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 export type SessionEnsureInput = z.infer<typeof sessionEnsureInputSchema>;
 export type SessionTouchUpdate = z.infer<typeof sessionTouchUpdateSchema>;
+export type SessionQueryOptions = z.infer<typeof sessionQueryOptionsSchema>;
 export type SessionListOptions = z.infer<typeof sessionListOptionsSchema>;

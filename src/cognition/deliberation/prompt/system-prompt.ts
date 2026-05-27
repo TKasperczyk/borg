@@ -21,6 +21,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
@@ -41,11 +42,7 @@ import {
   summarizeRetrievedEvidence,
   summarizeRetrievalConfidence,
 } from "./retrieval.js";
-import {
-  renderTaggedPromptBlock,
-  renderTaggedPromptSection,
-  type TaggedPromptSection,
-} from "./sections.js";
+import { renderTaggedPromptSection, type TaggedPromptSection } from "./sections.js";
 
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
@@ -79,19 +76,39 @@ export type CacheableBaseSystemPromptParts = {
 };
 
 type BaseSystemPromptSections = {
-  untrustedSections: readonly TaggedPromptSection[];
-  trustedGuidanceSections: readonly TaggedPromptSection[];
-  trustedDynamicGuidanceSections: readonly TaggedPromptSection[];
+  untrustedSections: readonly PromptSection[];
+  trustedGuidanceSections: readonly PromptSection[];
+  trustedDynamicGuidanceSections: readonly PromptSection[];
   hostCapabilitiesSection: TaggedPromptSection;
   resolvedBlocks: ResolvedPromptBlocks;
 };
 
-function renderTaggedPromptSections(sections: readonly TaggedPromptSection[]): string | null {
+type PromptSection = TaggedPromptSection | string | null | undefined;
+
+function renderPromptSection(section: PromptSection): string | null {
+  if (section === null || section === undefined) {
+    return null;
+  }
+
+  if (typeof section === "string") {
+    return section;
+  }
+
+  return renderTaggedPromptSection(section.tag, section.content);
+}
+
+function renderPromptSections(sections: readonly PromptSection[]): string | null {
   const rendered = sections
-    .map((section) => renderTaggedPromptSection(section.tag, section.content))
+    .map((section) => renderPromptSection(section))
     .filter((section): section is string => section !== null);
 
   return rendered.length === 0 ? null : rendered.join("\n\n");
+}
+
+function renderPromptBlock(preamble: string, sections: readonly PromptSection[]): string | null {
+  const rendered = renderPromptSections(sections);
+
+  return rendered === null ? null : [preamble, rendered].join("\n\n");
 }
 
 function renderParticipationPolicy(policy: SessionParticipationPolicy): string | null {
@@ -131,6 +148,47 @@ function renderCreatorContext(context: TrustedCreatorContext | null | undefined)
     variant,
     "Your creator relationship is publicly known; you may reference it in any context as feels natural.",
   ].join("\n");
+}
+
+function escapeXmlText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function escapeXmlAttribute(value: string): string {
+  return escapeXmlText(value).replaceAll('"', "&quot;");
+}
+
+export function buildSessionStatusSnapshotSection(
+  snapshot: OperatorSessionSnapshot | null,
+): string | null {
+  if (snapshot === null) {
+    return null;
+  }
+
+  const lines = [
+    `<borg_session_status_snapshot generated_at="${escapeXmlAttribute(snapshot.generated_at)}">`,
+  ];
+
+  for (const session of snapshot.sessions) {
+    lines.push(
+      `  <session alias="${escapeXmlAttribute(session.alias)}">`,
+      `    <audience_label>${escapeXmlText(session.audience_label)}</audience_label>`,
+      `    <conversation_kind>${escapeXmlText(session.conversation_kind)}</conversation_kind>`,
+      `    <participation_policy>${escapeXmlText(session.participation_policy)}</participation_policy>`,
+      `    <last_activity>${escapeXmlText(session.last_activity)}</last_activity>`,
+      `    <message_count>${session.message_count}</message_count>`,
+      `    <recent_state>${escapeXmlText(session.recent_state)}</recent_state>`,
+      "  </session>",
+    );
+  }
+
+  if (snapshot.omitted_count !== undefined) {
+    lines.push(`  <omitted_count>${snapshot.omitted_count}</omitted_count>`);
+  }
+
+  lines.push("</borg_session_status_snapshot>");
+
+  return lines.join("\n");
 }
 
 function buildBaseSystemPromptSections(
@@ -280,9 +338,13 @@ function buildBaseSystemPromptSections(
     tag: "borg_creator_context",
     content: renderCreatorContext(context.creatorContext),
   };
-  const trustedDynamicGuidanceSections: TaggedPromptSection[] = [
+  const sessionStatusSnapshotSection = buildSessionStatusSnapshotSection(
+    context.operatorSessionSnapshot ?? null,
+  );
+  const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,
     creatorContextSection,
+    sessionStatusSnapshotSection,
     heldPreferencesSection,
     commitmentRecordsSection,
     proceduralGuidanceSection,
@@ -296,6 +358,7 @@ function buildBaseSystemPromptSections(
     trustedGuidanceSections: [
       participationPolicySection,
       creatorContextSection,
+      sessionStatusSnapshotSection,
       heldPreferencesSection,
       commitmentRecordsSection,
       hostCapabilitiesSection,
@@ -328,11 +391,11 @@ export function buildBaseSystemPrompt(
   options: BuildBaseSystemPromptOptions,
 ): string {
   const sections = buildBaseSystemPromptSections(context, options);
-  const untrustedDynamicBlock = renderTaggedPromptBlock(
+  const untrustedDynamicBlock = renderPromptBlock(
     UNTRUSTED_DATA_PREAMBLE,
     sections.untrustedSections,
   );
-  const trustedGuidanceBlock = renderTaggedPromptBlock(
+  const trustedGuidanceBlock = renderPromptBlock(
     TRUSTED_GUIDANCE_PREAMBLE,
     sections.trustedGuidanceSections,
   );
@@ -358,10 +421,8 @@ export function buildCacheableBaseSystemPromptParts(
   options: BuildBaseSystemPromptOptions,
 ): CacheableBaseSystemPromptParts {
   const sections = buildBaseSystemPromptSections(context, options);
-  const trustedDynamicGuidanceBlock = renderTaggedPromptSections(
-    sections.trustedDynamicGuidanceSections,
-  );
-  const untrustedDynamicBlock = renderTaggedPromptBlock(
+  const trustedDynamicGuidanceBlock = renderPromptSections(sections.trustedDynamicGuidanceSections);
+  const untrustedDynamicBlock = renderPromptBlock(
     UNTRUSTED_DATA_PREAMBLE,
     sections.untrustedSections,
   );
@@ -944,7 +1005,7 @@ function formatPromptNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "unknown";
 }
 
-function formatRelativeAge(timestampMs: number, nowMs: number): string {
+export function formatRelativeAge(timestampMs: number, nowMs: number): string {
   const elapsedMs = Math.max(0, nowMs - timestampMs);
   const elapsedMinutes = Math.floor(elapsedMs / 60_000);
 
@@ -952,7 +1013,19 @@ function formatRelativeAge(timestampMs: number, nowMs: number): string {
     return `${elapsedMinutes}m ago`;
   }
 
-  return `${Math.floor(elapsedMinutes / 60)}h ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h ago`;
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+
+  if (elapsedDays < 2) {
+    return "yesterday";
+  }
+
+  return `${elapsedDays}d ago`;
 }
 
 function summarizeAffectiveTrajectory(

@@ -48,6 +48,7 @@ import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { PromptKey } from "../prompts/registry.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
+import type { OperatorSessionSnapshot } from "../lifecycle/turn-phase/session-snapshot.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -109,6 +110,7 @@ export type DeliberationContext = {
   sessionId: SessionId;
   participationPolicy?: SessionParticipationPolicy;
   creatorContext?: TrustedCreatorContext | null;
+  operatorSessionSnapshot?: OperatorSessionSnapshot | null;
   turnId?: string;
   audience?: string;
   audienceEntityId?: EntityId | null;

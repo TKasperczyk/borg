@@ -234,6 +234,7 @@ describe("SessionsRepository", () => {
     const harness = openRepo();
     db = harness.db;
     const slackSession = createSessionId();
+    const archivedSession = createSessionId();
 
     harness.repo.ensure({
       session_id: DEFAULT_SESSION_ID,
@@ -254,17 +255,37 @@ describe("SessionsRepository", () => {
       status: "idle",
       last_activity_at: 2_000,
     });
+    harness.repo.ensure({
+      session_id: archivedSession,
+      source_type: "demo",
+      label: "archived",
+      audience_label: "old",
+      conversation_kind: "demo",
+      status: "archived",
+      last_activity_at: 3_000,
+    });
 
     expect(harness.repo.list().map((session) => session.session_id)).toEqual([
+      archivedSession,
       slackSession,
       DEFAULT_SESSION_ID,
     ]);
     expect(harness.repo.list({ activeSince: 1_500 }).map((session) => session.session_id)).toEqual([
+      archivedSession,
       slackSession,
     ]);
     expect(harness.repo.list({ sourceType: "demo" }).map((session) => session.session_id)).toEqual([
+      archivedSession,
       DEFAULT_SESSION_ID,
     ]);
+    expect(harness.repo.list({ status: "active" }).map((session) => session.session_id)).toEqual([
+      DEFAULT_SESSION_ID,
+    ]);
+    expect(
+      harness.repo.list({ excludeSessionId: archivedSession }).map((session) => session.session_id),
+    ).toEqual([slackSession, DEFAULT_SESSION_ID]);
     expect(harness.repo.list({ limit: 1 })).toHaveLength(1);
+    expect(harness.repo.count({ status: "active" })).toBe(1);
+    expect(harness.repo.count({ excludeSessionId: DEFAULT_SESSION_ID })).toBe(2);
   });
 });

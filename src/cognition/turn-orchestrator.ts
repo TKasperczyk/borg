@@ -161,7 +161,7 @@ export type TurnOrchestratorOptions = {
   sessionLock?: SessionLock;
   tracer?: TurnTracer;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
-  sessionsRepository?: Pick<SessionsRepository, "get">;
+  sessionsRepository?: Pick<SessionsRepository, "count" | "get" | "list">;
 };
 
 export class TurnOrchestrator {

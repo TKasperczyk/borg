@@ -33,8 +33,10 @@ import {
 import type { Config } from "../config/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import {
+  DEFAULT_SESSION_ID,
   createEpisodeId,
   createGoalId,
+  createSessionId,
   createStreamEntryId,
   type EntityId,
   type EpisodeId,
@@ -837,6 +839,19 @@ function requestTextMessages(request: LLMCompleteOptions | undefined): string[] 
   return request?.messages.map((message) => message.content) ?? [];
 }
 
+function simpleSuccessfulTurnResponses(finalizerText: string) {
+  return [
+    createCorrectivePreferenceResponse({
+      classification: "none",
+    }),
+    createActionStateResponse([]),
+    createGoalPromotionResponse([]),
+    createEmitAnswerResponse(finalizerText),
+    createClosureResponseAuditResponse(),
+    createEmptyReflectionResponse(),
+  ];
+}
+
 async function removeTempDir(path: string): Promise<void> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -853,6 +868,134 @@ async function removeTempDir(path: string): Promise<void> {
     }
   }
 }
+
+describe("TurnOrchestrator operator session snapshot", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  it("renders active other sessions in operator turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-snapshot-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const operatorSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const archivedSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("I can see the live sessions."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.sessions.ensure({
+        session_id: otherSessionId,
+        source_type: "demo",
+        label: "dm with Alice",
+        audience_label: "Alice",
+        conversation_kind: "dm",
+        last_activity_at: clock.now() - 5 * 60_000,
+      });
+      borg.sessions.touch(otherSessionId, {
+        at: clock.now() - 5 * 60_000,
+        lastTurnId: "turn_alice",
+        messageCountDelta: 42,
+      });
+      borg.sessions.ensure({
+        session_id: archivedSessionId,
+        source_type: "demo",
+        label: "archived channel",
+        audience_label: "Archived",
+        conversation_kind: "channel",
+        status: "archived",
+        last_activity_at: clock.now() - 1 * 60_000,
+      });
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        label: "operator",
+        audience_label: "Tom",
+        conversation_kind: "demo",
+        audience_role: "operator",
+      });
+
+      await borg.turn({
+        sessionId: operatorSessionId,
+        audience: "Tom",
+        userMessage: "What other sessions are live?",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+      const snapshotStart = finalizerSystem.indexOf("<borg_session_status_snapshot");
+      const snapshotEnd = finalizerSystem.indexOf("</borg_session_status_snapshot>");
+      const snapshotBlock = finalizerSystem.slice(
+        snapshotStart,
+        snapshotEnd + "</borg_session_status_snapshot>".length,
+      );
+
+      expect(snapshotStart).toBeGreaterThanOrEqual(0);
+      expect(snapshotBlock).toContain('  <session alias="session_1">');
+      expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
+      expect(snapshotBlock).toContain("<conversation_kind>dm</conversation_kind>");
+      expect(snapshotBlock).toContain("<participation_policy>active</participation_policy>");
+      expect(snapshotBlock).toContain("<last_activity>5m ago</last_activity>");
+      expect(snapshotBlock).toContain("<message_count>42</message_count>");
+      expect(snapshotBlock).toContain("<recent_state>last_turn_available</recent_state>");
+      expect(snapshotBlock).not.toContain("Archived");
+      expect(snapshotBlock).not.toContain(operatorSessionId);
+      expect(snapshotBlock).not.toContain(otherSessionId);
+      expect(snapshotBlock).not.toMatch(/\b(?:sess|ent|strm|turn)_[a-z0-9]+\b/);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("omits the snapshot in participant turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-participant-snapshot-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const otherSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("No operator snapshot here."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.sessions.ensure({
+        session_id: otherSessionId,
+        source_type: "demo",
+        label: "dm with Alice",
+        audience_label: "Alice",
+        conversation_kind: "dm",
+        last_activity_at: clock.now() - 5 * 60_000,
+      });
+      borg.sessions.ensure({
+        session_id: DEFAULT_SESSION_ID,
+        source_type: "demo",
+        label: "default",
+        audience_label: "Tom",
+        conversation_kind: "demo",
+      });
+
+      await borg.turn({
+        sessionId: DEFAULT_SESSION_ID,
+        audience: "Tom",
+        userMessage: "What other sessions are live?",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
+    } finally {
+      await borg.close();
+    }
+  });
+});
 
 describe("TurnOrchestrator evidence ledger", () => {
   const tempDirs: string[] = [];

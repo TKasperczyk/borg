@@ -1,5 +1,6 @@
 import { Deliberator } from "../../deliberation/deliberator.js";
 import type { TrustedCreatorContext } from "../../deliberation/types.js";
+import type { OperatorSessionSnapshot } from "./session-snapshot.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
 import type { ContradictionRoutingCooldown } from "../../deliberation/contradiction-routing-cooldown.js";
@@ -50,6 +51,7 @@ export async function runDeliberationPhase(input: {
   audienceEntityId: EntityId | null;
   participationPolicy: SessionParticipationPolicy;
   creatorContext: TrustedCreatorContext | null;
+  operatorSessionSnapshot: OperatorSessionSnapshot | null;
   persistedUserEntryId?: StreamEntry["id"];
   currentUserContent?: readonly BorgUserContentBlock[];
   perception: PerceptionResult;
@@ -81,6 +83,7 @@ export async function runDeliberationPhase(input: {
       sessionId: input.sessionId,
       participationPolicy: input.participationPolicy,
       creatorContext: input.creatorContext,
+      operatorSessionSnapshot: input.operatorSessionSnapshot,
       turnId: input.turnId,
       audience: input.turnInput.audience,
       audienceEntityId: input.audienceEntityId,

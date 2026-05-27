@@ -8,11 +8,13 @@ import {
   sessionIdSchema,
   sessionListOptionsSchema,
   sessionParticipationPolicySchema,
+  sessionQueryOptionsSchema,
   sessionRecordSchema,
   sessionTouchUpdateSchema,
   type SessionEnsureInput,
   type SessionListOptions,
   type SessionParticipationPolicy,
+  type SessionQueryOptions,
   type SessionRecord,
   type SessionTouchUpdate,
 } from "./types.js";
@@ -39,6 +41,10 @@ type SessionRow = {
   audience_role: string;
 };
 
+type CountRow = {
+  count: number;
+};
+
 export type SessionsRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
@@ -59,6 +65,39 @@ function mapSessionRow(row: SessionRow): SessionRecord {
 
 function boundedLimit(limit: number | undefined): number {
   return Math.min(Math.max(1, limit ?? DEFAULT_SESSION_LIST_LIMIT), MAX_SESSION_LIST_LIMIT);
+}
+
+function buildSessionFilters(options: SessionQueryOptions | undefined): {
+  where: string;
+  values: unknown[];
+} {
+  const filters: string[] = [];
+  const values: unknown[] = [];
+
+  if (options?.activeSince !== undefined) {
+    filters.push("last_activity_at >= ?");
+    values.push(options.activeSince);
+  }
+
+  if (options?.sourceType !== undefined) {
+    filters.push("source_type = ?");
+    values.push(options.sourceType);
+  }
+
+  if (options?.status !== undefined) {
+    filters.push("status = ?");
+    values.push(options.status);
+  }
+
+  if (options?.excludeSessionId !== undefined) {
+    filters.push("session_id <> ?");
+    values.push(options.excludeSessionId);
+  }
+
+  return {
+    where: filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`,
+    values,
+  };
 }
 
 export class SessionsRepository {
@@ -195,22 +234,11 @@ export class SessionsRepository {
 
   list(options?: SessionListOptions): SessionRecord[] {
     const parsed = options === undefined ? undefined : sessionListOptionsSchema.parse(options);
-    const filters: string[] = [];
-    const values: unknown[] = [];
-
-    if (parsed?.activeSince !== undefined) {
-      filters.push("last_activity_at >= ?");
-      values.push(parsed.activeSince);
-    }
-
-    if (parsed?.sourceType !== undefined) {
-      filters.push("source_type = ?");
-      values.push(parsed.sourceType);
-    }
+    const filter = buildSessionFilters(parsed);
+    const values = [...filter.values];
 
     values.push(boundedLimit(parsed?.limit));
 
-    const where = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
     const rows = this.db
       .prepare(
         `
@@ -219,7 +247,7 @@ export class SessionsRepository {
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
             message_count, status, privacy_level, participation_policy, audience_role
           FROM sessions
-          ${where}
+          ${filter.where}
           ORDER BY last_activity_at DESC, session_id ASC
           LIMIT ?
         `,
@@ -227,5 +255,21 @@ export class SessionsRepository {
       .all(...values) as SessionRow[];
 
     return rows.map(mapSessionRow);
+  }
+
+  count(options?: SessionQueryOptions): number {
+    const parsed = options === undefined ? undefined : sessionQueryOptionsSchema.parse(options);
+    const filter = buildSessionFilters(parsed);
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM sessions
+          ${filter.where}
+        `,
+      )
+      .get(...filter.values) as CountRow | undefined;
+
+    return row?.count ?? 0;
   }
 }

@@ -29,15 +29,23 @@ import {
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
+import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import type { DeliberationContext } from "../types.js";
 
-import { buildBaseSystemPrompt, buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
+import {
+  buildBaseSystemPrompt,
+  buildCacheableBaseSystemPromptParts,
+  buildSessionStatusSnapshotSection,
+  formatRelativeAge,
+} from "./system-prompt.js";
 
 const NOW_MS = 1_700_000_000_000;
 const PROMPT_OPTIONS = {
   retrievalContextBudget: 1_000,
   semanticContextBudget: 1_000,
 };
+const INTERNAL_ID_PATTERN =
+  /\b(?:ent|sess|strm|turn|ep|cmt|goal|val|trt|abp|grw|oq|semn|seme|act|rslot|dart|skl|procevi|run|exstep|att|imgp)_[a-z0-9]+\b/;
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
   problem_kind: "code_debugging",
   domain_tags: ["typescript"],
@@ -189,16 +197,48 @@ function makeSocialProfile(
 }
 
 function extractBlock(prompt: string, tag: string): string {
-  const openTag = `<${tag}>`;
+  const openTag = `<${tag}`;
   const closeTag = `</${tag}>`;
   const start = prompt.indexOf(openTag);
-  const end = prompt.indexOf(closeTag);
+  const openEnd = prompt.indexOf(">", start);
+  const end = prompt.indexOf(closeTag, openEnd);
 
   expect(start).toBeGreaterThanOrEqual(0);
+  expect(openEnd).toBeGreaterThan(start);
   expect(end).toBeGreaterThan(start);
 
   return prompt.slice(start, end + closeTag.length);
 }
+
+function makeOperatorSessionSnapshot(
+  overrides: Partial<OperatorSessionSnapshot> = {},
+): OperatorSessionSnapshot {
+  return {
+    generated_at: new Date(NOW_MS).toISOString(),
+    sessions: [
+      {
+        alias: "session_1",
+        audience_label: "Alice",
+        conversation_kind: "dm",
+        participation_policy: "active",
+        last_activity: "5m ago",
+        message_count: 42,
+        recent_state: "last_turn_available",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("formatRelativeAge", () => {
+  it("formats minute, hour, yesterday, and day buckets", () => {
+    expect(formatRelativeAge(NOW_MS - 5 * 60_000, NOW_MS)).toBe("5m ago");
+    expect(formatRelativeAge(NOW_MS - 2 * 60 * 60_000, NOW_MS)).toBe("2h ago");
+    expect(formatRelativeAge(NOW_MS - 25 * 60 * 60_000, NOW_MS)).toBe("yesterday");
+    expect(formatRelativeAge(NOW_MS - 48 * 60 * 60_000, NOW_MS)).toBe("2d ago");
+    expect(formatRelativeAge(NOW_MS - 72 * 60 * 60_000, NOW_MS)).toBe("3d ago");
+  });
+});
 
 describe("buildBaseSystemPrompt", () => {
   it("renders creator context in operator sessions", () => {
@@ -223,9 +263,7 @@ describe("buildBaseSystemPrompt", () => {
       "Your creator relationship is publicly known; you may reference it in any context as feels natural.",
     );
     expect(block).not.toContain(creatorId);
-    expect(block).not.toMatch(
-      /\b(?:ent|sess|strm|ep|cmt|goal|val|trt|abp|grw|oq|semn|seme|act|rslot|dart|skl|procevi|run|exstep|att|imgp)_[a-z0-9]+\b/,
-    );
+    expect(block).not.toMatch(INTERNAL_ID_PATTERN);
     expect(cacheable.dynamicContent).toContain("<borg_creator_context>");
   });
 
@@ -262,6 +300,128 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(prompt).not.toContain("<borg_creator_context>");
     expect(cacheable.dynamicContent).not.toContain("<borg_creator_context>");
+  });
+
+  it("renders operator session status snapshot XML after creator context", () => {
+    const context = makeContext({
+      creatorContext: {
+        currentSenderEntityId: createEntityId(),
+        currentSenderDisplayName: "Tom",
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
+      },
+      operatorSessionSnapshot: makeOperatorSessionSnapshot(),
+    });
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_session_status_snapshot");
+
+    expect(block).toBe(
+      [
+        `<borg_session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
+        '  <session alias="session_1">',
+        "    <audience_label>Alice</audience_label>",
+        "    <conversation_kind>dm</conversation_kind>",
+        "    <participation_policy>active</participation_policy>",
+        "    <last_activity>5m ago</last_activity>",
+        "    <message_count>42</message_count>",
+        "    <recent_state>last_turn_available</recent_state>",
+        "  </session>",
+        "</borg_session_status_snapshot>",
+      ].join("\n"),
+    );
+    expect(prompt.indexOf("<borg_creator_context>")).toBeLessThan(
+      prompt.indexOf("<borg_session_status_snapshot"),
+    );
+    expect(prompt.indexOf("<borg_session_status_snapshot")).toBeLessThan(
+      prompt.indexOf("<borg_host_capabilities>"),
+    );
+    expect(cacheable.dynamicContent.indexOf("<borg_creator_context>")).toBeLessThan(
+      cacheable.dynamicContent.indexOf("<borg_session_status_snapshot"),
+    );
+    expect(cacheable.dynamicContent.indexOf("<borg_session_status_snapshot")).toBeLessThan(
+      cacheable.dynamicContent.indexOf(UNTRUSTED_DATA_PREAMBLE),
+    );
+    expect(block).not.toMatch(INTERNAL_ID_PATTERN);
+  });
+
+  it("omits operator session status snapshot when the input is null", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        operatorSessionSnapshot: null,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const cacheable = buildCacheableBaseSystemPromptParts(
+      makeContext({
+        operatorSessionSnapshot: null,
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<borg_session_status_snapshot");
+    expect(cacheable.dynamicContent).not.toContain("<borg_session_status_snapshot");
+  });
+
+  it("renders an empty operator session status snapshot without omitted count", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorContext: {
+          currentSenderEntityId: createEntityId(),
+          currentSenderDisplayName: "Tom",
+          currentSenderBorgRole: "creator",
+          sessionAudienceRole: "operator",
+        },
+        operatorSessionSnapshot: makeOperatorSessionSnapshot({
+          sessions: [],
+        }),
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_session_status_snapshot");
+
+    expect(block).toBe(
+      [
+        `<borg_session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
+        "</borg_session_status_snapshot>",
+      ].join("\n"),
+    );
+    expect(block).not.toContain("<omitted_count>");
+    expect(block).not.toMatch(INTERNAL_ID_PATTERN);
+  });
+
+  it("escapes operator session status snapshot text values", () => {
+    const section = buildSessionStatusSnapshotSection(
+      makeOperatorSessionSnapshot({
+        sessions: [
+          {
+            alias: "session_1",
+            audience_label: "Alice & <bad>",
+            conversation_kind: "dm",
+            participation_policy: "active",
+            last_activity: "5m ago",
+            message_count: 1,
+            recent_state: "last_turn_available",
+          },
+        ],
+      }),
+    );
+
+    expect(section).toContain("<audience_label>Alice &amp; &lt;bad&gt;</audience_label>");
+  });
+
+  it("renders omitted count only when the operator session snapshot has a tail", () => {
+    const section = buildSessionStatusSnapshotSection(
+      makeOperatorSessionSnapshot({
+        omitted_count: 8,
+      }),
+    );
+
+    expect(section).toContain("<omitted_count>8</omitted_count>");
+  });
+
+  it("returns null for a null operator session status snapshot", () => {
+    expect(buildSessionStatusSnapshotSection(null)).toBeNull();
   });
 
   it("renders legacy retrieved evidence when no evidence ledger is active", () => {

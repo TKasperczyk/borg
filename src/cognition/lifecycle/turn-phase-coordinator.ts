@@ -25,6 +25,10 @@ import {
   audienceProfileForParticipants,
   buildFrameAnomalyConversationContext,
 } from "./turn-phase/context-build.js";
+import {
+  buildOperatorSessionSnapshot,
+  OPERATOR_SESSION_SNAPSHOT_CAP,
+} from "./turn-phase/session-snapshot.js";
 export {
   buildContradictionRoutingOverride,
   type BuildContradictionRoutingOverrideInput,
@@ -229,6 +233,23 @@ export class TurnPhaseCoordinator {
     const sessionRecord = this.options.sessionsRepository?.get(sessionId) ?? null;
     const sessionAudienceRole = sessionRecord?.audience_role ?? "participant";
     const participationPolicy = sessionRecord?.participation_policy ?? "active";
+    const operatorSessionSnapshot =
+      sessionAudienceRole === "operator" && this.options.sessionsRepository !== undefined
+        ? buildOperatorSessionSnapshot({
+            sessions: this.options.sessionsRepository.list({
+              status: "active",
+              excludeSessionId: sessionId,
+              limit: OPERATOR_SESSION_SNAPSHOT_CAP,
+            }),
+            totalActiveOtherSessionCount: this.options.sessionsRepository.count({
+              status: "active",
+              excludeSessionId: sessionId,
+            }),
+            currentSessionId: sessionId,
+            nowMs: this.options.clock.now(),
+            cap: OPERATOR_SESSION_SNAPSHOT_CAP,
+          })
+        : null;
     const currentSenderEntityId =
       audienceEntity?.kind === "group" ? groupSpeakerEntityId : audienceEntityId;
     const currentSenderEntity =
@@ -633,6 +654,7 @@ export class TurnPhaseCoordinator {
           audienceEntityId,
           participationPolicy,
           creatorContext,
+          operatorSessionSnapshot,
           persistedUserEntryId,
           currentUserContent,
           perception,
