@@ -124,6 +124,16 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
   }
 }
 
+const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
+
+function sanitizeCreatorDisplayNameForPromptLine(value: string): string {
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .trim()
+    .slice(0, CREATOR_DISPLAY_NAME_MAX_CHARS)
+    .trimEnd();
+}
+
 function renderCreatorContext(context: TrustedCreatorContext | null | undefined): string | null {
   if (context?.currentSenderBorgRole !== "creator") {
     return null;
@@ -137,7 +147,11 @@ function renderCreatorContext(context: TrustedCreatorContext | null | undefined)
   return [
     ...(context.currentSenderDisplayName === null
       ? ["creator_display_name: unknown"]
-      : [`creator_display_name: ${context.currentSenderDisplayName}`]),
+      : [
+          `creator_display_name: ${sanitizeCreatorDisplayNameForPromptLine(
+            context.currentSenderDisplayName,
+          )}`,
+        ]),
     `session_audience_role: ${context.sessionAudienceRole}`,
     "relationship_visibility: public",
     `guidance_weight: ${
