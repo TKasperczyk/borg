@@ -154,9 +154,9 @@ function boundaryOrOmit(
 function evaluateRenderMode(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
+  audienceId: EntityId | null = options.currentAudienceEntityId,
 ): CreatorDirectiveRenderMode {
   const policy = directive.disclosure_policy;
-  const audienceId = options.currentAudienceEntityId;
 
   if (hasEntity(policy.excluded_entity_ids, audienceId)) {
     return boundaryOrOmit(directive, options.topicTags);
@@ -191,6 +191,48 @@ function evaluateRenderMode(
   }
 
   return "omit";
+}
+
+function effectiveRecipientEntityIds(
+  options: CreatorDirectiveApplicableOptions,
+): readonly (EntityId | null)[] {
+  const participantEntityIds = options.participantEntityIds ?? [];
+
+  if (participantEntityIds.length <= 1) {
+    return [options.currentAudienceEntityId];
+  }
+
+  return uniqueIds(participantEntityIds);
+}
+
+function evaluateApplicableRenderMode(
+  directive: CreatorDirective,
+  options: CreatorDirectiveApplicableOptions,
+): CreatorDirectiveRenderMode {
+  const recipientEntityIds = effectiveRecipientEntityIds(options);
+
+  if (recipientEntityIds.length <= 1) {
+    return evaluateRenderMode(directive, options, recipientEntityIds[0] ?? null);
+  }
+
+  const recipientEvaluations = recipientEntityIds.map((recipientEntityId) => ({
+    isExcluded: hasEntity(directive.disclosure_policy.excluded_entity_ids, recipientEntityId),
+    renderMode: evaluateRenderMode(directive, options, recipientEntityId),
+  }));
+
+  if (
+    recipientEvaluations.some(
+      (evaluation) => evaluation.isExcluded && evaluation.renderMode === "boundary",
+    )
+  ) {
+    return "boundary";
+  }
+
+  if (recipientEvaluations.some((evaluation) => evaluation.renderMode !== "content")) {
+    return "omit";
+  }
+
+  return "content";
 }
 
 export type CreatorDirectiveRepositoryOptions = {
@@ -361,7 +403,7 @@ export class CreatorDirectiveRepository {
 
     return this.list({ status: "active" }).map((directive) => ({
       directive,
-      render_mode: evaluateRenderMode(directive, parsed),
+      render_mode: evaluateApplicableRenderMode(directive, parsed),
     }));
   }
 

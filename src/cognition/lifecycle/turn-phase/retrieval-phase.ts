@@ -169,12 +169,22 @@ function uniqueEntityIds(ids: readonly EntityId[]): EntityId[] {
 
 function participantEntityIds(input: {
   audienceEntityId: EntityId | null;
+  audienceEntityKind?: "person" | "group" | "self" | "abstract" | null;
   activeParticipants: readonly ActiveParticipant[];
 }): EntityId[] {
-  return uniqueEntityIds([
-    ...(input.audienceEntityId === null ? [] : [input.audienceEntityId]),
-    ...input.activeParticipants.map((participant) => participant.entityId),
-  ]);
+  const concreteParticipants = input.activeParticipants.filter(
+    (participant) =>
+      input.audienceEntityKind !== "group" ||
+      input.audienceEntityId === null ||
+      participant.entityId !== input.audienceEntityId ||
+      input.activeParticipants.length === 1,
+  );
+
+  if (concreteParticipants.length > 0) {
+    return uniqueEntityIds(concreteParticipants.map((participant) => participant.entityId));
+  }
+
+  return input.audienceEntityId === null ? [] : [input.audienceEntityId];
 }
 
 function perceivedEntityIds(input: {
@@ -220,9 +230,10 @@ export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
-  const directives = input.applicable
+  const contentDirectives = input.applicable
     .filter((item) => item.render_mode === "content" && item.directive.canonical_fact !== null)
     .map((item) => ({
+      renderMode: "content" as const,
       kind: item.directive.kind,
       subjectKind: item.directive.subject_kind,
       subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
@@ -232,6 +243,21 @@ export function buildCreatorDirectiveBriefing(input: {
       createdAt: item.directive.created_at,
     }))
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+  const boundaryDirectives = input.applicable
+    .filter(
+      (item) =>
+        item.render_mode === "boundary" &&
+        item.directive.disclosure_policy.boundary_prompt !== null,
+    )
+    .map((item) => ({
+      renderMode: "boundary" as const,
+      boundaryPrompt: item.directive.disclosure_policy.boundary_prompt!,
+      topicTags: item.directive.disclosure_policy.topic_tags,
+      priority: item.directive.priority,
+      createdAt: item.directive.created_at,
+    }))
+    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+  const directives = [...contentDirectives, ...boundaryDirectives];
 
   return directives.length === 0 ? null : { directives };
 }
@@ -421,6 +447,7 @@ export async function runRetrievalPhase(input: {
           currentAudienceEntityId: input.audienceEntityId,
           participantEntityIds: participantEntityIds({
             audienceEntityId: input.audienceEntityId,
+            audienceEntityKind: input.audienceEntity?.kind ?? null,
             activeParticipants: input.activeParticipants,
           }),
           perceivedEntityIds: perceivedEntityIds({

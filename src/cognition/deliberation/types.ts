@@ -79,7 +79,8 @@ export type TrustedCreatorContext = {
   sessionAudienceRole: SessionAudienceRole;
 };
 
-export type CreatorDirectiveBriefingDirective = {
+export type CreatorDirectiveBriefingContentDirective = {
+  renderMode: "content";
   kind: CreatorDirectiveKind;
   subjectKind: CreatorDirectiveSubjectKind;
   subjectLabel: string;
@@ -88,6 +89,18 @@ export type CreatorDirectiveBriefingDirective = {
   priority: number;
   createdAt: number;
 };
+
+export type CreatorDirectiveBriefingBoundaryDirective = {
+  renderMode: "boundary";
+  boundaryPrompt: string;
+  topicTags: readonly string[];
+  priority: number;
+  createdAt: number;
+};
+
+export type CreatorDirectiveBriefingDirective =
+  | CreatorDirectiveBriefingContentDirective
+  | CreatorDirectiveBriefingBoundaryDirective;
 
 export type CreatorDirectiveBriefing = {
   directives: readonly CreatorDirectiveBriefingDirective[];

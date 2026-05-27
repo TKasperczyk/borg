@@ -387,6 +387,93 @@ describe("CreatorDirectiveRepository", () => {
         }),
       );
       expect(operatorModes[operatorOnly.id]).toBe("content");
+
+      const emptyParticipantModes = modeById(
+        repository.listApplicable({
+          currentAudienceEntityId: audience,
+          participantEntityIds: [],
+          topicTags: ["atlas"],
+          sessionRole: "participant",
+        }),
+      );
+      expect(emptyParticipantModes).toMatchObject(participantModes);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("aggregates group recipient-set applicability before rendering content", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const excludedWithBoundary = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [bob],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            topic_tags: ["atlas"],
+          }),
+          priority: 10,
+        }),
+      );
+      const excludedWithoutTopicOverlap = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [bob],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            topic_tags: ["private"],
+          }),
+          priority: 9,
+        }),
+      );
+      const allowListAliceOnly = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [alice],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            topic_tags: ["atlas"],
+          }),
+          priority: 8,
+        }),
+      );
+      const publicDirective = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+          }),
+          priority: 7,
+        }),
+      );
+
+      const groupModes = modeById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [alice, bob],
+          topicTags: ["atlas"],
+          sessionRole: "participant",
+        }),
+      );
+      expect(groupModes).toMatchObject({
+        [excludedWithBoundary.id]: "boundary",
+        [excludedWithoutTopicOverlap.id]: "omit",
+        [allowListAliceOnly.id]: "omit",
+        [publicDirective.id]: "content",
+      });
+
+      const singleRecipientModes = modeById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          topicTags: ["atlas"],
+          sessionRole: "participant",
+        }),
+      );
+      expect(singleRecipientModes[allowListAliceOnly.id]).toBe("content");
     } finally {
       db.close();
     }

@@ -119,9 +119,11 @@ describe("creator directive retrieval briefing", () => {
         entityRepository: { get: () => null },
       });
 
-      expect(briefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
-        "Borg's prior name is Kestrel.",
-      ]);
+      expect(
+        briefing?.directives.flatMap((directive) =>
+          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+        ),
+      ).toEqual(["Borg's prior name is Kestrel."]);
     } finally {
       db.close();
     }
@@ -192,13 +194,19 @@ describe("creator directive retrieval briefing", () => {
         entityRepository: { get: () => null },
       });
 
-      expect(operatorBriefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
+      expect(
+        operatorBriefing?.directives.flatMap((directive) =>
+          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+        ),
+      ).toEqual([
         "Borg's public name is Kestrel.",
         "Borg's operator-only diagnostic label is Kestrel-debug.",
       ]);
-      expect(participantBriefing?.directives.map((directive) => directive.canonicalFact)).toEqual([
-        "Borg's public name is Kestrel.",
-      ]);
+      expect(
+        participantBriefing?.directives.flatMap((directive) =>
+          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+        ),
+      ).toEqual(["Borg's public name is Kestrel."]);
     } finally {
       db.close();
     }

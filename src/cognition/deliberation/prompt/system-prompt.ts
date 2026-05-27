@@ -219,19 +219,36 @@ export function buildCreatorDirectiveBriefingSection(
   }
 
   const lines = ["<borg_creator_directive_briefing>"];
-  const sorted = [...briefing.directives].sort(
-    (left, right) => right.priority - left.priority || left.createdAt - right.createdAt,
-  );
+  const byPriorityAndAge = (
+    left: (typeof briefing.directives)[number],
+    right: (typeof briefing.directives)[number],
+  ) => right.priority - left.priority || left.createdAt - right.createdAt;
+  const sorted = [
+    ...briefing.directives
+      .filter((directive) => directive.renderMode === "content")
+      .sort(byPriorityAndAge),
+    ...briefing.directives
+      .filter((directive) => directive.renderMode === "boundary")
+      .sort(byPriorityAndAge),
+  ];
 
   for (const [index, directive] of sorted.entries()) {
-    lines.push(
-      `  <directive id_alias="cd_${index + 1}" kind="${escapeXmlAttribute(directive.kind)}">`,
-      `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
-      `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
-      `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`,
-      `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
-      "  </directive>",
-    );
+    if (directive.renderMode === "boundary") {
+      lines.push(
+        `  <directive id_alias="cd_${index + 1}" kind="disclosure_boundary" mode="boundary">`,
+        `    <boundary_prompt>${escapeCreatorDirectiveXmlText(directive.boundaryPrompt)}</boundary_prompt>`,
+        "  </directive>",
+      );
+    } else {
+      lines.push(
+        `  <directive id_alias="cd_${index + 1}" kind="${escapeXmlAttribute(directive.kind)}">`,
+        `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
+        `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
+        `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`,
+        `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
+        "  </directive>",
+      );
+    }
   }
 
   lines.push("</borg_creator_directive_briefing>");

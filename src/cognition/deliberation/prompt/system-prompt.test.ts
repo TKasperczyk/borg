@@ -430,6 +430,7 @@ describe("buildBaseSystemPrompt", () => {
       creatorDirectiveBriefing: {
         directives: [
           {
+            renderMode: "content",
             kind: "self_identity",
             subjectKind: "borg_self",
             subjectLabel: "Borg",
@@ -476,6 +477,7 @@ describe("buildBaseSystemPrompt", () => {
     const section = buildCreatorDirectiveBriefingSection({
       directives: [
         {
+          renderMode: "content",
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "Alice & <pilot>",
@@ -494,7 +496,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(section).toContain("[internal_id]");
   });
 
-  it("omits creator directive briefing when no content directives are present", () => {
+  it("omits creator directive briefing when no directives are present", () => {
     expect(buildCreatorDirectiveBriefingSection(null)).toBeNull();
     expect(buildCreatorDirectiveBriefingSection({ directives: [] })).toBeNull();
 
@@ -510,10 +512,40 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_creator_directive_briefing>");
   });
 
+  it("renders creator directive boundaries without hidden directive content", () => {
+    const section = buildCreatorDirectiveBriefingSection({
+      directives: [
+        {
+          renderMode: "boundary",
+          boundaryPrompt:
+            "A creator-defined confidentiality boundary applies to private organizational or workplace planning.",
+          topicTags: ["workplace_planning", "layoff_risk"],
+          priority: 5,
+          createdAt: 1,
+        },
+      ],
+    });
+
+    expect(section).toBe(
+      [
+        "<borg_creator_directive_briefing>",
+        '  <directive id_alias="cd_1" kind="disclosure_boundary" mode="boundary">',
+        "    <boundary_prompt>A creator-defined confidentiality boundary applies to private organizational or workplace planning.</boundary_prompt>",
+        "  </directive>",
+        "</borg_creator_directive_briefing>",
+      ].join("\n"),
+    );
+    expect(section).not.toContain("<canonical_fact>");
+    expect(section).not.toContain("<subject_label>");
+    expect(section).not.toContain("<subject_kind>");
+    expect(section).not.toMatch(INTERNAL_ID_PATTERN);
+  });
+
   it("renders creator directive aliases in priority and age order", () => {
     const section = buildCreatorDirectiveBriefingSection({
       directives: [
         {
+          renderMode: "content",
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "Alice",
@@ -523,6 +555,7 @@ describe("buildBaseSystemPrompt", () => {
           createdAt: 1,
         },
         {
+          renderMode: "content",
           kind: "self_identity",
           subjectKind: "borg_self",
           subjectLabel: "Borg",
@@ -532,6 +565,7 @@ describe("buildBaseSystemPrompt", () => {
           createdAt: 3,
         },
         {
+          renderMode: "content",
           kind: "response_policy",
           subjectKind: "system",
           subjectLabel: "system",
