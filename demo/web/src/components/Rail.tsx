@@ -12,19 +12,21 @@ export type RouteId =
 export type RailItem = {
   id: RouteId;
   label: string;
+  short: string;
   glyph: string;
+  num: number;
 };
 
 export const RAIL_ITEMS: readonly RailItem[] = [
-  { id: "cognition", label: "cognition", glyph: "◰" },
-  { id: "stream", label: "stream", glyph: "≡" },
-  { id: "memory", label: "memory", glyph: "⊞" },
-  { id: "graph", label: "graph", glyph: "◌" },
-  { id: "identity", label: "identity", glyph: "◉" },
-  { id: "commit", label: "commit", glyph: "⌬" },
-  { id: "shared", label: "shared", glyph: "◍" },
-  { id: "dream", label: "dream", glyph: "☾" },
-  { id: "prompts", label: "prompts", glyph: "❝" },
+  { id: "cognition", label: "cognition", short: "COG", glyph: "ψ", num: 1 },
+  { id: "stream", label: "stream", short: "STR", glyph: "≣", num: 2 },
+  { id: "memory", label: "memory", short: "MEM", glyph: "◇", num: 3 },
+  { id: "graph", label: "graph", short: "GRF", glyph: "✦", num: 4 },
+  { id: "identity", label: "identity", short: "IDN", glyph: "◐", num: 5 },
+  { id: "shared", label: "shared", short: "SHR", glyph: "∞", num: 6 },
+  { id: "commit", label: "commit", short: "CMT", glyph: "↵", num: 7 },
+  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 8 },
+  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 9 },
 ];
 
 export type RailProps = {
@@ -35,26 +37,26 @@ export type RailProps = {
 export function Rail({ route, setRoute }: RailProps) {
   return (
     <div className="rail">
-      <div className="rail-brand">▣</div>
-      {RAIL_ITEMS.map((item) => (
-        <div
-          key={item.id}
-          className={`rail-btn ${route === item.id ? "active" : ""}`}
-          onClick={() => setRoute(item.id)}
-          role="button"
-          tabIndex={0}
-          title={item.label}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              setRoute(item.id);
-            }
-          }}
-        >
-          <span className="glyph">{item.glyph}</span>
-          <span>{item.label}</span>
-        </div>
-      ))}
+      <div className="rail-brand">b</div>
+      <div className="rail-list">
+        {RAIL_ITEMS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`rail-btn ${route === item.id ? "active" : ""}`}
+            onClick={() => setRoute(item.id)}
+            title={`${item.label} (⌘${item.num})`}
+            aria-label={item.label}
+            aria-current={route === item.id ? "page" : undefined}
+          >
+            <span className="num">{item.num}</span>
+            <span className="glyph" aria-hidden="true">
+              {item.glyph}
+            </span>
+            <span className="label">{item.short}</span>
+          </button>
+        ))}
+      </div>
       <div className="rail-spacer"></div>
       <div className="rail-meta">
         <div className="row">

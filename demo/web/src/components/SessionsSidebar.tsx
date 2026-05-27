@@ -6,6 +6,33 @@ export type SessionsSidebarProps = {
   onSelect: (sessionId: string) => void;
 };
 
+type GroupKey = "today" | "yesterday" | "earlier";
+
+const GROUP_ORDER: readonly GroupKey[] = ["today", "yesterday", "earlier"];
+
+const MS_PER_DAY = 24 * 60 * 60 * 1_000;
+
+function startOfDay(ts: number): number {
+  const date = new Date(ts);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function groupKey(ts: number): GroupKey {
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return "earlier";
+  }
+  const todayStart = startOfDay(Date.now());
+  const tsStart = startOfDay(ts);
+  if (tsStart === todayStart) {
+    return "today";
+  }
+  if (tsStart === todayStart - MS_PER_DAY) {
+    return "yesterday";
+  }
+  return "earlier";
+}
+
 function relativeTime(ts: number): string {
   const diffMs = Date.now() - ts;
   if (!Number.isFinite(diffMs) || diffMs < 0) {
@@ -27,7 +54,17 @@ function relativeTime(ts: number): string {
     return `${diffHours}h`;
   }
 
-  return `${Math.floor(diffHours / 24)}d`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) {
+    return `${diffDays}d`;
+  }
+
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 4) {
+    return `${diffWeeks}w`;
+  }
+
+  return `${Math.floor(diffDays / 30)}mo`;
 }
 
 function sourceLabel(session: SessionRecord): string {
@@ -37,38 +74,82 @@ function sourceLabel(session: SessionRecord): string {
   return session.source_type;
 }
 
+function previewLine(session: SessionRecord): string {
+  const audience = session.audience_label;
+  const kind = sourceLabel(session);
+  if (audience.length === 0) {
+    return kind;
+  }
+  if (kind === audience) {
+    return audience;
+  }
+  return `${audience} · ${kind}`;
+}
+
+function shortId(sessionId: string): string {
+  if (sessionId.length <= 8) {
+    return sessionId;
+  }
+  return sessionId.slice(0, 8);
+}
+
 export function SessionsSidebar({
   sessions,
   activeSessionId,
   onSelect,
 }: SessionsSidebarProps) {
+  const grouped = new Map<GroupKey, SessionRecord[]>();
+  for (const key of GROUP_ORDER) {
+    grouped.set(key, []);
+  }
+  for (const session of sessions) {
+    grouped.get(groupKey(session.last_activity_at))!.push(session);
+  }
+
   return (
     <aside className="sessions-sidebar" aria-label="sessions">
       <div className="sessions-head">
-        <span>sessions</span>
+        <span className="title">sessions</span>
         <span className="count">{sessions.length}</span>
       </div>
       <div className="sessions-list">
-        {sessions.map((session) => {
-          const active = session.session_id === activeSessionId;
+        {GROUP_ORDER.map((key) => {
+          const rows = grouped.get(key) ?? [];
+          if (rows.length === 0) {
+            return null;
+          }
           return (
-            <button
-              key={session.session_id}
-              type="button"
-              className={`session-row ${active ? "active" : ""}`}
-              onClick={() => onSelect(session.session_id)}
-            >
-              <span className="session-row-top">
-                <span className="session-source">{sourceLabel(session)}</span>
-                <span className="session-time">{relativeTime(session.last_activity_at)}</span>
-              </span>
-              <span className="session-label">{session.label}</span>
-              <span className="session-meta">
-                <span>{session.audience_label}</span>
-                <span>{session.message_count.toLocaleString()} msg</span>
-                {session.message_count === 0 ? <span className="session-new">new</span> : null}
-              </span>
-            </button>
+            <div key={key}>
+              <div className="session-group-label">{key}</div>
+              {rows.map((session) => {
+                const active = session.session_id === activeSessionId;
+                return (
+                  <button
+                    key={session.session_id}
+                    type="button"
+                    className={`session-row ${active ? "active" : ""}`}
+                    onClick={() => onSelect(session.session_id)}
+                  >
+                    <span className="session-row-top">
+                      <span className="session-label">{session.label}</span>
+                      <span className="session-time">
+                        {relativeTime(session.last_activity_at)}
+                      </span>
+                    </span>
+                    <span className="session-preview">{previewLine(session)}</span>
+                    <span className="session-foot">
+                      <span className={`dot ${active ? "alive" : ""}`}></span>
+                      <span>{shortId(session.session_id)}</span>
+                      <span className="sep">·</span>
+                      <span>{session.message_count.toLocaleString()} msg</span>
+                      {session.message_count === 0 ? (
+                        <span className="session-new">new</span>
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </div>

@@ -382,11 +382,33 @@ export function FlowChart({
             : "S1 · fast path"
         : `attempt ${finalAttempt}`;
 
+  const outcomeLabel = terminalLabel(terminalOutcome);
+  const outcomeTone = (() => {
+    if (terminalOutcome === null) return "idle";
+    if (terminalOutcome === "reflected") return "";
+    if (terminalOutcome === "aborted") return "warn";
+    return "bad";
+  })();
+
   return (
     <div className="flow-shell">
       <div className="flow-topline">
-        <span>turn {activeTurnId ?? "idle"}</span>
-        <span className="flow-topline-status">{terminalLabel(terminalOutcome)}</span>
+        <div className="left">
+          <span className="eyebrow">turn</span>
+          <span className="turn-id">{activeTurnId ?? "idle"}</span>
+          <span className="eyebrow">outcome</span>
+          <span className={`flow-topline-status ${outcomeTone}`.trim()}>
+            {outcomeLabel}
+          </span>
+        </div>
+        <div className="right">
+          <div className="flow-legend" aria-label="phase legend">
+            <span className="leg queue">queue</span>
+            <span className="leg run">run</span>
+            <span className="leg done">done</span>
+            <span className="leg fail">fail</span>
+          </div>
+        </div>
       </div>
 
       <div className="fc-canvas">

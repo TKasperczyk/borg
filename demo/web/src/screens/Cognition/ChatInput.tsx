@@ -166,10 +166,15 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
           style={{ height: Math.min(96, Math.max(20, input.split("\n").length * 18)) }}
           disabled={running}
         />
+        <span className="send-hint" aria-hidden="true">
+          <span className="kbd">⌘</span>
+          <span className="kbd">↵</span>
+        </span>
       </div>
       <div className="chat-input-flags">
         <span className="flag">
-          <span className="k">--audience</span> <span className="v acc">{audience}</span>
+          <span className="k">--audience</span>{" "}
+          <span className="v acc">{audience}</span>
         </span>
         <span className="flag">
           <span className="k">--stakes</span>{" "}
@@ -178,10 +183,12 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
             onChange={(event) => setStakes(event.target.value as TurnStakes)}
             style={{
               background: "transparent",
-              color: "var(--text-dim)",
+              color: "var(--text-mute)",
               border: "0",
               fontFamily: "var(--mono)",
-              fontSize: "10.5px",
+              fontSize: "var(--fs-micro)",
+              textTransform: "uppercase",
+              letterSpacing: "var(--eyebrow-ls)",
               outline: "none",
               cursor: "pointer",
             }}
@@ -226,7 +233,14 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
         >
           send
         </button>
-        <span className="hint">↵ send · ⇧↵ newline</span>
+        <span className="hint">
+          <span className="kbd">↵</span> send
+          <span className="sep" style={{ color: "var(--text-ghost)", margin: "0 4px" }}>
+            ·
+          </span>
+          <span className="kbd">⇧</span>
+          <span className="kbd">↵</span> newline
+        </span>
       </div>
     </div>
   );

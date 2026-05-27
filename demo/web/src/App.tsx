@@ -72,6 +72,7 @@ export function App() {
           turns={stateApi.data?.counts.turns ?? 0}
           ws_state={live.wsState}
           now={now}
+          route={route}
         />
         <div className="main">
           <SessionsSidebar
