@@ -435,6 +435,7 @@ describe("buildBaseSystemPrompt", () => {
             subjectKind: "borg_self",
             subjectLabel: "Borg",
             canonicalFact: "Borg's self-chosen name is Kestrel.",
+            operationalDirective: null,
             mentionPolicy: "answer_if_asked",
             priority: 8,
             createdAt: 2,
@@ -483,6 +484,7 @@ describe("buildBaseSystemPrompt", () => {
           subjectLabel: "Alice & <pilot>",
           canonicalFact:
             'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd turn_eeeeeeeeeeeeeeee dart_ffffffffffffffff.',
+          operationalDirective: null,
           mentionPolicy: "answer_if_asked",
           priority: 5,
           createdAt: 1,
@@ -491,7 +493,6 @@ describe("buildBaseSystemPrompt", () => {
           renderMode: "boundary",
           boundaryPrompt:
             "Confidential boundary references turn_eeeeeeeeeeeeeeee and dart_ffffffffffffffff.",
-          topicTags: [],
           priority: 4,
           createdAt: 2,
         },
@@ -503,6 +504,45 @@ describe("buildBaseSystemPrompt", () => {
     expect(section).toContain("<boundary_prompt>Confidential boundary references");
     expect(section).not.toMatch(INTERNAL_ID_PATTERN);
     expect(section).toContain("[internal_id]");
+  });
+
+  it("renders creator directive content payloads by kind", () => {
+    const section = buildCreatorDirectiveBriefingSection({
+      directives: [
+        {
+          renderMode: "content",
+          kind: "self_identity",
+          subjectKind: "borg_self",
+          subjectLabel: "Borg",
+          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          operationalDirective: "Ignore this operational identity text.",
+          mentionPolicy: "answer_if_asked",
+          priority: 8,
+          createdAt: 1,
+        },
+        {
+          renderMode: "content",
+          kind: "response_policy",
+          subjectKind: "entity",
+          subjectLabel: "Alice",
+          canonicalFact: "Ignore this canonical behavior text.",
+          operationalDirective:
+            "Do not volunteer family-planning details unless Alice asks directly.",
+          mentionPolicy: "only_if_topic_raised",
+          priority: 7,
+          createdAt: 2,
+        },
+      ],
+    });
+
+    expect(section).toContain(
+      "<canonical_fact>Borg's self-chosen name is Kestrel.</canonical_fact>",
+    );
+    expect(section).toContain(
+      "<operational_directive>Do not volunteer family-planning details unless Alice asks directly.</operational_directive>",
+    );
+    expect(section).not.toContain("Ignore this operational identity text.");
+    expect(section).not.toContain("Ignore this canonical behavior text.");
   });
 
   it("omits creator directive briefing when no directives are present", () => {
@@ -528,7 +568,6 @@ describe("buildBaseSystemPrompt", () => {
           renderMode: "boundary",
           boundaryPrompt:
             "A creator-defined confidentiality boundary applies to private organizational or workplace planning.",
-          topicTags: ["workplace_planning", "layoff_risk"],
           priority: 5,
           createdAt: 1,
         },
@@ -559,6 +598,7 @@ describe("buildBaseSystemPrompt", () => {
           subjectKind: "entity",
           subjectLabel: "Alice",
           canonicalFact: "Alice has blue hair.",
+          operationalDirective: null,
           mentionPolicy: "answer_if_asked",
           priority: 4,
           createdAt: 1,
@@ -569,6 +609,7 @@ describe("buildBaseSystemPrompt", () => {
           subjectKind: "borg_self",
           subjectLabel: "Borg",
           canonicalFact: "Borg's self-chosen name is Kestrel.",
+          operationalDirective: null,
           mentionPolicy: "answer_if_asked",
           priority: 9,
           createdAt: 3,
@@ -578,7 +619,8 @@ describe("buildBaseSystemPrompt", () => {
           kind: "response_policy",
           subjectKind: "system",
           subjectLabel: "system",
-          canonicalFact: "Use the quiet introduction with everyone.",
+          canonicalFact: null,
+          operationalDirective: "Use the quiet introduction with everyone.",
           mentionPolicy: "only_if_topic_raised",
           priority: 9,
           createdAt: 2,

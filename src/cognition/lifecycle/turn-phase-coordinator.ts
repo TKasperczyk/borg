@@ -625,6 +625,7 @@ export class TurnPhaseCoordinator {
           recencyMessages: recencyWindow.messages,
           audienceEntityId,
           audienceEntity,
+          currentSenderBorgRole: currentSenderEntity?.borg_role ?? null,
           audienceProfile,
           sessionAudienceRole,
           perception,

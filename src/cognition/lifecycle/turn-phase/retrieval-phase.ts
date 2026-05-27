@@ -38,12 +38,14 @@ import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import {
   effectiveCommitmentEnforcementClass,
+  type BorgRole,
   type EntityRepository,
   type CommitmentRecord,
 } from "../../../memory/commitments/index.js";
 import type {
   CreatorDirective,
   CreatorDirectiveApplicable,
+  CreatorDirectiveKind,
 } from "../../../memory/creator-directives/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
@@ -205,22 +207,54 @@ function subjectLabelForCreatorDirective(
   }
 }
 
+function contentPayloadForCreatorDirective(
+  directive: CreatorDirective,
+): { canonicalFact: string | null; operationalDirective: string | null } | null {
+  const kind: CreatorDirectiveKind = directive.kind;
+
+  switch (kind) {
+    case "self_identity":
+    case "subject_fact":
+    case "disclosure_boundary":
+      return directive.canonical_fact === null
+        ? null
+        : { canonicalFact: directive.canonical_fact, operationalDirective: null };
+    case "response_policy":
+    case "routing_instruction":
+      return { canonicalFact: null, operationalDirective: directive.operational_directive };
+  }
+}
+
 export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
   const contentDirectives = input.applicable
-    .filter((item) => item.render_mode === "content" && item.directive.canonical_fact !== null)
-    .map((item) => ({
-      renderMode: "content" as const,
-      kind: item.directive.kind,
-      subjectKind: item.directive.subject_kind,
-      subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
-      canonicalFact: item.directive.canonical_fact!,
-      mentionPolicy: item.directive.disclosure_policy.mention_policy,
-      priority: item.directive.priority,
-      createdAt: item.directive.created_at,
-    }))
+    .flatMap((item) => {
+      if (item.render_mode !== "content") {
+        return [];
+      }
+
+      const payload = contentPayloadForCreatorDirective(item.directive);
+
+      if (payload === null) {
+        return [];
+      }
+
+      return [
+        {
+          renderMode: "content" as const,
+          kind: item.directive.kind,
+          subjectKind: item.directive.subject_kind,
+          subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
+          canonicalFact: payload.canonicalFact,
+          operationalDirective: payload.operationalDirective,
+          mentionPolicy: item.directive.disclosure_policy.mention_policy,
+          priority: item.directive.priority,
+          createdAt: item.directive.created_at,
+        },
+      ];
+    })
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
   const boundaryDirectives = input.applicable
     .filter(
@@ -231,7 +265,6 @@ export function buildCreatorDirectiveBriefing(input: {
     .map((item) => ({
       renderMode: "boundary" as const,
       boundaryPrompt: item.directive.disclosure_policy.boundary_prompt!,
-      topicTags: item.directive.disclosure_policy.topic_tags,
       priority: item.directive.priority,
       createdAt: item.directive.created_at,
     }))
@@ -254,6 +287,43 @@ function currentTurnEligibleCreatorDirectives(input: {
   return input.applicable.filter(
     (item) => !item.directive.authorization_stream_entry_ids.includes(currentUserEntryId),
   );
+}
+
+const CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT = 50;
+
+function traceCreatorDirectiveRendered(input: {
+  tracer: TurnPhaseCoordinatorOptions["tracer"];
+  turnId: string;
+  sessionId?: SessionId;
+  applicable: readonly CreatorDirectiveApplicable[];
+  currentUserEntryId?: StreamEntryId;
+  currentAudienceEntityId: EntityId | null;
+  participantEntityIds: readonly EntityId[];
+}): void {
+  if (!input.tracer.enabled) {
+    return;
+  }
+
+  for (const item of input.applicable.slice(0, CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT)) {
+    const sameTurnNPlusOne =
+      input.currentUserEntryId !== undefined &&
+      item.directive.authorization_stream_entry_ids.includes(input.currentUserEntryId);
+    const renderedMode = sameTurnNPlusOne
+      ? "omitted"
+      : item.render_mode === "omit"
+        ? "omitted"
+        : item.render_mode;
+
+    input.tracer.emit("creator_directive_rendered", {
+      turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      directive_id: item.directive.id,
+      current_audience_entity_id: input.currentAudienceEntityId,
+      participant_entity_ids: [...input.participantEntityIds],
+      render_mode: renderedMode,
+      reason: sameTurnNPlusOne ? "same_turn_n_plus_one" : item.reason,
+    });
+  }
 }
 
 export function buildCreatorDirectiveBriefingForTurn(input: {
@@ -342,6 +412,7 @@ export async function runRetrievalPhase(input: {
   recencyMessages: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
   audienceEntity: ReturnType<TurnPhaseCoordinatorOptions["entityRepository"]["get"]> | null;
+  currentSenderBorgRole?: BorgRole | null;
   audienceProfile: ReturnType<TurnPhaseCoordinatorOptions["socialRepository"]["getProfile"]>;
   sessionAudienceRole?: SessionAudienceRole;
   perception: PerceptionResult;
@@ -419,22 +490,35 @@ export async function runRetrievalPhase(input: {
     input.options.relationalSlotRepository,
     input.activeParticipants,
   );
+  const creatorDirectiveParticipantEntityIds = participantEntityIds({
+    audienceEntityId: input.audienceEntityId,
+    audienceEntityKind: input.audienceEntity?.kind ?? null,
+    activeParticipants: input.activeParticipants,
+  });
   const creatorDirectiveApplicable =
     input.options.creatorDirectiveRepository === undefined
       ? []
       : input.options.creatorDirectiveRepository.listApplicable({
           currentAudienceEntityId: input.audienceEntityId,
-          participantEntityIds: participantEntityIds({
-            audienceEntityId: input.audienceEntityId,
-            audienceEntityKind: input.audienceEntity?.kind ?? null,
-            activeParticipants: input.activeParticipants,
-          }),
+          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          participantEntityIds: creatorDirectiveParticipantEntityIds,
           topicTags: input.perception.entities,
           sessionRole: input.sessionAudienceRole ?? "participant",
         });
-  const creatorDirectiveBriefing = buildCreatorDirectiveBriefingForTurn({
+  traceCreatorDirectiveRendered({
+    tracer: input.options.tracer,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
     applicable: creatorDirectiveApplicable,
     currentUserEntryId: input.persistedUserEntry?.id,
+    currentAudienceEntityId: input.audienceEntityId,
+    participantEntityIds: creatorDirectiveParticipantEntityIds,
+  });
+  const creatorDirectiveBriefing = buildCreatorDirectiveBriefing({
+    applicable: currentTurnEligibleCreatorDirectives({
+      applicable: creatorDirectiveApplicable,
+      currentUserEntryId: input.persistedUserEntry?.id,
+    }),
     entityRepository: input.options.entityRepository,
   });
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({

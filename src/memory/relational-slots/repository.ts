@@ -79,6 +79,7 @@ function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[]
 const NAME_PROVENANCE_RANK: Record<RelationalSlotNameProvenance, number> = {
   unknown: 0,
   assistant_seeded: 1,
+  creator_directive: 2,
   config_default_user: 2,
   transport_audience_label: 2,
   user_confirmed: 3,

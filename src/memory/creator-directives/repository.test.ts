@@ -10,7 +10,7 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { creatorDirectiveMigrations } from "./migrations.js";
-import { CreatorDirectiveRepository } from "./repository.js";
+import { CreatorDirectiveRepository, evaluateCreatorDirectiveRenderMode } from "./repository.js";
 import { creatorDirectiveQueueInputSchema } from "./types.js";
 import type { CreatorDirective, CreatorDirectiveQueueInput, DisclosurePolicy } from "./types.js";
 
@@ -62,6 +62,12 @@ function queueInput(
 
 function modeById(records: readonly { directive: CreatorDirective; render_mode: string }[]) {
   return Object.fromEntries(records.map((record) => [record.directive.id, record.render_mode]));
+}
+
+function applicableById<T extends { directive: CreatorDirective }>(
+  records: readonly T[],
+): Record<string, T> {
+  return Object.fromEntries(records.map((record) => [record.directive.id, record]));
 }
 
 describe("CreatorDirectiveRepository", () => {
@@ -296,6 +302,19 @@ describe("CreatorDirectiveRepository", () => {
         path: ["disclosurePolicy", "boundary_prompt"],
         message: "render_boundary_when_relevant requires boundary_prompt",
       },
+      {
+        input: queueInput({
+          subjectKind: "entity",
+          subjectEntityId: entity,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [createEntityId()],
+            subject_may_know: false,
+          }),
+        }),
+        path: ["disclosurePolicy", "subject_may_know"],
+        message: "subject_may_know=false requires subject exclusion or operator_only scope",
+      },
     ];
 
     try {
@@ -342,6 +361,46 @@ describe("CreatorDirectiveRepository", () => {
 
       expect(directive.disclosure_policy.topic_tags).toEqual([]);
       expect(repository.get(directive.id)?.disclosure_policy.topic_tags).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies subject_may_know=false before broad render scopes", () => {
+    const { db, repository } = createRepository();
+    const subject = createEntityId();
+    const other = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          subjectKind: "entity",
+          subjectEntityId: subject,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+            subject_may_know: false,
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+        }),
+      );
+      const renderMode = evaluateCreatorDirectiveRenderMode(
+        {
+          ...directive,
+          disclosure_policy: {
+            ...directive.disclosure_policy,
+            content_scope: "all_except",
+            excluded_entity_ids: [other],
+          },
+        },
+        {
+          currentAudienceEntityId: subject,
+          sessionRole: "participant",
+        },
+      );
+
+      expect(renderMode).toBe("boundary");
+      expect(renderMode).not.toBe("content");
     } finally {
       db.close();
     }
@@ -423,6 +482,14 @@ describe("CreatorDirectiveRepository", () => {
         boundary_prompt: BOUNDARY_PROMPT,
         topic_tags: ["atlas"],
       });
+      const deniedExcludedWithBoundary = queue(4, {
+        content_scope: "allow_list",
+        allowed_entity_ids: [other],
+        excluded_entity_ids: [audience],
+        denied_audience_behavior: "render_boundary_when_relevant",
+        boundary_prompt: BOUNDARY_PROMPT,
+        topic_tags: ["atlas"],
+      });
       const deniedWithOmit = queue(3, {
         content_scope: "allow_list",
         allowed_entity_ids: [other],
@@ -447,18 +514,30 @@ describe("CreatorDirectiveRepository", () => {
         [allExcept.id]: "content",
         [allExceptExcludedWithBoundary.id]: "boundary",
         [allExceptExcludedWithoutTopicOverlap.id]: "boundary",
-        [deniedWithBoundary.id]: "boundary",
+        [deniedWithBoundary.id]: "omit",
+        [deniedExcludedWithBoundary.id]: "boundary",
         [deniedWithOmit.id]: "omit",
       });
 
       const operatorModes = modeById(
         repository.listApplicable({
           currentAudienceEntityId: audience,
+          currentSenderBorgRole: "creator",
           topicTags: ["atlas"],
           sessionRole: "operator",
         }),
       );
       expect(operatorModes[operatorOnly.id]).toBe("content");
+
+      const nonCreatorOperatorModes = modeById(
+        repository.listApplicable({
+          currentAudienceEntityId: audience,
+          currentSenderBorgRole: null,
+          topicTags: ["atlas"],
+          sessionRole: "operator",
+        }),
+      );
+      expect(nonCreatorOperatorModes[operatorOnly.id]).toBe("omit");
 
       const emptyParticipantModes = modeById(
         repository.listApplicable({
@@ -581,6 +660,41 @@ describe("CreatorDirectiveRepository", () => {
 
       expect(modes[excludedBob.id]).toBe("boundary");
       expect(modes[excludedBob.id]).not.toBe("content");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("propagates subject_may_know boundaries through group recipient aggregation", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          subjectKind: "entity",
+          subjectEntityId: bob,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+            subject_may_know: false,
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+        }),
+      );
+
+      const applicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [alice, bob],
+          sessionRole: "participant",
+        }),
+      );
+
+      expect(applicable[directive.id]?.render_mode).toBe("boundary");
+      expect(applicable[directive.id]?.reason).toBe("subject_may_not_know");
     } finally {
       db.close();
     }

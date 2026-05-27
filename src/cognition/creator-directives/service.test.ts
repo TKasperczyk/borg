@@ -66,7 +66,11 @@ function candidate(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-function entityRecord(id: EntityId, canonicalName: string): EntityRecord {
+function entityRecord(
+  id: EntityId,
+  canonicalName: string,
+  overrides: Partial<EntityRecord> = {},
+): EntityRecord {
   return {
     id,
     canonical_name: canonicalName,
@@ -75,6 +79,7 @@ function entityRecord(id: EntityId, canonicalName: string): EntityRecord {
     borg_role: canonicalName === "Tom" ? "creator" : null,
     name_provenance: "user_declared",
     created_at: 1_000,
+    ...overrides,
   };
 }
 
@@ -90,16 +95,35 @@ function createHarness() {
     [creatorId, entityRecord(creatorId, "Tom")],
     [aliceId, entityRecord(aliceId, "Alice")],
   ]);
-  const findByName = vi.fn((name: string) => {
-    for (const entity of entities.values()) {
-      if (entity.canonical_name === name) {
-        return entity.id;
-      }
-    }
-
-    return null;
-  });
+  const findAllByName = vi.fn((name: string) =>
+    [...entities.values()]
+      .filter((entity) => entity.canonical_name === name)
+      .map((entity) => entity.id),
+  );
   const get = vi.fn((id: EntityId) => entities.get(id) ?? null);
+  const resolve = vi.fn(
+    (
+      name: string,
+      options: { kind?: EntityRecord["kind"]; provenance?: EntityRecord["name_provenance"] } = {},
+    ) => {
+      const matches = findAllByName(name);
+
+      if (matches.length > 0) {
+        return matches[0]!;
+      }
+
+      const entityId = createEntityId();
+      entities.set(
+        entityId,
+        entityRecord(entityId, name, {
+          kind: options.kind ?? "person",
+          name_provenance: options.provenance ?? "unknown",
+        }),
+      );
+
+      return entityId;
+    },
+  );
   const tracer = {
     enabled: true,
     includePayloads: false,
@@ -108,7 +132,7 @@ function createHarness() {
   const service = new CreatorDirectiveTurnService({
     model: "haiku",
     creatorDirectiveRepository: repository,
-    entityRepository: { findByName, get },
+    entityRepository: { findAllByName, get, resolve },
     tracer,
   });
 
@@ -118,8 +142,10 @@ function createHarness() {
     service,
     creatorId,
     aliceId,
-    findByName,
+    entities,
+    findAllByName,
     get,
+    resolve,
     tracer,
   };
 }
@@ -252,7 +278,7 @@ describe("CreatorDirectiveTurnService", () => {
     }
   });
 
-  it("rejects entity-subject candidates with unresolvable labels", async () => {
+  it("creates unknown entity-subject labels in creator-directive context", async () => {
     const harness = createHarness();
     const sessionId = createSessionId();
     const llmClient = new FakeLLMClient({
@@ -278,15 +304,124 @@ describe("CreatorDirectiveTurnService", () => {
         }),
       );
 
+      const mallory = [...harness.entities.values()].find(
+        (entity) => entity.canonical_name === "Mallory",
+      );
+
+      expect(result).toHaveLength(1);
+      expect(harness.repository.list()).toHaveLength(1);
+      expect(mallory).toMatchObject({
+        canonical_name: "Mallory",
+        name_provenance: "creator_directive",
+      });
+      expect(result[0]?.subject_entity_id).toBe(mallory?.id);
+      expect(harness.resolve).toHaveBeenCalledWith("Mallory", {
+        kind: "person",
+        provenance: "creator_directive",
+      });
+      expect(harness.tracer.emit).toHaveBeenCalledWith(
+        "creator_directive_persisted",
+        expect.objectContaining({
+          turnId: "turn-creator-directive",
+          session_id: sessionId,
+          validationStatus: "accepted",
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("resolves existing non-person labels before creating creator-directive entities", async () => {
+    const harness = createHarness();
+    const planningTeamId = createEntityId();
+    harness.entities.set(
+      planningTeamId,
+      entityRecord(planningTeamId, "planning-team", {
+        kind: "group",
+      }),
+    );
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            disclosure_policy: {
+              content_scope: "all_except",
+              allowed_entity_ids: [],
+              allowed_entity_labels: [],
+              excluded_entity_ids: [],
+              excluded_entity_labels: ["planning-team"],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["planning-team"],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+        }),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.disclosure_policy.excluded_entity_ids).toEqual([planningTeamId]);
+      expect(
+        [...harness.entities.values()].filter(
+          (entity) => entity.canonical_name === "planning-team",
+        ),
+      ).toHaveLength(1);
+      expect(harness.resolve).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("rejects ambiguous entity-subject label matches", async () => {
+    const harness = createHarness();
+    const sessionId = createSessionId();
+    const firstMallory = createEntityId();
+    const secondMallory = createEntityId();
+    harness.entities.set(firstMallory, entityRecord(firstMallory, "Mallory"));
+    harness.entities.set(secondMallory, entityRecord(secondMallory, "Mallory"));
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            kind: "subject_fact",
+            subject_kind: "entity",
+            subject_entity_id: null,
+            subject_label: "Mallory",
+            canonical_fact: "Mallory knows the launch alias.",
+            operational_directive: "Answer allowed audiences with Mallory's launch alias.",
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          sessionId,
+        }),
+      );
+
       expect(result).toEqual([]);
       expect(harness.repository.list()).toEqual([]);
+      expect(harness.resolve).not.toHaveBeenCalledWith("Mallory", expect.anything());
       expect(harness.tracer.emit).toHaveBeenCalledWith(
         "creator_directive_candidate_rejected",
         expect.objectContaining({
           turnId: "turn-creator-directive",
           session_id: sessionId,
           validationStatus: "rejected",
-          reason: "unknown_subject_entity",
+          reason: "ambiguous_subject_entity",
         }),
       );
     } finally {

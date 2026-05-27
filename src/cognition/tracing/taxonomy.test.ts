@@ -12,6 +12,7 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("frame_anomaly.completed")).toBe("perception");
     expect(phaseForTraceEventName("frame_anomaly.degraded_fail_open")).toBe("perception");
     expect(phaseForTraceEventName("semantic_revision.completed")).toBe("retrieval");
+    expect(phaseForTraceEventName("creator_directive_rendered")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.reconcile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("attachment.quarantined")).toBe("perception");

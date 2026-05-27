@@ -36,7 +36,12 @@ import {
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
 import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
-import type { DeliberationContext, SelfSnapshot, TrustedCreatorContext } from "../types.js";
+import type {
+  CreatorDirectiveBriefingContentDirective,
+  DeliberationContext,
+  SelfSnapshot,
+  TrustedCreatorContext,
+} from "../types.js";
 import {
   summarizeContradictionSignal,
   summarizeRetrievedEvidence,
@@ -211,6 +216,22 @@ export function buildSessionStatusSnapshotSection(
   return lines.join("\n");
 }
 
+function renderContentPayload(directive: CreatorDirectiveBriefingContentDirective): string | null {
+  switch (directive.kind) {
+    case "self_identity":
+    case "subject_fact":
+    case "disclosure_boundary":
+      return directive.canonicalFact === null
+        ? null
+        : `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`;
+    case "response_policy":
+    case "routing_instruction":
+      return directive.operationalDirective === null
+        ? null
+        : `    <operational_directive>${escapeCreatorDirectiveXmlText(directive.operationalDirective)}</operational_directive>`;
+  }
+}
+
 export function buildCreatorDirectiveBriefingSection(
   briefing: DeliberationContext["creatorDirectiveBriefing"],
 ): string | null {
@@ -231,24 +252,37 @@ export function buildCreatorDirectiveBriefingSection(
       .filter((directive) => directive.renderMode === "boundary")
       .sort(byPriorityAndAge),
   ];
+  let renderedCount = 0;
 
-  for (const [index, directive] of sorted.entries()) {
+  for (const directive of sorted) {
     if (directive.renderMode === "boundary") {
+      renderedCount += 1;
       lines.push(
-        `  <directive id_alias="cd_${index + 1}" kind="disclosure_boundary" mode="boundary">`,
+        `  <directive id_alias="cd_${renderedCount}" kind="disclosure_boundary" mode="boundary">`,
         `    <boundary_prompt>${escapeCreatorDirectiveXmlText(directive.boundaryPrompt)}</boundary_prompt>`,
         "  </directive>",
       );
     } else {
+      const payload = renderContentPayload(directive);
+
+      if (payload === null) {
+        continue;
+      }
+
+      renderedCount += 1;
       lines.push(
-        `  <directive id_alias="cd_${index + 1}" kind="${escapeXmlAttribute(directive.kind)}">`,
+        `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}">`,
         `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
         `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
-        `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`,
+        payload,
         `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
         "  </directive>",
       );
     }
+  }
+
+  if (renderedCount === 0) {
+    return null;
   }
 
   lines.push("</borg_creator_directive_briefing>");

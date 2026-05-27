@@ -67,6 +67,7 @@ function uniqueStrings(values: readonly string[]): string[] {
 const NAME_PROVENANCE_RANK: Record<NameProvenance, number> = {
   unknown: 0,
   assistant_seeded: 1,
+  creator_directive: 2,
   config_default_user: 2,
   transport_audience_label: 2,
   user_confirmed: 3,
@@ -322,22 +323,28 @@ export class EntityRepository {
     return entity;
   }
 
-  findByName(name: string, options: EntityListOptions = {}): EntityId | null {
+  findAllByName(name: string, options: EntityListOptions = {}): EntityId[] {
     const normalized = normalizeName(name);
 
     if (normalized.length === 0) {
-      return null;
+      return [];
     }
+
+    const matches: EntityId[] = [];
 
     for (const entity of this.listEntities(options)) {
       const names = [entity.canonical_name, ...entity.aliases].map((value) => normalizeName(value));
 
       if (names.includes(normalized)) {
-        return entity.id;
+        matches.push(entity.id);
       }
     }
 
-    return null;
+    return matches;
+  }
+
+  findByName(name: string, options: EntityListOptions = {}): EntityId | null {
+    return this.findAllByName(name, options)[0] ?? null;
   }
 
   resolve(name: string, options: EntityResolveOptions = {}): EntityId {

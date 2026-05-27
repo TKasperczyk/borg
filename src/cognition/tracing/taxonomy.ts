@@ -34,6 +34,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "retrieval.completed",
     "retrieval.degraded",
     "recall_expansion.completed",
+    "creator_directive_rendered",
     "citation_resolution.degraded",
     "evidence_ledger.reverse_scan",
     "evidence_ledger.image_attach",

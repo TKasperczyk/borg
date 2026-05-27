@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { borgRoleSchema, type BorgRole } from "../commitments/types.js";
 import { sessionAudienceRoleSchema, type SessionAudienceRole } from "../../sessions/types.js";
 import {
   creatorDirectiveIdHelpers,
@@ -45,6 +46,18 @@ export const CREATOR_DIRECTIVE_DENIED_AUDIENCE_BEHAVIORS = [
   "render_boundary_when_relevant",
 ] as const;
 export const CREATOR_DIRECTIVE_RENDER_MODES = ["content", "boundary", "omit"] as const;
+export const CREATOR_DIRECTIVE_RENDER_REASONS = [
+  "public",
+  "explicit_allow",
+  "subject_allowed",
+  "operator_only",
+  "explicit_exclude_boundary",
+  "unauthorized_omit",
+  "subject_may_not_know",
+  "operator_only_omitted",
+  "group_contains_excluded_entity",
+  "same_turn_n_plus_one",
+] as const;
 
 export const creatorDirectiveIdSchema = z
   .string()
@@ -83,6 +96,7 @@ export const creatorDirectiveDeniedAudienceBehaviorSchema = z.enum(
   CREATOR_DIRECTIVE_DENIED_AUDIENCE_BEHAVIORS,
 );
 export const creatorDirectiveRenderModeSchema = z.enum(CREATOR_DIRECTIVE_RENDER_MODES);
+export const creatorDirectiveRenderReasonSchema = z.enum(CREATOR_DIRECTIVE_RENDER_REASONS);
 
 export const creatorDirectiveTopicTagSchema = z
   .string()
@@ -129,6 +143,25 @@ export const disclosurePolicySchema = z
     }
   });
 
+function subjectMayKnowPolicyIsValid(input: {
+  subjectEntityId: EntityId | null | undefined;
+  policy: DisclosurePolicy;
+}): boolean {
+  if (
+    input.policy.subject_may_know !== false ||
+    input.subjectEntityId === null ||
+    input.subjectEntityId === undefined
+  ) {
+    return true;
+  }
+
+  if (input.policy.content_scope === "operator_only") {
+    return true;
+  }
+
+  return input.policy.excluded_entity_ids.some((id) => id === input.subjectEntityId);
+}
+
 export const creatorDirectiveSchema = z
   .object({
     id: creatorDirectiveIdSchema,
@@ -156,6 +189,19 @@ export const creatorDirectiveSchema = z
         code: "custom",
         path: ["subject_entity_id"],
         message: "entity subject requires subject_entity_id",
+      });
+    }
+
+    if (
+      !subjectMayKnowPolicyIsValid({
+        subjectEntityId: value.subject_entity_id,
+        policy: value.disclosure_policy,
+      })
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["disclosure_policy", "subject_may_know"],
+        message: "subject_may_know=false requires subject exclusion or operator_only scope",
       });
     }
   });
@@ -188,6 +234,19 @@ export const creatorDirectiveQueueInputSchema = z
         message: "entity subject requires subjectEntityId",
       });
     }
+
+    if (
+      !subjectMayKnowPolicyIsValid({
+        subjectEntityId: value.subjectEntityId,
+        policy: value.disclosurePolicy,
+      })
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["disclosurePolicy", "subject_may_know"],
+        message: "subject_may_know=false requires subject exclusion or operator_only scope",
+      });
+    }
   });
 
 export const creatorDirectiveListFilterSchema = z
@@ -205,6 +264,7 @@ export const creatorDirectiveListFilterSchema = z
 export const creatorDirectiveApplicableOptionsSchema = z
   .object({
     currentAudienceEntityId: creatorDirectiveEntityIdSchema.nullable(),
+    currentSenderBorgRole: borgRoleSchema.nullable().optional(),
     participantEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
     topicTags: z.array(creatorDirectiveTopicTagSchema).optional(),
     sessionRole: sessionAudienceRoleSchema,
@@ -222,6 +282,7 @@ export type CreatorDirectiveDeniedAudienceBehavior = z.infer<
   typeof creatorDirectiveDeniedAudienceBehaviorSchema
 >;
 export type CreatorDirectiveRenderMode = z.infer<typeof creatorDirectiveRenderModeSchema>;
+export type CreatorDirectiveRenderReason = z.infer<typeof creatorDirectiveRenderReasonSchema>;
 export type CreatorDirectiveQueueInput = z.infer<typeof creatorDirectiveQueueInputSchema>;
 export type CreatorDirectiveListFilter = z.infer<typeof creatorDirectiveListFilterSchema>;
 export type CreatorDirectiveApplicableOptions = z.infer<
@@ -230,5 +291,13 @@ export type CreatorDirectiveApplicableOptions = z.infer<
 export type CreatorDirectiveApplicable = {
   directive: CreatorDirective;
   render_mode: CreatorDirectiveRenderMode;
+  reason: CreatorDirectiveRenderReason;
 };
-export type { CreatorDirectiveId, EntityId, SessionAudienceRole, SessionId, StreamEntryId };
+export type {
+  BorgRole,
+  CreatorDirectiveId,
+  EntityId,
+  SessionAudienceRole,
+  SessionId,
+  StreamEntryId,
+};

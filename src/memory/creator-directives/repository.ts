@@ -24,6 +24,7 @@ import {
   type CreatorDirectiveApplicableOptions,
   type CreatorDirectiveListFilter,
   type CreatorDirectiveQueueInput,
+  type CreatorDirectiveRenderReason,
   type CreatorDirectiveRenderMode,
   type DisclosurePolicy,
 } from "./types.js";
@@ -129,31 +130,53 @@ function hasEntity(values: readonly EntityId[], entityId: EntityId | null): bool
   return entityId !== null && values.includes(entityId);
 }
 
-function boundaryOrOmit(directive: CreatorDirective): CreatorDirectiveRenderMode {
+type CreatorDirectiveRenderEvaluation = {
+  render_mode: CreatorDirectiveRenderMode;
+  reason: CreatorDirectiveRenderReason;
+};
+
+function boundaryOrOmit(
+  directive: CreatorDirective,
+  boundaryReason: CreatorDirectiveRenderReason,
+  omitReason: CreatorDirectiveRenderReason = "unauthorized_omit",
+): CreatorDirectiveRenderEvaluation {
   if (directive.disclosure_policy.denied_audience_behavior !== "render_boundary_when_relevant") {
-    return "omit";
+    return { render_mode: "omit", reason: omitReason };
   }
 
-  return "boundary";
+  return { render_mode: "boundary", reason: boundaryReason };
 }
 
-function evaluateRenderMode(
+function evaluateRenderEvaluation(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
   audienceId: EntityId | null = options.currentAudienceEntityId,
-): CreatorDirectiveRenderMode {
+): CreatorDirectiveRenderEvaluation {
   const policy = directive.disclosure_policy;
 
   if (hasEntity(policy.excluded_entity_ids, audienceId)) {
-    return boundaryOrOmit(directive);
+    return boundaryOrOmit(directive, "explicit_exclude_boundary");
+  }
+
+  if (
+    audienceId !== null &&
+    directive.subject_entity_id !== null &&
+    policy.subject_may_know === false &&
+    audienceId === directive.subject_entity_id
+  ) {
+    return boundaryOrOmit(directive, "subject_may_not_know", "subject_may_not_know");
   }
 
   if (policy.content_scope === "public") {
-    return "content";
+    return { render_mode: "content", reason: "public" };
   }
 
-  if (hasEntity(policy.allowed_entity_ids, audienceId)) {
-    return "content";
+  if (policy.content_scope === "allow_list") {
+    if (hasEntity(policy.allowed_entity_ids, audienceId)) {
+      return { render_mode: "content", reason: "explicit_allow" };
+    }
+
+    return { render_mode: "omit", reason: "unauthorized_omit" };
   }
 
   if (
@@ -161,22 +184,33 @@ function evaluateRenderMode(
     audienceId !== null &&
     audienceId === directive.subject_entity_id
   ) {
-    return "content";
+    return { render_mode: "content", reason: "subject_allowed" };
   }
 
   if (policy.content_scope === "operator_only") {
-    return options.sessionRole === "operator" ? "content" : "omit";
+    const isCreatorOperator =
+      options.sessionRole === "operator" &&
+      (options.currentSenderBorgRole === "creator" ||
+        options.currentAudienceEntityId === directive.created_by_entity_id);
+
+    return isCreatorOperator
+      ? { render_mode: "content", reason: "operator_only" }
+      : { render_mode: "omit", reason: "operator_only_omitted" };
   }
 
   if (policy.content_scope === "all_except") {
-    return "content";
+    return { render_mode: "content", reason: "public" };
   }
 
-  if (policy.content_scope === "allow_list") {
-    return boundaryOrOmit(directive);
-  }
+  return { render_mode: "omit", reason: "unauthorized_omit" };
+}
 
-  return "omit";
+function evaluateRenderMode(
+  directive: CreatorDirective,
+  options: CreatorDirectiveApplicableOptions,
+  audienceId: EntityId | null = options.currentAudienceEntityId,
+): CreatorDirectiveRenderMode {
+  return evaluateRenderEvaluation(directive, options, audienceId).render_mode;
 }
 
 function effectiveRecipientEntityIds(
@@ -194,31 +228,45 @@ function effectiveRecipientEntityIds(
 function evaluateApplicableRenderMode(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
-): CreatorDirectiveRenderMode {
+): CreatorDirectiveRenderEvaluation {
   const recipientEntityIds = effectiveRecipientEntityIds(options);
 
   if (recipientEntityIds.length <= 1) {
-    return evaluateRenderMode(directive, options, recipientEntityIds[0] ?? null);
+    return evaluateRenderEvaluation(directive, options, recipientEntityIds[0] ?? null);
   }
 
   const recipientEvaluations = recipientEntityIds.map((recipientEntityId) => ({
     isExcluded: hasEntity(directive.disclosure_policy.excluded_entity_ids, recipientEntityId),
-    renderMode: evaluateRenderMode(directive, options, recipientEntityId),
+    evaluation: evaluateRenderEvaluation(directive, options, recipientEntityId),
   }));
 
-  if (
-    recipientEvaluations.some(
-      (evaluation) => evaluation.isExcluded && evaluation.renderMode === "boundary",
-    )
-  ) {
-    return "boundary";
+  const firstBoundary = recipientEvaluations.find(
+    (evaluation) => evaluation.evaluation.render_mode === "boundary",
+  );
+
+  if (firstBoundary !== undefined) {
+    return {
+      render_mode: "boundary",
+      reason: firstBoundary.isExcluded
+        ? "group_contains_excluded_entity"
+        : firstBoundary.evaluation.reason,
+    };
   }
 
-  if (recipientEvaluations.some((evaluation) => evaluation.renderMode !== "content")) {
-    return "omit";
+  const firstNonContent = recipientEvaluations.find(
+    (evaluation) => evaluation.evaluation.render_mode !== "content",
+  );
+
+  if (firstNonContent !== undefined) {
+    return {
+      render_mode: "omit",
+      reason: firstNonContent.isExcluded
+        ? "group_contains_excluded_entity"
+        : firstNonContent.evaluation.reason,
+    };
   }
 
-  return "content";
+  return recipientEvaluations[0]?.evaluation ?? { render_mode: "content", reason: "public" };
 }
 
 export type CreatorDirectiveRepositoryOptions = {
@@ -387,10 +435,15 @@ export class CreatorDirectiveRepository {
   listApplicable(options: CreatorDirectiveApplicableOptions): CreatorDirectiveApplicable[] {
     const parsed = creatorDirectiveApplicableOptionsSchema.parse(options);
 
-    return this.list({ status: "active" }).map((directive) => ({
-      directive,
-      render_mode: evaluateApplicableRenderMode(directive, parsed),
-    }));
+    return this.list({ status: "active" }).map((directive) => {
+      const evaluation = evaluateApplicableRenderMode(directive, parsed);
+
+      return {
+        directive,
+        render_mode: evaluation.render_mode,
+        reason: evaluation.reason,
+      };
+    });
   }
 
   supersede(id: CreatorDirectiveId, replacementId: CreatorDirectiveId): CreatorDirective | null {

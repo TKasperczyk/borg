@@ -84,7 +84,8 @@ export type CreatorDirectiveBriefingContentDirective = {
   kind: CreatorDirectiveKind;
   subjectKind: CreatorDirectiveSubjectKind;
   subjectLabel: string;
-  canonicalFact: string;
+  canonicalFact: string | null;
+  operationalDirective: string | null;
   mentionPolicy: CreatorDirectiveMentionPolicy;
   priority: number;
   createdAt: number;
@@ -93,7 +94,6 @@ export type CreatorDirectiveBriefingContentDirective = {
 export type CreatorDirectiveBriefingBoundaryDirective = {
   renderMode: "boundary";
   boundaryPrompt: string;
-  topicTags: readonly string[];
   priority: number;
   createdAt: number;
 };

@@ -35,6 +35,7 @@ export type TurnTraceEventName =
   | "recall_expansion.completed"
   | "retrieval.started"
   | "retrieval.completed"
+  | "creator_directive_rendered"
   | "evidence_ledger.reverse_scan"
   | "evidence_ledger.image_attach"
   | "evidence_ledger.completed"

@@ -22,7 +22,7 @@ import {
 export type CreatorDirectiveTurnServiceOptions = {
   model: string;
   creatorDirectiveRepository: Pick<CreatorDirectiveRepository, "queue">;
-  entityRepository: Pick<EntityRepository, "findByName" | "get">;
+  entityRepository: Pick<EntityRepository, "findAllByName" | "get" | "resolve">;
   tracer: TurnTracer;
 };
 
@@ -140,33 +140,62 @@ export class CreatorDirectiveTurnService {
     });
   }
 
-  private resolveExistingEntityLabel(label: string): EntityId | null {
-    return this.options.entityRepository.findByName(label);
+  private resolveEntityLabel(input: {
+    label: string;
+    unknownReason: string;
+    ambiguousReason: string;
+  }): { accepted: true; id: EntityId } | { accepted: false; reason: string } {
+    const matches = uniqueEntityIds(this.options.entityRepository.findAllByName(input.label));
+
+    if (matches.length > 1) {
+      return { accepted: false, reason: input.ambiguousReason };
+    }
+
+    if (matches.length === 1) {
+      return { accepted: true, id: matches[0]! };
+    }
+
+    try {
+      return {
+        accepted: true,
+        id: this.options.entityRepository.resolve(input.label, {
+          kind: "person",
+          provenance: "creator_directive",
+        }),
+      };
+    } catch {
+      return { accepted: false, reason: input.unknownReason };
+    }
   }
 
   private resolveEntityIdList(input: {
     ids: readonly EntityId[];
     labels: readonly string[];
-    reason: string;
+    unknownReason: string;
+    ambiguousReason: string;
   }): { accepted: true; ids: EntityId[] } | { accepted: false; reason: string } {
     const resolved: EntityId[] = [];
 
     for (const entityId of input.ids) {
       if (!entityExists(this.options.entityRepository, entityId)) {
-        return { accepted: false, reason: input.reason };
+        return { accepted: false, reason: input.unknownReason };
       }
 
       resolved.push(entityId);
     }
 
     for (const label of input.labels) {
-      const entityId = this.resolveExistingEntityLabel(label);
+      const resolution = this.resolveEntityLabel({
+        label,
+        unknownReason: input.unknownReason,
+        ambiguousReason: input.ambiguousReason,
+      });
 
-      if (entityId === null) {
-        return { accepted: false, reason: input.reason };
+      if (!resolution.accepted) {
+        return resolution;
       }
 
-      resolved.push(entityId);
+      resolved.push(resolution.id);
     }
 
     return { accepted: true, ids: uniqueEntityIds(resolved) };
@@ -184,17 +213,24 @@ export class CreatorDirectiveTurnService {
         return { accepted: false, reason: "unknown_subject_entity" };
       }
 
-      subjectEntityId = this.resolveExistingEntityLabel(candidate.subject_label);
+      const subjectResolution = this.resolveEntityLabel({
+        label: candidate.subject_label,
+        unknownReason: "unknown_subject_entity",
+        ambiguousReason: "ambiguous_subject_entity",
+      });
 
-      if (subjectEntityId === null) {
-        return { accepted: false, reason: "unknown_subject_entity" };
+      if (!subjectResolution.accepted) {
+        return subjectResolution;
       }
+
+      subjectEntityId = subjectResolution.id;
     }
 
     const allowed = this.resolveEntityIdList({
       ids: candidate.disclosure_policy.allowed_entity_ids,
       labels: candidate.disclosure_policy.allowed_entity_labels,
-      reason: "unknown_allowed_entity",
+      unknownReason: "unknown_allowed_entity",
+      ambiguousReason: "ambiguous_allowed_entity",
     });
 
     if (!allowed.accepted) {
@@ -204,7 +240,8 @@ export class CreatorDirectiveTurnService {
     const excluded = this.resolveEntityIdList({
       ids: candidate.disclosure_policy.excluded_entity_ids,
       labels: candidate.disclosure_policy.excluded_entity_labels,
-      reason: "unknown_excluded_entity",
+      unknownReason: "unknown_excluded_entity",
+      ambiguousReason: "ambiguous_excluded_entity",
     });
 
     if (!excluded.accepted) {

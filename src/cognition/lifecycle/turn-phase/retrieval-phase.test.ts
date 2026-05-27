@@ -120,7 +120,9 @@ describe("creator directive retrieval briefing", () => {
 
       expect(
         briefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+          directive.renderMode === "content" && directive.canonicalFact !== null
+            ? [directive.canonicalFact]
+            : [],
         ),
       ).toEqual(["Borg's prior name is Kestrel."]);
     } finally {
@@ -175,6 +177,7 @@ describe("creator directive retrieval briefing", () => {
       const operatorBriefing = buildCreatorDirectiveBriefingForTurn({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
+          currentSenderBorgRole: "creator",
           participantEntityIds: [audienceId],
           topicTags: [],
           sessionRole: "operator",
@@ -193,7 +196,9 @@ describe("creator directive retrieval briefing", () => {
 
       expect(
         operatorBriefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+          directive.renderMode === "content" && directive.canonicalFact !== null
+            ? [directive.canonicalFact]
+            : [],
         ),
       ).toEqual([
         "Borg's public name is Kestrel.",
@@ -201,9 +206,328 @@ describe("creator directive retrieval briefing", () => {
       ]);
       expect(
         participantBriefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+          directive.renderMode === "content" && directive.canonicalFact !== null
+            ? [directive.canonicalFact]
+            : [],
         ),
       ).toEqual(["Borg's public name is Kestrel."]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("briefs canonical facts and operational directives by creator-directive kind", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+
+    try {
+      repository.queue({
+        kind: "self_identity",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's self-chosen name is Kestrel.",
+        operationalDirective: "Answer allowed audiences with Borg's self-chosen name.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 8,
+        createdAt: 1_000,
+      });
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: audienceId,
+        canonicalFact: null,
+        operationalDirective:
+          "Do not volunteer family-planning details unless Alice asks directly.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 7,
+        createdAt: 1_500,
+      });
+
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable: repository.listApplicable({
+          currentAudienceEntityId: audienceId,
+          participantEntityIds: [audienceId],
+          topicTags: [],
+          sessionRole: "participant",
+        }),
+        entityRepository: {
+          get: (id) =>
+            id === audienceId
+              ? {
+                  id: audienceId,
+                  canonical_name: "Alice",
+                  aliases: [],
+                  kind: "person",
+                  borg_role: null,
+                  name_provenance: "user_declared",
+                  created_at: 1_000,
+                }
+              : null,
+        },
+      });
+
+      expect(briefing?.directives).toEqual([
+        expect.objectContaining({
+          kind: "self_identity",
+          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          operationalDirective: null,
+        }),
+        expect.objectContaining({
+          kind: "response_policy",
+          canonicalFact: null,
+          operationalDirective:
+            "Do not volunteer family-planning details unless Alice asks directly.",
+        }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits creator_directive_rendered trace events for considered directives", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+    const otherId = createEntityId();
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+
+    try {
+      repository.queue({
+        kind: "self_identity",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg's public name is Kestrel.",
+        operationalDirective: "Answer any audience with the public name when asked.",
+        disclosurePolicy: disclosurePolicy(),
+        priority: 8,
+        createdAt: 1_000,
+      });
+      repository.queue({
+        kind: "subject_fact",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: otherId,
+        canonicalFact: "Other private fact.",
+        operationalDirective: "Only tell the allowed audience.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "allow_list",
+          allowed_entity_ids: [otherId],
+        }),
+        priority: 7,
+        createdAt: 1_500,
+      });
+
+      const retrieval = {
+        evidence: [],
+        episodes: [],
+        semantic: null,
+        open_questions: [],
+        recall_intents: [],
+        contradiction_present: false,
+        contradictionRouting: {
+          contradictions: [],
+        },
+        confidence: null,
+      } as never;
+      const options = {
+        config: {
+          ...DEFAULT_CONFIG,
+          generation: {
+            ...DEFAULT_CONFIG.generation,
+            evidenceLedger: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger,
+              enabled: false,
+            },
+          },
+        },
+        creatorDirectiveRepository: repository,
+        sharedStateRepository: {
+          get: () => null,
+        },
+        entityRepository: {
+          get: (id: EntityId) =>
+            id === audienceId
+              ? {
+                  id: audienceId,
+                  canonical_name: "Alice",
+                  aliases: [],
+                  kind: "person",
+                  borg_role: null,
+                  name_provenance: "user_declared",
+                  created_at: 1_000,
+                }
+              : null,
+          findByName: () => null,
+          resolve: () => createEntityId(),
+        },
+        socialRepository: {
+          getProfile: () => null,
+        },
+        relationalSlotRepository: {
+          list: () => [],
+          listConstrained: () => [],
+        },
+        actionRepository: {
+          list: () => [],
+          get: () => null,
+          update: vi.fn(),
+        },
+        commitmentRepository: {
+          list: () => [],
+        },
+        goalsRepository: {
+          list: () => [],
+        },
+        openQuestionsRepository: {
+          list: () => [],
+        },
+        attachmentRepository: {
+          get: () => null,
+          isActiveForStreamEntry: () => true,
+        },
+        clock: new FixedClock(3_000),
+        tracer: {
+          enabled: true,
+          includePayloads: false,
+          emit: vi.fn((event: string, data: Record<string, unknown>) => {
+            events.push({ event, data });
+          }),
+        },
+        selfContextBuilder: {
+          build: vi.fn(async () => ({
+            selfSnapshot: {
+              values: [],
+              goals: [],
+              traits: [],
+            },
+            activeScoringValues: [],
+            retrievalScoringFeatures: {
+              goalVectors: [],
+              valueVectors: [],
+            },
+            executiveFocus: {
+              selected_goal: null,
+              selected_score: null,
+              candidates: [],
+              threshold: 0,
+            },
+          })),
+        },
+        turnRetrievalCoordinator: {
+          coordinate: vi.fn(async () => ({
+            applicableCommitments: [],
+            pendingCorrections: [],
+            affectiveTrajectory: [],
+            retrieval,
+            retrievedEpisodes: [],
+            retrievedSemantic: null,
+            proceduralContext: null,
+            selectedSkill: null,
+            retrievalOptions: {},
+            reRetrieve: vi.fn(async () => retrieval),
+          })),
+        },
+        createStreamReader: () =>
+          ({
+            async *iterate() {},
+          }) as StreamReader,
+      } as unknown as TurnPhaseCoordinatorOptions;
+
+      await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-creator-directive-rendered",
+        turnInput: {
+          userMessage: "Hi",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Hi",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: audienceId,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      const renderedEvents = events.filter((event) => event.event === "creator_directive_rendered");
+
+      expect(renderedEvents).toHaveLength(2);
+      expect(renderedEvents).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            turnId: "turn-creator-directive-rendered",
+            session_id: DEFAULT_SESSION_ID,
+            current_audience_entity_id: audienceId,
+            participant_entity_ids: [audienceId],
+            render_mode: "content",
+            reason: "public",
+          }),
+        }),
+        expect.objectContaining({
+          data: expect.objectContaining({
+            turnId: "turn-creator-directive-rendered",
+            session_id: DEFAULT_SESSION_ID,
+            current_audience_entity_id: audienceId,
+            participant_entity_ids: [audienceId],
+            render_mode: "omitted",
+            reason: "unauthorized_omit",
+          }),
+        }),
+      ]);
     } finally {
       db.close();
     }
