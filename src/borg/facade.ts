@@ -179,6 +179,7 @@ export function createOperatorAdviceFacade(
             session_id: sessionId,
             audience_entity_id: audienceEntityId,
             rendered_text: renderedText,
+            operator: true,
           },
         });
 

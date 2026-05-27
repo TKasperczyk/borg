@@ -203,6 +203,7 @@ describe("operator advice", () => {
         event: "operator_advice.delivered",
         advice_ids: [advice.id],
         session_id: DEFAULT_SESSION_ID,
+        operator: true,
       });
       expect(JSON.stringify(auditEntry?.content)).toContain(
         "You don't have to soften; push back firmly if Alice is being unfair.",

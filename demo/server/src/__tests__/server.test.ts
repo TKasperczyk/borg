@@ -1581,6 +1581,74 @@ describe("demo server", () => {
     });
   });
 
+  it("operator-authored commitment can be forgotten via correction (cross-sprint A+B)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const createdResponse = await requestJson(app, "/api/commitments", "POST", {
+      type: "rule",
+      kind: "process_norm",
+      directive: "Prefer terse status updates when speaking with Alice.",
+      priority: 6,
+      audience: "Alice",
+      directive_family: "cross_sprint_ab",
+    });
+
+    expect(createdResponse.status).toBe(200);
+    const created = (await createdResponse.json()) as { id: string };
+
+    const forgottenResponse = await requestJson(
+      app,
+      `/api/correction/${created.id}/forget`,
+      "POST",
+      {},
+    );
+    expect(forgottenResponse.status).toBe(200);
+    expect(await forgottenResponse.json()).toMatchObject({
+      id: created.id,
+      target_type: "commitment",
+      archived: true,
+      provenance: { kind: "manual" },
+    });
+
+    const activeResponse = await app.request("/api/commitments?state=active");
+    expect(activeResponse.status).toBe(200);
+    const activeBody = (await activeResponse.json()) as { commitments: Array<{ id: string }> };
+    expect(activeBody.commitments.map((commitment) => commitment.id)).not.toContain(created.id);
+
+    const allResponse = await app.request("/api/commitments?state=all");
+    expect(allResponse.status).toBe(200);
+    const allBody = (await allResponse.json()) as {
+      commitments: Array<{ id: string; state: string; revoked_reason: string | null }>;
+    };
+    expect(allBody.commitments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: created.id,
+          state: "revoked",
+          revoked_reason: "forgotten manually",
+        }),
+      ]),
+    );
+    expect(
+      borg.correction.listIdentityEvents({
+        recordType: "commitment",
+        recordId: created.id,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "revoke",
+          reason: "forgotten manually",
+          provenance: { kind: "manual" },
+        }),
+      ]),
+    );
+  });
+
   it("POST /api/commitments rejects invalid bodies", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

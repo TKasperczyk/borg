@@ -163,6 +163,9 @@ const adviceQueueBodySchema = z
     expires_at: z.number().int().finite().nullable().optional(),
   })
   .strict();
+const adviceParamSchema = z.object({
+  id: z.string().min(1),
+});
 
 const adviceListQuerySchema = z.object({
   session: z.string().trim().min(1).optional(),
@@ -1558,7 +1561,8 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.delete("/api/advice/:id", (c) => {
-    const id = parseAdviceIdParam(c.req.param("id"));
+    const params = parseRequest(adviceParamSchema, c.req.param());
+    const id = parseAdviceIdParam(params.id);
     const item = input.borg.advice.cancel(id);
 
     if (item === null) {
