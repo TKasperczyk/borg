@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory } from "../../memory/working/index.js";
+import type { ActivityEvent, ActivityEventRecordInput } from "../../memory/activity/index.js";
 import type { StreamEntry, StreamEntryInput, StreamWriter } from "../../stream/index.js";
 import { DEFAULT_SESSION_ID, type EntityId, type StreamEntryId } from "../../util/ids.js";
 import { SuppressionSet } from "../attention/index.js";
@@ -279,5 +280,63 @@ describe("TurnOpeningPersistence", () => {
     });
 
     expect(appended[0]).not.toHaveProperty("sender_entity_id");
+  });
+
+  it("records a user_contact activity event after persisting the user message", async () => {
+    const sequence: string[] = [];
+    const { streamWriter } = makeStreamWriter(sequence);
+    const audienceEntityId = "ent_bcdefghijklmnopa" as EntityId;
+    const activityEvents: ActivityEventRecordInput[] = [];
+    const record = vi.fn((event: ActivityEventRecordInput) => {
+      sequence.push(`activity:${event.kind}`);
+      activityEvents.push(event);
+      return {} as ActivityEvent;
+    });
+
+    await new TurnOpeningPersistence({
+      workingMemoryStore: {
+        save: vi.fn((memory) => {
+          sequence.push("save:working_memory");
+          return memory;
+        }),
+      },
+      activityRepository: {
+        record,
+      },
+    }).persist({
+      streamWriter,
+      turnId,
+      userMessage: "Checking in",
+      audience: "alice",
+      speakerEntityId: entityId,
+      audienceEntityId,
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 500),
+      pendingSocialAttribution: null,
+      pendingTraitAttribution: null,
+      suppressionSet: SuppressionSet.fromEntries([], 0),
+      perception: makePerception(),
+      now: () => 1_000,
+    });
+
+    expect(sequence).toEqual([
+      "append:user_msg",
+      "activity:user_contact",
+      "save:working_memory",
+      "append:perception",
+    ]);
+    expect(activityEvents).toEqual([
+      {
+        kind: "user_contact",
+        occurredAt: 1_000,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId,
+        speakerEntityId: entityId,
+        actorEntityId: entityId,
+        audienceEntityId,
+        participantEntityIds: [entityId, audienceEntityId],
+        sourceStreamEntryIds: [userEntryId],
+        status: "active",
+      },
+    ]);
   });
 });

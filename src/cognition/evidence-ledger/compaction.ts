@@ -55,6 +55,10 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxEntries: 96,
     maxTokens: 8_000,
   },
+  cross_session_self_activity: {
+    maxEntries: 12,
+    maxTokens: 1_200,
+  },
   current_session_attribution_sidebar: {
     maxEntries: 16,
     maxTokens: 600,
@@ -113,7 +117,7 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
   },
 } as const satisfies Record<EvidenceLedgerSectionId, FullEvidenceLedgerSectionOptions>;
 
-// Compaction priority: sections are trimmed lowest-trust first (rank 0) to highest (rank 15).
+// Compaction priority: sections are trimmed lowest-trust first (rank 0) to highest.
 // `satisfies Record<EvidenceLedgerSectionId, number>` forces every section to be ranked, so a
 // newly added section can never silently escape trust-ordered compaction.
 const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
@@ -131,8 +135,9 @@ const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
   closure_discourse_state: 11,
   commitments_and_constraints: 12,
   retrieved_raw_stream_evidence: 13,
-  current_session_transcript: 14,
-  current_user_message: 15,
+  cross_session_self_activity: 14,
+  current_session_transcript: 15,
+  current_user_message: 16,
 } as const satisfies Record<EvidenceLedgerSectionId, number>;
 
 const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSectionIds()].sort(

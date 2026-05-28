@@ -872,16 +872,18 @@ describe("renderCompactPlannerLedger", () => {
     expect(rendered).toContain("<borg_compact_planner_ledger>");
     expect(rendered).toContain("## 1. Current User Message");
     expect(rendered).toContain("sender_display_name");
-    expect(rendered).toContain("## 3. Active Commitments And Discourse Constraints");
+    expect(rendered).toContain("## 3. Cross-Session Self Activity");
+    expect(rendered).toContain("No entries.");
+    expect(rendered).toContain("## 4. Active Commitments And Discourse Constraints");
     expect(rendered).toContain("Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3");
-    expect(rendered).toContain("## 4. Current Closure And Discourse State");
-    expect(rendered).toContain("## 5. Current-Session Contradictions And Quarantines");
-    expect(rendered).toContain("## 6. Action States");
-    expect(rendered).toContain("## 7. Group/Channel Memory");
-    expect(rendered).toContain("## 8. Active Participant Memory");
+    expect(rendered).toContain("## 5. Current Closure And Discourse State");
+    expect(rendered).toContain("## 6. Current-Session Contradictions And Quarantines");
+    expect(rendered).toContain("## 7. Action States");
+    expect(rendered).toContain("## 8. Group/Channel Memory");
+    expect(rendered).toContain("## 9. Active Participant Memory");
     expect(rendered).not.toContain("## 2. Current-Session Transcript");
     expect(rendered).not.toContain("Transcript detail should not be in compact planner ledger.");
-    expect(rendered).not.toContain("## 11. Episodes");
+    expect(rendered).not.toContain("## 12. Episodes");
     expect(rendered).not.toContain("Episode detail should not be in compact planner ledger.");
   });
 
@@ -891,6 +893,7 @@ describe("renderCompactPlannerLedger", () => {
     for (const section of ledger.sections) {
       if (
         section.id === "current_user_message" ||
+        section.id === "cross_session_self_activity" ||
         section.id === "commitments_and_constraints" ||
         section.id === "closure_discourse_state" ||
         section.id === "contradictions_quarantines" ||
@@ -924,6 +927,6 @@ describe("renderCompactPlannerLedger", () => {
     expect(result.traceSummary.omittedEntryCountsBySection.action_states).toBeGreaterThan(0);
     expect(rendered).toContain("Compact planner ledger omitted");
     expect(rendered).toContain("older entries");
-    expect(rendered).not.toContain("## 12. Semantic Graph");
+    expect(rendered).not.toContain("## 13. Semantic Graph");
   });
 });

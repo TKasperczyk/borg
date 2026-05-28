@@ -1,6 +1,7 @@
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
 import type { PersistedTurnAttachment, TurnInputAttachment } from "../../attachments/index.js";
 import type { EntityId } from "../../util/ids.js";
+import type { ActivityEventStatus, ActivityRepository } from "../../memory/activity/index.js";
 import type {
   PendingSocialAttribution,
   PendingTraitAttribution,
@@ -14,6 +15,7 @@ const ACTIVE_TURN_STATUS = "active";
 
 export type TurnOpeningPersistenceOptions = {
   workingMemoryStore: Pick<WorkingMemoryStore, "save">;
+  activityRepository?: Pick<ActivityRepository, "record">;
 };
 
 export type TurnOpeningPersistenceInput = {
@@ -35,6 +37,8 @@ export type TurnOpeningPersistenceInput = {
   persistUserMessage?: boolean;
   audience?: string;
   senderEntityId?: EntityId;
+  speakerEntityId?: EntityId | null;
+  audienceEntityId?: EntityId | null;
   workingMemory: WorkingMemory;
   pendingSocialAttribution: PendingSocialAttribution | null;
   pendingTraitAttribution: PendingTraitAttribution | null;
@@ -69,6 +73,24 @@ export class TurnOpeningPersistence {
               ? {}
               : { sender_entity_id: input.senderEntityId }),
           });
+    if (persistedUserEntry !== null) {
+      const speakerEntityId = input.speakerEntityId ?? input.senderEntityId ?? null;
+
+      this.options.activityRepository?.record({
+        kind: "user_contact",
+        occurredAt: persistedUserEntry.timestamp,
+        sessionId: persistedUserEntry.session_id,
+        turnId: input.turnId,
+        speakerEntityId,
+        actorEntityId: speakerEntityId,
+        audienceEntityId: input.audienceEntityId ?? null,
+        participantEntityIds: [speakerEntityId, input.audienceEntityId ?? null].filter(
+          (entityId): entityId is EntityId => entityId !== null,
+        ),
+        sourceStreamEntryIds: [persistedUserEntry.id],
+        status: activityStatusForStreamEntry(persistedUserEntry),
+      });
+    }
     const persistedAttachments =
       persistedUserEntry === null ||
       input.attachments === undefined ||
@@ -122,4 +144,10 @@ export class TurnOpeningPersistence {
       workingMemory,
     };
   }
+}
+
+function activityStatusForStreamEntry(
+  entry: Pick<StreamEntry, "turn_status">,
+): ActivityEventStatus {
+  return entry.turn_status === "aborted" ? "inactive" : "active";
 }

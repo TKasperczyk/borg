@@ -234,7 +234,7 @@ function ledgerWithOpenQuestionIds(ids: readonly string[]): EvidenceLedger {
     sections: [
       {
         id: "open_questions",
-        label: "13. Open Questions",
+        label: "14. Open Questions",
         entries: ids.map((id) => ({
           id: `open_question:${id}`,
           source_type: "system_metadata",
@@ -2093,7 +2093,7 @@ describe("buildSharedStateLedgerPromptContext", () => {
         },
         {
           id: "retrieved_memory_evidence",
-          label: "10. Retrieved Memory Evidence",
+          label: "11. Retrieved Memory Evidence",
           entries: [
             {
               id: "episode:pruned_anchor",

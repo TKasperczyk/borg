@@ -9,6 +9,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import { ActivityRepository } from "../memory/activity/index.js";
 import {
   ActionRepository,
   resolveOpenQuestionsForCompletedAction,
@@ -94,6 +95,7 @@ export type BorgRepositorySetup = Pick<
   | "commitmentRepository"
   | "creatorDirectiveRepository"
   | "sharedStateRepository"
+  | "activityRepository"
   | "correctionService"
   | "skillRepository"
   | "proceduralContextStatsRepository"
@@ -291,6 +293,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const activityRepository = new ActivityRepository({
+    db: sqlite,
+    clock,
+  });
   const identityService = new IdentityService({
     valuesRepository,
     goalsRepository,
@@ -477,6 +483,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     creatorDirectiveRepository,
     sharedStateRepository,
+    activityRepository,
     correctionService,
     skillRepository,
     proceduralContextStatsRepository,

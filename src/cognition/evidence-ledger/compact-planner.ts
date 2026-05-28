@@ -19,6 +19,7 @@ import type {
 
 const COMPACT_PLANNER_LEDGER_SECTION_IDS = [
   "current_user_message",
+  "cross_session_self_activity",
   "commitments_and_constraints",
   "closure_discourse_state",
   "contradictions_quarantines",
@@ -35,6 +36,10 @@ const DEFAULT_COMPACT_SECTION_OPTIONS = {
   current_user_message: {
     maxEntries: 1,
     maxTokens: 1_200,
+  },
+  cross_session_self_activity: {
+    maxEntries: 8,
+    maxTokens: 800,
   },
   commitments_and_constraints: {
     maxEntries: 32,

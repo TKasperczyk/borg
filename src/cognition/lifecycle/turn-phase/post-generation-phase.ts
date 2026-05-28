@@ -16,6 +16,7 @@ import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
 import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
+import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { valueAppearsIn } from "../../../util/text-presence.js";
 import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
 import {
@@ -83,6 +84,22 @@ function actionArchiveAfterInactiveTurns(options: TurnPhaseCoordinatorOptions): 
   return (
     options.config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns ??
     DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS
+  );
+}
+
+function activityStatusForStreamEntry(
+  entry: Pick<StreamEntry, "turn_status">,
+): ActivityEventStatus {
+  return entry.turn_status === "aborted" ? "inactive" : "active";
+}
+
+function activityParticipantEntityIds(input: {
+  senderEntityId: EntityId | null;
+  audienceEntityId: EntityId | null;
+  replyTargetEntityId?: EntityId | null;
+}): EntityId[] {
+  return [input.senderEntityId, input.audienceEntityId, input.replyTargetEntityId ?? null].filter(
+    (entityId): entityId is EntityId => entityId !== null,
   );
 }
 
@@ -314,6 +331,44 @@ export async function runPostGenerationPhase(input: {
             }),
     completedSub: (entry) => `entry=${entry.kind}`,
   });
+  const activityRepository = input.options.activityRepository;
+
+  if (activityRepository !== undefined) {
+    const status = activityStatusForStreamEntry(persistedAgentEntry);
+    const participantEntityIds = activityParticipantEntityIds({
+      senderEntityId: input.senderEntityId,
+      audienceEntityId: input.audienceEntityId,
+      replyTargetEntityId: persistedAgentEntry.reply_target_entity_id,
+    });
+
+    if (actionEmission.kind === "message") {
+      activityRepository.record({
+        kind: "borg_replied",
+        occurredAt: persistedAgentEntry.timestamp,
+        sessionId: persistedAgentEntry.session_id,
+        turnId: input.turnId,
+        speakerEntityId: null,
+        actorEntityId: null,
+        audienceEntityId: input.audienceEntityId,
+        participantEntityIds,
+        sourceStreamEntryIds: [persistedAgentEntry.id],
+        status,
+      });
+    }
+
+    activityRepository.record({
+      kind: "turn_completed",
+      occurredAt: persistedAgentEntry.timestamp,
+      sessionId: persistedAgentEntry.session_id,
+      turnId: input.turnId,
+      speakerEntityId: null,
+      actorEntityId: null,
+      audienceEntityId: input.audienceEntityId,
+      participantEntityIds,
+      sourceStreamEntryIds: [persistedAgentEntry.id],
+      status,
+    });
+  }
 
   if (actionEmission.kind === "suppressed") {
     return suppressFromActionPhase({

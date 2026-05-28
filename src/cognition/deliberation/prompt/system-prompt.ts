@@ -21,6 +21,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import { formatRelativeAge } from "../../../util/relative-time.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
@@ -49,6 +50,8 @@ import {
   summarizeRetrievalConfidence,
 } from "./retrieval.js";
 import { renderTaggedPromptSection, type TaggedPromptSection } from "./sections.js";
+
+export { formatRelativeAge } from "../../../util/relative-time.js";
 
 // Interim mitigation (v94.1.1): boundary_prompt is extractor-authored and not yet
 // operator-reviewed. Render a fixed generic string so unreviewed boundary text can
@@ -1138,29 +1141,6 @@ function compactPromptText(text: string, maxLength: number): string {
 
 function formatPromptNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "unknown";
-}
-
-export function formatRelativeAge(timestampMs: number, nowMs: number): string {
-  const elapsedMs = Math.max(0, nowMs - timestampMs);
-  const elapsedMinutes = Math.floor(elapsedMs / 60_000);
-
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m ago`;
-  }
-
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-
-  if (elapsedHours < 24) {
-    return `${elapsedHours}h ago`;
-  }
-
-  const elapsedDays = Math.floor(elapsedHours / 24);
-
-  if (elapsedDays < 2) {
-    return "yesterday";
-  }
-
-  return `${elapsedDays}d ago`;
 }
 
 function summarizeAffectiveTrajectory(

@@ -18,6 +18,7 @@ import {
   addCurrentSessionTranscriptSection,
   addCurrentUserMessageSection,
 } from "./sections/current-session.js";
+import { addCrossSessionSelfActivitySection } from "./sections/cross-session-activity.js";
 import {
   addAttributionMatrixSection,
   addCurrentSessionAttributionSidebarSection,
@@ -156,6 +157,7 @@ export class EvidenceLedgerBuilder {
 
     addCurrentUserMessageSection(context);
     addCurrentSessionTranscriptSection(context);
+    addCrossSessionSelfActivitySection(context);
     addCurrentSessionAttributionSidebarSection(context);
     addAttributionMatrixSection(context);
     addCommitmentsAndConstraintsSection(context);

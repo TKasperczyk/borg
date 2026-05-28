@@ -28,6 +28,7 @@ import type { CognitiveMode, IntentRecord } from "../../types.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
 import type { LLMClient } from "../../../llm/index.js";
+import type { ActivityRepository } from "../../../memory/activity/index.js";
 import type { ActionRepository } from "../../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../../../memory/creator-directives/index.js";
@@ -99,6 +100,7 @@ export type TurnPhaseCoordinatorOptions = {
   commitmentRepository: CommitmentRepository;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
+  activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,

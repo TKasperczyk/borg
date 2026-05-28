@@ -322,6 +322,8 @@ export class TurnPhaseCoordinator {
       persistUserMessage: isUserTurn,
       audience: turnInput.audience,
       senderEntityId: turnInput.senderEntityId,
+      speakerEntityId: currentSenderEntityId,
+      audienceEntityId,
       workingMemory,
       pendingSocialAttribution,
       pendingTraitAttribution,

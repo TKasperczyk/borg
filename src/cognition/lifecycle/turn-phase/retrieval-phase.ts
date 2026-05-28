@@ -44,6 +44,11 @@ import type {
   CreatorDirectiveApplicable,
   CreatorDirectiveKind,
 } from "../../../memory/creator-directives/index.js";
+import {
+  DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
+  DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
+  selectCrossSessionSelfActivity,
+} from "../../../memory/activity/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
@@ -538,6 +543,19 @@ export async function runRetrievalPhase(input: {
     }),
     entityRepository: input.options.entityRepository,
   });
+  const crossSessionSelfActivity =
+    input.options.activityRepository === undefined
+      ? []
+      : selectCrossSessionSelfActivity({
+          repository: input.options.activityRepository,
+          currentSessionId: input.sessionId,
+          currentAudienceEntityId: input.audienceEntityId,
+          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
+          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          nowMs: input.options.clock.now(),
+          recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
+          cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
+        });
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({
     options: input.options,
     input: {
@@ -556,6 +574,7 @@ export async function runRetrievalPhase(input: {
       pendingCorrections,
       frameAnomaly: input.currentTurnFrameAnomaly,
       activeParticipants: input.activeParticipants,
+      crossSessionSelfActivity,
       participantRoster: input.participantRoster,
       isUserTurn: input.isUserTurn,
       perception: input.perception,

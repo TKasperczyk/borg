@@ -608,6 +608,59 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
+  it("renders cross-session self activity without durable source handles", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-activity",
+      audienceEntityId: null,
+      currentUserMessage: "Did Alice contact you?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      crossSessionSelfActivity: [
+        {
+          kind: "user_contact",
+          occurredAt: NOW_MS - 41_000,
+          relativeAge: "~41s ago",
+          text: "Alice contacted Borg ~41s ago in another active session.",
+        },
+      ],
+    });
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+
+    expect(
+      ledger.sections.find((section) => section.id === "cross_session_self_activity")?.entries,
+    ).toEqual([
+      expect.objectContaining({
+        source_type: "system_metadata",
+        session_scope: "prior_session",
+        text: "Alice contacted Borg ~41s ago in another active session.",
+      }),
+    ]);
+    expect(rendered).toContain("## 3. Cross-Session Self Activity");
+    expect(rendered).toContain("Alice contacted Borg ~41s ago in another active session.");
+    expect(rendered).not.toContain("sess_");
+    expect(rendered).not.toContain("strm_");
+  });
+
   it("collects current-session ledger context with a bounded reverse stream scan", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2002,7 +2055,7 @@ describe("EvidenceLedgerBuilder", () => {
     const participantText = JSON.stringify(participantSection?.entries ?? []);
     const actionText = JSON.stringify(actionSection?.entries ?? []);
 
-    expect(rendered).toContain("## 7. Group/Channel Memory");
+    expect(rendered).toContain("## 8. Group/Channel Memory");
     expect(rendered).toContain("trip.destination=Spain");
     expect(rendered).toContain("spain_channel_scope");
     expect(rendered).toContain("Coordinate the Spain trip channel.");
@@ -2012,7 +2065,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(groupText).not.toContain("book Alhambra");
     expect(groupText).not.toContain("alice_alhambra_booking");
     expect(groupText).not.toContain("Alice will book the Alhambra visit.");
-    expect(rendered).toContain("## 8. Active Participant Memory");
+    expect(rendered).toContain("## 9. Active Participant Memory");
     expect(rendered).toContain("task.booking=Alhambra");
     expect(participantText).not.toContain("trip.destination=Spain");
     expect(participantText).not.toContain("spain_channel_scope");
@@ -3257,7 +3310,7 @@ describe("EvidenceLedgerBuilder", () => {
     const rendered = renderEvidenceLedger(ledger) ?? "";
     const compactPlannerLedger = renderCompactPlannerLedger(ledger) ?? "";
     const transcriptHeader = "## 2. Current-Session Transcript";
-    const semanticHeader = "## 12. Semantic Graph";
+    const semanticHeader = "## 13. Semantic Graph";
     const transcriptStart = rendered.indexOf(transcriptHeader);
     const semanticStart = rendered.indexOf(semanticHeader);
     expect(transcriptStart).toBeGreaterThanOrEqual(0);

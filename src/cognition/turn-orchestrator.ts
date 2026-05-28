@@ -12,6 +12,7 @@ import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import type { ActivityRepository } from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
@@ -128,6 +129,7 @@ export type TurnOrchestratorOptions = {
   commitmentRepository: CommitmentRepository;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
+  activityRepository?: ActivityRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
   openQuestionsRepository: OpenQuestionsRepository;
@@ -202,6 +204,7 @@ export class TurnOrchestrator {
     });
     const turnOpeningPersistence = new TurnOpeningPersistence({
       workingMemoryStore: options.workingMemoryStore,
+      activityRepository: options.activityRepository,
     });
     const attributionLifecycleService = new AttributionLifecycleService({
       socialRepository: options.socialRepository,
@@ -320,6 +323,7 @@ export class TurnOrchestrator {
       commitmentRepository: options.commitmentRepository,
       creatorDirectiveRepository: options.creatorDirectiveRepository,
       sharedStateRepository: options.sharedStateRepository,
+      activityRepository: options.activityRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,

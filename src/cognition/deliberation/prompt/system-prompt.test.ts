@@ -234,6 +234,7 @@ function makeOperatorSessionSnapshot(
 
 describe("formatRelativeAge", () => {
   it("formats minute, hour, yesterday, and day buckets", () => {
+    expect(formatRelativeAge(NOW_MS - 41_000, NOW_MS)).toBe("~41s ago");
     expect(formatRelativeAge(NOW_MS - 5 * 60_000, NOW_MS)).toBe("5m ago");
     expect(formatRelativeAge(NOW_MS - 2 * 60 * 60_000, NOW_MS)).toBe("2h ago");
     expect(formatRelativeAge(NOW_MS - 25 * 60 * 60_000, NOW_MS)).toBe("yesterday");

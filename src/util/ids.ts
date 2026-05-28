@@ -28,6 +28,7 @@ export type EntityId = BrandedId<"EntityId">;
 export type ActionId = BrandedId<"ActionId">;
 export type RelationalSlotId = BrandedId<"RelationalSlotId">;
 export type SharedStateEntryId = BrandedId<"SharedStateEntryId">;
+export type ActivityEventId = BrandedId<"ActivityEventId">;
 export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
@@ -91,6 +92,7 @@ export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const actionIdHelpers = createIdHelpers<"ActionId">("act");
 export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
 export const sharedStateEntryIdHelpers = createIdHelpers<"SharedStateEntryId">("dart");
+export const activityEventIdHelpers = createIdHelpers<"ActivityEventId">("actevt");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
   prefix: "procevi_",
@@ -144,6 +146,7 @@ export const createActionId = (): ActionId => actionIdHelpers.create();
 export const createRelationalSlotId = (): RelationalSlotId => relationalSlotIdHelpers.create();
 export const createSharedStateEntryId = (): SharedStateEntryId =>
   sharedStateEntryIdHelpers.create();
+export const createActivityEventId = (): ActivityEventId => activityEventIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
   proceduralEvidenceIdHelpers.create();
@@ -231,6 +234,10 @@ export function parseRelationalSlotId(value: string): RelationalSlotId {
 
 export function parseSharedStateEntryId(value: string): SharedStateEntryId {
   return sharedStateEntryIdHelpers.parse(value);
+}
+
+export function parseActivityEventId(value: string): ActivityEventId {
+  return activityEventIdHelpers.parse(value);
 }
 
 export function parseSkillId(value: string): SkillId {

@@ -13,6 +13,7 @@ import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "../config
 import { executiveMigrations } from "../executive/index.js";
 import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
 import { affectiveMigrations } from "../memory/affective/index.js";
+import { activityMigrations } from "../memory/activity/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
 import { creatorDirectiveMigrations } from "../memory/creator-directives/index.js";
 import { sharedStateMigrations } from "../memory/decision-artifacts/index.js";
@@ -239,6 +240,7 @@ export function createMigrations(): Migration[] {
     sessionMigrations,
     sprintCRemovalMigrations,
     creatorDirectiveMigrations,
+    activityMigrations,
   );
 }
 

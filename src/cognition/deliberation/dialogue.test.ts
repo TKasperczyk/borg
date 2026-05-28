@@ -224,7 +224,7 @@ describe("withLedgerImageContentBlocks", () => {
       sections: [
         {
           id: "retrieved_memory_evidence" as const,
-          label: "10. Retrieved Memory Evidence",
+          label: "11. Retrieved Memory Evidence",
           entries: [
             {
               id: "retrieved_evidence:image",

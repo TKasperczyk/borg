@@ -7,6 +7,7 @@ import {
 
 export const CURRENT_USER_TRUST_RANK = 100;
 export const TRANSCRIPT_TRUST_RANK = 95;
+export const CROSS_SESSION_ACTIVITY_TRUST_RANK = 84;
 export const COMMITMENT_TRUST_RANK = 82;
 export const DISCOURSE_TRUST_RANK = 80;
 export const QUARANTINE_TRUST_RANK = 78;
@@ -23,6 +24,10 @@ export const IMAGE_PERCEPTION_TRUST_RANK = 10;
 export const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
+const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>([
+  "prior_session_memory",
+  "cross_session_self_activity",
+]);
 
 export type SectionBucket = {
   entries: EvidenceLedgerEntry[];
@@ -92,7 +97,7 @@ export function addEntry(
   entry: EvidenceLedgerEntry,
 ): void {
   const targetSectionId =
-    entry.session_scope === "prior_session" && sectionId !== "prior_session_memory"
+    entry.session_scope === "prior_session" && !PRIOR_SESSION_DIRECT_SECTION_IDS.has(sectionId)
       ? "prior_session_memory"
       : sectionId;
   const targetBucket = sectionBucket(sections, targetSectionId);

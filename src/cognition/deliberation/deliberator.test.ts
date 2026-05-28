@@ -301,7 +301,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "commitments_and_constraints",
-        label: "3. Active Commitments And Discourse Constraints",
+        label: "4. Active Commitments And Discourse Constraints",
         entries: [
           {
             id: "commitment:locked-spain-route",
@@ -329,7 +329,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "closure_discourse_state",
-        label: "4. Current Closure And Discourse State",
+        label: "5. Current Closure And Discourse State",
         entries: [
           {
             id: "discourse_state:working_memory",
@@ -345,7 +345,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "contradictions_quarantines",
-        label: "5. Current-Session Contradictions And Quarantines",
+        label: "6. Current-Session Contradictions And Quarantines",
         entries: [
           {
             id: "review_queue:granada-ss-route-flip",
@@ -362,7 +362,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "action_states",
-        label: "6. Action States",
+        label: "7. Action States",
         entries: [
           {
             id: "action_thread:ss-svq-flight",
@@ -382,7 +382,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "group_channel_memory",
-        label: "7. Group/Channel Memory",
+        label: "8. Group/Channel Memory",
         entries: [
           {
             id: "group_relational_slot:spain-route-order",
@@ -402,7 +402,7 @@ function makePhantomRouteEvidenceLedger(): EvidenceLedger {
       },
       {
         id: "relational_slots",
-        label: "8. Active Participant Memory",
+        label: "9. Active Participant Memory",
         entries: [
           {
             id: "relational_slot:ben-speaker",
@@ -1785,7 +1785,7 @@ describe("deliberator", () => {
     expect(plannerSystem).toContain("SS -> SVQ");
     expect(plannerSystem).toContain("Granada -> SS");
     expect(plannerSystem).not.toContain("## 2. Current-Session Transcript");
-    expect(plannerSystem).not.toContain("## 11. Episodes");
+    expect(plannerSystem).not.toContain("## 12. Episodes");
 
     const finalizerSystem = requestSystemText(llm.requests[1]?.system);
 
