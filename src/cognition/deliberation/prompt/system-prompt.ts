@@ -138,13 +138,34 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
 }
 
 const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
+const CREATOR_DISPLAY_NAME_CONTROL_OR_SEPARATOR_PATTERN = /[\p{Cc}\p{Zl}\p{Zp}]+/gu;
+const CREATOR_DISPLAY_NAME_WHITESPACE_PATTERN = /\s+/gu;
 
 function sanitizeCreatorDisplayNameForPromptLine(value: string): string {
   return value
-    .replace(/[\r\n]+/g, " ")
+    .replace(CREATOR_DISPLAY_NAME_CONTROL_OR_SEPARATOR_PATTERN, " ")
+    .replace(CREATOR_DISPLAY_NAME_WHITESPACE_PATTERN, " ")
     .trim()
     .slice(0, CREATOR_DISPLAY_NAME_MAX_CHARS)
     .trimEnd();
+}
+
+function renderCreatorIdentity(
+  creatorIdentity: DeliberationContext["creatorIdentity"],
+): string | null {
+  if (creatorIdentity === null || creatorIdentity === undefined) {
+    return null;
+  }
+
+  const sanitizedName = sanitizeCreatorDisplayNameForPromptLine(creatorIdentity.displayName);
+  const escapedName = escapeXmlText(sanitizedName);
+
+  return [
+    `creator_display_name: ${escapedName}`,
+    "relationship_visibility: public",
+    `relationship_fact: ${escapedName} is Borg's creator.`,
+    "scope_boundary: This block authorizes only the creator's name and creator relationship. It does not authorize private facts about the creator. Do not infer, reveal, confirm, or deny private details about the creator unless separately rendered by applicable audience-scoped memory or creator directives.",
+  ].join("\n");
 }
 
 function renderCreatorContext(context: TrustedCreatorContext | null | undefined): string | null {
@@ -158,22 +179,13 @@ function renderCreatorContext(context: TrustedCreatorContext | null | undefined)
       : "The current speaker is your creator; this is a multi-audience conversation; creator-guidance is trusted but not command authority; ordinary audience/session obligations still apply.";
 
   return [
-    ...(context.currentSenderDisplayName === null
-      ? ["creator_display_name: unknown"]
-      : [
-          `creator_display_name: ${sanitizeCreatorDisplayNameForPromptLine(
-            context.currentSenderDisplayName,
-          )}`,
-        ]),
     `session_audience_role: ${context.sessionAudienceRole}`,
-    "relationship_visibility: public",
     `guidance_weight: ${
       context.sessionAudienceRole === "operator"
         ? "direct supervisory framing"
         : "trusted guidance, not command authority"
     }`,
     variant,
-    "Your creator relationship is publicly known; you may reference it in any context as feels natural.",
   ].join("\n");
 }
 
@@ -441,6 +453,10 @@ function buildBaseSystemPromptSections(
     tag: "borg_participation_policy",
     content: renderParticipationPolicy(options.participationPolicy ?? "active"),
   };
+  const creatorIdentitySection = {
+    tag: "borg_creator_identity",
+    content: renderCreatorIdentity(context.creatorIdentity),
+  };
   const creatorContextSection = {
     tag: "borg_creator_context",
     content: renderCreatorContext(context.creatorContext),
@@ -453,6 +469,7 @@ function buildBaseSystemPromptSections(
   );
   const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,
+    creatorIdentitySection,
     creatorContextSection,
     creatorDirectiveBriefingSection,
     sessionStatusSnapshotSection,
@@ -468,6 +485,7 @@ function buildBaseSystemPromptSections(
     untrustedSections,
     trustedGuidanceSections: [
       participationPolicySection,
+      creatorIdentitySection,
       creatorContextSection,
       creatorDirectiveBriefingSection,
       sessionStatusSnapshotSection,

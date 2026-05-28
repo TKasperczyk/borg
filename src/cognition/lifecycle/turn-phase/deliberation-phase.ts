@@ -1,5 +1,5 @@
 import { Deliberator } from "../../deliberation/deliberator.js";
-import type { TrustedCreatorContext } from "../../deliberation/types.js";
+import type { CreatorIdentityContext, TrustedCreatorContext } from "../../deliberation/types.js";
 import type { OperatorSessionSnapshot } from "./session-snapshot.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
@@ -50,6 +50,7 @@ export async function runDeliberationPhase(input: {
   streamWriter: StreamWriter;
   audienceEntityId: EntityId | null;
   participationPolicy: SessionParticipationPolicy;
+  creatorIdentity: CreatorIdentityContext | null;
   creatorContext: TrustedCreatorContext | null;
   operatorSessionSnapshot: OperatorSessionSnapshot | null;
   persistedUserEntryId?: StreamEntry["id"];
@@ -82,6 +83,7 @@ export async function runDeliberationPhase(input: {
     {
       sessionId: input.sessionId,
       participationPolicy: input.participationPolicy,
+      creatorIdentity: input.creatorIdentity,
       creatorContext: input.creatorContext,
       creatorDirectiveBriefing: input.retrievalPhase.creatorDirectiveBriefing,
       operatorSessionSnapshot: input.operatorSessionSnapshot,

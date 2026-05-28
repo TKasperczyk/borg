@@ -79,6 +79,10 @@ export type TrustedCreatorContext = {
   sessionAudienceRole: SessionAudienceRole;
 };
 
+export type CreatorIdentityContext = {
+  displayName: string;
+};
+
 export type CreatorDirectiveBriefingContentDirective = {
   renderMode: "content";
   kind: CreatorDirectiveKind;
@@ -140,6 +144,7 @@ export type SelfSnapshot = {
 export type DeliberationContext = {
   sessionId: SessionId;
   participationPolicy?: SessionParticipationPolicy;
+  creatorIdentity?: CreatorIdentityContext | null;
   creatorContext?: TrustedCreatorContext | null;
   creatorDirectiveBriefing?: CreatorDirectiveBriefing | null;
   operatorSessionSnapshot?: OperatorSessionSnapshot | null;

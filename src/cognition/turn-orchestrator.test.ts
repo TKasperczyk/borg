@@ -989,6 +989,50 @@ describe("TurnOrchestrator operator session snapshot", () => {
   });
 });
 
+describe("TurnOrchestrator creator identity prompt", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  it("renders public creator identity for non-creator participant turns without creator authority context", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-creator-identity-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Tom is your creator."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const tomId = borg.entities.resolve("Tom");
+      borg.entities.setBorgRole(tomId, "creator");
+
+      await borg.turn({
+        sessionId: DEFAULT_SESSION_ID,
+        audience: "Alice",
+        userMessage: "Do you know Tom?",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).toContain("<borg_creator_identity>");
+      expect(finalizerSystem).toContain("creator_display_name: Tom");
+      expect(finalizerSystem).toContain("relationship_fact: Tom is Borg's creator.");
+      expect(finalizerSystem).toContain(
+        "scope_boundary: This block authorizes only the creator's name and creator relationship.",
+      );
+      expect(finalizerSystem).not.toContain("<borg_creator_context>");
+    } finally {
+      await borg.close();
+    }
+  });
+});
+
 describe("TurnOrchestrator evidence ledger", () => {
   const tempDirs: string[] = [];
 

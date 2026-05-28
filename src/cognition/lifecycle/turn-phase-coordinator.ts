@@ -256,6 +256,8 @@ export class TurnPhaseCoordinator {
       currentSenderEntityId === null
         ? null
         : this.options.entityRepository.get(currentSenderEntityId);
+    const creator = this.options.entityRepository.getCreator();
+    const creatorIdentity = creator === null ? null : { displayName: creator.canonical_name };
     const creatorContext = {
       currentSenderEntityId,
       currentSenderDisplayName: currentSenderEntity?.canonical_name ?? null,
@@ -659,6 +661,7 @@ export class TurnPhaseCoordinator {
           streamWriter,
           audienceEntityId,
           participationPolicy,
+          creatorIdentity,
           creatorContext,
           operatorSessionSnapshot,
           persistedUserEntryId,
