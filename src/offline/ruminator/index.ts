@@ -474,7 +474,7 @@ async function searchResolutionEvidence(
   episodes: RetrievedEpisode[];
   expectedCount: number;
 }> {
-  const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+  const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
   const baseOptions = {
     limit: Math.max(3, maxQuestionsPerRun),
     attentionWeights: buildReflectionWeights(ctx),

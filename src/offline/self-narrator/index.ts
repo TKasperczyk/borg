@@ -308,7 +308,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
-    const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+    const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
     // Existing global periods and growth markers may already cite older
     // audience-scoped evidence; this write-side guard only prevents new ones.
     const sourceEpisodes = (await ctx.episodicRepository.listAll())

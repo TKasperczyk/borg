@@ -408,6 +408,22 @@ export class EntityRepository {
     return row === undefined ? null : mapEntityRow(row);
   }
 
+  getSelf(): EntityRecord | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM entities
+          WHERE kind = 'self'
+          ORDER BY created_at ASC
+          LIMIT 1
+        `,
+      )
+      .get() as Record<string, unknown> | undefined;
+
+    return row === undefined ? null : mapEntityRow(row);
+  }
+
   setBorgRole(id: EntityId, role: BorgRole | null): EntityRecord | null {
     const parsedId = parseEntityId(id);
     const parsedRole = role === null ? null : borgRoleSchema.parse(role);

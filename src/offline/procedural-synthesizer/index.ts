@@ -760,7 +760,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
   ): Promise<ProceduralSynthesizerPlan> {
     const errors: OfflineProcessError[] = [];
     const budget = opts.budget ?? ctx.config.offline.proceduralSynthesizer.budget;
-    const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+    const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
     const minSupport = ctx.config.offline.proceduralSynthesizer.minSupport;
     const synthesizerConfig = ctx.config.offline.proceduralSynthesizer;
     const sourceEvidence = ctx.proceduralEvidenceRepository

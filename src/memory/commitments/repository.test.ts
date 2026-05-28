@@ -52,6 +52,34 @@ describe("commitment repository", () => {
     }
   });
 
+  it("resolves the self entity by kind, not by name", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    entities.add({
+      id: createEntityId(),
+      canonicalName: "Alex",
+    });
+
+    try {
+      expect(entities.getSelf()).toBeNull();
+
+      const self = entities.add({
+        id: createEntityId(),
+        canonicalName: "self-renamed",
+        kind: "self",
+      });
+
+      expect(entities.getSelf()?.id).toBe(self.id);
+    } finally {
+      db.close();
+    }
+  });
+
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),
