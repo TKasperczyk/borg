@@ -178,6 +178,32 @@ export const disclosurePolicySchema = z
       });
     }
 
+    if (value.content_scope === "subject_only") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "subject_only requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "subject_only requires empty excluded_entity_ids",
+        });
+      }
+
+      if (value.subject_may_know === false) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["subject_may_know"],
+          message: "subject_only requires subject_may_know to be true or null",
+        });
+      }
+    }
+
     if (
       value.denied_audience_behavior === "render_boundary_when_relevant" &&
       value.boundary_prompt === null
@@ -263,6 +289,14 @@ export const creatorDirectiveSchema = z
         message: "subject_may_know=false requires subject exclusion or operator_only scope",
       });
     }
+
+    if (value.semantic_slot !== null && value.canonical_fact === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["canonical_fact"],
+        message: "slotted creator directive requires canonical_fact",
+      });
+    }
   });
 
 export const creatorDirectiveQueueInputSchema = z
@@ -276,6 +310,7 @@ export const creatorDirectiveQueueInputSchema = z
     subjectKind: creatorDirectiveSubjectKindSchema,
     subjectEntityId: creatorDirectiveEntityIdSchema.nullable().optional(),
     semanticSlot: creatorDirectiveSemanticSlotSchema.nullable().optional(),
+    semanticValue: z.string().trim().min(1).nullable().optional(),
     canonicalFact: z.string().trim().min(1).nullable().optional(),
     operationalDirective: z.string().trim().min(1),
     disclosurePolicy: disclosurePolicySchema,
@@ -316,6 +351,28 @@ export const creatorDirectiveQueueInputSchema = z
         code: "custom",
         path: ["disclosurePolicy", "subject_may_know"],
         message: "subject_may_know=false requires subject exclusion or operator_only scope",
+      });
+    }
+
+    if (value.semanticSlot !== undefined && value.semanticSlot !== null) {
+      if (value.semanticValue === undefined || value.semanticValue === null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["semanticValue"],
+          message: "slotted creator directive requires semanticValue",
+        });
+      }
+    }
+
+    if (
+      (value.semanticSlot === undefined || value.semanticSlot === null) &&
+      value.semanticValue !== undefined &&
+      value.semanticValue !== null
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["semanticValue"],
+        message: "semanticValue requires semanticSlot",
       });
     }
   });

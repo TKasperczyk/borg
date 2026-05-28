@@ -12,6 +12,7 @@ import type {
 import type {
   CreatorDirectiveKind,
   CreatorDirectiveMentionPolicy,
+  CreatorDirectiveSemanticSlot,
   CreatorDirectiveSubjectKind,
 } from "../../memory/creator-directives/index.js";
 import type {
@@ -88,6 +89,8 @@ export type CreatorDirectiveBriefingContentDirective = {
   kind: CreatorDirectiveKind;
   subjectKind: CreatorDirectiveSubjectKind;
   subjectLabel: string;
+  semanticSlot: CreatorDirectiveSemanticSlot | null;
+  semanticValue: string | null;
   canonicalFact: string | null;
   operationalDirective: string | null;
   mentionPolicy: CreatorDirectiveMentionPolicy;

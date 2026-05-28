@@ -74,7 +74,24 @@ const creatorDirectiveCandidateSchema = z
     confidence: z.number().min(0).max(1),
     reason: z.string().trim().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.semantic_slot === null && value.semantic_value !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["semantic_value"],
+        message: "semantic_value requires semantic_slot",
+      });
+    }
+
+    if (value.semantic_slot !== null && value.semantic_value === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["semantic_value"],
+        message: "semantic_slot requires semantic_value",
+      });
+    }
+  });
 
 export const creatorDirectiveExtractionOutputSchema = z
   .object({

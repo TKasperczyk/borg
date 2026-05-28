@@ -204,9 +204,21 @@ function subjectLabelForCreatorDirective(
   }
 }
 
-function contentPayloadForCreatorDirective(
-  directive: CreatorDirective,
-): { canonicalFact: string | null; operationalDirective: string | null } | null {
+function contentPayloadForCreatorDirective(directive: CreatorDirective): {
+  semanticValue: string | null;
+  canonicalFact: string | null;
+  operationalDirective: string | null;
+} | null {
+  if (directive.semantic_slot !== null) {
+    return directive.canonical_fact === null
+      ? null
+      : {
+          semanticValue: directive.canonical_fact,
+          canonicalFact: null,
+          operationalDirective: null,
+        };
+  }
+
   const kind: CreatorDirectiveKind = directive.kind;
 
   switch (kind) {
@@ -215,10 +227,18 @@ function contentPayloadForCreatorDirective(
     case "disclosure_boundary":
       return directive.canonical_fact === null
         ? null
-        : { canonicalFact: directive.canonical_fact, operationalDirective: null };
+        : {
+            semanticValue: null,
+            canonicalFact: directive.canonical_fact,
+            operationalDirective: null,
+          };
     case "response_policy":
     case "routing_instruction":
-      return { canonicalFact: null, operationalDirective: directive.operational_directive };
+      return {
+        semanticValue: null,
+        canonicalFact: null,
+        operationalDirective: directive.operational_directive,
+      };
   }
 }
 
@@ -244,6 +264,8 @@ export function buildCreatorDirectiveBriefing(input: {
           kind: item.directive.kind,
           subjectKind: item.directive.subject_kind,
           subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
+          semanticSlot: item.directive.semantic_slot,
+          semanticValue: payload.semanticValue,
           canonicalFact: payload.canonicalFact,
           operationalDirective: payload.operationalDirective,
           mentionPolicy: item.directive.disclosure_policy.mention_policy,

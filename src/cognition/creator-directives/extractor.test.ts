@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
@@ -192,5 +192,38 @@ describe("CreatorDirectiveExtractor", () => {
       allowed_entity_labels: ["Alice"],
       mention_policy: "answer_if_asked",
     });
+  });
+
+  it("rejects semantic values without semantic slots", async () => {
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse([
+          candidate({
+            semantic_slot: null,
+            semantic_value: "Vesper",
+            canonical_fact: "Borg's self-chosen name is Claude.",
+          }),
+        ]),
+      ],
+    });
+    const extractor = new CreatorDirectiveExtractor({
+      llmClient: llm,
+      model: "haiku",
+      onDegraded,
+    });
+
+    const result = await extractor.extract(
+      extractorInput({
+        userMessage: "Vesper is the name.",
+      }),
+    );
+
+    expect(result).toEqual([]);
+    expect(onDegraded).toHaveBeenCalledWith(
+      "invalid_payload",
+      expect.any(Error),
+      expect.objectContaining({ stopReason: "tool_use" }),
+    );
   });
 });

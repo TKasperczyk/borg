@@ -11,7 +11,7 @@ import {
 } from "../../util/ids.js";
 import { creatorDirectiveMigrations } from "./migrations.js";
 import { CreatorDirectiveRepository, evaluateCreatorDirectiveRenderMode } from "./repository.js";
-import { creatorDirectiveQueueInputSchema } from "./types.js";
+import { creatorDirectiveQueueInputSchema, creatorDirectiveSchema } from "./types.js";
 import type { CreatorDirective, CreatorDirectiveQueueInput, DisclosurePolicy } from "./types.js";
 
 const BOUNDARY_PROMPT =
@@ -90,6 +90,7 @@ describe("CreatorDirectiveRepository", () => {
           subjectKind: "entity",
           subjectEntityId: subject,
           semanticSlot: "public_name",
+          semanticValue: "Maya",
           canonicalFact: "Maya may know this fact.",
           operationalDirective: "Treat this as a durable creator directive.",
           disclosurePolicy: disclosurePolicy({
@@ -113,7 +114,7 @@ describe("CreatorDirectiveRepository", () => {
         subject_kind: "entity",
         subject_entity_id: subject,
         semantic_slot: "public_name",
-        canonical_fact: "Maya may know this fact.",
+        canonical_fact: "Maya",
         operational_directive: "Treat this as a durable creator directive.",
         disclosure_policy: expect.objectContaining({
           content_scope: "allow_list",
@@ -149,6 +150,23 @@ describe("CreatorDirectiveRepository", () => {
       expect(repository.list({ topicTag: "ATLAS" }).map((record) => record.id)).toEqual([
         directive.id,
       ]);
+
+      const missingSlottedGroundedValue = creatorDirectiveSchema.safeParse({
+        ...directive,
+        canonical_fact: null,
+      });
+      expect(missingSlottedGroundedValue.success).toBe(false);
+      if (missingSlottedGroundedValue.success) {
+        throw new Error("expected slotted stored record without canonical_fact to fail validation");
+      }
+      expect(missingSlottedGroundedValue.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ["canonical_fact"],
+            message: "slotted creator directive requires canonical_fact",
+          }),
+        ]),
+      );
     } finally {
       db.close();
     }
@@ -274,10 +292,25 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
-  it("rejects malformed disclosure policy shapes", () => {
+  it("rejects malformed queue input and disclosure policy shapes", () => {
     const { db, repository } = createRepository();
     const entity = createEntityId();
     const cases = [
+      {
+        input: queueInput({
+          semanticSlot: "public_name",
+        }),
+        path: ["semanticValue"],
+        message: "slotted creator directive requires semanticValue",
+      },
+      {
+        input: queueInput({
+          semanticValue: "Vesper",
+          canonicalFact: "Borg's self-chosen name is Claude.",
+        }),
+        path: ["semanticValue"],
+        message: "semanticValue requires semanticSlot",
+      },
       {
         input: queueInput({
           disclosurePolicy: disclosurePolicy({
@@ -359,6 +392,42 @@ describe("CreatorDirectiveRepository", () => {
       },
       {
         input: queueInput({
+          subjectKind: "entity",
+          subjectEntityId: entity,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "subject_only",
+            allowed_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "allowed_entity_ids"],
+        message: "subject_only requires empty allowed_entity_ids",
+      },
+      {
+        input: queueInput({
+          subjectKind: "entity",
+          subjectEntityId: entity,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "subject_only",
+            excluded_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "excluded_entity_ids"],
+        message: "subject_only requires empty excluded_entity_ids",
+      },
+      {
+        input: queueInput({
+          subjectKind: "entity",
+          subjectEntityId: entity,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "subject_only",
+            subject_may_know: false,
+          }),
+        }),
+        path: ["disclosurePolicy", "subject_may_know"],
+        message: "subject_only requires subject_may_know to be true or null",
+      },
+      {
+        input: queueInput({
           disclosurePolicy: disclosurePolicy({
             content_scope: "all_except",
             excluded_entity_ids: [entity],
@@ -408,6 +477,36 @@ describe("CreatorDirectiveRepository", () => {
         expect(error).toBeInstanceOf(StorageError);
         expect(error).toMatchObject({ code: "CREATOR_DIRECTIVE_INVALID" });
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps operator_only exclusions valid for deny-audience boundaries", () => {
+    const { db, repository } = createRepository();
+    const excluded = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+            excluded_entity_ids: [excluded],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+        }),
+      );
+      const applicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: excluded,
+          sessionRole: "participant",
+        }),
+      );
+
+      expect(directive.disclosure_policy.excluded_entity_ids).toEqual([excluded]);
+      expect(applicable[directive.id]?.render_mode).toBe("boundary");
+      expect(applicable[directive.id]?.reason).toBe("explicit_exclude_boundary");
     } finally {
       db.close();
     }
@@ -811,6 +910,7 @@ describe("CreatorDirectiveRepository", () => {
           createdByEntityId: creator,
           subjectKind: "borg_self",
           semanticSlot: "public_name",
+          semanticValue: "Claude",
           canonicalFact: "Borg's self-chosen name is Claude.",
           operationalDirective: "Answer allowed audiences with Claude when asked.",
           priority: 100,
@@ -833,6 +933,7 @@ describe("CreatorDirectiveRepository", () => {
           createdByEntityId: creator,
           subjectKind: "borg_self",
           semanticSlot: "public_name",
+          semanticValue: "Vesper",
           canonicalFact: "Borg's self-chosen name is Vesper.",
           operationalDirective: "Answer allowed audiences with Vesper when asked.",
           priority: 1,
@@ -867,7 +968,7 @@ describe("CreatorDirectiveRepository", () => {
             : [],
         );
 
-      expect(applicableNames).toEqual(["Borg's self-chosen name is Vesper."]);
+      expect(applicableNames).toEqual(["Vesper"]);
     } finally {
       db.close();
     }

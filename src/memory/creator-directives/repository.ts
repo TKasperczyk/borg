@@ -300,6 +300,7 @@ export class CreatorDirectiveRepository {
     }
 
     const now = parsed.data.createdAt ?? this.clock.now();
+    const semanticSlot = parsed.data.semanticSlot ?? null;
     const record = creatorDirectiveSchema.parse({
       id: parsed.data.id ?? createCreatorDirectiveId(),
       record_version: 1,
@@ -311,8 +312,9 @@ export class CreatorDirectiveRepository {
       content_source_stream_entry_ids: uniqueIds(parsed.data.contentSourceStreamEntryIds),
       subject_kind: parsed.data.subjectKind,
       subject_entity_id: parsed.data.subjectEntityId ?? null,
-      semantic_slot: parsed.data.semanticSlot ?? null,
-      canonical_fact: parsed.data.canonicalFact ?? null,
+      semantic_slot: semanticSlot,
+      canonical_fact:
+        semanticSlot === null ? (parsed.data.canonicalFact ?? null) : parsed.data.semanticValue,
       operational_directive: parsed.data.operationalDirective,
       disclosure_policy: normalizeDisclosurePolicy(parsed.data.disclosurePolicy),
       priority: parsed.data.priority,

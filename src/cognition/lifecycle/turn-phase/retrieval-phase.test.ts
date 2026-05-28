@@ -86,6 +86,8 @@ describe("creator directive retrieval briefing", () => {
         authorizationStreamEntryIds: [currentUserEntryId],
         contentSourceStreamEntryIds: [currentUserEntryId],
         subjectKind: "borg_self",
+        semanticSlot: "public_name",
+        semanticValue: "Kestrel",
         canonicalFact: "Borg's same-turn name is Kestrel.",
         operationalDirective: "Answer with the same-turn name when asked.",
         disclosurePolicy: disclosurePolicy(),
@@ -99,6 +101,8 @@ describe("creator directive retrieval briefing", () => {
         authorizationStreamEntryIds: [priorUserEntryId],
         contentSourceStreamEntryIds: [priorUserEntryId],
         subjectKind: "borg_self",
+        semanticSlot: "public_name",
+        semanticValue: "Kestrel",
         canonicalFact: "Borg's prior name is Kestrel.",
         operationalDirective: "Answer with the prior name when asked.",
         disclosurePolicy: disclosurePolicy(),
@@ -119,11 +123,11 @@ describe("creator directive retrieval briefing", () => {
 
       expect(
         briefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" && directive.canonicalFact !== null
-            ? [directive.canonicalFact]
+          directive.renderMode === "content" && directive.semanticValue !== null
+            ? [directive.semanticValue]
             : [],
         ),
-      ).toEqual(["Borg's prior name is Kestrel."]);
+      ).toEqual(["Kestrel"]);
     } finally {
       db.close();
     }
@@ -150,6 +154,8 @@ describe("creator directive retrieval briefing", () => {
         authorizationStreamEntryIds: [publicEntryId],
         contentSourceStreamEntryIds: [publicEntryId],
         subjectKind: "borg_self",
+        semanticSlot: "public_name",
+        semanticValue: "Kestrel",
         canonicalFact: "Borg's public name is Kestrel.",
         operationalDirective: "Answer any audience with the public name when asked.",
         disclosurePolicy: disclosurePolicy(),
@@ -193,21 +199,18 @@ describe("creator directive retrieval briefing", () => {
 
       expect(
         operatorBriefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" && directive.canonicalFact !== null
-            ? [directive.canonicalFact]
+          directive.renderMode === "content"
+            ? (directive.semanticValue ?? directive.canonicalFact ?? [])
             : [],
         ),
-      ).toEqual([
-        "Borg's public name is Kestrel.",
-        "Borg's operator-only diagnostic label is Kestrel-debug.",
-      ]);
+      ).toEqual(["Kestrel", "Borg's operator-only diagnostic label is Kestrel-debug."]);
       expect(
         participantBriefing?.directives.flatMap((directive) =>
-          directive.renderMode === "content" && directive.canonicalFact !== null
-            ? [directive.canonicalFact]
+          directive.renderMode === "content" && directive.semanticValue !== null
+            ? [directive.semanticValue]
             : [],
         ),
-      ).toEqual(["Borg's public name is Kestrel."]);
+      ).toEqual(["Kestrel"]);
     } finally {
       db.close();
     }
@@ -232,7 +235,9 @@ describe("creator directive retrieval briefing", () => {
         authorizationStreamEntryIds: [createStreamEntryId()],
         contentSourceStreamEntryIds: [createStreamEntryId()],
         subjectKind: "borg_self",
-        canonicalFact: "Borg's self-chosen name is Kestrel.",
+        semanticSlot: "public_name",
+        semanticValue: "Kestrel",
+        canonicalFact: "Borg's self-chosen name is Claude.",
         operationalDirective: "Answer allowed audiences with Borg's self-chosen name.",
         disclosurePolicy: disclosurePolicy(),
         priority: 8,
@@ -279,11 +284,14 @@ describe("creator directive retrieval briefing", () => {
       expect(briefing?.directives).toEqual([
         expect.objectContaining({
           kind: "self_identity",
-          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          semanticSlot: "public_name",
+          semanticValue: "Kestrel",
+          canonicalFact: null,
           operationalDirective: null,
         }),
         expect.objectContaining({
           kind: "response_policy",
+          semanticValue: null,
           canonicalFact: null,
           operationalDirective:
             "Do not volunteer family-planning details unless Alice asks directly.",
@@ -315,6 +323,8 @@ describe("creator directive retrieval briefing", () => {
         authorizationStreamEntryIds: [createStreamEntryId()],
         contentSourceStreamEntryIds: [createStreamEntryId()],
         subjectKind: "borg_self",
+        semanticSlot: "public_name",
+        semanticValue: "Kestrel",
         canonicalFact: "Borg's public name is Kestrel.",
         operationalDirective: "Answer any audience with the public name when asked.",
         disclosurePolicy: disclosurePolicy(),

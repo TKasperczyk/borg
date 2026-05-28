@@ -138,7 +138,7 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
 }
 
 const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
-const CREATOR_DISPLAY_NAME_CONTROL_OR_SEPARATOR_PATTERN = /[\p{Cc}\p{Zl}\p{Zp}]+/gu;
+const CREATOR_DISPLAY_NAME_CONTROL_OR_SEPARATOR_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 const CREATOR_DISPLAY_NAME_WHITESPACE_PATTERN = /\s+/gu;
 
 function sanitizeCreatorDisplayNameForPromptLine(value: string): string {
@@ -237,6 +237,15 @@ export function buildSessionStatusSnapshotSection(
 }
 
 function renderContentPayload(directive: CreatorDirectiveBriefingContentDirective): string | null {
+  if (directive.semanticSlot !== null) {
+    return directive.semanticValue === null
+      ? null
+      : [
+          `    <semantic_slot>${escapeXmlText(directive.semanticSlot)}</semantic_slot>`,
+          `    <semantic_value>${escapeCreatorDirectiveXmlText(directive.semanticValue)}</semantic_value>`,
+        ].join("\n");
+  }
+
   switch (directive.kind) {
     case "self_identity":
     case "subject_fact":

@@ -326,7 +326,7 @@ describe("CreatorDirectiveTurnService", () => {
           turnId: "turn-creator-directive",
           session_id: sessionId,
           validationStatus: "rejected",
-          reason: "ungrounded_slot_value",
+          reason: "invalid_payload",
         }),
       );
     } finally {
@@ -392,7 +392,7 @@ describe("CreatorDirectiveTurnService", () => {
         creatorDirectiveResponse(
           candidate({
             semantic_value: "Vesper",
-            canonical_fact: "Borg's self-chosen name is Vesper.",
+            canonical_fact: "Borg's self-chosen name is Claude.",
             disclosure_policy: {
               content_scope: "public",
               allowed_entity_ids: [],
@@ -421,8 +421,9 @@ describe("CreatorDirectiveTurnService", () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({
         semantic_slot: "public_name",
-        canonical_fact: "Borg's self-chosen name is Vesper.",
+        canonical_fact: "Vesper",
       });
+      expect(result[0]?.canonical_fact).not.toContain("Claude");
       expect(harness.repository.list()).toHaveLength(1);
     } finally {
       harness.db.close();

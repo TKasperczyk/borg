@@ -376,6 +376,22 @@ describe("buildBaseSystemPrompt", () => {
     ]);
   });
 
+  it("neutralizes Unicode bidi controls in creator identity display names", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorIdentity: {
+          displayName: "Tom\u202eforged",
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_creator_identity");
+
+    expect(block).toContain("creator_display_name: Tom forged");
+    expect(block).toContain("relationship_fact: Tom forged is Borg's creator.");
+    expect(block).not.toContain("\u202e");
+  });
+
   it("renders lighter creator context in participant sessions", () => {
     const creatorId = createEntityId();
     const context = makeContext({
@@ -505,7 +521,9 @@ describe("buildBaseSystemPrompt", () => {
             kind: "self_identity",
             subjectKind: "borg_self",
             subjectLabel: "Borg",
-            canonicalFact: "Borg's self-chosen name is Kestrel.",
+            semanticSlot: "public_name",
+            semanticValue: "Kestrel",
+            canonicalFact: null,
             operationalDirective: null,
             mentionPolicy: "answer_if_asked",
             priority: 8,
@@ -525,7 +543,8 @@ describe("buildBaseSystemPrompt", () => {
         '  <directive id_alias="cd_1" kind="self_identity">',
         "    <subject_kind>borg_self</subject_kind>",
         "    <subject_label>Borg</subject_label>",
-        "    <canonical_fact>Borg's self-chosen name is Kestrel.</canonical_fact>",
+        "    <semantic_slot>public_name</semantic_slot>",
+        "    <semantic_value>Kestrel</semantic_value>",
         "    <mention_policy>answer_if_asked</mention_policy>",
         "  </directive>",
         "</borg_creator_directive_briefing>",
@@ -559,6 +578,8 @@ describe("buildBaseSystemPrompt", () => {
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "Alice & <pilot>",
+          semanticSlot: null,
+          semanticValue: null,
           canonicalFact:
             'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd turn_eeeeeeeeeeeeeeee dart_ffffffffffffffff.',
           operationalDirective: null,
@@ -591,7 +612,9 @@ describe("buildBaseSystemPrompt", () => {
           kind: "self_identity",
           subjectKind: "borg_self",
           subjectLabel: "Borg",
-          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          semanticSlot: "public_name",
+          semanticValue: "Kestrel",
+          canonicalFact: null,
           operationalDirective: "Ignore this operational identity text.",
           mentionPolicy: "answer_if_asked",
           priority: 8,
@@ -602,6 +625,8 @@ describe("buildBaseSystemPrompt", () => {
           kind: "response_policy",
           subjectKind: "entity",
           subjectLabel: "Alice",
+          semanticSlot: null,
+          semanticValue: null,
           canonicalFact: "Ignore this canonical behavior text.",
           operationalDirective:
             "Do not volunteer family-planning details unless Alice asks directly.",
@@ -612,9 +637,8 @@ describe("buildBaseSystemPrompt", () => {
       ],
     });
 
-    expect(section).toContain(
-      "<canonical_fact>Borg's self-chosen name is Kestrel.</canonical_fact>",
-    );
+    expect(section).toContain("<semantic_slot>public_name</semantic_slot>");
+    expect(section).toContain("<semantic_value>Kestrel</semantic_value>");
     expect(section).toContain(
       "<operational_directive>Do not volunteer family-planning details unless Alice asks directly.</operational_directive>",
     );
@@ -672,6 +696,8 @@ describe("buildBaseSystemPrompt", () => {
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "Alice",
+          semanticSlot: null,
+          semanticValue: null,
           canonicalFact: "Alice has blue hair.",
           operationalDirective: null,
           mentionPolicy: "answer_if_asked",
@@ -683,7 +709,9 @@ describe("buildBaseSystemPrompt", () => {
           kind: "self_identity",
           subjectKind: "borg_self",
           subjectLabel: "Borg",
-          canonicalFact: "Borg's self-chosen name is Kestrel.",
+          semanticSlot: "public_name",
+          semanticValue: "Kestrel",
+          canonicalFact: null,
           operationalDirective: null,
           mentionPolicy: "answer_if_asked",
           priority: 9,
@@ -694,6 +722,8 @@ describe("buildBaseSystemPrompt", () => {
           kind: "response_policy",
           subjectKind: "system",
           subjectLabel: "system",
+          semanticSlot: null,
+          semanticValue: null,
           canonicalFact: null,
           operationalDirective: "Use the quiet introduction with everyone.",
           mentionPolicy: "only_if_topic_raised",

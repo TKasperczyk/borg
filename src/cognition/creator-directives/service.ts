@@ -333,6 +333,7 @@ export class CreatorDirectiveTurnService {
       subjectKind: input.candidate.subject_kind,
       subjectEntityId: input.subjectEntityId,
       semanticSlot: input.candidate.semantic_slot,
+      semanticValue: input.candidate.semantic_value,
       canonicalFact: input.candidate.canonical_fact,
       operationalDirective: input.candidate.operational_directive,
       disclosurePolicy: this.buildDisclosurePolicy({
