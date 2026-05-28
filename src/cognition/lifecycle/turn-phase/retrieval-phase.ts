@@ -16,10 +16,7 @@ import {
   type EvidenceLedger,
   type EvidenceLedgerBuildInput,
 } from "../../evidence-ledger/index.js";
-import {
-  isFrameAnomaly,
-  type ActualFrameAnomalyClassification,
-} from "../../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
@@ -1158,7 +1155,8 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       ...imageLastUpdatedTurnByStreamEntryId,
     },
   };
-  const currentTurnIsFrameAnomaly = isFrameAnomaly(input.input.frameAnomaly);
+  const currentTurnIsFrameAnomaly =
+    input.input.frameAnomaly !== null && input.input.frameAnomaly !== undefined;
   const reconciliationRepositories: SharedStateReconciliationRepositories = {
     goalsRepository: input.options.goalsRepository,
     commitmentRepository: input.options.commitmentRepository,

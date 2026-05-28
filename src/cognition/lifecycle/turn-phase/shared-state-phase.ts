@@ -7,7 +7,7 @@ import {
   type EvidenceLedger,
   type EvidenceLedgerEntry,
 } from "../../evidence-ledger/index.js";
-import { isFrameAnomaly, type FrameAnomalyClassification } from "../../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../../participants.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import type { CognitiveMode } from "../../types.js";
@@ -429,7 +429,7 @@ export function shouldSkipSharedStateCompile(input: {
   enabled: boolean;
   previousArtifact: SharedStateArtifact | null | undefined;
   perceptionMode: CognitiveMode;
-  frameAnomaly: FrameAnomalyClassification | null | undefined;
+  frameAnomaly: ActualFrameAnomalyClassification | null | undefined;
   closureLoopAssessment: ClosureLoopAssessment | null | undefined;
   unsettledReconciliation?: SharedStateUnsettledReconciliationSummary | null;
 }): SharedStateCompileSkip | null {
@@ -437,7 +437,7 @@ export function shouldSkipSharedStateCompile(input: {
     input.previousArtifact,
   );
 
-  if (isFrameAnomaly(input.frameAnomaly)) {
+  if (input.frameAnomaly !== null && input.frameAnomaly !== undefined) {
     return {
       reason: "quarantined_current_turn",
       previousActiveEntryCount,

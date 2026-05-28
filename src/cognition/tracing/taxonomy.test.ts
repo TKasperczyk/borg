@@ -10,6 +10,7 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("turn.rejected")).toBe("session");
     expect(phaseForTraceEventName("turn.terminal")).toBe("session");
     expect(phaseForTraceEventName("frame_anomaly.completed")).toBe("perception");
+    expect(phaseForTraceEventName("frame_anomaly.disposition")).toBe("perception");
     expect(phaseForTraceEventName("frame_anomaly.degraded_fail_open")).toBe("perception");
     expect(phaseForTraceEventName("semantic_revision.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("creator_directive_rendered")).toBe("retrieval");

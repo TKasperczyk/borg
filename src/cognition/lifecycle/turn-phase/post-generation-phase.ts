@@ -9,7 +9,7 @@ import {
   type PendingTurnEmission,
   type TurnEmission,
 } from "../../generation/types.js";
-import type { FrameAnomalyClassification } from "../../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
@@ -243,7 +243,7 @@ export async function runPostGenerationPhase(input: {
     TurnPhaseCoordinatorOptions["turnReflectionCoordinator"]["run"]
   >[0]["suppressionSet"];
   isUserTurn: boolean;
-  frameAnomalyClassification: FrameAnomalyClassification | null;
+  currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
 }): Promise<TurnPhaseResult> {
   const workingMemory = {
     ...input.workingMemory,
@@ -438,7 +438,7 @@ export async function runPostGenerationPhase(input: {
         persistedPerceptionEntry: input.persistedPerceptionEntry,
         persistedAgentEntry,
         isUserTurn: input.isUserTurn,
-        frameAnomaly: input.frameAnomalyClassification,
+        frameAnomaly: input.currentTurnFrameAnomaly,
         streamWriter: input.streamWriter,
         onHookFailure: (hook, error) =>
           input.appendHookFailureEvent(input.streamWriter, hook, error),

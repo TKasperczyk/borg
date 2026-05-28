@@ -665,10 +665,6 @@ function summarizeFrameAnomalyGate(
     return null;
   }
 
-  if (classification.status === "degraded") {
-    return null;
-  }
-
   return [
     `Current user message frame anomaly: ${classification.kind} (confidence ${classification.confidence.toFixed(2)}).`,
     `Classifier rationale: ${classification.rationale}`,

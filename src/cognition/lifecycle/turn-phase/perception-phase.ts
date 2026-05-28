@@ -14,10 +14,20 @@ import {
 } from "../../generation/closure-loop.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import type { LLMClient } from "../../../llm/index.js";
+import type { BorgRole } from "../../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { SessionAudienceRole } from "../../../sessions/index.js";
 import { QUARANTINED_USER_ENTRY_EVENT, type StreamWriter } from "../../../stream/index.js";
 import type { SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
+
+export type FrameAnomalyDisposition = "none" | "trusted_operator_control" | "quarantine";
+
+export type FrameAnomalyPhaseResult = {
+  classification: FrameAnomalyClassification | null;
+  disposition: FrameAnomalyDisposition;
+  actionableFrameAnomaly: ActualFrameAnomalyClassification | null;
+};
 
 export async function classifyFrameAnomalyPhase(input: {
   options: TurnPhaseCoordinatorOptions;
@@ -34,11 +44,17 @@ export async function classifyFrameAnomalyPhase(input: {
   userMessage: string;
   recentHistory: readonly RecencyMessage[];
   conversationContext?: FrameAnomalyConversationContext;
+  currentSenderBorgRole: BorgRole | null;
+  sessionAudienceRole: SessionAudienceRole;
   persistedUserEntryId?: StreamEntryId;
   streamWriter: StreamWriter;
-}): Promise<FrameAnomalyClassification | null> {
+}): Promise<FrameAnomalyPhaseResult> {
   if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
-    return null;
+    return {
+      classification: null,
+      disposition: "none",
+      actionableFrameAnomaly: null,
+    };
   }
 
   const classifier = new FrameAnomalyClassifier({
@@ -78,7 +94,30 @@ export async function classifyFrameAnomalyPhase(input: {
     });
   }
 
-  if (isFrameAnomaly(classification)) {
+  const actualFrameAnomaly = isFrameAnomaly(classification) ? classification : null;
+  const trustedOperatorControl =
+    actualFrameAnomaly !== null &&
+    input.sessionAudienceRole === "operator" &&
+    input.currentSenderBorgRole === "creator";
+  const disposition: FrameAnomalyDisposition =
+    actualFrameAnomaly === null
+      ? "none"
+      : trustedOperatorControl
+        ? "trusted_operator_control"
+        : "quarantine";
+  const actionableFrameAnomaly = disposition === "quarantine" ? actualFrameAnomaly : null;
+
+  traceFrameAnomalyDisposition({
+    options: input.options,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+    classification,
+    disposition,
+    currentSenderBorgRole: input.currentSenderBorgRole,
+    sessionAudienceRole: input.sessionAudienceRole,
+  });
+
+  if (disposition === "quarantine" && actionableFrameAnomaly !== null) {
     await appendFrameAnomalyEvents({
       options: input.options,
       appendHookFailureEvent: input.appendHookFailureEvent,
@@ -86,11 +125,39 @@ export async function classifyFrameAnomalyPhase(input: {
       turnId: input.turnId,
       sessionId: input.sessionId,
       persistedUserEntryId: input.persistedUserEntryId,
-      classification,
+      classification: actionableFrameAnomaly,
     });
   }
 
-  return classification;
+  return {
+    classification,
+    disposition,
+    actionableFrameAnomaly,
+  };
+}
+
+function traceFrameAnomalyDisposition(input: {
+  options: TurnPhaseCoordinatorOptions;
+  turnId: string;
+  sessionId: SessionId;
+  classification: FrameAnomalyClassification;
+  disposition: FrameAnomalyDisposition;
+  currentSenderBorgRole: BorgRole | null;
+  sessionAudienceRole: SessionAudienceRole;
+}): void {
+  if (!input.options.tracer.enabled) {
+    return;
+  }
+
+  input.options.tracer.emit("frame_anomaly.disposition", {
+    turnId: input.turnId,
+    session_id: input.sessionId,
+    disposition: input.disposition,
+    status: input.classification.status,
+    kind: input.classification.status === "ok" ? input.classification.kind : null,
+    session_audience_role: input.sessionAudienceRole,
+    current_sender_borg_role: input.currentSenderBorgRole,
+  });
 }
 
 export async function classifyClosureLoopPhase(input: {

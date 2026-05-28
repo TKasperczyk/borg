@@ -1,9 +1,6 @@
 import type { DeliberationRoutingOverride } from "../../deliberation/types.js";
 import type { EvidenceLedger } from "../../evidence-ledger/index.js";
-import type {
-  ActualFrameAnomalyClassification,
-  FrameAnomalyConversationContext,
-} from "../../frame-anomaly/index.js";
+import type { FrameAnomalyConversationContext } from "../../frame-anomaly/index.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import type { PerceptionResult } from "../../types.js";
 import type { BorgRole, EntityRepository } from "../../../memory/commitments/index.js";

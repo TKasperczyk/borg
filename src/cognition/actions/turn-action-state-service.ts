@@ -12,7 +12,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
-import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 
@@ -38,7 +38,7 @@ export type ExtractTurnActionStatesInput = {
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
-  frameAnomaly?: FrameAnomalyClassification | null;
+  frameAnomaly?: ActualFrameAnomalyClassification | null;
 };
 
 export type CloseBorgSelfPerformedActionsInput = {
@@ -78,7 +78,7 @@ export class TurnActionStateService {
       return [];
     }
 
-    if (isFrameAnomaly(input.frameAnomaly)) {
+    if (input.frameAnomaly !== null && input.frameAnomaly !== undefined) {
       return [];
     }
 

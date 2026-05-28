@@ -18,9 +18,9 @@ export function addCurrentUserMessageSection(context: BuilderSectionContext): vo
         ? undefined
         : context.resolver.streamOrderById.get(context.input.currentUserEntry.id),
     taint:
-      context.input.frameAnomaly?.status === "ok" && context.input.frameAnomaly.kind !== "normal"
-        ? "quarantined"
-        : "none",
+      context.input.frameAnomaly === null || context.input.frameAnomaly === undefined
+        ? "none"
+        : "quarantined",
   });
 }
 

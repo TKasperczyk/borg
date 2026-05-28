@@ -2,7 +2,6 @@ import { SuppressionSet } from "../attention/index.js";
 import { formatAutonomyTriggerContext } from "../autonomy-trigger.js";
 import { ContradictionRoutingCooldown } from "../deliberation/contradiction-routing-cooldown.js";
 import { GenerationGate } from "../generation/generation-gate.js";
-import { isFrameAnomaly } from "../frame-anomaly/index.js";
 import { buildParticipantRosterFromRepositories } from "../perception/index.js";
 import {
   resolveActiveParticipants,
@@ -74,17 +73,18 @@ function summarizePerceptionResult(
 }
 
 function summarizeFrameClassification(
-  classification: Awaited<ReturnType<typeof classifyFrameAnomalyPhase>>,
+  result: Awaited<ReturnType<typeof classifyFrameAnomalyPhase>>,
 ): string {
+  const classification = result.classification;
   if (classification === null) {
     return "skipped";
   }
 
   if (classification.status === "degraded") {
-    return `degraded reason=${classification.reason}`;
+    return `degraded reason=${classification.reason} disposition=${result.disposition}`;
   }
 
-  return `kind=${classification.kind} conf=${classification.confidence}`;
+  return `kind=${classification.kind} conf=${classification.confidence} disposition=${result.disposition}`;
 }
 
 function summarizeExtraction(result: TurnExtractionPhaseResult): string {
@@ -404,7 +404,7 @@ export class TurnPhaseCoordinator {
       currentSenderBorgRole: currentSenderEntity?.borg_role ?? null,
       sessionAudienceRole,
     });
-    const frameAnomalyClassification = await traceTurnPhase({
+    const frameAnomalyPhase = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,
       turnId,
@@ -421,14 +421,14 @@ export class TurnPhaseCoordinator {
           userMessage: turnInput.userMessage,
           recentHistory: recencyWindow.messages,
           conversationContext: frameAnomalyConversationContext,
+          currentSenderBorgRole: creatorContext.currentSenderBorgRole,
+          sessionAudienceRole,
           persistedUserEntryId,
           streamWriter,
         }),
       completedSub: summarizeFrameClassification,
     });
-    const currentTurnFrameAnomaly = isFrameAnomaly(frameAnomalyClassification)
-      ? frameAnomalyClassification
-      : null;
+    const currentTurnFrameAnomaly = frameAnomalyPhase.actionableFrameAnomaly;
 
     const extraction = await traceTurnPhase({
       tracer: this.options.tracer,
@@ -458,7 +458,7 @@ export class TurnPhaseCoordinator {
           sessionAudienceRole,
           participantRoster,
           persistedUserEntryId,
-          frameAnomalyClassification,
+          currentTurnFrameAnomaly,
           streamWriter,
           trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
         }),
@@ -712,7 +712,7 @@ export class TurnPhaseCoordinator {
       pendingSocialAttribution,
       suppressionSet,
       isUserTurn,
-      frameAnomalyClassification,
+      currentTurnFrameAnomaly,
     });
   }
 }

@@ -53,7 +53,7 @@ import { z } from "zod";
 import type { ActionResult } from "../turn-action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
-import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
 import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -77,7 +77,7 @@ export type ReflectionContext = {
   senderEntityId?: EntityId | null;
   activeOpenQuestions?: readonly OpenQuestion[];
   suppressionSet: SuppressionSet;
-  frameAnomaly?: FrameAnomalyClassification | null;
+  frameAnomaly?: ActualFrameAnomalyClassification | null;
   // Sprint 56: stream entries persisted by the just-completed turn
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
   // since the episode hasn't been extracted yet at reflection time.
@@ -629,7 +629,8 @@ export class Reflector {
       ...context.actionResult.workingMemory,
       updated_at: this.clock.now(),
     };
-    const suppressIntentUpdatesForFrameAnomaly = isFrameAnomaly(context.frameAnomaly);
+    const suppressIntentUpdatesForFrameAnomaly =
+      context.frameAnomaly !== null && context.frameAnomaly !== undefined;
     const intentUpdates =
       isAutonomousTurn || suppressIntentUpdatesForFrameAnomaly
         ? []
@@ -644,9 +645,7 @@ export class Reflector {
     }
 
     if (suppressIntentUpdatesForFrameAnomaly && reflectionOutput.intent_updates.length > 0) {
-      const frameAnomalyKind = isFrameAnomaly(context.frameAnomaly)
-        ? context.frameAnomaly.kind
-        : "unknown";
+      const frameAnomalyKind = context.frameAnomaly?.kind ?? "unknown";
 
       await this.appendReflectorInternalEvent(streamWriter, {
         hook: "reflector_intent_update_dropped",
@@ -1327,7 +1326,7 @@ export class Reflector {
       turnId: context.turnId,
       ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
       reason: "frame_anomaly",
-      kind: isFrameAnomaly(context.frameAnomaly) ? context.frameAnomaly.kind : "unknown",
+      kind: context.frameAnomaly?.kind ?? "unknown",
       count,
     });
   }

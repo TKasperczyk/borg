@@ -233,7 +233,7 @@ describe("runPostGenerationPhase", () => {
       pendingSocialAttribution: null,
       suppressionSet: null as never,
       isUserTurn: true,
-      frameAnomalyClassification: null,
+      currentTurnFrameAnomaly: null,
     });
 
     expect(actionRepository.records).toContainEqual(
@@ -408,7 +408,7 @@ describe("runPostGenerationPhase", () => {
       pendingSocialAttribution: null,
       suppressionSet: null as never,
       isUserTurn: true,
-      frameAnomalyClassification: null,
+      currentTurnFrameAnomaly: null,
     });
 
     expect(actionRepository.records).toContainEqual(

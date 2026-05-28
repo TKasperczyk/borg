@@ -19,7 +19,7 @@ import type { PendingProceduralAttemptTracker } from "../procedural/pending-atte
 import type { PerceptionResult } from "../types.js";
 import type { ReflectionEffects, ReflectionResult, Reflector } from "./index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 
 const ACTION_RESPONSE_SUMMARY_LIMIT = 240;
 const OPEN_QUESTIONS_REFLECTION_LIMIT = 20;
@@ -63,7 +63,7 @@ export type RunTurnReflectionInput = {
   persistedPerceptionEntry: StreamEntry;
   persistedAgentEntry: StreamEntry;
   isUserTurn: boolean;
-  frameAnomaly?: FrameAnomalyClassification | null;
+  frameAnomaly?: ActualFrameAnomalyClassification | null;
   streamWriter: StreamWriter;
   onHookFailure: (hook: string, error: unknown) => Promise<void>;
   trackReflectionEffects: (effects: ReflectionEffects) => void;
@@ -151,7 +151,7 @@ export class TurnReflectionCoordinator {
         currentTurnStreamEntryIds:
           input.persistedUserEntryId === undefined
             ? [input.persistedPerceptionEntry.id, input.persistedAgentEntry.id]
-            : isFrameAnomaly(input.frameAnomaly)
+            : input.frameAnomaly !== null && input.frameAnomaly !== undefined
               ? [input.persistedAgentEntry.id]
               : [input.persistedUserEntryId, input.persistedAgentEntry.id],
       },

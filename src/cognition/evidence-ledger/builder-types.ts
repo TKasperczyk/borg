@@ -14,7 +14,7 @@ import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../re
 import type { StreamEntry, StreamReader } from "../../stream/index.js";
 import type { AttachmentRepository } from "../../attachments/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
-import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 
@@ -55,6 +55,6 @@ export type EvidenceLedgerBuildInput = {
   retrievedSemantic?: RetrievedSemantic | null;
   openQuestions: readonly OpenQuestion[];
   pendingCorrections: readonly ReviewQueueItem[];
-  frameAnomaly?: FrameAnomalyClassification | null;
+  frameAnomaly?: ActualFrameAnomalyClassification | null;
   activeParticipants?: readonly ActiveParticipant[];
 };

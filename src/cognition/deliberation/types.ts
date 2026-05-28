@@ -44,7 +44,7 @@ import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../turn-action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
-import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledger/index.js";
@@ -209,7 +209,7 @@ export type DeliberationContext = {
    * the being's visibility into its own just-completed turns.
    */
   recencyMessages?: readonly RecencyMessage[];
-  frameAnomaly?: FrameAnomalyClassification | null;
+  frameAnomaly?: ActualFrameAnomalyClassification | null;
   /**
    * Optional finalizer-only evidence ledger prompt section. This is appended
    * after the legacy base prompt and before S2 additional retrieval / plan

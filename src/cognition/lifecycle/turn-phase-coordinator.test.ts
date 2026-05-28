@@ -1427,12 +1427,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
           perception: {
             mode: "problem_solving",
           },
-          frameAnomaly: {
-            status: "ok",
-            kind: "normal",
-            confidence: 0.99,
-            rationale: "normal turn",
-          },
+          frameAnomaly: null,
           closureLoopAssessment: null,
           activeParticipants: [],
           turnId: "turn_next_normal",

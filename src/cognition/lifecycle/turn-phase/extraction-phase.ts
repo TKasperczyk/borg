@@ -1,7 +1,6 @@
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import type { CreatorDirectiveTurnService } from "../../creator-directives/service.js";
-import type { FrameAnomalyClassification } from "../../frame-anomaly/index.js";
-import { isFrameAnomaly } from "../../frame-anomaly/index.js";
+import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import type { PerceptionResult } from "../../types.js";
@@ -55,17 +54,14 @@ export async function runExtractionPhase(input: {
   sessionAudienceRole: SessionAudienceRole;
   participantRoster: ParticipantRoster | null;
   persistedUserEntryId?: StreamEntry["id"];
-  frameAnomalyClassification: FrameAnomalyClassification | null;
+  currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   streamWriter: StreamWriter;
   trackAppliedSlotNegation: Parameters<
     CorrectivePreferenceTurnService["extractAndApply"]
   >[0]["trackAppliedSlotNegation"];
 }): Promise<TurnExtractionPhaseResult> {
-  const currentTurnFrameAnomaly = isFrameAnomaly(input.frameAnomalyClassification)
-    ? input.frameAnomalyClassification
-    : null;
   const actionLinkSelfContext =
-    input.isUserTurn && currentTurnFrameAnomaly === null
+    input.isUserTurn && input.currentTurnFrameAnomaly === null
       ? await input.options.selfContextBuilder.build({
           turnId: input.turnId,
           sessionId: input.sessionId,
@@ -83,7 +79,7 @@ export async function runExtractionPhase(input: {
     : [];
   const [correctivePreferenceTurn, createdActionIds, persistedPromotions, creatorDirectives] =
     await Promise.all([
-      currentTurnFrameAnomaly === null
+      input.currentTurnFrameAnomaly === null
         ? input.options.correctivePreferenceTurnService.extractAndApply({
             llmClient: input.llmClient,
             turnId: input.turnId,
@@ -117,9 +113,9 @@ export async function runExtractionPhase(input: {
         speakerDisplayName: input.groupSpeakerDisplayName,
         goalId: actionLinkGoalId,
         turnCounter: input.turnInput.globalTurnCounter ?? input.workingMemory.turn_counter,
-        frameAnomaly: input.frameAnomalyClassification,
+        frameAnomaly: input.currentTurnFrameAnomaly,
       }),
-      currentTurnFrameAnomaly === null
+      input.currentTurnFrameAnomaly === null
         ? input.options.turnGoalPromotionService.extractAndPersist({
             llmClient: input.llmClient,
             turnId: input.turnId,

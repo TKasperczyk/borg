@@ -117,6 +117,7 @@ export type TurnTraceEventName =
   | "frame_anomaly.degraded"
   | "frame_anomaly.degraded_fail_open"
   | "frame_anomaly.completed"
+  | "frame_anomaly.disposition"
   | "frame_anomaly.transitioned"
   | "closure_loop.degraded"
   | "closure_loop.transitioned"

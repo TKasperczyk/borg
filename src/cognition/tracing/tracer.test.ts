@@ -509,6 +509,7 @@ describe("TurnTracer", () => {
       "llm_call.started",
       "llm_call.completed",
       "frame_anomaly.completed",
+      "frame_anomaly.disposition",
       "turn_phase.completed",
       "turn_phase.started",
       "llm_call.started",
