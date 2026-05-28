@@ -22,6 +22,8 @@ export {
   type ActionUpdateOptions,
 } from "./repository.js";
 export {
+  ACTIVE_ACTION_STATES,
+  ACTION_STATE_METADATA,
   ACTION_STATES,
   ACTION_SESSION_SCOPES,
   actionActorSchema,
@@ -38,4 +40,6 @@ export {
   type ActionRecordPatch,
   type ActionSessionScope,
   type ActionState,
+  type ActionStateMetadata,
+  type ActionStateTimestampField,
 } from "./types.js";

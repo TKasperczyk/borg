@@ -1,8 +1,10 @@
 import {
+  ACTION_STATE_METADATA,
   ACTION_STATES,
   type ActionDescriptionSimilarityPair,
   type ActionRecord,
   type ActionState,
+  type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
@@ -137,24 +139,10 @@ function unionParents(parents: Map<string, string>, leftId: string, rightId: str
 }
 
 function actionTimestampForState(action: ActionRecord): number {
-  switch (action.state) {
-    case "considering":
-      return action.considering_at ?? action.updated_at;
-    case "committed_to_do":
-      return action.committed_at ?? action.updated_at;
-    case "scheduled":
-      return action.scheduled_at ?? action.updated_at;
-    case "completed":
-      return action.completed_at ?? action.updated_at;
-    case "not_done":
-      return action.not_done_at ?? action.updated_at;
-    case "expired":
-      return action.expired_at ?? action.updated_at;
-    case "archived":
-      return action.archived_at ?? action.updated_at;
-    case "unknown":
-      return action.unknown_at ?? action.updated_at;
-  }
+  const timestampField: ActionStateTimestampField =
+    ACTION_STATE_METADATA[action.state].timestamp_field;
+
+  return action[timestampField] ?? action.updated_at;
 }
 
 function combineActionScopes(
@@ -303,12 +291,7 @@ export function actionThreadState(thread: ActionThread): ActionState {
 }
 
 export function isActiveActionState(state: ActionState): boolean {
-  return (
-    state === "considering" ||
-    state === "committed_to_do" ||
-    state === "scheduled" ||
-    state === "unknown"
-  );
+  return ACTION_STATE_METADATA[state].active;
 }
 
 export function isTerminalRenderedActionState(state: ActionState): boolean {

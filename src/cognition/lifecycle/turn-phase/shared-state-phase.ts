@@ -18,7 +18,11 @@ import {
   type SharedStateLedgerMode,
   type SharedStateUnsettledReconciliationSummary,
 } from "../../shared-state/index.js";
-import type { ActionRecord, ActionRepository, ActionState } from "../../../memory/actions/index.js";
+import {
+  ACTIVE_ACTION_STATES,
+  type ActionRecord,
+  type ActionRepository,
+} from "../../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type {
   SharedStateArtifact,
@@ -270,7 +274,7 @@ export function selectSharedStateArtifactActionCandidates(input: {
     addScopedActionCandidates({
       target: scoped,
       actions: input.actionRepository.list({
-        states: SHARED_STATE_ACTION_CANDIDATE_STATES,
+        states: ACTIVE_ACTION_STATES,
         audienceEntityId: input.audienceEntityId,
         limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
       }),
@@ -283,7 +287,7 @@ export function selectSharedStateArtifactActionCandidates(input: {
   addScopedActionCandidates({
     target: scoped,
     actions: input.actionRepository.list({
-      states: SHARED_STATE_ACTION_CANDIDATE_STATES,
+      states: ACTIVE_ACTION_STATES,
       audienceEntityId: null,
       limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
     }),
@@ -296,7 +300,7 @@ export function selectSharedStateArtifactActionCandidates(input: {
     addScopedActionCandidates({
       target: scoped,
       actions: input.actionRepository.list({
-        states: SHARED_STATE_ACTION_CANDIDATE_STATES,
+        states: ACTIVE_ACTION_STATES,
         actor: participant.entityId,
         limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
       }),
@@ -384,12 +388,6 @@ const SHARED_STATE_IN_FLIGHT_KINDS = [
   "tentative",
 ] as const satisfies readonly SharedStateEntryKind[];
 const SHARED_STATE_ACTION_CANDIDATE_LIMIT = 80;
-const SHARED_STATE_ACTION_CANDIDATE_STATES: readonly ActionState[] = [
-  "considering",
-  "committed_to_do",
-  "scheduled",
-  "unknown",
-];
 type SharedStateArtifactActionCandidateScope = "audience" | "global" | "actor";
 type ScopedSharedStateArtifactActionCandidate = {
   action: ActionRecord;

@@ -33,7 +33,12 @@ import {
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository, episodeIdSchema } from "../../memory/episodic/index.js";
 import type { EpisodeStats } from "../../memory/episodic/index.js";
-import type { ActionRepository, ActionState } from "../../memory/actions/index.js";
+import {
+  ACTION_STATE_METADATA,
+  type ActionRepository,
+  type ActionState,
+  type ActionStateTimestampField,
+} from "../../memory/actions/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import {
   createActionId,
@@ -360,25 +365,10 @@ function actionStateFromIntentStatus(
 function stateTimestampPatch(
   state: ActionState,
   timestamp: number,
-): Partial<Record<string, number>> {
-  switch (state) {
-    case "completed":
-      return { completed_at: timestamp };
-    case "not_done":
-      return { not_done_at: timestamp };
-    case "expired":
-      return { expired_at: timestamp };
-    case "archived":
-      return { archived_at: timestamp };
-    case "considering":
-      return { considering_at: timestamp };
-    case "committed_to_do":
-      return { committed_at: timestamp };
-    case "scheduled":
-      return { scheduled_at: timestamp };
-    case "unknown":
-      return { unknown_at: timestamp };
-  }
+): Partial<Record<ActionStateTimestampField, number>> {
+  const timestampField = ACTION_STATE_METADATA[state].timestamp_field;
+
+  return { [timestampField]: timestamp };
 }
 
 async function resolveAttemptEpisodeIds(

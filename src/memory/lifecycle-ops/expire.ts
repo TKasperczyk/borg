@@ -1,16 +1,9 @@
 import type { ActionRepository } from "../actions/repository.js";
-import type { ActionRecord } from "../actions/types.js";
+import { ACTIVE_ACTION_STATES } from "../actions/types.js";
 import type { ActionId, SessionId } from "../../util/ids.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
 import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 import { isTerminalActionState } from "./complete.js";
-
-const SESSION_SCOPED_ACTIVE_STATES = [
-  "considering",
-  "committed_to_do",
-  "scheduled",
-  "unknown",
-] as const satisfies readonly ActionRecord["state"][];
 
 export type ExpireSessionScopedActionsRepository = Pick<ActionRepository, "list" | "update">;
 
@@ -36,7 +29,7 @@ export function expireSessionScopedActions(input: {
   tracer?: LifecycleTracer;
 }): LifecycleOperationResult<ExpireSessionScopedActionsResult> {
   const candidates = input.repository.list({
-    states: SESSION_SCOPED_ACTIVE_STATES,
+    states: ACTIVE_ACTION_STATES,
     sessionScope: "current_session",
     sessionAnchorId: input.sessionId,
   });
@@ -108,7 +101,7 @@ export function rolloverNextSessionActions(input: {
   tracer?: LifecycleTracer;
 }): LifecycleOperationResult<RolloverNextSessionActionsResult> {
   const candidates = input.repository.list({
-    states: SESSION_SCOPED_ACTIVE_STATES,
+    states: ACTIVE_ACTION_STATES,
     sessionScope: "next_session",
     sessionAnchorId: input.fromSessionId,
   });

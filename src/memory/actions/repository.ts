@@ -29,6 +29,8 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  ACTIVE_ACTION_STATES,
+  ACTION_STATE_METADATA,
   ACTION_STATES,
   actionRecordPatchSchema,
   actionRecordSchema,
@@ -38,6 +40,7 @@ import {
   type ActionRecordPatch,
   type ActionSessionScope,
   type ActionState,
+  type ActionStateTimestampField,
 } from "./types.js";
 
 const ACTION_JSON_ARRAY_CODEC = {
@@ -173,35 +176,8 @@ function embeddingFromRow(row: Record<string, unknown>): Float32Array | null {
   return null;
 }
 
-type ActionStateTimestampField =
-  | "considering_at"
-  | "committed_at"
-  | "scheduled_at"
-  | "completed_at"
-  | "not_done_at"
-  | "expired_at"
-  | "archived_at"
-  | "unknown_at";
-
 function stateTimestampField(state: ActionState): ActionStateTimestampField {
-  switch (state) {
-    case "considering":
-      return "considering_at";
-    case "committed_to_do":
-      return "committed_at";
-    case "scheduled":
-      return "scheduled_at";
-    case "completed":
-      return "completed_at";
-    case "not_done":
-      return "not_done_at";
-    case "expired":
-      return "expired_at";
-    case "archived":
-      return "archived_at";
-    case "unknown":
-      return "unknown_at";
-  }
+  return ACTION_STATE_METADATA[state].timestamp_field;
 }
 
 export type ActionRecordListFilter = {
@@ -636,17 +612,19 @@ export class ActionRepository {
   }
 
   countActive(): number {
+    if (ACTIVE_ACTION_STATES.length === 0) {
+      return 0;
+    }
+
     const row = this.db
       .prepare(
         `
           SELECT COUNT(*) AS count
           FROM action_records
-          -- Active means non-terminal: still pressure-creating for
-          -- canonicalization and durable action bloat observability.
-          WHERE state IN ('considering', 'committed_to_do', 'scheduled', 'unknown')
+          WHERE state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")})
         `,
       )
-      .get() as { count: number } | undefined;
+      .get(...ACTIVE_ACTION_STATES) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
   }

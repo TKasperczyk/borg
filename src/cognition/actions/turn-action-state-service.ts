@@ -1,6 +1,10 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { ActionRecord, ActionRepository, ActionState } from "../../memory/actions/index.js";
+import {
+  ACTIVE_ACTION_STATES,
+  type ActionRecord,
+  type ActionRepository,
+} from "../../memory/actions/index.js";
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import type { Clock } from "../../util/clock.js";
 import type {
@@ -56,13 +60,6 @@ export type CloseBorgSelfPerformedActionsInput = {
   currentTurnSharedStateEntries: readonly SharedStateEntry[];
   turnCounter?: number | null;
 };
-
-const ACTIVE_ACTION_STATES: readonly ActionState[] = [
-  "considering",
-  "committed_to_do",
-  "scheduled",
-  "unknown",
-];
 
 function uniqueActions(actions: readonly ActionRecord[]): ActionRecord[] {
   return [...new Map(actions.map((action) => [action.id, action])).values()];

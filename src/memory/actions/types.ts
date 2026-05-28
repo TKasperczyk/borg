@@ -30,6 +30,72 @@ export const ACTION_STATES = [
   "unknown",
 ] as const;
 
+export type ActionState = (typeof ACTION_STATES)[number];
+
+export type ActionStateTimestampField =
+  | "considering_at"
+  | "committed_at"
+  | "scheduled_at"
+  | "completed_at"
+  | "not_done_at"
+  | "expired_at"
+  | "archived_at"
+  | "unknown_at";
+
+export type ActionStateMetadata = {
+  timestamp_field: ActionStateTimestampField;
+  active: boolean;
+  terminal: boolean;
+};
+
+export const ACTION_STATE_METADATA: Record<ActionState, ActionStateMetadata> = {
+  considering: {
+    timestamp_field: "considering_at",
+    active: true,
+    terminal: false,
+  },
+  committed_to_do: {
+    timestamp_field: "committed_at",
+    active: true,
+    terminal: false,
+  },
+  scheduled: {
+    timestamp_field: "scheduled_at",
+    active: true,
+    terminal: false,
+  },
+  completed: {
+    timestamp_field: "completed_at",
+    active: false,
+    terminal: true,
+  },
+  not_done: {
+    timestamp_field: "not_done_at",
+    active: false,
+    terminal: true,
+  },
+  expired: {
+    timestamp_field: "expired_at",
+    active: false,
+    terminal: false,
+  },
+  archived: {
+    timestamp_field: "archived_at",
+    active: false,
+    terminal: false,
+  },
+  unknown: {
+    timestamp_field: "unknown_at",
+    active: true,
+    terminal: false,
+  },
+};
+
+// Active means not terminal/expired/archived; pressure for canonicalization/action-bloat observability.
+export const ACTIVE_ACTION_STATES: readonly ActionState[] = ACTION_STATES.filter(
+  (state) => ACTION_STATE_METADATA[state].active,
+);
+
 export const ACTION_SESSION_SCOPES = ["current_session", "next_session"] as const;
 
 export const actionIdSchema = z
@@ -133,7 +199,6 @@ export const actionRecordPatchSchema = actionRecordShape
   .partial()
   .strict();
 
-export type ActionState = z.infer<typeof actionStateSchema>;
 export type ActionActor = z.infer<typeof actionActorSchema>;
 export type ActionSessionScope = z.infer<typeof actionSessionScopeSchema>;
 export type ActionSessionAnchorId = SessionId;

@@ -9,6 +9,8 @@ import {
 } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
+  ACTIVE_ACTION_STATES,
+  ACTION_STATE_METADATA,
   ACTION_STATES,
   actionIdSchema,
   actionEntityIdSchema,
@@ -19,6 +21,7 @@ import {
   type ActionRepository,
   type ActionSessionScope,
   type ActionState,
+  type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
@@ -45,12 +48,6 @@ import type { TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
-const ACTIVE_ACTION_STATES: readonly ActionState[] = [
-  "considering",
-  "committed_to_do",
-  "scheduled",
-  "unknown",
-];
 
 export const ACTION_CANDIDATE_CLASSIFICATIONS = [
   "concrete_action",
@@ -456,37 +453,10 @@ function allowedCandidateEvidenceStreamEntryIds(
 function stateTimestampPatch(
   state: ActionState,
   timestamp: number,
-): Partial<
-  Pick<
-    ActionRecord,
-    | "considering_at"
-    | "committed_at"
-    | "scheduled_at"
-    | "completed_at"
-    | "not_done_at"
-    | "expired_at"
-    | "archived_at"
-    | "unknown_at"
-  >
-> {
-  switch (state) {
-    case "considering":
-      return { considering_at: timestamp };
-    case "committed_to_do":
-      return { committed_at: timestamp };
-    case "scheduled":
-      return { scheduled_at: timestamp };
-    case "completed":
-      return { completed_at: timestamp };
-    case "not_done":
-      return { not_done_at: timestamp };
-    case "expired":
-      return { expired_at: timestamp };
-    case "archived":
-      return { archived_at: timestamp };
-    case "unknown":
-      return { unknown_at: timestamp };
-  }
+): Partial<Record<ActionStateTimestampField, number>> {
+  const timestampField = ACTION_STATE_METADATA[state].timestamp_field;
+
+  return { [timestampField]: timestamp };
 }
 
 function toActionRecord(input: {
@@ -552,11 +522,11 @@ function zeroActionStateCounts(): Record<ActionState, number> {
 }
 
 function isTerminalEmissionState(state: ActionState): state is "completed" | "not_done" {
-  return state === "completed" || state === "not_done";
+  return ACTION_STATE_METADATA[state].terminal;
 }
 
 function isActiveTerminalTransitionTarget(state: ActionState): boolean {
-  return (ACTIVE_ACTION_STATES as readonly ActionState[]).includes(state);
+  return ACTION_STATE_METADATA[state].active;
 }
 
 function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[]): T[] {
