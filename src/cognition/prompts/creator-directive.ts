@@ -17,6 +17,7 @@ export const CREATOR_DIRECTIVE_SYSTEM_PROMPT = [
   "For no-disclosure instructions, use kind=disclosure_boundary. Boundary rendering is handled elsewhere; still persist the directive faithfully.",
   "For response behavior that is not a fact about a subject, use response_policy or routing_instruction.",
   "Use canonical_fact only for content that may be rendered to an allowed audience. Keep it concise and declarative.",
+  "In canonical_fact, preserve the agent or origin the source expresses; do not flatten an agentive statement into an agentless one. When the creator authorizes disclosure of something Borg itself did, chose, or owns, attribute it to Borg, not left agentless (which reads as the creator's own act).",
   "Use operational_directive for Borg's internal durable handling rule. It must be enforceable later without relying on the current wording.",
   "The input may include known_entities with entity_id/display_name. Prefer entity ids from that list when a named person is clearly referenced.",
   "If an entity is not in known_entities, provide the label in *_entity_labels or subject_label so the caller can resolve it.",

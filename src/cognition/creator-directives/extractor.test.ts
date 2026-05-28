@@ -4,6 +4,7 @@ import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { CREATOR_DIRECTIVE_SYSTEM_PROMPT } from "../prompts/creator-directive.js";
 import { CREATOR_DIRECTIVE_TOOL_NAME, CreatorDirectiveExtractor } from "./extractor.js";
 
 function creatorDirectiveResponse(
@@ -225,5 +226,15 @@ describe("CreatorDirectiveExtractor", () => {
       expect.any(Error),
       expect.objectContaining({ stopReason: "tool_use" }),
     );
+  });
+});
+
+describe("CREATOR_DIRECTIVE_SYSTEM_PROMPT", () => {
+  // Presence guard. canonical_fact must carry the fact's agency, or facts Borg
+  // originated get flattened into agentless statements and misread as the creator's
+  // act. The LLM is mocked here, so behavioral coverage lives in the sim battery;
+  // this only ensures the instruction is not silently removed.
+  it("instructs the extractor to attribute Borg-originated facts to Borg", () => {
+    expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain("attribute it to Borg");
   });
 });
