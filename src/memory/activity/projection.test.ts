@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { EntityRepository, commitmentMigrations } from "../commitments/index.js";
 import { SessionsRepository, sessionMigrations } from "../../sessions/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -26,7 +27,7 @@ describe("selectCrossSessionSelfActivity", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-projection-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "activity.db"), {
-      migrations: composeMigrations(sessionMigrations, activityMigrations),
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
     });
     const sessions = new SessionsRepository({
       db,
@@ -106,6 +107,80 @@ describe("selectCrossSessionSelfActivity", () => {
       },
     ]);
     expect(hidden).toEqual([]);
+
+    db.close();
+  });
+
+  it("labels a group-session contact by the speaker, not the group audience", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-projection-group-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({ db, clock: new FixedClock(NOW_MS) });
+    const activity = new ActivityRepository({ db, clock: new FixedClock(NOW_MS) });
+    const entities = new EntityRepository({ db, clock: new FixedClock(NOW_MS) });
+
+    const currentSessionId = createSessionId();
+    const groupSessionId = createSessionId();
+    const operatorEntityId = createEntityId();
+    const groupEntityId = entities.resolve("Planning Room", { kind: "group" });
+    const bobEntityId = entities.resolve("Bob", { kind: "person" });
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Operator control",
+      audience_label: "Tom",
+      audience_entity_id: operatorEntityId,
+      conversation_kind: "demo",
+      audience_role: "operator",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS,
+    });
+    sessions.ensure({
+      session_id: groupSessionId,
+      source_type: "demo",
+      label: "Planning Room",
+      audience_label: "Planning Room",
+      audience_entity_id: groupEntityId,
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS - 30_000,
+    });
+    activity.record({
+      kind: "user_contact",
+      occurredAt: NOW_MS - 30_000,
+      sessionId: groupSessionId,
+      turnId: "bob-turn",
+      speakerEntityId: bobEntityId,
+      actorEntityId: bobEntityId,
+      audienceEntityId: groupEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    const visible = selectCrossSessionSelfActivity({
+      repository: activity,
+      currentSessionId,
+      currentAudienceEntityId: operatorEntityId,
+      sessionAudienceRole: "operator",
+      currentSenderBorgRole: "creator",
+      nowMs: NOW_MS,
+      recencyWindowMs: 60_000,
+      cap: 5,
+    });
+
+    expect(visible).toEqual([
+      {
+        kind: "user_contact",
+        occurredAt: NOW_MS - 30_000,
+        relativeAge: "~30s ago",
+        text: "Bob contacted Borg ~30s ago in another active session.",
+      },
+    ]);
 
     db.close();
   });

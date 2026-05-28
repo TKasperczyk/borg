@@ -246,9 +246,12 @@ export class ActivityRepository {
           SELECT
             e.kind,
             e.occurred_at,
-            s.audience_label AS participant_label
+            COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
+              AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
+          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
+          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND s.status = 'active'
