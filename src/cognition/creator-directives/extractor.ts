@@ -13,12 +13,14 @@ import {
   creatorDirectiveEntityIdSchema,
   creatorDirectiveKindSchema,
   creatorDirectiveMentionPolicySchema,
+  creatorDirectiveSemanticSlotSchema,
   creatorDirectiveSubjectKindSchema,
   creatorDirectiveTopicTagSchema,
   type CreatorDirectiveContentScope,
   type CreatorDirectiveDeniedAudienceBehavior,
   type CreatorDirectiveKind,
   type CreatorDirectiveMentionPolicy,
+  type CreatorDirectiveSemanticSlot,
   type CreatorDirectiveSubjectKind,
 } from "../../memory/creator-directives/index.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
@@ -63,6 +65,8 @@ const creatorDirectiveCandidateSchema = z
     subject_kind: creatorDirectiveSubjectKindSchema,
     subject_entity_id: creatorDirectiveEntityIdSchema.nullable().optional(),
     subject_label: entityLabelSchema.nullable().optional(),
+    semantic_slot: creatorDirectiveSemanticSlotSchema.nullable(),
+    semantic_value: z.string().trim().min(1).nullable(),
     canonical_fact: z.string().trim().min(1).nullable(),
     operational_directive: z.string().trim().min(1),
     disclosure_policy: creatorDirectiveExtractorDisclosurePolicySchema,
@@ -108,6 +112,8 @@ export type CreatorDirectiveCandidate = {
   subject_kind: CreatorDirectiveSubjectKind;
   subject_entity_id: EntityId | null;
   subject_label: string | null;
+  semantic_slot: CreatorDirectiveSemanticSlot | null;
+  semantic_value: string | null;
   canonical_fact: string | null;
   operational_directive: string;
   disclosure_policy: CreatorDirectiveExtractorDisclosurePolicy;
@@ -162,6 +168,8 @@ function toCandidate(
     subject_kind: input.subject_kind,
     subject_entity_id: input.subject_entity_id ?? null,
     subject_label: input.subject_label ?? null,
+    semantic_slot: input.semantic_slot,
+    semantic_value: input.semantic_value,
     canonical_fact: input.canonical_fact,
     operational_directive: input.operational_directive.trim(),
     disclosure_policy: {

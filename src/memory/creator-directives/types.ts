@@ -28,6 +28,7 @@ export const CREATOR_DIRECTIVE_SUBJECT_KINDS = [
   "system",
   "unknown",
 ] as const;
+export const CREATOR_DIRECTIVE_SEMANTIC_SLOTS = ["public_name"] as const;
 export const CREATOR_DIRECTIVE_CONTENT_SCOPES = [
   "operator_only",
   "public",
@@ -90,6 +91,7 @@ export const creatorDirectiveStreamEntryIdSchema = z
 export const creatorDirectiveStatusSchema = z.enum(CREATOR_DIRECTIVE_STATUSES);
 export const creatorDirectiveKindSchema = z.enum(CREATOR_DIRECTIVE_KINDS);
 export const creatorDirectiveSubjectKindSchema = z.enum(CREATOR_DIRECTIVE_SUBJECT_KINDS);
+export const creatorDirectiveSemanticSlotSchema = z.enum(CREATOR_DIRECTIVE_SEMANTIC_SLOTS);
 export const creatorDirectiveContentScopeSchema = z.enum(CREATOR_DIRECTIVE_CONTENT_SCOPES);
 export const creatorDirectiveMentionPolicySchema = z.enum(CREATOR_DIRECTIVE_MENTION_POLICIES);
 export const creatorDirectiveDeniedAudienceBehaviorSchema = z.enum(
@@ -219,6 +221,7 @@ export const creatorDirectiveSchema = z
     content_source_stream_entry_ids: z.array(creatorDirectiveStreamEntryIdSchema).min(1),
     subject_kind: creatorDirectiveSubjectKindSchema,
     subject_entity_id: creatorDirectiveEntityIdSchema.nullable(),
+    semantic_slot: creatorDirectiveSemanticSlotSchema.nullable(),
     canonical_fact: z.string().trim().min(1).nullable(),
     operational_directive: z.string().trim().min(1),
     disclosure_policy: disclosurePolicySchema,
@@ -272,6 +275,7 @@ export const creatorDirectiveQueueInputSchema = z
     contentSourceStreamEntryIds: z.array(creatorDirectiveStreamEntryIdSchema).min(1),
     subjectKind: creatorDirectiveSubjectKindSchema,
     subjectEntityId: creatorDirectiveEntityIdSchema.nullable().optional(),
+    semanticSlot: creatorDirectiveSemanticSlotSchema.nullable().optional(),
     canonicalFact: z.string().trim().min(1).nullable().optional(),
     operationalDirective: z.string().trim().min(1),
     disclosurePolicy: disclosurePolicySchema,
@@ -324,6 +328,7 @@ export const creatorDirectiveListFilterSchema = z
     sourceSessionId: creatorDirectiveSessionIdSchema.optional(),
     subjectKind: creatorDirectiveSubjectKindSchema.optional(),
     subjectEntityId: creatorDirectiveEntityIdSchema.nullable().optional(),
+    semanticSlot: creatorDirectiveSemanticSlotSchema.nullable().optional(),
     topicTag: creatorDirectiveTopicTagSchema.optional(),
   })
   .strict();
@@ -342,6 +347,7 @@ export type CreatorDirective = z.infer<typeof creatorDirectiveSchema>;
 export type CreatorDirectiveStatus = z.infer<typeof creatorDirectiveStatusSchema>;
 export type CreatorDirectiveKind = z.infer<typeof creatorDirectiveKindSchema>;
 export type CreatorDirectiveSubjectKind = z.infer<typeof creatorDirectiveSubjectKindSchema>;
+export type CreatorDirectiveSemanticSlot = z.infer<typeof creatorDirectiveSemanticSlotSchema>;
 export type CreatorDirectiveContentScope = z.infer<typeof creatorDirectiveContentScopeSchema>;
 export type CreatorDirectiveMentionPolicy = z.infer<typeof creatorDirectiveMentionPolicySchema>;
 export type CreatorDirectiveDeniedAudienceBehavior = z.infer<

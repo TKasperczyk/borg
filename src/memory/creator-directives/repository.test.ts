@@ -89,6 +89,7 @@ describe("CreatorDirectiveRepository", () => {
           contentSourceStreamEntryIds: [contentEntryId],
           subjectKind: "entity",
           subjectEntityId: subject,
+          semanticSlot: "public_name",
           canonicalFact: "Maya may know this fact.",
           operationalDirective: "Treat this as a durable creator directive.",
           disclosurePolicy: disclosurePolicy({
@@ -111,6 +112,7 @@ describe("CreatorDirectiveRepository", () => {
         content_source_stream_entry_ids: [contentEntryId],
         subject_kind: "entity",
         subject_entity_id: subject,
+        semantic_slot: "public_name",
         canonical_fact: "Maya may know this fact.",
         operational_directive: "Treat this as a durable creator directive.",
         disclosure_policy: expect.objectContaining({
@@ -128,6 +130,9 @@ describe("CreatorDirectiveRepository", () => {
         directive.id,
       ]);
       expect(repository.list({ kind: "self_identity" }).map((record) => record.id)).toEqual([
+        directive.id,
+      ]);
+      expect(repository.list({ semanticSlot: "public_name" }).map((record) => record.id)).toEqual([
         directive.id,
       ]);
       expect(repository.list({ createdByEntityId: creator }).map((record) => record.id)).toEqual([
@@ -789,6 +794,80 @@ describe("CreatorDirectiveRepository", () => {
       expect(repository.list({ status: "active" }).map((record) => record.id)).toEqual([
         replacement.id,
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("supersedes prior active directives sharing a non-null semantic slot", () => {
+    const { db, repository } = createRepository();
+    const creator = createEntityId();
+    const audience = createEntityId();
+
+    try {
+      const original = repository.queue(
+        queueInput({
+          kind: "self_identity",
+          createdByEntityId: creator,
+          subjectKind: "borg_self",
+          semanticSlot: "public_name",
+          canonicalFact: "Borg's self-chosen name is Claude.",
+          operationalDirective: "Answer allowed audiences with Claude when asked.",
+          priority: 100,
+        }),
+      );
+      const nullSlot = repository.queue(
+        queueInput({
+          kind: "subject_fact",
+          createdByEntityId: creator,
+          subjectKind: "entity",
+          subjectEntityId: audience,
+          canonicalFact: "Alice has blue hair.",
+          operationalDirective: "Answer allowed audiences with Alice's blue-hair fact.",
+          priority: 50,
+        }),
+      );
+      const replacement = repository.queue(
+        queueInput({
+          kind: "self_identity",
+          createdByEntityId: creator,
+          subjectKind: "borg_self",
+          semanticSlot: "public_name",
+          canonicalFact: "Borg's self-chosen name is Vesper.",
+          operationalDirective: "Answer allowed audiences with Vesper when asked.",
+          priority: 1,
+        }),
+      );
+
+      expect(repository.get(original.id)).toMatchObject({
+        id: original.id,
+        status: "superseded",
+        superseded_by: replacement.id,
+      });
+      expect(repository.get(nullSlot.id)).toMatchObject({
+        id: nullSlot.id,
+        status: "active",
+        superseded_by: null,
+      });
+      expect(repository.list({ status: "active" }).map((record) => record.id)).toEqual([
+        nullSlot.id,
+        replacement.id,
+      ]);
+
+      const applicableNames = repository
+        .listApplicable({
+          currentAudienceEntityId: audience,
+          sessionRole: "participant",
+        })
+        .flatMap((item) =>
+          item.render_mode === "content" &&
+          item.directive.kind === "self_identity" &&
+          item.directive.canonical_fact !== null
+            ? [item.directive.canonical_fact]
+            : [],
+        );
+
+      expect(applicableNames).toEqual(["Borg's self-chosen name is Vesper."]);
     } finally {
       db.close();
     }

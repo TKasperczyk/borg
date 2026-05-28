@@ -37,6 +37,8 @@ function candidate(overrides: Record<string, unknown> = {}): Record<string, unkn
     subject_kind: "entity",
     subject_entity_id: null,
     subject_label: "Alice",
+    semantic_slot: null,
+    semantic_value: null,
     canonical_fact: "Alice has blue hair.",
     operational_directive: "Answer allowed audiences with the blue-hair fact when asked.",
     disclosure_policy: {
@@ -109,6 +111,8 @@ describe("CreatorDirectiveExtractor", () => {
             subject_kind: "borg_self",
             subject_entity_id: null,
             subject_label: "Borg",
+            semantic_slot: "public_name",
+            semantic_value: "Kestrel",
             canonical_fact: "Borg's self-chosen name is Kestrel.",
             operational_directive: "Answer any audience with Borg's self-chosen name when asked.",
             disclosure_policy: {
@@ -141,6 +145,8 @@ describe("CreatorDirectiveExtractor", () => {
     expect(result[0]).toMatchObject({
       kind: "self_identity",
       subject_kind: "borg_self",
+      semantic_slot: "public_name",
+      semantic_value: "Kestrel",
       canonical_fact: "Borg's self-chosen name is Kestrel.",
       disclosure_policy: expect.objectContaining({
         content_scope: "public",

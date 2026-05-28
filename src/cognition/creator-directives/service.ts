@@ -10,6 +10,7 @@ import type { SessionAudienceRole } from "../../sessions/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -331,6 +332,7 @@ export class CreatorDirectiveTurnService {
       contentSourceStreamEntryIds: [input.sourceStreamEntryId],
       subjectKind: input.candidate.subject_kind,
       subjectEntityId: input.subjectEntityId,
+      semanticSlot: input.candidate.semantic_slot,
       canonicalFact: input.candidate.canonical_fact,
       operationalDirective: input.candidate.operational_directive,
       disclosurePolicy: this.buildDisclosurePolicy({
@@ -428,6 +430,24 @@ export class CreatorDirectiveTurnService {
         priority: candidate.priority,
         confidence: candidate.confidence,
       });
+
+      const assertsGroundedValue =
+        candidate.semantic_slot !== null || candidate.semantic_value !== null;
+
+      if (
+        assertsGroundedValue &&
+        (candidate.semantic_value === null ||
+          !valueAppearsIn(input.userMessage, candidate.semantic_value))
+      ) {
+        this.reject({
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          candidateIndex: index,
+          candidate,
+          reason: "ungrounded_slot_value",
+        });
+        continue;
+      }
 
       const resolution = this.resolveCandidate(candidate);
 

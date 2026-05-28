@@ -97,6 +97,10 @@ function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective 
       row.subject_entity_id === null || row.subject_entity_id === undefined
         ? null
         : String(row.subject_entity_id),
+    semantic_slot:
+      row.semantic_slot === null || row.semantic_slot === undefined
+        ? null
+        : String(row.semantic_slot),
     canonical_fact:
       row.canonical_fact === null || row.canonical_fact === undefined
         ? null
@@ -307,6 +311,7 @@ export class CreatorDirectiveRepository {
       content_source_stream_entry_ids: uniqueIds(parsed.data.contentSourceStreamEntryIds),
       subject_kind: parsed.data.subjectKind,
       subject_entity_id: parsed.data.subjectEntityId ?? null,
+      semantic_slot: parsed.data.semanticSlot ?? null,
       canonical_fact: parsed.data.canonicalFact ?? null,
       operational_directive: parsed.data.operationalDirective,
       disclosure_policy: normalizeDisclosurePolicy(parsed.data.disclosurePolicy),
@@ -318,46 +323,53 @@ export class CreatorDirectiveRepository {
     });
     const policy = record.disclosure_policy;
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO creator_directives (
-            id, record_version, status, kind, created_by_entity_id, source_session_id,
-            authorization_stream_entry_ids, content_source_stream_entry_ids,
-            subject_kind, subject_entity_id, canonical_fact, operational_directive,
-            content_scope, allowed_entity_ids, excluded_entity_ids, subject_may_know,
-            mention_policy, denied_audience_behavior, boundary_prompt, topic_tags,
-            priority, superseded_by, revoked_reason, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        record.id,
-        record.record_version,
-        record.status,
-        record.kind,
-        record.created_by_entity_id,
-        record.source_session_id,
-        serializeJsonValue(record.authorization_stream_entry_ids),
-        serializeJsonValue(record.content_source_stream_entry_ids),
-        record.subject_kind,
-        record.subject_entity_id,
-        record.canonical_fact,
-        record.operational_directive,
-        policy.content_scope,
-        serializeJsonValue(policy.allowed_entity_ids),
-        serializeJsonValue(policy.excluded_entity_ids),
-        toStoredBoolean(policy.subject_may_know),
-        policy.mention_policy,
-        policy.denied_audience_behavior,
-        policy.boundary_prompt,
-        serializeJsonValue(policy.topic_tags),
-        record.priority,
-        record.superseded_by,
-        record.revoked_reason,
-        record.created_at,
-        record.updated_at,
-      );
+    const persist = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO creator_directives (
+              id, record_version, status, kind, created_by_entity_id, source_session_id,
+              authorization_stream_entry_ids, content_source_stream_entry_ids,
+              subject_kind, subject_entity_id, semantic_slot, canonical_fact,
+              operational_directive, content_scope, allowed_entity_ids, excluded_entity_ids,
+              subject_may_know, mention_policy, denied_audience_behavior, boundary_prompt,
+              topic_tags, priority, superseded_by, revoked_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          record.id,
+          record.record_version,
+          record.status,
+          record.kind,
+          record.created_by_entity_id,
+          record.source_session_id,
+          serializeJsonValue(record.authorization_stream_entry_ids),
+          serializeJsonValue(record.content_source_stream_entry_ids),
+          record.subject_kind,
+          record.subject_entity_id,
+          record.semantic_slot,
+          record.canonical_fact,
+          record.operational_directive,
+          policy.content_scope,
+          serializeJsonValue(policy.allowed_entity_ids),
+          serializeJsonValue(policy.excluded_entity_ids),
+          toStoredBoolean(policy.subject_may_know),
+          policy.mention_policy,
+          policy.denied_audience_behavior,
+          policy.boundary_prompt,
+          serializeJsonValue(policy.topic_tags),
+          record.priority,
+          record.superseded_by,
+          record.revoked_reason,
+          record.created_at,
+          record.updated_at,
+        );
+
+      this.supersedeConflictingActiveDirectives(record);
+    });
+
+    persist();
 
     return record;
   }
@@ -410,6 +422,15 @@ export class CreatorDirectiveRepository {
       }
     }
 
+    if (parsed.semanticSlot !== undefined) {
+      if (parsed.semanticSlot === null) {
+        filters.push("semantic_slot IS NULL");
+      } else {
+        filters.push("semantic_slot = ?");
+        values.push(parsed.semanticSlot);
+      }
+    }
+
     const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
     const rows = this.db
       .prepare(
@@ -446,12 +467,11 @@ export class CreatorDirectiveRepository {
     });
   }
 
-  supersede(id: CreatorDirectiveId, replacementId: CreatorDirectiveId): CreatorDirective | null {
-    const parsedId = parseCreatorDirectiveId(id);
-    const parsedReplacementId = parseCreatorDirectiveId(replacementId);
-    const current = this.get(parsedId);
-
-    if (current === null || current.status !== "active") {
+  private supersedeActiveDirective(
+    current: CreatorDirective,
+    replacementId: CreatorDirectiveId,
+  ): CreatorDirective | null {
+    if (current.status !== "active") {
       return null;
     }
 
@@ -469,7 +489,7 @@ export class CreatorDirectiveRepository {
             AND record_version = ?
         `,
       )
-      .run(parsedReplacementId, updatedAt, parsedId, current.record_version);
+      .run(replacementId, updatedAt, current.id, current.record_version);
 
     if (result.changes === 0) {
       return null;
@@ -479,9 +499,57 @@ export class CreatorDirectiveRepository {
       ...current,
       record_version: current.record_version + 1,
       status: "superseded",
-      superseded_by: parsedReplacementId,
+      superseded_by: replacementId,
       updated_at: updatedAt,
     });
+  }
+
+  private supersedeConflictingActiveDirectives(record: CreatorDirective): void {
+    if (record.semantic_slot === null) {
+      return;
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM creator_directives
+          WHERE status = 'active'
+            AND id != ?
+            AND kind = ?
+            AND subject_kind = ?
+            AND (
+              (subject_entity_id IS NULL AND ? IS NULL)
+              OR subject_entity_id = ?
+            )
+            AND semantic_slot = ?
+          ORDER BY priority DESC, created_at ASC
+        `,
+      )
+      .all(
+        record.id,
+        record.kind,
+        record.subject_kind,
+        record.subject_entity_id,
+        record.subject_entity_id,
+        record.semantic_slot,
+      ) as Record<string, unknown>[];
+
+    for (const row of rows) {
+      this.supersedeActiveDirective(mapCreatorDirectiveRow(row), record.id);
+    }
+  }
+
+  supersede(id: CreatorDirectiveId, replacementId: CreatorDirectiveId): CreatorDirective | null {
+    const parsedId = parseCreatorDirectiveId(id);
+    const parsedReplacementId = parseCreatorDirectiveId(replacementId);
+    const current = this.get(parsedId);
+
+    if (current === null) {
+      return null;
+    }
+
+    return this.supersedeActiveDirective(current, parsedReplacementId);
   }
 
   revoke(id: CreatorDirectiveId, reason: string): CreatorDirective | null {

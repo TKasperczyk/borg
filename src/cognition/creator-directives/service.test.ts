@@ -45,6 +45,8 @@ function candidate(overrides: Record<string, unknown> = {}): Record<string, unkn
     subject_kind: "borg_self",
     subject_entity_id: null,
     subject_label: "Borg",
+    semantic_slot: "public_name",
+    semantic_value: "Kestrel",
     canonical_fact: "Borg's self-chosen name is Kestrel.",
     operational_directive: "Answer allowed audiences with Borg's self-chosen name when asked.",
     disclosure_policy: {
@@ -281,6 +283,152 @@ describe("CreatorDirectiveTurnService", () => {
     }
   });
 
+  it("rejects slotted candidates without a semantic value before persistence", async () => {
+    const harness = createHarness();
+    const sessionId = createSessionId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            semantic_value: null,
+            canonical_fact: "Borg's self-chosen name is Claude.",
+            disclosure_policy: {
+              content_scope: "public",
+              allowed_entity_ids: [],
+              allowed_entity_labels: [],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["Claude"],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          sessionId,
+          userMessage: "I'd like you to choose a name for yourself.",
+        }),
+      );
+
+      expect(result).toEqual([]);
+      expect(harness.repository.list()).toEqual([]);
+      expect(harness.tracer.emit).toHaveBeenCalledWith(
+        "creator_directive_candidate_rejected",
+        expect.objectContaining({
+          turnId: "turn-creator-directive",
+          session_id: sessionId,
+          validationStatus: "rejected",
+          reason: "ungrounded_slot_value",
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("rejects ungrounded semantic values before persistence", async () => {
+    const harness = createHarness();
+    const sessionId = createSessionId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            semantic_value: "Claude",
+            canonical_fact: "Borg's self-chosen name is Claude.",
+            disclosure_policy: {
+              content_scope: "public",
+              allowed_entity_ids: [],
+              allowed_entity_labels: [],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["Claude"],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          sessionId,
+          userMessage: "I'd like you to choose a name for yourself.",
+        }),
+      );
+
+      expect(result).toEqual([]);
+      expect(harness.repository.list()).toEqual([]);
+      expect(harness.tracer.emit).toHaveBeenCalledWith(
+        "creator_directive_candidate_rejected",
+        expect.objectContaining({
+          turnId: "turn-creator-directive",
+          session_id: sessionId,
+          validationStatus: "rejected",
+          reason: "ungrounded_slot_value",
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("queues grounded self-identity values from the current message", async () => {
+    const harness = createHarness();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            semantic_value: "Vesper",
+            canonical_fact: "Borg's self-chosen name is Vesper.",
+            disclosure_policy: {
+              content_scope: "public",
+              allowed_entity_ids: [],
+              allowed_entity_labels: [],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["Vesper"],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          userMessage: "Alright Vesper, that name works.",
+        }),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        semantic_slot: "public_name",
+        canonical_fact: "Borg's self-chosen name is Vesper.",
+      });
+      expect(harness.repository.list()).toHaveLength(1);
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("normalizes salvageable public allow policies before persistence", async () => {
     const harness = createHarness();
     const userEntryId = createStreamEntryId();
@@ -367,6 +515,8 @@ describe("CreatorDirectiveTurnService", () => {
             subject_kind: "entity",
             subject_entity_id: null,
             subject_label: "Mallory",
+            semantic_slot: null,
+            semantic_value: null,
             canonical_fact: "Mallory knows the launch alias.",
             operational_directive: "Answer allowed audiences with Mallory's launch alias.",
           }),
@@ -475,6 +625,8 @@ describe("CreatorDirectiveTurnService", () => {
             subject_kind: "entity",
             subject_entity_id: null,
             subject_label: "Mallory",
+            semantic_slot: null,
+            semantic_value: null,
             canonical_fact: "Mallory knows the launch alias.",
             operational_directive: "Answer allowed audiences with Mallory's launch alias.",
           }),

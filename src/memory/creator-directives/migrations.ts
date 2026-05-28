@@ -27,6 +27,9 @@ export const creatorDirectiveMigrations = [
             subject_kind IN ('borg_self', 'entity', 'system', 'unknown')
           ),
           subject_entity_id TEXT NULL,
+          semantic_slot TEXT NULL CHECK (
+            semantic_slot IS NULL OR semantic_slot IN ('public_name')
+          ),
           canonical_fact TEXT NULL,
           operational_directive TEXT NOT NULL,
           content_scope TEXT NOT NULL CHECK (
@@ -67,6 +70,8 @@ export const creatorDirectiveMigrations = [
           ON creator_directives(source_session_id, status);
         CREATE INDEX IF NOT EXISTS creator_directives_subject_idx
           ON creator_directives(subject_kind, subject_entity_id, status);
+        CREATE INDEX IF NOT EXISTS creator_directives_slot_conflict_idx
+          ON creator_directives(status, kind, subject_kind, subject_entity_id, semantic_slot);
         CREATE INDEX IF NOT EXISTS creator_directives_content_scope_idx
           ON creator_directives(content_scope, status);
       `);
