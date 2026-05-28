@@ -20,7 +20,7 @@ import { RelationalSlotRepository, relationalSlotMigrations } from "../relationa
 import { selfMigrations } from "../self/migrations.js";
 import { createWorkingMemory, WorkingMemoryStore } from "../working/index.js";
 import { episodicMigrations } from "./migrations.js";
-import { EpisodicExtractor } from "./extractor.js";
+import { EpisodicExtractor, RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF } from "./extractor.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -803,7 +803,7 @@ describe("episodic extractor", () => {
     });
   });
 
-  it("resolves bare user relational slot subjects to the human audience entity", async () => {
+  it("resolves current-sender relational slot subject refs to the human audience entity", async () => {
     const harness = await createRelationalExtractorHarness();
     const user = await harness.writer.append({
       kind: "user_msg",
@@ -826,7 +826,7 @@ describe("episodic extractor", () => {
           ],
           [
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [user.id],
@@ -863,7 +863,7 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
-  it("resolves bare user relational slot subjects to each stream entry sender when present", async () => {
+  it("resolves current-sender relational slot subject refs to each stream entry sender when present", async () => {
     const harness = await createRelationalExtractorHarness();
     const alice = harness.entityRepository.resolve("Alice", {
       kind: "person",
@@ -888,14 +888,14 @@ describe("episodic extractor", () => {
           [],
           [
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "dog.name",
               asserted_value: "Maple",
               source_stream_entry_ids: [aliceMessage.id],
               confirmation_kind: "direct",
             },
             {
-              subject_entity_id: "I",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "cat.name",
               asserted_value: "Nori",
               source_stream_entry_ids: [bobMessage.id],
@@ -941,7 +941,7 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
-  it("keeps same-key first-person relational slots separate for group chat senders", async () => {
+  it("keeps same-key current-sender relational slots separate for group chat senders", async () => {
     const harness = await createRelationalExtractorHarness();
     const group = harness.entityRepository.resolve("Planning Room", {
       kind: "group",
@@ -971,14 +971,14 @@ describe("episodic extractor", () => {
           [],
           [
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "partner.name",
               asserted_value: "Maya",
               source_stream_entry_ids: [aliceMessage.id],
               confirmation_kind: "direct",
             },
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "partner.name",
               asserted_value: "Sara",
               source_stream_entry_ids: [benMessage.id],
@@ -1023,7 +1023,7 @@ describe("episodic extractor", () => {
     expect(harness.relationalSlotRepository.findBySubjectAndKey(group, "partner.name")).toBeNull();
   });
 
-  it("keeps bare user relational slot subjects on the default user for self audience", async () => {
+  it("keeps current-sender relational slot subject refs on the default user for self audience", async () => {
     const harness = await createRelationalExtractorHarness();
     const user = await harness.writer.append({
       kind: "user_msg",
@@ -1036,7 +1036,7 @@ describe("episodic extractor", () => {
           [],
           [
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [user.id],
@@ -1075,7 +1075,7 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
-  it("converges relational slots for default user and bare user subjects under one audience", async () => {
+  it("converges relational slots for default user and current-sender subject refs under one audience", async () => {
     const harness = await createRelationalExtractorHarness();
     const tom = harness.entityRepository.resolve("Tom");
     const dog = await harness.writer.append({
@@ -1114,7 +1114,7 @@ describe("episodic extractor", () => {
           ],
           [
             {
-              subject_entity_id: "user",
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [dog.id],

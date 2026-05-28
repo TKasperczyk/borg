@@ -29,13 +29,16 @@ import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-e
 import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
-import type {
-  RelationalSlotAssertionConfirmation,
-  RelationalSlotRepository,
+import {
+  relationalSlotEntityIdSchema,
+  type RelationalSlotAssertionConfirmation,
+  type RelationalSlotRepository,
 } from "../relational-slots/index.js";
 import type { WorkingMemoryStore } from "../working/index.js";
 
 import { z } from "zod";
+
+export const RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF = "@current_sender";
 
 const extractorCandidateSchema = z.object({
   title: z.string().min(1),
@@ -51,7 +54,11 @@ const extractorCandidateSchema = z.object({
 
 const relationalSlotUpdateCandidateSchema = z
   .object({
-    subject_entity_id: z.string().min(1),
+    subject_entity_id: z
+      .union([relationalSlotEntityIdSchema, z.literal(RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF)])
+      .describe(
+        `Entity id from relational_slot_subjects, or ${RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF} for the current message sender / self.`,
+      ),
     slot_key: z.string().min(1),
     asserted_value: z.string().min(1),
     source_stream_entry_ids: z.array(z.string().min(1)).min(1),
@@ -381,8 +388,8 @@ function buildExtractorPrompt(
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
-    "Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id appears in the supplied relational slot subject manifest.",
-    "When a stream entry has sender_entity_id and the user asserts a first-person relational attribute, use that sender entity_id as subject_entity_id.",
+    `Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id is either an entity_id from the supplied relational slot subject manifest or the reserved ${RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF} sentinel.`,
+    `When the user asserts a relational attribute about the current message sender / self, set subject_entity_id to ${RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF}. Do not emit pronoun text or translated self-reference words.`,
     "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
     "If an assistant introduced a person name and a later user merely reuses that name, do not emit a relational_slot_update for the name. Bare adoption is not explicit confirmation.",
     "Stream entry audience fields are audience routing labels, not evidence that the user self-declared the label as their name.",
@@ -576,7 +583,7 @@ function resolveRelationalSlotSubjectEntityId(
 ): EntityId {
   const candidate = subjectEntityId.trim();
 
-  if (candidate === "user" || candidate === "I" || candidate === "i" || candidate === "me") {
+  if (candidate === RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF) {
     return (
       (
         senderForRelationalSlot(sourceEntries, relationalSlotSubjects) ??
