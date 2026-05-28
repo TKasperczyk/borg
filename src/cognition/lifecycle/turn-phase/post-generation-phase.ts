@@ -3,7 +3,7 @@ import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordi
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import { Deliberator } from "../../deliberation/deliberator.js";
 import type { GenerationGate } from "../../generation/generation-gate.js";
-import { StopCommitmentExtractor } from "../../generation/self-stop-commitment.js";
+import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "../../generation/canonical-stop-phrase.js";
 import {
   replyTargetEntityId,
   type PendingTurnEmission,
@@ -15,7 +15,8 @@ import type { LLMClient } from "../../../llm/index.js";
 import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
-import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
+import { valueAppearsIn } from "../../../util/text-presence.js";
 import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
 import {
   ACTION_ARCHIVE_ACTIVE_STATES,
@@ -44,6 +45,11 @@ type CorrectiveCommitmentSupersession = Parameters<
 >[0]["supersession"];
 
 const DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
+
+type MessageStopStateApplication = {
+  provenance: DiscourseStopProvenance;
+  reason: string;
+};
 
 type ActionArchiveScanResult = {
   scannedCount: number;
@@ -78,6 +84,27 @@ function actionArchiveAfterInactiveTurns(options: TurnPhaseCoordinatorOptions): 
     options.config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns ??
     DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS
   );
+}
+
+function stopStateApplicationForMessage(input: {
+  emission: Extract<PendingTurnEmission, { kind: "message" }>;
+  response: string;
+}): MessageStopStateApplication | null {
+  if (input.emission.discourse_control?.kind === "stop_until_substantive_content") {
+    return {
+      provenance: "finalizer_emission_metadata",
+      reason: input.emission.discourse_control.reason,
+    };
+  }
+
+  if (valueAppearsIn(input.response, CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE)) {
+    return {
+      provenance: "canonical_stop_phrase",
+      reason: "Borg used the canonical stop-until-substantive-content phrase.",
+    };
+  }
+
+  return null;
 }
 
 function incrementSkippedReason(skippedByReason: Record<string, number>, reason: string): void {
@@ -323,6 +350,9 @@ export async function runPostGenerationPhase(input: {
           ...(actionEmission.persistence_class === undefined
             ? {}
             : { persistence_class: actionEmission.persistence_class }),
+          ...(actionEmission.discourse_control === undefined
+            ? {}
+            : { discourse_control: actionEmission.discourse_control }),
         };
   let postActionWorkingMemory = actionResult.workingMemory;
   if (
@@ -336,30 +366,17 @@ export async function runPostGenerationPhase(input: {
     });
   }
   if (actionEmission.kind === "message") {
-    const stopCommitmentExtractor = new StopCommitmentExtractor({
-      llmClient: input.llmClient,
-      model: input.options.config.anthropic.models.background,
-      onDegraded: (reason, error) =>
-        input.appendHookFailureEvent(
-          input.streamWriter,
-          "self_stop_commitment_extraction",
-          error ?? reason,
-          {
-            reason,
-          },
-        ),
-    });
-    const stopCommitment = await stopCommitmentExtractor.extract({
-      userMessage: input.turnInput.userMessage,
-      agentResponse: actionResult.response,
+    const stopStateApplication = stopStateApplicationForMessage({
+      emission: actionEmission,
+      response: actionResult.response,
     });
 
-    if (stopCommitment !== null) {
+    if (stopStateApplication !== null) {
       postActionWorkingMemory = input.options.discourseStateService.setStopState({
         workingMemory: postActionWorkingMemory,
-        provenance: "self_commitment_extractor",
+        provenance: stopStateApplication.provenance,
         sourceStreamEntryId: persistedAgentEntry.id,
-        reason: stopCommitment.reason,
+        reason: stopStateApplication.reason,
         turnId: input.turnId,
         sessionId: input.sessionId,
       });

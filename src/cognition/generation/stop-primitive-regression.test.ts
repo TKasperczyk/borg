@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg, ManualClock } from "../../index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
+import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "./canonical-stop-phrase.js";
 
 const tempDirs: string[] = [];
 
@@ -52,7 +53,16 @@ async function openRegressionBorg(llm: FakeLLMClient) {
   });
 }
 
-function textResponse(text: string) {
+function stopDiscourseControl(
+  reason = "The assistant committed to stop until substantive content appears.",
+) {
+  return {
+    kind: "stop_until_substantive_content" as const,
+    reason,
+  };
+}
+
+function textResponse(text: string, discourseControl?: ReturnType<typeof stopDiscourseControl>) {
   return {
     text: "",
     input_tokens: 8,
@@ -62,7 +72,10 @@ function textResponse(text: string) {
       {
         id: "toolu_emit_answer",
         name: "EmitAnswer",
-        input: { text },
+        input: {
+          text,
+          ...(discourseControl === undefined ? {} : { discourse_control: discourseControl }),
+        },
       },
     ],
   };
@@ -123,27 +136,6 @@ function gateResponse(input: {
           decision: input.decision,
           substantive: input.substantive,
           reason: input.reason ?? "Generation gate classified the turn.",
-          confidence: 0.95,
-        },
-      },
-    ],
-  };
-}
-
-function stopCommitmentResponse() {
-  return {
-    text: "",
-    input_tokens: 4,
-    output_tokens: 2,
-    stop_reason: "tool_use" as const,
-    tool_calls: [
-      {
-        id: "toolu_stop_commitment",
-        name: "EmitStopCommitmentClassification",
-        input: {
-          classification: "stop_until_substantive_content",
-          directive_family: "stop_until_substantive_content",
-          reason: "The assistant committed to stop until substantive content appears.",
           confidence: 0.95,
         },
       },
@@ -252,8 +244,10 @@ describe("stop primitive v8 regressions", () => {
   it("turns compliance theater into real suppression on the next minimal probe", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        textResponse("I will stop responding until you bring substantive content."),
-        stopCommitmentResponse(),
+        textResponse(
+          "I will stop responding until you bring substantive content.",
+          stopDiscourseControl(),
+        ),
         reflectionResponse(),
         gateResponse({
           decision: "suppress",
@@ -282,8 +276,58 @@ describe("stop primitive v8 regressions", () => {
         "I will stop responding until you bring substantive content.",
       ]);
       expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
       });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("uses only Borg's canonical stop phrase as a deterministic backstop", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        textResponse(CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE),
+        reflectionResponse(),
+        gateResponse({
+          decision: "suppress",
+          substantive: false,
+          reason: "The user sent a minimal probe after the canonical stop phrase.",
+        }),
+      ],
+    });
+    const borg = await openRegressionBorg(llm);
+
+    try {
+      const commitment = await borg.turn({
+        userMessage: "Name the loop once if needed.",
+      });
+      const suppressed = await borg.turn({
+        userMessage: "No.",
+      });
+
+      expect(commitment.emitted).toBe(true);
+      expect(suppressed.emitted).toBe(false);
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
+        provenance: "canonical_stop_phrase",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not treat non-canonical stop-ish phrasing as a backstop", async () => {
+    const llm = new FakeLLMClient({
+      responses: [textResponse("I think I'll wrap things up here for now."), reflectionResponse()],
+    });
+    const borg = await openRegressionBorg(llm);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Maybe close this out.",
+      });
+
+      expect(result.emitted).toBe(true);
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toBeNull();
     } finally {
       await borg.close();
     }

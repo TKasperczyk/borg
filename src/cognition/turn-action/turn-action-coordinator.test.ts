@@ -14,6 +14,7 @@ import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { DeliberationResult } from "../deliberation/types.js";
+import type { PendingTurnEmission } from "../generation/types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { TurnActionCoordinator } from "./turn-action-coordinator.js";
 
@@ -23,6 +24,9 @@ type CommitmentViolationFixture = {
   confidence: number;
   violating_span_or_topic?: string;
 };
+type MessageEmissionMetadata = Partial<
+  Omit<Extract<PendingTurnEmission, { kind: "message" }>, "kind" | "content">
+>;
 
 function commitmentVerdictResponse(
   violations: readonly CommitmentViolationFixture[],
@@ -33,9 +37,20 @@ function commitmentVerdictResponse(
   });
 }
 
+function textResponse(text: string): LLMCompleteResult {
+  return {
+    text,
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "end_turn",
+    tool_calls: [],
+  };
+}
+
 function makeDeliberation(
   response: string,
   regenerateFinalResponse?: DeliberationResult["regenerateFinalResponse"],
+  emissionMetadata: MessageEmissionMetadata = {},
 ): DeliberationResult {
   return {
     path: "system_1",
@@ -44,6 +59,7 @@ function makeDeliberation(
     emission: {
       kind: "message",
       content: response,
+      ...emissionMetadata,
     },
     emissionRecommendation: "emit",
     thoughtStreamEntryIds: [],
@@ -63,7 +79,11 @@ function makeDeliberation(
   };
 }
 
-function makeCommitmentGuardRunner(input: { tracer: TurnTracer }): CommitmentGuardRunner {
+function makeCommitmentGuardRunner(input: {
+  tracer: TurnTracer;
+  regenerateBeforeSuppress?: boolean;
+  rewriteOnViolation?: boolean;
+}): CommitmentGuardRunner {
   return new CommitmentGuardRunner({
     detectionModel: "test-commitment-judge",
     rewriteModel: "test-commitment-rewriter",
@@ -74,6 +94,12 @@ function makeCommitmentGuardRunner(input: { tracer: TurnTracer }): CommitmentGua
       resolve: () => null,
     } as unknown as EntityRepository,
     tracer: input.tracer,
+    ...(input.regenerateBeforeSuppress === undefined
+      ? {}
+      : { regenerateBeforeSuppress: input.regenerateBeforeSuppress }),
+    ...(input.rewriteOnViolation === undefined
+      ? {}
+      : { rewriteOnViolation: input.rewriteOnViolation }),
   });
 }
 
@@ -83,6 +109,10 @@ async function runCoordinator(input: {
   deliberation: DeliberationResult;
   commitments: readonly CommitmentRecord[];
   turnId?: string;
+  commitmentGuardOptions?: {
+    regenerateBeforeSuppress?: boolean;
+    rewriteOnViolation?: boolean;
+  };
 }) {
   const postGenerationGuardRunner = {
     run: vi.fn(async ({ response }: { response: string }) => ({
@@ -91,7 +121,10 @@ async function runCoordinator(input: {
     })),
   };
   const coordinator = new TurnActionCoordinator({
-    commitmentGuardRunner: makeCommitmentGuardRunner({ tracer: input.tracer }),
+    commitmentGuardRunner: makeCommitmentGuardRunner({
+      tracer: input.tracer,
+      ...input.commitmentGuardOptions,
+    }),
     postGenerationGuardRunner,
     embeddingClient: new FakeEmbeddingClient(8),
     pendingActionJudgeModel: "test-pending-action-judge",
@@ -181,6 +214,108 @@ describe("TurnActionCoordinator commitment regeneration", () => {
     expect(eventsNamed(tracer, "commitment_guard.regeneration_requested")).toHaveLength(1);
     expect(eventsNamed(tracer, "commitment_guard.regeneration_succeeded")).toHaveLength(1);
     expect(eventsNamed(tracer, "commitment_guard.regeneration_failed")).toHaveLength(0);
+  });
+
+  it("uses regenerated finalizer discourse metadata as the final source of truth", async () => {
+    const tracer = makeTestTurnTraceRecorder();
+    const commitment = makeCommitmentRecord({
+      kind: "boundary",
+      type: "boundary",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+      directive_family: "vendor_channel_codename",
+      directive: "Do not disclose the private deployment codename in the vendor channel.",
+      priority: 10,
+    });
+    const initialDraft =
+      "I will stop responding until substantive content appears. The private deployment codename is ORCHID-17.";
+    const cleanDraft = "The deploy checklist is green for the vendor handoff.";
+    const violation = {
+      commitment_id: commitment.id,
+      reason: "The draft discloses the private deployment codename in the vendor channel.",
+      confidence: 0.99,
+      violating_span_or_topic: "ORCHID-17",
+    };
+    const llmClient = new FakeLLMClient({
+      responses: [commitmentVerdictResponse([violation]), commitmentVerdictResponse([])],
+    });
+    const regenerateFinalResponse = vi.fn<
+      NonNullable<DeliberationResult["regenerateFinalResponse"]>
+    >(async () => makeDeliberation(cleanDraft));
+
+    const { result } = await runCoordinator({
+      llmClient,
+      tracer,
+      deliberation: makeDeliberation(initialDraft, regenerateFinalResponse, {
+        discourse_control: {
+          kind: "stop_until_substantive_content",
+          reason: "Initial draft committed to stop.",
+        },
+      }),
+      commitments: [commitment],
+      turnId: "turn-regenerated-discourse-control-drop",
+    });
+
+    expect(result.actionEmission).toEqual({
+      kind: "message",
+      content: cleanDraft,
+    });
+    expect(regenerateFinalResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves discourse metadata through the commitment rewrite path", async () => {
+    const tracer = makeTestTurnTraceRecorder();
+    const commitment = makeCommitmentRecord({
+      kind: "boundary",
+      type: "boundary",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+      directive_family: "vendor_channel_codename",
+      directive: "Do not disclose the private deployment codename in the vendor channel.",
+      priority: 10,
+    });
+    const discourseControl = {
+      kind: "stop_until_substantive_content" as const,
+      reason: "The response commits Borg to wait for substantive content.",
+    };
+    const initialDraft =
+      "I will stop responding until substantive content appears. The private deployment codename is ORCHID-17.";
+    const rewrittenDraft = "I will stop responding until substantive content appears.";
+    const violation = {
+      commitment_id: commitment.id,
+      reason: "The draft discloses the private deployment codename in the vendor channel.",
+      confidence: 0.99,
+      violating_span_or_topic: "ORCHID-17",
+    };
+    const llmClient = new FakeLLMClient({
+      responses: [
+        commitmentVerdictResponse([violation]),
+        textResponse(rewrittenDraft),
+        commitmentVerdictResponse([]),
+      ],
+    });
+
+    const { result } = await runCoordinator({
+      llmClient,
+      tracer,
+      deliberation: makeDeliberation(initialDraft, undefined, {
+        discourse_control: discourseControl,
+      }),
+      commitments: [commitment],
+      commitmentGuardOptions: {
+        regenerateBeforeSuppress: false,
+        rewriteOnViolation: true,
+      },
+      turnId: "turn-rewritten-discourse-control-preserved",
+    });
+
+    expect(result.actionEmission).toEqual({
+      kind: "message",
+      content: rewrittenDraft,
+      discourse_control: discourseControl,
+    });
+    expect(result.actionResult.response).toBe(rewrittenDraft);
+    expect(eventsNamed(tracer, "commitment_guard.enforce_rewrite")).toHaveLength(1);
   });
 
   it("suppresses when regeneration still violates a critical boundary", async () => {

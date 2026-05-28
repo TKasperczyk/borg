@@ -157,6 +157,7 @@ export {
   type FrameAnomalyClassification,
   type FrameAnomalyKind,
   type IntentRecord,
+  type MessageDiscourseControl,
   type ParticipantRoster,
   type ParticipantRosterMember,
   type ParticipantRosterStreamEvidence,

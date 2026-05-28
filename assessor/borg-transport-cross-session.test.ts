@@ -126,18 +126,6 @@ function turnPlan(): LLMCompleteResult {
   });
 }
 
-function stopCommitmentNone(): LLMCompleteResult {
-  return completeWithTool({
-    id: "toolu_stop_commitment",
-    name: "EmitStopCommitmentClassification",
-    input: {
-      classification: "none",
-      reason: "The response does not commit to future no-output behavior.",
-      confidence: 0.98,
-    },
-  });
-}
-
 function emptyReflection(): LLMCompleteResult {
   return completeWithTool({
     id: "toolu_reflection",
@@ -235,10 +223,6 @@ function createScriptedLlm(): FakeLLMClient {
 
     if (names.includes("EmitTurnPlan")) {
       return turnPlan();
-    }
-
-    if (names.includes("EmitStopCommitmentClassification")) {
-      return stopCommitmentNone();
     }
 
     if (names.includes("EmitTurnReflection")) {

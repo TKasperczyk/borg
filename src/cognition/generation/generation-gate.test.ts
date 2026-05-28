@@ -117,7 +117,7 @@ describe("GenerationGate", () => {
     const workingMemory = setStopUntilSubstantiveContent(
       createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       {
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
         sourceStreamEntryId: createStreamEntryId(),
         reason: "The assistant promised to stop.",
         sinceTurn: 1,
@@ -157,7 +157,7 @@ describe("GenerationGate", () => {
     const workingMemory = setStopUntilSubstantiveContent(
       createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       {
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
         sourceStreamEntryId: createStreamEntryId(),
         reason: "The assistant promised to stop.",
         sinceTurn: 1,
@@ -283,7 +283,7 @@ describe("GenerationGate", () => {
     const workingMemory = setStopUntilSubstantiveContent(
       createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       {
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
         sourceStreamEntryId: createStreamEntryId(),
         reason: "The assistant promised to stop.",
         sinceTurn: 1,

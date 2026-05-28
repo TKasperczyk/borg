@@ -20,14 +20,14 @@ describe("discourse state", () => {
     const sourceStreamEntryId = createStreamEntryId();
     const workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
     const stopped = setStopUntilSubstantiveContent(workingMemory, {
-      provenance: "self_commitment_extractor",
+      provenance: "finalizer_emission_metadata",
       sourceStreamEntryId,
       reason: "Agent committed to stop responding to minimal inputs.",
       sinceTurn: 12,
     });
 
     expect(stopped.discourse_state?.stop_until_substantive_content).toEqual({
-      provenance: "self_commitment_extractor",
+      provenance: "finalizer_emission_metadata",
       source_stream_entry_id: sourceStreamEntryId,
       reason: "Agent committed to stop responding to minimal inputs.",
       since_turn: 12,

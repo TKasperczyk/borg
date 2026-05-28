@@ -131,13 +131,6 @@ export {
   type FrameAnomalyKind,
 } from "./frame-anomaly/index.js";
 export {
-  StopCommitmentExtractor,
-  type ExtractStopCommitmentInput,
-  type StopCommitmentExtraction,
-  type StopCommitmentExtractorDegradedReason,
-  type StopCommitmentExtractorOptions,
-} from "./generation/self-stop-commitment.js";
-export {
   FINALIZER_NO_OUTPUT_CATEGORIES,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
   FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
@@ -149,6 +142,7 @@ export {
   type FinalizerNoOutputStructuralCategory,
   type FinalizerNoOutputStructuralFlag,
   type GenerationSuppressionReason,
+  type MessageDiscourseControl,
   type PendingTurnEmission,
   type ReplyTarget,
   type TurnEmission,

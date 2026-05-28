@@ -126,6 +126,15 @@ export function replyTargetEntityId(replyTarget: ReplyTarget | undefined): Entit
   return replyTarget?.kind === "entity" ? replyTarget.entity_id : null;
 }
 
+export const messageDiscourseControlSchema = z
+  .object({
+    kind: z.literal("stop_until_substantive_content"),
+    reason: z.string().trim().min(1),
+  })
+  .strict();
+
+export type MessageDiscourseControl = z.infer<typeof messageDiscourseControlSchema>;
+
 export type PendingTurnEmission =
   | {
       kind: "message";
@@ -133,6 +142,7 @@ export type PendingTurnEmission =
       reply_target?: ReplyTarget;
       persistence_class?: StreamEntryPersistenceClass;
       closure_pressure_history_reason?: ClosurePressureHistoryReason;
+      discourse_control?: MessageDiscourseControl;
     }
   | {
       kind: "observed";
@@ -156,6 +166,7 @@ export type TurnEmission =
       reply_target?: ReplyTarget;
       agentMessageId: StreamEntryId;
       persistence_class?: StreamEntryPersistenceClass;
+      discourse_control?: MessageDiscourseControl;
     }
   | {
       kind: "observed";

@@ -177,33 +177,6 @@ function parseReflectionPayload(request: LLMCompleteOptions | undefined): Record
   return JSON.parse(String(request?.messages[0]?.content ?? "{}")) as Record<string, unknown>;
 }
 
-function createStopCommitmentResponse(input: {
-  classification: "stop_until_substantive_content" | "none";
-  reason?: string;
-}) {
-  return {
-    text: "",
-    input_tokens: 4,
-    output_tokens: 2,
-    stop_reason: "tool_use" as const,
-    tool_calls: [
-      {
-        id: "toolu_stop_commitment",
-        name: "EmitStopCommitmentClassification",
-        input: {
-          classification: input.classification,
-          directive_family:
-            input.classification === "stop_until_substantive_content"
-              ? "stop_until_substantive_content"
-              : null,
-          reason: input.reason ?? "The assistant committed to stop until substantive content.",
-          confidence: 0.94,
-        },
-      },
-    ],
-  };
-}
-
 function createNoOutputTurnPlanResponse() {
   return {
     text: "",
@@ -259,11 +232,30 @@ function createFinalizerToolResponse(tool: { id: string; name: string; input: un
   };
 }
 
-function createEmitAnswerResponse(text: string) {
+function createStopDiscourseControl(
+  reason = "The assistant committed to stop until substantive content.",
+) {
+  return {
+    kind: "stop_until_substantive_content" as const,
+    reason,
+  };
+}
+
+function createEmitAnswerResponse(
+  text: string,
+  options: {
+    discourseControl?: ReturnType<typeof createStopDiscourseControl>;
+  } = {},
+) {
   return createFinalizerToolResponse({
     id: "toolu_emit_answer",
     name: "EmitAnswer",
-    input: { text },
+    input: {
+      text,
+      ...(options.discourseControl === undefined
+        ? {}
+        : { discourse_control: options.discourseControl }),
+    },
   });
 }
 
@@ -2897,11 +2889,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
 
       llm.pushResponse(createEmitAnswerResponse("The current turn answers it directly."));
-      llm.pushResponse(
-        createStopCommitmentResponse({
-          classification: "none",
-        }),
-      );
       llm.pushResponse((request: LLMCompleteOptions) => {
         const payload = parseReflectionPayload(request);
         const activeQuestions = payload.active_open_questions as Array<{ id: string }>;
@@ -2953,11 +2940,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       );
 
       llm.pushResponse(createEmitAnswerResponse("No open question remains in scope."));
-      llm.pushResponse(
-        createStopCommitmentResponse({
-          classification: "none",
-        }),
-      );
       llm.pushResponse((request: LLMCompleteOptions) => {
         const payload = parseReflectionPayload(request);
         const activeQuestions = payload.active_open_questions as Array<{ id: string }>;
@@ -2982,10 +2964,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(1_800_000_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        createEmitAnswerResponse("I will stop responding until you bring substantive content."),
-        createStopCommitmentResponse({
-          classification: "stop_until_substantive_content",
-          reason: "The assistant committed to stop until substantive content arrives.",
+        createEmitAnswerResponse("I will stop responding until you bring substantive content.", {
+          discourseControl: createStopDiscourseControl(
+            "The assistant committed to stop until substantive content arrives.",
+          ),
         }),
         createEmptyReflectionResponse(),
       ],
@@ -3001,7 +2983,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.emitted).toBe(true);
       expect(result.response).toContain("I will stop responding");
       expect(activeStop).toMatchObject({
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
         source_stream_entry_id: result.agentMessageId,
         reason: "The assistant committed to stop until substantive content arrives.",
         since_turn: 1,
@@ -3596,10 +3578,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         return createCommitmentJudgeResponse([]);
       }
 
-      if (options.budget === "generation-stop-commitment") {
-        return createStopCommitmentResponse({ classification: "none" });
-      }
-
       if (options.budget === "reflection") {
         return createEmptyReflectionResponse();
       }
@@ -3696,10 +3674,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       if (options.budget === "pending-action-judge") {
         sawPendingActionJudge = true;
         return createPendingActionJudgeResponse("action");
-      }
-
-      if (options.budget === "generation-stop-commitment") {
-        return createStopCommitmentResponse({ classification: "none" });
       }
 
       if (options.budget === "commitment-judge") {
@@ -3872,10 +3846,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       if (options.budget === "commitment-judge") {
         return createCommitmentJudgeResponse([]);
-      }
-
-      if (options.budget === "generation-stop-commitment") {
-        return createStopCommitmentResponse({ classification: "none" });
       }
 
       if (options.budget === "reflection") {
@@ -4917,9 +4887,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const embeddingClient = new CountingEmbeddingClient();
     const llm = new FakeLLMClient({
       responses: [
-        createEmitAnswerResponse("I will stop responding until you bring substantive content."),
-        createStopCommitmentResponse({
-          classification: "stop_until_substantive_content",
+        createEmitAnswerResponse("I will stop responding until you bring substantive content.", {
+          discourseControl: createStopDiscourseControl(),
         }),
         createEmptyReflectionResponse(),
         createGenerationGateResponse({
@@ -4954,7 +4923,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(embeddingClient.embedTexts).toEqual([]);
       expect(embeddingClient.embedBatchTexts).toEqual([]);
       expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
-        provenance: "self_commitment_extractor",
+        provenance: "finalizer_emission_metadata",
       });
       expect(
         readTraceEvents(tracePath)

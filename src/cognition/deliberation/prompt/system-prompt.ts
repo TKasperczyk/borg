@@ -36,6 +36,7 @@ import {
   PARTICIPATION_POSTURE_SECTION,
 } from "../../prompts/participation.js";
 import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
+import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "../../generation/canonical-stop-phrase.js";
 import type {
   CreatorDirectiveBriefingContentDirective,
   DeliberationContext,
@@ -769,7 +770,7 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
 
   if (closureLoop?.status === "detected") {
     lines.push(
-      'Discourse control: closure_loop_detected. The recent exchange is repeated mutual goodbye/closure beats. For this turn, either call EmitNoOutput or name the loop once, then stop adding send-offs: "We keep doing goodbye and continuing. I\'m going to stop adding send-offs unless you bring a substantive question."',
+      `Discourse control: closure_loop_detected. The recent exchange is repeated mutual goodbye/closure beats. For this turn, either call EmitNoOutput or name the loop once, then stop adding send-offs: "${CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE}"`,
     );
   }
 

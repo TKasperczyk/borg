@@ -68,6 +68,9 @@ function withMessageMetadata<T extends PendingTurnEmission>(
     ...(source.persistence_class === undefined
       ? {}
       : { persistence_class: source.persistence_class }),
+    ...(source.discourse_control === undefined
+      ? {}
+      : { discourse_control: source.discourse_control }),
   } as T;
 }
 

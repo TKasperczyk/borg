@@ -299,6 +299,9 @@ function buildFinalizerEmission(
         kind: "message",
         content: result.decision.text,
         persistence_class: result.decision.persistence_class,
+        ...(result.decision.discourse_control === undefined
+          ? {}
+          : { discourse_control: result.decision.discourse_control }),
       },
     };
   }
@@ -334,6 +337,9 @@ function buildFinalizerEmission(
       ...(result.decision.reply_target === undefined
         ? {}
         : { reply_target: result.decision.reply_target }),
+      ...(result.decision.discourse_control === undefined
+        ? {}
+        : { discourse_control: result.decision.discourse_control }),
     },
   };
 }

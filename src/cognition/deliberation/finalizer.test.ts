@@ -155,6 +155,47 @@ describe("runFinalizer emission tools", () => {
     ]);
   });
 
+  it("parses message discourse-control metadata from EmitAnswer", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_answer",
+              name: "EmitAnswer",
+              input: {
+                text: "I will stop after this until you bring real content.",
+                discourse_control: {
+                  kind: "stop_until_substantive_content",
+                  reason: "The visible response commits to no output until substantive content.",
+                },
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toEqual({
+      kind: "answer",
+      text: "I will stop after this until you bring real content.",
+      source: "tool",
+      discourse_control: {
+        kind: "stop_until_substantive_content",
+        reason: "The visible response commits to no output until substantive content.",
+      },
+    });
+    expect(requestSystemText(llm.requests[0]?.system)).toContain(
+      "set discourse_control.kind=stop_until_substantive_content ONLY",
+    );
+  });
+
   it("filters finalizer emission tools when allowed emissions are provided", async () => {
     const llm = new FakeLLMClient({
       responses: [

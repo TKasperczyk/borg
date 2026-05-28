@@ -893,15 +893,13 @@ describe("Borg", () => {
         "haiku",
         "haiku",
         "haiku",
-        "haiku",
       ]);
       expect(nonCorrectiveRequests[0]?.budget).toBe("procedural-context");
       expect(nonCorrectiveRequests[2]?.budget).toBe("commitment-judge");
       expect(nonCorrectiveRequests[3]?.budget).toBe("commitment-revision");
       expect(nonCorrectiveRequests[4]?.budget).toBe("commitment-judge");
       expect(nonCorrectiveRequests[5]?.budget).toBe("closure-response-auditor");
-      expect(nonCorrectiveRequests[6]?.budget).toBe("generation-stop-commitment");
-      expect(nonCorrectiveRequests[7]?.budget).toBe("reflection");
+      expect(nonCorrectiveRequests[6]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }

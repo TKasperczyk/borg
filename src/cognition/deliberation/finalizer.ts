@@ -10,10 +10,12 @@ import {
   FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
   deriveFinalizerNoOutputPrimaryReason,
+  messageDiscourseControlSchema,
   replyTargetSchema,
   type FinalizerNoOutputPrimaryReason,
   type FinalizerNoOutputSemanticCategory,
   type FinalizerNoOutputStructuralFlag,
+  type MessageDiscourseControl,
   type ReplyTarget,
 } from "../generation/types.js";
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
@@ -27,6 +29,7 @@ const emitTextToolInputSchema = z
   .object({
     text: z.string(),
     reply_target: replyTargetSchema.optional(),
+    discourse_control: messageDiscourseControlSchema.optional(),
   })
   .strict();
 
@@ -52,6 +55,7 @@ const emitSelfReportToolInputSchema = z
     kind: z.literal("self_report"),
     text: z.string(),
     persistence_class: z.literal("assistant_self_report"),
+    discourse_control: messageDiscourseControlSchema.optional(),
   })
   .strict();
 
@@ -131,6 +135,8 @@ const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION =
   "Use EmitNoOutput to produce no assistant message for this turn. Put a concise reason in reason.";
 const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
+const EMIT_DISCOURSE_CONTROL_INSTRUCTION =
+  "For EmitAnswer or EmitSelfReport, set discourse_control.kind=stop_until_substantive_content ONLY when the visible response commits Borg to emit nothing until substantive new user content appears; do not set it for ordinary topic boundaries, local explanations, or style commitments.";
 const EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS = [
   'When emitting EmitNoOutput, choose ONE primary_no_output_reason that best captures why silence is the right output: "closure" when the message is a closure-shaped wrap-up, goodbye, sign-off, or terminal beat; "user_to_user" when the current message is between two human participants and Borg was not addressed; "when_borg_addressed" when Borg was explicitly addressed but no useful response is warranted (rare); "low_value_echo" when any visible response would only acknowledge or echo with no new content; "other" for any other principled reason for silence.',
   'When emitting EmitNoOutput, classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and Borg was not addressed; "when_borg_addressed" if Borg was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, list all. Use [] if uncertain.',
@@ -204,6 +210,7 @@ function buildEmissionToolInstructions(
       "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
       "",
       EMIT_ANSWER_FINALIZER_INSTRUCTION,
+      EMIT_DISCOURSE_CONTROL_INSTRUCTION,
       `${EMIT_OBSERVE_FINALIZER_INSTRUCTION} In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.`,
       "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
       ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
@@ -219,6 +226,10 @@ function buildEmissionToolInstructions(
     `Your available terminal tools are ${formatEmissionToolList(availableEmissionNames)}.`,
     "",
     ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ? [EMIT_ANSWER_FINALIZER_INSTRUCTION] : []),
+    ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ||
+    available.has(EMIT_SELF_REPORT_FINALIZER_TOOL_NAME)
+      ? [EMIT_DISCOURSE_CONTROL_INSTRUCTION]
+      : []),
     ...(available.has(EMIT_OBSERVE_FINALIZER_TOOL_NAME)
       ? [EMIT_OBSERVE_FINALIZER_INSTRUCTION]
       : []),
@@ -280,11 +291,13 @@ export type EmissionDecision =
       text: string;
       source: "tool" | "text";
       reply_target?: ReplyTarget;
+      discourse_control?: MessageDiscourseControl;
     }
   | {
       kind: "self_report";
       text: string;
       persistence_class: "assistant_self_report";
+      discourse_control?: MessageDiscourseControl;
     }
   | {
       kind: "no_output";
@@ -385,6 +398,9 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
           ...(parsed.data.reply_target === undefined
             ? {}
             : { reply_target: parsed.data.reply_target }),
+          ...(parsed.data.discourse_control === undefined
+            ? {}
+            : { discourse_control: parsed.data.discourse_control }),
         };
   }
 
@@ -401,6 +417,9 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
           kind: "self_report",
           text: parsed.data.text,
           persistence_class: "assistant_self_report",
+          ...(parsed.data.discourse_control === undefined
+            ? {}
+            : { discourse_control: parsed.data.discourse_control }),
         };
   }
 
@@ -471,6 +490,11 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
       : {}),
     ...(decision.kind === "answer" && decision.reply_target !== undefined
       ? { reply_target: decision.reply_target }
+      : {}),
+    ...(decision.kind === "answer" || decision.kind === "self_report"
+      ? decision.discourse_control === undefined
+        ? {}
+        : { discourse_control: decision.discourse_control }
       : {}),
     ...(decision.kind === "no_output"
       ? {
