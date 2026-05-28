@@ -1,5 +1,5 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
-import { emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
+import { allSectionIds, emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
 import { renderSection } from "./section-rendering.js";
@@ -113,24 +113,33 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
   },
 } as const satisfies Record<EvidenceLedgerSectionId, FullEvidenceLedgerSectionOptions>;
 
-const LOWEST_TRUST_SECTION_ORDER = [
-  "prior_session_memory",
-  "semantic_graph",
-  "episodes",
-  "retrieved_memory_evidence",
-  "open_questions",
-  "current_session_attribution_sidebar",
-  "relational_slots",
-  "group_channel_memory",
-  "attribution_matrix",
-  "action_states",
-  "contradictions_quarantines",
-  "closure_discourse_state",
-  "commitments_and_constraints",
-  "retrieved_raw_stream_evidence",
-  "current_session_transcript",
-  "current_user_message",
-] as const satisfies readonly EvidenceLedgerSectionId[];
+// Compaction priority: sections are trimmed lowest-trust first (rank 0) to highest (rank 15).
+// `satisfies Record<EvidenceLedgerSectionId, number>` forces every section to be ranked, so a
+// newly added section can never silently escape trust-ordered compaction.
+const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
+  prior_session_memory: 0,
+  semantic_graph: 1,
+  episodes: 2,
+  retrieved_memory_evidence: 3,
+  open_questions: 4,
+  current_session_attribution_sidebar: 5,
+  relational_slots: 6,
+  group_channel_memory: 7,
+  attribution_matrix: 8,
+  action_states: 9,
+  contradictions_quarantines: 10,
+  closure_discourse_state: 11,
+  commitments_and_constraints: 12,
+  retrieved_raw_stream_evidence: 13,
+  current_session_transcript: 14,
+  current_user_message: 15,
+} as const satisfies Record<EvidenceLedgerSectionId, number>;
+
+const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSectionIds()].sort(
+  (left, right) =>
+    LOWEST_TRUST_SECTION_COMPACTION_PRIORITY[left] -
+    LOWEST_TRUST_SECTION_COMPACTION_PRIORITY[right],
+);
 
 type FullLedgerSectionRetentionPolicy = "head" | "tail";
 
