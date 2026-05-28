@@ -264,8 +264,14 @@ const turnBodySchema = z.object({
   message: z.string().trim().min(1),
   audience: z.string().trim().min(1).optional(),
   audience_entity_id: z.string().trim().min(1).optional(),
+  sender_entity_id: z.string().trim().min(1).optional(),
   stakes: z.enum(["low", "medium", "high"]).optional(),
   session: z.string().trim().min(1).optional(),
+});
+
+const entityCreateBodySchema = z.object({
+  name: z.string().trim().min(1),
+  kind: z.enum(["person", "group", "self", "abstract"]).optional(),
 });
 
 const offlineProcessNameSchema = z.enum(OFFLINE_PROCESS_NAMES);
@@ -649,6 +655,7 @@ async function parseTurnBody(c: Context): Promise<ParsedTurnBody> {
     message: formData.get("message"),
     audience: optionalFormValue(formData.get("audience")),
     audience_entity_id: optionalFormValue(formData.get("audience_entity_id")),
+    sender_entity_id: optionalFormValue(formData.get("sender_entity_id")),
     stakes: optionalFormValue(formData.get("stakes")),
     session: optionalFormValue(formData.get("session")),
   });
@@ -1550,6 +1557,12 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json(entity);
   });
 
+  app.post("/api/entities", async (c) => {
+    const body = parseRequest(entityCreateBodySchema, await parseJsonBody(c));
+    const entityId = input.borg.entities.resolve(body.name, body.kind ? { kind: body.kind } : {});
+    return c.json(input.borg.entities.get(entityId));
+  });
+
   app.post("/api/sessions/operator", (c) => c.json(ensureDemoOperatorSession(input.borg)));
 
   app.post("/api/sessions/:id/participation", async (c) => {
@@ -2287,6 +2300,10 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         body.audience_entity_id === undefined
           ? (existingSession?.audience_entity_id ?? null)
           : parseRequest(entityParamSchema, { id: body.audience_entity_id }).id;
+      const senderEntityId =
+        body.sender_entity_id === undefined
+          ? undefined
+          : parseRequest(entityParamSchema, { id: body.sender_entity_id }).id;
       // Demo uploads accept png/jpeg/gif/webp images up to 8 MiB; Borg revalidates before persistence.
       ensureDemoSession(input.borg, {
         sessionId,
@@ -2299,6 +2316,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         stakes: body.stakes,
         sessionId,
         attachments: body.attachments,
+        ...(senderEntityId === undefined ? {} : { senderEntityId }),
       });
       input.borg.sessions.touch(sessionId, { lastTurnId: result.turn_id });
 
