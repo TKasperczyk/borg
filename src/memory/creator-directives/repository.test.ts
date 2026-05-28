@@ -269,10 +269,30 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
-  it("rejects malformed disclosure policy cardinality", () => {
+  it("rejects malformed disclosure policy shapes", () => {
     const { db, repository } = createRepository();
     const entity = createEntityId();
     const cases = [
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+            allowed_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "allowed_entity_ids"],
+        message: "public scope requires empty allowed_entity_ids",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+            excluded_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "excluded_entity_ids"],
+        message: "public scope requires empty excluded_entity_ids",
+      },
       {
         input: queueInput({
           disclosurePolicy: disclosurePolicy({
@@ -285,11 +305,52 @@ describe("CreatorDirectiveRepository", () => {
       {
         input: queueInput({
           disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [entity],
+            excluded_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "excluded_entity_ids"],
+        message: "allow_list allowed and excluded entity ids must not overlap",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
             content_scope: "all_except",
           }),
         }),
         path: ["disclosurePolicy", "excluded_entity_ids"],
         message: "all_except requires at least one excluded entity",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            allowed_entity_ids: [entity],
+            excluded_entity_ids: [createEntityId()],
+          }),
+        }),
+        path: ["disclosurePolicy", "allowed_entity_ids"],
+        message: "all_except requires empty allowed_entity_ids",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+            allowed_entity_ids: [entity],
+          }),
+        }),
+        path: ["disclosurePolicy", "allowed_entity_ids"],
+        message: "operator_only requires empty allowed_entity_ids",
+      },
+      {
+        input: queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "subject_only",
+          }),
+        }),
+        path: ["subjectEntityId"],
+        message: "subject_only requires subjectEntityId",
       },
       {
         input: queueInput({
@@ -426,8 +487,8 @@ describe("CreatorDirectiveRepository", () => {
       );
 
     try {
-      const excludedPublic = queue(10, {
-        content_scope: "public",
+      const excludedAllExcept = queue(10, {
+        content_scope: "all_except",
         excluded_entity_ids: [audience],
         denied_audience_behavior: "render_boundary_when_relevant",
         boundary_prompt: BOUNDARY_PROMPT,
@@ -504,7 +565,7 @@ describe("CreatorDirectiveRepository", () => {
         }),
       );
       expect(participantModes).toMatchObject({
-        [excludedPublic.id]: "boundary",
+        [excludedAllExcept.id]: "boundary",
         [publicDirective.id]: "content",
         [allowed.id]: "content",
         [subjectOnly.id]: "content",

@@ -115,6 +115,24 @@ export const disclosurePolicySchema = z
     topic_tags: z.array(creatorDirectiveTopicTagSchema).max(32),
   })
   .superRefine((value, ctx) => {
+    if (value.content_scope === "public") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "public scope requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "public scope requires empty excluded_entity_ids",
+        });
+      }
+    }
+
     if (value.content_scope === "allow_list" && value.allowed_entity_ids.length === 0) {
       ctx.addIssue({
         code: "custom",
@@ -123,11 +141,38 @@ export const disclosurePolicySchema = z
       });
     }
 
+    if (value.content_scope === "allow_list") {
+      const allowedEntityIds = new Set(value.allowed_entity_ids);
+      if (value.excluded_entity_ids.some((id) => allowedEntityIds.has(id))) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "allow_list allowed and excluded entity ids must not overlap",
+        });
+      }
+    }
+
+    if (value.content_scope === "all_except" && value.allowed_entity_ids.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "all_except requires empty allowed_entity_ids",
+      });
+    }
+
     if (value.content_scope === "all_except" && value.excluded_entity_ids.length === 0) {
       ctx.addIssue({
         code: "custom",
         path: ["excluded_entity_ids"],
         message: "all_except requires at least one excluded entity",
+      });
+    }
+
+    if (value.content_scope === "operator_only" && value.allowed_entity_ids.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "operator_only requires empty allowed_entity_ids",
       });
     }
 
@@ -193,6 +238,17 @@ export const creatorDirectiveSchema = z
     }
 
     if (
+      value.disclosure_policy.content_scope === "subject_only" &&
+      value.subject_entity_id === null
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subject_entity_id"],
+        message: "subject_only requires subject_entity_id",
+      });
+    }
+
+    if (
       !subjectMayKnowPolicyIsValid({
         subjectEntityId: value.subject_entity_id,
         policy: value.disclosure_policy,
@@ -232,6 +288,17 @@ export const creatorDirectiveQueueInputSchema = z
         code: "custom",
         path: ["subjectEntityId"],
         message: "entity subject requires subjectEntityId",
+      });
+    }
+
+    if (
+      value.disclosurePolicy.content_scope === "subject_only" &&
+      (value.subjectEntityId === undefined || value.subjectEntityId === null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subjectEntityId"],
+        message: "subject_only requires subjectEntityId",
       });
     }
 

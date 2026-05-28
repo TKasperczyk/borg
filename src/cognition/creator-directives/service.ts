@@ -91,6 +91,7 @@ export class CreatorDirectiveTurnService {
   private trace(
     event:
       | "creator_directive_candidate_extracted"
+      | "creator_directive_policy_normalized"
       | "creator_directive_persisted"
       | "creator_directive_candidate_rejected",
     input: {
@@ -260,11 +261,48 @@ export class CreatorDirectiveTurnService {
     candidate: CreatorDirectiveCandidate;
     allowedEntityIds: readonly EntityId[];
     excludedEntityIds: readonly EntityId[];
+    turnId: string;
+    sessionId?: SessionId;
+    candidateIndex: number;
   }): DisclosurePolicy {
+    const allowedEntityIds = uniqueEntityIds(input.allowedEntityIds);
+    const excludedEntityIds = uniqueEntityIds(input.excludedEntityIds);
+    const originalScope = input.candidate.disclosure_policy.content_scope;
+    let contentScope: DisclosurePolicy["content_scope"] = originalScope;
+    let reason: string | null = null;
+
+    if (
+      originalScope === "public" &&
+      allowedEntityIds.length > 0 &&
+      excludedEntityIds.length === 0
+    ) {
+      contentScope = "allow_list";
+      reason = "public_with_allowed_entities";
+    } else if (
+      originalScope === "public" &&
+      excludedEntityIds.length > 0 &&
+      allowedEntityIds.length === 0
+    ) {
+      contentScope = "all_except";
+      reason = "public_with_excluded_entities";
+    }
+
+    if (reason !== null) {
+      this.trace("creator_directive_policy_normalized", {
+        turnId: input.turnId,
+        sessionId: input.sessionId,
+        candidate_index: input.candidateIndex,
+        validationStatus: "normalized",
+        original_scope: originalScope,
+        normalized_scope: contentScope,
+        reason,
+      });
+    }
+
     return {
-      content_scope: input.candidate.disclosure_policy.content_scope,
-      allowed_entity_ids: uniqueEntityIds(input.allowedEntityIds),
-      excluded_entity_ids: uniqueEntityIds(input.excludedEntityIds),
+      content_scope: contentScope,
+      allowed_entity_ids: allowedEntityIds,
+      excluded_entity_ids: excludedEntityIds,
       subject_may_know: input.candidate.disclosure_policy.subject_may_know,
       mention_policy: input.candidate.disclosure_policy.mention_policy,
       denied_audience_behavior: input.candidate.disclosure_policy.denied_audience_behavior,
@@ -281,6 +319,9 @@ export class CreatorDirectiveTurnService {
     subjectEntityId: EntityId | null;
     allowedEntityIds: readonly EntityId[];
     excludedEntityIds: readonly EntityId[];
+    turnId: string;
+    sessionId?: SessionId;
+    candidateIndex: number;
   }): CreatorDirectiveQueueInput {
     return {
       kind: input.candidate.kind,
@@ -296,6 +337,9 @@ export class CreatorDirectiveTurnService {
         candidate: input.candidate,
         allowedEntityIds: input.allowedEntityIds,
         excludedEntityIds: input.excludedEntityIds,
+        turnId: input.turnId,
+        sessionId: input.sessionId,
+        candidateIndex: input.candidateIndex,
       }),
       priority: input.candidate.priority,
     };
@@ -408,6 +452,9 @@ export class CreatorDirectiveTurnService {
             subjectEntityId: resolution.subjectEntityId,
             allowedEntityIds: resolution.allowedEntityIds,
             excludedEntityIds: resolution.excludedEntityIds,
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+            candidateIndex: index,
           }),
         );
 

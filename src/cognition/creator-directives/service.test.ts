@@ -91,9 +91,11 @@ function createHarness() {
   const repository = new CreatorDirectiveRepository({ db, clock });
   const creatorId = createEntityId();
   const aliceId = createEntityId();
+  const bobId = createEntityId();
   const entities = new Map<EntityId, EntityRecord>([
     [creatorId, entityRecord(creatorId, "Tom")],
     [aliceId, entityRecord(aliceId, "Alice")],
+    [bobId, entityRecord(bobId, "Bob")],
   ]);
   const findAllByName = vi.fn((name: string) =>
     [...entities.values()]
@@ -142,6 +144,7 @@ function createHarness() {
     service,
     creatorId,
     aliceId,
+    bobId,
     entities,
     findAllByName,
     get,
@@ -273,6 +276,81 @@ describe("CreatorDirectiveTurnService", () => {
           validationStatus: "accepted",
         }),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("normalizes salvageable public allow policies before persistence", async () => {
+    const harness = createHarness();
+    const userEntryId = createStreamEntryId();
+    const sessionId = createSessionId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            disclosure_policy: {
+              content_scope: "public",
+              allowed_entity_ids: [harness.aliceId],
+              allowed_entity_labels: [],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["Alice"],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          persistedUserEntryId: userEntryId,
+          sessionId,
+        }),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.disclosure_policy).toMatchObject({
+        content_scope: "allow_list",
+        allowed_entity_ids: [harness.aliceId],
+        excluded_entity_ids: [],
+      });
+      expect(harness.tracer.emit).toHaveBeenCalledWith(
+        "creator_directive_policy_normalized",
+        expect.objectContaining({
+          turnId: "turn-creator-directive",
+          session_id: sessionId,
+          candidate_index: 0,
+          validationStatus: "normalized",
+          original_scope: "public",
+          normalized_scope: "allow_list",
+          reason: "public_with_allowed_entities",
+        }),
+      );
+
+      const aliceApplicable = harness.repository.listApplicable({
+        currentAudienceEntityId: harness.aliceId,
+        sessionRole: "participant",
+      });
+      const bobApplicable = harness.repository.listApplicable({
+        currentAudienceEntityId: harness.bobId,
+        sessionRole: "participant",
+      });
+
+      expect(aliceApplicable[0]).toMatchObject({
+        directive: expect.objectContaining({ id: result[0]?.id }),
+        render_mode: "content",
+      });
+      expect(bobApplicable[0]).toMatchObject({
+        directive: expect.objectContaining({ id: result[0]?.id }),
+        render_mode: "omit",
+      });
     } finally {
       harness.db.close();
     }
