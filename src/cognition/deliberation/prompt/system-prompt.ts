@@ -58,7 +58,7 @@ export { formatRelativeAge } from "../../../util/relative-time.js";
 // never reach an excluded audience's prompt. The stored directive.boundary_prompt is
 // preserved for the v95 operator-review queue. See GPT v94 review.
 export const INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT =
-  "A creator-defined confidentiality boundary applies. Do not reveal, confirm, deny, or speculate about undisclosed private information. If asked, decline to discuss private matters.";
+  "A creator-defined confidentiality boundary applies. Do not reveal, confirm, deny, or speculate about undisclosed private information, and do not claim you have no knowledge or memory of it. If asked, simply decline to discuss the private matter without implying it does or does not exist.";
 
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
@@ -271,7 +271,10 @@ export function buildCreatorDirectiveBriefingSection(
     return null;
   }
 
-  const lines = ["<borg_creator_directive_briefing>"];
+  const lines = [
+    "<borg_creator_directive_briefing>",
+    '  <interpretation>These directives are creator authorizations about disclosure, not facts the creator personally performed. When mention_policy is "answer_if_asked", disclose the fact plainly if the audience asks about it or its subject -- a subject asking generally "what do you know about me?" counts as asking -- and never understate or deny what you actually hold.</interpretation>',
+  ];
   const byPriorityAndAge = (
     left: (typeof briefing.directives)[number],
     right: (typeof briefing.directives)[number],

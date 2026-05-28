@@ -123,6 +123,7 @@ describe("creator directive boundary adversarial rendering", () => {
       expect(section).toBe(
         [
           "<borg_creator_directive_briefing>",
+          '  <interpretation>These directives are creator authorizations about disclosure, not facts the creator personally performed. When mention_policy is "answer_if_asked", disclose the fact plainly if the audience asks about it or its subject -- a subject asking generally "what do you know about me?" counts as asking -- and never understate or deny what you actually hold.</interpretation>',
           '  <directive id_alias="cd_1" kind="disclosure_boundary" mode="boundary">',
           `    <boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
           "  </directive>",
