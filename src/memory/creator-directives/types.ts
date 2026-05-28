@@ -266,7 +266,6 @@ export const creatorDirectiveApplicableOptionsSchema = z
     currentAudienceEntityId: creatorDirectiveEntityIdSchema.nullable(),
     currentSenderBorgRole: borgRoleSchema.nullable().optional(),
     participantEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
-    topicTags: z.array(creatorDirectiveTopicTagSchema).optional(),
     sessionRole: sessionAudienceRoleSchema,
   })
   .strict();

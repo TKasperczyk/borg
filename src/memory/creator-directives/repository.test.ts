@@ -500,7 +500,6 @@ describe("CreatorDirectiveRepository", () => {
       const participantModes = modeById(
         repository.listApplicable({
           currentAudienceEntityId: audience,
-          topicTags: ["atlas"],
           sessionRole: "participant",
         }),
       );
@@ -523,7 +522,6 @@ describe("CreatorDirectiveRepository", () => {
         repository.listApplicable({
           currentAudienceEntityId: audience,
           currentSenderBorgRole: "creator",
-          topicTags: ["atlas"],
           sessionRole: "operator",
         }),
       );
@@ -533,7 +531,6 @@ describe("CreatorDirectiveRepository", () => {
         repository.listApplicable({
           currentAudienceEntityId: audience,
           currentSenderBorgRole: null,
-          topicTags: ["atlas"],
           sessionRole: "operator",
         }),
       );
@@ -543,7 +540,6 @@ describe("CreatorDirectiveRepository", () => {
         repository.listApplicable({
           currentAudienceEntityId: audience,
           participantEntityIds: [],
-          topicTags: ["atlas"],
           sessionRole: "participant",
         }),
       );
@@ -609,7 +605,6 @@ describe("CreatorDirectiveRepository", () => {
         repository.listApplicable({
           currentAudienceEntityId: group,
           participantEntityIds: [alice, bob],
-          topicTags: ["atlas"],
           sessionRole: "participant",
         }),
       );
@@ -623,7 +618,6 @@ describe("CreatorDirectiveRepository", () => {
       const singleRecipientModes = modeById(
         repository.listApplicable({
           currentAudienceEntityId: alice,
-          topicTags: ["atlas"],
           sessionRole: "participant",
         }),
       );

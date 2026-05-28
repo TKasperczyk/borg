@@ -49,6 +49,13 @@ import {
 } from "./retrieval.js";
 import { renderTaggedPromptSection, type TaggedPromptSection } from "./sections.js";
 
+// Interim mitigation (v94.1.1): boundary_prompt is extractor-authored and not yet
+// operator-reviewed. Render a fixed generic string so unreviewed boundary text can
+// never reach an excluded audience's prompt. The stored directive.boundary_prompt is
+// preserved for the v95 operator-review queue. See GPT v94 review.
+export const INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT =
+  "A creator-defined confidentiality boundary applies. Do not reveal, confirm, deny, or speculate about undisclosed private information. If asked, decline to discuss private matters.";
+
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
   semanticContextBudget: number;
@@ -259,7 +266,7 @@ export function buildCreatorDirectiveBriefingSection(
       renderedCount += 1;
       lines.push(
         `  <directive id_alias="cd_${renderedCount}" kind="disclosure_boundary" mode="boundary">`,
-        `    <boundary_prompt>${escapeCreatorDirectiveXmlText(directive.boundaryPrompt)}</boundary_prompt>`,
+        `    <boundary_prompt>${escapeCreatorDirectiveXmlText(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT)}</boundary_prompt>`,
         "  </directive>",
       );
     } else {

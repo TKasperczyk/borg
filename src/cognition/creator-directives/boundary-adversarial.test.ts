@@ -14,10 +14,12 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { buildCreatorDirectiveBriefingForTurn } from "../lifecycle/turn-phase/retrieval-phase.js";
-import { buildCreatorDirectiveBriefingSection } from "../deliberation/prompt/system-prompt.js";
+import {
+  buildCreatorDirectiveBriefingSection,
+  INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
+} from "../deliberation/prompt/system-prompt.js";
 
-const GENERIC_WORKPLACE_BOUNDARY =
-  "A creator-defined confidentiality boundary applies to private organizational or workplace planning. Do not reveal, confirm, deny, or speculate about undisclosed plans. If asked directly, decline to discuss confidential workplace matters.";
+const UNSAFE_STORED_BOUNDARY_PROMPT = "Do not tell Bob he is being laid off";
 
 function entityRecord(id: EntityId, canonicalName: string): EntityRecord {
   return {
@@ -40,7 +42,6 @@ function createScenario(): {
     audienceEntityId: EntityId;
     participantEntityIds?: readonly EntityId[];
     sessionRole?: "operator" | "participant";
-    topicTags?: readonly string[];
   }) => string | null;
   tom: EntityId;
 } {
@@ -80,7 +81,7 @@ function createScenario(): {
       subject_may_know: false,
       mention_policy: "never_mention",
       denied_audience_behavior: "render_boundary_when_relevant",
-      boundary_prompt: GENERIC_WORKPLACE_BOUNDARY,
+      boundary_prompt: UNSAFE_STORED_BOUNDARY_PROMPT,
       topic_tags: ["workplace_planning", "layoff_risk"],
     },
     priority: 10,
@@ -97,7 +98,6 @@ function createScenario(): {
         currentAudienceEntityId: input.audienceEntityId,
         participantEntityIds:
           input.participantEntityIds === undefined ? undefined : [...input.participantEntityIds],
-        topicTags: input.topicTags === undefined ? ["workplace_planning"] : [...input.topicTags],
         sessionRole: input.sessionRole ?? "participant",
       });
       const briefing = buildCreatorDirectiveBriefingForTurn({
@@ -124,16 +124,33 @@ describe("creator directive boundary adversarial rendering", () => {
         [
           "<borg_creator_directive_briefing>",
           '  <directive id_alias="cd_1" kind="disclosure_boundary" mode="boundary">',
-          `    <boundary_prompt>${GENERIC_WORKPLACE_BOUNDARY}</boundary_prompt>`,
+          `    <boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
           "  </directive>",
           "</borg_creator_directive_briefing>",
         ].join("\n"),
       );
-      expect(section).toContain(GENERIC_WORKPLACE_BOUNDARY);
+      expect(section).toContain(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT);
+      expect(section).not.toContain(UNSAFE_STORED_BOUNDARY_PROMPT);
       expect(section).not.toContain("Bob is being laid off");
       expect(section).not.toContain("Bob");
       expect(section).not.toContain("laid off");
       expect(section?.toLowerCase()).not.toContain("layoff");
+    } finally {
+      scenario.db.close();
+    }
+  });
+
+  it("does not render an unsafe stored boundary_prompt", () => {
+    const scenario = createScenario();
+
+    try {
+      const section =
+        scenario.renderForAudience({
+          audienceEntityId: scenario.bob,
+        }) ?? "";
+
+      expect(section).toContain(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT);
+      expect(section).not.toContain(UNSAFE_STORED_BOUNDARY_PROMPT);
     } finally {
       scenario.db.close();
     }

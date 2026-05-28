@@ -109,7 +109,6 @@ describe("creator directive retrieval briefing", () => {
       const applicable = repository.listApplicable({
         currentAudienceEntityId: audienceId,
         participantEntityIds: [audienceId],
-        topicTags: [],
         sessionRole: "participant",
       });
       const briefing = buildCreatorDirectiveBriefingForTurn({
@@ -179,7 +178,6 @@ describe("creator directive retrieval briefing", () => {
           currentAudienceEntityId: audienceId,
           currentSenderBorgRole: "creator",
           participantEntityIds: [audienceId],
-          topicTags: [],
           sessionRole: "operator",
         }),
         entityRepository: { get: () => null },
@@ -188,7 +186,6 @@ describe("creator directive retrieval briefing", () => {
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
-          topicTags: [],
           sessionRole: "participant",
         }),
         entityRepository: { get: () => null },
@@ -261,7 +258,6 @@ describe("creator directive retrieval briefing", () => {
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
-          topicTags: [],
           sessionRole: "participant",
         }),
         entityRepository: {

@@ -93,7 +93,6 @@ export type CreatorDirectiveBriefingContentDirective = {
 
 export type CreatorDirectiveBriefingBoundaryDirective = {
   renderMode: "boundary";
-  boundaryPrompt: string;
   priority: number;
   createdAt: number;
 };

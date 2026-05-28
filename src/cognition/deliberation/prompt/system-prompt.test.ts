@@ -38,6 +38,7 @@ import {
   buildCreatorDirectiveBriefingSection,
   buildSessionStatusSnapshotSection,
   formatRelativeAge,
+  INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
 } from "./system-prompt.js";
 
 const NOW_MS = 1_700_000_000_000;
@@ -491,8 +492,6 @@ describe("buildBaseSystemPrompt", () => {
         },
         {
           renderMode: "boundary",
-          boundaryPrompt:
-            "Confidential boundary references turn_eeeeeeeeeeeeeeee and dart_ffffffffffffffff.",
           priority: 4,
           createdAt: 2,
         },
@@ -501,7 +500,9 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(section).toContain("<subject_label>Alice &amp; &lt;pilot&gt;</subject_label>");
     expect(section).toContain('"blue"');
-    expect(section).toContain("<boundary_prompt>Confidential boundary references");
+    expect(section).toContain(
+      `<boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
+    );
     expect(section).not.toMatch(INTERNAL_ID_PATTERN);
     expect(section).toContain("[internal_id]");
   });
@@ -566,8 +567,6 @@ describe("buildBaseSystemPrompt", () => {
       directives: [
         {
           renderMode: "boundary",
-          boundaryPrompt:
-            "A creator-defined confidentiality boundary applies to private organizational or workplace planning.",
           priority: 5,
           createdAt: 1,
         },
@@ -578,7 +577,7 @@ describe("buildBaseSystemPrompt", () => {
       [
         "<borg_creator_directive_briefing>",
         '  <directive id_alias="cd_1" kind="disclosure_boundary" mode="boundary">',
-        "    <boundary_prompt>A creator-defined confidentiality boundary applies to private organizational or workplace planning.</boundary_prompt>",
+        `    <boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
         "  </directive>",
         "</borg_creator_directive_briefing>",
       ].join("\n"),

@@ -264,7 +264,6 @@ export function buildCreatorDirectiveBriefing(input: {
     )
     .map((item) => ({
       renderMode: "boundary" as const,
-      boundaryPrompt: item.directive.disclosure_policy.boundary_prompt!,
       priority: item.directive.priority,
       createdAt: item.directive.created_at,
     }))
@@ -502,7 +501,6 @@ export async function runRetrievalPhase(input: {
           currentAudienceEntityId: input.audienceEntityId,
           currentSenderBorgRole: input.currentSenderBorgRole ?? null,
           participantEntityIds: creatorDirectiveParticipantEntityIds,
-          topicTags: input.perception.entities,
           sessionRole: input.sessionAudienceRole ?? "participant",
         });
   traceCreatorDirectiveRendered({
