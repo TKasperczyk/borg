@@ -95,6 +95,36 @@ describe("relational slot repository", () => {
     }
   });
 
+  it("derives the neutral phrase structurally from the slot-key category", () => {
+    const db = openDatabase(":memory:", {
+      migrations: relationalSlotMigrations,
+    });
+    const repo = new RelationalSlotRepository({ db, clock: new ManualClock(1_000) });
+    const subject = createEntityId();
+    const assertionEntry = createStreamEntryId();
+    const negationEntry = createStreamEntryId();
+
+    try {
+      repo.applyAssertion({
+        subject_entity_id: subject,
+        slot_key: "spouse.name",
+        asserted_value: "Robin",
+        source_stream_entry_ids: [assertionEntry],
+      });
+      const result = repo.applyNegation({
+        subject_entity_id: subject,
+        slot_key: "spouse.name",
+        rejected_value: "Robin",
+        source_stream_entry_ids: [negationEntry],
+      });
+
+      expect(result?.slot.state).toBe("quarantined");
+      expect(result?.neutral_phrase).toBe("your spouse");
+    } finally {
+      db.close();
+    }
+  });
+
   it("promotes an explicit different-value assertion and preserves the prior value as an alternate", () => {
     const db = openDatabase(":memory:", {
       migrations: relationalSlotMigrations,

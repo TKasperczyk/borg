@@ -158,18 +158,8 @@ function containsState(
 }
 
 function neutralPhraseForSlotKey(slotKey: string): string {
-  switch (slotKey) {
-    case "partner.name":
-    case "partner.role":
-      return "your partner";
-    case "tutor.name":
-    case "tutor.role":
-      return "your tutor";
-    case "dog.name":
-      return "your dog";
-    default:
-      return "that relation";
-  }
+  const category = slotKey.trim().split(".")[0]?.trim() ?? "";
+  return category.length === 0 ? "that relation" : `your ${category}`;
 }
 
 function allSlotValues(slot: RelationalSlot): string[] {
