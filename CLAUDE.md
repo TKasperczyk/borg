@@ -1,3 +1,17 @@
+# CARDINAL RULE -- read before writing a single line of code
+
+Borg is a cognitive-memory harness for an **LLM-based entity**, not a Chinese Room. The model handles language and judgment; the harness manages information and validates *structure*. Almost every recurring mistake in this project is a violation of that split. These are absolutes, not guidelines:
+
+1. **No deterministic validation, scoring, gating, or rewriting of model output -- ever, anywhere in production.** No regexes, keyword lists, phrase matching, or pattern checks that inspect what the model *produced* and judge whether it's acceptable. The ONLY place deterministic assertions about output may live is unit/integration tests. (Tool-shape/schema invariants and internal-ID-leak detection are structural hygiene, not output validation -- those are fine. Semantic judgment of output is not.)
+
+2. **Everything must work in ANY language.** The bot is multilingual. No English -- or any-language -- keyword/pronoun/kinship/phrase lists, and no detecting intent by matching specific words in user content. Key on *structure* (entity ids, slots, schema fields, roles), never on surface wording. Default *prompts* may be written in English (the model reasons across languages); *detection and branching logic* may never assume a language.
+
+3. **No non-general case handling. Overfitting is a bug, not a fix.** If a change only works for the specific scenario in front of you -- a named person ("Tom", "Alice"), a particular phrasing ("do you know me"), an enumerated value set -- it is wrong. Fix the general structural condition, or fix the prompt. Adding an exception clause, a special branch, or a lookup entry per case IS the Chinese Room. Do not.
+
+4. **When the model fails *with the right context already in hand*, the fix is a stronger model or a better prompt -- never harness machinery that legislates judgment.** If the harness is gagging, over-constraining, or deciding something the model should decide, the fix is almost always *subtractive*: delete the brittle rule and present information the model can reason over. (See the Opus 5.0 test below.)
+
+If a proposed fix adds a rule, branch, regex, or word-list to handle a case, stop -- you are almost certainly building the wrong thing. The instinct to reach for that is the single most expensive recurring error here.
+
 ## Workflow
 
 The dev-loop process (sprint cycle, GPT Pro review submission, sim runs, ChatGPT mechanics, end-state goals) lives in `WORKFLOW.md` at the repo root. Read it after this file when starting a fresh session.
