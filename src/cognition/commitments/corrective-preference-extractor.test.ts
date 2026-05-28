@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { createEntityId, createRelationalSlotId, createStreamEntryId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import type { RelationshipClaim } from "../relationship-claims.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
@@ -26,8 +27,7 @@ function correctivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
-  relationship_evidence_relational_slot_ids?: string[];
-  relationship_evidence_stream_entry_ids?: string[];
+  relationship_claims?: RelationshipClaim[];
   slot_negations?: unknown[];
 }): LLMCompleteResult {
   return {
@@ -58,14 +58,24 @@ function correctivePreferenceResponse(input: {
           reason: input.reason ?? "Classification reason.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
-          relationship_evidence_relational_slot_ids:
-            input.relationship_evidence_relational_slot_ids ?? [],
-          relationship_evidence_stream_entry_ids:
-            input.relationship_evidence_stream_entry_ids ?? [],
+          relationship_claims: input.relationship_claims ?? [],
           slot_negations: input.slot_negations ?? [],
         },
       },
     ],
+  };
+}
+
+function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {
+  return {
+    label_family: "kinship",
+    subject_entity_id: null,
+    object_entity_id: null,
+    object_text: "relación familiar",
+    requires_grounding: true,
+    evidence_relational_slot_ids: [],
+    evidence_stream_entry_ids: [],
+    ...overrides,
   };
 }
 
@@ -117,8 +127,9 @@ describe("CorrectivePreferenceExtractor", () => {
     });
   });
 
-  it("carries relationship evidence fields on corrective preference candidates", async () => {
+  it("carries relationship claims on corrective preference candidates", async () => {
     const streamEntryId = createStreamEntryId();
+    const slotId = createRelationalSlotId();
     const llm = new FakeLLMClient({
       responses: [
         correctivePreferenceResponse({
@@ -130,8 +141,12 @@ describe("CorrectivePreferenceExtractor", () => {
           priority: 8,
           reason: "The user supplied durable relationship-grounded process guidance.",
           confidence: 0.9,
-          relationship_evidence_relational_slot_ids: ["rslot_parent"],
-          relationship_evidence_stream_entry_ids: [streamEntryId],
+          relationship_claims: [
+            relationshipClaim({
+              evidence_relational_slot_ids: [slotId],
+              evidence_stream_entry_ids: [streamEntryId],
+            }),
+          ],
         }),
       ],
     });
@@ -150,8 +165,12 @@ describe("CorrectivePreferenceExtractor", () => {
       }),
     ).resolves.toMatchObject({
       directive: "Use the parent constraint for future care-planning replies.",
-      relationship_evidence_relational_slot_ids: ["rslot_parent"],
-      relationship_evidence_stream_entry_ids: [streamEntryId],
+      relationship_claims: [
+        expect.objectContaining({
+          evidence_relational_slot_ids: [slotId],
+          evidence_stream_entry_ids: [streamEntryId],
+        }),
+      ],
     });
   });
 

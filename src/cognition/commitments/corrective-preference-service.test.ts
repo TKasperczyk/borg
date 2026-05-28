@@ -19,6 +19,7 @@ import {
   createStreamEntryId,
   type CommitmentId,
 } from "../../util/ids.js";
+import type { RelationshipClaim } from "../relationship-claims.js";
 import { CorrectivePreferenceTurnService } from "./corrective-preference-service.js";
 
 type AddCommitmentInput = Parameters<IdentityService["addCommitment"]>[0];
@@ -38,8 +39,7 @@ function correctivePreferenceResponse(
       | null;
     directive?: string;
     directiveFamily?: string;
-    relationshipEvidenceRelationalSlotIds?: string[];
-    relationshipEvidenceStreamEntryIds?: string[];
+    relationshipClaims?: RelationshipClaim[];
   } = {},
 ) {
   return {
@@ -64,13 +64,24 @@ function correctivePreferenceResponse(
           reason: "The current speaker made a durable correction.",
           confidence: 0.91,
           supersedes_commitment_id: input.supersedesCommitmentId ?? null,
-          relationship_evidence_relational_slot_ids:
-            input.relationshipEvidenceRelationalSlotIds ?? [],
-          relationship_evidence_stream_entry_ids: input.relationshipEvidenceStreamEntryIds ?? [],
+          relationship_claims: input.relationshipClaims ?? [],
           slot_negations: [],
         },
       },
     ],
+  };
+}
+
+function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {
+  return {
+    label_family: "kinship",
+    subject_entity_id: null,
+    object_entity_id: null,
+    object_text: "relación familiar",
+    requires_grounding: true,
+    evidence_relational_slot_ids: [],
+    evidence_stream_entry_ids: [],
+    ...overrides,
   };
 }
 
@@ -453,7 +464,7 @@ describe("CorrectivePreferenceTurnService", () => {
     });
   });
 
-  it("skips corrective candidates with ungrounded protected relationship labels", async () => {
+  it("skips corrective candidates with ungrounded relationship claims", async () => {
     const userEntryId = createStreamEntryId();
     const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
     const llm = new FakeLLMClient({
@@ -461,6 +472,7 @@ describe("CorrectivePreferenceTurnService", () => {
         correctivePreferenceResponse({
           directive: "Use the parent constraint for future care-planning replies.",
           directiveFamily: "care_planning_parent_constraint",
+          relationshipClaims: [relationshipClaim({ object_text: "mi madre" })],
         }),
       ],
     });
@@ -503,10 +515,9 @@ describe("CorrectivePreferenceTurnService", () => {
       expect.objectContaining({
         turnId: "turn-ungrounded-relationship-commitment",
         validationStatus: "rejected",
-        reason: "relationship_label_ungrounded",
-        protected_relationship_labels: ["parent"],
-        relationship_evidence_relational_slot_ids: [],
-        relationship_evidence_stream_entry_ids: [],
+        reason: "relationship_claim_ungrounded",
+        relationship_claim_label_families: ["kinship"],
+        ungrounded_relationship_claims: [expect.objectContaining({ object_text: "mi madre" })],
       }),
     );
   });
@@ -520,7 +531,11 @@ describe("CorrectivePreferenceTurnService", () => {
         correctivePreferenceResponse({
           directive: "Use the parent constraint for future care-planning replies.",
           directiveFamily: "care_planning_parent_constraint",
-          relationshipEvidenceStreamEntryIds: [assistantEntryId],
+          relationshipClaims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [assistantEntryId],
+            }),
+          ],
         }),
       ],
     });
@@ -561,9 +576,13 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(tracer.emit).toHaveBeenCalledWith(
       "corrective_preference.candidate_rejected_ungrounded",
       expect.objectContaining({
-        protected_relationship_labels: ["parent"],
-        relationship_evidence_stream_entry_ids: [assistantEntryId],
-        rejected_relationship_evidence_stream_entry_ids: [
+        relationship_claim_label_families: ["kinship"],
+        relationship_claims: [
+          expect.objectContaining({
+            evidence_stream_entry_ids: [assistantEntryId],
+          }),
+        ],
+        rejected_relationship_claim_evidence_stream_entry_ids: [
           {
             id: assistantEntryId,
             reason: "not_user_msg",
@@ -582,7 +601,11 @@ describe("CorrectivePreferenceTurnService", () => {
         correctivePreferenceResponse({
           directive: "Use the parent constraint for future care-planning replies.",
           directiveFamily: "care_planning_parent_constraint",
-          relationshipEvidenceStreamEntryIds: [outsideEntryId],
+          relationshipClaims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [outsideEntryId],
+            }),
+          ],
         }),
       ],
     });
@@ -622,9 +645,13 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(tracer.emit).toHaveBeenCalledWith(
       "corrective_preference.candidate_rejected_ungrounded",
       expect.objectContaining({
-        protected_relationship_labels: ["parent"],
-        relationship_evidence_stream_entry_ids: [outsideEntryId],
-        rejected_relationship_evidence_stream_entry_ids: [
+        relationship_claim_label_families: ["kinship"],
+        relationship_claims: [
+          expect.objectContaining({
+            evidence_stream_entry_ids: [outsideEntryId],
+          }),
+        ],
+        rejected_relationship_claim_evidence_stream_entry_ids: [
           {
             id: outsideEntryId,
             reason: "not_in_source_bundle",
@@ -641,7 +668,11 @@ describe("CorrectivePreferenceTurnService", () => {
         correctivePreferenceResponse({
           directive: "Use the parent constraint for future care-planning replies.",
           directiveFamily: "care_planning_parent_constraint",
-          relationshipEvidenceStreamEntryIds: [userEntryId],
+          relationshipClaims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [userEntryId],
+            }),
+          ],
         }),
       ],
     });
@@ -690,7 +721,11 @@ describe("CorrectivePreferenceTurnService", () => {
         correctivePreferenceResponse({
           directive: "Use the parent constraint for future care-planning replies.",
           directiveFamily: "care_planning_parent_constraint",
-          relationshipEvidenceRelationalSlotIds: [slotId],
+          relationshipClaims: [
+            relationshipClaim({
+              evidence_relational_slot_ids: [slotId],
+            }),
+          ],
         }),
       ],
     });

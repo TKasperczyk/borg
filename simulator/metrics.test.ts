@@ -74,13 +74,13 @@ const TURN_METRICS_KEY_ORDER = [
   "semantic_edge_count",
   "semantic_nodes_added_since_last_check",
   "semantic_edges_added_since_last_check",
-  "semantic_nodes_rejected_ungrounded_label_count",
-  "semantic_nodes_rejected_ungrounded_label_total",
-  "semantic_nodes_rejected_ungrounded_label_by_label",
-  "shared_state_operations_rejected_ungrounded_label_total",
-  "shared_state_operations_rejected_ungrounded_label_by_label",
-  "commitment_candidates_rejected_ungrounded_label_total",
-  "commitment_candidates_rejected_ungrounded_label_by_label",
+  "semantic_nodes_rejected_ungrounded_claim_count",
+  "semantic_nodes_rejected_ungrounded_claim_total",
+  "semantic_nodes_rejected_ungrounded_claim_by_label_family",
+  "shared_state_operations_rejected_ungrounded_claim_total",
+  "shared_state_operations_rejected_ungrounded_claim_by_label_family",
+  "commitment_candidates_rejected_ungrounded_claim_total",
+  "commitment_candidates_rejected_ungrounded_claim_by_label_family",
   "open_question_count",
   "active_goal_count",
   "generation_suppression_count",
@@ -705,20 +705,20 @@ describe("MetricsCapture", () => {
           turnId: "semantic_extractor",
           event: "semantic_insert.skipped",
           kind: "node",
-          reason: "relationship_label_ungrounded",
-          protected_relationship_labels: ["siblings"],
+          reason: "relationship_claim_ungrounded",
+          relationship_claim_label_families: ["kinship"],
         },
         {
           ts: 141,
           turnId: "turn-1",
-          event: "shared_state.compile.label_ungrounded",
-          protected_relationship_labels: ["partner"],
+          event: "shared_state.compile.claim_ungrounded",
+          relationship_claim_label_families: ["intimate_partner"],
         },
         {
           ts: 142,
           turnId: "turn-1",
           event: "corrective_preference.candidate_rejected_ungrounded",
-          protected_relationship_labels: ["parent"],
+          relationship_claim_label_families: ["kinship"],
         },
         {
           ts: 190,
@@ -937,18 +937,18 @@ describe("MetricsCapture", () => {
     expect(row.semantic_edge_count).toBe(2);
     expect(row.semantic_nodes_added_since_last_check).toBe(0);
     expect(row.semantic_edges_added_since_last_check).toBe(0);
-    expect(row.semantic_nodes_rejected_ungrounded_label_count).toBe(1);
-    expect(row.semantic_nodes_rejected_ungrounded_label_total).toBe(1);
-    expect(row.semantic_nodes_rejected_ungrounded_label_by_label).toEqual({
-      siblings: 1,
+    expect(row.semantic_nodes_rejected_ungrounded_claim_count).toBe(1);
+    expect(row.semantic_nodes_rejected_ungrounded_claim_total).toBe(1);
+    expect(row.semantic_nodes_rejected_ungrounded_claim_by_label_family).toEqual({
+      kinship: 1,
     });
-    expect(row.shared_state_operations_rejected_ungrounded_label_total).toBe(1);
-    expect(row.shared_state_operations_rejected_ungrounded_label_by_label).toEqual({
-      partner: 1,
+    expect(row.shared_state_operations_rejected_ungrounded_claim_total).toBe(1);
+    expect(row.shared_state_operations_rejected_ungrounded_claim_by_label_family).toEqual({
+      intimate_partner: 1,
     });
-    expect(row.commitment_candidates_rejected_ungrounded_label_total).toBe(1);
-    expect(row.commitment_candidates_rejected_ungrounded_label_by_label).toEqual({
-      parent: 1,
+    expect(row.commitment_candidates_rejected_ungrounded_claim_total).toBe(1);
+    expect(row.commitment_candidates_rejected_ungrounded_claim_by_label_family).toEqual({
+      kinship: 1,
     });
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);
@@ -1506,8 +1506,8 @@ describe("MetricsCapture", () => {
           rejectedCount: 3,
           rejectionReasons: [
             "missing_new_key_reason",
-            "relationship_label_ungrounded",
-            "relationship_label_ungrounded",
+            "relationship_claim_ungrounded",
+            "relationship_claim_ungrounded",
           ],
           operation_counts_by_kind: {
             add: 9,
@@ -1576,7 +1576,7 @@ describe("MetricsCapture", () => {
     expect(row.shared_state_compiler_repair_failed_total).toBe(1);
     expect(row.shared_state_compiler_repair_failed_by_rejection_reason).toEqual({
       missing_new_key_reason: 1,
-      relationship_label_ungrounded: 2,
+      relationship_claim_ungrounded: 2,
     });
     expect(row.shared_state_update_checked_for_empty_total).toBe(3);
     expect(row.shared_state_empty_update_attempted_total).toBe(3);

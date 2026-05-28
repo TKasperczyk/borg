@@ -7,20 +7,20 @@ const refsSchema = z
     target_type: z.literal("semantic_node_candidate"),
     label: z.string().min(1),
     description: z.string().min(1),
-    protected_relationship_labels: z.array(z.string().min(1)),
-    relationship_evidence_relational_slot_ids: z.array(z.string().min(1)),
-    relationship_evidence_stream_entry_ids: z.array(z.string().min(1)).default([]),
+    relationship_claim_label_families: z.array(z.string().min(1)).default([]),
+    relationship_claims: z.array(z.unknown()).default([]),
+    ungrounded_relationship_claims: z.array(z.unknown()).default([]),
   })
   .passthrough();
 
 type Refs = z.infer<typeof refsSchema>;
 
-export function createRelationshipLabelUngroundedReviewQueueHandler(): ReviewQueueHandler<
-  "relationship_label_ungrounded",
+export function createRelationshipClaimUngroundedReviewQueueHandler(): ReviewQueueHandler<
+  "relationship_claim_ungrounded",
   Refs
 > {
   return {
-    kind: "relationship_label_ungrounded",
+    kind: "relationship_claim_ungrounded",
     refsSchema,
     allowedResolutions: new Set(["dismiss", "reject", "accept", "keep"] as const),
     transactionScope: () => "sqlite",

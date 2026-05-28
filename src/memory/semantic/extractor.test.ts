@@ -10,8 +10,15 @@ import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
-import { createEntityId, createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createRelationalSlotId,
+  createSemanticNodeId,
+  createStreamEntryId,
+  type EpisodeId,
+} from "../../util/ids.js";
 import type { ParticipantRoster } from "../../cognition/perception/index.js";
+import type { RelationshipClaim } from "../../cognition/relationship-claims.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";
@@ -37,6 +44,19 @@ function createSemanticToolResponse(input: { nodes: unknown[]; edges: unknown[] 
         input,
       },
     ],
+  };
+}
+
+function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {
+  return {
+    label_family: "kinship",
+    subject_entity_id: null,
+    object_entity_id: null,
+    object_text: "relationship participant",
+    requires_grounding: true,
+    evidence_relational_slot_ids: [],
+    evidence_stream_entry_ids: [],
+    ...overrides,
   };
 }
 
@@ -142,16 +162,16 @@ describe("semantic extractor", () => {
     }
   });
 
-  it("routes relationship-label grounding through the promoted shared gate", () => {
+  it("routes relationship-claim grounding through the promoted shared gate", () => {
     const semanticSource = readFileSync(new URL("./extractor.ts", import.meta.url), "utf8");
     const sharedStateSource = readFileSync(
       new URL("../../cognition/shared-state/patch-validation.ts", import.meta.url),
       "utf8",
     );
 
-    expect(semanticSource).toContain("checkRelationshipLabelGroundingAsync");
-    expect(sharedStateSource).toContain("checkRelationshipLabelGrounding");
-    expect(semanticSource).not.toContain("protectedRelationshipLabelsInText");
+    expect(semanticSource).toContain("checkRelationshipClaimGroundingAsync");
+    expect(sharedStateSource).toContain("checkRelationshipClaimGrounding");
+    expect(semanticSource).toContain("relationship_claims");
   });
 
   it("includes event-vs-state guidance in the extraction prompt", async () => {
@@ -198,15 +218,16 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("prefer the narrower event-scoped interpretation");
     expect(prompt).toContain("observation_metadata");
     expect(prompt).toContain("Distinct witness, timeframe/date, count_or_intensity");
-    expect(prompt).toContain("Memory-write relationship label grounding");
+    expect(prompt).toContain("Memory-write relationship claim grounding");
     expect(prompt).toContain("Headcount and set grounding");
-    expect(prompt).toContain("relationship_evidence_relational_slot_ids");
-    expect(prompt).toContain("relationship_evidence_stream_entry_ids");
+    expect(prompt).toContain("relationship_claims");
+    expect(prompt).toContain("evidence_relational_slot_ids");
+    expect(prompt).toContain("evidence_stream_entry_ids");
     expect(prompt).toContain("Thread roster:");
     expect(prompt).toContain("relational_slot:rslot_grounded");
   });
 
-  it("queues and skips semantic nodes with ungrounded protected relationship labels", async () => {
+  it("queues and skips semantic nodes with ungrounded relationship claims", async () => {
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Birthday lunch", {
       narrative: "The user discussed birthday lunch attendance.",
     });
@@ -233,6 +254,9 @@ describe("semantic extractor", () => {
                 description: "The four siblings plus Mom and Dad are attending lunch.",
                 aliases: [],
                 confidence: 0.7,
+                relationship_claims: [
+                  relationshipClaim({ object_text: "les membres de la famille" }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -262,31 +286,36 @@ describe("semantic extractor", () => {
     });
     expect(reviewEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: "relationship_label_ungrounded",
+        kind: "relationship_claim_ungrounded",
         sourceProcess: "semantic-extractor",
         traceTurnId: "turn_ungrounded_relationship",
         refs: expect.objectContaining({
           target_type: "semantic_node_candidate",
           label: "Birthday lunch siblings",
-          protected_relationship_labels: expect.arrayContaining(["siblings"]),
-          relationship_evidence_relational_slot_ids: [],
+          relationship_claim_label_families: ["kinship"],
+          ungrounded_relationship_claims: [
+            expect.objectContaining({ object_text: "les membres de la famille" }),
+          ],
         }),
       }),
     );
     expect(tracer.emit).toHaveBeenCalledWith("semantic_insert.skipped", {
       turnId: "turn_ungrounded_relationship",
       kind: "node",
-      reason: "relationship_label_ungrounded",
-      protected_relationship_labels: expect.arrayContaining(["siblings"]),
-      relationship_evidence_relational_slot_ids: [],
-      relationship_evidence_stream_entry_ids: [],
+      reason: "relationship_claim_ungrounded",
+      relationship_claim_label_families: ["kinship"],
+      relationship_claims: [expect.objectContaining({ object_text: "les membres de la famille" })],
+      ungrounded_relationship_claims: [
+        expect.objectContaining({ object_text: "les membres de la famille" }),
+      ],
     });
   });
 
-  it("rejects protected-label semantic nodes grounded only by uncertain roster slots", async () => {
+  it("rejects semantic relationship claims grounded only by uncertain roster slots", async () => {
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Birthday lunch", {
       narrative: "The user discussed birthday lunch attendance.",
     });
+    const contestedSlotId = createRelationalSlotId();
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
       nodeRepository: {
@@ -305,7 +334,11 @@ describe("semantic extractor", () => {
                 description: "The siblings are attending lunch.",
                 aliases: [],
                 confidence: 0.7,
-                relationship_evidence_relational_slot_ids: ["rslot_contested"],
+                relationship_claims: [
+                  relationshipClaim({
+                    evidence_relational_slot_ids: [contestedSlotId],
+                  }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -324,8 +357,8 @@ describe("semantic extractor", () => {
             display_name: "uncertain family group",
             known_relationships: ["sibling:uncertain"],
             reason: "relational_slot_state:contested",
-            relationship_source: "relational_slot:rslot_contested",
-            relationship_sources: ["relational_slot:rslot_contested"],
+            relationship_source: `relational_slot:${contestedSlotId}`,
+            relationship_sources: [`relational_slot:${contestedSlotId}`],
           },
         ],
       },
@@ -340,16 +373,21 @@ describe("semantic extractor", () => {
     });
     expect(reviewEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: "relationship_label_ungrounded",
+        kind: "relationship_claim_ungrounded",
         refs: expect.objectContaining({
-          relationship_evidence_relational_slot_ids: ["rslot_contested"],
+          ungrounded_relationship_claims: [
+            expect.objectContaining({
+              evidence_relational_slot_ids: [contestedSlotId],
+            }),
+          ],
         }),
       }),
     );
   });
 
-  it("inserts protected-label semantic nodes with grounded participant relational slot evidence", async () => {
+  it("inserts semantic relationship claims with grounded participant relational slot evidence", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const slotId = createRelationalSlotId();
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Sibling planning", {
       narrative: "The user stated the sibling relationship was established in the roster.",
     });
@@ -369,7 +407,11 @@ describe("semantic extractor", () => {
                 description: "Nora's sibling relationship is relevant to the planning thread.",
                 aliases: [],
                 confidence: 0.7,
-                relationship_evidence_relational_slot_ids: ["rslot_grounded"],
+                relationship_claims: [
+                  relationshipClaim({
+                    evidence_relational_slot_ids: [slotId],
+                  }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -387,8 +429,8 @@ describe("semantic extractor", () => {
             display_name: "Nora",
             known_relationships: ["sibling:Julian"],
             audience_role: "speaker",
-            relationship_source: "relational_slot:rslot_grounded",
-            relationship_sources: ["relational_slot:rslot_grounded"],
+            relationship_source: `relational_slot:${slotId}`,
+            relationship_sources: [`relational_slot:${slotId}`],
           },
         ],
         non_chat_subjects: [],
@@ -408,7 +450,7 @@ describe("semantic extractor", () => {
     expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
-  it("inserts protected-label semantic nodes with direct trusted user stream evidence", async () => {
+  it("inserts semantic relationship claims with direct trusted user stream evidence", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
     const userStreamId = "strm_userdirect000001" as Episode["source_stream_ids"][number];
     const episode = buildEpisode("ep_userdirect000001" as Episode["id"], "Direct sibling note", {
@@ -431,7 +473,11 @@ describe("semantic extractor", () => {
                 description: "Nora and Julian are siblings.",
                 aliases: [],
                 confidence: 0.7,
-                relationship_evidence_stream_entry_ids: [userStreamId],
+                relationship_claims: [
+                  relationshipClaim({
+                    evidence_stream_entry_ids: [userStreamId],
+                  }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -458,7 +504,7 @@ describe("semantic extractor", () => {
     expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
-  it("rejects protected-label semantic nodes grounded only by assistant output under review", async () => {
+  it("rejects semantic relationship claims grounded only by assistant output under review", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
     const assistantStreamId = "strm_assistant0000001" as Episode["source_stream_ids"][number];
     const episode = buildEpisode("ep_assistant0000001" as Episode["id"], "Assistant sibling note", {
@@ -481,7 +527,11 @@ describe("semantic extractor", () => {
                 description: "Nora and Julian are siblings.",
                 aliases: [],
                 confidence: 0.7,
-                relationship_evidence_stream_entry_ids: [assistantStreamId],
+                relationship_claims: [
+                  relationshipClaim({
+                    evidence_stream_entry_ids: [assistantStreamId],
+                  }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -506,15 +556,19 @@ describe("semantic extractor", () => {
     });
     expect(reviewEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: "relationship_label_ungrounded",
+        kind: "relationship_claim_ungrounded",
         refs: expect.objectContaining({
-          relationship_evidence_stream_entry_ids: [assistantStreamId],
+          ungrounded_relationship_claims: [
+            expect.objectContaining({
+              evidence_stream_entry_ids: [assistantStreamId],
+            }),
+          ],
         }),
       }),
     );
   });
 
-  it("rejects protected-label semantic nodes with stream evidence outside the source bundle", async () => {
+  it("rejects semantic relationship claims with stream evidence outside the source bundle", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
     const sourceStreamId = "strm_srcbundle0000001" as Episode["source_stream_ids"][number];
     const citedOutsideBundleId = "strm_notbundle0000001" as Episode["source_stream_ids"][number];
@@ -541,7 +595,11 @@ describe("semantic extractor", () => {
                 description: "Nora and Julian are siblings.",
                 aliases: [],
                 confidence: 0.7,
-                relationship_evidence_stream_entry_ids: [citedOutsideBundleId],
+                relationship_claims: [
+                  relationshipClaim({
+                    evidence_stream_entry_ids: [citedOutsideBundleId],
+                  }),
+                ],
                 source_episode_ids: [episode.id],
               },
             ],
@@ -564,15 +622,19 @@ describe("semantic extractor", () => {
     expect(trust).not.toHaveBeenCalled();
     expect(reviewEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: "relationship_label_ungrounded",
+        kind: "relationship_claim_ungrounded",
         refs: expect.objectContaining({
-          relationship_evidence_stream_entry_ids: [citedOutsideBundleId],
+          ungrounded_relationship_claims: [
+            expect.objectContaining({
+              evidence_stream_entry_ids: [citedOutsideBundleId],
+            }),
+          ],
         }),
       }),
     );
   });
 
-  it("inserts semantic nodes without protected relationship labels, including service context nouns", async () => {
+  it("inserts semantic nodes without relationship claims, including service context nouns", async () => {
     const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Appointment logistics");
     const reviewEnqueue = vi.fn();

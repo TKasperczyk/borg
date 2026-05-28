@@ -21,8 +21,9 @@ import {
   type SharedStateEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { checkRelationshipLabelGrounding } from "../memory-write-relationship-gate.js";
+import { checkRelationshipClaimGrounding } from "../memory-write-relationship-gate.js";
 import type { ParticipantRoster } from "../perception/index.js";
+import { relationshipClaimSchema } from "../relationship-claims.js";
 import type {
   AllowedCanonicalizationIds,
   CanonicalizationDuplicateDrop,
@@ -43,6 +44,7 @@ import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../me
 import { buildExistingStateKeyRegistry } from "./summary.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
+const relationshipClaimsInputSchema = relationshipClaimSchema.array().default([]);
 
 function parseEntryId(value: string): SharedStateEntryId | null {
   try {
@@ -431,11 +433,10 @@ function rejection(
     | "lockedEntryIds"
     | "similarStateKeys"
     | "sharedStateKeyTokens"
-    | "protectedRelationshipLabels"
-    | "relationshipEvidenceRelationalSlotIds"
-    | "relationshipEvidenceStreamEntryIds"
-    | "rejectedRelationshipEvidenceRelationalSlotIds"
-    | "rejectedRelationshipEvidenceStreamEntryIds"
+    | "relationshipClaims"
+    | "ungroundedRelationshipClaims"
+    | "rejectedRelationshipClaimEvidenceRelationalSlotIds"
+    | "rejectedRelationshipClaimEvidenceStreamEntryIds"
   > = {},
 ): PatchRejection {
   return {
@@ -491,25 +492,20 @@ export function normalizePatch(input: {
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
   const initialActiveStateKeyCount = buildExistingStateKeyRegistry(input.previousArtifact).length;
 
-  const relationshipLabelRejection = (
+  const relationshipClaimRejection = (
     operation: Extract<ParsedPatchOperation, { type: "add" | "update" | "supersede" }>,
     operationIndex: number,
-    text: string | undefined,
-    evidence: {
-      relationship_evidence_relational_slot_ids?: readonly string[];
-      relationship_evidence_stream_entry_ids?: readonly string[];
-    },
+    claims: readonly unknown[] | undefined,
   ): PatchRejection | null => {
-    if (text === undefined) {
+    const parsedClaims = relationshipClaimsInputSchema.parse(claims ?? []);
+
+    if (parsedClaims.length === 0) {
       return null;
     }
 
-    const check = checkRelationshipLabelGrounding({
-      text,
+    const check = checkRelationshipClaimGrounding({
+      claims: parsedClaims,
       participantRoster: input.participantRoster,
-      relationshipEvidenceRelationalSlotIds:
-        evidence.relationship_evidence_relational_slot_ids ?? [],
-      relationshipEvidenceStreamEntryIds: evidence.relationship_evidence_stream_entry_ids ?? [],
       allowedRelationshipEvidenceStreamEntryIds: input.allowedSourceStreamEntryIds,
       relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
     });
@@ -518,17 +514,12 @@ export function normalizePatch(input: {
       return null;
     }
 
-    return rejection(operation, operationIndex, "relationship_label_ungrounded", {
+    return rejection(operation, operationIndex, "relationship_claim_ungrounded", {
       ...(operation.type === "add" ? {} : { targetEntryId: operation.id }),
-      protectedRelationshipLabels: check.protectedLabels,
-      relationshipEvidenceRelationalSlotIds: [
-        ...(evidence.relationship_evidence_relational_slot_ids ?? []),
-      ],
-      relationshipEvidenceStreamEntryIds: [
-        ...(evidence.relationship_evidence_stream_entry_ids ?? []),
-      ],
-      rejectedRelationshipEvidenceRelationalSlotIds: check.rejectedRelationalSlotIds,
-      rejectedRelationshipEvidenceStreamEntryIds: check.rejectedStreamEntryIds,
+      relationshipClaims: check.claims,
+      ungroundedRelationshipClaims: check.ungroundedClaims,
+      rejectedRelationshipClaimEvidenceRelationalSlotIds: check.rejectedRelationalSlotIds,
+      rejectedRelationshipClaimEvidenceStreamEntryIds: check.rejectedStreamEntryIds,
     });
   };
 
@@ -665,15 +656,14 @@ export function normalizePatch(input: {
           return;
         }
 
-        const labelRejection = relationshipLabelRejection(
+        const claimRejection = relationshipClaimRejection(
           operation,
           operationIndex,
-          operation.text,
-          operation,
+          operation.relationship_claims ?? [],
         );
 
-        if (labelRejection !== null) {
-          rejected.push(labelRejection);
+        if (claimRejection !== null) {
+          rejected.push(claimRejection);
           return;
         }
 
@@ -775,15 +765,14 @@ export function normalizePatch(input: {
           return;
         }
 
-        const labelRejection = relationshipLabelRejection(
+        const claimRejection = relationshipClaimRejection(
           operation,
           operationIndex,
-          operation.text,
-          operation,
+          operation.relationship_claims ?? [],
         );
 
-        if (labelRejection !== null) {
-          rejected.push(labelRejection);
+        if (claimRejection !== null) {
+          rejected.push(claimRejection);
           return;
         }
 
@@ -869,24 +858,14 @@ export function normalizePatch(input: {
           return;
         }
 
-        const labelRejection = relationshipLabelRejection(
+        const claimRejection = relationshipClaimRejection(
           operation,
           operationIndex,
-          operation.replacement.text,
-          {
-            relationship_evidence_relational_slot_ids: [
-              ...(operation.relationship_evidence_relational_slot_ids ?? []),
-              ...(operation.replacement.relationship_evidence_relational_slot_ids ?? []),
-            ],
-            relationship_evidence_stream_entry_ids: [
-              ...(operation.relationship_evidence_stream_entry_ids ?? []),
-              ...(operation.replacement.relationship_evidence_stream_entry_ids ?? []),
-            ],
-          },
+          operation.replacement.relationship_claims ?? [],
         );
 
-        if (labelRejection !== null) {
-          rejected.push(labelRejection);
+        if (claimRejection !== null) {
+          rejected.push(claimRejection);
           return;
         }
 

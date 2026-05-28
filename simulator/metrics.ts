@@ -471,13 +471,13 @@ type ClosurePressureMetricCounts = Pick<
 
 type SemanticMemoryWriteGateMetricCounts = Pick<
   MetricsRow,
-  | "semantic_nodes_rejected_ungrounded_label_count"
-  | "semantic_nodes_rejected_ungrounded_label_total"
-  | "semantic_nodes_rejected_ungrounded_label_by_label"
-  | "shared_state_operations_rejected_ungrounded_label_total"
-  | "shared_state_operations_rejected_ungrounded_label_by_label"
-  | "commitment_candidates_rejected_ungrounded_label_total"
-  | "commitment_candidates_rejected_ungrounded_label_by_label"
+  | "semantic_nodes_rejected_ungrounded_claim_count"
+  | "semantic_nodes_rejected_ungrounded_claim_total"
+  | "semantic_nodes_rejected_ungrounded_claim_by_label_family"
+  | "shared_state_operations_rejected_ungrounded_claim_total"
+  | "shared_state_operations_rejected_ungrounded_claim_by_label_family"
+  | "commitment_candidates_rejected_ungrounded_claim_total"
+  | "commitment_candidates_rejected_ungrounded_claim_by_label_family"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -2340,59 +2340,59 @@ function finalizerNoOutputClosureWithOpenQuestion(input: {
   );
 }
 
-function semanticRelationshipLabelRejectionRecords(
+function semanticRelationshipClaimRejectionRecords(
   traceRecords: readonly TraceRecord[],
 ): TraceRecord[] {
   return traceRecords.filter(
     (record) =>
       record.event === "semantic_insert.skipped" &&
       traceKind(record) === "node" &&
-      traceReason(record) === "relationship_label_ungrounded",
+      traceReason(record) === "relationship_claim_ungrounded",
   );
 }
 
-function semanticRelationshipLabelRejectionsByLabel(
+function semanticRelationshipClaimRejectionsByLabelFamily(
   traceRecords: readonly TraceRecord[],
 ): Record<string, number> {
   const counts: Record<string, number> = {};
 
-  for (const record of semanticRelationshipLabelRejectionRecords(traceRecords)) {
-    const labels = Array.isArray(record.protected_relationship_labels)
-      ? record.protected_relationship_labels.filter(
-          (label): label is string => typeof label === "string",
+  for (const record of semanticRelationshipClaimRejectionRecords(traceRecords)) {
+    const labelFamilies = Array.isArray(record.relationship_claim_label_families)
+      ? record.relationship_claim_label_families.filter(
+          (labelFamily): labelFamily is string => typeof labelFamily === "string",
         )
       : [];
 
-    for (const label of labels.length === 0 ? ["unknown"] : labels) {
-      counts[label] = (counts[label] ?? 0) + 1;
+    for (const labelFamily of labelFamilies.length === 0 ? ["unknown"] : labelFamilies) {
+      counts[labelFamily] = (counts[labelFamily] ?? 0) + 1;
     }
   }
 
   return counts;
 }
 
-function relationshipLabelRejectionRecords(
+function relationshipClaimRejectionRecords(
   traceRecords: readonly TraceRecord[],
   event: string,
 ): TraceRecord[] {
   return traceRecords.filter((record) => record.event === event);
 }
 
-function relationshipLabelRejectionsByLabel(
+function relationshipClaimRejectionsByLabelFamily(
   traceRecords: readonly TraceRecord[],
   event: string,
 ): Record<string, number> {
   const counts: Record<string, number> = {};
 
-  for (const record of relationshipLabelRejectionRecords(traceRecords, event)) {
-    const labels = Array.isArray(record.protected_relationship_labels)
-      ? record.protected_relationship_labels.filter(
-          (label): label is string => typeof label === "string",
+  for (const record of relationshipClaimRejectionRecords(traceRecords, event)) {
+    const labelFamilies = Array.isArray(record.relationship_claim_label_families)
+      ? record.relationship_claim_label_families.filter(
+          (labelFamily): labelFamily is string => typeof labelFamily === "string",
         )
       : [];
 
-    for (const label of labels.length === 0 ? ["unknown"] : labels) {
-      counts[label] = (counts[label] ?? 0) + 1;
+    for (const labelFamily of labelFamilies.length === 0 ? ["unknown"] : labelFamilies) {
+      counts[labelFamily] = (counts[labelFamily] ?? 0) + 1;
     }
   }
 
@@ -2403,35 +2403,36 @@ function semanticMemoryWriteGateMetrics(input: {
   traceRecords: readonly TraceRecord[];
   cumulativeTraceRecords: readonly TraceRecord[];
 }): SemanticMemoryWriteGateMetricCounts {
-  const intervalRejections = semanticRelationshipLabelRejectionRecords(input.traceRecords);
-  const cumulativeRejections = semanticRelationshipLabelRejectionRecords(
+  const intervalRejections = semanticRelationshipClaimRejectionRecords(input.traceRecords);
+  const cumulativeRejections = semanticRelationshipClaimRejectionRecords(
     input.cumulativeTraceRecords,
   );
-  const sharedStateCumulativeRejections = relationshipLabelRejectionRecords(
+  const sharedStateCumulativeRejections = relationshipClaimRejectionRecords(
     input.cumulativeTraceRecords,
-    "shared_state.compile.label_ungrounded",
+    "shared_state.compile.claim_ungrounded",
   );
-  const commitmentCumulativeRejections = relationshipLabelRejectionRecords(
+  const commitmentCumulativeRejections = relationshipClaimRejectionRecords(
     input.cumulativeTraceRecords,
     "corrective_preference.candidate_rejected_ungrounded",
   );
 
   return {
-    semantic_nodes_rejected_ungrounded_label_count: intervalRejections.length,
-    semantic_nodes_rejected_ungrounded_label_total: cumulativeRejections.length,
-    semantic_nodes_rejected_ungrounded_label_by_label: semanticRelationshipLabelRejectionsByLabel(
-      input.cumulativeTraceRecords,
-    ),
-    shared_state_operations_rejected_ungrounded_label_total: sharedStateCumulativeRejections.length,
-    shared_state_operations_rejected_ungrounded_label_by_label: relationshipLabelRejectionsByLabel(
-      input.cumulativeTraceRecords,
-      "shared_state.compile.label_ungrounded",
-    ),
-    commitment_candidates_rejected_ungrounded_label_total: commitmentCumulativeRejections.length,
-    commitment_candidates_rejected_ungrounded_label_by_label: relationshipLabelRejectionsByLabel(
-      input.cumulativeTraceRecords,
-      "corrective_preference.candidate_rejected_ungrounded",
-    ),
+    semantic_nodes_rejected_ungrounded_claim_count: intervalRejections.length,
+    semantic_nodes_rejected_ungrounded_claim_total: cumulativeRejections.length,
+    semantic_nodes_rejected_ungrounded_claim_by_label_family:
+      semanticRelationshipClaimRejectionsByLabelFamily(input.cumulativeTraceRecords),
+    shared_state_operations_rejected_ungrounded_claim_total: sharedStateCumulativeRejections.length,
+    shared_state_operations_rejected_ungrounded_claim_by_label_family:
+      relationshipClaimRejectionsByLabelFamily(
+        input.cumulativeTraceRecords,
+        "shared_state.compile.claim_ungrounded",
+      ),
+    commitment_candidates_rejected_ungrounded_claim_total: commitmentCumulativeRejections.length,
+    commitment_candidates_rejected_ungrounded_claim_by_label_family:
+      relationshipClaimRejectionsByLabelFamily(
+        input.cumulativeTraceRecords,
+        "corrective_preference.candidate_rejected_ungrounded",
+      ),
   };
 }
 
@@ -3484,20 +3485,20 @@ export class MetricsCapture {
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: semanticNodesAdded,
       semantic_edges_added_since_last_check: semanticEdgesAdded,
-      semantic_nodes_rejected_ungrounded_label_count:
-        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_count,
-      semantic_nodes_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
-      semantic_nodes_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
-      shared_state_operations_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_total,
-      shared_state_operations_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_by_label,
-      commitment_candidates_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_total,
-      commitment_candidates_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_by_label,
+      semantic_nodes_rejected_ungrounded_claim_count:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_claim_count,
+      semantic_nodes_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_claim_total,
+      semantic_nodes_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_claim_by_label_family,
+      shared_state_operations_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_claim_total,
+      shared_state_operations_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_claim_by_label_family,
+      commitment_candidates_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_claim_total,
+      commitment_candidates_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_claim_by_label_family,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,
@@ -4024,19 +4025,19 @@ export class MetricsCapture {
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,
-      semantic_nodes_rejected_ungrounded_label_count: 0,
-      semantic_nodes_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_total,
-      semantic_nodes_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_label_by_label,
-      shared_state_operations_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_total,
-      shared_state_operations_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_label_by_label,
-      commitment_candidates_rejected_ungrounded_label_total:
-        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_total,
-      commitment_candidates_rejected_ungrounded_label_by_label:
-        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_label_by_label,
+      semantic_nodes_rejected_ungrounded_claim_count: 0,
+      semantic_nodes_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_claim_total,
+      semantic_nodes_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.semantic_nodes_rejected_ungrounded_claim_by_label_family,
+      shared_state_operations_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_claim_total,
+      shared_state_operations_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.shared_state_operations_rejected_ungrounded_claim_by_label_family,
+      commitment_candidates_rejected_ungrounded_claim_total:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_claim_total,
+      commitment_candidates_rejected_ungrounded_claim_by_label_family:
+        semanticMemoryWriteGateMetricCounts.commitment_candidates_rejected_ungrounded_claim_by_label_family,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       generation_suppression_count: generationSuppressions,

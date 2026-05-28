@@ -23,7 +23,8 @@ import {
 } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { ParticipantRoster } from "../perception/index.js";
-import { checkRelationshipLabelGrounding } from "../memory-write-relationship-gate.js";
+import { checkRelationshipClaimGrounding } from "../memory-write-relationship-gate.js";
+import type { RelationshipClaim } from "../relationship-claims.js";
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
@@ -176,7 +177,7 @@ export class CorrectivePreferenceTurnService {
     turnId?: string;
     sessionId?: SessionId;
     candidate: CorrectivePreferenceCandidate;
-    protectedLabels: readonly string[];
+    ungroundedClaims: readonly RelationshipClaim[];
     rejectedRelationalSlotIds: readonly string[];
     rejectedStreamEntryIds: readonly { id: string; reason: string }[];
   }): void {
@@ -188,22 +189,22 @@ export class CorrectivePreferenceTurnService {
       turnId: input.turnId,
       ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
       validationStatus: "rejected",
-      reason: "relationship_label_ungrounded",
+      reason: "relationship_claim_ungrounded",
       directive_family: input.candidate.directive_family,
       kind: input.candidate.kind,
-      protected_relationship_labels: [...input.protectedLabels],
-      relationship_evidence_relational_slot_ids: [
-        ...input.candidate.relationship_evidence_relational_slot_ids,
+      relationship_claim_label_families: [
+        ...new Set(input.ungroundedClaims.map((claim) => claim.label_family)),
       ],
-      relationship_evidence_stream_entry_ids: [
-        ...input.candidate.relationship_evidence_stream_entry_ids,
+      relationship_claims: [...input.candidate.relationship_claims],
+      ungrounded_relationship_claims: [...input.ungroundedClaims],
+      rejected_relationship_claim_evidence_relational_slot_ids: [
+        ...input.rejectedRelationalSlotIds,
       ],
-      rejected_relationship_evidence_relational_slot_ids: [...input.rejectedRelationalSlotIds],
-      rejected_relationship_evidence_stream_entry_ids: [...input.rejectedStreamEntryIds],
+      rejected_relationship_claim_evidence_stream_entry_ids: [...input.rejectedStreamEntryIds],
     });
   }
 
-  private candidateHasGroundedRelationshipLabels(input: {
+  private candidateHasGroundedRelationshipClaims(input: {
     candidate: CorrectivePreferenceCandidate;
     turnId?: string;
     sessionId?: SessionId;
@@ -223,12 +224,9 @@ export class CorrectivePreferenceTurnService {
       streamEntryKindById.set(entry.id, entry.kind);
     }
 
-    const check = checkRelationshipLabelGrounding({
-      text: input.candidate.directive,
+    const check = checkRelationshipClaimGrounding({
+      claims: input.candidate.relationship_claims,
       participantRoster: input.participantRoster ?? null,
-      relationshipEvidenceRelationalSlotIds:
-        input.candidate.relationship_evidence_relational_slot_ids,
-      relationshipEvidenceStreamEntryIds: input.candidate.relationship_evidence_stream_entry_ids,
       allowedRelationshipEvidenceStreamEntryIds: allowedStreamEntryIds,
       relationshipEvidenceStreamEntryTrust: (streamEntryId) => {
         if (streamEntryId === input.persistedUserEntryId) {
@@ -255,7 +253,7 @@ export class CorrectivePreferenceTurnService {
       turnId: input.turnId,
       sessionId: input.sessionId,
       candidate: input.candidate,
-      protectedLabels: check.protectedLabels,
+      ungroundedClaims: check.ungroundedClaims,
       rejectedRelationalSlotIds: check.rejectedRelationalSlotIds,
       rejectedStreamEntryIds: check.rejectedStreamEntryIds,
     });
@@ -366,7 +364,7 @@ export class CorrectivePreferenceTurnService {
 
     if (
       correctiveCandidate !== null &&
-      this.candidateHasGroundedRelationshipLabels({
+      this.candidateHasGroundedRelationshipClaims({
         candidate: correctiveCandidate,
         turnId: input.turnId,
         sessionId: input.sessionId,

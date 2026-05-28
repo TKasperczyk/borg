@@ -30,6 +30,7 @@ import {
 import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
+import { relationshipClaimSchema, type RelationshipClaim } from "../relationship-claims.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   traceLlmCallError,
@@ -59,19 +60,11 @@ const correctivePreferenceStreamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
-const relationshipEvidenceRelationalSlotIdsSchema = z
-  .array(z.string().trim().min(1))
+const correctivePreferenceRelationshipClaimsSchema = z
+  .array(relationshipClaimSchema)
+  .optional()
   .default([])
-  .describe(
-    "Grounded relational slot ids supporting any strict kinship or caregiver relationship label in the directive.",
-  );
-
-const relationshipEvidenceStreamEntryIdsSchema = z
-  .array(correctivePreferenceStreamEntryIdSchema)
-  .default([])
-  .describe(
-    "Trusted user-message stream entry ids supporting any strict kinship or caregiver relationship label in the directive.",
-  );
+  .describe("Sensitive interpersonal relationship claims asserted by the directive.");
 
 const slotNegationSchema = z
   .object({
@@ -153,8 +146,7 @@ const correctivePreferenceSchema = z
       .describe(
         "Existing commitment id this correction replaces or tightens, if one was clearly selected from the supplied active commitments.",
       ),
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    relationship_claims: correctivePreferenceRelationshipClaimsSchema,
     slot_negations: z
       .array(slotNegationSchema)
       .default([])
@@ -187,8 +179,7 @@ export type CorrectivePreferenceCandidate = {
   reason: string;
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
-  relationship_evidence_relational_slot_ids: string[];
-  relationship_evidence_stream_entry_ids: StreamEntryId[];
+  relationship_claims: RelationshipClaim[];
 };
 
 export type CorrectivePreferenceSlotNegation = {
@@ -341,8 +332,11 @@ function toCandidate(
     reason,
     confidence: input.confidence,
     supersedes_commitment_id: input.supersedes_commitment_id ?? null,
-    relationship_evidence_relational_slot_ids: [...input.relationship_evidence_relational_slot_ids],
-    relationship_evidence_stream_entry_ids: [...input.relationship_evidence_stream_entry_ids],
+    relationship_claims: input.relationship_claims.map((claim) => ({
+      ...claim,
+      evidence_relational_slot_ids: [...claim.evidence_relational_slot_ids],
+      evidence_stream_entry_ids: [...claim.evidence_stream_entry_ids],
+    })),
   };
 }
 

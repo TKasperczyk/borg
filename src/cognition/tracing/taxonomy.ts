@@ -52,7 +52,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "shared_state.compile.add_rejected_cap_exceeded",
     "shared_state.compile.add_rejected_near_duplicate_state_key",
     "shared_state.compile.add_rejected_missing_new_key_reason",
-    "shared_state.compile.label_ungrounded",
+    "shared_state.compile.claim_ungrounded",
     "shared_state.compile.empty_update_dropped",
     "shared_state.compile.repair_attempted",
     "shared_state.compile.repair_succeeded",

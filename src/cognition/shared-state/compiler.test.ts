@@ -35,6 +35,7 @@ import {
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
+import type { RelationshipClaim } from "../relationship-claims.js";
 import {
   advanceSharedStateCompileSkipAnchor,
   buildSharedStateLedgerPromptContext,
@@ -49,6 +50,19 @@ import {
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 
 let defaultStateKeyCounter = 0;
+
+function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {
+  return {
+    label_family: "kinship",
+    subject_entity_id: null,
+    object_entity_id: null,
+    object_text: "relación familiar",
+    requires_grounding: true,
+    evidence_relational_slot_ids: [],
+    evidence_stream_entry_ids: [],
+    ...overrides,
+  };
+}
 
 function emitSharedStateArtifactPatchResponse(patch: unknown, toolName = SHARED_STATE_TOOL_NAME) {
   return emitRawSharedStateArtifactPatchResponse(withDefaultStateKeys(patch), toolName);
@@ -276,9 +290,9 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("shared planning decision state");
-    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Relationship label grounding");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Sensitive relationship claim grounding");
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
-      "cite the supporting relational slot or stream entry",
+      "relationship_claims with requires_grounding=true",
     );
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "Before proposing add, scan previous_artifact_summary.active_entries",
@@ -341,7 +355,13 @@ describe("compileSharedStateArtifact", () => {
               text: "Priya is Avery's partner for care-planning context.",
               owner_entity_id: audience,
               source_stream_entry_ids: [slotSource],
-              relationship_evidence_relational_slot_ids: [slotId],
+              relationship_claims: [
+                relationshipClaim({
+                  label_family: "intimate_partner",
+                  object_text: "Priya",
+                  evidence_relational_slot_ids: [slotId],
+                }),
+              ],
             },
           ],
         }),
@@ -2563,7 +2583,7 @@ describe("compileSharedStateArtifact", () => {
     expectSingleSuccessfulRepair(trace);
   });
 
-  it("repairs shared-state operations with ungrounded protected relationship labels", async () => {
+  it("repairs shared-state operations with ungrounded relationship claims", async () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
       responses: [
@@ -2575,6 +2595,7 @@ describe("compileSharedStateArtifact", () => {
               text: "Use the parent constraint for care planning.",
               owner_entity_id: audience,
               source_stream_entry_ids: [priorAllowedStreamEntryId],
+              relationship_claims: [relationshipClaim({ object_text: "la persona responsable" })],
             },
           ],
         }),
@@ -2586,7 +2607,12 @@ describe("compileSharedStateArtifact", () => {
               text: "Use the parent constraint for care planning.",
               owner_entity_id: audience,
               source_stream_entry_ids: [priorAllowedStreamEntryId],
-              relationship_evidence_stream_entry_ids: [priorAllowedStreamEntryId],
+              relationship_claims: [
+                relationshipClaim({
+                  object_text: "la persona responsable",
+                  evidence_stream_entry_ids: [priorAllowedStreamEntryId],
+                }),
+              ],
             },
           ],
         }),
@@ -2606,9 +2632,8 @@ describe("compileSharedStateArtifact", () => {
     };
 
     expect(llmClient.requests).toHaveLength(2);
-    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
-      "relationship_evidence_relational_slot_ids",
-    );
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain("relationship_claims");
+    expect(repairPayload.additional_prompt_sections?.[0]).toContain("evidence_relational_slot_ids");
     expect(patch.operations).toEqual([
       expect.objectContaining({
         type: "add",
@@ -2618,10 +2643,12 @@ describe("compileSharedStateArtifact", () => {
     expect(trace.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          event: "shared_state.compile.label_ungrounded",
+          event: "shared_state.compile.claim_ungrounded",
           data: expect.objectContaining({
-            protected_relationship_labels: ["parent"],
-            relationship_evidence_stream_entry_ids: [],
+            relationship_claim_label_families: ["kinship"],
+            ungrounded_relationship_claims: [
+              expect.objectContaining({ object_text: "la persona responsable" }),
+            ],
           }),
         }),
         expect.objectContaining({ event: "shared_state.compile.repair_succeeded" }),

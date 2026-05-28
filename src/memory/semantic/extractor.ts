@@ -11,7 +11,11 @@ import {
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
 } from "../../cognition/prompts/relationship-labels.js";
-import { checkRelationshipLabelGroundingAsync } from "../../cognition/memory-write-relationship-gate.js";
+import { checkRelationshipClaimGroundingAsync } from "../../cognition/memory-write-relationship-gate.js";
+import {
+  relationshipClaimSchema,
+  type RelationshipClaim,
+} from "../../cognition/relationship-claims.js";
 import {
   type LLMClient,
   type LLMCompleteResult,
@@ -46,8 +50,7 @@ const extractorNodeSchema = z.object({
   domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
   observation_metadata: semanticObservationMetadataSchema.nullable().default(null),
-  relationship_evidence_relational_slot_ids: z.array(z.string().min(1)).default([]),
-  relationship_evidence_stream_entry_ids: z.array(z.string().min(1)).default([]),
+  relationship_claims: z.array(relationshipClaimSchema).optional().default([]),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
@@ -135,7 +138,7 @@ type SemanticInsertSkipReason =
   | "invalid_endpoint"
   | "validity_window_conflict"
   | "episode_archived_post_plan"
-  | "relationship_label_ungrounded"
+  | "relationship_claim_ungrounded"
   | "other";
 
 function buildPrompt(input: {
@@ -163,7 +166,7 @@ function buildPrompt(input: {
     RELATIONSHIP_LABELS_PROMPT,
     RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
     HEADCOUNT_SET_GROUNDING_PROMPT,
-    "When a node label or description assigns a strict kinship or caregiver role, fill relationship_evidence_relational_slot_ids with a supplied grounded relational slot id, or relationship_evidence_stream_entry_ids with a supplied direct user-message stream entry id. Do not cite assistant output as relationship evidence. If neither supplied evidence type grounds it, rewrite the node neutrally before emitting it.",
+    "When a node label or description asserts a sensitive interpersonal relationship, emit relationship_claims with supporting evidence ids. Do not cite assistant output as relationship evidence. If no accepted evidence grounds the claim, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
@@ -360,6 +363,18 @@ function episodeIdOverlap(
   return uniqueEpisodeIds(left.filter((id) => rightIds.has(id)));
 }
 
+function relationshipClaimsTracePayload(claims: readonly RelationshipClaim[]): RelationshipClaim[] {
+  return claims.map((claim) => ({
+    ...claim,
+    evidence_relational_slot_ids: [...claim.evidence_relational_slot_ids],
+    evidence_stream_entry_ids: [...claim.evidence_stream_entry_ids],
+  }));
+}
+
+function relationshipClaimLabelFamilies(claims: readonly RelationshipClaim[]): string[] {
+  return [...new Set(claims.map((claim) => claim.label_family))];
+}
+
 export class SemanticExtractor {
   private readonly clock: Clock;
   private readonly dedupThreshold: number;
@@ -374,9 +389,8 @@ export class SemanticExtractor {
   private traceInsertSkipped(input: {
     kind: "node" | "edge";
     reason: SemanticInsertSkipReason;
-    protectedLabels?: readonly string[];
-    relationshipEvidenceRelationalSlotIds?: readonly string[];
-    relationshipEvidenceStreamEntryIds?: readonly string[];
+    relationshipClaims?: readonly RelationshipClaim[];
+    ungroundedRelationshipClaims?: readonly RelationshipClaim[];
   }): void {
     if (this.options.tracer?.enabled !== true) {
       return;
@@ -386,20 +400,20 @@ export class SemanticExtractor {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       kind: input.kind,
       reason: input.reason,
-      ...(input.protectedLabels === undefined
-        ? {}
-        : { protected_relationship_labels: [...input.protectedLabels] }),
-      ...(input.relationshipEvidenceRelationalSlotIds === undefined
+      ...(input.relationshipClaims === undefined
         ? {}
         : {
-            relationship_evidence_relational_slot_ids: [
-              ...input.relationshipEvidenceRelationalSlotIds,
-            ],
+            relationship_claim_label_families: relationshipClaimLabelFamilies(
+              input.relationshipClaims,
+            ),
+            relationship_claims: relationshipClaimsTracePayload(input.relationshipClaims),
           }),
-      ...(input.relationshipEvidenceStreamEntryIds === undefined
+      ...(input.ungroundedRelationshipClaims === undefined
         ? {}
         : {
-            relationship_evidence_stream_entry_ids: [...input.relationshipEvidenceStreamEntryIds],
+            ungrounded_relationship_claims: relationshipClaimsTracePayload(
+              input.ungroundedRelationshipClaims,
+            ),
           }),
     });
   }
@@ -471,30 +485,28 @@ export class SemanticExtractor {
     return candidateIds.map((value) => value as Episode["id"]);
   }
 
-  private async relationshipLabelGroundingForCandidate(
+  private async relationshipClaimGroundingForCandidate(
     candidate: ExtractorNode,
     sourceEpisodes: readonly Episode[],
-  ): ReturnType<typeof checkRelationshipLabelGroundingAsync> {
+  ): ReturnType<typeof checkRelationshipClaimGroundingAsync> {
     const sourceStreamEntryIds = new Set(
       sourceEpisodes.flatMap((episode) => episode.source_stream_ids),
     );
 
-    return checkRelationshipLabelGroundingAsync({
-      text: `${candidate.label}\n${candidate.description}`,
+    return checkRelationshipClaimGroundingAsync({
+      claims: candidate.relationship_claims,
       participantRoster: this.options.participantRoster,
-      relationshipEvidenceRelationalSlotIds: candidate.relationship_evidence_relational_slot_ids,
-      relationshipEvidenceStreamEntryIds: candidate.relationship_evidence_stream_entry_ids,
       allowedRelationshipEvidenceStreamEntryIds: sourceStreamEntryIds,
       relationshipEvidenceStreamEntryTrust: this.options.relationshipEvidenceStreamEntryTrust,
     });
   }
 
-  private queueUngroundedRelationshipLabelReview(input: {
+  private queueUngroundedRelationshipClaimReview(input: {
     candidate: ExtractorNode;
-    protectedLabels: readonly string[];
+    ungroundedClaims: readonly RelationshipClaim[];
   }): void {
     this.options.reviewEnqueue?.({
-      kind: "relationship_label_ungrounded",
+      kind: "relationship_claim_ungrounded",
       refs: {
         target_type: "semantic_node_candidate",
         label: input.candidate.label,
@@ -503,14 +515,12 @@ export class SemanticExtractor {
         domain: input.candidate.domain,
         aliases: input.candidate.aliases,
         source_episode_ids: input.candidate.source_episode_ids,
-        protected_relationship_labels: [...input.protectedLabels],
-        relationship_evidence_relational_slot_ids:
-          input.candidate.relationship_evidence_relational_slot_ids,
-        relationship_evidence_stream_entry_ids:
-          input.candidate.relationship_evidence_stream_entry_ids,
+        relationship_claim_label_families: relationshipClaimLabelFamilies(input.ungroundedClaims),
+        relationship_claims: relationshipClaimsTracePayload(input.candidate.relationship_claims),
+        ungrounded_relationship_claims: relationshipClaimsTracePayload(input.ungroundedClaims),
       },
       reason:
-        "Semantic node candidate used a strict relationship label without grounded relationship evidence.",
+        "Semantic node candidate asserted a sensitive relationship without accepted relationship evidence.",
       sourceProcess: "semantic-extractor",
       ...(this.options.traceTurnId === undefined ? {} : { traceTurnId: this.options.traceTurnId }),
     });
@@ -524,7 +534,7 @@ export class SemanticExtractor {
     status: "inserted" | "updated" | "skipped";
     node?: SemanticNode;
     reason?: SemanticInsertSkipReason;
-    protectedLabels?: string[];
+    ungroundedRelationshipClaims?: RelationshipClaim[];
   }> {
     const sourceEpisodeIds = this.validateEpisodeRefs(
       candidate.source_episode_ids,
@@ -534,21 +544,21 @@ export class SemanticExtractor {
     const sourceEpisodes = sourceEpisodeIds
       .map((episodeId) => episodeById.get(episodeId))
       .filter((episode): episode is Episode => episode !== undefined);
-    const relationshipLabelGrounding = await this.relationshipLabelGroundingForCandidate(
+    const relationshipClaimGrounding = await this.relationshipClaimGroundingForCandidate(
       candidate,
       sourceEpisodes,
     );
 
-    if (!relationshipLabelGrounding.grounded) {
-      this.queueUngroundedRelationshipLabelReview({
+    if (!relationshipClaimGrounding.grounded) {
+      this.queueUngroundedRelationshipClaimReview({
         candidate,
-        protectedLabels: relationshipLabelGrounding.protectedLabels,
+        ungroundedClaims: relationshipClaimGrounding.ungroundedClaims,
       });
 
       return {
         status: "skipped",
-        reason: "relationship_label_ungrounded",
-        protectedLabels: relationshipLabelGrounding.protectedLabels,
+        reason: "relationship_claim_ungrounded",
+        ungroundedRelationshipClaims: relationshipClaimGrounding.ungroundedClaims,
       };
     }
 
@@ -911,13 +921,10 @@ export class SemanticExtractor {
           this.traceInsertSkipped({
             kind: "node",
             reason,
-            ...(reason === "relationship_label_ungrounded"
+            ...(reason === "relationship_claim_ungrounded"
               ? {
-                  protectedLabels: outcome.protectedLabels ?? [],
-                  relationshipEvidenceRelationalSlotIds:
-                    candidate.relationship_evidence_relational_slot_ids,
-                  relationshipEvidenceStreamEntryIds:
-                    candidate.relationship_evidence_stream_entry_ids,
+                  relationshipClaims: candidate.relationship_claims,
+                  ungroundedRelationshipClaims: outcome.ungroundedRelationshipClaims ?? [],
                 }
               : {}),
           });

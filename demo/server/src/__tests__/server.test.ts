@@ -1506,13 +1506,14 @@ describe("demo server", () => {
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const internal = borg as unknown as BorgTestInternals;
     const review = internal.deps.reviewQueueRepository.enqueue({
-      kind: "relationship_label_ungrounded",
+      kind: "relationship_claim_ungrounded",
       refs: {
         target_type: "semantic_node_candidate",
-        label: "parent",
-        description: "Ungrounded relationship label fixture.",
-        protected_relationship_labels: ["parent"],
-        relationship_evidence_relational_slot_ids: [],
+        label: "relationship claim",
+        description: "Ungrounded relationship claim fixture.",
+        relationship_claim_label_families: ["kinship"],
+        relationship_claims: [],
+        ungrounded_relationship_claims: [],
       },
       reason: "non-correction review fixture",
     });
@@ -1530,7 +1531,7 @@ describe("demo server", () => {
     });
     expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
       id: review.id,
-      kind: "relationship_label_ungrounded",
+      kind: "relationship_claim_ungrounded",
       resolved_at: null,
       resolution: null,
     });

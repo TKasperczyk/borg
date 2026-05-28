@@ -15,28 +15,19 @@ import type {
   SharedStateEntryId,
 } from "../../util/ids.js";
 import type { ParticipantRoster } from "../perception/types.js";
+import { relationshipClaimSchema, type RelationshipClaim } from "../relationship-claims.js";
 import type { SharedStateCommitmentCanonicalizationType } from "./commitment-canonicalization.js";
-import {
-  MAX_OPERATIONS_PER_COMPILE,
-  SHARED_STATE_TOOL_ENTRY_KINDS,
-} from "./constants.js";
+import { MAX_OPERATIONS_PER_COMPILE, SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
 
 const sharedStateToolKindSchema = z.enum(SHARED_STATE_TOOL_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .describe("Stream entry ids that support this artifact operation.");
-const relationshipEvidenceRelationalSlotIdsSchema = z
-  .array(z.string().trim().min(1))
+const relationshipClaimsSchema = z
+  .array(relationshipClaimSchema)
   .optional()
-  .describe(
-    "Grounded relational slot ids supporting any strict kinship or caregiver relationship label in this operation text.",
-  );
-const relationshipEvidenceStreamEntryIdsSchema = z
-  .array(z.string().trim().min(1))
-  .optional()
-  .describe(
-    "Trusted user-message stream entry ids supporting any strict kinship or caregiver relationship label in this operation text.",
-  );
+  .default([])
+  .describe("Sensitive interpersonal relationship claims asserted by this operation text.");
 const stateKeySchema = z
   .string()
   .trim()
@@ -79,8 +70,7 @@ const addOperationSchema = z
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    relationship_claims: relationshipClaimsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -94,8 +84,7 @@ const updateOperationSchema = z
     text: z.string().trim().min(1).optional(),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    relationship_claims: relationshipClaimsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -107,8 +96,7 @@ const replacementEntrySchema = z
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
+    relationship_claims: relationshipClaimsSchema,
   })
   .strict();
 
@@ -118,8 +106,6 @@ const supersedeOperationSchema = z
     id: z.string().trim().min(1),
     replacement: replacementEntrySchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
-    relationship_evidence_relational_slot_ids: relationshipEvidenceRelationalSlotIdsSchema,
-    relationship_evidence_stream_entry_ids: relationshipEvidenceStreamEntryIdsSchema,
     canonicalizes: canonicalizesSchema,
   })
   .strict();
@@ -147,7 +133,7 @@ export const sharedStatePatchSchema = z
   })
   .strict();
 
-export type EmitSharedStatePatch = z.infer<typeof sharedStatePatchSchema>;
+export type EmitSharedStatePatch = z.input<typeof sharedStatePatchSchema>;
 export type EmitDecisionArtifactPatch = EmitSharedStatePatch;
 
 export type SharedStateArtifactParticipantContext = {
@@ -232,7 +218,7 @@ export type PatchRejection = {
     | "locked_state_key_collision"
     | "near_duplicate_state_key"
     | "missing_new_key_reason"
-    | "relationship_label_ungrounded";
+    | "relationship_claim_ungrounded";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
   sourceStreamEntryId?: string;
@@ -245,11 +231,10 @@ export type PatchRejection = {
   lockedEntryIds?: string[];
   similarStateKeys?: string[];
   sharedStateKeyTokens?: string[];
-  protectedRelationshipLabels?: string[];
-  relationshipEvidenceRelationalSlotIds?: string[];
-  relationshipEvidenceStreamEntryIds?: string[];
-  rejectedRelationshipEvidenceRelationalSlotIds?: string[];
-  rejectedRelationshipEvidenceStreamEntryIds?: Array<{ id: string; reason: string }>;
+  relationshipClaims?: RelationshipClaim[];
+  ungroundedRelationshipClaims?: RelationshipClaim[];
+  rejectedRelationshipClaimEvidenceRelationalSlotIds?: string[];
+  rejectedRelationshipClaimEvidenceStreamEntryIds?: Array<{ id: string; reason: string }>;
 };
 
 export type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";

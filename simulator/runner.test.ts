@@ -354,13 +354,13 @@ function metricsRow(turnCounter: number): MetricsRow {
     semantic_edge_count: 0,
     semantic_nodes_added_since_last_check: 0,
     semantic_edges_added_since_last_check: 0,
-    semantic_nodes_rejected_ungrounded_label_count: 0,
-    semantic_nodes_rejected_ungrounded_label_total: 0,
-    semantic_nodes_rejected_ungrounded_label_by_label: {},
-    shared_state_operations_rejected_ungrounded_label_total: 0,
-    shared_state_operations_rejected_ungrounded_label_by_label: {},
-    commitment_candidates_rejected_ungrounded_label_total: 0,
-    commitment_candidates_rejected_ungrounded_label_by_label: {},
+    semantic_nodes_rejected_ungrounded_claim_count: 0,
+    semantic_nodes_rejected_ungrounded_claim_total: 0,
+    semantic_nodes_rejected_ungrounded_claim_by_label_family: {},
+    shared_state_operations_rejected_ungrounded_claim_total: 0,
+    shared_state_operations_rejected_ungrounded_claim_by_label_family: {},
+    commitment_candidates_rejected_ungrounded_claim_total: 0,
+    commitment_candidates_rejected_ungrounded_claim_by_label_family: {},
     open_question_count: 0,
     active_goal_count: 0,
     generation_suppression_count: 0,
@@ -474,7 +474,7 @@ function metricsRow(turnCounter: number): MetricsRow {
       correction: 0,
       belief_revision: 0,
       skill_split: 0,
-      relationship_label_ungrounded: 0,
+      relationship_claim_ungrounded: 0,
     },
     frame_anomaly_classifier_calls: 0,
     frame_anomaly_classified_normal_count: 0,
@@ -943,9 +943,9 @@ describe("SimulatorRunner", () => {
           closure_loop_classifier: 26,
           corrective_preference_extractor: 1,
         },
-        commitment_candidates_rejected_ungrounded_label_total: 1,
-        commitment_candidates_rejected_ungrounded_label_by_label: {
-          parent: 1,
+        commitment_candidates_rejected_ungrounded_claim_total: 1,
+        commitment_candidates_rejected_ungrounded_claim_by_label_family: {
+          kinship: 1,
         },
         shared_state_compiler_max_tokens_total: 1,
         shared_state_compiler_degraded_total: 2,
@@ -954,7 +954,7 @@ describe("SimulatorRunner", () => {
         shared_state_compiler_repair_failed_total: 1,
         shared_state_compiler_repair_failed_by_rejection_reason: {
           missing_new_key_reason: 1,
-          relationship_label_ungrounded: 2,
+          relationship_claim_ungrounded: 2,
         },
         shared_state_update_checked_for_empty_total: 4,
         shared_state_empty_update_attempted_total: 4,
@@ -981,9 +981,9 @@ describe("SimulatorRunner", () => {
           "decision.architecture": 1,
         },
         shared_state_add_rejected_cap_exceeded_total: 1,
-        shared_state_operations_rejected_ungrounded_label_total: 2,
-        shared_state_operations_rejected_ungrounded_label_by_label: {
-          partner: 2,
+        shared_state_operations_rejected_ungrounded_claim_total: 2,
+        shared_state_operations_rejected_ungrounded_claim_by_label_family: {
+          intimate_partner: 2,
         },
         semantic_revision_calls_total: 6,
         semantic_revision_candidates_reviewed_total: 31,
@@ -1032,14 +1032,14 @@ describe("SimulatorRunner", () => {
       "Degraded by label: closure_loop_classifier=26, corrective_preference_extractor=1",
     );
     expect(report).toContain(
-      "Commitment gate rejections: protected relationship labels 1 total (parent=1)",
+      "Commitment gate rejections: ungrounded relationship claims 1 total (kinship=1)",
     );
     expect(report).toContain("## Cumulative Compiler Health");
     expect(report).toContain("Shared-state compiler max-token stops: 1");
     expect(report).toContain("Shared-state compiler degraded events: 2");
     expect(report).toContain("Shared-state compiler repair: attempted 3, succeeded 2, failed 1");
     expect(report).toContain(
-      "Shared-state repair failures by reason: missing_new_key_reason=1, relationship_label_ungrounded=2",
+      "Shared-state repair failures by reason: missing_new_key_reason=1, relationship_claim_ungrounded=2",
     );
     expect(report).toContain("Shared-state empty-update:");
     expect(report).toContain("update operations checked: 4");
@@ -1051,7 +1051,7 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("Shared-state compiler add/update ratio: 2.50");
     expect(report).toContain("Shared-state add rejected by per-key cap: 1");
     expect(report).toContain(
-      "Shared-state gate rejections: protected relationship labels 2 total (partner=2)",
+      "Shared-state gate rejections: ungrounded relationship claims 2 total (intimate_partner=2)",
     );
     expect(report).toContain("## Cumulative Semantic Revision Health");
     expect(report).toContain("Revision LLM calls: 6");

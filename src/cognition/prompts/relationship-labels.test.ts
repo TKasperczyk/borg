@@ -1,47 +1,53 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CONTEXTUAL_RELATIONSHIP_LABELS,
-  PROTECTED_RELATIONSHIP_LABELS,
-  STRICT_RELATIONSHIP_LABELS,
-  protectedRelationshipLabelsInText,
+  HEADCOUNT_SET_GROUNDING_PROMPT,
+  RELATIONSHIP_LABELS_PROMPT,
+  RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+  RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
 } from "./relationship-labels.js";
 
-describe("relationship label tiers", () => {
-  it("uses strict labels as the protected hard-gated labels", () => {
-    expect(PROTECTED_RELATIONSHIP_LABELS).toEqual(STRICT_RELATIONSHIP_LABELS);
-    expect(PROTECTED_RELATIONSHIP_LABELS).toEqual([
+describe("relationship claim prompt guidance", () => {
+  it("describes structured language-agnostic relationship claims", () => {
+    const prompt = [
+      RELATIONSHIP_LABELS_PROMPT,
+      RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+      RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
+      HEADCOUNT_SET_GROUNDING_PROMPT,
+    ].join("\n");
+
+    expect(prompt).toContain("relationship_claim");
+    expect(prompt).toContain("label_family");
+    expect(prompt).toContain("requires_grounding=true");
+    expect(prompt).toContain("evidence_relational_slot_ids");
+    expect(prompt).toContain("evidence_stream_entry_ids");
+    expect(prompt).toContain("any language");
+  });
+
+  it("does not contain the removed English relationship word list", () => {
+    const prompt = [
+      RELATIONSHIP_LABELS_PROMPT,
+      RELATIONSHIP_LABEL_JUSTIFICATION_PROMPT,
+      RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
+      HEADCOUNT_SET_GROUNDING_PROMPT,
+    ]
+      .join("\n")
+      .toLowerCase();
+
+    for (const word of [
       "sibling",
+      "siblings",
       "spouse",
+      "spouses",
       "parent",
+      "parents",
       "child",
-      "caregiver",
-    ]);
-  });
-
-  it("matches strict labels in memory-write text", () => {
-    expect(protectedRelationshipLabelsInText("Nora's sibling is Priya.")).toEqual(["sibling"]);
-    expect(protectedRelationshipLabelsInText("Mom's spouse is asleep.")).toEqual(["spouse"]);
-    expect(protectedRelationshipLabelsInText("My parent lives upstate.")).toEqual(["parent"]);
-    expect(protectedRelationshipLabelsInText("My child is at school.")).toEqual(["child"]);
-  });
-
-  it("does not hard-gate contextual role labels", () => {
-    expect(CONTEXTUAL_RELATIONSHIP_LABELS).toContain("partner");
-    expect(protectedRelationshipLabelsInText("The design partner owns rollout notes.")).toEqual([]);
-  });
-
-  it("does not hard-gate medical or professional context nouns", () => {
-    expect(protectedRelationshipLabelsInText("The doctor appointment is pending.")).toEqual([]);
-    expect(protectedRelationshipLabelsInText("Mom's doctor scheduled the appointment.")).toEqual(
-      [],
-    );
-    expect(protectedRelationshipLabelsInText("No doctor calls this week.")).toEqual([]);
-    expect(protectedRelationshipLabelsInText("The patient portal is down.")).toEqual([]);
-    expect(protectedRelationshipLabelsInText("Patient portal is broken.")).toEqual([]);
-    expect(protectedRelationshipLabelsInText("Patient paperwork is waiting.")).toEqual([]);
-    expect(
-      protectedRelationshipLabelsInText("I haven't booked the dentist appointment yet."),
-    ).toEqual([]);
+      "children",
+      "wife",
+      "mother",
+      "father",
+    ]) {
+      expect(prompt).not.toContain(word);
+    }
   });
 });

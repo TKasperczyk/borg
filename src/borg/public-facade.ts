@@ -867,7 +867,7 @@ export type BorgReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "relationship_label_ungrounded";
+  | "relationship_claim_ungrounded";
 
 export type BorgReviewResolution =
   | "keep_both"

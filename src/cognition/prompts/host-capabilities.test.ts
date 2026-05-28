@@ -23,10 +23,12 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain('Avoid unqualified "I\'ll prompt you"');
   });
 
-  it("includes relationship-label grounding guidance", () => {
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("Relationship label grounding");
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("sibling, spouse, parent");
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("partner, manager, owner");
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("direct evidence supports");
+  it("includes relationship-claim grounding guidance", () => {
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
+      "Sensitive relationship claim grounding",
+    );
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("relationship_claim");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("label_family");
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("evidence_stream_entry_ids");
   });
 });

@@ -10,7 +10,6 @@ import type {
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
-import { PROTECTED_RELATIONSHIP_LABELS } from "../prompts/relationship-labels.js";
 import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import {
   mergeSemanticBeliefRevisionResult,
@@ -47,7 +46,7 @@ import {
   traceCompileRepairFailed,
   traceCompileRepairSucceeded,
   traceEmptyUpdateDropped,
-  traceLabelUngrounded,
+  traceClaimUngrounded,
   traceReconciliationCompleted,
 } from "./compiler-io.js";
 import {
@@ -414,7 +413,7 @@ function repairablePatchRejections(rejections: readonly PatchRejection[]): Patch
       rejection.reason === "locked_state_key_collision" ||
       rejection.reason === "near_duplicate_state_key" ||
       rejection.reason === "missing_new_key_reason" ||
-      rejection.reason === "relationship_label_ungrounded",
+      rejection.reason === "relationship_claim_ungrounded",
   );
 }
 
@@ -462,15 +461,12 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
         ].join("; ");
       }
 
-      if (rejection.reason === "relationship_label_ungrounded") {
-        const strictLabels = PROTECTED_RELATIONSHIP_LABELS.join(", ");
+      if (rejection.reason === "relationship_claim_ungrounded") {
         return [
           `operation ${rejection.operationIndex} ${rejection.operationType}`,
-          `uses strict relationship label ${rejection.protectedRelationshipLabels?.join(", ") || "unknown"}`,
-          `strict labels are ${strictLabels}`,
-          "if the label refers to a person-to-person role assignment, add relationship_evidence_relational_slot_ids citing a supplied relational slot, or relationship_evidence_stream_entry_ids citing a supplied trusted user message",
-          "if the strict label appears incidental or as part of a context noun phrase, rewrite the operation to remove or replace the strict term with a generic noun such as family member, partner, or helper",
-          "if the meaning belongs in another operation shape, re-emit it as a different operation kind that does not carry the strict assignment",
+          `has ${rejection.ungroundedRelationshipClaims?.length ?? 0} relationship_claims without accepted evidence`,
+          "for each sensitive interpersonal assertion, emit relationship_claims with requires_grounding=true and supporting evidence_relational_slot_ids or evidence_stream_entry_ids",
+          "if no supplied evidence grounds the assertion, rewrite the operation with neutral wording and no relationship_claim for that assertion",
         ].join("; ");
       }
 
@@ -515,8 +511,8 @@ function traceRepairablePatchRejection(
     return;
   }
 
-  if (rejection.reason === "relationship_label_ungrounded") {
-    traceLabelUngrounded({
+  if (rejection.reason === "relationship_claim_ungrounded") {
+    traceClaimUngrounded({
       tracer: input.tracer,
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
@@ -1409,6 +1405,7 @@ export async function compileSharedStateArtifact(
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.provenance_stream_entry_ids],
+            relationship_claims: [],
             ...(operation.canonicalizes === undefined
               ? {}
               : { canonicalizes: operation.canonicalizes }),
@@ -1422,6 +1419,7 @@ export async function compileSharedStateArtifact(
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.last_updated_stream_entry_ids],
+            relationship_claims: [],
             ...(operation.canonicalizes === undefined
               ? {}
               : { canonicalizes: operation.canonicalizes }),
@@ -1436,6 +1434,7 @@ export async function compileSharedStateArtifact(
               text: operation.replacement.text,
               owner_entity_id: operation.replacement.owner_entity_id,
               source_stream_entry_ids: [...operation.replacement.provenance_stream_entry_ids],
+              relationship_claims: [],
             },
             source_stream_entry_ids: [...operation.last_updated_stream_entry_ids],
             ...(operation.replacement.canonicalizes === undefined

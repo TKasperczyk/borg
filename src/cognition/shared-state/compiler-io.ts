@@ -294,7 +294,7 @@ export function traceAddRejectedMissingNewKeyReason(options: {
   });
 }
 
-export function traceLabelUngrounded(options: {
+export function traceClaimUngrounded(options: {
   tracer?: TurnTracer;
   turnId?: string;
   audienceEntityId: EntityId;
@@ -304,22 +304,24 @@ export function traceLabelUngrounded(options: {
     return;
   }
 
-  options.tracer.emit("shared_state.compile.label_ungrounded", {
+  options.tracer.emit("shared_state.compile.claim_ungrounded", {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     operation_index: options.rejection.operationIndex,
     operation_type: options.rejection.operationType,
     operation_id:
       options.rejection.targetEntryId ?? `operation:${options.rejection.operationIndex}`,
-    protected_relationship_labels: options.rejection.protectedRelationshipLabels ?? [],
-    relationship_evidence_relational_slot_ids:
-      options.rejection.relationshipEvidenceRelationalSlotIds ?? [],
-    relationship_evidence_stream_entry_ids:
-      options.rejection.relationshipEvidenceStreamEntryIds ?? [],
-    rejected_relationship_evidence_relational_slot_ids:
-      options.rejection.rejectedRelationshipEvidenceRelationalSlotIds ?? [],
-    rejected_relationship_evidence_stream_entry_ids:
-      options.rejection.rejectedRelationshipEvidenceStreamEntryIds ?? [],
+    relationship_claim_label_families: [
+      ...new Set(
+        (options.rejection.ungroundedRelationshipClaims ?? []).map((claim) => claim.label_family),
+      ),
+    ],
+    relationship_claims: options.rejection.relationshipClaims ?? [],
+    ungrounded_relationship_claims: options.rejection.ungroundedRelationshipClaims ?? [],
+    rejected_relationship_claim_evidence_relational_slot_ids:
+      options.rejection.rejectedRelationshipClaimEvidenceRelationalSlotIds ?? [],
+    rejected_relationship_claim_evidence_stream_entry_ids:
+      options.rejection.rejectedRelationshipClaimEvidenceStreamEntryIds ?? [],
   });
 }
 

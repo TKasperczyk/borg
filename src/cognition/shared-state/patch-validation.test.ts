@@ -13,6 +13,7 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import type { RelationshipClaim } from "../relationship-claims.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
 
@@ -22,6 +23,19 @@ const EMPTY_CANONICALIZES = {
   action_ids: [],
   open_question_ids: [],
 };
+
+function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {
+  return {
+    label_family: "kinship",
+    subject_entity_id: null,
+    object_entity_id: null,
+    object_text: "relación familiar",
+    requires_grounding: true,
+    evidence_relational_slot_ids: [],
+    evidence_stream_entry_ids: [],
+    ...overrides,
+  };
+}
 
 function makeArtifact(input: {
   audienceEntityId: EntityId;
@@ -518,7 +532,7 @@ describe("normalizePatch empty update no-op handling", () => {
 });
 
 describe("normalizePatch state_key validation", () => {
-  it("rejects protected relationship labels without grounding evidence", () => {
+  it("rejects required relationship claims without grounding evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const result = normalizeKeyedPatch({
@@ -531,7 +545,8 @@ describe("normalizePatch state_key validation", () => {
             stateKey: "plan.attendees",
             sourceStreamEntryId,
           }),
-          text: "Mom's spouse is asleep.",
+          text: "The care plan depends on a sensitive relationship assertion.",
+          relationship_claims: [relationshipClaim({ object_text: "mi esposa" })],
         },
       ],
     });
@@ -539,12 +554,11 @@ describe("normalizePatch state_key validation", () => {
     expect(result.operations).toEqual([]);
     expect(result.rejected).toEqual([
       expect.objectContaining({
-        reason: "relationship_label_ungrounded",
+        reason: "relationship_claim_ungrounded",
         operationType: "add",
         operationIndex: 0,
-        protectedRelationshipLabels: ["spouse"],
-        relationshipEvidenceRelationalSlotIds: [],
-        relationshipEvidenceStreamEntryIds: [],
+        relationshipClaims: [expect.objectContaining({ object_text: "mi esposa" })],
+        ungroundedRelationshipClaims: [expect.objectContaining({ object_text: "mi esposa" })],
       }),
     ]);
   });
@@ -603,7 +617,7 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("accepts protected relationship labels grounded by roster relational slot evidence", () => {
+  it("accepts relationship claims grounded by roster relational slot evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const slotId = createRelationalSlotId();
@@ -631,7 +645,12 @@ describe("normalizePatch state_key validation", () => {
             sourceStreamEntryId,
           }),
           text: "Priya is Avery's spouse for care-planning context.",
-          relationship_evidence_relational_slot_ids: [slotId],
+          relationship_claims: [
+            relationshipClaim({
+              object_text: "Priya",
+              evidence_relational_slot_ids: [slotId],
+            }),
+          ],
         },
       ],
     });
@@ -645,7 +664,7 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("accepts protected relationship labels grounded by trusted user-message stream evidence", () => {
+  it("accepts relationship claims grounded by trusted user-message stream evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const result = normalizeKeyedPatch({
@@ -663,7 +682,11 @@ describe("normalizePatch state_key validation", () => {
             sourceStreamEntryId,
           }),
           text: "Use the parent constraint for care planning.",
-          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+          relationship_claims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [sourceStreamEntryId],
+            }),
+          ],
         },
       ],
     });
@@ -677,7 +700,7 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("rejects protected relationship labels grounded only by assistant stream evidence", () => {
+  it("rejects relationship claims grounded only by assistant stream evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const result = normalizeKeyedPatch({
@@ -695,7 +718,11 @@ describe("normalizePatch state_key validation", () => {
             sourceStreamEntryId,
           }),
           text: "Use the parent constraint for care planning.",
-          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+          relationship_claims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [sourceStreamEntryId],
+            }),
+          ],
         },
       ],
     });
@@ -703,9 +730,13 @@ describe("normalizePatch state_key validation", () => {
     expect(result.operations).toEqual([]);
     expect(result.rejected).toEqual([
       expect.objectContaining({
-        reason: "relationship_label_ungrounded",
-        relationshipEvidenceStreamEntryIds: [sourceStreamEntryId],
-        rejectedRelationshipEvidenceStreamEntryIds: [
+        reason: "relationship_claim_ungrounded",
+        relationshipClaims: [
+          expect.objectContaining({
+            evidence_stream_entry_ids: [sourceStreamEntryId],
+          }),
+        ],
+        rejectedRelationshipClaimEvidenceStreamEntryIds: [
           {
             id: sourceStreamEntryId,
             reason: "not_user_msg",
@@ -715,7 +746,7 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("bypasses relationship grounding when operation text has no protected label", () => {
+  it("bypasses relationship grounding when operation has no relationship claims", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const result = normalizeKeyedPatch({
@@ -742,48 +773,7 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("accepts supersede replacement text grounded by operation-level evidence", () => {
-    const audienceEntityId = createEntityId();
-    const sourceStreamEntryId = createStreamEntryId();
-    const previous = makeEntry({
-      audienceEntityId,
-      sourceStreamEntryId,
-      stateKey: "plan.care",
-      text: "Legacy care planning entry.",
-    });
-    const result = normalizeKeyedPatch({
-      audienceEntityId,
-      sourceStreamEntryId,
-      previousEntries: [previous],
-      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
-        streamEntryId === sourceStreamEntryId
-          ? { allowed: true }
-          : { allowed: false, reason: "missing" },
-      operations: [
-        {
-          type: "supersede",
-          id: previous.id,
-          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
-          replacement: {
-            state_key: "plan.care",
-            kind: "locked",
-            text: "Use the parent constraint for care planning.",
-            source_stream_entry_ids: [sourceStreamEntryId],
-          },
-        },
-      ],
-    });
-
-    expect(result.rejected).toEqual([]);
-    expect(result.operations).toEqual([
-      expect.objectContaining({
-        type: "supersede",
-        id: previous.id,
-      }),
-    ]);
-  });
-
-  it("accepts supersede replacement text grounded by replacement-entry evidence", () => {
+  it("accepts supersede replacement text with no declared relationship claims", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const previous = makeEntry({
@@ -807,9 +797,8 @@ describe("normalizePatch state_key validation", () => {
           replacement: {
             state_key: "plan.care",
             kind: "locked",
-            text: "Use the parent constraint for care planning.",
+            text: "Use the care-planning constraint.",
             source_stream_entry_ids: [sourceStreamEntryId],
-            relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
           },
         },
       ],
@@ -824,7 +813,52 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
-  it("rejects supersede replacement text with no relationship evidence", () => {
+  it("accepts supersede replacement relationship claims grounded by replacement-entry evidence", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previous = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "plan.care",
+      text: "Legacy care planning entry.",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [previous],
+      relationshipEvidenceStreamEntryTrust: (streamEntryId) =>
+        streamEntryId === sourceStreamEntryId
+          ? { allowed: true }
+          : { allowed: false, reason: "missing" },
+      operations: [
+        {
+          type: "supersede",
+          id: previous.id,
+          replacement: {
+            state_key: "plan.care",
+            kind: "locked",
+            text: "Use the parent constraint for care planning.",
+            source_stream_entry_ids: [sourceStreamEntryId],
+            relationship_claims: [
+              relationshipClaim({
+                evidence_stream_entry_ids: [sourceStreamEntryId],
+              }),
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "supersede",
+        id: previous.id,
+      }),
+    ]);
+  });
+
+  it("rejects supersede replacement relationship claims with no accepted evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
     const previous = makeEntry({
@@ -846,6 +880,7 @@ describe("normalizePatch state_key validation", () => {
             kind: "locked",
             text: "Use the parent constraint for care planning.",
             source_stream_entry_ids: [sourceStreamEntryId],
+            relationship_claims: [relationshipClaim()],
           },
         },
       ],
@@ -854,7 +889,7 @@ describe("normalizePatch state_key validation", () => {
     expect(result.operations).toEqual([]);
     expect(result.rejected).toEqual([
       expect.objectContaining({
-        reason: "relationship_label_ungrounded",
+        reason: "relationship_claim_ungrounded",
         operationType: "supersede",
         operationIndex: 0,
         targetEntryId: previous.id,
@@ -886,7 +921,11 @@ describe("normalizePatch state_key validation", () => {
           state_key: "plan.care",
           text: "Use the parent constraint for care planning.",
           source_stream_entry_ids: [sourceStreamEntryId],
-          relationship_evidence_stream_entry_ids: [sourceStreamEntryId],
+          relationship_claims: [
+            relationshipClaim({
+              evidence_stream_entry_ids: [sourceStreamEntryId],
+            }),
+          ],
         },
       ],
     });
