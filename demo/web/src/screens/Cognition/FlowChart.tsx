@@ -2,13 +2,19 @@ import { useMemo, type CSSProperties, type ReactNode } from "react";
 
 import type { TurnTerminalOutcome } from "../../api/types";
 import type { PhaseState } from "../../hooks/use-turn-stream";
+import { ParticleField, type ParticleTarget } from "./ParticleField";
 
-// Synaptic flow chart -- each phase rendered as a small "ganglion"
-// with a halo, dendrite stubs and a state-coloured nucleus. Edges are
-// smooth bezier traces; active edges march and emit pulse particles.
-// Decision gates are hexagons. The S1/S2 fork shows two parallel
-// paths bifurcating from delib and converging at final; the regen arc
-// loops back over tier 3.
+// Synaptic flow chart -- each phase rendered as a small "ganglion" with a
+// halo, dendrite stubs and a state-coloured nucleus. Edges are smooth bezier
+// traces with arrowheads; active edges march and emit pulse particles.
+//
+// Layout is a zigzag/snake: tier 1 flows left -> right, tier 2 right -> left,
+// tier 3 left -> right. This eliminates the old wrap-around path -- cross-tier
+// descents become short S-curves on the right (gen -> retrieval) and on the
+// left (delib -> final via the S1/S2 fork). Tier labels are editorial chips in
+// the top-left of each band so they never collide with the first node of a row.
+// A gravitational-lens particle cloud sits behind the SVG and bends toward the
+// active node.
 
 export type FlowChartProps = {
   phases: readonly PhaseState[];
@@ -17,77 +23,110 @@ export type FlowChartProps = {
   terminalOutcome: TurnTerminalOutcome | null;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
+  particleEnabled?: boolean;
+  particleDensity?: number;
 };
 
-// Layout (viewBox 1200 x 600)
-const NODE_R = 22;
+// Layout (viewBox 1200 x 660)
+const VIEW_W = 1200;
+const VIEW_H = 660;
+
+const NODE_R = 24;
 const GATE_R = 26;
-const ENDPOINT_H = 32;
+const ENDPOINT_H = 34;
 
-const TIER_Y = { 1: 85, 2: 295, 3: 500 } as const;
+const TIER_Y = { 1: 125, 2: 320, 3: 510 } as const;
+const BAND = { 1: [30, 225], 2: [225, 420], 3: [420, 615] } as const;
 
-type TierDef = { id: string; y: number; label: string };
-const TIERS: readonly TierDef[] = [
-  { id: "perception", y: TIER_Y[1], label: "PERCEPTION" },
-  { id: "context", y: TIER_Y[2], label: "CONTEXT" },
-  { id: "synthesis", y: TIER_Y[3], label: "SYNTHESIS" },
+type TierId = 1 | 2 | 3;
+const TIERS: ReadonlyArray<{ id: TierId; label: string; flow: string }> = [
+  { id: 1, label: "perception", flow: "left -> right" },
+  { id: 2, label: "context", flow: "right -> left" },
+  { id: 3, label: "synthesis", flow: "left -> right" },
 ];
 
 type EndpointNode = {
   id: string;
+  kind: "endpoint";
   x: number;
   y: number;
   w: number;
   label: string;
-  kind: "endpoint";
+  side: string;
 };
 
 type PhaseNode = {
   id: string;
+  kind: "phase" | "gate";
   x: number;
   y: number;
   label: string;
-  kind: "phase" | "gate";
 };
 
 type LayoutNode = EndpointNode | PhaseNode;
 
 const INPUT_NODE: EndpointNode = {
   id: "input",
-  x: 60,
-  y: TIER_Y[1],
-  w: 78,
-  label: "input",
   kind: "endpoint",
+  x: 78,
+  y: TIER_Y[1],
+  w: 72,
+  label: "input",
+  side: "ENTRY",
 };
 const TERMINAL_NODE: EndpointNode = {
   id: "terminal",
-  x: 1020,
-  y: TIER_Y[3],
-  w: 130,
-  label: "terminal",
   kind: "endpoint",
+  x: 950,
+  y: TIER_Y[3],
+  w: 150,
+  label: "terminal",
+  side: "EXIT",
 };
 
+// Phase IDs are the canonical names from use-turn-stream's PHASES list. The
+// design prototype shortened a few labels (e.g. "gen?"), but the ids must stay
+// stable -- they are the live-data binding keys.
+const PHASE_IDS = [
+  "ingest",
+  "audience",
+  "perception",
+  "frame",
+  "extract",
+  "closure_loop",
+  "generation_gate",
+  "retrieval",
+  "ledger",
+  "shared",
+  "delib",
+  "final",
+  "guards",
+  "persist",
+  "reflect",
+] as const;
+
 const PHASES_LAYOUT: readonly PhaseNode[] = [
-  { id: "ingest", x: 195, y: TIER_Y[1], label: "ingest", kind: "phase" },
-  { id: "audience", x: 330, y: TIER_Y[1], label: "audience", kind: "phase" },
-  { id: "perception", x: 465, y: TIER_Y[1], label: "perception", kind: "phase" },
-  { id: "frame", x: 600, y: TIER_Y[1], label: "frame gate", kind: "phase" },
-  { id: "extract", x: 735, y: TIER_Y[1], label: "extraction", kind: "phase" },
-  { id: "closure_loop", x: 870, y: TIER_Y[1], label: "closure?", kind: "gate" },
-  { id: "generation_gate", x: 1005, y: TIER_Y[1], label: "gen gate?", kind: "gate" },
-  { id: "retrieval", x: 195, y: TIER_Y[2], label: "retrieval", kind: "phase" },
-  { id: "ledger", x: 425, y: TIER_Y[2], label: "ev. ledger", kind: "phase" },
-  { id: "shared", x: 655, y: TIER_Y[2], label: "shared state", kind: "phase" },
-  { id: "delib", x: 885, y: TIER_Y[2], label: "deliberation", kind: "phase" },
-  { id: "final", x: 330, y: TIER_Y[3], label: "finalizer", kind: "phase" },
-  { id: "guards", x: 500, y: TIER_Y[3], label: "guards?", kind: "gate" },
-  { id: "persist", x: 670, y: TIER_Y[3], label: "persist", kind: "phase" },
-  { id: "reflect", x: 840, y: TIER_Y[3], label: "reflection", kind: "phase" },
+  // tier 1 -- left -> right
+  { id: "ingest", kind: "phase", x: 200, y: TIER_Y[1], label: "ingest" },
+  { id: "audience", kind: "phase", x: 330, y: TIER_Y[1], label: "audience" },
+  { id: "perception", kind: "phase", x: 460, y: TIER_Y[1], label: "perception" },
+  { id: "frame", kind: "phase", x: 595, y: TIER_Y[1], label: "frame" },
+  { id: "extract", kind: "phase", x: 730, y: TIER_Y[1], label: "extract" },
+  { id: "closure_loop", kind: "gate", x: 865, y: TIER_Y[1], label: "closure?" },
+  { id: "generation_gate", kind: "gate", x: 1000, y: TIER_Y[1], label: "gen?" },
+  // tier 2 -- right -> left
+  { id: "retrieval", kind: "phase", x: 1000, y: TIER_Y[2], label: "retrieval" },
+  { id: "ledger", kind: "phase", x: 800, y: TIER_Y[2], label: "ev. ledger" },
+  { id: "shared", kind: "phase", x: 600, y: TIER_Y[2], label: "shared" },
+  { id: "delib", kind: "phase", x: 400, y: TIER_Y[2], label: "deliberation" },
+  // tier 3 -- left -> right
+  { id: "final", kind: "phase", x: 200, y: TIER_Y[3], label: "finalizer" },
+  { id: "guards", kind: "gate", x: 370, y: TIER_Y[3], label: "guards?" },
+  { id: "persist", kind: "phase", x: 540, y: TIER_Y[3], label: "persist" },
+  { id: "reflect", kind: "phase", x: 720, y: TIER_Y[3], label: "reflection" },
 ];
 
-const NODE_BY_ID: Record<string, LayoutNode> = (() => {
+const NODES: Record<string, LayoutNode> = (() => {
   const map: Record<string, LayoutNode> = {
     input: INPUT_NODE,
     terminal: TERMINAL_NODE,
@@ -96,6 +135,8 @@ const NODE_BY_ID: Record<string, LayoutNode> = (() => {
   return map;
 })();
 
+// Same edge topology as upstream -- the routing changes, not the graph. The
+// delib -> final transition is the S1/S2 fork, drawn separately.
 const SPINE_EDGES: ReadonlyArray<readonly [string, string]> = [
   ["input", "ingest"],
   ["ingest", "audience"],
@@ -104,6 +145,7 @@ const SPINE_EDGES: ReadonlyArray<readonly [string, string]> = [
   ["frame", "extract"],
   ["extract", "closure_loop"],
   ["closure_loop", "generation_gate"],
+  ["generation_gate", "retrieval"], // tier 1 -> tier 2 (right-side descent)
   ["retrieval", "ledger"],
   ["ledger", "shared"],
   ["shared", "delib"],
@@ -113,62 +155,111 @@ const SPINE_EDGES: ReadonlyArray<readonly [string, string]> = [
   ["reflect", "terminal"],
 ];
 
-function nodeRight(node: LayoutNode): { x: number; y: number } {
-  if (node.kind === "endpoint") return { x: node.x + node.w / 2, y: node.y };
-  if (node.kind === "gate") return { x: node.x + GATE_R + 2, y: node.y };
-  return { x: node.x + NODE_R + 2, y: node.y };
+// -----------------------------------------------------------------------------
+// Geometry helpers
+// -----------------------------------------------------------------------------
+
+function nodeRadius(n: LayoutNode): number {
+  if (n.kind === "endpoint") return n.w / 2;
+  if (n.kind === "gate") return GATE_R;
+  return NODE_R;
 }
-function nodeLeft(node: LayoutNode): { x: number; y: number } {
-  if (node.kind === "endpoint") return { x: node.x - node.w / 2, y: node.y };
-  if (node.kind === "gate") return { x: node.x - GATE_R - 2, y: node.y };
-  return { x: node.x - NODE_R - 2, y: node.y };
+function rightAnchor(n: LayoutNode): { x: number; y: number } {
+  if (n.kind === "endpoint") return { x: n.x + n.w / 2, y: n.y };
+  return { x: n.x + nodeRadius(n) + 2, y: n.y };
 }
-function nodeBottom(node: LayoutNode): { x: number; y: number } {
-  if (node.kind === "endpoint") return { x: node.x, y: node.y + ENDPOINT_H / 2 };
-  if (node.kind === "gate") return { x: node.x, y: node.y + GATE_R + 2 };
-  return { x: node.x, y: node.y + NODE_R + 2 };
+function leftAnchor(n: LayoutNode): { x: number; y: number } {
+  if (n.kind === "endpoint") return { x: n.x - n.w / 2, y: n.y };
+  return { x: n.x - nodeRadius(n) - 2, y: n.y };
 }
-function nodeTop(node: LayoutNode): { x: number; y: number } {
-  if (node.kind === "endpoint") return { x: node.x, y: node.y - ENDPOINT_H / 2 };
-  if (node.kind === "gate") return { x: node.x, y: node.y - GATE_R - 2 };
-  return { x: node.x, y: node.y - NODE_R - 2 };
+function bottomAnchor(n: LayoutNode): { x: number; y: number } {
+  if (n.kind === "endpoint") return { x: n.x, y: n.y + ENDPOINT_H / 2 };
+  return { x: n.x, y: n.y + nodeRadius(n) + 2 };
+}
+function topAnchor(n: LayoutNode): { x: number; y: number } {
+  if (n.kind === "endpoint") return { x: n.x, y: n.y - ENDPOINT_H / 2 };
+  return { x: n.x, y: n.y - nodeRadius(n) - 2 };
 }
 
-function spinePath(from: LayoutNode, to: LayoutNode): string {
-  const a = nodeRight(from);
-  const b = nodeLeft(to);
-  const dx = (b.x - a.x) * 0.45;
-  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-}
-
-function wrapAroundPath(): string {
-  const from = nodeRight(NODE_BY_ID.generation_gate!);
-  const to = nodeTop(NODE_BY_ID.retrieval!);
-  return `M ${from.x} ${from.y} C 1180 ${from.y}, 1180 190, 1090 190 L 280 190 C 60 190, 60 ${to.y - 30}, ${to.x} ${to.y}`;
-}
-
-function forkPath(which: "s1" | "s2"): string {
-  const a = nodeBottom(NODE_BY_ID.delib!);
-  const b = nodeTop(NODE_BY_ID.final!);
-  const midY = (a.y + b.y) / 2;
-  if (which === "s1") {
-    return `M ${a.x} ${a.y} C ${a.x} ${midY}, ${b.x + 60} ${midY}, ${b.x} ${b.y}`;
+function spinePath(fromId: string, toId: string): string {
+  const from = NODES[fromId]!;
+  const to = NODES[toId]!;
+  const dy = to.y - from.y;
+  if (Math.abs(dy) < 5) {
+    // intra-tier -- horizontal bezier, honouring the row's flow direction
+    const rtl = to.x < from.x;
+    const a = rtl ? leftAnchor(from) : rightAnchor(from);
+    const b = rtl ? rightAnchor(to) : leftAnchor(to);
+    const span = Math.abs(b.x - a.x);
+    const cx = span * 0.42;
+    if (rtl) {
+      return `M ${a.x} ${a.y} C ${a.x - cx} ${a.y}, ${b.x + cx} ${b.y}, ${b.x} ${b.y}`;
+    }
+    return `M ${a.x} ${a.y} C ${a.x + cx} ${a.y}, ${b.x - cx} ${b.y}, ${b.x} ${b.y}`;
   }
-  return `M ${a.x} ${a.y} C ${a.x + 60} ${a.y + 30}, ${a.x + 60} ${midY + 30}, ${a.x - 80} ${midY + 30} C ${b.x - 40} ${midY + 30}, ${b.x} ${midY + 50}, ${b.x} ${b.y}`;
+  // cross-tier descent -- vertical with a subtle outward bow
+  const a = bottomAnchor(from);
+  const b = topAnchor(to);
+  const mid = (a.y + b.y) / 2;
+  const bow = from.x > VIEW_W / 2 ? 26 : -26;
+  return `M ${a.x} ${a.y} C ${a.x + bow} ${mid}, ${b.x + bow} ${mid}, ${b.x} ${b.y}`;
 }
 
+// S1/S2 fork: both originate at delib's left anchor and end at final's top.
+// Two clean parallel cubic beziers that mirror across the direct diagonal --
+// S1 a tighter inner curve ("fast path"), S2 a wider outer sweep ("plan").
+function forkPath(which: "s1" | "s2"): string {
+  const a = leftAnchor(NODES.delib!);
+  const b = topAnchor(NODES.final!);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Unit perpendicular to (a->b), rotated 90 CCW.
+  const px = -dy / len;
+  const py = dx / len;
+
+  if (which === "s1") {
+    const off = -34;
+    const cp1x = a.x + dx * 0.33 + px * off;
+    const cp1y = a.y + dy * 0.33 + py * off;
+    const cp2x = a.x + dx * 0.67 + px * off;
+    const cp2y = a.y + dy * 0.67 + py * off;
+    return `M ${a.x} ${a.y} C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${b.x} ${b.y}`;
+  }
+  const off = 58;
+  const cp1x = a.x + dx * 0.3 + px * off;
+  const cp1y = a.y + dy * 0.3 + py * off;
+  const cp2x = a.x + dx * 0.7 + px * off;
+  const cp2y = a.y + dy * 0.7 + py * off;
+  return `M ${a.x} ${a.y} C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${b.x} ${b.y}`;
+}
+
+// Regen arc: guards bottom -> final bottom, looping UNDER tier 3.
 function regenPath(): string {
-  const a = nodeTop(NODE_BY_ID.guards!);
-  const b = nodeTop(NODE_BY_ID.final!);
-  const peakY = a.y - 38;
-  return `M ${a.x} ${a.y} C ${a.x} ${peakY}, ${b.x} ${peakY}, ${b.x} ${b.y}`;
+  const g = bottomAnchor(NODES.guards!);
+  const f = bottomAnchor(NODES.final!);
+  const peakY = 612;
+  return `M ${g.x} ${g.y} C ${g.x} ${peakY}, ${f.x} ${peakY}, ${f.x} ${f.y}`;
 }
 
-function thornDrop(gateId: string, thornY: number): string {
-  const node = NODE_BY_ID[gateId]!;
-  const from = nodeBottom(node);
-  return `M ${from.x} ${from.y} V ${thornY}`;
+// Thorn drop -- tier 1 thorns go UP into the top margin; the tier 3 thorn is a
+// sidecar out to the lower-right (the clear zone between guards and persist).
+function thornDrop(nodeId: string, dir: "up" | "side"): string {
+  const n = NODES[nodeId]!;
+  if (dir === "up") {
+    const from = topAnchor(n);
+    return `M ${from.x} ${from.y} L ${from.x} ${from.y - 32}`;
+  }
+  const ax = n.x + Math.cos(Math.PI / 6) * GATE_R;
+  const ay = n.y + Math.sin(Math.PI / 6) * GATE_R;
+  const px = n.x + 40;
+  const py = n.y + 45;
+  return `M ${ax} ${ay} Q ${ax + 6} ${ay + 14}, ${px} ${py}`;
 }
+
+// -----------------------------------------------------------------------------
+// Phase-state plumbing (unchanged contract with use-turn-stream)
+// -----------------------------------------------------------------------------
 
 type PhaseStatus = PhaseState["status"];
 
@@ -207,6 +298,10 @@ function deriveActiveStreamPhase(
   return null;
 }
 
+// -----------------------------------------------------------------------------
+// Node + endpoint components
+// -----------------------------------------------------------------------------
+
 function Ganglion({
   node,
   status,
@@ -220,7 +315,7 @@ function Ganglion({
 }) {
   const { x, y, label, kind } = node;
   const isGate = kind === "gate";
-  const r = isGate ? GATE_R : NODE_R;
+  const r = nodeRadius(node);
 
   const hex = useMemo(() => {
     const pts: string[] = [];
@@ -231,15 +326,6 @@ function Ganglion({
     return pts.join(" ");
   }, [r]);
 
-  const dendrites = !isGate ? (
-    <g className="fc-dendrite-grp">
-      <line className="fc-dendrite" x1={-r - 1} y1={0} x2={-r - 6} y2={-3} />
-      <line className="fc-dendrite" x1={-r - 1} y1={0} x2={-r - 6} y2={3} />
-      <line className="fc-dendrite" x1={r + 1} y1={0} x2={r + 6} y2={-3} />
-      <line className="fc-dendrite" x1={r + 1} y1={0} x2={r + 6} y2={3} />
-    </g>
-  ) : null;
-
   return (
     <g
       className={`fc-node fc-node-${status}`}
@@ -247,19 +333,26 @@ function Ganglion({
       data-testid={`phase-${node.id}`}
       transform={`translate(${x} ${y})`}
     >
-      <circle className="fc-node-halo" r={r + 9} />
+      <circle className="fc-node-halo" r={r + 8} />
       <circle className="fc-pulse-ring" r={r} />
       <circle className="fc-pulse-ring b" r={r} />
       <circle className="fc-pulse-ring c" r={r} />
 
-      {dendrites}
+      {!isGate ? (
+        <g className="fc-dendrite-grp">
+          <line className="fc-dendrite" x1={-r - 1} y1={0} x2={-r - 7} y2={-3} />
+          <line className="fc-dendrite" x1={-r - 1} y1={0} x2={-r - 7} y2={3} />
+          <line className="fc-dendrite" x1={r + 1} y1={0} x2={r + 7} y2={-3} />
+          <line className="fc-dendrite" x1={r + 1} y1={0} x2={r + 7} y2={3} />
+        </g>
+      ) : null}
 
       {isGate ? (
         <polygon className="fc-node-body" points={hex} />
       ) : (
         <circle className="fc-node-body" r={r} />
       )}
-      <circle className="fc-node-core" r={5} />
+      <circle className="fc-node-core" r={4.5} />
 
       <text className="fc-node-label" y={r + 16}>
         {label}
@@ -285,7 +378,7 @@ function Endpoint({
   node: EndpointNode;
   outcome: TurnTerminalOutcome | null;
 }) {
-  const { x, y, w, label, id } = node;
+  const { x, y, w, label, id, side } = node;
   const h = ENDPOINT_H;
   const r = h / 2;
   const isTerminal = id === "terminal";
@@ -296,7 +389,7 @@ function Endpoint({
     : label;
   return (
     <g
-      className={`fc-endpoint ${isTerminal ? "terminal" : ""}`}
+      className={`fc-endpoint ${isTerminal ? "terminal" : "input"}`}
       data-outcome={outcome ?? ""}
       transform={`translate(${x - w / 2} ${y - h / 2})`}
     >
@@ -304,32 +397,124 @@ function Endpoint({
       <text className="fc-endpoint-label" x={w / 2} y={h / 2 + 3.5}>
         {display}
       </text>
+      <text className="fc-endpoint-side" x={w / 2} y={-7}>
+        {side}
+      </text>
     </g>
   );
 }
 
-function Thorn({
-  gateId,
-  x,
-  y,
+function ThornUp({
+  nodeId,
   label,
   active,
 }: {
-  gateId: string;
-  x: number;
-  y: number;
+  nodeId: string;
   label: string;
   active: boolean;
 }) {
+  const n = NODES[nodeId]!;
+  const top = topAnchor(n);
+  const pillY = top.y - 50;
+  const pillW = 100;
+  const pillH = 20;
   return (
     <g className={`fc-thorn ${active ? "active" : ""}`}>
-      <path d={thornDrop(gateId, y)} className={`fc-edge branch ${active ? "fire" : ""}`} />
-      <g transform={`translate(${x - 38} ${y})`}>
-        <rect className="fc-thorn-shape" x={0} y={0} width={76} height={20} rx={2} />
-        <text className="fc-thorn-label" x={38} y={14}>
+      <path d={thornDrop(nodeId, "up")} className={`fc-edge branch ${active ? "fire" : ""}`} />
+      <g transform={`translate(${n.x - pillW / 2} ${pillY - pillH / 2})`}>
+        <rect className="fc-thorn-shape" x={0} y={0} width={pillW} height={pillH} rx={2} />
+        <text className="fc-thorn-icon" x={11} y={pillH / 2 + 3}>
+          {"↯"}
+        </text>
+        <text className="fc-thorn-label" x={pillW / 2 + 7} y={pillH / 2 + 3}>
           {label}
         </text>
       </g>
+    </g>
+  );
+}
+
+function ThornSidecar({
+  nodeId,
+  label,
+  active,
+}: {
+  nodeId: string;
+  label: string;
+  active: boolean;
+}) {
+  const n = NODES[nodeId]!;
+  const pillW = 92;
+  const pillH = 19;
+  const pillX = n.x + 40;
+  const pillY = n.y + 45 - pillH / 2;
+  return (
+    <g className={`fc-thorn ${active ? "active" : ""}`}>
+      <path d={thornDrop(nodeId, "side")} className={`fc-edge branch ${active ? "fire" : ""}`} />
+      <g transform={`translate(${pillX} ${pillY})`}>
+        <rect className="fc-thorn-shape" x={0} y={0} width={pillW} height={pillH} rx={2} />
+        <text className="fc-thorn-icon" x={11} y={pillH / 2 + 3}>
+          {"↯"}
+        </text>
+        <text className="fc-thorn-label" x={pillW / 2 + 6} y={pillH / 2 + 3}>
+          {label}
+        </text>
+      </g>
+    </g>
+  );
+}
+
+function TierHeader({
+  tier,
+  band,
+}: {
+  tier: { id: TierId; label: string; flow: string };
+  band: readonly [number, number];
+}) {
+  const x = 18;
+  const y = band[0] + 18;
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect className="fc-tier-chip-bg" x={0} y={-13} width={28} height={18} rx={2} />
+      <text className="fc-tier-chip-num" x={14} y={0} textAnchor="middle">
+        {String(tier.id).padStart(2, "0")}
+      </text>
+      <text className="fc-tier-chip-label" x={38} y={0}>
+        {tier.label}
+      </text>
+      <text className="fc-tier-chip-meta" x={38} y={14}>
+        {tier.flow}
+      </text>
+    </g>
+  );
+}
+
+function Edge({
+  d,
+  state,
+  descent,
+}: {
+  d: string;
+  state: "queue" | "active" | "done";
+  descent?: boolean;
+}) {
+  const cls = `fc-edge ${descent ? "descent" : ""} ${state === "active" ? "active" : state === "done" ? "done" : "dim"}`;
+  const pulseStyle = { offsetPath: `path("${d}")` } as CSSProperties;
+  const marker =
+    state === "active"
+      ? "url(#arrow-active)"
+      : state === "done"
+        ? "url(#arrow-done)"
+        : "url(#arrow-queue)";
+  return (
+    <g className={`fc-edge-wrap ${state === "active" ? "active" : ""}`}>
+      <path d={d} className={cls} markerEnd={marker} />
+      {state === "active" ? (
+        <>
+          <circle className="fc-pulse a" r={2.5} style={pulseStyle} />
+          <circle className="fc-pulse b" r={2.5} style={pulseStyle} />
+        </>
+      ) : null}
     </g>
   );
 }
@@ -348,21 +533,21 @@ function ActiveStream({
   activeStreamPhase: "delib" | "final" | null;
 }) {
   const phase = activeStreamPhase;
-  const status: PhaseStatus | "idle" = phase
-    ? phases[phase]?.status ?? "queue"
-    : "idle";
+  const status: PhaseStatus | "idle" = phase ? phases[phase]?.status ?? "queue" : "idle";
   const isRunning = status === "running";
   const phaseName =
     phase === "final" ? "finalizer" : phase === "delib" ? "deliberation" : null;
 
-  const meta = (() => {
-    if (!phase) return "no streaming phase";
-    if (phase === "delib") {
-      if (delibPath === null) return "path pending";
-      return delibPath === "system_2" ? "S2 · EmitTurnPlan" : "S1 · fast path";
-    }
-    return `attempt ${finalAttempt}`;
-  })();
+  const meta =
+    phase === "final"
+      ? `attempt ${finalAttempt}`
+      : phase === "delib"
+        ? delibPath === "system_2"
+          ? "S2 · plan"
+          : delibPath === "system_1"
+            ? "S1 · fast"
+            : "path pending"
+        : "no stream";
 
   const body = !phase
     ? "waiting for delib or final to produce tokens"
@@ -371,7 +556,7 @@ function ActiveStream({
       : "stream open…";
 
   return (
-    <div className={`flow-active-stream ${status}`} data-status={status}>
+    <div className={`flow-active-stream ${!phase ? "idle" : ""}`} data-status={status}>
       <div className="flow-active-head">
         <span className="pin">
           active stream
@@ -382,7 +567,16 @@ function ActiveStream({
             </>
           ) : null}
         </span>
-        <span className="dim">{meta}</span>
+        <span className="meta">
+          {phase ? (
+            <>
+              <span className={`chip ${finalAttempt > 1 ? "warn" : "acc"}`}>{meta}</span>
+              {phase === "final" && delibPath ? (
+                <span className="chip">{delibPath === "system_2" ? "via S2" : "via S1"}</span>
+              ) : null}
+            </>
+          ) : null}
+        </span>
       </div>
       <pre
         className={`flow-active-body ${!phase ? "empty" : ""} ${status === "done" ? "muted" : ""}`}
@@ -394,6 +588,10 @@ function ActiveStream({
   );
 }
 
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
+
 export function FlowChart({
   phases,
   activeTurnId,
@@ -401,6 +599,8 @@ export function FlowChart({
   terminalOutcome,
   delibPath,
   finalAttempt,
+  particleEnabled = true,
+  particleDensity = 320,
 }: FlowChartProps) {
   const phasesRecord = useMemo(() => buildPhaseRecord(phases), [phases]);
   const activeStreamPhase = useMemo(
@@ -412,8 +612,7 @@ export function FlowChart({
       ? ""
       : tokenTextByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? "";
 
-  const phStatus = (id: string): PhaseStatus =>
-    phasesRecord[id]?.status ?? "queue";
+  const phStatus = (id: string): PhaseStatus => phasesRecord[id]?.status ?? "queue";
 
   const closureSuppressed = terminalOutcome === "suppressed_closure";
   const gateSuppressed = terminalOutcome === "suppressed_generation_gate";
@@ -423,12 +622,13 @@ export function FlowChart({
     const from = phStatus(fromId);
     const to = phStatus(toId);
     if (from === "queue") return "queue";
-    if (to === "running") return "active";
-    if (from === "running") return "active";
-    if (from === "done" && to === "done") return "done";
+    if (to === "running" || from === "running") return "active";
     return "done";
   };
 
+  // gen -> retrieval descent: stays dim until the gate actually completes (so
+  // a running/suppressed/failed gate never renders the hop as done), goes live
+  // while retrieval runs, then done.
   const wrapState: "queue" | "active" | "done" = (() => {
     const gateDone = phStatus("generation_gate") === "done";
     const retrievalActive = phStatus("retrieval") === "running";
@@ -440,9 +640,9 @@ export function FlowChart({
   const delibDone = phStatus("delib") === "done";
   const finalRun = phStatus("final") === "running";
   const finalDone = phStatus("final") === "done";
+
   const forkActive = (lane: "s1" | "s2"): boolean => {
-    if (!delibDone) return false;
-    if (delibPath === null) return false;
+    if (!delibDone || delibPath === null) return false;
     if (delibPath === "system_1" && lane === "s1") return finalRun;
     if (delibPath === "system_2" && lane === "s2") return finalRun;
     return false;
@@ -455,18 +655,6 @@ export function FlowChart({
     );
   };
 
-  const dots = useMemo(() => {
-    const out: ReactNode[] = [];
-    for (let y = 30; y < 600; y += 30) {
-      for (let x = 30; x < 1200; x += 30) {
-        out.push(
-          <circle key={`${x}-${y}`} cx={x} cy={y} r={0.7} className="fc-bg-dots" />,
-        );
-      }
-    }
-    return out;
-  }, []);
-
   const outcomeTone = (() => {
     if (terminalOutcome === null) return "idle";
     if (terminalOutcome === "reflected") return "";
@@ -475,6 +663,34 @@ export function FlowChart({
   })();
   const outcomeLabel =
     terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
+
+  // Subtle background dots -- sparser than the original (every 50px).
+  const dots = useMemo(() => {
+    const out: ReactNode[] = [];
+    for (let y = 50; y < VIEW_H - 30; y += 50) {
+      for (let x = 60; x < VIEW_W - 30; x += 50) {
+        out.push(<circle key={`${x}-${y}`} cx={x} cy={y} r={0.6} className="fc-bg-dots" />);
+      }
+    }
+    return out;
+  }, []);
+
+  // Particle cloud focal point: first running node, else first failing node.
+  const particleTarget = useMemo<ParticleTarget>(() => {
+    for (const id of PHASE_IDS) {
+      if (phasesRecord[id]?.status === "running") {
+        const n = NODES[id]!;
+        return { x: n.x, y: n.y };
+      }
+    }
+    for (const id of PHASE_IDS) {
+      if (phasesRecord[id]?.status === "fail") {
+        const n = NODES[id]!;
+        return { x: n.x, y: n.y };
+      }
+    }
+    return null;
+  }, [phasesRecord]);
 
   return (
     <div className="flow-shell">
@@ -489,9 +705,10 @@ export function FlowChart({
             )}
           </span>
           <span className="eyebrow">outcome</span>
-          <span className={`flow-topline-status ${outcomeTone}`.trim()}>
-            {outcomeLabel}
-          </span>
+          <span className={`flow-topline-status ${outcomeTone}`.trim()}>{outcomeLabel}</span>
+          {finalAttempt > 1 ? (
+            <span className="flow-topline-status warn">regen · attempt {finalAttempt}</span>
+          ) : null}
         </div>
         <div className="right">
           <div className="flow-legend" aria-label="phase legend">
@@ -504,172 +721,211 @@ export function FlowChart({
       </div>
 
       <div className="fc-canvas">
+        <ParticleField
+          target={particleTarget}
+          viewW={VIEW_W}
+          viewH={VIEW_H}
+          density={particleDensity}
+          enabled={particleEnabled}
+        />
         <svg
           className="fc-svg fc-style-synaptic"
-          viewBox="0 0 1200 600"
+          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           preserveAspectRatio="xMidYMid meet"
           role="img"
           aria-label="cognitive turn flow chart"
         >
           <defs>
-            <radialGradient id="bg-glow-1" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="oklch(0.84 0.155 142 / 0.12)" />
+            <radialGradient id="bg-glow-a" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="oklch(0.84 0.155 142 / 0.07)" />
               <stop offset="100%" stopColor="oklch(0.84 0.155 142 / 0)" />
             </radialGradient>
-            <radialGradient id="bg-glow-2" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="oklch(0.78 0.115 232 / 0.08)" />
+            <radialGradient id="bg-glow-b" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="oklch(0.78 0.115 232 / 0.05)" />
               <stop offset="100%" stopColor="oklch(0.78 0.115 232 / 0)" />
             </radialGradient>
-            <radialGradient id="bg-glow-3" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="oklch(0.74 0.135 305 / 0.06)" />
-              <stop offset="100%" stopColor="oklch(0.74 0.135 305 / 0)" />
-            </radialGradient>
+
+            <marker
+              id="arrow-active"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.84 0.155 142)" />
+            </marker>
+            <marker
+              id="arrow-done"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.1 142 / 0.85)" />
+            </marker>
+            <marker
+              id="arrow-queue"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.37 0.006 80)" />
+            </marker>
+            <marker
+              id="arrow-warn"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.835 0.135 85)" />
+            </marker>
+            <marker
+              id="arrow-warn-dim"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.085 85)" />
+            </marker>
           </defs>
 
-          <circle cx={465} cy={85} r={280} fill="url(#bg-glow-2)" />
-          <circle cx={655} cy={295} r={340} fill="url(#bg-glow-1)" />
-          <circle cx={500} cy={500} r={300} fill="url(#bg-glow-1)" />
-          <circle cx={1100} cy={300} r={220} fill="url(#bg-glow-3)" />
+          {/* Background bands */}
+          {TIERS.map((t) => (
+            <rect
+              key={`band-${t.id}`}
+              className={`fc-band ${t.id === 2 ? "alt" : ""}`.trim()}
+              x={0}
+              y={BAND[t.id][0]}
+              width={VIEW_W}
+              height={BAND[t.id][1] - BAND[t.id][0]}
+            />
+          ))}
 
-          <line x1={50} y1={195} x2={1150} y2={195} className="fc-membrane" />
-          <line x1={50} y1={400} x2={1150} y2={400} className="fc-membrane" />
+          {/* Soft glows by tier */}
+          <circle cx={550} cy={TIER_Y[1]} r={340} fill="url(#bg-glow-b)" />
+          <circle cx={650} cy={TIER_Y[2]} r={380} fill="url(#bg-glow-a)" />
+          <circle cx={500} cy={TIER_Y[3]} r={340} fill="url(#bg-glow-a)" />
+
+          {/* Band dividers */}
+          <line className="fc-band-divider" x1={0} y1={BAND[2][0]} x2={VIEW_W} y2={BAND[2][0]} />
+          <line className="fc-band-divider" x1={0} y1={BAND[3][0]} x2={VIEW_W} y2={BAND[3][0]} />
 
           {dots}
 
+          {/* Tier headers (top-left of each band) */}
           {TIERS.map((t) => (
-            <g key={t.id} transform={`translate(18 ${t.y})`}>
-              <line className="fc-tier-bar" x1={0} y1={-28} x2={0} y2={28} />
-              <text className="fc-tier-label" x={8} y={-8}>
-                {t.label}
-              </text>
-            </g>
+            <TierHeader key={`tier-${t.id}`} tier={t} band={BAND[t.id]} />
           ))}
 
+          {/* Spine edges */}
           {SPINE_EDGES.map(([fromId, toId]) => {
-            const from = NODE_BY_ID[fromId]!;
-            const to = NODE_BY_ID[toId]!;
-            const state = edgeState(fromId, toId);
-            const d = spinePath(from, to);
-            const cls = `fc-edge ${state === "active" ? "active" : state === "done" ? "done" : "dim"}`;
-            const pulseStyle = { offsetPath: `path("${d}")` } as CSSProperties;
+            const isDescent = NODES[fromId]!.y !== NODES[toId]!.y;
+            const state =
+              isDescent && fromId === "generation_gate" && toId === "retrieval"
+                ? wrapState
+                : edgeState(fromId, toId);
             return (
-              <g
+              <Edge
                 key={`${fromId}-${toId}`}
-                className={`fc-edge-wrap ${state === "active" ? "active" : ""}`}
-              >
-                <path d={d} className={cls} />
-                {state === "active" ? (
-                  <>
-                    <circle className="fc-pulse a" r={2.2} style={pulseStyle} />
-                    <circle className="fc-pulse b" r={2.2} style={pulseStyle} />
-                  </>
-                ) : null}
-              </g>
+                d={spinePath(fromId, toId)}
+                state={state}
+                descent={isDescent}
+              />
             );
           })}
 
+          {/* S1/S2 fork (delib -> final) */}
           {(() => {
-            const d = wrapAroundPath();
-            const cls = `fc-edge ${wrapState === "active" ? "active" : wrapState === "done" ? "done" : "dim"}`;
-            const pulseStyle = { offsetPath: `path("${d}")` } as CSSProperties;
-            return (
-              <g className={`fc-edge-wrap ${wrapState === "active" ? "active" : ""}`}>
-                <path d={d} className={cls} />
-                {wrapState === "active" ? (
-                  <>
-                    <circle className="fc-pulse a" r={2.2} style={pulseStyle} />
-                    <circle className="fc-pulse b" r={2.2} style={pulseStyle} />
-                  </>
-                ) : null}
-              </g>
-            );
-          })()}
-
-          {(() => {
-            const s1 = forkPath("s1");
-            const s2 = forkPath("s2");
-            const s1Chosen = forkChosen("s1");
-            const s2Chosen = forkChosen("s2");
-            const s1Active = forkActive("s1") || (s1Chosen === true && finalDone);
-            const s2Active = forkActive("s2") || (s2Chosen === true && finalDone);
-            const s1Cls = `fc-fork-lane ${s1Active ? "active" : ""} ${s1Chosen === false ? "unchosen" : ""}`;
-            const s2Cls = `fc-fork-lane ${s2Active ? "active" : ""} ${s2Chosen === false ? "unchosen" : ""}`;
-            const labelY1 = 380;
-            const labelY2 = 430;
+            const s1Active = forkActive("s1") || (forkChosen("s1") === true && finalDone);
+            const s2Active = forkActive("s2") || (forkChosen("s2") === true && finalDone);
+            const s1Cls = `fc-fork-lane ${s1Active ? "active" : ""} ${forkChosen("s1") === true ? "chosen" : ""} ${forkChosen("s1") === false ? "unchosen" : ""}`;
+            const s2Cls = `fc-fork-lane ${s2Active ? "active" : ""} ${forkChosen("s2") === true ? "chosen" : ""} ${forkChosen("s2") === false ? "unchosen" : ""}`;
+            const laneMarker = (lane: "s1" | "s2") => {
+              if (forkActive(lane)) return "url(#arrow-active)";
+              if (forkChosen(lane) === true) return "url(#arrow-done)";
+              return "url(#arrow-queue)";
+            };
             return (
               <>
                 <g className={s1Cls}>
-                  <path d={s1} className="fc-fork-lane-path" />
-                  <text className="fc-fork-tag" x={600} y={labelY1 - 4}>
-                    S1
-                  </text>
-                  <text className="fc-fork-desc" x={600} y={labelY1 + 8}>
-                    fast
-                  </text>
+                  <path d={forkPath("s1")} className="fc-fork-lane-path" markerEnd={laneMarker("s1")} />
+                  <g transform="translate(305 421)">
+                    <rect className="fc-fork-tag-bg" x={-30} y={-13} width={60} height={26} rx={3} />
+                    <text className="fc-fork-tag" x={0} y={-2}>
+                      S1
+                    </text>
+                    <text className="fc-fork-desc" x={0} y={9}>
+                      fast
+                    </text>
+                  </g>
                 </g>
                 <g className={s2Cls}>
-                  <path d={s2} className="fc-fork-lane-path" />
-                  <text className="fc-fork-tag" x={780} y={labelY2 - 4}>
-                    S2
-                  </text>
-                  <text className="fc-fork-desc" x={780} y={labelY2 + 8}>
-                    plan
-                  </text>
+                  <path d={forkPath("s2")} className="fc-fork-lane-path" markerEnd={laneMarker("s2")} />
+                  <g transform="translate(257 370)">
+                    <rect className="fc-fork-tag-bg" x={-30} y={-13} width={60} height={26} rx={3} />
+                    <text className="fc-fork-tag" x={0} y={-2}>
+                      S2
+                    </text>
+                    <text className="fc-fork-desc" x={0} y={9}>
+                      plan
+                    </text>
+                  </g>
                 </g>
               </>
             );
           })()}
 
+          {/* Regen arc */}
           {(() => {
-            const d = regenPath();
             const active = finalAttempt > 1;
             const cls = `fc-edge regen ${active ? "fire" : ""}`;
+            const marker = active ? "url(#arrow-warn)" : "url(#arrow-warn-dim)";
             return (
-              <g>
-                <path d={d} className={cls} />
-                <text
-                  className={`fc-regen-label ${active ? "active" : ""}`}
-                  x={(NODE_BY_ID.guards!.x + NODE_BY_ID.final!.x) / 2}
-                  y={NODE_BY_ID.guards!.y - 50}
-                >
-                  regen ↻
-                </text>
+              <g className={`fc-regen-group ${active ? "active" : ""}`}>
+                <path d={regenPath()} className={cls} markerEnd={marker} />
+                <g transform={`translate(${(NODES.guards!.x + NODES.final!.x) / 2} 624)`}>
+                  <rect className="fc-regen-label-bg" x={-38} y={-9} width={76} height={16} rx={2} />
+                  <text className={`fc-regen-label ${active ? "active" : ""}`} x={0} y={3}>
+                    regen ↻
+                  </text>
+                </g>
               </g>
             );
           })()}
 
-          <Thorn
-            gateId="closure_loop"
-            x={870}
-            y={170}
-            label="closure suppress"
-            active={closureSuppressed}
-          />
-          <Thorn
-            gateId="generation_gate"
-            x={1005}
-            y={170}
-            label="gate suppress"
-            active={gateSuppressed}
-          />
-          <Thorn
-            gateId="guards"
-            x={500}
-            y={570}
-            label="guards trip"
-            active={guardsSuppressed}
-          />
+          {/* Suppression thorns */}
+          <ThornUp nodeId="closure_loop" label="suppress closure" active={closureSuppressed} />
+          <ThornUp nodeId="generation_gate" label="suppress gen" active={gateSuppressed} />
+          <ThornSidecar nodeId="guards" label="guards trip" active={guardsSuppressed} />
 
+          {/* Endpoints + nodes */}
           <Endpoint node={INPUT_NODE} outcome={null} />
-          {PHASES_LAYOUT.map((p) => (
-            <Ganglion
-              key={p.id}
-              node={p}
-              status={phStatus(p.id)}
-              sub={phasesRecord[p.id]?.sub}
-              duration={phasesRecord[p.id]?.durationMs}
-            />
-          ))}
+          {PHASE_IDS.map((id) => {
+            const n = NODES[id];
+            if (!n || n.kind === "endpoint") return null;
+            return (
+              <Ganglion
+                key={id}
+                node={n}
+                status={phStatus(id)}
+                sub={phasesRecord[id]?.sub}
+                duration={phasesRecord[id]?.durationMs}
+              />
+            );
+          })}
           <Endpoint node={TERMINAL_NODE} outcome={terminalOutcome} />
         </svg>
       </div>
