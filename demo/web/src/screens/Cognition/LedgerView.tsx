@@ -42,6 +42,12 @@ function groupsForLedger(ledger: EvidenceLedger): LedgerGroup[] {
     })) ?? [];
 
   return [
+    {
+      id: "csa",
+      label: "cross-session activity",
+      color: "solid",
+      entries: sectionEntries(ledger, "cross_session_self_activity"),
+    },
     { id: "ep", label: "episodes", color: "info", entries: sectionEntries(ledger, "episodes") },
     {
       id: "sn",
