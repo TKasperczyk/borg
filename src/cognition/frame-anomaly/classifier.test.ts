@@ -88,15 +88,13 @@ function creatorAuthorityResponse(options: LLMCompleteOptions): LLMCompleteResul
         session_audience_role?: unknown;
       }
     | undefined;
-  const allowed =
-    context?.current_sender_borg_role === "creator" ||
-    context?.session_audience_role === "operator";
+  const allowed = context?.current_sender_borg_role === "creator";
 
   return frameAnomalyResponse({
     kind: allowed ? "normal" : "frame_assignment_claim",
     rationale: allowed
-      ? "Creator authority is allowed by structural context."
-      : "Creator authority is not allowed for this sender and session.",
+      ? "Creator authority is allowed by the current sender role."
+      : "Creator authority is not allowed for this sender.",
   });
 }
 
@@ -213,8 +211,9 @@ describe("FrameAnomalyClassifier", () => {
 
             expect(String(options.system ?? "")).toContain("In group audiences");
             expect(String(options.system ?? "")).toContain(
-              'current sender\'s borg_role is "creator" OR the session audience_role is "operator"',
+              'conversation_context.current_sender_borg_role is "creator"; session_audience_role="operator" alone is not sufficient',
             );
+            expect(String(options.system ?? "")).not.toContain("Tom");
             expect(payload.conversation_context).toEqual({
               audience: {
                 id: audience,
@@ -339,10 +338,11 @@ describe("FrameAnomalyClassifier", () => {
 
   it.each([
     ["creator speaker in participant session", "creator", "participant", "normal"],
+    ["creator speaker in operator session", "creator", "operator", "normal"],
     ["non-creator speaker in participant session", null, "participant", "frame_assignment_claim"],
-    ["operator session with non-creator speaker", null, "operator", "normal"],
+    ["operator session with non-creator speaker", null, "operator", "frame_assignment_claim"],
   ] as const)(
-    "classifies creator authority claims with dual signals: %s",
+    "classifies creator authority claims by sender role: %s",
     async (_label, borgRole, audienceRole, expectedKind) => {
       const audience = createEntityId();
       const currentSender = createEntityId();
@@ -368,7 +368,7 @@ describe("FrameAnomalyClassifier", () => {
           },
           current_sender: {
             id: currentSender,
-            display_name: "Tom",
+            display_name: "Morgan",
           },
           current_sender_borg_role: borgRole,
           session_audience_role: audienceRole,
