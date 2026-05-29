@@ -67,8 +67,8 @@ procedural adaptation are continuously derived.
 
 The Stream is an append-only chronological audit log of Borg's experience
 (entry point: `src/stream/index.ts`). It records user messages, assistant
-messages, suppressed or observed emissions, thoughts, tool calls, tool results,
-perception results, internal events, and dream reports.
+messages, image attachments, suppressed or observed emissions, thoughts, tool
+calls, tool results, perception results, internal events, and dream reports.
 
 The Stream is the spine because every later memory record needs to be traceable
 to what actually happened. A semantic belief, episode, skill update,
@@ -101,6 +101,57 @@ Aborted-turn status propagates through that same source-trust path. Entries
 written during a failed turn remain audit history, but they become inactive for
 retrieval recency, citation resolution, and later source validation so failed
 turn artifacts are not reused as ordinary evidence.
+
+## Sessions
+
+A session is one conversational locus the entity is addressable in: a demo
+chat, a Slack thread, a Discord channel, an iMessage DM, or an operator
+console (entry point: `src/sessions/index.ts`). Sessions are first-class,
+migrated records, and the entity holds many of them at once. "The current
+session" is just the record keyed by the incoming turn's session id; the rest
+stay live in the background.
+
+Sessions exist because Borg is a multi-surface, multi-audience entity. A single
+ambient scope cannot model talking to one person in a demo while holding a
+paused group thread and a dedicated operator channel with its creator. Making
+each locus its own governed record is what lets audience scoping, operator
+awareness, and participation control act on one conversation without disturbing
+the others.
+
+A session record carries identity (source type, label, and the audience entity
+it addresses), liveness (last activity, message count, last turn, and an
+active, idle, or archived status), and three orthogonal control dimensions:
+
+- Participation policy is active, paused, observing, or muted. It structurally
+  narrows the emission tools offered to the finalizer: active offers the full
+  set, observing offers only observe-or-silence, and paused or muted offer only
+  silence. This is tool-shape gating, not output policing; the harness removes
+  tools rather than judging what the model wrote.
+- Audience role is participant or operator. An operator session is the entity's
+  supervisory channel. It unlocks operator-only context: an aliased, PII-light
+  snapshot of the entity's other active sessions, and, when the sender is also
+  the creator, cross-session activity, creator directives, and proactive
+  outbound into those sessions. The snapshot stays alias-only for awareness;
+  only a session reachable for outbound additionally exposes its id, so the
+  model can name a target without ids leaking for awareness alone.
+- Privacy level is a declared dimension reserved for payload handling. It is
+  not yet load-bearing in cognition.
+
+Writes come from the host wiring each surface (ensuring a record on contact,
+touching it after each turn) and from operator controls that set participation
+policy. Reads shape audience resolution, the available emission tools,
+operator-only prompt context, and cross-session features.
+
+Operator authority is a two-key structural condition, not one flag. The session
+says "this is the operator channel" when its audience role is operator; the
+entity record says "this sender is the creator" when the sender's Borg role is
+creator. Operator-only content that carries real authority -- cross-session
+activity, creator directives, trusted operator control over a frame anomaly --
+requires both. Operator role alone is necessary but not sufficient.
+
+Nothing here makes a session a memory band. A session is scope and governance
+for a conversation; what is remembered from it still flows through the Stream
+and the memory bands. See Audience Scoping.
 
 ## Memory Bands
 
@@ -214,9 +265,12 @@ recurs.
 Writes come from Perception and Reflection. Reads influence retrieval weights,
 mood-congruent ranking, and deliberation context.
 
-Retrieval uses the current turn's Working Memory mood when it is available,
-then falls back to the repository mood. This lets fresh Perception affect
-ranking before durable affective persistence catches up.
+Retrieval uses the current turn's Working Memory mood only when it carries a
+non-trivial affective signal, and otherwise falls back to the repository mood.
+This lets fresh Perception affect ranking before durable affective persistence
+catches up, while a flat or near-neutral working mood does not displace stored
+affect. The same activity threshold gates whether mood influences ranking at
+all.
 
 When affective classification degrades, Borg falls back to neutral affect with
 observability. It is better to proceed honestly with no affective signal than
@@ -368,6 +422,10 @@ cannot silently overwrite current self state; compare-and-set conflicts surface
 as operation results or errors, and successful changes leave identity events
 that explain what changed and why.
 
+Identity Governance bounds changes to Borg's own self-model. Standing operator
+instructions about how to disclose facts to particular audiences are a separate
+authority; see Creator Directives.
+
 ## Visual Attachments
 
 Images are first-class durable sources, not inline text inside the Stream. The
@@ -417,9 +475,11 @@ authority over Borg's system, developer, or user instructions.
 
 ## A Single Turn End To End
 
-A turn begins when the harness receives a user-origin or autonomous input and
-opens a coordinated turn lifecycle (entry point:
-`src/cognition/lifecycle/turn-phase-coordinator.ts`). The lifecycle is ordered
+A turn begins when the harness receives a user-origin, autonomous, or
+directed-outbound input and opens a coordinated turn lifecycle (entry point:
+`src/cognition/lifecycle/turn-phase-coordinator.ts`). Autonomous inputs come
+from the Autonomy Scheduler; directed-outbound inputs come from the entity
+sending a message into another session (see Autonomy and Proactive Outbound). The lifecycle is ordered
 so that Borg first catches up and interprets the input, then records the
 turn-opening evidence, then retrieves the right context, then reasons, then
 emits once, then reflects.
@@ -490,8 +550,14 @@ out of a fictional frame, or that the role assignment is inverted.
 
 The classifier does not decide whether the final answer is good. It decides
 whether the current user message is safe to ingest as normal user-world
-evidence. Confirmed anomalies are recorded and quarantined so they remain
-visible as events but do not become ordinary memory substrate.
+evidence. A confirmed anomaly is normally recorded and quarantined so it remains
+visible as an event but does not become ordinary memory substrate.
+
+There is one structural exemption. A confirmed anomaly from the creator in an
+operator session is treated as trusted operator control rather than quarantined,
+because the creator may legitimately reframe the entity's own operating context.
+This keys on the sender's Borg role being creator, not on the operator session
+alone. Every other confirmed anomaly is quarantined.
 
 If the classifier fails or returns an unusable result, the path fails open with
 degraded trace data. The user entry is not quarantined on classifier failure;
@@ -502,8 +568,9 @@ ordinary turn flow continues unless an anomaly is actually classified.
 Extraction turns the current message into structured candidates before
 retrieval (entry point:
 `src/cognition/lifecycle/turn-phase/extraction-phase.ts`). It can extract
-corrective preferences, action state changes, goal promotion candidates, and
-links between current action assertions and existing self context.
+corrective preferences, action state changes, goal promotion candidates, links
+between current action assertions and existing self context, and -- when the
+creator speaks in an operator session -- creator directives.
 
 Extraction exists because some current-turn signals must be available to
 retrieval and deliberation immediately. If the user corrects a preference or
@@ -576,8 +643,8 @@ final response (entry point: `src/cognition/evidence-ledger/index.ts`). It
 renders the current message, transcript context, attribution, active
 commitments, discourse state, contradictions, action states, group/channel
 memory, relational slots, raw retrieved Stream evidence, structured memory
-evidence, episodes, semantic graph context, Open Questions, prior-session
-memory, and Shared State.
+evidence, episodes, semantic graph context, Open Questions, cross-session
+self-activity, prior-session memory, and the Shared State artifact.
 
 The ledger exists because scattering retrieval results across many prompt
 sections makes grounding hard to audit. The finalizer needs one ordered packet
@@ -731,7 +798,10 @@ protocols are direct runtime constraints.
 Before deliberation, recent dialogue and the current user turn are classified
 along closure, content, and state-delta axes. A detected loop can update
 discourse state or suppress later closure-only output, which is separate from
-the post-generation audit that inspects a drafted response for closure spans.
+the post-generation audit that inspects a drafted response for closure spans. A
+closure-shaped current turn that carries no substantive state delta also skips
+Shared State compilation for that turn, so a purely closing exchange does not
+rewrite what the audience and Borg share.
 
 ### Finalization
 
@@ -889,6 +959,16 @@ canonicalization. Each commitment records what was promised or constrained,
 who it applies to, who made it, what audience it restricts, what entity it is
 about, and what Stream entries justify it.
 
+A commitment's restricting audience is normally the session it was authored in.
+The one exception is gated to the creator-in-an-operator-session case: a creator
+can scope a behavioral rule to one of the entity's other known audiences, so the
+operator can govern how Borg behaves in a specific channel from the operator
+console. The target audience is chosen by the model from the structurally
+supplied set of other active audiences and re-validated against that set before
+it is honored, so an ordinary participant -- or a hallucinated id -- can never
+redirect a commitment to an audience it does not belong to. See Audience
+Scoping.
+
 During retrieval, Borg asks for commitments applicable to the current audience
 and time. They are sorted by priority and rendered into the prompt before the
 model speaks.
@@ -909,6 +989,60 @@ Commitments can be superseded, revoked, expired, or canonicalized by locked
 Shared State. History remains traceable through provenance and source Stream
 IDs.
 
+## Creator Directives
+
+Creator directives are standing, authority-bearing instructions from the creator
+or operator about identity and disclosure (entry point:
+`src/memory/creator-directives/index.ts`). A directive can assert who Borg is,
+record a fact about a subject, or set a disclosure boundary: who may be told
+which fact, and how. They are a third authority pillar alongside Commitments and
+Identity Governance, and they replaced the earlier operator-advice mechanism.
+
+Creator directives exist because authority over disclosure is not the same as a
+behavioral commitment or a self-model record. "This fact may be told to Alice,
+shown as a confidentiality boundary to Bob, and hidden from everyone else" is a
+durable, audience-scoped rule the harness must resolve before the model speaks,
+so a fact authorized for one audience never enters another audience's prompt.
+
+A directive pairs a durable internal handling rule with a structured disclosure
+policy. The policy's content scope is one of operator-only, public, allow-list,
+subject-only, or all-except, together with the allowed and excluded entities,
+whether the subject itself may know, and a mention posture (volunteer,
+answer-if-asked, only-if-the-topic-is-raised, or never mention). Directives
+carry priority and supersession, so a newer directive about the same subject
+slot retires the older one.
+
+The harness resolves which directives apply and how to render each one, purely
+structurally. For every recipient it evaluates the disclosure policy against the
+audience entity, the participant roster, the session's audience role, and the
+sender's Borg role, and returns one of three render modes: content, where the
+fact is shown to the model; boundary, where a content-free confidentiality
+posture is shown instead; or omit, where the directive is invisible this turn.
+In a group the most restrictive recipient wins. None of this reads what the
+model would say; the mention posture is handed to the model verbatim for it to
+honor, and no deterministic check polices whether it complied.
+
+Writes come from extraction: when the creator speaks in an operator session, an
+LLM turns those instructions into structured directive records. That write path
+is gated structurally to the creator-in-an-operator-session case, and the
+extracted records are checked for structural consistency -- scope against entity
+sets, slot against value, internal-id hygiene -- but never for whether their
+wording is acceptable. Reads happen during retrieval, where applicable
+directives are rendered into a dedicated trusted briefing in the deliberation
+prompt, beside Commitments and the creator-identity context. That briefing is
+its own prompt section, not part of the Evidence Ledger.
+
+A creator directive differs from a commitment. A commitment binds conduct:
+always do X, never do Y. A creator directive governs information: which audience
+may receive which fact, and with what posture. Both are operator-authority
+pillars surfaced as sibling trusted sections, but they answer different
+questions, and resolving a directive's render mode by audience is machinery
+commitments do not have.
+
+Nothing here decides truth. Creator directives govern what may be disclosed, not
+what is recorded as true; correcting a stored fact is a separate authority. See
+Corrections.
+
 ## Goals, Actions, Open Questions, And Review Queue
 
 Borg has a lifecycle layer for state that is neither simple memory nor final
@@ -922,9 +1056,9 @@ future work without host capability.
 
 Actions are finite actor-owned task states. An action can belong to Borg, a
 user, a participant, or a third party. Actions have explicit states such as
-considering, committed to do, scheduled, completed, not done, unknown, or
-archived. They are used for concrete tasks and assertions, not for durable
-identity direction.
+considering, committed to do, scheduled, completed, not done, expired,
+unknown, or archived. They are used for concrete tasks and assertions, not for
+durable identity direction.
 
 Open Questions represent unresolved uncertainty. They are not facts. An Open
 Question can be created by reflection, contradiction detection, review hooks,
@@ -969,8 +1103,9 @@ who heard it, who is being addressed, and who may later see the memory.
 The audience can be null or global, a person, a group, or self. The sender can
 be different from the audience in group contexts. The reply target can be a
 specific entity within a group. These distinctions propagate into Stream
-entries, Social Memory, Commitments, episodic visibility, semantic source
-visibility, Shared State, retrieval, and the Evidence Ledger.
+entries, Social Memory, Commitments, creator-directive disclosure, episodic
+visibility, semantic source visibility, Shared State, retrieval, the
+cross-session activity projection, and the Evidence Ledger.
 
 Group audience scope does not imply participant-private visibility. A group
 turn may include participant roster context and constrained relational slots,
@@ -988,6 +1123,83 @@ Identity also has audience scope. Borg can have global self-memory, but some
 Open Questions, commitments, or shared states are specific to the relationship
 with a particular audience. A coherent identity does not require the same
 state to be visible to every audience.
+
+## Cross-Session Activity
+
+Cross-session activity is how something the entity did in one conversation can
+become visible in another (entry point: `src/memory/activity/projection.ts`). An
+activity ledger records every inbound contact, every reply, and every completed
+turn across all sessions. A separate audience-scoped projection reads recent
+events from other still-active sessions and renders them as a small Evidence
+Ledger section.
+
+It exists so the entity can answer "what have you been doing elsewhere, and who
+else have you been talking to" for its operator, without the harness leaking
+other audiences' private interactions into every session. Activity is recorded
+globally but disclosed narrowly: by default, another session's events are
+invisible.
+
+The projection is one of a few narrowly sanctioned crossings of the audience
+boundary, all gated on the same creator-in-an-operator-session shape: reading
+another session's recent activity here, scoping a commitment to another channel
+(see Commitments), and sending a proactive message into another session (see
+Proactive Outbound). The projection itself surfaces only when the current
+session's audience role is operator and the current sender's Borg role is
+creator, within a recent time window and under a small cap. Any other audience
+or sender gets nothing. The gate is purely structural -- roles, recency, count
+-- never a judgment about content.
+
+Each surfaced row is labeled by the speaker, not by the session it happened in.
+In a group session the audience is the room, so labeling an inbound contact by
+the session would say "the planning room contacted Borg" when a specific person
+did. Resolving the speaker first means the operator sees who actually spoke.
+
+In the Evidence Ledger the projection is its own section with its own trust
+rank, carried as system-attested metadata rather than citable Stream evidence.
+It tells the model what the entity has been doing without becoming a fact to
+cite. As with everything surfaced this way, whether and how to mention it is the
+model's judgment; the harness only decides that the operator, and only the
+operator, may see it. See Audience Scoping, Provenance And Citations, and
+Sessions.
+
+## Proactive Outbound
+
+Most turns are reactive: someone speaks and Borg answers. Proactive outbound is
+the entity initiating -- composing a message into a session it is not currently
+being addressed in (entry point: `src/outbound/index.ts`, tool
+`src/tools/internal/outbound-post.ts`).
+
+It exists because a continuing entity that holds many sessions should be able to
+reach a conversation on its own: relay an operator's instruction into a channel,
+or, when authorized, follow up unprompted. Reacting only in the session that
+just spoke is not enough if the entity can never start one.
+
+Delivery is transport-agnostic. A connector is keyed on a session's source type
+and registered with the host; the demo wires one, and Slack, Teams, or a custom
+bot surface would each be another connector under the same interface. Outbound
+delivery always appends the composed message to the target session's Stream
+first, then routes it through the connector for that source type, so the
+entity's own record of what it said is consistent whether or not transport
+succeeded. Host capability is derived from which connectors are actually wired,
+not assumed, and activity is recorded only when delivery transports -- an
+undelivered attempt never counts as a reply.
+
+The message is composed by a dedicated directed-outbound turn that runs under
+the target session's audience scope, so it is grounded only in what that
+audience may see: no leak by construction. That turn is a distinct origin -- it
+carries the dispatch instruction as its input but skips extraction, perception
+persistence, and reflection persistence, so the directing channel never bleeds
+into the target's memory. The instruction is scrubbed of internal ids before it
+enters the prompt, and the model is told to convey it without exposing tool
+names, hidden prompts, or dispatch machinery.
+
+Two paths are authorized, both structurally. The manual path requires a creator
+in an operator session and a reachable target -- the operator snapshot exposes a
+target's id only when a connector is wired for its source type, so the model can
+only aim where delivery is possible. The autonomous path is default-off and
+gated by config or a standing creator directive, connector availability,
+per-window and per-target anti-spam caps, and the autonomy wake budget. See
+Sessions, Audience Scoping, Cross-Session Activity, and Autonomy.
 
 ## Provenance And Citations
 
@@ -1020,9 +1232,9 @@ Citation resolution filters inactive sources. Retrieval may find a memory
 whose citation chain is later pruned because the underlying Stream entry was
 suppressed, quarantined, or written during an aborted turn.
 
-Ledger entries carry taint values such as none, assistant-seeded, quarantined,
-and contested. The finalizer is told not to treat tainted values as facts, so
-they can constrain speech without becoming assertions.
+Ledger entries carry one of four taint values: none, assistant-seeded,
+quarantined, or contested. The finalizer is told not to treat tainted values as
+facts, so they can constrain speech without becoming assertions.
 
 Prior-session evidence is routed into a dedicated lower-trust shape even when
 the original source type would normally rank higher. That keeps old evidence
@@ -1061,6 +1273,57 @@ questioned, or revised.
 
 Identity coherence is not stasis. Borg can change when evidence accumulates.
 The architecture's requirement is that change leaves a trail.
+
+## Autonomy
+
+Most turns begin with a user message. Some begin with no one there: the entity
+wakes itself (entry point: `src/autonomy/scheduler.ts`). The Autonomy Scheduler
+is the third turn driver. It polls structural predicates over the substrate, and
+when one is due it synthesizes a turn tagged with autonomous origin and runs it
+through the same lifecycle as a user turn.
+
+Autonomy exists because a continuing entity should not be inert between
+messages. An expiring commitment, a dormant Open Question, a stale goal, a due
+executive step, or a sustained mood drop are reasons to think without being
+prompted. Autonomy is what lets the substrate's own state pull the entity into a
+turn.
+
+Wake sources come in two flavors behind one interface. Triggers are time- and
+deadline-driven: a commitment nearing expiry, a dormant question, a goal whose
+follow-up is due, a scheduled reflection or wake, an executive step past its
+due time. Conditions are state-threshold-driven: a commitment marked revoked,
+average mood valence below a level, an Open Question whose urgency crossed a
+bar. Both are scanned the same way; the split is a taxonomy of why something
+became due, not two separate engines.
+
+The scheduler decides only whether and when to wake, structurally. Each due
+event is deduped through a watermark keyed on the state version that made it
+due, so a source fires once per state change and re-arms when that state
+advances rather than firing forever. A budget caps wakes per rolling window,
+failures back off, and a live user turn always wins the session lock -- an
+autonomous wake yields rather than preempting. The scheduler never inspects,
+scores, or rewrites what the woken turn produces; it records a wake event and
+an outcome summary to the Stream and stops there.
+
+An autonomous turn is structurally distinct from a user turn. Its origin is
+autonomous, its audience is the self, and it carries no external sender and no
+user message. The lifecycle keys on that origin: it does not persist a user
+message, it skips the group-sender preflight and the frame-anomaly check that
+only apply to inbound user-world input, and perception uses the carried mood
+rather than classifying affect from a message that does not exist. The wake
+context itself is rendered as untrusted data, so remembered trigger text cannot
+smuggle instructions into the turn.
+
+Autonomy does not grant new capabilities. Waking is not acting. An autonomous
+turn can only do what any turn can do -- reason, call host-provided tools, emit
+or stay silent -- and whether it claims an action it cannot perform is the
+model's judgment against the host-capabilities block, not something the harness
+gates. The scheduler also does not start itself: a runtime opts in by starting
+it, and one self-invocation source fires only the wakes the entity itself queued
+through a tool.
+
+See A Single Turn End To End for the lifecycle an autonomous input enters, and
+Offline Maintenance for the separate between-turns maintenance path.
 
 ## Offline Maintenance: The Dream Cycle
 
@@ -1101,8 +1364,10 @@ semantic insights with source episodes and support edges. It runs offline
 because durable pattern extraction needs multiple episodes and should not
 delay a live answer.
 
-Its purpose is to convert repeated experience into semantic memory while
-keeping confidence conservative and reviewable.
+It does not write the graph directly. Each insight is enqueued as a new-insight
+review carrying the proposed node and its candidate support edges, and the
+Review Resolver materializes them on acceptance. Confidence is kept conservative
+so a proposed pattern stays reviewable rather than asserted.
 
 ### Semantic Extractor
 
@@ -1228,6 +1493,49 @@ trail.
 Online revision from locked Shared State is intentionally narrow and fail-open.
 It can supersede or contradict candidate semantic records when the evidence is
 clear, but failures trace degradation and continue the turn.
+
+## Corrections
+
+Corrections are the operator-authoritative path into the substrate (entry point:
+`src/correction/service.ts`). Where ordinary turns change memory only through
+conservative, LLM-mediated extraction and review, corrections let a human edit,
+revoke, or invalidate any addressable record directly. The public facade exposes
+them as a first-class operation.
+
+Corrections exist because extraction is deliberately cautious and can be wrong:
+a misattributed fact, a stale belief, a bad semantic edge. The operator is the
+ground-truth authority on what is true, and that authority needs a structured,
+audited channel rather than a silent overwrite. Every correction carries manual
+provenance and leaves an identity event, so operator intervention is as
+traceable as any other change.
+
+The operations differ in how directly they act. Correcting a record proposes a
+patch through the Review Queue rather than writing in place, so the change lands
+when the review is resolved. Forgetting a record acts immediately, and its
+effect depends on the record: episodes and semantic nodes are archived,
+commitments are revoked, an Open Question is abandoned through Identity
+Governance, and a few self-model records are removed outright with the identity
+event as the surviving trail. Invalidating a semantic edge closes it in time and
+feeds the same dependent-belief fanout the Belief Reviser runs. Alongside these,
+read-only operations answer why a record exists, summarize what is known about a
+person, and list the identity-event log.
+
+Operator authority does not mean bypassing governance. Identity-bearing
+corrections still pass through Identity Governance; the difference is that they
+are marked as resolved-through-review, the signal that lets an operator change
+established state where an ordinary conservative write would be blocked and
+re-queued. The round trip exists for traceability, not gatekeeping. There is no
+model in this path: the harness validates structure -- the target id, the patch
+shape, version checks -- and never judges meaning.
+
+Corrections preserve history rather than erasing it, the same principle as
+Belief Revision and Provenance And Citations: records are archived, revoked, or
+closed in time, and the identity-event log records what changed and why.
+
+Corrections fix truth; they do not govern disclosure. Which audiences may be
+told which facts is a separate authority. See Creator Directives, Identity
+Governance, and the Review Queue under Goals, Actions, Open Questions, And
+Review Queue.
 
 ## LLM-First Interpretation
 
@@ -1380,7 +1688,9 @@ Evidence Ledger. Shared understanding is audience-specific, so Borg has
 Shared State and audience-scoped retrieval. Identity must evolve without
 silent overwrite, so Borg has Identity Governance, provenance, Open Questions,
 growth markers, and review. Maintenance must happen outside the response path,
-so Borg has the dream cycle. Interpretation must remain model-mediated, so
+so Borg has the dream cycle. The entity must be able to act on its own state
+without being prompted, so Borg has autonomy. Interpretation must remain
+model-mediated, so
 deterministic code can keep the substrate orderly but cannot become a hidden
 language interpreter.
 
