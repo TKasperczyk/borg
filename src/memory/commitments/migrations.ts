@@ -1,10 +1,9 @@
 import type { Migration } from "../../storage/sqlite/index.js";
-import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const commitmentMigrations = [
   {
     id: 1,
-    name: "commitments_initial_schema",
+    name: "commitment_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE entities (
@@ -12,11 +11,15 @@ export const commitmentMigrations = [
           canonical_name TEXT NOT NULL,
           aliases TEXT NOT NULL,
           created_at INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS entities_name_idx
+        , name_provenance TEXT NOT NULL DEFAULT 'unknown', kind TEXT NULL CHECK (
+              kind IS NULL OR kind IN ('person', 'group', 'self', 'abstract')
+            ), borg_role TEXT NULL CHECK (
+            borg_role IS NULL OR borg_role IN ('creator')
+          ));
+        CREATE INDEX entities_kind_idx
+          ON entities(kind);
+        CREATE INDEX entities_name_idx
           ON entities(canonical_name);
-
         CREATE TABLE commitments (
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -40,175 +43,7 @@ export const commitmentMigrations = [
           revoke_provenance_kind TEXT,
           revoke_provenance_episode_ids TEXT,
           revoke_provenance_process TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS commitments_audience_idx
-          ON commitments(restricted_audience);
-        CREATE INDEX IF NOT EXISTS commitments_about_idx
-          ON commitments(about_entity);
-        CREATE INDEX IF NOT EXISTS commitments_committed_by_idx
-          ON commitments(committed_by_entity_id);
-      `);
-    },
-  },
-  {
-    id: 2,
-    name: "commitment_source_stream_entry_ids",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE commitments
-          ADD COLUMN source_stream_entry_ids TEXT NULL;
-      `);
-    },
-  },
-  {
-    id: 3,
-    name: "commitment_directive_family",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE commitments
-          ADD COLUMN directive_family TEXT NULL;
-
-        UPDATE commitments
-        SET directive_family = 'uncategorized'
-        WHERE directive_family IS NULL;
-
-        ALTER TABLE commitments
-          ADD COLUMN last_reinforced_at INTEGER NULL;
-
-        UPDATE commitments
-        SET last_reinforced_at = created_at
-        WHERE last_reinforced_at IS NULL;
-
-        CREATE INDEX IF NOT EXISTS commitments_directive_family_idx
-          ON commitments(directive_family, restricted_audience, made_to_entity);
-      `);
-    },
-  },
-  {
-    id: 4,
-    name: "commitment_closure_pressure_relevance",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE commitments
-          ADD COLUMN closure_pressure_relevance TEXT NOT NULL DEFAULT 'neutral';
-      `);
-    },
-  },
-  {
-    id: 5,
-    name: "entity_name_provenance",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE entities
-          ADD COLUMN name_provenance TEXT NOT NULL DEFAULT 'unknown';
-
-        UPDATE entities
-        SET name_provenance = 'unknown'
-        WHERE name_provenance IS NULL;
-      `);
-    },
-  },
-  {
-    id: 6,
-    name: "entity_kind",
-    up: (db) => {
-      if (!tableHasColumn(db, "entities", "kind")) {
-        db.exec(`
-          ALTER TABLE entities
-            ADD COLUMN kind TEXT NULL CHECK (
-              kind IS NULL OR kind IN ('person', 'group', 'self', 'abstract')
-            );
-        `);
-      }
-
-      db.exec(`
-        UPDATE entities
-        SET kind = 'person'
-        WHERE kind IS NULL
-          AND lower(trim(canonical_name)) = 'user';
-
-        UPDATE entities
-        SET kind = 'self'
-        WHERE lower(trim(canonical_name)) = 'self';
-
-        CREATE INDEX IF NOT EXISTS entities_kind_idx
-          ON entities(kind);
-      `);
-
-      if (tableHasColumn(db, "entities", "name_provenance")) {
-        db.exec(`
-          UPDATE entities
-          SET kind = 'person'
-          WHERE kind IS NULL
-            AND name_provenance = 'config_default_user';
-        `);
-      }
-    },
-  },
-  {
-    id: 7,
-    name: "commitment_record_versions",
-    up: (db) => {
-      if (!tableExists(db, "commitments") || tableHasColumn(db, "commitments", "record_version")) {
-        return;
-      }
-
-      db.exec(`
-        ALTER TABLE commitments
-          ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
-      `);
-    },
-  },
-  {
-    id: 8,
-    name: "commitment_committed_by_entity_id",
-    up: (db) => {
-      if (!tableExists(db, "commitments")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "commitments", "committed_by_entity_id")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN committed_by_entity_id TEXT NULL;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS commitments_committed_by_idx
-          ON commitments(committed_by_entity_id);
-      `);
-    },
-  },
-  {
-    id: 9,
-    name: "commitment_artifact_backref",
-    up: (db) => {
-      if (!tableExists(db, "commitments")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "commitments", "canonicalized_by_artifact_entry_id")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
-        `);
-      }
-    },
-  },
-  {
-    id: 10,
-    name: "commitment_kind",
-    up: (db) => {
-      if (!tableExists(db, "commitments")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "commitments", "kind")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN kind TEXT NOT NULL DEFAULT 'assistant_commitment' CHECK (
+        , source_stream_entry_ids TEXT NULL, directive_family TEXT NULL, last_reinforced_at INTEGER NULL, closure_pressure_relevance TEXT NOT NULL DEFAULT 'neutral', canonicalized_by_artifact_entry_id TEXT NULL, kind TEXT NOT NULL DEFAULT 'assistant_commitment' CHECK (
               kind IN (
                 'assistant_commitment',
                 'audience_rule',
@@ -216,56 +51,9 @@ export const commitmentMigrations = [
                 'boundary',
                 'process_norm'
               )
-            );
-        `);
-      }
-
-      db.exec(`
-        UPDATE commitments
-        SET kind = 'assistant_commitment'
-        WHERE kind IS NULL;
-
-        CREATE INDEX IF NOT EXISTS commitments_kind_idx
-          ON commitments(kind);
-      `);
-    },
-  },
-  {
-    id: 11,
-    name: "commitment_enforcement_class",
-    up: (db) => {
-      if (!tableExists(db, "commitments")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "commitments", "kind")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN kind TEXT NOT NULL DEFAULT 'assistant_commitment' CHECK (
-              kind IN (
-                'assistant_commitment',
-                'audience_rule',
-                'participant_preference',
-                'boundary',
-                'process_norm'
-              )
-            );
-        `);
-      }
-
-      if (!tableHasColumn(db, "commitments", "enforcement_class")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN enforcement_class TEXT NULL CHECK (
+            ), enforcement_class TEXT NULL CHECK (
               enforcement_class IS NULL OR enforcement_class IN ('critical', 'advisory')
-            );
-        `);
-      }
-
-      if (!tableHasColumn(db, "commitments", "critical_domain")) {
-        db.exec(`
-          ALTER TABLE commitments
-            ADD COLUMN critical_domain TEXT NULL CHECK (
+            ), critical_domain TEXT NULL CHECK (
               critical_domain IS NULL OR critical_domain IN (
                 'privacy',
                 'audience_scope',
@@ -273,50 +61,21 @@ export const commitmentMigrations = [
                 'explicit_no_disclosure',
                 'internal_tool_hygiene'
               )
-            );
-        `);
-      }
-
-      db.exec(`
-        UPDATE commitments
-        SET enforcement_class = CASE
-          WHEN kind IN ('boundary', 'audience_rule') THEN 'critical'
-          WHEN kind IN ('process_norm', 'participant_preference', 'assistant_commitment') THEN 'advisory'
-          ELSE 'advisory'
-        END
-        WHERE enforcement_class IS NULL;
-
-        UPDATE commitments
-        SET critical_domain = CASE
-          WHEN kind IN ('boundary', 'audience_rule') THEN 'audience_scope'
-          ELSE NULL
-        END
-        WHERE critical_domain IS NULL;
-
-        UPDATE commitments
-        SET critical_domain = NULL
-        WHERE enforcement_class = 'advisory';
-
-        CREATE INDEX IF NOT EXISTS commitments_enforcement_class_idx
-          ON commitments(enforcement_class);
-        CREATE INDEX IF NOT EXISTS commitments_critical_domain_idx
+            ));
+        CREATE INDEX commitments_about_idx
+          ON commitments(about_entity);
+        CREATE INDEX commitments_audience_idx
+          ON commitments(restricted_audience);
+        CREATE INDEX commitments_committed_by_idx
+          ON commitments(committed_by_entity_id);
+        CREATE INDEX commitments_critical_domain_idx
           ON commitments(critical_domain);
-      `);
-    },
-  },
-  {
-    id: 12,
-    name: "entity_borg_role",
-    up: (db) => {
-      if (!tableExists(db, "entities") || tableHasColumn(db, "entities", "borg_role")) {
-        return;
-      }
-
-      db.exec(`
-        ALTER TABLE entities
-          ADD COLUMN borg_role TEXT NULL CHECK (
-            borg_role IS NULL OR borg_role IN ('creator')
-          );
+        CREATE INDEX commitments_directive_family_idx
+          ON commitments(directive_family, restricted_audience, made_to_entity);
+        CREATE INDEX commitments_enforcement_class_idx
+          ON commitments(enforcement_class);
+        CREATE INDEX commitments_kind_idx
+          ON commitments(kind);
       `);
     },
   },

@@ -25,12 +25,14 @@ export {
   createGoalFollowupDueTrigger,
   createOpenQuestionDormantTrigger,
   createScheduledReflectionTrigger,
+  createScheduledWakeTrigger,
   type CommitmentExpiringTriggerOptions,
   type ExecutiveFocusDuePayload,
   type ExecutiveFocusDueTriggerOptions,
   type GoalFollowupDueTriggerOptions,
   type OpenQuestionDormantTriggerOptions,
   type ScheduledReflectionTriggerOptions,
+  type ScheduledWakeTriggerOptions,
 } from "./triggers/index.js";
 export {
   createCommitmentRevokedCondition,
@@ -46,3 +48,13 @@ export {
   type AutonomyWakeRecordInput,
   type AutonomyWakesRepositoryOptions,
 } from "./wakes-repository.js";
+export {
+  ScheduledWakesRepository,
+  SCHEDULED_WAKE_STATUSES,
+  scheduledWakeSchema,
+  type ScheduledWake,
+  type ScheduledWakeListInput,
+  type ScheduledWakeScheduleInput,
+  type ScheduledWakeStatus,
+  type ScheduledWakesRepositoryOptions,
+} from "./scheduled-wakes-repository.js";

@@ -14,6 +14,12 @@ This unlocks cleaner fixes than the orchestrator might otherwise reach for. For 
 
 The corollary: **don't optimize for the "what if a real user upgrades from version X" case.** That case doesn't exist. The code that polishes that case is code that has to be maintained for no benefit.
 
+### Migrations: one baseline per module, until first real data
+
+Migrations are **squashed to a single baseline migration per module** -- the pre-launch v1 schema. While there is no real (non-wipeable) data, the rule is: a schema change = **edit that module's baseline in place, then reset** (`.borg-data` wipe or `/api/admin/reset`). **Do not add new migration entries.** Verify any squash or in-place edit with a schema diff -- build a fresh DB before and after and confirm `sqlite_master` is byte-identical (whitespace-normalized); the produced schema must not change unless you intend it to.
+
+**This regime inverts the moment borg holds real, non-wipeable memory.** From first real data onward: the baselines are **frozen**; every schema change is a **new forward migration**; you never edit an applied migration; you never reset. Editing a baseline in place after that point silently corrupts the live schema -- the migration is already recorded as applied, so your edit never runs, and prod drifts from code. If you are unsure which regime you are in, assume the second one.
+
 ## Project goal (the only one that matters)
 
 A cognitive memory architecture for an LLM that is:

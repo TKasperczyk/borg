@@ -3,7 +3,7 @@ import type { Migration } from "../../storage/sqlite/index.js";
 export const episodicMigrations = [
   {
     id: 1,
-    name: "episodic_initial_schema",
+    name: "episodic_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE episode_stats (
@@ -22,7 +22,6 @@ export const episodicMigrations = [
           valence_mean REAL NOT NULL DEFAULT 0,
           heat_multiplier REAL NOT NULL DEFAULT 1
         );
-
         CREATE TABLE episode_index (
           episode_id TEXT PRIMARY KEY,
           audience_entity_id TEXT,
@@ -40,7 +39,33 @@ export const episodicMigrations = [
           heat_score REAL NOT NULL DEFAULT 0,
           FOREIGN KEY (episode_id) REFERENCES episode_stats(episode_id) ON DELETE CASCADE
         );
-
+        CREATE INDEX idx_episode_index_audience_heat
+          ON episode_index (audience_entity_id, heat_score DESC, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_audience_recent
+          ON episode_index (audience_entity_id, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_audience_retrieved
+          ON episode_index (audience_entity_id, last_retrieved DESC, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_heat
+          ON episode_index (heat_score DESC, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_recent
+          ON episode_index (updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_shared_heat
+          ON episode_index (shared, heat_score DESC, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_shared_recent
+          ON episode_index (shared, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_time_end
+          ON episode_index (end_time, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
+        CREATE INDEX idx_episode_index_time_start
+          ON episode_index (start_time, updated_at DESC, episode_id DESC)
+          WHERE archived = 0;
         CREATE TABLE episode_participants (
           episode_id TEXT NOT NULL,
           term TEXT NOT NULL,
@@ -48,7 +73,8 @@ export const episodicMigrations = [
           PRIMARY KEY (episode_id, term, value),
           FOREIGN KEY (episode_id) REFERENCES episode_index(episode_id) ON DELETE CASCADE
         );
-
+        CREATE INDEX idx_episode_participants_term
+          ON episode_participants (term, episode_id);
         CREATE TABLE episode_tags (
           episode_id TEXT NOT NULL,
           term TEXT NOT NULL,
@@ -56,43 +82,12 @@ export const episodicMigrations = [
           PRIMARY KEY (episode_id, term, value),
           FOREIGN KEY (episode_id) REFERENCES episode_index(episode_id) ON DELETE CASCADE
         );
-
+        CREATE INDEX idx_episode_tags_term
+          ON episode_tags (term, episode_id);
         CREATE TABLE episode_index_metadata (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
         );
-
-        CREATE INDEX IF NOT EXISTS idx_episode_index_recent
-          ON episode_index (updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_audience_recent
-          ON episode_index (audience_entity_id, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_shared_recent
-          ON episode_index (shared, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_heat
-          ON episode_index (heat_score DESC, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_audience_heat
-          ON episode_index (audience_entity_id, heat_score DESC, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_shared_heat
-          ON episode_index (shared, heat_score DESC, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_audience_retrieved
-          ON episode_index (audience_entity_id, last_retrieved DESC, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_time_start
-          ON episode_index (start_time, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_index_time_end
-          ON episode_index (end_time, updated_at DESC, episode_id DESC)
-          WHERE archived = 0;
-        CREATE INDEX IF NOT EXISTS idx_episode_participants_term
-          ON episode_participants (term, episode_id);
-        CREATE INDEX IF NOT EXISTS idx_episode_tags_term
-          ON episode_tags (term, episode_id);
       `);
     },
   },

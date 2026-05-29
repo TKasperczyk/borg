@@ -262,6 +262,13 @@ export class AutonomyScheduler {
                 lastTs: dueEvent.sortTs,
                 lastEntryId: dueEvent.id,
               });
+              try {
+                await preparedEvent.source.onFired?.(preparedEvent.event);
+              } catch {
+                // Best-effort: the watermark already enforces one-time semantics
+                // and scan() reconciles row state as a backstop, so a failed
+                // onFired must not demote a successful fire to an error.
+              }
               this.retryBackoff.delete(
                 `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`,
               );

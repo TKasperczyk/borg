@@ -3,6 +3,7 @@
 import {
   AutonomyScheduler,
   type AutonomyWakesRepository,
+  type ScheduledWakesRepository,
   createCommitmentExpiringTrigger,
   createCommitmentRevokedCondition,
   createExecutiveFocusDueTrigger,
@@ -11,6 +12,7 @@ import {
   createOpenQuestionDormantTrigger,
   createOpenQuestionUrgencyBumpCondition,
   createScheduledReflectionTrigger,
+  createScheduledWakeTrigger,
 } from "../autonomy/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
@@ -37,6 +39,7 @@ export type BuildAutonomySchedulerOptions = {
   moodRepository: MoodRepository;
   streamWatermarkRepository: StreamWatermarkRepository;
   autonomyWakesRepository: AutonomyWakesRepository;
+  scheduledWakesRepository: ScheduledWakesRepository;
   turnOrchestrator: TurnOrchestrator;
   toolDispatcher: ToolDispatcher;
   createStreamWriter: BorgStreamWriterFactory;
@@ -106,6 +109,15 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
           createScheduledReflectionTrigger({
             watermarkRepository: options.streamWatermarkRepository,
             intervalMs: options.config.autonomy.triggers.scheduledReflection.intervalMs,
+            clock: options.clock,
+          }),
+        ]
+      : []),
+    ...(options.config.autonomy.triggers.scheduledWake.enabled
+      ? [
+          createScheduledWakeTrigger({
+            scheduledWakesRepository: options.scheduledWakesRepository,
+            watermarkRepository: options.streamWatermarkRepository,
             clock: options.clock,
           }),
         ]

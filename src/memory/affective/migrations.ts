@@ -3,7 +3,7 @@ import type { Migration } from "../../storage/sqlite/index.js";
 export const affectiveMigrations = [
   {
     id: 1,
-    name: "affective_initial_schema",
+    name: "affective_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE mood_state (
@@ -14,7 +14,6 @@ export const affectiveMigrations = [
           half_life_hours REAL NOT NULL,
           recent_triggers TEXT NOT NULL
         );
-
         CREATE TABLE mood_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_id TEXT NOT NULL,
@@ -27,8 +26,7 @@ export const affectiveMigrations = [
           provenance_episode_ids TEXT,
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_mood_history_session_ts
+        CREATE INDEX idx_mood_history_session_ts
           ON mood_history (session_id, ts DESC);
       `);
     },

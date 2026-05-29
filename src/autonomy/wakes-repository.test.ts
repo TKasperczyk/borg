@@ -5,6 +5,7 @@ import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 
 import { autonomyMigrations } from "./migrations.js";
+import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
 import { AutonomyWakesRepository } from "./wakes-repository.js";
 
 describe("AutonomyWakesRepository", () => {
@@ -120,6 +121,32 @@ describe("AutonomyWakesRepository", () => {
       expect(wakes).toHaveLength(3);
       expect(new Set(wakes.map((wake) => wake.id)).size).toBe(3);
       expect(wakes.every((wake) => wake.ts === 1_000)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("accepts every declared wake source name (CHECK stays in sync with the name lists)", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", {
+      migrations: autonomyMigrations,
+    });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      for (const name of AUTONOMY_WAKE_SOURCE_NAMES) {
+        const isCondition = (AUTONOMY_CONDITION_NAMES as readonly string[]).includes(name);
+        expect(() =>
+          repository.record({
+            trigger_name: name,
+            condition_name: isCondition
+              ? (name as (typeof AUTONOMY_CONDITION_NAMES)[number])
+              : null,
+            session_id: DEFAULT_SESSION_ID,
+            wake_source_type: isCondition ? "condition" : "trigger",
+          }),
+        ).not.toThrow();
+      }
     } finally {
       db.close();
     }

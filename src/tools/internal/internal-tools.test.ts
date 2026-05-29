@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
+import { ScheduledWakesRepository } from "../../autonomy/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
@@ -84,6 +85,7 @@ function createHarnessToolDispatcher(
     commitmentRepository: harness.commitmentRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
+    scheduledWakesRepository: new ScheduledWakesRepository({ db: harness.db, clock }),
     createStreamWriter: (sessionId) =>
       new StreamWriter({
         dataDir: harness.tempDir,

@@ -4,6 +4,7 @@ export const AUTONOMY_TRIGGER_NAMES = [
   "commitment_expiring",
   "open_question_dormant",
   "scheduled_reflection",
+  "scheduled_wake",
   "goal_followup_due",
   "executive_focus_due",
 ] as const;
@@ -41,6 +42,12 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     type: AutonomyWakeSourceType;
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
+    // Optional lifecycle hook invoked by the scheduler immediately after a wake
+    // fires successfully (watermark committed). Lets a source make its own
+    // persisted state authoritative at fire-time instead of waiting for the next
+    // scan to reconcile. Best-effort: the watermark remains the idempotency
+    // source of truth, so a throwing onFired never causes a re-fire.
+    onFired?(event: DueEvent<Payload>): void | Promise<void>;
   };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =

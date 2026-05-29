@@ -539,6 +539,14 @@ const configBaseSchema = z.object({
               intervalMs: z.number().int().positive().default(14_400_000),
             })
             .prefault({}),
+          scheduledWake: z
+            .object({
+              // On by default but inert unless Borg actually schedules a wake
+              // via tool.scheduledWakes.create -- the entity's deliberate,
+              // one-time self-invocation lever.
+              enabled: z.boolean().default(true),
+            })
+            .prefault({}),
           goalFollowupDue: z
             .object({
               enabled: z.boolean().default(true),

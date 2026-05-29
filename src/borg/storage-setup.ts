@@ -50,16 +50,6 @@ export type BorgLanceTables = {
   imagePerceptionsTable: LanceDbTable;
 };
 
-const sprintCRemovalMigrations = [
-  {
-    id: 2,
-    name: "drop_operator_advice_table",
-    up: (db) => {
-      db.exec("DROP TABLE IF EXISTS operator_advice;");
-    },
-  },
-] as const satisfies readonly Migration[];
-
 export function resolveBorgConfig(options: {
   config?: Config;
   env?: NodeJS.ProcessEnv;
@@ -210,6 +200,10 @@ export function resolveBorgConfig(options: {
           ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
           ...rawConfig.autonomy?.triggers?.scheduledReflection,
         },
+        scheduledWake: {
+          ...DEFAULT_CONFIG.autonomy.triggers.scheduledWake,
+          ...rawConfig.autonomy?.triggers?.scheduledWake,
+        },
       },
     },
   });
@@ -238,7 +232,6 @@ export function createMigrations(): Migration[] {
     imagePerceptionMigrations,
     promptOverrideMigrations,
     sessionMigrations,
-    sprintCRemovalMigrations,
     creatorDirectiveMigrations,
     activityMigrations,
   );

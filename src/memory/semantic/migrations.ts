@@ -1,10 +1,9 @@
 import type { Migration } from "../../storage/sqlite/index.js";
-import { tableHasColumn, tableExists } from "../../storage/sqlite/migrations-utils.js";
 
 export const semanticMigrations = [
   {
     id: 1,
-    name: "semantic_initial_schema",
+    name: "semantic_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE semantic_nodes (
@@ -21,13 +20,16 @@ export const semanticMigrations = [
           last_verified_at INTEGER NOT NULL,
           archived INTEGER NOT NULL DEFAULT 0,
           superseded_by TEXT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS semantic_nodes_kind_idx
+        , status TEXT NOT NULL DEFAULT 'active', corrected_by TEXT NULL, superseded_at INTEGER NULL, observation_metadata TEXT NULL);
+        CREATE INDEX semantic_nodes_kind_idx
           ON semantic_nodes(kind);
-        CREATE INDEX IF NOT EXISTS semantic_nodes_label_idx
+        CREATE INDEX semantic_nodes_label_idx
           ON semantic_nodes(label);
-
+        CREATE INDEX semantic_nodes_observation_metadata_idx
+          ON semantic_nodes(observation_metadata)
+          WHERE observation_metadata IS NOT NULL;
+        CREATE INDEX semantic_nodes_status_updated_idx
+          ON semantic_nodes(status, updated_at DESC);
         CREATE TABLE semantic_edges (
           id TEXT PRIMARY KEY,
           from_node_id TEXT NOT NULL,
@@ -45,61 +47,15 @@ export const semanticMigrations = [
           invalidated_by_process TEXT NULL,
           invalidated_reason TEXT NULL
         );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS semantic_edges_open_unique_idx
+        CREATE INDEX semantic_edges_from_relation_validity_idx
+          ON semantic_edges(from_node_id, relation, valid_from, valid_to);
+        CREATE INDEX semantic_edges_invalidated_at_idx
+          ON semantic_edges(invalidated_at);
+        CREATE UNIQUE INDEX semantic_edges_open_unique_idx
           ON semantic_edges(from_node_id, to_node_id, relation)
           WHERE valid_to IS NULL;
-        CREATE INDEX IF NOT EXISTS semantic_edges_from_relation_validity_idx
-          ON semantic_edges(from_node_id, relation, valid_from, valid_to);
-        CREATE INDEX IF NOT EXISTS semantic_edges_to_relation_validity_idx
+        CREATE INDEX semantic_edges_to_relation_validity_idx
           ON semantic_edges(to_node_id, relation, valid_from, valid_to);
-        CREATE INDEX IF NOT EXISTS semantic_edges_invalidated_at_idx
-          ON semantic_edges(invalidated_at);
-
-        CREATE TABLE review_queue (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          kind TEXT NOT NULL,
-          refs TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          resolved_at INTEGER NULL,
-          resolution TEXT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS review_queue_kind_idx
-          ON review_queue(kind);
-        CREATE INDEX IF NOT EXISTS review_queue_open_idx
-          ON review_queue(resolved_at);
-        CREATE INDEX IF NOT EXISTS review_queue_belief_revision_target_idx
-          ON review_queue (
-            json_extract(refs, '$.target_type'),
-            json_extract(refs, '$.target_id'),
-            created_at DESC,
-            id DESC
-          )
-          WHERE kind = 'belief_revision'
-            AND resolved_at IS NULL;
-
-        CREATE TABLE semantic_belief_dependencies (
-          target_type TEXT NOT NULL CHECK (target_type IN ('semantic_node', 'semantic_edge')),
-          target_id TEXT NOT NULL,
-          source_edge_id TEXT NOT NULL,
-          dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('supports', 'derived_from')),
-          created_at INTEGER NOT NULL,
-          PRIMARY KEY (target_type, target_id, source_edge_id, dependency_kind)
-        );
-
-        CREATE INDEX IF NOT EXISTS semantic_belief_dependencies_source_idx
-          ON semantic_belief_dependencies(source_edge_id);
-
-        CREATE TABLE semantic_edge_invalidation_events (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          edge_id TEXT NOT NULL,
-          valid_to INTEGER NOT NULL,
-          invalidated_at INTEGER NOT NULL,
-          processed_at INTEGER NULL
-        );
-
         CREATE TRIGGER semantic_edges_invalidation_outbox_insert
         AFTER UPDATE OF valid_to ON semantic_edges
         WHEN OLD.valid_to IS NULL AND NEW.valid_to IS NOT NULL
@@ -116,7 +72,45 @@ export const semanticMigrations = [
             NULL
           );
         END;
-
+        CREATE TABLE review_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          refs TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          resolved_at INTEGER NULL,
+          resolution TEXT NULL
+        );
+        CREATE INDEX review_queue_belief_revision_target_idx
+          ON review_queue (
+            json_extract(refs, '$.target_type'),
+            json_extract(refs, '$.target_id'),
+            created_at DESC,
+            id DESC
+          )
+          WHERE kind = 'belief_revision'
+            AND resolved_at IS NULL;
+        CREATE INDEX review_queue_kind_idx
+          ON review_queue(kind);
+        CREATE INDEX review_queue_open_idx
+          ON review_queue(resolved_at);
+        CREATE TABLE semantic_belief_dependencies (
+          target_type TEXT NOT NULL CHECK (target_type IN ('semantic_node', 'semantic_edge')),
+          target_id TEXT NOT NULL,
+          source_edge_id TEXT NOT NULL,
+          dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('supports', 'derived_from')),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (target_type, target_id, source_edge_id, dependency_kind)
+        );
+        CREATE INDEX semantic_belief_dependencies_source_idx
+          ON semantic_belief_dependencies(source_edge_id);
+        CREATE TABLE semantic_edge_invalidation_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          edge_id TEXT NOT NULL,
+          valid_to INTEGER NOT NULL,
+          invalidated_at INTEGER NOT NULL,
+          processed_at INTEGER NULL
+        );
         CREATE TABLE semantic_node_vector_sync_outbox (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           node_id TEXT NOT NULL,
@@ -128,54 +122,8 @@ export const semanticMigrations = [
           last_error TEXT NULL,
           UNIQUE(node_id)
         );
-
-        CREATE INDEX IF NOT EXISTS semantic_node_vector_sync_outbox_created_idx
+        CREATE INDEX semantic_node_vector_sync_outbox_created_idx
           ON semantic_node_vector_sync_outbox(created_at, id);
-      `);
-    },
-  },
-  {
-    id: 2,
-    name: "semantic_node_lifecycle_status",
-    up: (db) => {
-      if (!tableExists(db, "semantic_nodes")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "semantic_nodes", "status")) {
-        db.exec("ALTER TABLE semantic_nodes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
-      }
-
-      if (!tableHasColumn(db, "semantic_nodes", "corrected_by")) {
-        db.exec("ALTER TABLE semantic_nodes ADD COLUMN corrected_by TEXT NULL");
-      }
-
-      if (!tableHasColumn(db, "semantic_nodes", "superseded_at")) {
-        db.exec("ALTER TABLE semantic_nodes ADD COLUMN superseded_at INTEGER NULL");
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS semantic_nodes_status_updated_idx
-          ON semantic_nodes(status, updated_at DESC);
-      `);
-    },
-  },
-  {
-    id: 3,
-    name: "semantic_node_observation_metadata",
-    up: (db) => {
-      if (!tableExists(db, "semantic_nodes")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "semantic_nodes", "observation_metadata")) {
-        db.exec("ALTER TABLE semantic_nodes ADD COLUMN observation_metadata TEXT NULL");
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS semantic_nodes_observation_metadata_idx
-          ON semantic_nodes(observation_metadata)
-          WHERE observation_metadata IS NOT NULL;
       `);
     },
   },

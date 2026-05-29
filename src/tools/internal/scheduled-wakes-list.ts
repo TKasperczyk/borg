@@ -1,0 +1,49 @@
+import { z } from "zod";
+
+import {
+  SCHEDULED_WAKE_STATUSES,
+  scheduledWakeSchema,
+  type ScheduledWake,
+  type ScheduledWakeStatus,
+} from "../../autonomy/index.js";
+import type { ToolDefinition } from "../dispatcher.js";
+
+const DEFAULT_LIST_LIMIT = 20;
+
+const scheduledWakesListInputSchema = z.object({
+  status: z.enum(SCHEDULED_WAKE_STATUSES).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+const scheduledWakesListOutputSchema = z.object({
+  scheduledWakes: z.array(scheduledWakeSchema),
+});
+
+export type ScheduledWakesListToolOptions = {
+  listScheduledWakes: (input: { status?: ScheduledWakeStatus; limit: number }) => ScheduledWake[];
+};
+
+export function createScheduledWakesListTool(
+  options: ScheduledWakesListToolOptions,
+): ToolDefinition<
+  z.infer<typeof scheduledWakesListInputSchema>,
+  z.infer<typeof scheduledWakesListOutputSchema>
+> {
+  return {
+    name: "tool.scheduledWakes.list",
+    description:
+      "List your scheduled self-wakes. Defaults to pending (not yet fired) wakes; pass status to inspect fired or cancelled ones. Use this to review what you have already scheduled before adding or cancelling one.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "read",
+    inputSchema: scheduledWakesListInputSchema,
+    outputSchema: scheduledWakesListOutputSchema,
+    async invoke(input) {
+      return {
+        scheduledWakes: options.listScheduledWakes({
+          status: input.status ?? "pending",
+          limit: input.limit ?? DEFAULT_LIST_LIMIT,
+        }),
+      };
+    },
+  };
+}

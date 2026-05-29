@@ -33,6 +33,7 @@ export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
 export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
+export type ScheduledWakeId = BrandedId<"ScheduledWakeId">;
 export type ExecutiveStepId = BrandedId<"ExecutiveStepId">;
 export type AttachmentId = BrandedId<"AttachmentId">;
 export type ImagePerceptionId = BrandedId<"ImagePerceptionId">;
@@ -93,6 +94,7 @@ export const actionIdHelpers = createIdHelpers<"ActionId">("act");
 export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
 export const sharedStateEntryIdHelpers = createIdHelpers<"SharedStateEntryId">("dart");
 export const activityEventIdHelpers = createIdHelpers<"ActivityEventId">("actevt");
+export const scheduledWakeIdHelpers = createIdHelpers<"ScheduledWakeId">("swake");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
   prefix: "procevi_",
@@ -147,6 +149,7 @@ export const createRelationalSlotId = (): RelationalSlotId => relationalSlotIdHe
 export const createSharedStateEntryId = (): SharedStateEntryId =>
   sharedStateEntryIdHelpers.create();
 export const createActivityEventId = (): ActivityEventId => activityEventIdHelpers.create();
+export const createScheduledWakeId = (): ScheduledWakeId => scheduledWakeIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
   proceduralEvidenceIdHelpers.create();
@@ -226,6 +229,10 @@ export function parseEntityId(value: string): EntityId {
 
 export function parseActionId(value: string): ActionId {
   return actionIdHelpers.parse(value);
+}
+
+export function parseScheduledWakeId(value: string): ScheduledWakeId {
+  return scheduledWakeIdHelpers.parse(value);
 }
 
 export function parseRelationalSlotId(value: string): RelationalSlotId {

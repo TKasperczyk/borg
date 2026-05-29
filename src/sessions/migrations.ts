@@ -3,7 +3,7 @@ import type { Migration } from "../storage/sqlite/index.js";
 export const sessionMigrations = [
   {
     id: 1,
-    name: "sessions_initial_schema",
+    name: "session_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE sessions (
@@ -27,37 +27,15 @@ export const sessionMigrations = [
           privacy_level TEXT NOT NULL DEFAULT 'payload_off' CHECK (
             privacy_level IN ('payload_off', 'payload_on')
           )
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_sessions_last_activity
-          ON sessions (last_activity_at);
-
-        CREATE INDEX IF NOT EXISTS idx_sessions_source_type_last_activity
-          ON sessions (source_type, last_activity_at);
-      `);
-    },
-  },
-  {
-    id: 2,
-    name: "sessions_participation_policy",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE sessions
-          ADD COLUMN participation_policy TEXT NOT NULL DEFAULT 'active' CHECK (
+        , participation_policy TEXT NOT NULL DEFAULT 'active' CHECK (
             participation_policy IN ('active', 'paused', 'observing', 'muted')
-          );
-      `);
-    },
-  },
-  {
-    id: 3,
-    name: "sessions_audience_role",
-    up: (db) => {
-      db.exec(`
-        ALTER TABLE sessions
-          ADD COLUMN audience_role TEXT NOT NULL DEFAULT 'participant' CHECK (
+          ), audience_role TEXT NOT NULL DEFAULT 'participant' CHECK (
             audience_role IN ('participant', 'operator')
-          );
+          ));
+        CREATE INDEX idx_sessions_last_activity
+          ON sessions (last_activity_at);
+        CREATE INDEX idx_sessions_source_type_last_activity
+          ON sessions (source_type, last_activity_at);
       `);
     },
   },

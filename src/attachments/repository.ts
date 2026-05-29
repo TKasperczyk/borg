@@ -11,9 +11,10 @@ import type { ImageMediaType, StoredAttachmentRecord } from "./types.js";
 export const attachmentMigrations: Migration[] = [
   {
     id: 1,
-    name: "create-stream-attachments",
-    up: `
-      CREATE TABLE IF NOT EXISTS stream_attachments (
+    name: "attachment_baseline",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE stream_attachments (
         attachment_id TEXT PRIMARY KEY,
         sha256 TEXT NOT NULL,
         media_type TEXT NOT NULL,
@@ -33,19 +34,20 @@ export const attachmentMigrations: Migration[] = [
         parent_turn_id TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_sha256
-      ON stream_attachments(sha256);
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_parent_entry
-      ON stream_attachments(parent_entry_id);
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_stream_entry
-      ON stream_attachments(stream_entry_id);
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_parent_turn
-      ON stream_attachments(parent_turn_id);
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_active
+        CREATE INDEX idx_stream_attachments_active
       ON stream_attachments(active);
-      CREATE INDEX IF NOT EXISTS idx_stream_attachments_audience
+        CREATE INDEX idx_stream_attachments_audience
       ON stream_attachments(audience);
-    `,
+        CREATE INDEX idx_stream_attachments_parent_entry
+      ON stream_attachments(parent_entry_id);
+        CREATE INDEX idx_stream_attachments_parent_turn
+      ON stream_attachments(parent_turn_id);
+        CREATE INDEX idx_stream_attachments_sha256
+      ON stream_attachments(sha256);
+        CREATE INDEX idx_stream_attachments_stream_entry
+      ON stream_attachments(stream_entry_id);
+      `);
+    },
   },
 ];
 

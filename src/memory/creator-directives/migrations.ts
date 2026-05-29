@@ -3,7 +3,7 @@ import type { Migration } from "../../storage/sqlite/index.js";
 export const creatorDirectiveMigrations = [
   {
     id: 1,
-    name: "creator_directives_initial_schema",
+    name: "creator_directive_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE creator_directives (
@@ -59,21 +59,20 @@ export const creatorDirectiveMigrations = [
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
-
-        CREATE INDEX IF NOT EXISTS creator_directives_status_priority_idx
-          ON creator_directives(status, priority DESC, created_at ASC);
-        CREATE INDEX IF NOT EXISTS creator_directives_kind_status_idx
-          ON creator_directives(kind, status);
-        CREATE INDEX IF NOT EXISTS creator_directives_created_by_idx
-          ON creator_directives(created_by_entity_id, status);
-        CREATE INDEX IF NOT EXISTS creator_directives_source_session_idx
-          ON creator_directives(source_session_id, status);
-        CREATE INDEX IF NOT EXISTS creator_directives_subject_idx
-          ON creator_directives(subject_kind, subject_entity_id, status);
-        CREATE INDEX IF NOT EXISTS creator_directives_slot_conflict_idx
-          ON creator_directives(status, kind, subject_kind, subject_entity_id, semantic_slot);
-        CREATE INDEX IF NOT EXISTS creator_directives_content_scope_idx
+        CREATE INDEX creator_directives_content_scope_idx
           ON creator_directives(content_scope, status);
+        CREATE INDEX creator_directives_created_by_idx
+          ON creator_directives(created_by_entity_id, status);
+        CREATE INDEX creator_directives_kind_status_idx
+          ON creator_directives(kind, status);
+        CREATE INDEX creator_directives_slot_conflict_idx
+          ON creator_directives(status, kind, subject_kind, subject_entity_id, semantic_slot);
+        CREATE INDEX creator_directives_source_session_idx
+          ON creator_directives(source_session_id, status);
+        CREATE INDEX creator_directives_status_priority_idx
+          ON creator_directives(status, priority DESC, created_at ASC);
+        CREATE INDEX creator_directives_subject_idx
+          ON creator_directives(subject_kind, subject_entity_id, status);
       `);
     },
   },

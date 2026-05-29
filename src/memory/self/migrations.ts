@@ -1,10 +1,9 @@
-import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import type { Migration } from "../../storage/sqlite/index.js";
 
 export const selfMigrations = [
   {
     id: 1,
-    name: "self_initial_schema",
+    name: "self_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE "values" (
@@ -27,14 +26,12 @@ export const selfMigrations = [
           contradiction_count INTEGER,
           evidence_episode_ids TEXT
         );
-
         CREATE TABLE value_sources (
           value_id TEXT NOT NULL,
           episode_id TEXT NOT NULL,
           PRIMARY KEY (value_id, episode_id),
           FOREIGN KEY (value_id) REFERENCES "values"(id) ON DELETE CASCADE
         );
-
         CREATE TABLE goals (
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -51,13 +48,13 @@ export const selfMigrations = [
           last_progress_ts INTEGER,
           audience_entity_id TEXT,
           owner_entity_id TEXT,
-          source_stream_entry_ids TEXT,
+          source_stream_entry_ids TEXT, canonicalized_by_artifact_entry_id TEXT NULL,
           FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
         );
-
-        CREATE INDEX IF NOT EXISTS idx_goals_audience_status_priority
+        CREATE INDEX idx_goals_audience_status_priority
           ON goals (audience_entity_id, status, priority DESC, created_at ASC);
-
+        CREATE INDEX idx_goals_owner_status_priority
+          ON goals (owner_entity_id, status, priority DESC, created_at ASC);
         CREATE TABLE traits (
           label TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -77,11 +74,9 @@ export const selfMigrations = [
           contradiction_count INTEGER,
           evidence_episode_ids TEXT
         );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_traits_id
+        CREATE UNIQUE INDEX idx_traits_id
           ON traits (id)
           WHERE id IS NOT NULL;
-
         CREATE TABLE autobiographical_periods (
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -97,15 +92,13 @@ export const selfMigrations = [
           provenance_episode_ids TEXT,
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_autobiographical_periods_start
-          ON autobiographical_periods (start_ts DESC);
-        CREATE INDEX IF NOT EXISTS idx_autobiographical_periods_end
-          ON autobiographical_periods (end_ts);
-        CREATE UNIQUE INDEX IF NOT EXISTS autobiographical_single_open
+        CREATE UNIQUE INDEX autobiographical_single_open
           ON autobiographical_periods (CASE WHEN end_ts IS NULL THEN 1 END)
           WHERE end_ts IS NULL;
-
+        CREATE INDEX idx_autobiographical_periods_end
+          ON autobiographical_periods (end_ts);
+        CREATE INDEX idx_autobiographical_periods_start
+          ON autobiographical_periods (start_ts DESC);
         CREATE TABLE growth_markers (
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -124,12 +117,10 @@ export const selfMigrations = [
           provenance_episode_ids TEXT,
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_growth_markers_ts
-          ON growth_markers (ts DESC);
-        CREATE INDEX IF NOT EXISTS idx_growth_markers_category
+        CREATE INDEX idx_growth_markers_category
           ON growth_markers (category);
-
+        CREATE INDEX idx_growth_markers_ts
+          ON growth_markers (ts DESC);
         CREATE TABLE open_questions (
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
@@ -165,15 +156,13 @@ export const selfMigrations = [
           audience_entity_id TEXT,
           unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
           last_ruminated_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_open_questions_status_urgency
-          ON open_questions (status, urgency DESC, last_touched DESC);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
-          ON open_questions (dedupe_key);
-        CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
+        , resolved_by_artifact_entry_id TEXT NULL);
+        CREATE INDEX idx_open_questions_audience_status_urgency
           ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
-
+        CREATE UNIQUE INDEX idx_open_questions_dedupe_key
+          ON open_questions (dedupe_key);
+        CREATE INDEX idx_open_questions_status_urgency
+          ON open_questions (status, urgency DESC, last_touched DESC);
         CREATE TABLE trait_reinforcement_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           trait_id TEXT NOT NULL,
@@ -185,10 +174,8 @@ export const selfMigrations = [
           provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_trait_reinforcement_events_trait_ts
+        CREATE INDEX idx_trait_reinforcement_events_trait_ts
           ON trait_reinforcement_events (trait_id, ts DESC, id DESC);
-
         CREATE TABLE value_reinforcement_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           value_id TEXT NOT NULL,
@@ -199,10 +186,8 @@ export const selfMigrations = [
           provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_value_reinforcement_events_value_ts
+        CREATE INDEX idx_value_reinforcement_events_value_ts
           ON value_reinforcement_events (value_id, ts DESC, id DESC);
-
         CREATE TABLE value_contradiction_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           value_id TEXT NOT NULL,
@@ -214,10 +199,8 @@ export const selfMigrations = [
           provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_value_contradiction_events_value_ts
+        CREATE INDEX idx_value_contradiction_events_value_ts
           ON value_contradiction_events (value_id, ts DESC, id DESC);
-
         CREATE TABLE trait_contradiction_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           trait_id TEXT NOT NULL,
@@ -229,231 +212,8 @@ export const selfMigrations = [
           provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
           provenance_process TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
+        CREATE INDEX idx_trait_contradiction_events_trait_ts
           ON trait_contradiction_events (trait_id, ts DESC, id DESC);
-      `);
-    },
-  },
-  {
-    id: 3,
-    name: "open_question_resolution_evidence_arrays",
-    up: (db) => {
-      if (!tableExists(db, "open_questions")) {
-        return;
-      }
-
-      if (
-        !tableHasColumn(db, "open_questions", "resolution_episode_id") &&
-        tableHasColumn(db, "open_questions", "resolution_evidence_episode_ids") &&
-        tableHasColumn(db, "open_questions", "resolution_evidence_stream_entry_ids")
-      ) {
-        return;
-      }
-
-      db.exec(`
-        ALTER TABLE open_questions
-          RENAME TO open_questions_before_resolution_evidence_arrays;
-
-        CREATE TABLE open_questions (
-          id TEXT PRIMARY KEY,
-          question TEXT NOT NULL,
-          urgency REAL NOT NULL,
-          status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
-          related_episode_ids TEXT NOT NULL,
-          related_semantic_node_ids TEXT NOT NULL,
-          source TEXT NOT NULL CHECK (
-            source IN (
-              'user',
-              'reflection',
-              'contradiction',
-              'ruminator',
-              'overseer',
-              'autonomy',
-              'deliberator'
-            )
-          ),
-          created_at INTEGER NOT NULL,
-          last_touched INTEGER NOT NULL,
-          resolution_evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
-          resolution_evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
-          resolution_note TEXT,
-          resolved_at INTEGER,
-          abandoned_reason TEXT,
-          abandoned_at INTEGER,
-          dedupe_key TEXT,
-          provenance_kind TEXT,
-          provenance_episode_ids TEXT,
-          provenance_process TEXT,
-          audience_entity_id TEXT,
-          unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
-          last_ruminated_at INTEGER
-        );
-
-        INSERT INTO open_questions (
-          id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
-          source, created_at, last_touched, resolution_evidence_episode_ids,
-          resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
-          abandoned_at, dedupe_key, provenance_kind, provenance_episode_ids, provenance_process,
-          audience_entity_id, unresolved_rumination_ticks, last_ruminated_at
-        )
-        SELECT
-          id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
-          source, created_at, last_touched,
-          CASE
-            WHEN resolution_episode_id IS NULL THEN '[]'
-            ELSE json_array(resolution_episode_id)
-          END,
-          '[]',
-          resolution_note, resolved_at, abandoned_reason, abandoned_at, dedupe_key,
-          provenance_kind, provenance_episode_ids, provenance_process, audience_entity_id,
-          0, NULL
-        FROM open_questions_before_resolution_evidence_arrays;
-
-        DROP TABLE open_questions_before_resolution_evidence_arrays;
-
-        CREATE INDEX IF NOT EXISTS idx_open_questions_status_urgency
-          ON open_questions (status, urgency DESC, last_touched DESC);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
-          ON open_questions (dedupe_key);
-        CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
-          ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
-      `);
-    },
-  },
-  {
-    id: 4,
-    name: "open_question_rumination_ticks",
-    up: (db) => {
-      if (!tableExists(db, "open_questions")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "open_questions", "unresolved_rumination_ticks")) {
-        db.exec(`
-          ALTER TABLE open_questions
-            ADD COLUMN unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0;
-        `);
-      }
-
-      if (!tableHasColumn(db, "open_questions", "last_ruminated_at")) {
-        db.exec(`
-          ALTER TABLE open_questions
-            ADD COLUMN last_ruminated_at INTEGER;
-        `);
-      }
-    },
-  },
-  {
-    id: 5,
-    name: "open_question_goal_id",
-    up: (db) => {
-      if (!tableExists(db, "open_questions")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "open_questions", "goal_id")) {
-        db.exec(`
-          ALTER TABLE open_questions
-            ADD COLUMN goal_id TEXT;
-        `);
-      }
-    },
-  },
-  {
-    id: 6,
-    name: "self_record_versions",
-    up: (db) => {
-      for (const table of [
-        "values",
-        "goals",
-        "traits",
-        "autobiographical_periods",
-        "growth_markers",
-        "open_questions",
-      ]) {
-        if (!tableExists(db, table) || tableHasColumn(db, table, "record_version")) {
-          continue;
-        }
-
-        db.exec(`
-          ALTER TABLE "${table}"
-            ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
-        `);
-      }
-    },
-  },
-  {
-    id: 7,
-    name: "goal_owner_entity_id",
-    up: (db) => {
-      if (!tableExists(db, "goals")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "goals", "owner_entity_id")) {
-        db.exec(`
-          ALTER TABLE goals
-            ADD COLUMN owner_entity_id TEXT;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_goals_owner_status_priority
-          ON goals (owner_entity_id, status, priority DESC, created_at ASC);
-      `);
-    },
-  },
-  {
-    id: 8,
-    name: "planning_state_artifact_backrefs",
-    up: (db) => {
-      if (
-        tableExists(db, "goals") &&
-        !tableHasColumn(db, "goals", "canonicalized_by_artifact_entry_id")
-      ) {
-        db.exec(`
-          ALTER TABLE goals
-            ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
-        `);
-      }
-
-      if (
-        tableExists(db, "open_questions") &&
-        !tableHasColumn(db, "open_questions", "resolved_by_artifact_entry_id")
-      ) {
-        db.exec(`
-          ALTER TABLE open_questions
-            ADD COLUMN resolved_by_artifact_entry_id TEXT NULL;
-        `);
-      }
-    },
-  },
-  {
-    id: 2,
-    name: "goal_audience_and_source_stream_ids",
-    up: (db) => {
-      if (!tableExists(db, "goals")) {
-        return;
-      }
-
-      if (!tableHasColumn(db, "goals", "audience_entity_id")) {
-        db.exec(`
-          ALTER TABLE goals
-            ADD COLUMN audience_entity_id TEXT;
-        `);
-      }
-
-      if (!tableHasColumn(db, "goals", "source_stream_entry_ids")) {
-        db.exec(`
-          ALTER TABLE goals
-            ADD COLUMN source_stream_entry_ids TEXT NULL;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_goals_audience_status_priority
-          ON goals (audience_entity_id, status, priority DESC, created_at ASC);
       `);
     },
   },

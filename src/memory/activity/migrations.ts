@@ -3,9 +3,10 @@ import type { Migration } from "../../storage/sqlite/index.js";
 export const activityMigrations = [
   {
     id: 1,
-    name: "activity_events_initial_schema",
-    up: `
-      CREATE TABLE activity_events (
+    name: "activity_baseline",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE activity_events (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK (
           kind IN ('user_contact', 'borg_replied', 'turn_completed')
@@ -22,18 +23,15 @@ export const activityMigrations = [
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-
-      CREATE INDEX IF NOT EXISTS idx_activity_events_recent
-        ON activity_events(status, occurred_at DESC);
-
-      CREATE INDEX IF NOT EXISTS idx_activity_events_session_recent
-        ON activity_events(session_id, status, occurred_at DESC);
-
-      CREATE INDEX IF NOT EXISTS idx_activity_events_turn
-        ON activity_events(session_id, turn_id, status);
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_events_kind_source
+        CREATE UNIQUE INDEX idx_activity_events_kind_source
         ON activity_events(kind, source_stream_entry_ids);
-    `,
+        CREATE INDEX idx_activity_events_recent
+        ON activity_events(status, occurred_at DESC);
+        CREATE INDEX idx_activity_events_session_recent
+        ON activity_events(session_id, status, occurred_at DESC);
+        CREATE INDEX idx_activity_events_turn
+        ON activity_events(session_id, turn_id, status);
+      `);
+    },
   },
 ] as const satisfies readonly Migration[];

@@ -1,6 +1,6 @@
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
-import { AutonomyWakesRepository } from "../autonomy/index.js";
+import { AutonomyWakesRepository, ScheduledWakesRepository } from "../autonomy/index.js";
 import type { AttachmentRepository } from "../attachments/index.js";
 import { ImagePerceptionRepository } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
@@ -105,6 +105,7 @@ export type BorgRepositorySetup = Pick<
   | "retrievalPipeline"
   | "workingMemoryStore"
   | "autonomyWakesRepository"
+  | "scheduledWakesRepository"
   | "sessionsRepository"
   | "attachmentRepository"
   | "imagePerceptionRepository"
@@ -136,6 +137,10 @@ export async function buildBorgRepositories(
 ): Promise<BorgRepositorySetup> {
   const { config, sqlite, clock, embeddingClient } = options;
   const autonomyWakesRepository = new AutonomyWakesRepository({
+    db: sqlite,
+    clock,
+  });
+  const scheduledWakesRepository = new ScheduledWakesRepository({
     db: sqlite,
     clock,
   });
@@ -493,6 +498,7 @@ export async function buildBorgRepositories(
     retrievalPipeline,
     workingMemoryStore,
     autonomyWakesRepository,
+    scheduledWakesRepository,
     sessionsRepository,
     attachmentRepository: options.attachmentRepository,
     imagePerceptionRepository,

@@ -1,6 +1,7 @@
 // Registers Borg's built-in read and memory tools with a dispatcher.
 
 import type { Clock } from "../util/clock.js";
+import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import { legacyCommitmentSchema } from "../memory/commitments/index.js";
 import { isEpisodeVisibleToAudience, type EpisodicRepository } from "../memory/episodic/index.js";
@@ -20,6 +21,9 @@ import {
   createEpisodicSearchTool,
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
+  createScheduledWakesCancelTool,
+  createScheduledWakesCreateTool,
+  createScheduledWakesListTool,
   createSemanticWalkTool,
   createSkillsListTool,
 } from "../tools/index.js";
@@ -33,6 +37,7 @@ export type BuildToolDispatcherOptions = {
   commitmentRepository: CommitmentRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
+  scheduledWakesRepository: ScheduledWakesRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
 };
@@ -154,6 +159,21 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createOpenQuestionsCreateTool({
         createOpenQuestion: (input) => options.identityService.addOpenQuestion(input),
+      }),
+    )
+    .register(
+      createScheduledWakesCreateTool({
+        scheduleWake: (input) => options.scheduledWakesRepository.schedule(input),
+      }),
+    )
+    .register(
+      createScheduledWakesListTool({
+        listScheduledWakes: (input) => options.scheduledWakesRepository.list(input),
+      }),
+    )
+    .register(
+      createScheduledWakesCancelTool({
+        cancelScheduledWake: (id) => options.scheduledWakesRepository.cancel(id),
       }),
     )
     .register(

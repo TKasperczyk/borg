@@ -3,7 +3,7 @@ import type { Migration } from "../storage/sqlite/index.js";
 export const offlineMigrations = [
   {
     id: 1,
-    name: "offline_initial_schema",
+    name: "offline_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE maintenance_audit (
@@ -17,13 +17,12 @@ export const offlineMigrations = [
           reverted_at INTEGER,
           reverted_by TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_maintenance_audit_run_id
-          ON maintenance_audit (run_id);
-        CREATE INDEX IF NOT EXISTS idx_maintenance_audit_process
+        CREATE INDEX idx_maintenance_audit_process
           ON maintenance_audit (process);
-        CREATE INDEX IF NOT EXISTS idx_maintenance_audit_reverted
+        CREATE INDEX idx_maintenance_audit_reverted
           ON maintenance_audit (reverted_at);
+        CREATE INDEX idx_maintenance_audit_run_id
+          ON maintenance_audit (run_id);
       `);
     },
   },

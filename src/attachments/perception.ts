@@ -157,11 +157,10 @@ const VECTOR_CODEC = {
 export const imagePerceptionMigrations: Migration[] = [
   {
     id: 1,
-    name: "create-image-perception-payloads-and-artifacts",
-    up: `
-      DROP TABLE IF EXISTS image_perception_artifacts;
-      DROP TABLE IF EXISTS image_perception_payloads;
-      CREATE TABLE IF NOT EXISTS image_perception_payloads (
+    name: "image_perception_baseline",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE image_perception_payloads (
         payload_id TEXT PRIMARY KEY,
         sha256 TEXT NOT NULL,
         media_type TEXT NOT NULL,
@@ -183,7 +182,11 @@ export const imagePerceptionMigrations: Migration[] = [
         created_at INTEGER NOT NULL,
         UNIQUE (sha256, media_type, perception_prompt_version, model)
       );
-      CREATE TABLE IF NOT EXISTS image_perception_artifacts (
+        CREATE INDEX idx_image_perception_payload_cache
+      ON image_perception_payloads(sha256, media_type, perception_prompt_version, model);
+        CREATE INDEX idx_image_perception_payload_embedding_status
+      ON image_perception_payloads(embedding_status);
+        CREATE TABLE image_perception_artifacts (
         artifact_id TEXT PRIMARY KEY,
         attachment_id TEXT NOT NULL,
         payload_id TEXT NOT NULL,
@@ -196,17 +199,14 @@ export const imagePerceptionMigrations: Migration[] = [
         created_at INTEGER NOT NULL,
         UNIQUE (attachment_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_image_perception_payload_cache
-      ON image_perception_payloads(sha256, media_type, perception_prompt_version, model);
-      CREATE INDEX IF NOT EXISTS idx_image_perception_payload_embedding_status
-      ON image_perception_payloads(embedding_status);
-      CREATE INDEX IF NOT EXISTS idx_image_perception_attachment
-      ON image_perception_artifacts(attachment_id);
-      CREATE INDEX IF NOT EXISTS idx_image_perception_payload
-      ON image_perception_artifacts(payload_id);
-      CREATE INDEX IF NOT EXISTS idx_image_perception_active_audience
+        CREATE INDEX idx_image_perception_active_audience
       ON image_perception_artifacts(active, audience);
-    `,
+        CREATE INDEX idx_image_perception_attachment
+      ON image_perception_artifacts(attachment_id);
+        CREATE INDEX idx_image_perception_payload
+      ON image_perception_artifacts(payload_id);
+      `);
+    },
   },
 ];
 

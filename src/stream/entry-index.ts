@@ -25,130 +25,38 @@ const NEWLINE_BYTE = 0x0a;
 
 export const streamEntryIndexMigrations: Migration[] = [
   {
-    id: 201,
-    name: "create-stream-entry-index",
-    up: `
-      CREATE TABLE IF NOT EXISTS stream_entry_index (
+    id: 1,
+    name: "stream_entry_index_baseline",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE stream_entry_index (
         entry_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         byte_offset INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
         kind TEXT NULL,
         sender_entity_id TEXT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_stream_entry_session
-      ON stream_entry_index(session_id)
-    `,
-  },
-  {
-    id: 202,
-    name: "add-stream-entry-sender-entity-id",
-    up: (db) => {
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "sender_entity_id")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN sender_entity_id TEXT NULL;
-        `);
-      }
-    },
-  },
-  {
-    id: 203,
-    name: "add-stream-entry-kind",
-    up: (db) => {
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "kind")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN kind TEXT NULL;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_stream_entry_session_kind
-        ON stream_entry_index(session_id, kind);
-      `);
-    },
-  },
-  {
-    id: 204,
-    name: "add-stream-entry-trust-facts",
-    up: (db) => {
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "turn_id")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN turn_id TEXT NULL;
-        `);
-      }
-
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "turn_status")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN turn_status TEXT NULL;
-        `);
-      }
-
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "active")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_stream_entry_active
+      , turn_id TEXT NULL, turn_status TEXT NULL, active INTEGER NOT NULL DEFAULT 1, entry_index INTEGER NULL);
+        CREATE INDEX idx_stream_entry_active
         ON stream_entry_index(active);
-      `);
-    },
-  },
-  {
-    id: 205,
-    name: "create-stream-quarantine-refs",
-    up: `
-      CREATE TABLE IF NOT EXISTS stream_quarantine_refs (
+        CREATE INDEX idx_stream_entry_session
+      ON stream_entry_index(session_id)
+    ;
+        CREATE INDEX idx_stream_entry_session_entry_index
+        ON stream_entry_index(session_id, entry_index);
+        CREATE INDEX idx_stream_entry_session_kind
+        ON stream_entry_index(session_id, kind);
+        CREATE TABLE stream_quarantine_refs (
         marker_entry_id TEXT NOT NULL,
         marker_session_id TEXT NOT NULL,
         referenced_entry_id TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
         PRIMARY KEY (marker_entry_id, referenced_entry_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_stream_quarantine_refs_referenced
+        CREATE INDEX idx_stream_quarantine_refs_referenced
       ON stream_quarantine_refs(referenced_entry_id);
-      CREATE INDEX IF NOT EXISTS idx_stream_quarantine_refs_session
+        CREATE INDEX idx_stream_quarantine_refs_session
       ON stream_quarantine_refs(marker_session_id);
-    `,
-  },
-  {
-    id: 206,
-    name: "add-stream-entry-order-index",
-    up: (db) => {
-      if (
-        tableExists(db, "stream_entry_index") &&
-        !tableHasColumn(db, "stream_entry_index", "entry_index")
-      ) {
-        db.exec(`
-          ALTER TABLE stream_entry_index
-            ADD COLUMN entry_index INTEGER NULL;
-        `);
-      }
-
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_stream_entry_session_entry_index
-        ON stream_entry_index(session_id, entry_index);
       `);
     },
   },

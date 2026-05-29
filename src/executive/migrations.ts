@@ -3,7 +3,7 @@ import type { Migration } from "../storage/sqlite/index.js";
 export const executiveMigrations = [
   {
     id: 1,
-    name: "executive_initial_schema",
+    name: "executive_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE executive_steps (
@@ -27,8 +27,7 @@ export const executiveMigrations = [
           provenance_process TEXT,
           FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
         );
-
-        CREATE INDEX IF NOT EXISTS idx_executive_steps_goal_status
+        CREATE INDEX idx_executive_steps_goal_status
           ON executive_steps (goal_id, status, due_at, created_at, id);
       `);
     },

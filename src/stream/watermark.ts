@@ -5,18 +5,20 @@ import { StorageError } from "../util/errors.js";
 
 export const streamWatermarkMigrations: Migration[] = [
   {
-    id: 200,
-    name: "create-stream-watermarks",
-    up: `
-      CREATE TABLE IF NOT EXISTS stream_watermarks (
+    id: 1,
+    name: "stream_watermark_baseline",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE stream_watermarks (
         process_name TEXT NOT NULL,
         session_id TEXT NOT NULL,
         last_ts INTEGER NOT NULL,
         last_entry_id TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (process_name, session_id)
-      )
-    `,
+      );
+      `);
+    },
   },
 ];
 

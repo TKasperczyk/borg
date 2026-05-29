@@ -19,3 +19,4 @@ export {
   createScheduledReflectionTrigger,
   type ScheduledReflectionTriggerOptions,
 } from "./scheduled-reflection.js";
+export { createScheduledWakeTrigger, type ScheduledWakeTriggerOptions } from "./scheduled-wake.js";

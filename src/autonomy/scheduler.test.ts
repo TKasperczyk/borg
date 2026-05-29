@@ -2,12 +2,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  StreamReader,
-  StreamWatermarkRepository,
-  StreamWriter,
-  streamWatermarkMigrations,
-} from "../stream/index.js";
+import { StreamReader, StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
@@ -16,11 +11,10 @@ import {
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
-import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
+import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
-import { autonomyMigrations } from "./migrations.js";
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
 import { AutonomyWakesRepository } from "./wakes-repository.js";
 
@@ -338,7 +332,10 @@ describe("AutonomyScheduler", () => {
     });
     cleanup = harness.cleanup;
     const secondDb = openDatabase(join(harness.tempDir, "borg.db"), {
-      migrations: composeMigrations(autonomyMigrations, streamWatermarkMigrations),
+      // The harness already migrated this file. A second connection only needs
+      // to attach to the existing schema; re-running a divergent migration
+      // subset would collide on tables the harness already created.
+      migrations: [],
     });
 
     try {

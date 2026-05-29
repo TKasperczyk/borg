@@ -395,6 +395,10 @@ export function createTestConfig(
           ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
           ...overrides.autonomy?.triggers?.scheduledReflection,
         },
+        scheduledWake: {
+          ...DEFAULT_CONFIG.autonomy.triggers.scheduledWake,
+          ...overrides.autonomy?.triggers?.scheduledWake,
+        },
         goalFollowupDue: {
           ...DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue,
           ...overrides.autonomy?.triggers?.goalFollowupDue,

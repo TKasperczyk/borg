@@ -14,6 +14,9 @@ export {
   createEpisodicSearchTool,
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
+  createScheduledWakesCancelTool,
+  createScheduledWakesCreateTool,
+  createScheduledWakesListTool,
   createSemanticWalkTool,
   createSkillsListTool,
 } from "./internal/index.js";

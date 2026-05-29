@@ -123,6 +123,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       identityService: repositories.identityService,
       skillRepository: repositories.skillRepository,
+      scheduledWakesRepository: repositories.scheduledWakesRepository,
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
@@ -225,6 +226,7 @@ export async function openBorgDependencies(
       moodRepository: repositories.moodRepository,
       streamWatermarkRepository,
       autonomyWakesRepository: repositories.autonomyWakesRepository,
+      scheduledWakesRepository: repositories.scheduledWakesRepository,
       turnOrchestrator,
       toolDispatcher,
       createStreamWriter: repositories.createStreamWriter,
@@ -283,6 +285,7 @@ export async function openBorgDependencies(
       retrievalPipeline: repositories.retrievalPipeline,
       workingMemoryStore: repositories.workingMemoryStore,
       autonomyWakesRepository: repositories.autonomyWakesRepository,
+      scheduledWakesRepository: repositories.scheduledWakesRepository,
       turnOrchestrator,
       autonomyScheduler,
       maintenanceScheduler,

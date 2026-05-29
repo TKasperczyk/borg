@@ -3,7 +3,7 @@ import type { Migration } from "../../storage/sqlite/index.js";
 export const proceduralMigrations = [
   {
     id: 1,
-    name: "procedural_initial_schema",
+    name: "procedural_baseline",
     up: (db) => {
       db.exec(`
         CREATE TABLE skills (
@@ -30,18 +30,16 @@ export const proceduralMigrations = [
           last_split_error TEXT,
           requires_manual_review INTEGER NOT NULL DEFAULT 0
         );
-
-        CREATE INDEX IF NOT EXISTS idx_skills_updated_at
-          ON skills (updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_skills_status_updated
-          ON skills (status, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_skills_split_attempt
-          ON skills (status, last_split_attempt_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_skills_split_failures
-          ON skills (status, split_failure_count, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_skills_manual_review
+        CREATE INDEX idx_skills_manual_review
           ON skills (requires_manual_review, updated_at DESC);
-
+        CREATE INDEX idx_skills_split_attempt
+          ON skills (status, last_split_attempt_at DESC);
+        CREATE INDEX idx_skills_split_failures
+          ON skills (status, split_failure_count, updated_at DESC);
+        CREATE INDEX idx_skills_status_updated
+          ON skills (status, updated_at DESC);
+        CREATE INDEX idx_skills_updated_at
+          ON skills (updated_at DESC);
         CREATE TABLE procedural_evidence (
           id TEXT PRIMARY KEY,
           pending_attempt_snapshot TEXT NOT NULL,
@@ -55,12 +53,10 @@ export const proceduralMigrations = [
           skill_actually_applied INTEGER NOT NULL DEFAULT 1,
           procedural_context TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_procedural_evidence_unconsumed
-          ON procedural_evidence (consumed_at, created_at);
-        CREATE INDEX IF NOT EXISTS idx_procedural_evidence_audience
+        CREATE INDEX idx_procedural_evidence_audience
           ON procedural_evidence (audience_entity_id);
-
+        CREATE INDEX idx_procedural_evidence_unconsumed
+          ON procedural_evidence (consumed_at, created_at);
         CREATE TABLE skill_context_stats (
           skill_id TEXT NOT NULL,
           context_key TEXT NOT NULL,
@@ -75,10 +71,9 @@ export const proceduralMigrations = [
           updated_at INTEGER NOT NULL,
           PRIMARY KEY (skill_id, context_key)
         );
-
-        CREATE INDEX IF NOT EXISTS idx_skill_context_stats_context
+        CREATE INDEX idx_skill_context_stats_context
           ON skill_context_stats (context_key, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_skill_context_stats_skill
+        CREATE INDEX idx_skill_context_stats_skill
           ON skill_context_stats (skill_id, updated_at DESC);
       `);
     },
