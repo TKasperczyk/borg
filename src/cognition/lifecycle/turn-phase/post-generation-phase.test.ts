@@ -438,3 +438,154 @@ describe("runPostGenerationPhase", () => {
     });
   });
 });
+
+describe("runPostGenerationPhase outbound activity gate", () => {
+  // A directed-outbound message turn records cross-session activity
+  // (borg_replied / turn_completed) ONLY when the message actually transported.
+  // OutboundDelivery always stream-appends the message to the target first, so a
+  // composed-but-not-transported message exists in the stream -- but recording a
+  // "reply" the operator's projection would render as "Borg replied to X" when
+  // nothing reached X would inject a falsehood into Borg's continuity context.
+  // Gate: post-generation-phase.ts shouldRecordActivity = outboundDelivery
+  // undefined || status === "transported".
+  type DeliveryStatus = "transported" | "composed_not_transported" | "transport_failed";
+
+  async function runDirectedOutboundMessageTurn(deliveryStatus: DeliveryStatus) {
+    const sessionId = createSessionId();
+    const audienceId = createEntityId();
+    const senderId = createEntityId();
+    const turnId = "turn_outbound_activity_gate";
+    const workingMemory = createWorkingMemory(sessionId, 2_000);
+    const record = vi.fn();
+    const agentEntry = {
+      id: createStreamEntryId(),
+      kind: "agent_msg",
+      turn_id: turnId,
+      turn_status: "active",
+      content: "Note to the crew.",
+      session_id: sessionId,
+      timestamp: 10_000,
+      reply_target_entity_id: null,
+    };
+    const targetSession = {
+      session_id: sessionId,
+      source_type: "demo",
+      audience_label: "Project Crew",
+      audience_entity_id: audienceId,
+    };
+    const deliver = vi.fn(async () => ({
+      status: deliveryStatus,
+      streamEntry: agentEntry,
+      sourceType: "demo",
+    }));
+
+    await runPostGenerationPhase({
+      options: {
+        config: DEFAULT_CONFIG,
+        clock: { now: () => 10_000 },
+        actionRepository: makeActionRepository([]),
+        tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+        activityRepository: { record },
+        sessionsRepository: { get: () => targetSession },
+        outboundDelivery: { deliver },
+        turnActionCoordinator: {
+          run: vi.fn(async () => ({
+            actionResult: {
+              response: "Note to the crew.",
+              tool_calls: [],
+              intents: [],
+              workingMemory,
+              pending_action_merge_count: 0,
+            },
+            actionEmission: { kind: "message" },
+            deliberation: {
+              path: "system_1",
+              thoughts: [],
+              usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+              retrievedEpisodes: [],
+              referencedEpisodeIds: [],
+            },
+          })),
+        },
+        discourseStateService: {
+          appendObservationMarker: vi.fn(),
+          appendClosurePressureHistory: vi.fn(
+            (arg: { workingMemory: unknown }) => arg.workingMemory,
+          ),
+          setStopState: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+          markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+        },
+        turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
+        streamIngestionCoordinator: undefined,
+      } as never,
+      appendHookFailureEvent: vi.fn(async () => undefined),
+      llmClient: new FakeLLMClient({ responses: [] }),
+      sessionId,
+      turnId,
+      turnInput: { userMessage: "Directed outbound instruction", origin: "directed_outbound" },
+      streamWriter: { append: vi.fn(async () => agentEntry) } as never,
+      lifecycleTracker: {
+        trackPendingActionMerges: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      } as never,
+      cognitionInput: "Directed outbound instruction",
+      perception: { mode: "relational", entities: [] } as never,
+      workingMemory,
+      workingMood: null as never,
+      persistedPerceptionEntry: null as never,
+      persistedUserEntryId: createStreamEntryId(),
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      deliberation: {
+        path: "system_1",
+        thoughts: [],
+        usage: null,
+        retrievedEpisodes: [],
+        referencedEpisodeIds: [],
+      } as never,
+      retrievalPhase: {
+        applicableCommitments: [],
+        retrievedEpisodes: [],
+        selfSnapshot: null,
+        retrieval: { confidence: 1 },
+        executiveFocusWithStep: null,
+        selectedSkill: null,
+        proceduralContext: null,
+        evidenceLedgerContext: { ledger: null },
+      } as never,
+      origin: "directed_outbound",
+      autonomyTrigger: undefined,
+      closureLoopCurrentUserAct: null,
+      audienceEntityId: audienceId,
+      audienceIsGroup: true,
+      senderEntityId: senderId,
+      socialInteractionEntityId: null,
+      pendingSocialAttribution: null,
+      suppressionSet: null as never,
+      isUserTurn: false,
+      currentTurnFrameAnomaly: null,
+    });
+
+    return { record, deliver };
+  }
+
+  it.each(["composed_not_transported", "transport_failed"] as const)(
+    "records zero activity events when a directed-outbound delivery is %s",
+    async (status) => {
+      const { record, deliver } = await runDirectedOutboundMessageTurn(status);
+
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(record).not.toHaveBeenCalled();
+    },
+  );
+
+  it("records borg_replied and turn_completed when the directed-outbound delivery transports", async () => {
+    const { record } = await runDirectedOutboundMessageTurn("transported");
+
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ kind: "borg_replied" }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ kind: "turn_completed" }));
+  });
+});
