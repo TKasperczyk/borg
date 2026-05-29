@@ -60,13 +60,19 @@ import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberat
 import { SuppressionSet } from "../attention/index.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
-import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
+import {
+  intentRecordSchema,
+  isAutonomousLikeTurnOrigin,
+  type IntentRecord,
+  type PerceptionResult,
+  type TurnOrigin,
+} from "../types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
   turnId?: string;
   sessionId?: SessionId;
   actionLifecycleTurnCounter?: number | null;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   userMessage: string;
   perception?: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -519,7 +525,7 @@ export class Reflector {
 
     const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
     const reflectionOrigin = context.origin ?? "user";
-    const isAutonomousTurn = reflectionOrigin === "autonomous";
+    const isAutonomousTurn = isAutonomousLikeTurnOrigin(reflectionOrigin);
 
     const autonomouslyClosedStepGoalIds = await this.applyExecutiveStepOutcomes(
       context,
@@ -678,7 +684,7 @@ export class Reflector {
       // Lagged trait attribution must only come from user-visible turns.
       // Autonomous/self-talk turns are not shown to the user, so a later
       // user reply must not be treated as evidence about them.
-      context.origin !== "autonomous" &&
+      !isAutonomousLikeTurnOrigin(context.origin) &&
       nextWorkingMemory.pending_trait_attribution === null &&
       traitDemonstration !== null &&
       traitEvidenceStreamIds.length > 0
@@ -897,7 +903,7 @@ export class Reflector {
       }
 
       if (
-        context.origin === "autonomous" &&
+        isAutonomousLikeTurnOrigin(context.origin) &&
         !isAutonomousStepOutcomeAllowed({
           currentStatus: current.status,
           nextStatus: outcome.new_status,
@@ -920,7 +926,10 @@ export class Reflector {
         });
         effects.updatedExecutiveSteps.push(current);
 
-        if (context.origin === "autonomous" && isClosingExecutiveStepStatus(outcome.new_status)) {
+        if (
+          isAutonomousLikeTurnOrigin(context.origin) &&
+          isClosingExecutiveStepStatus(outcome.new_status)
+        ) {
           autonomouslyClosedStepGoalIds.add(current.goal_id);
         }
       } catch (error) {
@@ -1075,7 +1084,7 @@ export class Reflector {
     streamWriter: StreamWriter,
   ): Promise<ReflectionOutput["proposed_steps"]> {
     if (
-      context.origin !== "autonomous" ||
+      !isAutonomousLikeTurnOrigin(context.origin) ||
       proposals.length === 0 ||
       autonomouslyClosedStepGoalIds.size === 0
     ) {
@@ -1559,7 +1568,7 @@ export class Reflector {
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
     const pendingActions = context.workingMemory.pending_actions;
-    const isAutonomousTurn = context.origin === "autonomous";
+    const isAutonomousTurn = isAutonomousLikeTurnOrigin(context.origin);
     const hasUserVisibleTurnPayload =
       !isAutonomousTurn &&
       (context.userMessage.trim().length > 0 || context.actionResult.response.trim().length > 0);

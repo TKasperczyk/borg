@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
-import { Borg } from "borg";
+import { Borg, DemoMessageConnector } from "borg";
 
 import type { LiveBridge } from "./live.js";
 
@@ -65,6 +65,7 @@ export function createResetBorgController(
         dataDir: options.dataDir,
         tracer: options.live.tracer,
         onStreamAppend: options.live.onStreamAppend,
+        outboundConnectors: [new DemoMessageConnector()],
       }));
   let resetting = false;
 

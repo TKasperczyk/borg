@@ -76,6 +76,8 @@ describe("buildOperatorSessionSnapshot", () => {
       sessions: [
         {
           alias: "session_1",
+          session_id: firstSessionId,
+          outbound_targetable: false,
           audience_label: "Alice",
           conversation_kind: "dm",
           participation_policy: "paused",
@@ -85,6 +87,8 @@ describe("buildOperatorSessionSnapshot", () => {
         },
         {
           alias: "session_2",
+          session_id: secondSessionId,
+          outbound_targetable: false,
           audience_label: "Bob",
           conversation_kind: "channel",
           participation_policy: "observing",

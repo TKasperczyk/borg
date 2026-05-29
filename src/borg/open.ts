@@ -12,7 +12,19 @@ import { SessionLock } from "../cognition/index.js";
 import { compositeTracer, createTurnTracer } from "../cognition/tracing/tracer.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
-import { StreamEntryIndexRepository, StreamWatermarkRepository } from "../stream/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWatermarkRepository,
+} from "../stream/index.js";
+import { createOutboundPostTool } from "../tools/index.js";
+import {
+  AutonomousOutboundPolicy,
+  MessageConnectorRegistry,
+  OutboundDelivery,
+  runDirectedOutboundTurn,
+} from "../outbound/index.js";
+import { withDerivedOutboundCapabilities } from "../cognition/prompts/host-capabilities.js";
 import { buildAutonomyScheduler } from "./autonomy-setup.js";
 import { buildMaintenanceScheduler } from "./maintenance-setup.js";
 import { createEmbeddingClient, createLazyLlmClient, createLlmFactory } from "./clients.js";
@@ -38,7 +50,17 @@ export async function openBorgDependencies(
   let lance: LanceDbStore | undefined;
 
   try {
-    const config = resolveBorgConfig(options);
+    const resolvedConfig = resolveBorgConfig(options);
+    const outboundConnectorRegistry = new MessageConnectorRegistry(
+      options.outboundConnectors ?? [],
+    );
+    const config = {
+      ...resolvedConfig,
+      host_capabilities: withDerivedOutboundCapabilities({
+        hostCapabilities: resolvedConfig.host_capabilities,
+        outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
+      }),
+    };
     const tracer = compositeTracer([
       createTurnTracer({
         tracerPath: options.tracerPath,
@@ -127,6 +149,24 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
+    const outboundDelivery = new OutboundDelivery({
+      connectorRegistry: outboundConnectorRegistry,
+      createStreamWriter: repositories.createStreamWriter,
+      clock,
+    });
+    const autonomousOutboundPolicy = new AutonomousOutboundPolicy({
+      config: config.autonomy.proactiveOutbound,
+      sessionsRepository: repositories.sessionsRepository,
+      creatorDirectiveRepository: repositories.creatorDirectiveRepository,
+      createStreamReader: (sessionId) =>
+        new StreamReader({
+          dataDir: config.dataDir,
+          sessionId,
+          entryIndex,
+        }),
+      transportSourceTypes: outboundConnectorRegistry.sourceTypes(),
+      clock,
+    });
     const offline = buildOfflineSetup({
       config,
       sqlite,
@@ -205,6 +245,9 @@ export async function openBorgDependencies(
       toolDispatcher,
       sessionLock,
       streamIngestionCoordinator,
+      outboundDelivery,
+      autonomousOutboundPolicy,
+      outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       createStreamWriter: repositories.createStreamWriter,
       entryIndex: repositories.entryIndex,
       attachmentService,
@@ -215,6 +258,20 @@ export async function openBorgDependencies(
       promptOverrideRepository: repositories.promptOverrideRepository,
       sessionsRepository: repositories.sessionsRepository,
     });
+    toolDispatcher.register(
+      createOutboundPostTool({
+        sessionsRepository: repositories.sessionsRepository,
+        connectorRegistry: outboundConnectorRegistry,
+        autonomousOutboundPolicy,
+        postOutbound: (input) =>
+          runDirectedOutboundTurn(
+            {
+              turnOrchestrator,
+            },
+            input,
+          ),
+      }),
+    );
     const autonomyScheduler = buildAutonomyScheduler({
       config,
       commitmentRepository: repositories.commitmentRepository,
@@ -251,6 +308,9 @@ export async function openBorgDependencies(
       imagePerceptionRepository: repositories.imagePerceptionRepository,
       imageAttachmentLifecycleService,
       promptOverrideRepository: repositories.promptOverrideRepository,
+      outboundConnectorRegistry,
+      outboundDelivery,
+      autonomousOutboundPolicy,
       sessionsRepository: repositories.sessionsRepository,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,

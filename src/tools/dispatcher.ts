@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { TurnOrigin } from "../cognition/types.js";
+import type { BorgRole } from "../memory/commitments/index.js";
+import type { SessionAudienceRole } from "../sessions/index.js";
 import { StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { ToolError } from "../util/errors.js";
@@ -15,8 +18,11 @@ export type ToolOrigin = "autonomous" | "deliberator";
 export type ToolInvocationContext = {
   sessionId: SessionId;
   origin: ToolOrigin;
+  turnOrigin?: TurnOrigin;
   turnId?: string;
   audienceEntityId?: EntityId | null;
+  currentSenderBorgRole?: BorgRole | null;
+  sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
 };
 
@@ -37,7 +43,10 @@ export type ToolDispatchCall = {
   sessionId?: SessionId;
   turnId?: string;
   origin: ToolOrigin;
+  turnOrigin?: TurnOrigin;
   audienceEntityId?: EntityId | null;
+  currentSenderBorgRole?: BorgRole | null;
+  sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
   timeoutMs?: number;
 };
@@ -49,7 +58,10 @@ export type ToolSkippedCall = {
   sessionId?: SessionId;
   turnId?: string;
   origin: ToolOrigin;
+  turnOrigin?: TurnOrigin;
   audienceEntityId?: EntityId | null;
+  currentSenderBorgRole?: BorgRole | null;
+  sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
   skipReason: string;
   error?: string;
@@ -167,6 +179,7 @@ export class ToolDispatcher {
           tool_name: call.toolName,
           input: call.input,
           origin: call.origin,
+          ...(call.turnOrigin === undefined ? {} : { turn_origin: call.turnOrigin }),
           ...(call.provenance === undefined ? {} : { provenance: call.provenance }),
           skipped: true,
           skip_reason: call.skipReason,
@@ -213,6 +226,7 @@ export class ToolDispatcher {
           tool_name: call.toolName,
           input: call.input,
           origin: call.origin,
+          ...(call.turnOrigin === undefined ? {} : { turn_origin: call.turnOrigin }),
           ...(call.provenance === undefined ? {} : { provenance: call.provenance }),
         },
       });
@@ -255,8 +269,15 @@ export class ToolDispatcher {
       const context = {
         sessionId,
         origin: call.origin,
+        ...(call.turnOrigin === undefined ? {} : { turnOrigin: call.turnOrigin }),
         ...(call.turnId === undefined ? {} : { turnId: call.turnId }),
         ...(call.audienceEntityId === undefined ? {} : { audienceEntityId: call.audienceEntityId }),
+        ...(call.currentSenderBorgRole === undefined
+          ? {}
+          : { currentSenderBorgRole: call.currentSenderBorgRole }),
+        ...(call.sessionAudienceRole === undefined
+          ? {}
+          : { sessionAudienceRole: call.sessionAudienceRole }),
         provenance: call.provenance,
       };
       const invocation =

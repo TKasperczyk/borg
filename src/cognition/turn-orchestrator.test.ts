@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   Borg,
+  DemoMessageConnector,
   ManualClock,
   QUARANTINED_USER_ENTRY_EVENT,
+  type BorgOpenOptions,
   type FrameAnomalyKind,
   type LLMCompleteOptions,
   type LLMCompleteResult,
@@ -74,6 +76,7 @@ async function openTestBorg(
     tracerPath?: string;
     env?: NodeJS.ProcessEnv;
     configOverrides?: DeepPartial<Config>;
+    outboundConnectors?: BorgOpenOptions["outboundConnectors"];
   } = {},
 ) {
   const configOverrides = options.configOverrides ?? {};
@@ -124,6 +127,7 @@ async function openTestBorg(
     env: options.env,
     tracerPath: options.tracerPath,
     liveExtraction: false,
+    outboundConnectors: options.outboundConnectors,
   });
 }
 
@@ -929,11 +933,19 @@ describe("TurnOrchestrator operator session snapshot", () => {
     const otherSessionId = createSessionId();
     const archivedSessionId = createSessionId();
     const llm = new FakeLLMClient({
-      responses: simpleSuccessfulTurnResponses("I can see the live sessions."),
+      responses: [
+        createNoCreatorDirectiveResponse(),
+        ...simpleSuccessfulTurnResponses("I can see the live sessions."),
+      ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, undefined, {
+      outboundConnectors: [new DemoMessageConnector()],
+    });
 
     try {
+      const tomId = borg.entities.resolve("Tom");
+      borg.entities.setBorgRole(tomId, "creator");
+
       borg.sessions.ensure({
         session_id: otherSessionId,
         source_type: "demo",
@@ -981,7 +993,9 @@ describe("TurnOrchestrator operator session snapshot", () => {
       );
 
       expect(snapshotStart).toBeGreaterThanOrEqual(0);
-      expect(snapshotBlock).toContain('  <session alias="session_1">');
+      expect(snapshotBlock).toContain(
+        `  <session alias="session_1" session_id="${otherSessionId}">`,
+      );
       expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
       expect(snapshotBlock).toContain("<conversation_kind>dm</conversation_kind>");
       expect(snapshotBlock).toContain("<participation_policy>active</participation_policy>");
@@ -990,7 +1004,68 @@ describe("TurnOrchestrator operator session snapshot", () => {
       expect(snapshotBlock).toContain("<recent_state>last_turn_available</recent_state>");
       expect(snapshotBlock).not.toContain("Archived");
       expect(snapshotBlock).not.toContain(operatorSessionId);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("renders cross-session awareness for operator turns without exposing session_ids when outbound is unavailable", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-awareness-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const operatorSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("I can see the live sessions."),
+    });
+    // No outbound connector wired and no creator role -> awareness only, no ids.
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.sessions.ensure({
+        session_id: otherSessionId,
+        source_type: "demo",
+        label: "dm with Alice",
+        audience_label: "Alice",
+        conversation_kind: "dm",
+        last_activity_at: clock.now() - 5 * 60_000,
+      });
+      borg.sessions.touch(otherSessionId, {
+        at: clock.now() - 5 * 60_000,
+        lastTurnId: "turn_alice",
+        messageCountDelta: 42,
+      });
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        label: "operator",
+        audience_label: "Tom",
+        conversation_kind: "demo",
+        audience_role: "operator",
+      });
+
+      await borg.turn({
+        sessionId: operatorSessionId,
+        audience: "Tom",
+        userMessage: "What other sessions are live?",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+      const snapshotStart = finalizerSystem.indexOf("<borg_session_status_snapshot");
+      const snapshotEnd = finalizerSystem.indexOf("</borg_session_status_snapshot>");
+      const snapshotBlock = finalizerSystem.slice(
+        snapshotStart,
+        snapshotEnd + "</borg_session_status_snapshot>".length,
+      );
+
+      // Awareness renders for any operator session...
+      expect(snapshotStart).toBeGreaterThanOrEqual(0);
+      expect(snapshotBlock).toContain('  <session alias="session_1">');
+      expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
+      // ...but no session_ids leak when outbound is not available.
       expect(snapshotBlock).not.toContain(otherSessionId);
+      expect(snapshotBlock).not.toContain(operatorSessionId);
       expect(snapshotBlock).not.toMatch(/\b(?:sess|ent|strm|turn)_[a-z0-9]+\b/);
     } finally {
       await borg.close();

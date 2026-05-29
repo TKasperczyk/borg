@@ -33,7 +33,12 @@ import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/se
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
-import type { SessionsRepository } from "../sessions/index.js";
+import type {
+  AutonomousOutboundPolicy,
+  OutboundDelivery,
+  OutboundDeliveryReceipt,
+} from "../outbound/index.js";
+import type { SessionSourceType, SessionsRepository } from "../sessions/index.js";
 import {
   ABORTED_TURN_EVENT,
   StreamReader,
@@ -72,7 +77,12 @@ import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { SessionLock } from "./session-lock.js";
 import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "./tracing/tracer.js";
-import type { CognitiveMode, IntentRecord } from "./types.js";
+import {
+  isAutonomousLikeTurnOrigin,
+  type CognitiveMode,
+  type IntentRecord,
+  type TurnOrigin,
+} from "./types.js";
 
 export type TurnInput = {
   userMessage: string;
@@ -82,7 +92,7 @@ export type TurnInput = {
   stakes?: TurnStakes;
   sessionId?: SessionId;
   globalTurnCounter?: number;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   autonomyTrigger?: AutonomyTriggerContext | null;
 };
 
@@ -106,6 +116,7 @@ export type TurnResult = {
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
   agentMessageId?: string;
+  outboundDelivery?: OutboundDeliveryReceipt;
 };
 
 export type TurnOrchestratorOptions = {
@@ -162,6 +173,9 @@ export type TurnOrchestratorOptions = {
    * `borg.episodic.extract()` / `borg.dream.consolidate()` calls.
    */
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  outboundDelivery?: Pick<OutboundDelivery, "deliver">;
+  autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  outboundSourceTypes?: readonly SessionSourceType[];
   affectiveSignalDetector?: typeof detectAffectiveSignal;
   sessionLock?: SessionLock;
   tracer?: TurnTracer;
@@ -333,6 +347,9 @@ export class TurnOrchestrator {
       attachmentService: options.attachmentService,
       imagePerceptionService: options.imagePerceptionService,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
+      outboundDelivery: options.outboundDelivery,
+      autonomousOutboundPolicy: options.autonomousOutboundPolicy,
+      outboundSourceTypes: options.outboundSourceTypes,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,
       turnOpeningPersistence,
@@ -427,10 +444,9 @@ export class TurnOrchestrator {
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
-    const lease =
-      input.origin === "autonomous"
-        ? await this.sessionLock.tryAcquire(sessionId)
-        : await this.sessionLock.acquire(sessionId);
+    const lease = isAutonomousLikeTurnOrigin(input.origin)
+      ? await this.sessionLock.tryAcquire(sessionId)
+      : await this.sessionLock.acquire(sessionId);
 
     if (lease === null) {
       throw new SessionBusyError(`Session ${sessionId} is busy`, {

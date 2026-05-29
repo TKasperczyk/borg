@@ -1,4 +1,5 @@
 import { RELATIONSHIP_LABELS_PROMPT } from "./relationship-labels.js";
+import type { SessionSourceType } from "../../sessions/index.js";
 
 export const BORG_HOST_CAPABILITY_CATEGORIES = ["allowed", "impossible"] as const;
 export type BorgHostCapabilityCategory = (typeof BORG_HOST_CAPABILITY_CATEGORIES)[number];
@@ -74,6 +75,97 @@ function renderCapabilities(category: BorgHostCapabilityCategory): string[] {
   );
 }
 
+function outboundCapabilityLines(sourceTypes: readonly SessionSourceType[]): string[] {
+  if (sourceTypes.length === 0) {
+    return [
+      "- Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
+      "- Scheduled check-ins or reminders that surface to participants",
+      "- External notifications (email, SMS, push, etc.)",
+    ];
+  }
+
+  return [
+    "- Scheduled check-ins or reminders that surface to participants remain unavailable unless separately authorized by the host.",
+    "- External notifications without a wired connector remain unavailable.",
+  ];
+}
+
+function wiredOutboundCapabilityLines(sourceTypes: readonly SessionSourceType[]): string[] {
+  if (sourceTypes.length === 0) {
+    return [];
+  }
+
+  return [
+    `- Proactive outbound messaging via wired source_type connector(s): ${sourceTypes.join(", ")}`,
+    "- Use tool.outbound.post only when structurally authorized by creator-in-operator context or an autonomous authorization block, and a target session id is provided.",
+    "- Targets without a wired connector are not transportable through tool.outbound.post.",
+  ];
+}
+
+function outboundSourceTypes(input: {
+  outboundSourceTypes?: readonly SessionSourceType[];
+}): SessionSourceType[] {
+  return [...(input.outboundSourceTypes ?? [])].sort();
+}
+
+export function withDerivedOutboundCapabilities(input: {
+  hostCapabilities: string;
+  outboundSourceTypes?: readonly SessionSourceType[];
+}): string {
+  const sourceTypes = outboundSourceTypes(input);
+
+  if (input.hostCapabilities === DEFAULT_HOST_CAPABILITIES_SECTION) {
+    return buildHostCapabilitiesSection({ outboundSourceTypes: sourceTypes });
+  }
+
+  return [
+    input.hostCapabilities.trimEnd(),
+    "",
+    "Host-wired outbound capability status:",
+    ...(sourceTypes.length === 0
+      ? [
+          "- Proactive outbound messaging is unavailable: no outbound source_type connector is wired.",
+        ]
+      : wiredOutboundCapabilityLines(sourceTypes)),
+  ].join("\n");
+}
+
+export function buildHostCapabilitiesSection(
+  input: {
+    outboundSourceTypes?: readonly SessionSourceType[];
+  } = {},
+): string {
+  const sourceTypes = outboundSourceTypes(input);
+
+  return [
+    "Inputs available to you (assembled before this turn):",
+    "- episodic memory (past episodes are surfaced via retrieval)",
+    "- semantic graph (concept nodes and relationships)",
+    "- commitments (rules, preferences, boundaries you've agreed to honor)",
+    "- open questions (unresolved threads)",
+    "- evidence ledger (current-session transcript, retrieval, contradictions, etc.)",
+    "",
+    "Output channels available now:",
+    "- EmitAnswer: speak visibly to the current speaker or audience when engagement is warranted",
+    "- EmitObserve: in multi-participant conversations, stay present without a visible message when other participants are carrying the conversation with each other",
+    "- EmitSelfReport: interior reflection (persisted differently; not user-facing world-fact)",
+    "- EmitNoOutput: conversation closure / natural ending",
+    "",
+    ...(sourceTypes.length === 0
+      ? []
+      : [
+          "Host-wired outbound capabilities available now:",
+          ...wiredOutboundCapabilityLines(sourceTypes),
+          "",
+        ]),
+    "Capabilities NOT available unless the host has declared them otherwise:",
+    ...outboundCapabilityLines(sourceTypes),
+    "- Real-time polling of external state",
+    "",
+    BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
+  ].join("\n");
+}
+
 export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   "Borg host capability boundary:",
   "",
@@ -94,25 +186,4 @@ export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   RELATIONSHIP_LABELS_PROMPT,
 ].join("\n");
 
-export const DEFAULT_HOST_CAPABILITIES_SECTION = [
-  "Inputs available to you (assembled before this turn):",
-  "- episodic memory (past episodes are surfaced via retrieval)",
-  "- semantic graph (concept nodes and relationships)",
-  "- commitments (rules, preferences, boundaries you've agreed to honor)",
-  "- open questions (unresolved threads)",
-  "- evidence ledger (current-session transcript, retrieval, contradictions, etc.)",
-  "",
-  "Output channels available now:",
-  "- EmitAnswer: speak visibly to the current speaker or audience when engagement is warranted",
-  "- EmitObserve: in multi-participant conversations, stay present without a visible message when other participants are carrying the conversation with each other",
-  "- EmitSelfReport: interior reflection (persisted differently; not user-facing world-fact)",
-  "- EmitNoOutput: conversation closure / natural ending",
-  "",
-  "Capabilities NOT available unless the host has declared them otherwise:",
-  "- Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
-  "- Scheduled check-ins or reminders that surface to participants",
-  "- External notifications (email, SMS, push, etc.)",
-  "- Real-time polling of external state",
-  "",
-  BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
-].join("\n");
+export const DEFAULT_HOST_CAPABILITIES_SECTION = buildHostCapabilitiesSection();

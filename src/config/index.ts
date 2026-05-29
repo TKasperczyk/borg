@@ -9,6 +9,7 @@ import {
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { commitmentKindSchema, type CommitmentKind } from "../memory/commitments/types.js";
+import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 import { isPlainRecord } from "../util/guards.js";
@@ -508,6 +509,22 @@ const configBaseSchema = z.object({
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
+      proactiveOutbound: z
+        .object({
+          enabled: z.boolean().default(false),
+          maxPostsPerWindow: z.number().int().positive().default(2),
+          maxPostsPerTargetPerWindow: z.number().int().positive().default(1),
+          windowMs: z.number().int().positive().default(86_400_000),
+          maxAuthorizedTargets: z.number().int().positive().default(20),
+          allowByCreatorDirective: z.boolean().default(true),
+          allowByConfig: z
+            .object({
+              sessionIds: z.array(sessionIdSchema).default([]),
+              sourceTypes: z.array(sessionSourceTypeSchema).default([]),
+            })
+            .prefault({}),
+        })
+        .prefault({}),
       executiveFocus: z
         .object({
           // Default on alongside autonomy so a stale selected goal or due
@@ -1345,6 +1362,36 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["autonomy", "proactiveOutbound", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "proactiveOutbound", "maxPostsPerWindow"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_POSTS_PER_WINDOW"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "proactiveOutbound", "maxPostsPerTargetPerWindow"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_POSTS_PER_TARGET_PER_WINDOW"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "proactiveOutbound", "windowMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_WINDOW_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "proactiveOutbound", "maxAuthorizedTargets"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_AUTHORIZED_TARGETS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "proactiveOutbound", "allowByCreatorDirective"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_PROACTIVE_OUTBOUND_ALLOW_BY_CREATOR_DIRECTIVE"),
+  );
+  setConfigOverride(
+    overrides,
     ["autonomy", "executiveFocus", "enabled"],
     readOptionalEnvBoolean(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_ENABLED"),
   );
@@ -1570,8 +1617,18 @@ export function redactConfig(config: Config): Config {
         scheduledReflection: {
           ...config.autonomy.triggers.scheduledReflection,
         },
+        scheduledWake: {
+          ...config.autonomy.triggers.scheduledWake,
+        },
         goalFollowupDue: {
           ...config.autonomy.triggers.goalFollowupDue,
+        },
+      },
+      proactiveOutbound: {
+        ...config.autonomy.proactiveOutbound,
+        allowByConfig: {
+          sessionIds: [...config.autonomy.proactiveOutbound.allowByConfig.sessionIds],
+          sourceTypes: [...config.autonomy.proactiveOutbound.allowByConfig.sourceTypes],
         },
       },
       conditions: {

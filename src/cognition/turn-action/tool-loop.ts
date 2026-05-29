@@ -14,7 +14,10 @@ import type {
   ToolDispatcher,
   ToolOrigin,
 } from "../../tools/index.js";
+import type { BorgRole } from "../../memory/commitments/index.js";
+import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnOrigin } from "../types.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
 import { summarizeToolSchemas } from "../tracing/llm-call-trace.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -50,7 +53,10 @@ export type ExecuteToolLoopOptions = {
   initialMessages: readonly LLMContentBlockMessage[];
   tools: readonly ToolDefinition[];
   origin: ToolOrigin;
+  turnOrigin?: TurnOrigin;
   audienceEntityId?: EntityId | null;
+  currentSenderBorgRole?: BorgRole | null;
+  sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
   budget: string;
   maxTokens?: number;
@@ -175,7 +181,14 @@ async function dispatchToolUseBlock(
   dispatcher: ToolDispatcher,
   options: Pick<
     ExecuteToolLoopOptions,
-    "sessionId" | "origin" | "turnId" | "audienceEntityId" | "provenance"
+    | "sessionId"
+    | "origin"
+    | "turnOrigin"
+    | "turnId"
+    | "audienceEntityId"
+    | "currentSenderBorgRole"
+    | "sessionAudienceRole"
+    | "provenance"
   >,
   block: LLMToolUseBlock,
 ): Promise<ToolDispatchResult> {
@@ -187,7 +200,10 @@ async function dispatchToolUseBlock(
       sessionId: options.sessionId,
       turnId: options.turnId,
       origin: options.origin,
+      turnOrigin: options.turnOrigin,
       audienceEntityId: options.audienceEntityId,
+      currentSenderBorgRole: options.currentSenderBorgRole,
+      sessionAudienceRole: options.sessionAudienceRole,
       provenance: options.provenance,
     });
   } catch (error) {
@@ -351,6 +367,9 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           sessionId: options.sessionId,
           turnId: options.turnId,
           origin: options.origin,
+          turnOrigin: options.turnOrigin,
+          currentSenderBorgRole: options.currentSenderBorgRole,
+          sessionAudienceRole: options.sessionAudienceRole,
           provenance: options.provenance,
           skipReason: "tool_not_available_in_context",
         });
@@ -374,8 +393,11 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         {
           sessionId: options.sessionId,
           origin: options.origin,
+          turnOrigin: options.turnOrigin,
           turnId: options.turnId,
           audienceEntityId: options.audienceEntityId,
+          currentSenderBorgRole: options.currentSenderBorgRole,
+          sessionAudienceRole: options.sessionAudienceRole,
           provenance: options.provenance,
         },
         block,
@@ -412,6 +434,9 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         input: block.input,
         sessionId: options.sessionId,
         origin: options.origin,
+        turnOrigin: options.turnOrigin,
+        currentSenderBorgRole: options.currentSenderBorgRole,
+        sessionAudienceRole: options.sessionAudienceRole,
         turnId: options.turnId,
         provenance: options.provenance,
         skipReason: "max_tool_calls_per_iteration",

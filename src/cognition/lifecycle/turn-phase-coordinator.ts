@@ -10,6 +10,9 @@ import {
 } from "../participants.js";
 import type { StreamWriter } from "../../stream/index.js";
 import { CognitionError } from "../../util/errors.js";
+import type { SessionId } from "../../util/ids.js";
+import { isCreatorInOperatorContext } from "../authority.js";
+import { isUserTurnOrigin, persistsPerception } from "../types.js";
 import {
   classifyClosureLoopPhase,
   classifyFrameAnomalyPhase,
@@ -126,7 +129,7 @@ export class TurnPhaseCoordinator {
       details?: Record<string, unknown>,
     ) => appendHookFailureEvent(targetStreamWriter, hook, error, details);
     const isSelfAudience = turnInput.audience === "self";
-    const isUserTurn = turnInput.origin !== "autonomous";
+    const isUserTurn = isUserTurnOrigin(turnInput.origin);
     const preflightAudienceEntityId =
       turnInput.audience === undefined || isSelfAudience
         ? null
@@ -233,22 +236,9 @@ export class TurnPhaseCoordinator {
     const sessionRecord = this.options.sessionsRepository?.get(sessionId) ?? null;
     const sessionAudienceRole = sessionRecord?.audience_role ?? "participant";
     const participationPolicy = sessionRecord?.participation_policy ?? "active";
-    const operatorSessionSnapshot =
-      sessionAudienceRole === "operator" && this.options.sessionsRepository !== undefined
-        ? buildOperatorSessionSnapshot({
-            sessions: this.options.sessionsRepository.list({
-              status: "active",
-              excludeSessionId: sessionId,
-              limit: OPERATOR_SESSION_SNAPSHOT_CAP,
-            }),
-            totalActiveOtherSessionCount: this.options.sessionsRepository.count({
-              status: "active",
-              excludeSessionId: sessionId,
-            }),
-            currentSessionId: sessionId,
-            nowMs: this.options.clock.now(),
-            cap: OPERATOR_SESSION_SNAPSHOT_CAP,
-          })
+    const autonomousOutbound =
+      turnInput.origin === "autonomous"
+        ? (this.options.autonomousOutboundPolicy?.promptContext(sessionId) ?? null)
         : null;
     const currentSenderEntityId =
       audienceEntity?.kind === "group" ? groupSpeakerEntityId : audienceEntityId;
@@ -264,6 +254,50 @@ export class TurnPhaseCoordinator {
       currentSenderBorgRole: currentSenderEntity?.borg_role ?? null,
       sessionAudienceRole,
     };
+    const outboundSourceTypes = new Set(this.options.outboundSourceTypes ?? []);
+    // Cross-session AWARENESS (the snapshot) renders for any operator-role
+    // session over all active other sessions -- this is the continuity feature
+    // and is independent of outbound. OUTBOUND TARGETING is the separate,
+    // narrower concern: a session is targetable only when the sender is a
+    // creator-in-operator AND a connector is wired for its source_type. Only
+    // targetable sessions expose their session_id to the model, so non-outbound
+    // operator turns keep the id-free awareness view.
+    const snapshotRepository =
+      sessionAudienceRole === "operator" ? this.options.sessionsRepository : undefined;
+    const activeOtherSessions =
+      snapshotRepository === undefined
+        ? []
+        : snapshotRepository.list({
+            status: "active",
+            excludeSessionId: sessionId,
+            limit: OPERATOR_SESSION_SNAPSHOT_CAP,
+          });
+    const totalActiveOtherSessionCount =
+      snapshotRepository === undefined
+        ? 0
+        : snapshotRepository.count({ status: "active", excludeSessionId: sessionId });
+    const outboundTargetableSessionIds: ReadonlySet<SessionId> =
+      isCreatorInOperatorContext({
+        currentSenderBorgRole: creatorContext.currentSenderBorgRole,
+        sessionAudienceRole,
+      }) && outboundSourceTypes.size > 0
+        ? new Set<SessionId>(
+            activeOtherSessions
+              .filter((session) => outboundSourceTypes.has(session.source_type))
+              .map((session) => session.session_id),
+          )
+        : new Set<SessionId>();
+    const operatorSessionSnapshot =
+      activeOtherSessions.length > 0
+        ? buildOperatorSessionSnapshot({
+            sessions: activeOtherSessions,
+            totalActiveOtherSessionCount,
+            currentSessionId: sessionId,
+            nowMs: this.options.clock.now(),
+            cap: OPERATOR_SESSION_SNAPSHOT_CAP,
+            outboundTargetableSessionIds,
+          })
+        : null;
     const perceptionResult = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,
@@ -281,11 +315,13 @@ export class TurnPhaseCoordinator {
       completedSub: summarizePerceptionResult,
     });
     const perception = perceptionResult.perception;
-    for (const userIdentityName of perception.userIdentityNames ?? []) {
-      this.options.entityRepository.resolve(userIdentityName, {
-        kind: "person",
-        provenance: "user_declared",
-      });
+    if (persistsPerception(turnInput.origin)) {
+      for (const userIdentityName of perception.userIdentityNames ?? []) {
+        this.options.entityRepository.resolve(userIdentityName, {
+          kind: "person",
+          provenance: "user_declared",
+        });
+      }
     }
     const recencyWindow = perceptionResult.recencyWindow;
     const workingMood = perceptionResult.workingMood;
@@ -320,6 +356,7 @@ export class TurnPhaseCoordinator {
           createdTurnGlobal: input.globalTurnCounter,
         }),
       persistUserMessage: isUserTurn,
+      persistPerception: persistsPerception(turnInput.origin),
       audience: turnInput.audience,
       senderEntityId: turnInput.senderEntityId,
       speakerEntityId: currentSenderEntityId,
@@ -665,6 +702,7 @@ export class TurnPhaseCoordinator {
           participationPolicy,
           creatorIdentity,
           creatorContext,
+          autonomousOutbound,
           operatorSessionSnapshot,
           persistedUserEntryId,
           currentUserContent,
@@ -683,6 +721,10 @@ export class TurnPhaseCoordinator {
     });
     const deliberation = deliberationPhase.deliberation;
     workingMemory = deliberationPhase.workingMemory;
+    const knownInternalIdentifiers = [
+      ...(operatorSessionSnapshot?.sessions.map((session) => session.session_id) ?? []),
+      ...(autonomousOutbound?.targets.map((target) => target.session_id) ?? []),
+    ];
 
     return runPostGenerationPhase({
       options: this.options,
@@ -715,6 +757,7 @@ export class TurnPhaseCoordinator {
       suppressionSet,
       isUserTurn,
       currentTurnFrameAnomaly,
+      knownInternalIdentifiers,
     });
   }
 }

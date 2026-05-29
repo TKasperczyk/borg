@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { Borg } from "borg";
+import { Borg, DemoMessageConnector } from "borg";
 
 import { createDemoServerApp, ensureDemoDefaultSession } from "./app.js";
 import { createLiveBridge } from "./live.js";
@@ -39,6 +39,7 @@ async function openDemoBorg(): Promise<Borg> {
     dataDir,
     tracer: live.tracer,
     onStreamAppend: live.onStreamAppend,
+    outboundConnectors: [new DemoMessageConnector()],
   });
   ensureDemoDefaultSession(borg, { demoCreatorEntityName });
   return borg;

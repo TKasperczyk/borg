@@ -10,6 +10,7 @@ import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { BorgRole } from "../../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../../sessions/index.js";
+import { runsExtraction } from "../../types.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import type { AppendHookFailureEvent } from "./utils.js";
 
@@ -60,6 +61,21 @@ export async function runExtractionPhase(input: {
     CorrectivePreferenceTurnService["extractAndApply"]
   >[0]["trackAppliedSlotNegation"];
 }): Promise<TurnExtractionPhaseResult> {
+  if (!runsExtraction(input.turnInput.origin)) {
+    return {
+      actionLinkSelfContext: null,
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      workingMemory: input.workingMemory,
+      createdActionIds: [],
+      persistedPromotions: {
+        goalIds: [],
+        executiveStepIds: [],
+      },
+      creatorDirectives: [],
+    };
+  }
+
   const actionLinkSelfContext =
     input.isUserTurn && input.currentTurnFrameAnomaly === null
       ? await input.options.selfContextBuilder.build({

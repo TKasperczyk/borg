@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Borg,
   DEFAULT_SESSION_ID,
+  DemoMessageConnector,
   ManualClock,
   createSessionId,
   createEpisodeId,
@@ -164,6 +165,7 @@ function createHarnessOpenOptions(input: {
     llmClient: input.llmClient ?? new FakeLLMClient(),
     tracer: input.live.tracer,
     onStreamAppend: input.live.onStreamAppend,
+    outboundConnectors: [new DemoMessageConnector()],
     liveExtraction: false,
   };
 }
@@ -2115,9 +2117,11 @@ describe("demo server", () => {
       "host_capabilities",
     ]);
     expect(body.blocks.every((b) => b.overridden === false)).toBe(true);
-    expect(body.blocks.find((b) => b.key === "host_capabilities")).toMatchObject({
-      current_text: hostCapabilities,
-    });
+    const hostCapabilitiesBlock = body.blocks.find((b) => b.key === "host_capabilities");
+    expect(hostCapabilitiesBlock?.current_text).toContain(hostCapabilities);
+    expect(hostCapabilitiesBlock?.current_text).toContain(
+      "Proactive outbound messaging via wired source_type connector(s): demo",
+    );
   });
 
   it("PUT /api/prompts/:key sets an override, DELETE clears it", async () => {

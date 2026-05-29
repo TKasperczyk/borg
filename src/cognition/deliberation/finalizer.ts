@@ -2,8 +2,15 @@
 import { z } from "zod";
 
 import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
-import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
+import {
+  OUTBOUND_POST_TOOL_NAME,
+  type ToolDefinition,
+  type ToolDispatcher,
+} from "../../tools/index.js";
+import type { BorgRole } from "../../memory/commitments/index.js";
+import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
+import type { TurnOrigin } from "../types.js";
 import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
 import {
@@ -242,9 +249,16 @@ function buildEmissionToolInstructions(
 
 function buildEmissionFinalizerInstructions(
   allowedEmissions: readonly EmissionToolName[] | undefined,
+  outboundToolAvailable: boolean,
 ): string {
   return [
     buildEmissionToolInstructions(resolveAvailableEmissionNames(allowedEmissions)),
+    ...(outboundToolAvailable
+      ? [
+          "",
+          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks Borg to send a message into another session, or when an autonomous turn has an authorized target listed in <borg_autonomous_outbound_authorization>, call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. Wait for the tool result, then call exactly one terminal emission tool for the current turn. Do not expose tool names, session ids, or dispatch internals in visible text.",
+        ]
+      : []),
     "",
     ...COMMON_FINALIZER_INSTRUCTIONS,
   ].join("\n");
@@ -280,6 +294,10 @@ export type RunFinalizerOptions = {
   additionalPromptSections?: readonly (string | null)[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   allowedEmissions?: readonly EmissionToolName[];
+  outboundToolAvailable?: boolean;
+  turnOrigin?: TurnOrigin;
+  currentSenderBorgRole?: BorgRole | null;
+  sessionAudienceRole?: SessionAudienceRole;
   structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
   tracer?: TurnTracer;
   turnId?: string;
@@ -334,7 +352,11 @@ function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
 }
 
 function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
-  const finalizerInstructions = buildEmissionFinalizerInstructions(options.allowedEmissions);
+  const outboundTool = getOutboundTool(options);
+  const finalizerInstructions = buildEmissionFinalizerInstructions(
+    options.allowedEmissions,
+    outboundTool !== null,
+  );
 
   return options.cacheableSystemPrompt === undefined
     ? finalizerInstructions
@@ -357,6 +379,14 @@ function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["sy
       text: dynamicPrompt,
     },
   ];
+}
+
+function getOutboundTool(
+  options: Pick<RunFinalizerOptions, "dispatcher" | "outboundToolAvailable">,
+) {
+  return options.outboundToolAvailable === true
+    ? options.dispatcher.getDefinition(OUTBOUND_POST_TOOL_NAME)
+    : null;
 }
 
 function invalidToolDecision(toolName: string, reason: string): EmissionDecision {
@@ -532,6 +562,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   const emissionTools = EMISSION_FINALIZER_TOOLS.filter((tool) =>
     allowedEmissionNames.has(tool.name),
   );
+  const outboundTool = getOutboundTool(options);
+  const availableTools = outboundTool === null ? emissionTools : [...emissionTools, outboundTool];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
   let tokenSequence = 0;
 
@@ -543,8 +575,11 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     model: options.model,
     systemPrompt,
     initialMessages: options.initialMessages,
-    tools: emissionTools,
-    origin: "deliberator",
+    tools: availableTools,
+    origin: options.turnOrigin === "autonomous" ? "autonomous" : "deliberator",
+    turnOrigin: options.turnOrigin,
+    currentSenderBorgRole: options.currentSenderBorgRole,
+    sessionAudienceRole: options.sessionAudienceRole,
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),

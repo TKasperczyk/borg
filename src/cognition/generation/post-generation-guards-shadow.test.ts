@@ -17,6 +17,7 @@ import {
   createCommitmentId,
   createEpisodeId,
   createRelationalSlotId,
+  createSessionId,
   createStreamEntryId,
   DEFAULT_SESSION_ID,
 } from "../../util/ids.js";
@@ -288,6 +289,61 @@ describe("post-generation guard shadow chain", () => {
       session_id: DEFAULT_SESSION_ID,
       verdict: "suppressed",
       leaked_identifiers: [userEntryId],
+    });
+  });
+
+  it("suppresses known cross-session identifiers rendered in operator snapshots", async () => {
+    const targetSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-cross-session-id-leak",
+      response: `The target session handle is ${targetSessionId}.`,
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+      knownInternalIdentifiers: [targetSessionId],
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-cross-session-id-leak",
+      session_id: DEFAULT_SESSION_ID,
+      verdict: "suppressed",
+      leaked_identifiers: [targetSessionId],
     });
   });
 

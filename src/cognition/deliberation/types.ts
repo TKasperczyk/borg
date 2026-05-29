@@ -41,6 +41,7 @@ import type {
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
+import type { AutonomousOutboundPromptContext } from "../../outbound/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../turn-action/index.js";
@@ -56,7 +57,7 @@ import type { PromptKey } from "../prompts/registry.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { OperatorSessionSnapshot } from "../lifecycle/turn-phase/session-snapshot.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import type { IntentRecord, PerceptionResult } from "../types.js";
+import type { IntentRecord, PerceptionResult, TurnOrigin } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 
 export type TurnStakes = "low" | "medium" | "high";
@@ -150,8 +151,10 @@ export type DeliberationContext = {
   creatorIdentity?: CreatorIdentityContext | null;
   creatorContext?: TrustedCreatorContext | null;
   creatorDirectiveBriefing?: CreatorDirectiveBriefing | null;
+  autonomousOutbound?: AutonomousOutboundPromptContext | null;
   operatorSessionSnapshot?: OperatorSessionSnapshot | null;
   turnId?: string;
+  turnOrigin?: TurnOrigin;
   audience?: string;
   audienceEntityId?: EntityId | null;
   senderEntityId?: EntityId;

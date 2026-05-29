@@ -273,8 +273,8 @@ export class TurnDiscourseStateService {
       turn_status: ACTIVE_TURN_STATUS,
       content: {
         reason: input.reason,
-        user_entry_id: input.userEntryId,
         turn_id: input.turnId,
+        ...(input.userEntryId === undefined ? {} : { user_entry_id: input.userEntryId }),
         ...(input.noOutputCategories === undefined
           ? {}
           : { no_output_categories: [...input.noOutputCategories] }),
@@ -296,8 +296,8 @@ export class TurnDiscourseStateService {
       turn_status: ACTIVE_TURN_STATUS,
       content: {
         reason: input.reason,
-        user_entry_id: input.userEntryId,
         turn_id: input.turnId,
+        ...(input.userEntryId === undefined ? {} : { user_entry_id: input.userEntryId }),
       } satisfies AgentObservedStreamContent,
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });

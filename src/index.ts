@@ -74,6 +74,19 @@ export {
   type SessionTouchUpdate,
 } from "./sessions/index.js";
 export {
+  PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG,
+  DemoMessageConnector,
+  type AutonomousOutboundAuthorizationKind,
+  type AutonomousOutboundPromptContext,
+  type AutonomousOutboundPromptTarget,
+  type MessageConnector,
+  type OutboundConnectorDeliverInput,
+  type OutboundConnectorDeliverResult,
+  type OutboundDeliveryResult,
+  type OutboundDeliveryStatus,
+  type OutboundMessage,
+} from "./outbound/index.js";
+export {
   DEFAULT_CONFIG,
   loadConfig,
   postGenerationGuardModeSchema,
@@ -118,6 +131,7 @@ export {
 export {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   COGNITIVE_MODES,
+  TURN_ORIGINS,
   CompositeTracer,
   FINALIZER_NO_OUTPUT_CATEGORIES,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
@@ -170,6 +184,7 @@ export {
   type TurnEmission,
   type ToolLoopCallRecord,
   type TurnInput,
+  type TurnOrigin,
   type TurnResult,
   type TurnStakes,
   type TurnTraceData,

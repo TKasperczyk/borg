@@ -174,7 +174,7 @@ describe("TurnOpeningPersistence", () => {
       updated_at: 2_000,
     });
     expect(result.persistedUserEntry?.id).toBe(userEntryId);
-    expect(result.persistedPerceptionEntry.id).toBe(perceptionEntryId);
+    expect(result.persistedPerceptionEntry?.id).toBe(perceptionEntryId);
     expect(result.workingMemory).toEqual(save.mock.results[0]?.value);
   });
 
@@ -226,7 +226,39 @@ describe("TurnOpeningPersistence", () => {
       },
     ]);
     expect(result.persistedUserEntry).toBeNull();
-    expect(result.persistedPerceptionEntry.id).toBe(perceptionEntryId);
+    expect(result.persistedPerceptionEntry?.id).toBe(perceptionEntryId);
+  });
+
+  it("can skip perception persistence for internal directed outbound turns", async () => {
+    const sequence: string[] = [];
+    const { appended, streamWriter } = makeStreamWriter(sequence);
+
+    const result = await new TurnOpeningPersistence({
+      workingMemoryStore: {
+        save: vi.fn((memory) => {
+          sequence.push("save:working_memory");
+          return memory;
+        }),
+      },
+    }).persist({
+      streamWriter,
+      turnId,
+      userMessage: "Internal outbound instruction",
+      persistUserMessage: false,
+      persistPerception: false,
+      audience: "alice",
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 500),
+      pendingSocialAttribution: null,
+      pendingTraitAttribution: null,
+      suppressionSet: SuppressionSet.fromEntries([], 0),
+      perception: makePerception(),
+      now: () => 1_000,
+    });
+
+    expect(sequence).toEqual(["save:working_memory"]);
+    expect(appended).toEqual([]);
+    expect(result.persistedUserEntry).toBeNull();
+    expect(result.persistedPerceptionEntry).toBeUndefined();
   });
 
   it("omits audience from opening stream entries when no audience was provided", async () => {

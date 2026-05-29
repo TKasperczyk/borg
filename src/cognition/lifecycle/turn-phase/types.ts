@@ -24,7 +24,7 @@ import type { TurnRetrievalCoordinator } from "../../retrieval/turn-coordinator.
 import type { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
 import type { TurnTerminalOutcome, TurnTracer } from "../../tracing/tracer.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
-import type { CognitiveMode, IntentRecord } from "../../types.js";
+import type { CognitiveMode, IntentRecord, TurnOrigin } from "../../types.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -40,6 +40,12 @@ import type { SemanticNodeRepository } from "../../../memory/semantic/index.js";
 import type { SocialRepository } from "../../../memory/social/index.js";
 import type { WorkingMemoryStore } from "../../../memory/working/index.js";
 import type { SessionsRepository } from "../../../sessions/index.js";
+import type { SessionSourceType } from "../../../sessions/index.js";
+import type {
+  AutonomousOutboundPolicy,
+  OutboundDelivery,
+  OutboundDeliveryReceipt,
+} from "../../../outbound/index.js";
 import type {
   StreamEntryIndexRepository,
   StreamReader,
@@ -58,7 +64,7 @@ export type TurnPhaseInput = {
   stakes?: TurnStakes;
   sessionId?: SessionId;
   globalTurnCounter?: number;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   autonomyTrigger?: AutonomyTriggerContext | null;
 };
 
@@ -80,6 +86,7 @@ export type TurnPhaseResult = {
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
   agentMessageId?: string;
+  outboundDelivery?: OutboundDeliveryReceipt;
   terminalOutcome?: TurnTerminalOutcome;
 };
 
@@ -116,6 +123,9 @@ export type TurnPhaseCoordinatorOptions = {
   attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
   imagePerceptionService?: ImagePerceptionService;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  outboundDelivery?: Pick<OutboundDelivery, "deliver">;
+  autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  outboundSourceTypes?: readonly SessionSourceType[];
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;
   turnOpeningPersistence: TurnOpeningPersistence;

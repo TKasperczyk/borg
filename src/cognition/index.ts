@@ -176,16 +176,19 @@ export {
 } from "./turn-orchestrator.js";
 export {
   COGNITIVE_MODES,
+  TURN_ORIGINS,
   attentionWeightsSchema,
   affectiveSignalSchema,
   cognitiveModeSchema,
   intentRecordSchema,
   perceptionResultSchema,
   temporalCueSchema,
+  turnOriginSchema,
   type AffectiveSignal,
   type AttentionWeights,
   type CognitiveMode,
   type IntentRecord,
   type PerceptionResult,
   type TemporalCue,
+  type TurnOrigin,
 } from "./types.js";

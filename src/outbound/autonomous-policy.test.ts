@@ -1,0 +1,478 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { DEFAULT_CONFIG } from "../config/index.js";
+import {
+  CreatorDirectiveRepository,
+  creatorDirectiveMigrations,
+} from "../memory/creator-directives/index.js";
+import { SessionsRepository, sessionMigrations, type SessionSourceType } from "../sessions/index.js";
+import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
+import { StreamReader, StreamWriter } from "../stream/index.js";
+import { ManualClock } from "../util/clock.js";
+import {
+  createEntityId,
+  createSessionId,
+  createStreamEntryId,
+  type SessionId,
+} from "../util/ids.js";
+
+import {
+  AutonomousOutboundPolicy,
+  PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG,
+} from "./autonomous-policy.js";
+
+function policyConfig(
+  overrides: Partial<typeof DEFAULT_CONFIG.autonomy.proactiveOutbound> = {},
+): typeof DEFAULT_CONFIG.autonomy.proactiveOutbound {
+  return {
+    ...DEFAULT_CONFIG.autonomy.proactiveOutbound,
+    ...overrides,
+    allowByConfig: {
+      ...DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig,
+      ...overrides.allowByConfig,
+      sessionIds: [
+        ...(overrides.allowByConfig?.sessionIds ??
+          DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig.sessionIds),
+      ],
+      sourceTypes: [
+        ...(overrides.allowByConfig?.sourceTypes ??
+          DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig.sourceTypes),
+      ],
+    },
+  };
+}
+
+function setup(): {
+  tempDir: string;
+  db: SqliteDatabase;
+  clock: ManualClock;
+  sessionsRepository: SessionsRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
+  createPolicy: (
+    config: typeof DEFAULT_CONFIG.autonomy.proactiveOutbound,
+    transportSourceTypes?: readonly SessionSourceType[],
+  ) => AutonomousOutboundPolicy;
+} {
+  const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomous-outbound-"));
+  const clock = new ManualClock(1_000);
+  const db = openDatabase(join(tempDir, "borg.sqlite"), {
+    migrations: composeMigrations(sessionMigrations, creatorDirectiveMigrations),
+  });
+  const sessionsRepository = new SessionsRepository({ db, clock });
+  const creatorDirectiveRepository = new CreatorDirectiveRepository({ db, clock });
+
+  return {
+    tempDir,
+    db,
+    clock,
+    sessionsRepository,
+    creatorDirectiveRepository,
+    createPolicy: (config, transportSourceTypes) =>
+      new AutonomousOutboundPolicy({
+        config,
+        sessionsRepository,
+        creatorDirectiveRepository,
+        createStreamReader: (sessionId: SessionId) =>
+          new StreamReader({
+            dataDir: tempDir,
+            sessionId,
+          }),
+        ...(transportSourceTypes === undefined ? {} : { transportSourceTypes }),
+        clock,
+      }),
+  };
+}
+
+describe("AutonomousOutboundPolicy", () => {
+  const cleanups: Array<() => void> = [];
+
+  afterEach(() => {
+    while (cleanups.length > 0) {
+      cleanups.pop()?.();
+    }
+  });
+
+  it("is off by default", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const policy = harness.createPolicy(policyConfig(), ["demo"]);
+
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/disabled/);
+  });
+
+  it("authorizes configured target sessions structurally", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBe("config");
+    expect(policy.promptContext(currentSessionId)?.targets).toEqual([
+      expect.objectContaining({
+        session_id: targetSession.session_id,
+        authorization: "config",
+      }),
+    ]);
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).not.toThrow();
+  });
+
+  it("omits and rejects authorized targets without a wired transport connector", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "slack",
+      label: "alice-slack",
+      audience_label: "Alice",
+      conversation_kind: "channel",
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBeNull();
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/no wired transport/);
+  });
+
+  it("fails closed when no transport source types are provided", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBeNull();
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/no wired transport/);
+  });
+
+  it("authorizes active routing directives by machine topic tag and target audience id", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const creatorId = createEntityId();
+    const aliceId = createEntityId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      audience_entity_id: aliceId,
+      conversation_kind: "demo",
+    });
+    harness.creatorDirectiveRepository.queue({
+      kind: "routing_instruction",
+      createdByEntityId: creatorId,
+      sourceSessionId: currentSessionId,
+      authorizationStreamEntryIds: [createStreamEntryId()],
+      contentSourceStreamEntryIds: [createStreamEntryId()],
+      subjectKind: "entity",
+      subjectEntityId: aliceId,
+      operationalDirective: "Creator permits autonomous outreach to this audience.",
+      disclosurePolicy: {
+        content_scope: "subject_only",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: true,
+        mention_policy: "proactive",
+        denied_audience_behavior: "omit",
+        boundary_prompt: null,
+        topic_tags: [PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG],
+      },
+      priority: 10,
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+      }),
+      ["demo"],
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBe("creator_directive");
+    expect(policy.promptContext(currentSessionId)?.targets).toEqual([
+      expect.objectContaining({
+        session_id: targetSession.session_id,
+        authorization: "creator_directive",
+      }),
+    ]);
+  });
+
+  it("omits prompt targets and rejects when the rolling outbound cap is exhausted", async () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: currentSessionId,
+      clock: harness.clock,
+    });
+    try {
+      await writer.append({
+        kind: "tool_call",
+        content: {
+          call_id: "toolu_prior",
+          tool_name: "tool.outbound.post",
+          input: {
+            target_session_id: targetSession.session_id,
+            instruction: "Prior autonomous attempt.",
+          },
+          origin: "autonomous",
+        },
+      });
+      await writer.append({
+        kind: "tool_call",
+        content: {
+          call_id: "toolu_current",
+          tool_name: "tool.outbound.post",
+          input: {
+            target_session_id: targetSession.session_id,
+            instruction: "Current autonomous attempt.",
+          },
+          origin: "autonomous",
+        },
+      });
+    } finally {
+      writer.close();
+    }
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        maxPostsPerWindow: 1,
+        maxPostsPerTargetPerWindow: 2,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/rolling cap/);
+  });
+
+  it("excludes the current tool call turn when checking autonomous caps", async () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: currentSessionId,
+      clock: harness.clock,
+    });
+    try {
+      await writer.append({
+        kind: "tool_call",
+        turn_id: "turn-current",
+        content: {
+          call_id: "toolu_current",
+          tool_name: "tool.outbound.post",
+          input: {
+            target_session_id: targetSession.session_id,
+            instruction: "Current autonomous attempt.",
+          },
+          origin: "autonomous",
+        },
+      });
+    } finally {
+      writer.close();
+    }
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        maxPostsPerWindow: 1,
+        maxPostsPerTargetPerWindow: 1,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+        currentTurnId: "turn-current",
+      }),
+    ).not.toThrow();
+  });
+
+  it("omits and rejects a target after its per-target attempt cap is reached", async () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const otherWakeSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "autonomy",
+      label: "autonomy",
+      audience_label: "Borg",
+      conversation_kind: "demo",
+    });
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: otherWakeSession.session_id,
+      clock: harness.clock,
+    });
+    try {
+      await writer.append({
+        kind: "tool_call",
+        turn_id: "turn-prior",
+        content: {
+          call_id: "toolu_prior",
+          tool_name: "tool.outbound.post",
+          input: {
+            target_session_id: targetSession.session_id,
+            instruction: "Prior autonomous attempt.",
+          },
+          origin: "autonomous",
+        },
+      });
+    } finally {
+      writer.close();
+    }
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        maxPostsPerWindow: 10,
+        maxPostsPerTargetPerWindow: 1,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/target rolling cap/);
+  });
+});

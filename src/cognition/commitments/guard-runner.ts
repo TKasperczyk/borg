@@ -13,6 +13,11 @@ import {
 } from "../../memory/commitments/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import {
+  hasAutonomousTriggerUntrustedContext,
+  isAutonomousLikeTurnOrigin,
+  type TurnOrigin,
+} from "../types.js";
 import { escapeReservedBorgTags } from "../../util/prompt-tags.js";
 import type { SessionId } from "../../util/ids.js";
 
@@ -34,7 +39,7 @@ export type CommitmentGuardRunnerInput = {
   response: string;
   userMessage: string;
   cognitionInput: string;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   autonomyTrigger?: AutonomyTriggerContext | null;
   commitments: readonly CommitmentRecord[];
   relevantEntities: readonly string[];
@@ -187,8 +192,9 @@ export class CommitmentGuardRunner {
       rewriteModel: this.options.rewriteModel,
       entityRepository: this.options.entityRepository,
     });
-    const commitmentCheckerUserMessage =
-      input.origin === "autonomous" ? input.userMessage : input.cognitionInput;
+    const commitmentCheckerUserMessage = isAutonomousLikeTurnOrigin(input.origin)
+      ? input.userMessage
+      : input.cognitionInput;
     let shadowCheck: CommitmentCheckResult | null = null;
     let shadowError: string | undefined;
 
@@ -198,7 +204,7 @@ export class CommitmentGuardRunner {
           response: input.response,
           userMessage: commitmentCheckerUserMessage,
           untrustedContext:
-            input.origin === "autonomous" &&
+            hasAutonomousTriggerUntrustedContext(input.origin) &&
             input.autonomyTrigger !== null &&
             input.autonomyTrigger !== undefined
               ? input.cognitionInput
@@ -284,7 +290,7 @@ export class CommitmentGuardRunner {
         response: input.response,
         userMessage: commitmentCheckerUserMessage,
         untrustedContext:
-          input.origin === "autonomous" &&
+          hasAutonomousTriggerUntrustedContext(input.origin) &&
           input.autonomyTrigger !== null &&
           input.autonomyTrigger !== undefined
             ? input.cognitionInput

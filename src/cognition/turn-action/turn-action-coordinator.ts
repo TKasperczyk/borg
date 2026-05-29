@@ -13,7 +13,7 @@ import type { PendingTurnEmission } from "../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
 import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
-import type { PerceptionResult } from "../types.js";
+import type { PerceptionResult, TurnOrigin } from "../types.js";
 import {
   LLMPendingActionJudge,
   performAction,
@@ -38,7 +38,7 @@ export type RunTurnActionInput = {
   workingMemory: WorkingMemory;
   userMessage: string;
   cognitionInput: string;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   autonomyTrigger?: AutonomyTriggerContext | null;
   applicableCommitments: readonly CommitmentRecord[];
   perceptionEntities: PerceptionResult["entities"];
@@ -46,6 +46,7 @@ export type RunTurnActionInput = {
   retrievedEpisodes: readonly RetrievedEpisode[];
   currentUserClosureKind?: ClosureLoopDialogueAct | null;
   audienceEntityId: EntityId | null;
+  knownInternalIdentifiers?: readonly string[];
 };
 
 export type TurnActionCoordinatorResult = {
@@ -336,6 +337,7 @@ export class TurnActionCoordinator {
                   currentUserClosureKind: input.currentUserClosureKind,
                   currentTurn: input.workingMemory.turn_counter,
                   audienceEntityId: input.audienceEntityId,
+                  knownInternalIdentifiers: input.knownInternalIdentifiers,
                 }),
                 commitmentEmission,
               );

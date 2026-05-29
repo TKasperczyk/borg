@@ -62,6 +62,7 @@ export type RunTurnPostGenerationGuardInput = {
   currentUserClosureKind?: ClosureLoopDialogueAct | null;
   currentTurn?: number;
   audienceEntityId: EntityId | null;
+  knownInternalIdentifiers?: readonly string[];
 };
 
 function addInternalIdentifier(identifiers: Set<string>, value: string | null | undefined): void {
@@ -91,9 +92,11 @@ function collectInternalIdentifiers(input: {
   relationalSlots: readonly RelationalSlot[];
   recentCompletedActions: readonly ActionRecord[];
   audienceEntityId: EntityId | null;
+  knownInternalIdentifiers: readonly string[];
 }): string[] {
   const identifiers = new Set<string>();
 
+  addInternalIdentifiers(identifiers, input.knownInternalIdentifiers);
   addInternalIdentifier(identifiers, input.turnId);
   addInternalIdentifier(identifiers, input.sessionId);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.id);
@@ -254,6 +257,7 @@ export class TurnPostGenerationGuardRunner {
         relationalSlots,
         recentCompletedActions,
         audienceEntityId: input.audienceEntityId,
+        knownInternalIdentifiers: input.knownInternalIdentifiers ?? [],
       }),
       tracer: this.options.tracer,
     });

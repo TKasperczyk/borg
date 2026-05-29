@@ -200,10 +200,29 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
 }
 
+// Input-side substrate hygiene: strips internal ids that an operator might
+// paste into creator-directive text or a directed-outbound instruction before
+// that text enters the model-facing prompt. This is defense-in-depth, not a
+// critical leak path -- the instruction is composed into the model's prompt
+// (the model is separately told not to surface internal ids), it is never
+// delivered verbatim to a target audience.
+//
+// The band is a deliberate CURATED SUBSET, not every id prefix in util/ids.ts.
+// It covers the "addressable" ids that actually surface in operator-facing
+// views (creator-directive, entity, session, stream, turn, shared-state), which
+// are the ones an operator could realistically copy back into directive text.
+// It intentionally omits prefixes that collide with ordinary words once the
+// `_[a-z0-9]+` tail is allowed -- e.g. goal_, act_ ("act_now"), run_
+// ("run_tests"), val_, att_ -- because a blanket widen would scrub legitimate
+// operator prose. Widen only with prefixes distinctive enough to avoid that.
 const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart)_[a-z0-9]+\b/g;
 
+export function scrubCreatorDirectiveInternalIds(value: string): string {
+  return value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]");
+}
+
 function escapeCreatorDirectiveXmlText(value: string): string {
-  return escapeXmlText(value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]"));
+  return escapeXmlText(scrubCreatorDirectiveInternalIds(value));
 }
 
 export function buildSessionStatusSnapshotSection(
@@ -218,8 +237,14 @@ export function buildSessionStatusSnapshotSection(
   ];
 
   for (const session of snapshot.sessions) {
+    // session_id is exposed only for outbound-targetable sessions; awareness
+    // rendering for the rest stays alias-only so non-outbound operator turns do
+    // not surface internal session ids into the prompt.
+    const openTag = session.outbound_targetable
+      ? `  <session alias="${escapeXmlAttribute(session.alias)}" session_id="${escapeXmlAttribute(session.session_id)}">`
+      : `  <session alias="${escapeXmlAttribute(session.alias)}">`;
     lines.push(
-      `  <session alias="${escapeXmlAttribute(session.alias)}">`,
+      openTag,
       `    <audience_label>${escapeXmlText(session.audience_label)}</audience_label>`,
       `    <conversation_kind>${escapeXmlText(session.conversation_kind)}</conversation_kind>`,
       `    <participation_policy>${escapeXmlText(session.participation_policy)}</participation_policy>`,
@@ -235,6 +260,32 @@ export function buildSessionStatusSnapshotSection(
   }
 
   lines.push("</borg_session_status_snapshot>");
+
+  return lines.join("\n");
+}
+
+export function buildAutonomousOutboundAuthorizationSection(
+  context: DeliberationContext["autonomousOutbound"],
+): string | null {
+  if (context === null || context === undefined || context.targets.length === 0) {
+    return null;
+  }
+
+  const lines = [
+    `<borg_autonomous_outbound_authorization max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}">`,
+  ];
+
+  for (const target of context.targets) {
+    lines.push(
+      `  <target session_id="${escapeXmlAttribute(target.session_id)}" source_type="${escapeXmlAttribute(target.source_type)}" authorization="${escapeXmlAttribute(target.authorization)}">`,
+      `    <audience_label>${escapeXmlText(target.audience_label)}</audience_label>`,
+      `    <conversation_kind>${escapeXmlText(target.conversation_kind)}</conversation_kind>`,
+      `    <participation_policy>${escapeXmlText(target.participation_policy)}</participation_policy>`,
+      "  </target>",
+    );
+  }
+
+  lines.push("</borg_autonomous_outbound_authorization>");
 
   return lines.join("\n");
 }
@@ -482,12 +533,16 @@ function buildBaseSystemPromptSections(
   const sessionStatusSnapshotSection = buildSessionStatusSnapshotSection(
     context.operatorSessionSnapshot ?? null,
   );
+  const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
+    context.autonomousOutbound ?? null,
+  );
   const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,
     creatorIdentitySection,
     creatorContextSection,
     creatorDirectiveBriefingSection,
     sessionStatusSnapshotSection,
+    autonomousOutboundAuthorizationSection,
     heldPreferencesSection,
     commitmentRecordsSection,
     proceduralGuidanceSection,
@@ -504,6 +559,7 @@ function buildBaseSystemPromptSections(
       creatorContextSection,
       creatorDirectiveBriefingSection,
       sessionStatusSnapshotSection,
+      autonomousOutboundAuthorizationSection,
       heldPreferencesSection,
       commitmentRecordsSection,
       hostCapabilitiesSection,

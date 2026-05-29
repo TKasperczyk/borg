@@ -220,6 +220,8 @@ function makeOperatorSessionSnapshot(
     sessions: [
       {
         alias: "session_1",
+        session_id: DEFAULT_SESSION_ID,
+        outbound_targetable: false,
         audience_label: "Alice",
         conversation_kind: "dm",
         participation_policy: "active",
@@ -472,7 +474,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toBe(
       [
         `<borg_session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
-        '  <session alias="session_1">',
+        `  <session alias="session_1">`,
         "    <audience_label>Alice</audience_label>",
         "    <conversation_kind>dm</conversation_kind>",
         "    <participation_policy>active</participation_policy>",
@@ -796,6 +798,8 @@ describe("buildBaseSystemPrompt", () => {
         sessions: [
           {
             alias: "session_1",
+            session_id: DEFAULT_SESSION_ID,
+            outbound_targetable: false,
             audience_label: "Alice & <bad>",
             conversation_kind: "dm",
             participation_policy: "active",
@@ -808,6 +812,42 @@ describe("buildBaseSystemPrompt", () => {
     );
 
     expect(section).toContain("<audience_label>Alice &amp; &lt;bad&gt;</audience_label>");
+  });
+
+  it("exposes session_id only for outbound-targetable sessions", () => {
+    const section = buildSessionStatusSnapshotSection(
+      makeOperatorSessionSnapshot({
+        sessions: [
+          {
+            alias: "session_1",
+            session_id: DEFAULT_SESSION_ID,
+            outbound_targetable: true,
+            audience_label: "Alice",
+            conversation_kind: "dm",
+            participation_policy: "active",
+            last_activity: "5m ago",
+            message_count: 1,
+            recent_state: "last_turn_available",
+          },
+          {
+            alias: "session_2",
+            session_id: DEFAULT_SESSION_ID,
+            outbound_targetable: false,
+            audience_label: "Bob",
+            conversation_kind: "dm",
+            participation_policy: "active",
+            last_activity: "5m ago",
+            message_count: 1,
+            recent_state: "last_turn_available",
+          },
+        ],
+      }),
+    );
+
+    // Targetable session exposes its id (the model needs it to post); the
+    // awareness-only session stays alias-only.
+    expect(section).toContain('<session alias="session_1" session_id="');
+    expect(section).toContain('<session alias="session_2">');
   });
 
   it("renders omitted count only when the operator session snapshot has a tail", () => {

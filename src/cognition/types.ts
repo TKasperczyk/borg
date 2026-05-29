@@ -5,8 +5,10 @@ import { affectiveSignalSchema } from "../memory/affective/types.js";
 import { entityKindSchema } from "../memory/commitments/types.js";
 
 export const COGNITIVE_MODES = ["problem_solving", "relational", "reflective", "idle"] as const;
+export const TURN_ORIGINS = ["user", "autonomous", "directed_outbound"] as const;
 
 export const cognitiveModeSchema = z.enum(COGNITIVE_MODES);
+export const turnOriginSchema = z.enum(TURN_ORIGINS);
 
 export const temporalCueSchema = z.object({
   sinceTs: z.number().finite().optional(),
@@ -48,8 +50,41 @@ export const perceptionResultSchema = z.object({
 });
 
 export type CognitiveMode = z.infer<typeof cognitiveModeSchema>;
+export type TurnOrigin = z.infer<typeof turnOriginSchema>;
 export type AffectiveSignal = z.infer<typeof affectiveSignalSchema>;
 export type TemporalCue = z.infer<typeof temporalCueSchema>;
 export type IntentRecord = z.infer<typeof intentRecordSchema>;
 export type AttentionWeights = z.infer<typeof attentionWeightsSchema>;
 export type PerceptionResult = z.infer<typeof perceptionResultSchema>;
+
+export function isUserTurnOrigin(origin: TurnOrigin | undefined): boolean {
+  return origin === undefined || origin === "user";
+}
+
+export function isAutonomousLikeTurnOrigin(origin: TurnOrigin | undefined): boolean {
+  return origin === "autonomous" || origin === "directed_outbound";
+}
+
+export function isDirectedOutboundTurnOrigin(origin: TurnOrigin | undefined): boolean {
+  return origin === "directed_outbound";
+}
+
+export function runsExtraction(origin: TurnOrigin | undefined): boolean {
+  return !isDirectedOutboundTurnOrigin(origin);
+}
+
+export function persistsPerception(origin: TurnOrigin | undefined): boolean {
+  return !isDirectedOutboundTurnOrigin(origin);
+}
+
+export function runsReflectionPersistence(origin: TurnOrigin | undefined): boolean {
+  return !isDirectedOutboundTurnOrigin(origin);
+}
+
+export function exposesOutboundTool(origin: TurnOrigin | undefined): boolean {
+  return !isDirectedOutboundTurnOrigin(origin);
+}
+
+export function hasAutonomousTriggerUntrustedContext(origin: TurnOrigin | undefined): boolean {
+  return origin === "autonomous";
+}

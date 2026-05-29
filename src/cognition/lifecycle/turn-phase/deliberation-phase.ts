@@ -1,5 +1,6 @@
 import { Deliberator } from "../../deliberation/deliberator.js";
 import type { CreatorIdentityContext, TrustedCreatorContext } from "../../deliberation/types.js";
+import type { AutonomousOutboundPromptContext } from "../../../outbound/index.js";
 import type { OperatorSessionSnapshot } from "./session-snapshot.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
@@ -52,6 +53,7 @@ export async function runDeliberationPhase(input: {
   participationPolicy: SessionParticipationPolicy;
   creatorIdentity: CreatorIdentityContext | null;
   creatorContext: TrustedCreatorContext | null;
+  autonomousOutbound?: AutonomousOutboundPromptContext | null;
   operatorSessionSnapshot: OperatorSessionSnapshot | null;
   persistedUserEntryId?: StreamEntry["id"];
   currentUserContent?: readonly BorgUserContentBlock[];
@@ -85,9 +87,11 @@ export async function runDeliberationPhase(input: {
       participationPolicy: input.participationPolicy,
       creatorIdentity: input.creatorIdentity,
       creatorContext: input.creatorContext,
+      autonomousOutbound: input.autonomousOutbound ?? null,
       creatorDirectiveBriefing: input.retrievalPhase.creatorDirectiveBriefing,
       operatorSessionSnapshot: input.operatorSessionSnapshot,
       turnId: input.turnId,
+      turnOrigin: input.turnInput.origin,
       audience: input.turnInput.audience,
       audienceEntityId: input.audienceEntityId,
       senderEntityId: input.turnInput.senderEntityId,

@@ -61,6 +61,18 @@ describe("config", () => {
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.autonomy.proactiveOutbound).toEqual({
+      enabled: false,
+      maxPostsPerWindow: 2,
+      maxPostsPerTargetPerWindow: 1,
+      windowMs: 24 * 60 * 60 * 1_000,
+      maxAuthorizedTargets: 20,
+      allowByCreatorDirective: true,
+      allowByConfig: {
+        sessionIds: [],
+        sourceTypes: [],
+      },
+    });
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
     expect(config.retrieval.semanticOverfetchMultiplier).toBe(3);
@@ -235,6 +247,49 @@ describe("config", () => {
 
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
+  });
+
+  it("loads autonomous proactive outbound gates from config and env", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      autonomy: {
+        proactiveOutbound: {
+          enabled: true,
+          maxPostsPerWindow: 3,
+          maxPostsPerTargetPerWindow: 2,
+          windowMs: 3_600_000,
+          allowByConfig: {
+            sessionIds: ["default"],
+            sourceTypes: ["demo"],
+          },
+        },
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_POSTS_PER_WINDOW: "4",
+        BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_POSTS_PER_TARGET_PER_WINDOW: "3",
+        BORG_AUTONOMY_PROACTIVE_OUTBOUND_MAX_AUTHORIZED_TARGETS: "9",
+        BORG_AUTONOMY_PROACTIVE_OUTBOUND_ALLOW_BY_CREATOR_DIRECTIVE: "false",
+      },
+    });
+
+    expect(config.autonomy.proactiveOutbound).toEqual({
+      enabled: true,
+      maxPostsPerWindow: 4,
+      maxPostsPerTargetPerWindow: 3,
+      windowMs: 3_600_000,
+      maxAuthorizedTargets: 9,
+      allowByCreatorDirective: false,
+      allowByConfig: {
+        sessionIds: ["default"],
+        sourceTypes: ["demo"],
+      },
+    });
   });
 
   it("loads host capabilities from the config file", () => {

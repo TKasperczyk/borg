@@ -59,6 +59,8 @@ import type {
   DeliberatorOptions,
 } from "./types.js";
 import type { SessionParticipationPolicy } from "../../sessions/index.js";
+import { isCreatorInOperatorContext } from "../authority.js";
+import { exposesOutboundTool } from "../types.js";
 
 export type {
   DeliberationContext,
@@ -509,6 +511,21 @@ export class Deliberator {
     const allowedEmissions = allowedEmissionsForParticipationPolicy(
       effectiveContext.participationPolicy,
     );
+    const manualOutboundAuthorized =
+      isCreatorInOperatorContext({
+        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole ?? null,
+      }) &&
+      (effectiveContext.operatorSessionSnapshot?.sessions.some(
+        (session) => session.outbound_targetable,
+      ) ??
+        false);
+    const autonomousOutboundAuthorized =
+      effectiveContext.turnOrigin === "autonomous" &&
+      (effectiveContext.autonomousOutbound?.targets.length ?? 0) > 0;
+    const outboundToolAvailable =
+      exposesOutboundTool(effectiveContext.turnOrigin) &&
+      (manualOutboundAuthorized || autonomousOutboundAuthorized);
 
     if (decision.path === "system_1") {
       const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext);
@@ -526,6 +543,10 @@ export class Deliberator {
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_1",
         ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+        outboundToolAvailable,
+        turnOrigin: effectiveContext.turnOrigin,
+        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
         ...(finalizerGroundingPromptSections.length === 0
           ? {}
           : { additionalPromptSections: finalizerGroundingPromptSections }),
@@ -567,6 +588,10 @@ export class Deliberator {
           ...(thinking === undefined ? {} : { thinking }),
           path: "system_1",
           ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+          outboundToolAvailable,
+          turnOrigin: effectiveContext.turnOrigin,
+          currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+          sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
           additionalPromptSections: appendFinalizerPromptSections(
             finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
             regeneration.additionalPromptSections,
@@ -727,6 +752,10 @@ export class Deliberator {
       ...(thinking === undefined ? {} : { thinking }),
       path: "system_2",
       ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+      outboundToolAvailable,
+      turnOrigin: effectiveContext.turnOrigin,
+      currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+      sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
       additionalPromptSections,
       structuralNoOutputFlags: finalizerStructuralFlags,
       tracer: this.tracer,
@@ -771,6 +800,10 @@ export class Deliberator {
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_2",
         ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+        outboundToolAvailable,
+        turnOrigin: effectiveContext.turnOrigin,
+        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
         additionalPromptSections: appendFinalizerPromptSections(
           additionalPromptSections,
           regeneration.additionalPromptSections,

@@ -13,7 +13,7 @@ import { TurnContextCompiler, type RecencyWindow } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
 import { Perceiver } from "./index.js";
-import type { PerceptionResult } from "../types.js";
+import { isAutonomousLikeTurnOrigin, type PerceptionResult, type TurnOrigin } from "../types.js";
 
 export type PerceptionGatewayOptions = {
   config: Config;
@@ -28,7 +28,7 @@ export type PerceptionGatewayOptions = {
 export type PerceptionGatewayInput = {
   sessionId: SessionId;
   isSelfAudience: boolean;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   cognitionInput: string;
   workingMemory: WorkingMemory;
 };
@@ -128,7 +128,7 @@ export class PerceptionGateway {
       input.sessionId,
     );
     const workingMood =
-      input.origin === "autonomous" || perception.affectiveSignalDegraded === true
+      isAutonomousLikeTurnOrigin(input.origin) || perception.affectiveSignalDegraded === true
         ? (input.workingMemory.mood ?? createNeutralAffectiveSignal())
         : perception.affectiveSignal;
     const workingMemory = {

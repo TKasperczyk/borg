@@ -1,4 +1,4 @@
-import { performAction } from "../../turn-action/index.js";
+import { performAction, type ActionResult } from "../../turn-action/index.js";
 import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordinator.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import { Deliberator } from "../../deliberation/deliberator.js";
@@ -10,15 +10,16 @@ import {
   type TurnEmission,
 } from "../../generation/types.js";
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
-import type { PerceptionResult } from "../../types.js";
+import { isDirectedOutboundTurnOrigin, type PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
-import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
+import type { StreamEntry, StreamEntryInput, StreamWriter } from "../../../stream/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
 import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
 import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { valueAppearsIn } from "../../../util/text-presence.js";
 import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
+import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
 import {
   ACTION_ARCHIVE_ACTIVE_STATES,
   ACTION_ARCHIVE_SCAN_LIMIT,
@@ -61,6 +62,11 @@ type ActionArchiveScanResult = {
   oldestEligibleInactiveTurns: number;
 };
 
+type PersistedMessageEmission = {
+  entry: StreamEntry;
+  outboundDelivery?: OutboundDeliveryReceipt;
+};
+
 function currentTurnSharedStateEntries(input: {
   retrievalPhase: TurnRetrievalPhaseResult;
   persistedUserEntryId?: StreamEntry["id"];
@@ -91,6 +97,71 @@ function activityStatusForStreamEntry(
   entry: Pick<StreamEntry, "turn_status">,
 ): ActivityEventStatus {
   return entry.turn_status === "aborted" ? "inactive" : "active";
+}
+
+function outboundDeliveryReceipt(delivery: OutboundDeliveryResult): OutboundDeliveryReceipt {
+  return {
+    status: delivery.status,
+    streamEntryId: delivery.streamEntry.id,
+    sourceType: delivery.sourceType,
+    ...(delivery.externalMessageId === undefined
+      ? {}
+      : { externalMessageId: delivery.externalMessageId }),
+    ...(delivery.error === undefined ? {} : { error: delivery.error }),
+  };
+}
+
+async function persistMessageEmission(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  turnId: string;
+  turnInput: TurnPhaseInput;
+  streamWriter: StreamWriter;
+  response: string;
+  actionResult: Pick<ActionResult, "tool_calls">;
+  actionEmission: Extract<PendingTurnEmission, { kind: "message" }>;
+}): Promise<PersistedMessageEmission> {
+  const streamInput: Omit<StreamEntryInput, "kind" | "content"> = {
+    turn_id: input.turnId,
+    turn_status: ACTIVE_TURN_STATUS,
+    tool_calls: input.actionResult.tool_calls,
+    reply_target_entity_id: replyTargetEntityId(input.actionEmission.reply_target),
+    ...(input.actionEmission.persistence_class === undefined
+      ? {}
+      : { persistence_class: input.actionEmission.persistence_class }),
+    ...(input.turnInput.audience === undefined ? {} : { audience: input.turnInput.audience }),
+  };
+
+  if (
+    isDirectedOutboundTurnOrigin(input.turnInput.origin) &&
+    input.options.outboundDelivery !== undefined
+  ) {
+    const session = input.options.sessionsRepository?.get(input.sessionId) ?? null;
+
+    if (session !== null) {
+      const delivery = await input.options.outboundDelivery.deliver({
+        session,
+        streamWriter: input.streamWriter,
+        message: {
+          content: input.response,
+          streamInput,
+        },
+      });
+
+      return {
+        entry: delivery.streamEntry,
+        outboundDelivery: outboundDeliveryReceipt(delivery),
+      };
+    }
+  }
+
+  return {
+    entry: await input.streamWriter.append({
+      kind: "agent_msg",
+      content: input.response,
+      ...streamInput,
+    }),
+  };
 }
 
 function activityParticipantEntityIds(input: {
@@ -261,6 +332,7 @@ export async function runPostGenerationPhase(input: {
   >[0]["suppressionSet"];
   isUserTurn: boolean;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  knownInternalIdentifiers?: readonly string[];
 }): Promise<TurnPhaseResult> {
   const workingMemory = {
     ...input.workingMemory,
@@ -283,57 +355,63 @@ export async function runPostGenerationPhase(input: {
     retrievedEpisodes: input.retrievalPhase.retrievedEpisodes,
     currentUserClosureKind: input.closureLoopCurrentUserAct,
     audienceEntityId: input.audienceEntityId,
+    knownInternalIdentifiers: input.knownInternalIdentifiers,
   });
   const actionResult = actionCoordinatorResult.actionResult;
   const actionEmission: PendingTurnEmission = actionCoordinatorResult.actionEmission;
   const deliberation = actionCoordinatorResult.deliberation;
   input.lifecycleTracker.trackPendingActionMerges(actionResult.pending_action_merge_count ?? 0);
-  const persistedAgentEntry = await traceTurnPhase({
+  const persistedEmission = await traceTurnPhase({
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
     sessionId: input.sessionId,
     phase: "persist",
     sub: `emission=${actionEmission.kind}`,
-    run: async () =>
+    run: async (): Promise<PersistedMessageEmission> =>
       actionEmission.kind === "message"
-        ? await input.streamWriter.append({
-            kind: "agent_msg",
-            turn_id: input.turnId,
-            turn_status: ACTIVE_TURN_STATUS,
-            content: actionResult.response,
-            tool_calls: actionResult.tool_calls,
-            reply_target_entity_id: replyTargetEntityId(actionEmission.reply_target),
-            ...(actionEmission.persistence_class === undefined
-              ? {}
-              : { persistence_class: actionEmission.persistence_class }),
-            ...(input.turnInput.audience === undefined
-              ? {}
-              : { audience: input.turnInput.audience }),
+        ? await persistMessageEmission({
+            options: input.options,
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            turnInput: input.turnInput,
+            streamWriter: input.streamWriter,
+            response: actionResult.response,
+            actionResult,
+            actionEmission,
           })
         : actionEmission.kind === "observed"
-          ? await input.options.discourseStateService.appendObservationMarker({
-              streamWriter: input.streamWriter,
-              reason: actionEmission.reason,
-              userEntryId: input.persistedUserEntryId,
-              turnId: input.turnId,
-              audience: input.turnInput.audience,
-            })
-          : await input.options.discourseStateService.appendSuppressionMarker({
-              streamWriter: input.streamWriter,
-              reason: actionEmission.reason,
-              userEntryId: input.persistedUserEntryId,
-              turnId: input.turnId,
-              audience: input.turnInput.audience,
-              noOutputCategories: actionEmission.no_output_categories,
-              primaryNoOutputReason: actionEmission.primary_no_output_reason,
-              structuralNoOutputFlags: actionEmission.structural_no_output_flags,
-            }),
-    completedSub: (entry) => `entry=${entry.kind}`,
+          ? {
+              entry: await input.options.discourseStateService.appendObservationMarker({
+                streamWriter: input.streamWriter,
+                reason: actionEmission.reason,
+                userEntryId: input.persistedUserEntryId,
+                turnId: input.turnId,
+                audience: input.turnInput.audience,
+              }),
+            }
+          : {
+              entry: await input.options.discourseStateService.appendSuppressionMarker({
+                streamWriter: input.streamWriter,
+                reason: actionEmission.reason,
+                userEntryId: input.persistedUserEntryId,
+                turnId: input.turnId,
+                audience: input.turnInput.audience,
+                noOutputCategories: actionEmission.no_output_categories,
+                primaryNoOutputReason: actionEmission.primary_no_output_reason,
+                structuralNoOutputFlags: actionEmission.structural_no_output_flags,
+              }),
+            },
+    completedSub: (result) => `entry=${result.entry.kind}`,
   });
+  const persistedAgentEntry = persistedEmission.entry;
   const activityRepository = input.options.activityRepository;
 
-  if (activityRepository !== undefined) {
+  const shouldRecordActivity =
+    persistedEmission.outboundDelivery === undefined ||
+    persistedEmission.outboundDelivery.status === "transported";
+
+  if (activityRepository !== undefined && shouldRecordActivity) {
     const status = activityStatusForStreamEntry(persistedAgentEntry);
     const participantEntityIds = activityParticipantEntityIds({
       senderEntityId: input.senderEntityId,
@@ -552,6 +630,9 @@ export async function runPostGenerationPhase(input: {
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
+    ...(persistedEmission.outboundDelivery === undefined
+      ? {}
+      : { outboundDelivery: persistedEmission.outboundDelivery }),
     terminalOutcome: "reflected",
   };
 }

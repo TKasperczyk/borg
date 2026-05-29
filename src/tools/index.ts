@@ -14,6 +14,8 @@ export {
   createEpisodicSearchTool,
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
+  createOutboundPostTool,
+  OUTBOUND_POST_TOOL_NAME,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
   createScheduledWakesListTool,

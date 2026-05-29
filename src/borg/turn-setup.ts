@@ -38,7 +38,8 @@ import type { ReviewQueueRepository, SemanticNodeRepository } from "../memory/se
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
-import type { SessionsRepository } from "../sessions/index.js";
+import type { AutonomousOutboundPolicy, OutboundDelivery } from "../outbound/index.js";
+import type { SessionSourceType, SessionsRepository } from "../sessions/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
@@ -79,6 +80,9 @@ export type BuildTurnOrchestratorOptions = {
   toolDispatcher: ToolDispatcher;
   sessionLock: SessionLock;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  outboundDelivery?: Pick<OutboundDelivery, "deliver">;
+  autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  outboundSourceTypes?: readonly SessionSourceType[];
   createStreamWriter: BorgStreamWriterFactory;
   entryIndex?: StreamEntryIndexRepository;
   attachmentService: AttachmentService;
@@ -151,6 +155,15 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.streamIngestionCoordinator === undefined
       ? {}
       : { streamIngestionCoordinator: options.streamIngestionCoordinator }),
+    ...(options.outboundDelivery === undefined
+      ? {}
+      : { outboundDelivery: options.outboundDelivery }),
+    ...(options.autonomousOutboundPolicy === undefined
+      ? {}
+      : { autonomousOutboundPolicy: options.autonomousOutboundPolicy }),
+    ...(options.outboundSourceTypes === undefined
+      ? {}
+      : { outboundSourceTypes: options.outboundSourceTypes }),
     ...(options.promptOverrideRepository === undefined
       ? {}
       : { promptOverrideRepository: options.promptOverrideRepository }),

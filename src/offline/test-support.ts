@@ -376,6 +376,22 @@ export function createTestConfig(
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
       ...overrides.autonomy,
+      proactiveOutbound: {
+        ...DEFAULT_CONFIG.autonomy.proactiveOutbound,
+        ...overrides.autonomy?.proactiveOutbound,
+        allowByConfig: {
+          ...DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig,
+          ...overrides.autonomy?.proactiveOutbound?.allowByConfig,
+          sessionIds: [
+            ...(overrides.autonomy?.proactiveOutbound?.allowByConfig?.sessionIds ??
+              DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig.sessionIds),
+          ],
+          sourceTypes: [
+            ...(overrides.autonomy?.proactiveOutbound?.allowByConfig?.sourceTypes ??
+              DEFAULT_CONFIG.autonomy.proactiveOutbound.allowByConfig.sourceTypes),
+          ],
+        },
+      },
       executiveFocus: {
         ...DEFAULT_CONFIG.autonomy.executiveFocus,
         ...overrides.autonomy?.executiveFocus,

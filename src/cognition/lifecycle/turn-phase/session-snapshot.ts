@@ -10,6 +10,8 @@ export const OPERATOR_SESSION_SNAPSHOT_CAP = 12;
 
 export type OperatorSessionSnapshotSession = {
   alias: string;
+  session_id: SessionId;
+  outbound_targetable: boolean;
   audience_label: string;
   conversation_kind: ConversationKind;
   participation_policy: SessionParticipationPolicy;
@@ -30,6 +32,13 @@ export type BuildOperatorSessionSnapshotInput = {
   nowMs: number;
   cap?: number;
   totalActiveOtherSessionCount?: number;
+  /**
+   * Session ids that are outbound-targetable on this turn (creator-in-operator
+   * with a wired connector for the session's source_type). Only these expose
+   * their session_id to the model; awareness rendering for everyone else stays
+   * alias-only so the snapshot does not leak internal ids on non-outbound turns.
+   */
+  outboundTargetableSessionIds?: ReadonlySet<SessionId>;
 };
 
 export function buildOperatorSessionSnapshot(
@@ -57,6 +66,8 @@ export function buildOperatorSessionSnapshot(
     generated_at: new Date(input.nowMs).toISOString(),
     sessions: visibleSessions.map((session, index) => ({
       alias: `session_${index + 1}`,
+      session_id: session.session_id,
+      outbound_targetable: input.outboundTargetableSessionIds?.has(session.session_id) ?? false,
       audience_label: session.audience_label,
       conversation_kind: session.conversation_kind,
       participation_policy: session.participation_policy,

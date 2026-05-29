@@ -254,6 +254,14 @@ function serializeCause(cause: unknown): unknown {
   };
 }
 
+export function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return String(error);
+}
+
 export abstract class BorgError extends Error {
   readonly code: BorgErrorCode;
 

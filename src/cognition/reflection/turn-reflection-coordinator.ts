@@ -16,13 +16,25 @@ import type { SuppressionSet } from "../attention/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { PendingProceduralAttemptTracker } from "../procedural/pending-attempt-tracker.js";
-import type { PerceptionResult } from "../types.js";
+import { runsReflectionPersistence, type PerceptionResult, type TurnOrigin } from "../types.js";
 import type { ReflectionEffects, ReflectionResult, Reflector } from "./index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 
 const ACTION_RESPONSE_SUMMARY_LIMIT = 240;
 const OPEN_QUESTIONS_REFLECTION_LIMIT = 20;
+
+function emptyReflectionEffects(): ReflectionEffects {
+  return {
+    createdActionIds: [],
+    createdExecutiveStepIds: [],
+    createdOpenQuestionIds: [],
+    updatedExecutiveSteps: [],
+    updatedGoals: [],
+    resolvedOpenQuestions: [],
+    updatedEpisodeStats: [],
+  };
+}
 
 export type TurnReflectionCoordinatorOptions = {
   moodRepository: Pick<MoodRepository, "update">;
@@ -40,7 +52,7 @@ export type RunTurnReflectionInput = {
   sessionId: SessionId;
   turnId: string;
   actionLifecycleTurnCounter?: number | null;
-  origin?: "user" | "autonomous";
+  origin?: TurnOrigin;
   userMessage: string;
   perception: PerceptionResult;
   workingMood: AffectiveSignal;
@@ -60,7 +72,7 @@ export type RunTurnReflectionInput = {
   pendingSocialAttribution: PendingSocialAttribution | null;
   suppressionSet: SuppressionSet;
   persistedUserEntryId?: StreamEntryId;
-  persistedPerceptionEntry: StreamEntry;
+  persistedPerceptionEntry?: StreamEntry;
   persistedAgentEntry: StreamEntry;
   isUserTurn: boolean;
   frameAnomaly?: ActualFrameAnomalyClassification | null;
@@ -73,9 +85,19 @@ export class TurnReflectionCoordinator {
   constructor(private readonly options: TurnReflectionCoordinatorOptions) {}
 
   async run(input: RunTurnReflectionInput): Promise<ReflectionResult> {
+    if (!runsReflectionPersistence(input.origin)) {
+      const effects = emptyReflectionEffects();
+      input.trackReflectionEffects(effects);
+
+      return {
+        workingMemory: input.postActionWorkingMemory,
+        effects,
+      };
+    }
+
     let moodSnapshot = input.workingMood;
 
-    if (input.origin !== "autonomous" && input.perception.affectiveSignalDegraded !== true) {
+    if (input.isUserTurn && input.perception.affectiveSignalDegraded !== true) {
       try {
         const nextMood = this.options.moodRepository.update(input.sessionId, {
           valence: input.perception.affectiveSignal.valence,
@@ -150,7 +172,9 @@ export class TurnReflectionCoordinator {
         frameAnomaly: input.frameAnomaly ?? null,
         currentTurnStreamEntryIds:
           input.persistedUserEntryId === undefined
-            ? [input.persistedPerceptionEntry.id, input.persistedAgentEntry.id]
+            ? [input.persistedPerceptionEntry?.id, input.persistedAgentEntry.id].filter(
+                (entryId): entryId is StreamEntryId => entryId !== undefined,
+              )
             : input.frameAnomaly !== null && input.frameAnomaly !== undefined
               ? [input.persistedAgentEntry.id]
               : [input.persistedUserEntryId, input.persistedAgentEntry.id],

@@ -35,6 +35,7 @@ export type TurnOpeningPersistenceInput = {
     },
   ) => Promise<PersistedTurnAttachment[]>;
   persistUserMessage?: boolean;
+  persistPerception?: boolean;
   audience?: string;
   senderEntityId?: EntityId;
   speakerEntityId?: EntityId | null;
@@ -52,7 +53,7 @@ export type TurnOpeningPersistenceResult = {
   persistedAttachments: readonly PersistedTurnAttachment[];
   persistedAttachmentEntries: readonly StreamEntry[];
   currentUserContent: readonly import("../../attachments/index.js").BorgUserContentBlock[];
-  persistedPerceptionEntry: StreamEntry;
+  persistedPerceptionEntry?: StreamEntry;
   workingMemory: WorkingMemory;
 };
 
@@ -119,28 +120,31 @@ export class TurnOpeningPersistence {
       updated_at: input.now(),
     });
 
-    const persistedPerceptionEntry = await input.streamWriter.append({
-      kind: "perception",
-      turn_id: input.turnId,
-      turn_status: ACTIVE_TURN_STATUS,
-      content: {
-        mode: input.perception.mode,
-        isOperational: input.perception.isOperational === true,
-        entities: input.perception.entities,
-        userIdentityNames: input.perception.userIdentityNames ?? [],
-        temporalCue: input.perception.temporalCue,
-        affectiveSignal: input.perception.affectiveSignal,
-        affectiveSignalDegraded: input.perception.affectiveSignalDegraded === true,
-      },
-      ...(input.audience === undefined ? {} : { audience: input.audience }),
-    });
+    const persistedPerceptionEntry =
+      input.persistPerception === false
+        ? undefined
+        : await input.streamWriter.append({
+            kind: "perception",
+            turn_id: input.turnId,
+            turn_status: ACTIVE_TURN_STATUS,
+            content: {
+              mode: input.perception.mode,
+              isOperational: input.perception.isOperational === true,
+              entities: input.perception.entities,
+              userIdentityNames: input.perception.userIdentityNames ?? [],
+              temporalCue: input.perception.temporalCue,
+              affectiveSignal: input.perception.affectiveSignal,
+              affectiveSignalDegraded: input.perception.affectiveSignalDegraded === true,
+            },
+            ...(input.audience === undefined ? {} : { audience: input.audience }),
+          });
 
     return {
       persistedUserEntry,
       persistedAttachments,
       persistedAttachmentEntries: persistedAttachments.map((attachment) => attachment.streamEntry),
       currentUserContent,
-      persistedPerceptionEntry,
+      ...(persistedPerceptionEntry === undefined ? {} : { persistedPerceptionEntry }),
       workingMemory,
     };
   }

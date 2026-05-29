@@ -63,6 +63,12 @@ import type {
   OrchestratorResult,
 } from "../offline/index.js";
 import type {
+  AutonomousOutboundPolicy,
+  MessageConnector,
+  MessageConnectorRegistry,
+  OutboundDelivery,
+} from "../outbound/index.js";
+import type {
   RetrievalGetEpisodeOptions,
   RetrievalPipeline,
   RetrievalSearchOptions,
@@ -121,6 +127,9 @@ export type BorgDependencies = {
   imageAttachmentLifecycleService: ImageAttachmentLifecycleService;
   attachmentService: AttachmentService;
   promptOverrideRepository: PromptOverrideRepository;
+  outboundConnectorRegistry: MessageConnectorRegistry;
+  outboundDelivery: OutboundDelivery;
+  autonomousOutboundPolicy: AutonomousOutboundPolicy;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
   maintenanceScheduler: MaintenanceScheduler;
@@ -145,6 +154,7 @@ export type BorgOpenOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   onStreamAppend?: (entries: readonly StreamEntry[]) => void;
+  outboundConnectors?: readonly MessageConnector[];
   tracerPath?: string;
   /**
    * When true, completed turns trigger best-effort watermark-based episodic
