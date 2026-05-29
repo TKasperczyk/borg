@@ -104,6 +104,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "extraction.commitments.transitioned",
     "commitment_classification.downgraded",
     "corrective_preference.candidate_rejected_ungrounded",
+    "corrective_preference.cross_audience_scope",
     "creator_directive_candidate_extracted",
     "creator_directive_policy_normalized",
     "creator_directive_persisted",

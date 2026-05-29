@@ -54,6 +54,14 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   speakerDisplayName?: string | null;
   participantRoster?: ParticipantRoster | null;
   relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
+  // Cross-audience scope is gated upstream: `allowed` must already encode the
+  // creator-in-operator authority check. Even so the service re-validates the
+  // model's chosen target against `candidateAudiences` before honoring it, so a
+  // hallucinated or out-of-set id can never redirect a commitment.
+  crossAudienceTargeting?: {
+    allowed: boolean;
+    candidateAudiences: readonly { entity_id: EntityId; label: string }[];
+  };
   sessionId: SessionId;
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
   trackAppliedSlotNegation: (slot: RelationalSlot) => void;
@@ -72,7 +80,7 @@ export type CorrectivePreferenceSupersessionClaim = {
 
 function buildCorrectivePreferenceCommitment(input: {
   candidate: CorrectivePreferenceCandidate;
-  audienceEntityId: EntityId | null;
+  restrictedAudience: EntityId | null;
   committedByEntityId: EntityId | null;
   sourceStreamEntryIds?: CommitmentRecord["source_stream_entry_ids"];
   nowMs: number;
@@ -88,7 +96,7 @@ function buildCorrectivePreferenceCommitment(input: {
     directive: input.candidate.directive,
     priority: input.candidate.priority,
     made_to_entity: null,
-    restricted_audience: input.audienceEntityId,
+    restricted_audience: input.restrictedAudience,
     about_entity: null,
     committed_by_entity_id: input.committedByEntityId,
     provenance: {
@@ -307,6 +315,76 @@ export class CorrectivePreferenceTurnService {
     return { accepted: true };
   }
 
+  private traceCrossAudienceScope(input: {
+    turnId?: string;
+    sessionId?: SessionId;
+    validationStatus: "accepted" | "rejected";
+    requestedAudienceEntityId: EntityId;
+    currentAudienceEntityId: EntityId | null;
+    reason: string;
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("corrective_preference.cross_audience_scope", {
+      turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      validationStatus: input.validationStatus,
+      reason: input.reason,
+      requested_audience_entity_id: input.requestedAudienceEntityId,
+      current_audience_entity_id: input.currentAudienceEntityId,
+    });
+  }
+
+  // Resolve the audience a corrective commitment is scoped to. Default is the
+  // current session audience. A different audience is honored ONLY when the
+  // turn was authorized to cross-target (input.allowed, set upstream to the
+  // creator-in-operator check) AND the model's chosen id is one of the
+  // structurally-supplied candidate audiences. This is the security gate: a
+  // non-authorized turn never receives candidates, and even an authorized turn
+  // cannot redirect a commitment to an id outside its candidate set.
+  private resolveCorrectiveRestrictedAudience(input: {
+    candidate: CorrectivePreferenceCandidate;
+    currentAudienceEntityId: EntityId | null;
+    allowed: boolean;
+    candidateAudiences: readonly { entity_id: EntityId; label: string }[];
+    turnId?: string;
+    sessionId?: SessionId;
+  }): EntityId | null {
+    const requested = input.candidate.applies_to_audience_entity_id;
+
+    if (requested === null) {
+      return input.currentAudienceEntityId;
+    }
+
+    const inCandidateSet = input.candidateAudiences.some(
+      (audience) => audience.entity_id === requested,
+    );
+
+    if (input.allowed && inCandidateSet) {
+      this.traceCrossAudienceScope({
+        turnId: input.turnId,
+        sessionId: input.sessionId,
+        validationStatus: "accepted",
+        requestedAudienceEntityId: requested,
+        currentAudienceEntityId: input.currentAudienceEntityId,
+        reason: "cross_audience_scope_applied",
+      });
+      return requested;
+    }
+
+    this.traceCrossAudienceScope({
+      turnId: input.turnId,
+      sessionId: input.sessionId,
+      validationStatus: "rejected",
+      requestedAudienceEntityId: requested,
+      currentAudienceEntityId: input.currentAudienceEntityId,
+      reason: input.allowed ? "target_not_in_candidate_set" : "cross_audience_not_authorized",
+    });
+    return input.currentAudienceEntityId;
+  }
+
   async extractAndApply(
     input: ExtractCorrectivePreferenceForTurnInput,
   ): Promise<CorrectivePreferenceTurnResult> {
@@ -338,6 +416,10 @@ export class CorrectivePreferenceTurnService {
         });
       },
     });
+    const crossAudienceAllowed = input.crossAudienceTargeting?.allowed === true;
+    const crossAudienceCandidates = crossAudienceAllowed
+      ? (input.crossAudienceTargeting?.candidateAudiences ?? [])
+      : [];
     const correctiveExtraction = await correctivePreferenceExtractor.extractWithSlotNegations({
       userMessage: input.userMessage,
       currentUserStreamEntryId: input.persistedUserEntryId ?? null,
@@ -346,6 +428,7 @@ export class CorrectivePreferenceTurnService {
       speakerEntityId: input.committedByEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
       participantRoster: input.participantRoster ?? null,
+      crossAudienceTargets: crossAudienceCandidates,
       activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
         id: commitment.id,
         type: commitment.type,
@@ -376,7 +459,14 @@ export class CorrectivePreferenceTurnService {
       acceptedCorrectiveCandidate = correctiveCandidate;
       correctiveCommitment = buildCorrectivePreferenceCommitment({
         candidate: correctiveCandidate,
-        audienceEntityId: input.audienceEntityId,
+        restrictedAudience: this.resolveCorrectiveRestrictedAudience({
+          candidate: correctiveCandidate,
+          currentAudienceEntityId: input.audienceEntityId,
+          allowed: crossAudienceAllowed,
+          candidateAudiences: crossAudienceCandidates,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+        }),
         committedByEntityId: input.committedByEntityId ?? null,
         sourceStreamEntryIds:
           input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId],

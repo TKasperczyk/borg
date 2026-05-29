@@ -20,6 +20,7 @@ import {
   type CommitmentId,
 } from "../../util/ids.js";
 import type { RelationshipClaim } from "../relationship-claims.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceTurnService } from "./corrective-preference-service.js";
 
 type AddCommitmentInput = Parameters<IdentityService["addCommitment"]>[0];
@@ -40,6 +41,7 @@ function correctivePreferenceResponse(
     directive?: string;
     directiveFamily?: string;
     relationshipClaims?: RelationshipClaim[];
+    appliesToAudienceEntityId?: string | null;
   } = {},
 ) {
   return {
@@ -64,6 +66,7 @@ function correctivePreferenceResponse(
           reason: "The current speaker made a durable correction.",
           confidence: 0.91,
           supersedes_commitment_id: input.supersedesCommitmentId ?? null,
+          applies_to_audience_entity_id: input.appliesToAudienceEntityId ?? null,
           relationship_claims: input.relationshipClaims ?? [],
           slot_negations: [],
         },
@@ -971,5 +974,154 @@ describe("CorrectivePreferenceTurnService", () => {
       validationStatus: "rejected",
       reason: "commitment_not_active",
     });
+  });
+});
+
+describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
+  function makeService(tracer?: TurnTracer) {
+    const addCommitment = vi.fn();
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: tracer ?? { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    return { service, addCommitment };
+  }
+
+  const audienceRuleResponse = (appliesToAudienceEntityId: string | null) =>
+    correctivePreferenceResponse({
+      type: "rule",
+      kind: "audience_rule",
+      directive: "In the crew channel, proactively flag deploy and incident risks.",
+      directiveFamily: "crew_proactive_risk",
+      appliesToAudienceEntityId,
+    });
+
+  function turnInput(input: {
+    audienceEntityId: ReturnType<typeof createEntityId>;
+    crossAudienceTargeting: {
+      allowed: boolean;
+      candidateAudiences: readonly {
+        entity_id: ReturnType<typeof createEntityId>;
+        label: string;
+      }[];
+    };
+    appliesToAudienceEntityId: string | null;
+  }) {
+    return {
+      llmClient: new FakeLLMClient({
+        responses: [audienceRuleResponse(input.appliesToAudienceEntityId)],
+      }),
+      turnId: "turn-cross-audience",
+      userMessage: "In the Project Crew channel, proactively flag deploy risks.",
+      persistedUserEntryId: createStreamEntryId(),
+      recentHistory: [],
+      audienceEntityId: input.audienceEntityId,
+      committedByEntityId: input.audienceEntityId,
+      speakerDisplayName: "Tom",
+      crossAudienceTargeting: input.crossAudienceTargeting,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    };
+  }
+
+  it("scopes a commitment to another audience when authorized and the target is a candidate", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const emit = vi.fn();
+    const { service } = makeService({ enabled: true, includePayloads: true, emit });
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        appliesToAudienceEntityId: groupAudience,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment?.restricted_audience).toBe(groupAudience);
+    expect(emit).toHaveBeenCalledWith(
+      "corrective_preference.cross_audience_scope",
+      expect.objectContaining({
+        validationStatus: "accepted",
+        reason: "cross_audience_scope_applied",
+      }),
+    );
+  });
+
+  it("falls back to the current audience when the target is not a supplied candidate", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const unlistedAudience = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        appliesToAudienceEntityId: unlistedAudience,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment?.restricted_audience).toBe(operatorAudience);
+  });
+
+  it("ignores a cross-audience target when the turn is not authorized to cross-target", async () => {
+    const participantAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: participantAudience,
+        // A hallucinated target on a non-creator-in-operator turn: the extraction
+        // phase passes no candidates (allowed:false), and the service ignores it.
+        appliesToAudienceEntityId: groupAudience,
+        crossAudienceTargeting: { allowed: false, candidateAudiences: [] },
+      }),
+    );
+
+    expect(result.commitment?.restricted_audience).toBe(participantAudience);
+  });
+
+  it("keeps the current audience when no cross-audience target is emitted", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        appliesToAudienceEntityId: null,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment?.restricted_audience).toBe(operatorAudience);
   });
 });

@@ -146,6 +146,12 @@ const correctivePreferenceSchema = z
       .describe(
         "Existing commitment id this correction replaces or tightens, if one was clearly selected from the supplied active commitments.",
       ),
+    applies_to_audience_entity_id: correctivePreferenceEntityIdSchema
+      .nullable()
+      .optional()
+      .describe(
+        "Cross-audience scope. Only set this when cross_audience_targets is non-empty AND the current speaker is giving a standing rule explicitly about one of those other audiences/channels; then set it to that audience's entity_id so the rule applies in that audience's sessions instead of the current one. Use a value copied verbatim from cross_audience_targets; never invent an id. Leave null (the default) whenever the rule is about the current conversation or no cross_audience_targets are supplied.",
+      ),
     relationship_claims: correctivePreferenceRelationshipClaimsSchema,
     slot_negations: z
       .array(slotNegationSchema)
@@ -179,6 +185,7 @@ export type CorrectivePreferenceCandidate = {
   reason: string;
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
+  applies_to_audience_entity_id: EntityId | null;
   relationship_claims: RelationshipClaim[];
 };
 
@@ -222,6 +229,7 @@ export type ExtractCorrectivePreferenceInput = {
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   participantRoster?: ParticipantRoster | null;
+  crossAudienceTargets?: readonly { entity_id: EntityId; label: string }[];
   activeCommitments: readonly {
     id: CommitmentId;
     type: string;
@@ -332,6 +340,7 @@ function toCandidate(
     reason,
     confidence: input.confidence,
     supersedes_commitment_id: input.supersedes_commitment_id ?? null,
+    applies_to_audience_entity_id: input.applies_to_audience_entity_id ?? null,
     relationship_claims: input.relationship_claims.map((claim) => ({
       ...claim,
       evidence_relational_slot_ids: [...claim.evidence_relational_slot_ids],
@@ -410,6 +419,10 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
         speaker_entity_id: input.speakerEntityId ?? null,
         speaker_display_name: input.speakerDisplayName ?? null,
         participant_roster: renderParticipantRoster(input.participantRoster),
+        cross_audience_targets: (input.crossAudienceTargets ?? []).map((target) => ({
+          entity_id: target.entity_id,
+          label: target.label,
+        })),
         active_commitments: input.activeCommitments.map((commitment) => {
           const enforcementFields =
             commitment.kind === null || commitment.kind === undefined

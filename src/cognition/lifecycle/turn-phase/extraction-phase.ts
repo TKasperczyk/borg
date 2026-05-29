@@ -11,8 +11,27 @@ import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { BorgRole } from "../../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../../sessions/index.js";
 import { runsExtraction } from "../../types.js";
+import { isCreatorInOperatorContext } from "../../authority.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import type { AppendHookFailureEvent } from "./utils.js";
+
+// Most recently active other audiences offered to the corrective-preference
+// extractor as cross-audience targets (only on creator-in-operator turns).
+const CROSS_AUDIENCE_TARGET_CAP = 12;
+
+function dedupeCrossAudienceTargets(
+  targets: readonly { entity_id: EntityId; label: string }[],
+): { entity_id: EntityId; label: string }[] {
+  const byEntityId = new Map<EntityId, { entity_id: EntityId; label: string }>();
+
+  for (const target of targets) {
+    if (!byEntityId.has(target.entity_id)) {
+      byEntityId.set(target.entity_id, target);
+    }
+  }
+
+  return [...byEntityId.values()];
+}
 
 export type TurnExtractionPhaseResult = {
   actionLinkSelfContext: Awaited<
@@ -93,6 +112,38 @@ export async function runExtractionPhase(input: {
         input.audienceEntityId,
       )
     : [];
+  // Cross-audience scope is offered only when the current sender is a creator
+  // in an operator context (same authority gate as manual outbound). Other
+  // turns get an empty candidate set, so the extractor cannot redirect a
+  // commitment away from the current audience.
+  const crossAudienceAllowed = isCreatorInOperatorContext({
+    currentSenderBorgRole: input.currentSenderBorgRole,
+    sessionAudienceRole: input.sessionAudienceRole,
+  });
+  const crossAudienceCandidateAudiences =
+    crossAudienceAllowed && input.options.sessionsRepository !== undefined
+      ? dedupeCrossAudienceTargets(
+          input.options.sessionsRepository
+            .list({
+              status: "active",
+              excludeSessionId: input.sessionId,
+              limit: CROSS_AUDIENCE_TARGET_CAP,
+            })
+            .flatMap((session) => {
+              // Label-only sessions carry a null audience_entity_id column but
+              // still scope memory to an entity resolved from the label at turn
+              // time. Resolve the same way (existing entities only) so the
+              // candidate id matches what the target session deliberates under.
+              const audienceEntityId =
+                session.audience_entity_id ??
+                input.options.entityRepository.findByName(session.audience_label);
+              return audienceEntityId === null || audienceEntityId === input.audienceEntityId
+                ? []
+                : [{ entity_id: audienceEntityId, label: session.audience_label }];
+            }),
+        )
+      : [];
+
   const [correctivePreferenceTurn, createdActionIds, persistedPromotions, creatorDirectives] =
     await Promise.all([
       input.currentTurnFrameAnomaly === null
@@ -106,6 +157,10 @@ export async function runExtractionPhase(input: {
             committedByEntityId: input.groupSpeakerEntityId,
             speakerDisplayName: input.groupSpeakerDisplayName,
             participantRoster: input.participantRoster,
+            crossAudienceTargeting: {
+              allowed: crossAudienceAllowed,
+              candidateAudiences: crossAudienceCandidateAudiences,
+            },
             sessionId: input.sessionId,
             onHookFailure: (hook, error, details) =>
               input.appendHookFailureEvent(input.streamWriter, hook, error, details),
