@@ -920,6 +920,14 @@ export type TurnFinalAttemptFrame = LiveFrameBase & {
   attempt: number;
 };
 
+export type TurnPhaseDetailFrame = LiveFrameBase & {
+  type: "turn:phase:detail";
+  turn_id: string;
+  phase?: string;
+  event: string;
+  summary: string;
+};
+
 export type DreamProcessStartedFrame = LiveFrameBase & {
   type: "dream:process:started";
   process: string;
@@ -950,6 +958,7 @@ export type LiveFrame =
   | EvidenceLedgerBuiltFrame
   | TurnDelibPathFrame
   | TurnFinalAttemptFrame
+  | TurnPhaseDetailFrame
   | DreamProcessStartedFrame
   | DreamProcessCompletedFrame
   | BorgResetFrame;

@@ -98,7 +98,8 @@ function turnIdFromLiveFrame(frame: LiveFrame): string | null {
     frame.type === "turn:token:flush" ||
     frame.type === "evidence_ledger:built" ||
     frame.type === "turn:delib_path" ||
-    frame.type === "turn:final_attempt"
+    frame.type === "turn:final_attempt" ||
+    frame.type === "turn:phase:detail"
   ) {
     return frame.turn_id;
   }
@@ -227,6 +228,18 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
         ts: formatTime(frame.ts),
         kind: "internal",
         body: `finalizer re-attempt · #${frame.attempt}`,
+        isNew: true,
+      },
+    ];
+  }
+
+  if (frame.type === "turn:phase:detail") {
+    return [
+      {
+        id: `detail:${frame.turn_id}:${frame.event}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: frame.event.split(".")[0] ?? frame.event,
+        body: `${frame.event} · ${frame.summary}`,
         isNew: true,
       },
     ];
@@ -592,6 +605,10 @@ export function useTurnStream(
           completeActiveLiveTurn({ releaseForOutstanding: true });
         }
 
+        return;
+      }
+
+      if (frame.type === "turn:phase:detail") {
         return;
       }
 

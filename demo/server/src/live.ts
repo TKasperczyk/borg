@@ -35,6 +35,17 @@ type StreamAppendObserver = (entries: readonly StreamEntry[]) => void;
 
 const RING_BUFFER_MAX = 64;
 const RING_BUFFER_MAX_AGE_MS = 60_000;
+const TRACE_DETAIL_SKIP_KEYS = new Set([
+  "turnId",
+  "turn_id",
+  "session_id",
+  "sessionId",
+  "ts",
+  "phase",
+  "duration_ms",
+]);
+const TRACE_DETAIL_STRING_MAX = 60;
+const TRACE_DETAIL_SUMMARY_MAX = 200;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,6 +69,60 @@ function firstStreamEntrySessionId(frame: LiveFrame): SessionId | undefined {
   }
 
   return parseMaybeSessionId((frame.entries[0] as { session_id?: unknown } | undefined)?.session_id);
+}
+
+function summarizeTraceEventValue(value: unknown): string | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  if (value === null) {
+    return "null";
+  }
+
+  if (typeof value === "string") {
+    return value.length <= TRACE_DETAIL_STRING_MAX
+      ? value
+      : `${value.slice(0, TRACE_DETAIL_STRING_MAX - 3)}...`;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.length}]`;
+  }
+
+  if (isObject(value)) {
+    return `{${Object.keys(value).length}}`;
+  }
+
+  return String(value);
+}
+
+function summarizeTraceEventData(data: TurnTraceData): string {
+  const parts: string[] = [];
+
+  for (const [key, value] of Object.entries(data)) {
+    if (TRACE_DETAIL_SKIP_KEYS.has(key)) {
+      continue;
+    }
+
+    const rendered = summarizeTraceEventValue(value);
+    if (rendered !== null) {
+      parts.push(`${key}=${rendered}`);
+    }
+  }
+
+  if (parts.length === 0) {
+    return "(no detail)";
+  }
+
+  const summary = parts.join(" ");
+  return summary.length <= TRACE_DETAIL_SUMMARY_MAX
+    ? summary
+    : `${summary.slice(0, TRACE_DETAIL_SUMMARY_MAX - 3)}...`;
 }
 
 function frameSessionId(frame: LiveFrame): SessionId | undefined {
@@ -393,6 +458,18 @@ export class WsBridgeTracer implements TurnTracer {
           typeof data.candidates_accepted === "number" ? data.candidates_accepted : 0,
       });
       return;
+    }
+
+    if (turnId !== null) {
+      this.broadcaster.broadcast({
+        type: "turn:phase:detail",
+        ts: Date.now(),
+        turn_id: turnId,
+        ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
+        ...(typeof data.phase === "string" ? { phase: data.phase } : {}),
+        event,
+        summary: summarizeTraceEventData(data),
+      });
     }
   }
 }

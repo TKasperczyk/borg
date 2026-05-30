@@ -604,6 +604,55 @@ describe("demo server", () => {
     expect(framesB).toEqual([]);
   });
 
+  it("broadcasts unhandled turn-scoped trace events as phase detail frames", () => {
+    const live = createLiveBridge();
+    const { frames } = collectLiveFrames(live);
+
+    live.tracer.emit("frame_anomaly.disposition", {
+      turnId: "turn_detail",
+      turn_id: "turn_detail",
+      session_id: DEFAULT_SESSION_ID,
+      phase: "frame",
+      disposition: "continue",
+      status: "ok",
+      kind: "topic_shift",
+      candidates: ["a", "b"],
+      metrics: { considered: 2, accepted: 1 },
+      empty: null,
+    });
+
+    const detailFrame = frames.find((frame) => frame.type === "turn:phase:detail");
+
+    expect(detailFrame).toMatchObject({
+      type: "turn:phase:detail",
+      turn_id: "turn_detail",
+      session_id: DEFAULT_SESSION_ID,
+      phase: "frame",
+      event: "frame_anomaly.disposition",
+      summary: expect.any(String),
+    });
+    expect(detailFrame?.summary).toContain("disposition=continue");
+    expect(detailFrame?.summary).toContain("status=ok");
+    expect(detailFrame?.summary).toContain("kind=topic_shift");
+    expect(detailFrame?.summary).toContain("candidates=[2]");
+    expect(detailFrame?.summary).toContain("metrics={2}");
+    expect(detailFrame?.summary).toContain("empty=null");
+  });
+
+  it("does not broadcast unhandled trace events without a turn id", () => {
+    const live = createLiveBridge();
+    const { frames } = collectLiveFrames(live);
+    const unscopedTraceData = {
+      session_id: DEFAULT_SESSION_ID,
+      disposition: "continue",
+      status: "ok",
+    } as unknown as Parameters<typeof live.tracer.emit>[1];
+
+    live.tracer.emit("frame_anomaly.disposition", unscopedTraceData);
+
+    expect(frames).toEqual([]);
+  });
+
   it("serves creator and operator session endpoints", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-creator-"));
     tempDirs.push(tempDir);
@@ -2219,6 +2268,12 @@ describe("demo server", () => {
       turn_id: "turn_ledger",
       ledger: { sections: [] },
     });
+    expect(
+      frames.some(
+        (frame) =>
+          frame.type === "turn:phase:detail" && frame.event === "evidence_ledger.built",
+      ),
+    ).toBe(false);
     live.broadcaster.closeAll();
     expect(wasClosed()).toBe(true);
   });
