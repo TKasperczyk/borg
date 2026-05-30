@@ -20,6 +20,25 @@ const CHAT_KINDS: readonly StreamChatKind[] = ["user_msg", "agent_msg", "user_im
 const CHAT_PANEL_LIMIT = 16;
 const DEMO_SOURCE_TYPE = "demo";
 
+// crypto.randomUUID() exists only in secure contexts (HTTPS or localhost). The
+// demo is reached over plain HTTP on the LAN, where randomUUID is undefined.
+// crypto.getRandomValues IS available in non-secure contexts, so derive a
+// UUIDv4 from it, with a last-resort fallback.
+function makeClientMessageId(): string {
+  const webCrypto = globalThis.crypto as Crypto | undefined;
+  if (webCrypto !== undefined && typeof webCrypto.randomUUID === "function") {
+    return webCrypto.randomUUID();
+  }
+  if (webCrypto !== undefined && typeof webCrypto.getRandomValues === "function") {
+    const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+  }
+  return `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export type CognitionScreenProps = {
   sessionId: string;
   audience: string;
@@ -333,7 +352,7 @@ export function CognitionScreen({
   );
 
   const send = async (input: { message: string; attachments?: readonly File[] }) => {
-    const externalMessageId = crypto.randomUUID();
+    const externalMessageId = makeClientMessageId();
     const optimisticEntry = optimisticUserEntry({
       externalMessageId,
       message: input.message,
