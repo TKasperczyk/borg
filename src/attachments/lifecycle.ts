@@ -71,7 +71,7 @@ export class ImageAttachmentLifecycleService {
     const result = apply();
 
     if (this.options.tracer?.enabled === true) {
-      const turnId = input.turnId ?? existing.parent_turn_id;
+      const turnId = input.turnId ?? existing.parent_turn_id ?? "attachment";
       if (input.active) {
         this.options.tracer.emit("image_perception.reactivated", {
           turnId,

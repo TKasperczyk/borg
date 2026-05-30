@@ -42,6 +42,7 @@ export const streamEntryIndexMigrations: Migration[] = [
           turn_id TEXT NULL,
           turn_status TEXT NULL,
           active INTEGER NOT NULL DEFAULT 1,
+          receipt_pending INTEGER NOT NULL DEFAULT 0,
           entry_index INTEGER NULL,
           source_message_key_source_type TEXT NULL,
           source_message_key_source_external_id TEXT NULL,
@@ -107,6 +108,7 @@ export type StreamEntryIndexRecord = {
   turn_id: string | null;
   turn_status: StreamTurnStatus | null;
   active: boolean;
+  receipt_pending: boolean;
   source_message_key_source_type: string | null;
   source_message_key_source_external_id: string | null;
   source_message_key_external_message_id: string | null;
@@ -135,6 +137,7 @@ type StreamEntryIndexRow = {
   turn_id?: string | null;
   turn_status?: string | null;
   active?: number | null;
+  receipt_pending?: number | null;
   source_message_key_source_type?: string | null;
   source_message_key_source_external_id?: string | null;
   source_message_key_external_message_id?: string | null;
@@ -286,6 +289,10 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
         ? null
         : (row.turn_status as StreamTurnStatus),
     active: row.active === null || row.active === undefined ? true : row.active !== 0,
+    receipt_pending:
+      row.receipt_pending === null || row.receipt_pending === undefined
+        ? false
+        : row.receipt_pending !== 0,
     source_message_key_source_type: row.source_message_key_source_type ?? null,
     source_message_key_source_external_id: row.source_message_key_source_external_id ?? null,
     source_message_key_external_message_id: row.source_message_key_external_message_id ?? null,
@@ -467,19 +474,20 @@ export class StreamEntryIndexRepository {
     turnId: string | null = null,
     turnStatus: StreamTurnStatus | null = null,
     active = true,
+    receiptPending = false,
     stampColumns: StreamEntryIndexStampColumns = EMPTY_STAMP_COLUMNS,
   ): void {
     this.db
       .prepare(
         `INSERT INTO stream_entry_index (
            entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
-           turn_id, turn_status, active,
+           turn_id, turn_status, active, receipt_pending,
            source_message_key_source_type, source_message_key_source_external_id,
            source_message_key_external_message_id, response_to_kind, response_to_from_cursor_ts,
            response_to_from_cursor_entry_id, response_to_through_cursor_ts,
            response_to_through_cursor_entry_id, response_to_source_entry_ids, response_to_count
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
@@ -490,6 +498,7 @@ export class StreamEntryIndexRepository {
            turn_id = excluded.turn_id,
            turn_status = excluded.turn_status,
            active = excluded.active,
+           receipt_pending = excluded.receipt_pending,
            source_message_key_source_type = excluded.source_message_key_source_type,
            source_message_key_source_external_id = excluded.source_message_key_source_external_id,
            source_message_key_external_message_id = excluded.source_message_key_external_message_id,
@@ -512,6 +521,7 @@ export class StreamEntryIndexRepository {
         turnId,
         turnStatus,
         active ? 1 : 0,
+        receiptPending ? 1 : 0,
         stampColumns.source_message_key_source_type,
         stampColumns.source_message_key_source_external_id,
         stampColumns.source_message_key_external_message_id,
@@ -539,6 +549,7 @@ export class StreamEntryIndexRepository {
       entry.turn_id ?? null,
       entry.turn_status ?? "active",
       streamEntryIsActive(entry, inactiveRefs),
+      entry.receipt_pending === true,
       stampColumnsFromEntry(entry),
     );
 
@@ -591,6 +602,16 @@ export class StreamEntryIndexRepository {
 
   clearPoisoned(sessionId: SessionId): void {
     this.poisonedSessions.delete(sessionId);
+  }
+
+  setReceiptPending(entryId: StreamEntryId, pending: boolean): void {
+    this.db
+      .prepare(
+        `UPDATE stream_entry_index
+         SET receipt_pending = ?
+         WHERE entry_id = ?`,
+      )
+      .run(pending ? 1 : 0, entryId);
   }
 
   private recordQuarantineRefs(entry: StreamEntry): void {
@@ -648,7 +669,7 @@ export class StreamEntryIndexRepository {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -666,7 +687,7 @@ export class StreamEntryIndexRepository {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -724,7 +745,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -751,7 +772,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -778,7 +799,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -807,7 +828,7 @@ export class StreamEntryIndexRepository {
     const serializedSourceEntryIds = serializeJsonValue(input.sourceEntryIds);
     const terminalKindPlaceholders = terminalKinds.map(() => "?").join(", ");
     const baseSql = `SELECT entry_id, session_id, byte_offset, timestamp
-              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
               , source_message_key_source_type, source_message_key_source_external_id
               , source_message_key_external_message_id, response_to_kind
               , response_to_from_cursor_ts, response_to_from_cursor_entry_id
@@ -915,13 +936,13 @@ export class StreamEntryIndexRepository {
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
              entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
-             turn_id, turn_status, active,
+             turn_id, turn_status, active, receipt_pending,
              source_message_key_source_type, source_message_key_source_external_id,
              source_message_key_external_message_id, response_to_kind, response_to_from_cursor_ts,
              response_to_from_cursor_entry_id, response_to_through_cursor_ts,
              response_to_through_cursor_entry_id, response_to_source_entry_ids, response_to_count
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (entry_id) DO UPDATE SET
              session_id = excluded.session_id,
              byte_offset = excluded.byte_offset,
@@ -932,6 +953,10 @@ export class StreamEntryIndexRepository {
              turn_id = excluded.turn_id,
              turn_status = excluded.turn_status,
              active = excluded.active,
+             receipt_pending = CASE
+               WHEN stream_entry_index.receipt_pending = 0 THEN 0
+               ELSE excluded.receipt_pending
+             END,
              source_message_key_source_type = excluded.source_message_key_source_type,
              source_message_key_source_external_id = excluded.source_message_key_source_external_id,
              source_message_key_external_message_id = excluded.source_message_key_external_message_id,
@@ -951,6 +976,7 @@ export class StreamEntryIndexRepository {
               OR stream_entry_index.turn_id IS NOT excluded.turn_id
               OR stream_entry_index.turn_status IS NOT excluded.turn_status
               OR stream_entry_index.active IS NOT excluded.active
+              OR stream_entry_index.receipt_pending IS NOT excluded.receipt_pending
               OR stream_entry_index.source_message_key_source_type IS NOT excluded.source_message_key_source_type
               OR stream_entry_index.source_message_key_source_external_id IS NOT excluded.source_message_key_source_external_id
               OR stream_entry_index.source_message_key_external_message_id IS NOT excluded.source_message_key_external_message_id
@@ -983,6 +1009,7 @@ export class StreamEntryIndexRepository {
               entry.turn_id ?? null,
               entry.turn_status ?? "active",
               streamEntryIsActive(entry, inactiveRefs) ? 1 : 0,
+              entry.receipt_pending === true ? 1 : 0,
               stampColumns.source_message_key_source_type,
               stampColumns.source_message_key_source_external_id,
               stampColumns.source_message_key_external_message_id,

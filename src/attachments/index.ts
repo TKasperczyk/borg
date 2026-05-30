@@ -9,8 +9,10 @@ export {
 } from "./lifecycle.js";
 export {
   AttachmentService,
+  type PersistedParentEntryAttachment,
   type AttachmentValidationConfig,
   type PersistedTurnAttachment,
+  type PersistParentEntryAttachmentsInput,
   type PersistTurnAttachmentsInput,
 } from "./service.js";
 export {

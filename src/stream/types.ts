@@ -88,6 +88,7 @@ export const streamEntrySchema = z.object({
   source_message_key: streamSourceMessageKeySchema.optional(),
   response_to: streamResponseToSchema.optional(),
   persistence_class: streamEntryPersistenceClassSchema.optional(),
+  receipt_pending: z.boolean().optional(),
   session_id: sessionIdSchema,
   compressed: z.boolean().default(false),
 });

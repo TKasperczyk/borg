@@ -7,11 +7,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import {
   StreamEntryIndexRepository,
+  StreamReader,
   StreamWriter,
   streamEntryIndexMigrations,
+  type StreamEntry,
 } from "../stream/index.js";
 import { AttachmentError } from "../util/errors.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { backfillSessionStreamEntryIndexAndAttachments } from "../borg/reconciliation.js";
 import { AttachmentBlobStore } from "./blob-store.js";
 import { AttachmentRepository, attachmentMigrations } from "./repository.js";
 import { AttachmentService } from "./service.js";
@@ -59,6 +62,12 @@ describe("AttachmentService", () => {
         maxImagesPerTurn: 4,
       },
       entryIndex,
+      createStreamReader: (sessionId) =>
+        new StreamReader({
+          dataDir: tempDir!,
+          sessionId,
+          entryIndex,
+        }),
     });
     const writer = new StreamWriter({
       dataDir: tempDir,
@@ -109,6 +118,130 @@ describe("AttachmentService", () => {
     expect(streamJsonl).toContain('"attachment_id"');
     expect(streamJsonl).toContain(`"parent_entry_id":"${parentEntry.id}"`);
     expect(streamJsonl).not.toContain(Buffer.from(PNG_1X1).toString("base64"));
+  });
+
+  it("stores parent-entry image attachments without a turn id", async () => {
+    const { repository, service, writer } = setup();
+    const parentEntry = await writer.append({
+      kind: "user_msg",
+      content: "queued image",
+      audience: "Alice",
+    });
+
+    const [persisted] = await service.persistParentEntryAttachments({
+      attachments: [{ mediaType: "image/png", bytes: PNG_1X1 }],
+      streamWriter: writer,
+      parentEntry,
+    });
+
+    writer.close();
+
+    const record = repository.get(persisted!.attachmentId);
+    expect(record).toMatchObject({
+      media_type: "image/png",
+      parent_entry_id: parentEntry.id,
+      stream_entry_id: persisted!.streamEntry?.id,
+      parent_turn_id: null,
+      active: true,
+    });
+    expect(persisted!.streamEntry).toMatchObject({
+      kind: "user_image_attachment",
+      content: {
+        type: "image_ref",
+        attachment_id: persisted!.attachmentId,
+        media_type: "image/png",
+        parent_entry_id: parentEntry.id,
+      },
+    });
+    expect(persisted!.streamEntry).not.toHaveProperty("turn_id");
+  });
+
+  it("repairs a poisoned attachment append through StreamWriter and does not append duplicates on recovery", async () => {
+    const { repository, service, writer, entryIndex } = setup();
+    const parentEntry = await writer.append({
+      kind: "user_msg",
+      content: "queued image repair",
+    });
+    writer.close();
+    let failImageIndexUpdate = true;
+    let repairCalls = 0;
+    const repairingWriter = new StreamWriter({
+      dataDir: tempDir!,
+      sessionId: DEFAULT_SESSION_ID,
+      entryIndex: {
+        isPoisoned: (sessionId: SessionId) => entryIndex.isPoisoned(sessionId),
+        markPoisoned: (sessionId: SessionId) => entryIndex.markPoisoned(sessionId),
+        nextEntryIndex: (sessionId: SessionId) => entryIndex.nextEntryIndex(sessionId),
+        backfillSession: (sessionId: SessionId) => entryIndex.backfillSession(sessionId),
+        recordEntry: (entry: StreamEntry, byteOffset: number) => {
+          if (entry.kind === "user_image_attachment" && failImageIndexUpdate) {
+            failImageIndexUpdate = false;
+            throw new Error("test image attachment index failure");
+          }
+
+          entryIndex.recordEntry(entry, byteOffset);
+        },
+      } as never,
+      repairSession: async (sessionId) => {
+        repairCalls += 1;
+        await backfillSessionStreamEntryIndexAndAttachments({
+          dataDir: tempDir!,
+          sessionId,
+          entryIndex,
+          attachmentRepository: repository,
+        });
+      },
+    });
+
+    const [persisted] = await service.persistParentEntryAttachments({
+      attachments: [{ mediaType: "image/png", bytes: PNG_1X1 }],
+      streamWriter: repairingWriter,
+      parentEntry,
+    });
+    repairingWriter.close();
+    const firstImageEntry = persisted!.streamEntry;
+
+    expect(firstImageEntry).not.toBeNull();
+    expect(repairCalls).toBe(1);
+    expect(repository.get(persisted!.attachmentId)).toMatchObject({
+      stream_entry_id: firstImageEntry?.id,
+      active: true,
+    });
+
+    db!
+      .prepare(
+        `UPDATE stream_attachments
+       SET stream_entry_id = NULL,
+           active = 0
+       WHERE attachment_id = ?`,
+      )
+      .run(persisted!.attachmentId);
+
+    const recoveryWriter = new StreamWriter({
+      dataDir: tempDir!,
+      sessionId: DEFAULT_SESSION_ID,
+      entryIndex,
+    });
+    const [recovered] = await service.persistParentEntryAttachments({
+      attachments: [{ mediaType: "image/png", bytes: PNG_1X1 }],
+      streamWriter: recoveryWriter,
+      parentEntry,
+    });
+    recoveryWriter.close();
+    const imageEntries = new StreamReader({
+      dataDir: tempDir!,
+      sessionId: DEFAULT_SESSION_ID,
+      entryIndex,
+    })
+      .tail(20)
+      .filter((entry) => entry.kind === "user_image_attachment");
+
+    expect(recovered?.streamEntry?.id).toBe(firstImageEntry?.id);
+    expect(repository.get(persisted!.attachmentId)).toMatchObject({
+      stream_entry_id: firstImageEntry?.id,
+      active: true,
+    });
+    expect(imageEntries).toHaveLength(1);
   });
 
   it("deduplicates repeated image bytes by sha256", async () => {

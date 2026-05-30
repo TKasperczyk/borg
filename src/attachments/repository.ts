@@ -29,9 +29,10 @@ export const attachmentMigrations: Migration[] = [
         active INTEGER NOT NULL DEFAULT 1,
         audience TEXT NULL,
         created_turn_global INTEGER NULL,
+        ordinal INTEGER NOT NULL DEFAULT 0,
         parent_entry_id TEXT NOT NULL,
         stream_entry_id TEXT NULL UNIQUE,
-        parent_turn_id TEXT NOT NULL,
+        parent_turn_id TEXT NULL,
         created_at INTEGER NOT NULL
       );
         CREATE INDEX idx_stream_attachments_active
@@ -66,9 +67,10 @@ type AttachmentRow = {
   active: number;
   audience: string | null;
   created_turn_global: number | null;
+  ordinal: number;
   parent_entry_id: string;
   stream_entry_id: string | null;
-  parent_turn_id: string;
+  parent_turn_id: string | null;
   created_at: number;
 };
 
@@ -88,6 +90,7 @@ function rowToRecord(row: AttachmentRow): StoredAttachmentRecord {
     active: row.active !== 0,
     audience: row.audience,
     created_turn_global: row.created_turn_global,
+    ordinal: row.ordinal,
     parent_entry_id: row.parent_entry_id as StreamEntryId,
     stream_entry_id: row.stream_entry_id as StreamEntryId | null,
     parent_turn_id: row.parent_turn_id,
@@ -103,6 +106,14 @@ export class AttachmentRepository {
       this.db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get("image_perception_artifacts") !== undefined
+    );
+  }
+
+  private hasStreamEntryIndexTable(): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get("stream_entry_index") !== undefined
     );
   }
 
@@ -146,10 +157,10 @@ export class AttachmentRepository {
         `INSERT INTO stream_attachments (
            attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
            thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-           active, audience, created_turn_global, parent_entry_id, stream_entry_id,
+           active, audience, created_turn_global, ordinal, parent_entry_id, stream_entry_id,
            parent_turn_id, created_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.attachment_id,
@@ -166,6 +177,7 @@ export class AttachmentRepository {
         record.active ? 1 : 0,
         record.audience,
         record.created_turn_global,
+        record.ordinal ?? 0,
         record.parent_entry_id,
         record.stream_entry_id,
         record.parent_turn_id,
@@ -176,10 +188,10 @@ export class AttachmentRepository {
   get(attachmentId: AttachmentId): StoredAttachmentRecord | null {
     const row = this.db
       .prepare(
-        `SELECT attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
+        `SELECT stream_attachments.attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
                 thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-                active, audience, created_turn_global, parent_entry_id, stream_entry_id,
-                parent_turn_id, created_at
+                stream_attachments.active, audience, created_turn_global, ordinal,
+                parent_entry_id, stream_entry_id, parent_turn_id, created_at
          FROM stream_attachments
          WHERE attachment_id = ?`,
       )
@@ -207,17 +219,35 @@ export class AttachmentRepository {
   }
 
   listByParentEntry(parentEntryId: StreamEntryId): StoredAttachmentRecord[] {
-    const rows = this.db
-      .prepare(
-        `SELECT attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
-                thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-                active, audience, created_turn_global, parent_entry_id, stream_entry_id,
-                parent_turn_id, created_at
-         FROM stream_attachments
-         WHERE parent_entry_id = ?
-         ORDER BY created_at ASC, attachment_id ASC`,
-      )
-      .all(parentEntryId) as AttachmentRow[];
+    const rows = this.hasStreamEntryIndexTable()
+      ? (this.db
+          .prepare(
+            `SELECT stream_attachments.attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
+                    thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
+                    stream_attachments.active, audience, created_turn_global, ordinal,
+                    parent_entry_id, stream_entry_id, parent_turn_id, created_at
+             FROM stream_attachments
+             LEFT JOIN stream_entry_index
+               ON stream_entry_index.entry_id = stream_attachments.stream_entry_id
+             WHERE stream_attachments.parent_entry_id = ?
+             ORDER BY stream_attachments.ordinal ASC,
+                      stream_entry_index.entry_index IS NULL ASC,
+                      stream_entry_index.entry_index ASC,
+                      stream_attachments.created_at ASC,
+                      stream_attachments.attachment_id ASC`,
+          )
+          .all(parentEntryId) as AttachmentRow[])
+      : (this.db
+          .prepare(
+            `SELECT attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
+                    thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
+                    active, audience, created_turn_global, ordinal, parent_entry_id, stream_entry_id,
+                    parent_turn_id, created_at
+             FROM stream_attachments
+             WHERE parent_entry_id = ?
+             ORDER BY ordinal ASC, created_at ASC, attachment_id ASC`,
+          )
+          .all(parentEntryId) as AttachmentRow[]);
 
     return rows.map(rowToRecord);
   }

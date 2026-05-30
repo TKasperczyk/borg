@@ -2,6 +2,7 @@ import type { ToolLoopCallRecord } from "../../turn-action/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionRepository,
   ImagePerceptionService,
   TurnInputAttachment,
 } from "../../../attachments/index.js";
@@ -133,7 +134,11 @@ export type TurnPhaseCoordinatorOptions = {
     | "quarantinedSharedStateArtifactRefs"
   >;
   attachmentService: AttachmentService;
-  attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
+  attachmentRepository: Pick<
+    AttachmentRepository,
+    "get" | "isActiveForStreamEntry" | "listByParentEntry"
+  >;
+  imagePerceptionRepository: Pick<ImagePerceptionRepository, "listByParentEntries">;
   imagePerceptionService?: ImagePerceptionService;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;

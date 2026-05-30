@@ -42,10 +42,8 @@ export type DrainResult = {
 export type ChatResponseCatchUpWorkerOptions = {
   coordinator: Pick<ChatResponseWatermarkCoordinator, "reconcile">;
   prefixBuilder: Pick<ChatResponseBacklogPrefixBuilder, "build">;
-  entryIndex: Pick<
-    StreamEntryIndexRepository,
-    "backfillSession" | "listSessionIdsWithPendingResponseBacklog"
-  >;
+  entryIndex: Pick<StreamEntryIndexRepository, "listSessionIdsWithPendingResponseBacklog">;
+  repairSessionStreamEntryIndex: (sessionId: SessionId) => Promise<unknown>;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   sessionsRepository: Pick<SessionsRepository, "count" | "list">;
   clock: Clock;
@@ -236,7 +234,7 @@ export class ChatResponseCatchUpWorker {
 
     try {
       if (repairOnly) {
-        await this.options.entryIndex.backfillSession(sessionId);
+        await this.options.repairSessionStreamEntryIndex(sessionId);
         state.backoffMs = null;
         this.markPending(sessionId, this.clock.now());
 

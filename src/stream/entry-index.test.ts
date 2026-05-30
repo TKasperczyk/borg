@@ -267,6 +267,7 @@ describe("stream entry index", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const otherSessionId = createSessionId();
+    const receiptOnlySessionId = createSessionId();
     const db = openDatabase(join(tempDir, "borg.db"), {
       migrations: [...streamEntryIndexMigrations],
     });
@@ -286,11 +287,22 @@ describe("stream entry index", () => {
       clock,
       entryIndex,
     });
+    const receiptOnlyWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: receiptOnlySessionId,
+      clock,
+      entryIndex,
+    });
 
     try {
       const pending = await writer.append({
         kind: "user_msg",
         content: "pending",
+      });
+      const receiptPending = await receiptOnlyWriter.append({
+        kind: "user_msg",
+        content: "waiting for image receipt",
+        receipt_pending: true,
       });
       await writer.append({
         kind: "user_msg",
@@ -311,11 +323,57 @@ describe("stream entry index", () => {
       );
 
       expect(new Set(entryIndex.listSessionIdsWithPendingResponseBacklog())).toEqual(
-        new Set([pending.session_id, otherSessionId]),
+        new Set([pending.session_id, otherSessionId, receiptOnlySessionId]),
+      );
+      expect(entryIndex.lookup(receiptPending.id)?.receipt_pending).toBe(true);
+
+      entryIndex.setReceiptPending(receiptPending.id, false);
+
+      expect(new Set(entryIndex.listSessionIdsWithPendingResponseBacklog())).toEqual(
+        new Set([pending.session_id, otherSessionId, receiptOnlySessionId]),
       );
     } finally {
       writer.close();
       otherWriter.close();
+      receiptOnlyWriter.close();
+      db.close();
+    }
+  });
+
+  it("preserves a cleared receipt-pending flag during stream backfill", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const entry = await writer.append({
+        kind: "user_msg",
+        content: "image receipt started",
+        receipt_pending: true,
+      });
+
+      entryIndex.setReceiptPending(entry.id, false);
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+
+      expect(entryIndex.lookup(entry.id)?.receipt_pending).toBe(false);
+
+      db.prepare("DELETE FROM stream_entry_index WHERE entry_id = ?").run(entry.id);
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+
+      expect(entryIndex.lookup(entry.id)?.receipt_pending).toBe(true);
+    } finally {
+      writer.close();
       db.close();
     }
   });

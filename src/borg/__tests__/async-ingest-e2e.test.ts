@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AttachmentBlobStore, type AttachmentService } from "../../attachments/index.js";
 import type { MessageConnector } from "../../outbound/index.js";
 import {
   ABORTED_TURN_EVENT,
@@ -30,6 +31,10 @@ const TERMINAL_KINDS = new Set<StreamEntry["kind"]>([
   "agent_suppressed",
   "agent_observed",
 ]);
+const GIF_1X1 = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+const GIF_1X1_ALT = Uint8Array.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x21,
+]);
 
 type HarnessBorgInternals = {
   deps: {
@@ -39,6 +44,15 @@ type HarnessBorgInternals = {
     };
     createStreamWriter(sessionId: SessionId): StreamWriter;
     entryIndex: StreamEntryIndexRepository;
+    messageEnqueuer: {
+      options: {
+        attachmentService: {
+          persistParentEntryAttachments: (
+            input: Parameters<AttachmentService["persistParentEntryAttachments"]>[0],
+          ) => ReturnType<AttachmentService["persistParentEntryAttachments"]>;
+        };
+      };
+    };
     outboundDelivery: {
       deliver(input: {
         session: NonNullable<ReturnType<Borg["sessions"]["get"]>>;
@@ -62,6 +76,63 @@ function finalizerRequests(llm: FakeLLMClient) {
   );
 }
 
+function imagePerceptionRequests(llm: FakeLLMClient) {
+  return llm.requests.filter((request) => request.budget === "image-perception");
+}
+
+function requestTextMessages(request: ReturnType<typeof finalizerRequests>[number] | undefined) {
+  return request?.messages.map((message) => message.content) ?? [];
+}
+
+function createImagePerceptionResponse(
+  input: {
+    caption?: string;
+    visibleText?: readonly string[];
+    searchTerms?: readonly string[];
+  } = {},
+) {
+  return {
+    messageBlocks: [
+      {
+        type: "tool_use" as const,
+        id: "toolu_image",
+        name: "EmitImagePerception",
+        input: {
+          caption: input.caption ?? "small test image",
+          image_kind: "other",
+          visible_text: [...(input.visibleText ?? [])],
+          objects: [],
+          people_or_roles: [],
+          scene: "test fixture",
+          colors_and_visual_attributes: [],
+          spatial_relationships: [],
+          possible_user_relevant_details: [],
+          search_terms: [...(input.searchTerms ?? ["test image"])],
+          uncertainties: [],
+        },
+      },
+    ],
+    input_tokens: 4,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+  };
+}
+
+function deferred<T = void>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return {
+    promise,
+    resolve,
+    reject,
+  };
+}
+
 function terminalEntries(borg: Borg, sessionId: SessionId): StreamEntry[] {
   return borg.stream
     .tail(200, { session: sessionId })
@@ -83,6 +154,28 @@ function abortedTurnEntries(borg: Borg, sessionId: SessionId): StreamEntry[] {
 
 function userEntries(borg: Borg, sessionId: SessionId): StreamEntry[] {
   return borg.stream.tail(200, { session: sessionId }).filter((entry) => entry.kind === "user_msg");
+}
+
+function imageAttachmentEntries(borg: Borg, sessionId: SessionId): StreamEntry[] {
+  return borg.stream
+    .tail(200, { session: sessionId })
+    .filter((entry) => entry.kind === "user_image_attachment");
+}
+
+async function waitForTerminalCount(input: {
+  borg: Borg;
+  sessionId: SessionId;
+  count: number;
+}): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (terminalEntries(input.borg, input.sessionId).length === input.count) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  expect(terminalEntries(input.borg, input.sessionId)).toHaveLength(input.count);
 }
 
 function cursorFor(entry: Pick<StreamEntry, "id" | "timestamp">): StreamCursor {
@@ -309,6 +402,520 @@ describe("async ingest Borg E2E crash and duplicate matrix", () => {
         internal.deps.chatResponseWatermarkCoordinator.getWatermark(session.session_id),
       ).toEqual(stamp.through_cursor_inclusive);
       expect(finalizerRequests(llm)).toHaveLength(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("startup scan crash-replays a fully received image message without re-running perception", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-image-reopen-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_000_500);
+    const session = createConversationHarness({ externalId: "image-restart-queue" });
+    const enqueueLlm = new FakeLLMClient({
+      responses: [
+        createImagePerceptionResponse({
+          caption: "receipt-time image caption",
+          visibleText: ["receipt visible text"],
+          searchTerms: ["receipt image"],
+        }),
+      ],
+    });
+    let borg = await openHarness({ tempDir, clock, llm: enqueueLlm });
+
+    try {
+      const senderEntityId = borg.entities.resolve("Sender");
+
+      await borg.enqueueMessage({
+        session,
+        userMessage: "queued image before crash",
+        senderEntityId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: session.source_external_id,
+          external_message_id: "image-before-drain",
+        },
+        arrivedAt: clock.now(),
+        attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+      });
+
+      const [source] = userEntries(borg, session.session_id);
+      const internal = borgInternals<HarnessBorgInternals>(borg);
+
+      if (source === undefined) {
+        throw new Error("expected queued image source entry");
+      }
+
+      expect(imageAttachmentEntries(borg, session.session_id)).toHaveLength(1);
+      expect(internal.deps.entryIndex.lookup(source.id)?.receipt_pending).toBe(false);
+      expect(terminalEntries(borg, session.session_id)).toHaveLength(0);
+      expect(imagePerceptionRequests(enqueueLlm)).toHaveLength(1);
+
+      await borg.close();
+
+      const replayLlm = new FakeLLMClient({
+        responses: [
+          createEmitAnswerResponse("answer after image restart"),
+          createEmptyReflectionResponse(),
+        ],
+      });
+      borg = await openHarness({ tempDir, clock, llm: replayLlm });
+      borg.inbox.catchUp.start();
+      await waitForTerminalCount({ borg, sessionId: session.session_id, count: 1 });
+
+      const terminals = terminalEntries(borg, session.session_id);
+      const stamp = responseToFor([source]);
+      const reopenedInternal = borgInternals<HarnessBorgInternals>(borg);
+      const finalizerPrompt = requestTextMessages(finalizerRequests(replayLlm).at(0)).join("\n");
+
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        kind: "agent_msg",
+        content: "answer after image restart",
+        response_to: stamp,
+      });
+      expect(finalizerPrompt).toContain('<attachments count="1">');
+      expect(finalizerPrompt).toContain("receipt-time image caption");
+      expect(finalizerPrompt).toContain("receipt visible text");
+      expect(
+        reopenedInternal.deps.chatResponseWatermarkCoordinator.getWatermark(session.session_id),
+      ).toEqual(stamp.through_cursor_inclusive);
+      expect(finalizerRequests(replayLlm)).toHaveLength(1);
+      expect(imagePerceptionRequests(replayLlm)).toHaveLength(0);
+      expect(imagePerceptionRequests(enqueueLlm)).toHaveLength(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("does not drain an image enqueue until receipt persistence clears readiness", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-receipt-window-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_001_000);
+    const session = createConversationHarness({ externalId: "receipt-window" });
+    const llm = new FakeLLMClient({
+      responses: [
+        createImagePerceptionResponse(),
+        createEmitAnswerResponse("answer after image receipt"),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openHarness({ tempDir, clock, llm });
+
+    try {
+      const senderEntityId = borg.entities.resolve("Sender");
+      const internal = borgInternals<HarnessBorgInternals>(borg);
+      const originalPersist =
+        internal.deps.messageEnqueuer.options.attachmentService.persistParentEntryAttachments.bind(
+          internal.deps.messageEnqueuer.options.attachmentService,
+        );
+      const persistStarted = deferred<void>();
+      const releasePersistence = deferred<void>();
+
+      internal.deps.messageEnqueuer.options.attachmentService.persistParentEntryAttachments = vi.fn(
+        async (input) => {
+          persistStarted.resolve();
+          await releasePersistence.promise;
+          return originalPersist(input);
+        },
+      );
+
+      borg.inbox.catchUp.start();
+      const enqueue = borg.enqueueMessage({
+        session,
+        userMessage: "queued image message",
+        senderEntityId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: session.source_external_id,
+          external_message_id: "image-message",
+        },
+        arrivedAt: clock.now(),
+        attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+      });
+
+      await persistStarted.promise;
+      const [source] = userEntries(borg, session.session_id);
+
+      if (source === undefined) {
+        throw new Error("expected queued source entry");
+      }
+
+      expect(internal.deps.entryIndex.lookup(source.id)?.receipt_pending).toBe(true);
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "empty",
+        drained: 0,
+        hasMore: false,
+      });
+      expect(terminalEntries(borg, session.session_id)).toHaveLength(0);
+      expect(finalizerRequests(llm)).toHaveLength(0);
+
+      releasePersistence.resolve();
+      await expect(enqueue).resolves.toMatchObject({
+        status: "enqueued",
+        streamEntryId: source.id,
+      });
+      expect(internal.deps.entryIndex.lookup(source.id)?.receipt_pending).toBe(false);
+
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "drained",
+        drained: 1,
+        hasMore: false,
+      });
+
+      const terminals = terminalEntries(borg, session.session_id);
+      const finalizerPrompt = requestTextMessages(finalizerRequests(llm).at(0)).join("\n");
+
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        kind: "agent_msg",
+        content: "answer after image receipt",
+        response_to: responseToFor([source]),
+      });
+      expect(finalizerPrompt).toContain('<attachments count="1">');
+      expect(finalizerPrompt).toContain("small test image");
+      expect(finalizerRequests(llm)).toHaveLength(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("skips a receipt-pending image message on reopen until redelivery completes the receipt", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-receipt-pending-reopen-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_002_000);
+    const session = createConversationHarness({ externalId: "receipt-pending-reopen" });
+    const sourceMessageKey = {
+      source_type: "demo" as const,
+      source_external_id: session.source_external_id,
+      external_message_id: "image-redelivery",
+    };
+    let borg = await openHarness({ tempDir, clock, llm: new FakeLLMClient() });
+
+    try {
+      const senderEntityId = borg.entities.resolve("Sender");
+
+      borg.sessions.ensure(session);
+      await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "crashed before image receipt",
+          sender_entity_id: senderEntityId,
+          source_message_key: sourceMessageKey,
+          receipt_pending: true,
+        },
+        { session: session.session_id },
+      );
+      const [source] = userEntries(borg, session.session_id);
+
+      if (source === undefined) {
+        throw new Error("expected queued source entry");
+      }
+
+      await borg.close();
+
+      const llm = new FakeLLMClient({
+        responses: [
+          createImagePerceptionResponse(),
+          createEmitAnswerResponse("answer after image redelivery"),
+          createEmptyReflectionResponse(),
+        ],
+      });
+      borg = await openHarness({ tempDir, clock, llm });
+      const internal = borgInternals<HarnessBorgInternals>(borg);
+
+      borg.inbox.catchUp.start();
+      await Promise.resolve();
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "empty",
+        drained: 0,
+        hasMore: false,
+      });
+      expect(terminalEntries(borg, session.session_id)).toHaveLength(0);
+      expect(finalizerRequests(llm)).toHaveLength(0);
+      expect(imagePerceptionRequests(llm)).toHaveLength(0);
+      expect(internal.deps.entryIndex.lookup(source.id)?.receipt_pending).toBe(true);
+
+      await expect(
+        borg.enqueueMessage({
+          session,
+          userMessage: "redelivered with image",
+          senderEntityId,
+          sourceMessageKey,
+          arrivedAt: clock.now(),
+          attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+        }),
+      ).resolves.toEqual({
+        status: "duplicate",
+        sessionId: session.session_id,
+        streamEntryId: source.id,
+      });
+      expect(internal.deps.entryIndex.lookup(source.id)?.receipt_pending).toBe(false);
+      expect(imagePerceptionRequests(llm)).toHaveLength(1);
+
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "drained",
+        drained: 1,
+        hasMore: false,
+      });
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "empty",
+        drained: 0,
+        hasMore: false,
+      });
+
+      const terminals = terminalEntries(borg, session.session_id);
+      const finalizerPrompt = requestTextMessages(finalizerRequests(llm).at(0)).join("\n");
+
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        kind: "agent_msg",
+        content: "answer after image redelivery",
+        response_to: responseToFor([source]),
+      });
+      expect(finalizerPrompt).toContain('<attachments count="1">');
+      expect(finalizerPrompt).toContain("small test image");
+      expect(finalizerRequests(llm)).toHaveLength(1);
+      expect(imagePerceptionRequests(llm)).toHaveLength(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("dedupes a completed image enqueue without rewriting blobs or re-running perception", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-image-duplicate-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_003_000);
+    const session = createConversationHarness({ externalId: "image-duplicate" });
+    const llm = new FakeLLMClient({
+      responses: [createImagePerceptionResponse()],
+    });
+    const blobWrite = vi.spyOn(AttachmentBlobStore.prototype, "write");
+    const borg = await openHarness({ tempDir, clock, llm });
+
+    try {
+      const senderEntityId = borg.entities.resolve("Sender");
+      const sourceMessageKey = {
+        source_type: "demo" as const,
+        source_external_id: session.source_external_id,
+        external_message_id: "image-duplicate-key",
+      };
+      const first = await borg.enqueueMessage({
+        session,
+        userMessage: "first image delivery",
+        senderEntityId,
+        sourceMessageKey,
+        arrivedAt: clock.now(),
+        attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+      });
+      const writesAfterFirst = blobWrite.mock.calls.length;
+      const perceptionCallsAfterFirst = imagePerceptionRequests(llm).length;
+      const imageEntriesAfterFirst = imageAttachmentEntries(borg, session.session_id).length;
+
+      expect(first.status).toBe("enqueued");
+      expect(writesAfterFirst).toBe(1);
+      expect(perceptionCallsAfterFirst).toBe(1);
+      expect(imageEntriesAfterFirst).toBe(1);
+
+      await expect(
+        borg.enqueueMessage({
+          session,
+          userMessage: "duplicate image delivery",
+          senderEntityId,
+          sourceMessageKey,
+          arrivedAt: clock.now(),
+          attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+        }),
+      ).resolves.toEqual({
+        status: "duplicate",
+        sessionId: session.session_id,
+        streamEntryId: first.streamEntryId,
+      });
+
+      expect(blobWrite).toHaveBeenCalledTimes(writesAfterFirst);
+      expect(imagePerceptionRequests(llm)).toHaveLength(perceptionCallsAfterFirst);
+      expect(imageAttachmentEntries(borg, session.session_id)).toHaveLength(imageEntriesAfterFirst);
+      expect(userEntries(borg, session.session_id)).toHaveLength(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("coalesces two image messages into one ordered batch with per-message perceptions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-image-coalesce-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_004_000);
+    const session = createConversationHarness({ externalId: "image-coalesce" });
+    const llm = new FakeLLMClient({
+      responses: [
+        createImagePerceptionResponse({
+          caption: "first message image caption",
+          visibleText: ["first message visible text"],
+          searchTerms: ["first image"],
+        }),
+        createImagePerceptionResponse({
+          caption: "second message image caption",
+          visibleText: ["second message visible text"],
+          searchTerms: ["second image"],
+        }),
+        createEmitAnswerResponse("answer after two image messages"),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openHarness({ tempDir, clock, llm });
+
+    try {
+      const senderA = borg.entities.resolve("Sender A");
+      const senderB = borg.entities.resolve("Sender B");
+
+      await borg.enqueueMessage({
+        session,
+        userMessage: "first image message",
+        senderEntityId: senderA,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: session.source_external_id,
+          external_message_id: "image-coalesce-1",
+        },
+        arrivedAt: clock.now(),
+        attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+      });
+      clock.advance(10);
+      await borg.enqueueMessage({
+        session,
+        userMessage: "second image message",
+        senderEntityId: senderB,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: session.source_external_id,
+          external_message_id: "image-coalesce-2",
+        },
+        arrivedAt: clock.now(),
+        attachments: [{ mediaType: "image/gif", bytes: GIF_1X1_ALT }],
+      });
+
+      const users = userEntries(borg, session.session_id);
+
+      expect(users).toHaveLength(2);
+      expect(imageAttachmentEntries(borg, session.session_id)).toHaveLength(2);
+      expect(imagePerceptionRequests(llm)).toHaveLength(2);
+
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "drained",
+        drained: 2,
+        hasMore: false,
+      });
+
+      const terminals = terminalEntries(borg, session.session_id);
+      const stamp = responseToFor(users);
+      const finalizerPrompt = requestTextMessages(finalizerRequests(llm).at(0)).join("\n");
+      const firstMessageOffset = finalizerPrompt.indexOf("first image message");
+      const secondMessageOffset = finalizerPrompt.indexOf("second image message");
+      const firstCaptionOffset = finalizerPrompt.indexOf("first message image caption");
+      const secondCaptionOffset = finalizerPrompt.indexOf("second message image caption");
+
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        kind: "agent_msg",
+        content: "answer after two image messages",
+        response_to: stamp,
+      });
+      expect(terminals[0]?.response_to).toMatchObject({
+        kind: "stream_backlog",
+        source_entry_ids: users.map((entry) => entry.id),
+        count: 2,
+      });
+      expect(firstMessageOffset).toBeGreaterThanOrEqual(0);
+      expect(secondMessageOffset).toBeGreaterThan(firstMessageOffset);
+      expect(firstCaptionOffset).toBeGreaterThan(firstMessageOffset);
+      expect(firstCaptionOffset).toBeLessThan(secondMessageOffset);
+      expect(secondCaptionOffset).toBeGreaterThan(secondMessageOffset);
+      expect(finalizerPrompt).toContain("first message visible text");
+      expect(finalizerPrompt).toContain("second message visible text");
+      expect(finalizerRequests(llm)).toHaveLength(1);
+      expect(imagePerceptionRequests(llm)).toHaveLength(2);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("renders multiple images from one async message in provided order after reload", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-image-order-reload-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_900_000_004_500);
+    const session = createConversationHarness({ externalId: "image-order-reload" });
+    const enqueueLlm = new FakeLLMClient({
+      responses: [
+        createImagePerceptionResponse({
+          caption: "first provided image caption",
+          searchTerms: ["first provided image"],
+        }),
+        createImagePerceptionResponse({
+          caption: "second provided image caption",
+          searchTerms: ["second provided image"],
+        }),
+      ],
+    });
+    let borg = await openHarness({ tempDir, clock, llm: enqueueLlm });
+
+    try {
+      const senderEntityId = borg.entities.resolve("Sender");
+
+      await borg.enqueueMessage({
+        session,
+        userMessage: "one message with two images",
+        senderEntityId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: session.source_external_id,
+          external_message_id: "two-images-one-message",
+        },
+        arrivedAt: clock.now(),
+        attachments: [
+          { mediaType: "image/gif", bytes: GIF_1X1 },
+          { mediaType: "image/gif", bytes: GIF_1X1_ALT },
+        ],
+      });
+
+      const [source] = userEntries(borg, session.session_id);
+
+      if (source === undefined) {
+        throw new Error("expected queued source entry");
+      }
+
+      expect(imageAttachmentEntries(borg, session.session_id)).toHaveLength(2);
+      expect(imagePerceptionRequests(enqueueLlm)).toHaveLength(2);
+
+      await borg.close();
+
+      const replayLlm = new FakeLLMClient({
+        responses: [
+          createEmitAnswerResponse("answer after ordered image reload"),
+          createEmptyReflectionResponse(),
+        ],
+      });
+      borg = await openHarness({ tempDir, clock, llm: replayLlm });
+
+      await expect(borg.inbox.catchUp.tick(session.session_id)).resolves.toMatchObject({
+        status: "drained",
+        drained: 1,
+        hasMore: false,
+      });
+
+      const finalizerPrompt = requestTextMessages(finalizerRequests(replayLlm).at(0)).join("\n");
+      const firstAttachmentOffset = finalizerPrompt.indexOf('<attachment index="1"');
+      const secondAttachmentOffset = finalizerPrompt.indexOf('<attachment index="2"');
+      const firstCaptionOffset = finalizerPrompt.indexOf("first provided image caption");
+      const secondCaptionOffset = finalizerPrompt.indexOf("second provided image caption");
+
+      expect(terminalEntries(borg, session.session_id)).toHaveLength(1);
+      expect(firstAttachmentOffset).toBeGreaterThanOrEqual(0);
+      expect(secondAttachmentOffset).toBeGreaterThan(firstAttachmentOffset);
+      expect(firstCaptionOffset).toBeGreaterThan(firstAttachmentOffset);
+      expect(firstCaptionOffset).toBeLessThan(secondAttachmentOffset);
+      expect(secondCaptionOffset).toBeGreaterThan(secondAttachmentOffset);
+      expect(finalizerRequests(replayLlm)).toHaveLength(1);
+      expect(imagePerceptionRequests(replayLlm)).toHaveLength(0);
     } finally {
       await borg.close().catch(() => undefined);
     }

@@ -67,7 +67,10 @@ import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgDependencies, BorgStreamWriterFactory } from "./types.js";
-import { backfillStreamEntryIndex } from "./reconciliation.js";
+import {
+  backfillSessionStreamEntryIndexAndAttachments,
+  backfillStreamEntryIndex,
+} from "./reconciliation.js";
 
 export type BorgRepositorySetup = Pick<
   BorgDependencies,
@@ -112,6 +115,7 @@ export type BorgRepositorySetup = Pick<
   | "promptOverrideRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
+  createNonNotifyingStreamWriter: BorgStreamWriterFactory;
 };
 
 export type BuildBorgRepositoriesOptions = {
@@ -170,6 +174,13 @@ export async function buildBorgRepositories(
     entryIndex,
     attachmentRepository: options.attachmentRepository,
   });
+  const repairSessionStreamEntryIndex = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
+    backfillSessionStreamEntryIndexAndAttachments({
+      dataDir: config.dataDir,
+      sessionId,
+      entryIndex,
+      attachmentRepository: options.attachmentRepository,
+    });
 
   const createStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
     new StreamWriter({
@@ -177,7 +188,16 @@ export async function buildBorgRepositories(
       sessionId,
       clock,
       entryIndex,
+      repairSession: repairSessionStreamEntryIndex,
       onAppend: options.onStreamAppend,
+    });
+  const createNonNotifyingStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
+    new StreamWriter({
+      dataDir: config.dataDir,
+      sessionId,
+      clock,
+      entryIndex,
+      repairSession: repairSessionStreamEntryIndex,
     });
   const createDefaultStreamWriter = () => createStreamWriter(DEFAULT_SESSION_ID);
   let reviewQueueRepository: ReviewQueueRepository | undefined;
@@ -504,5 +524,6 @@ export async function buildBorgRepositories(
     imagePerceptionRepository,
     promptOverrideRepository,
     createStreamWriter,
+    createNonNotifyingStreamWriter,
   };
 }

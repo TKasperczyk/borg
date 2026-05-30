@@ -37,6 +37,7 @@ export type StreamWriterOptions = {
   lockTimeoutMs?: number;
   lockRetryDelayMs?: number;
   entryIndex?: StreamEntryIndexRepository;
+  repairSession?: (sessionId: SessionId) => Promise<unknown>;
   onAppend?: (entries: readonly StreamEntry[]) => void;
 };
 
@@ -48,6 +49,7 @@ export class StreamWriter {
   private readonly lockTimeoutMs: number;
   private readonly lockRetryDelayMs: number;
   private readonly entryIndex?: StreamEntryIndexRepository;
+  private readonly repairSession?: (sessionId: SessionId) => Promise<unknown>;
   private readonly onAppend?: (entries: readonly StreamEntry[]) => void;
   private closed = false;
 
@@ -59,6 +61,11 @@ export class StreamWriter {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 2_000;
     this.lockRetryDelayMs = options.lockRetryDelayMs ?? 20;
     this.entryIndex = options.entryIndex;
+    this.repairSession =
+      options.repairSession ??
+      (this.entryIndex === undefined
+        ? undefined
+        : async (sessionId) => this.entryIndex?.backfillSession(sessionId));
     this.onAppend = options.onAppend;
   }
 
@@ -125,12 +132,12 @@ export class StreamWriter {
   }
 
   private async repairPoisonedSessionBeforeAppend(streamPath: string): Promise<void> {
-    if (this.entryIndex === undefined) {
+    if (this.entryIndex === undefined || this.repairSession === undefined) {
       return;
     }
 
     try {
-      await this.entryIndex.backfillSession(this.sessionId);
+      await this.repairSession(this.sessionId);
     } catch (repairError) {
       this.logger.error("Failed to repair poisoned stream entry index before append", {
         streamPath,
@@ -215,7 +222,7 @@ export class StreamWriter {
               });
 
               try {
-                await this.entryIndex.backfillSession(this.sessionId);
+                await this.repairSession?.(this.sessionId);
               } catch (repairError) {
                 this.logger.error("Failed to repair stream entry index after committed append", {
                   streamPath,

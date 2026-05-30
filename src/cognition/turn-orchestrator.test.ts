@@ -15,6 +15,11 @@ import {
   type LLMCompleteResult,
 } from "../index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import type {
+  ImageKind,
+  ImagePerceptionRecord,
+  StoredAttachmentRecord,
+} from "../attachments/index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
@@ -38,12 +43,16 @@ import type { Config } from "../config/index.js";
 import { StreamReader, StreamWriter, type StreamEntry } from "../stream/index.js";
 import {
   DEFAULT_SESSION_ID,
+  createAttachmentId,
   createEpisodeId,
   createGoalId,
+  createImagePerceptionId,
   createSessionId,
   createStreamEntryId,
+  type AttachmentId,
   type EntityId,
   type EpisodeId,
+  type ImagePerceptionId,
 } from "../util/ids.js";
 import { CognitionError, SessionBusyError } from "../util/errors.js";
 import type { SessionLock } from "./session-lock.js";
@@ -1183,6 +1192,129 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
       .map(inboundBatchEntryFromStream);
   }
 
+  function storedAttachment(input: {
+    attachmentId: AttachmentId;
+    parentEntryId: StreamEntry["id"];
+    mediaType: StoredAttachmentRecord["media_type"];
+    width: number;
+    height: number;
+    createdAt: number;
+  }): StoredAttachmentRecord {
+    return {
+      attachment_id: input.attachmentId,
+      sha256: `${input.attachmentId}-sha256`,
+      media_type: input.mediaType,
+      byte_size: 128,
+      width: input.width,
+      height: input.height,
+      storage_ref: `attachments/${input.attachmentId}`,
+      thumbnail_ref: null,
+      perception_id: null,
+      text_embedding_ref: null,
+      visual_embedding_ref: null,
+      active: true,
+      audience: null,
+      created_turn_global: null,
+      parent_entry_id: input.parentEntryId,
+      stream_entry_id: null,
+      parent_turn_id: null,
+      created_at: input.createdAt,
+    };
+  }
+
+  function storedImagePerception(input: {
+    perceptionId: ImagePerceptionId;
+    payloadId: ImagePerceptionId;
+    attachment: StoredAttachmentRecord;
+    caption: string;
+    imageKind: ImageKind;
+    visibleText?: readonly string[];
+    searchTerms?: readonly string[];
+  }): ImagePerceptionRecord {
+    const visibleText = input.visibleText ?? [];
+    const searchTerms = input.searchTerms ?? [];
+
+    return {
+      perception_id: input.perceptionId,
+      payload_id: input.payloadId,
+      attachment_id: input.attachment.attachment_id,
+      parent_entry_id: input.attachment.parent_entry_id,
+      parent_turn_id: null,
+      stream_entry_id: null,
+      sha256: input.attachment.sha256,
+      media_type: input.attachment.media_type,
+      perception_prompt_version: "test-prompt",
+      model: "test-image-perception",
+      audience: null,
+      active: true,
+      created_turn_global: null,
+      created_at: input.attachment.created_at + 1,
+      text_embedding_ref: null,
+      embedding_text: [input.caption, input.imageKind, ...visibleText, ...searchTerms].join("\n"),
+      embedding_status: "pending",
+      caption: input.caption,
+      image_kind: input.imageKind,
+      visible_text: [...visibleText],
+      objects: [],
+      people_or_roles: [],
+      scene: "",
+      colors_and_visual_attributes: [],
+      spatial_relationships: [],
+      possible_user_relevant_details: [],
+      search_terms: [...searchTerms],
+      uncertainties: [],
+    };
+  }
+
+  function insertStoredImagePerception(
+    borg: Borg,
+    input: {
+      parentEntryId: StreamEntry["id"];
+      mediaType: StoredAttachmentRecord["media_type"];
+      width: number;
+      height: number;
+      createdAt: number;
+      caption: string;
+      imageKind: ImageKind;
+      visibleText?: readonly string[];
+      searchTerms?: readonly string[];
+    },
+  ) {
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "attachmentRepository" | "imagePerceptionRepository">;
+    };
+    const attachment = storedAttachment({
+      attachmentId: createAttachmentId(),
+      parentEntryId: input.parentEntryId,
+      mediaType: input.mediaType,
+      width: input.width,
+      height: input.height,
+      createdAt: input.createdAt,
+    });
+    const perception = storedImagePerception({
+      perceptionId: createImagePerceptionId(),
+      payloadId: createImagePerceptionId(),
+      attachment,
+      caption: input.caption,
+      imageKind: input.imageKind,
+      visibleText: input.visibleText,
+      searchTerms: input.searchTerms,
+    });
+
+    internal.deps.attachmentRepository.insert(attachment);
+    const canonical =
+      internal.deps.imagePerceptionRepository.insertPayloadAndUpsertArtifact(perception).record;
+    internal.deps.attachmentRepository.setPerceptionRefs(attachment.attachment_id, {
+      perceptionId: canonical.perception_id,
+      textEmbeddingRef: canonical.text_embedding_ref,
+    });
+
+    return {
+      attachment,
+      perception: canonical,
+    };
+  }
+
   it("uses try acquisition for user-origin catch-up when lockMode requests it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-try-lock-"));
     tempDirs.push(tempDir);
@@ -1368,6 +1500,109 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
         entries[1]!.id,
         agentEntry?.id,
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("hydrates stored image perceptions into the catch-up batch without re-perceiving images", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-image-hydration-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_301_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Caught up with images."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+      const firstImage = insertStoredImagePerception(borg, {
+        parentEntryId: entries[0]!.id,
+        mediaType: "image/png",
+        width: 640,
+        height: 480,
+        createdAt: clock.now() + 1,
+        caption: "first stored perception",
+        imageKind: "screenshot",
+        visibleText: ["first visible text"],
+        searchTerms: ["first search"],
+      });
+      const secondImage = insertStoredImagePerception(borg, {
+        parentEntryId: entries[1]!.id,
+        mediaType: "image/jpeg",
+        width: 320,
+        height: 240,
+        createdAt: clock.now() + 2,
+        caption: "second stored perception",
+        imageKind: "photo",
+        visibleText: ["second visible text"],
+        searchTerms: ["second search"],
+      });
+      const thirdImage = insertStoredImagePerception(borg, {
+        parentEntryId: entries[1]!.id,
+        mediaType: "image/webp",
+        width: 160,
+        height: 120,
+        createdAt: clock.now() + 3,
+        caption: "third stored perception",
+        imageKind: "diagram",
+        visibleText: ["third visible text"],
+        searchTerms: ["third search"],
+      });
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              imagePerceptionService?: {
+                perceiveAttachment(input: unknown): Promise<unknown>;
+              };
+            };
+          };
+        };
+      };
+      const perceiveAttachment = vi.fn(async () => null);
+
+      if (internal.deps.turnOrchestrator.options.imagePerceptionService !== undefined) {
+        internal.deps.turnOrchestrator.options.imagePerceptionService.perceiveAttachment =
+          perceiveAttachment;
+      }
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const finalizerPrompt = requestTextMessages(firstFinalizerRequest(llm.requests)).join("\n");
+      const firstMessageOffset = finalizerPrompt.indexOf("first pending message");
+      const secondMessageOffset = finalizerPrompt.indexOf("second pending message");
+      const firstImageOffset = finalizerPrompt.indexOf(firstImage.perception.caption);
+      const secondImageOffset = finalizerPrompt.indexOf(secondImage.perception.caption);
+      const thirdImageOffset = finalizerPrompt.indexOf(thirdImage.perception.caption);
+
+      expect(firstMessageOffset).toBeGreaterThanOrEqual(0);
+      expect(secondMessageOffset).toBeGreaterThan(firstMessageOffset);
+      expect(firstImageOffset).toBeGreaterThan(firstMessageOffset);
+      expect(firstImageOffset).toBeLessThan(secondMessageOffset);
+      expect(secondImageOffset).toBeGreaterThan(secondMessageOffset);
+      expect(thirdImageOffset).toBeGreaterThan(secondImageOffset);
+      expect(finalizerPrompt).toContain(
+        `<attachment index="1" kind="image" attachment_id="${firstImage.attachment.attachment_id}"`,
+      );
+      expect(finalizerPrompt).toContain(
+        `<attachment index="1" kind="image" attachment_id="${secondImage.attachment.attachment_id}"`,
+      );
+      expect(finalizerPrompt).toContain(
+        `<attachment index="2" kind="image" attachment_id="${thirdImage.attachment.attachment_id}"`,
+      );
+      expect(finalizerPrompt).toContain(
+        `<perception status="available" perception_id="${firstImage.perception.perception_id}">`,
+      );
+      expect(finalizerPrompt).not.toContain("image_ref");
+      expect(perceiveAttachment).not.toHaveBeenCalled();
     } finally {
       await borg.close();
     }

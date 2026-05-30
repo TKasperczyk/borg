@@ -59,7 +59,7 @@ export type ImagePerceptionRecord = ImagePerceptionArtifact & {
   payload_id: ImagePerceptionId;
   attachment_id: AttachmentId;
   parent_entry_id: StreamEntryId;
-  parent_turn_id: string;
+  parent_turn_id: string | null;
   stream_entry_id: StreamEntryId | null;
   sha256: string;
   media_type: ImageMediaType;
@@ -95,7 +95,7 @@ type ImagePerceptionRow = {
   payload_id: string;
   attachment_id: string;
   parent_entry_id: string;
-  parent_turn_id: string;
+  parent_turn_id: string | null;
   stream_entry_id: string | null;
   sha256: string;
   media_type: string;
@@ -191,7 +191,7 @@ export const imagePerceptionMigrations: Migration[] = [
         attachment_id TEXT NOT NULL,
         payload_id TEXT NOT NULL,
         parent_entry_id TEXT NOT NULL,
-        parent_turn_id TEXT NOT NULL,
+        parent_turn_id TEXT NULL,
         stream_entry_id TEXT NULL,
         audience TEXT NULL,
         active INTEGER NOT NULL DEFAULT 1,
@@ -203,6 +203,8 @@ export const imagePerceptionMigrations: Migration[] = [
       ON image_perception_artifacts(active, audience);
         CREATE INDEX idx_image_perception_attachment
       ON image_perception_artifacts(attachment_id);
+        CREATE INDEX idx_image_perception_parent_entry
+      ON image_perception_artifacts(parent_entry_id);
         CREATE INDEX idx_image_perception_payload
       ON image_perception_artifacts(payload_id);
       `);
@@ -451,6 +453,50 @@ export class ImagePerceptionRepository {
       .get(perceptionId) as ImagePerceptionRow | undefined;
 
     return row === undefined ? null : rowToRecord(row);
+  }
+
+  listByParentEntry(parentEntryId: StreamEntryId): ImagePerceptionRecord[] {
+    return this.listByParentEntries([parentEntryId]).get(parentEntryId) ?? [];
+  }
+
+  listByParentEntries(
+    parentEntryIds: readonly StreamEntryId[],
+  ): Map<StreamEntryId, ImagePerceptionRecord[]> {
+    if (parentEntryIds.length === 0) {
+      return new Map();
+    }
+
+    const uniqueParentEntryIds = [...new Set(parentEntryIds)];
+    const placeholders = uniqueParentEntryIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT artifacts.artifact_id, artifacts.attachment_id, artifacts.payload_id,
+                artifacts.parent_entry_id, artifacts.parent_turn_id, artifacts.stream_entry_id,
+                artifacts.audience, artifacts.active, artifacts.created_turn_global,
+                artifacts.created_at, payloads.sha256, payloads.media_type,
+                payloads.perception_prompt_version, payloads.model, payloads.caption,
+                payloads.image_kind, payloads.visible_text, payloads.objects,
+                payloads.people_or_roles, payloads.scene, payloads.colors_and_visual_attributes,
+                payloads.spatial_relationships, payloads.possible_user_relevant_details,
+                payloads.search_terms, payloads.uncertainties, payloads.embedding_text,
+                payloads.embedding_status,
+                ('image_perception_embeddings:' || payloads.payload_id) AS text_embedding_ref
+         FROM image_perception_artifacts artifacts
+         JOIN image_perception_payloads payloads ON payloads.payload_id = artifacts.payload_id
+         WHERE artifacts.parent_entry_id IN (${placeholders})
+         ORDER BY artifacts.created_at ASC, artifacts.artifact_id ASC`,
+      )
+      .all(...uniqueParentEntryIds) as ImagePerceptionRow[];
+    const byParentEntry = new Map<StreamEntryId, ImagePerceptionRecord[]>();
+
+    for (const row of rows) {
+      const record = rowToRecord(row);
+      const records = byParentEntry.get(record.parent_entry_id) ?? [];
+      records.push(record);
+      byParentEntry.set(record.parent_entry_id, records);
+    }
+
+    return byParentEntry;
   }
 
   findPayload(input: {

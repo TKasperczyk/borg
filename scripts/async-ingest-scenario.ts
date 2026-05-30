@@ -12,6 +12,7 @@ import {
   type MessageConnector,
   type SessionId,
   type StreamEntryId,
+  type TurnInputAttachment,
 } from "../src/index.js";
 import type {
   StreamCursor,
@@ -40,6 +41,10 @@ const TERMINAL_KINDS = new Set<StreamEntry["kind"]>([
   "agent_msg",
   "agent_suppressed",
   "agent_observed",
+]);
+const GIF_1X1 = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+const GIF_1X1_ALT = Uint8Array.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x21,
 ]);
 
 type ScenarioSession = ReturnType<typeof createConversationHarness>;
@@ -114,6 +119,38 @@ function createFrameAnomalyResponse(input: {
         },
       },
     ],
+  };
+}
+
+function createImagePerceptionResponse(input: {
+  caption: string;
+  visibleText: readonly string[];
+  searchTerms: readonly string[];
+}) {
+  return {
+    messageBlocks: [
+      {
+        type: "tool_use" as const,
+        id: "toolu_image",
+        name: "EmitImagePerception",
+        input: {
+          caption: input.caption,
+          image_kind: "other",
+          visible_text: [...input.visibleText],
+          objects: [],
+          people_or_roles: [],
+          scene: "scripted image fixture",
+          colors_and_visual_attributes: [],
+          spatial_relationships: [],
+          possible_user_relevant_details: [],
+          search_terms: [...input.searchTerms],
+          uncertainties: [],
+        },
+      },
+    ],
+    input_tokens: 4,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
   };
 }
 
@@ -202,6 +239,10 @@ function finalizerRequests(llm: FakeLLMClient): LLMCompleteOptions[] {
   );
 }
 
+function imagePerceptionRequests(llm: FakeLLMClient): LLMCompleteOptions[] {
+  return llm.requests.filter((request) => request.budget === "image-perception");
+}
+
 function terminalEntries(borg: Borg, sessionId: SessionId): StreamEntry[] {
   return borg.stream
     .tail(300, { session: sessionId })
@@ -221,6 +262,18 @@ function userEntries(borg: Borg, sessionId: SessionId): Array<StreamEntry & { ki
   return borg.stream
     .tail(300, { session: sessionId })
     .filter((entry): entry is StreamEntry & { kind: "user_msg" } => entry.kind === "user_msg");
+}
+
+function imageAttachmentEntries(
+  borg: Borg,
+  sessionId: SessionId,
+): Array<StreamEntry & { kind: "user_image_attachment" }> {
+  return borg.stream
+    .tail(300, { session: sessionId })
+    .filter(
+      (entry): entry is StreamEntry & { kind: "user_image_attachment" } =>
+        entry.kind === "user_image_attachment",
+    );
 }
 
 function streamEntryById(borg: Borg, sessionId: SessionId, id: StreamEntryId): StreamEntry {
@@ -272,6 +325,7 @@ async function enqueueOne(input: {
   externalMessageId: string;
   text: string;
   advanceMs?: number;
+  attachments?: readonly TurnInputAttachment[];
 }) {
   const result = await input.borg.enqueueMessage({
     session: input.session,
@@ -281,6 +335,7 @@ async function enqueueOne(input: {
     arrivedAt: input.clock.now(),
     audience: input.session.audience_label,
     audienceEntityId: input.session.audience_entity_id,
+    attachments: input.attachments,
   });
 
   input.clock.advance(input.advanceMs ?? 10);
@@ -417,6 +472,18 @@ async function main(): Promise<void> {
   const llm = new FakeLLMClient({
     responses: [
       createEmitAnswerResponse("Burst received: I saw the three launch-room updates together."),
+      createEmptyReflectionResponse(),
+      createImagePerceptionResponse({
+        caption: "first crash-replay image caption",
+        visibleText: ["first crash visible text"],
+        searchTerms: ["first crash image"],
+      }),
+      createImagePerceptionResponse({
+        caption: "second crash-replay image caption",
+        visibleText: ["second crash visible text"],
+        searchTerms: ["second crash image"],
+      }),
+      createEmitAnswerResponse("Image burst recovered with both stored perceptions."),
       createEmptyReflectionResponse(),
       createEmitAnswerResponse(
         "Remainder received: I picked up the follow-up after the watermark.",
@@ -576,6 +643,108 @@ async function main(): Promise<void> {
 
     await runStep(
       stats,
+      "IMAGE BURST CRASH-REPLAY drains stored perceptions once after reopen",
+      async () => {
+        const current = requireBorg();
+        const currentSession = requireSession();
+        assert.ok(senderAId, "sender A missing");
+        assert.ok(senderBId, "sender B missing");
+        assert.ok(lastWatermark, "previous watermark missing");
+
+        const beforeFinalizers = finalizerRequests(llm).length;
+        const beforeVisionCalls = imagePerceptionRequests(llm).length;
+        const first = await enqueueOne({
+          borg: current,
+          clock,
+          session: currentSession,
+          senderEntityId: senderAId,
+          externalMessageId: "image-crash-1",
+          text: "Riley: image one arrived before the restart.",
+          attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+        });
+        const second = await enqueueOne({
+          borg: current,
+          clock,
+          session: currentSession,
+          senderEntityId: senderBId,
+          externalMessageId: "image-crash-2",
+          text: "Morgan: image two is part of the same recovered burst.",
+          attachments: [{ mediaType: "image/gif", bytes: GIF_1X1_ALT }],
+        });
+        const sourceEntries = [
+          streamEntryById(current, currentSession.session_id, first.streamEntryId),
+          streamEntryById(current, currentSession.session_id, second.streamEntryId),
+        ];
+        const expectedStamp = responseToFor(sourceEntries, lastWatermark);
+        const visionCallsAfterReceipt = imagePerceptionRequests(llm).length;
+
+        assert.equal(visionCallsAfterReceipt, beforeVisionCalls + 2);
+        assert.equal(imageAttachmentEntries(current, currentSession.session_id).length, 2);
+        assert.equal(terminalEntries(current, currentSession.session_id).length, 1);
+
+        await current.close();
+        borg = null;
+        borg = await openHarness({
+          tempDir,
+          clock,
+          llm,
+          tracerPath: tracePath,
+          outboundConnectors,
+          configOverrides,
+        });
+
+        const reopened = requireBorg();
+        const tickResult = await reopened.inbox.catchUp.tick(currentSession.session_id);
+        const agent = agentMessages(reopened, currentSession.session_id).at(-1);
+        const finalizer = finalizerRequests(llm).slice(beforeFinalizers)[0];
+        const renderedBatch = extractInboundBatch(finalizer);
+        const firstMessageOffset = renderedBatch.indexOf("Riley: image one");
+        const secondMessageOffset = renderedBatch.indexOf("Morgan: image two");
+        const firstCaptionOffset = renderedBatch.indexOf("first crash-replay image caption");
+        const secondCaptionOffset = renderedBatch.indexOf("second crash-replay image caption");
+        const watermark = borgInternals<HarnessBorgInternals>(
+          reopened,
+        ).deps.chatResponseWatermarkCoordinator.getWatermark(currentSession.session_id);
+        const matchingAgents = agentMessages(reopened, currentSession.session_id).filter(
+          (entry) => entry.response_to?.source_entry_ids.includes(first.streamEntryId) === true,
+        );
+
+        assert.deepEqual(tickResult, {
+          sessionId: currentSession.session_id,
+          status: "drained",
+          drained: 2,
+          hasMore: false,
+        });
+        assert.ok(agent, "expected image replay terminal agent_msg");
+        assert.equal(agent.content, "Image burst recovered with both stored perceptions.");
+        assert.deepEqual(agent.response_to, expectedStamp);
+        assert.equal(agent.response_to?.count, 2);
+        assert.deepEqual(watermark, expectedStamp.through_cursor_inclusive);
+        assert.equal(imagePerceptionRequests(llm).length, visionCallsAfterReceipt);
+        assert.equal(matchingAgents.length, 1);
+        assert.ok(firstMessageOffset >= 0, "first image message missing from render");
+        assert.ok(secondMessageOffset > firstMessageOffset, "image messages rendered out of order");
+        assert.ok(firstCaptionOffset > firstMessageOffset, "first caption not attached to message");
+        assert.ok(firstCaptionOffset < secondMessageOffset, "first caption crossed message boundary");
+        assert.ok(secondCaptionOffset > secondMessageOffset, "second caption not attached");
+        assert.ok(renderedBatch.includes("first crash visible text"));
+        assert.ok(renderedBatch.includes("second crash visible text"));
+
+        lastWatermark = expectedStamp.through_cursor_inclusive;
+
+        console.log(`receipt_vision_calls ${beforeVisionCalls} -> ${visionCallsAfterReceipt}`);
+        console.log(`replay_vision_calls=${imagePerceptionRequests(llm).length}`);
+        console.log(`tick=${formatJson(tickResult)}`);
+        console.log("rendered_image_batch:");
+        console.log(indentBlock(renderedBatch));
+        console.log("stamp:");
+        console.log(indentBlock(formatJson(agent.response_to)));
+        console.log(`watermark=${formatJson(watermark)}`);
+      },
+    );
+
+    await runStep(
+      stats,
       "DEDUP re-enqueue returns duplicate without new contact or message count",
       async () => {
         const current = requireBorg();
@@ -621,6 +790,7 @@ async function main(): Promise<void> {
         assert.ok(lastWatermark, "previous watermark missing");
 
         const beforeFinalizers = finalizerRequests(llm).length;
+        const beforeTerminals = terminalEntries(current, currentSession.session_id).length;
         const enqueued = await enqueueOne({
           borg: current,
           clock,
@@ -645,7 +815,7 @@ async function main(): Promise<void> {
           drained: 1,
           hasMore: false,
         });
-        assert.equal(terminals.length, 2);
+        assert.equal(terminals.length, beforeTerminals + 1);
         assert.ok(agent, "expected second terminal agent_msg");
         assert.equal(
           agent.content,

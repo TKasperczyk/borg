@@ -82,7 +82,7 @@ export function orderedPendingResponseUserRecords(input: {
   throughEntryIndexInclusive?: number;
   orderMissingCode?: string;
 }): StreamEntryIndexRecord[] {
-  return input.records
+  const ordered = input.records
     .filter(isPendingResponseUserRecord)
     .filter((record) => {
       const entryIndex = requiredQueuedUserRecordEntryIndex(record, input.orderMissingCode);
@@ -99,6 +99,9 @@ export function orderedPendingResponseUserRecords(input: {
           requiredQueuedUserRecordEntryIndex(right, input.orderMissingCode) ||
         left.byte_offset - right.byte_offset,
     );
+  const firstReceiptPendingIndex = ordered.findIndex((record) => record.receipt_pending === true);
+
+  return firstReceiptPendingIndex === -1 ? ordered : ordered.slice(0, firstReceiptPendingIndex);
 }
 
 function cursorForRecord(record: StreamEntryIndexRecord): StreamCursor {

@@ -2,6 +2,11 @@
  * v1 delivery contract: Inbound is durable (committed before ack). Reply generation is replay-safe (cursor-stamped response_to + reconcile-before-generate; at-least-once). External delivery is NOT auto-retried by borg (no durable outbox in v1). Accepted D1 loss window: a crash after the stamped terminal append but before the transport delivers leaves the reply recorded-but-possibly-undelivered, not retried. Dedup is per source_message_key via the single-writer daemon's in-process serialization; cross-process concurrent writers are out of v1 scope.
  */
 import type { ActivityRepository } from "../../memory/activity/index.js";
+import type {
+  AttachmentService,
+  ImagePerceptionService,
+  TurnInputAttachment,
+} from "../../attachments/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type {
   SessionEnsureInput,
@@ -9,6 +14,7 @@ import type {
   SessionsRepository,
 } from "../../sessions/index.js";
 import type {
+  StreamEntry,
   StreamEntryIndexRecord,
   StreamEntryIndexRepository,
   StreamSourceMessageKey,
@@ -31,7 +37,7 @@ export type BorgEnqueueMessageInput = {
   arrivedAt?: number;
   audience?: string;
   audienceEntityId?: EntityId | null;
-  attachments?: readonly unknown[];
+  attachments?: readonly TurnInputAttachment[];
 };
 
 export type BorgEnqueueMessageResult = {
@@ -44,13 +50,25 @@ export type MessageEnqueuerOptions = {
   sessionsRepository: Pick<SessionsRepository, "ensure" | "touch">;
   entityRepository: Pick<EntityRepository, "get">;
   activityRepository: Pick<ActivityRepository, "record" | "getByKindAndSource">;
+  attachmentService: Pick<
+    AttachmentService,
+    "validateAttachments" | "persistParentEntryAttachments"
+  >;
+  imagePerceptionService: Pick<ImagePerceptionService, "perceiveAttachment">;
   entryIndex: Pick<
     StreamEntryIndexRepository,
-    "lookupBySourceMessageKey" | "isPoisoned" | "backfillSession"
+    "lookupBySourceMessageKey" | "isPoisoned" | "setReceiptPending"
   >;
-  createStreamWriter: (sessionId: SessionId) => Pick<StreamWriter, "append" | "close">;
+  createReceiptStreamWriter: (
+    sessionId: SessionId,
+  ) => Pick<StreamWriter, "append" | "appendMany" | "close">;
+  repairSessionStreamEntryIndex: (sessionId: SessionId) => Promise<unknown>;
   isDuplicatePendingResponse?: (record: StreamEntryIndexRecord) => boolean;
-  onPendingDuplicate?: (record: StreamEntryIndexRecord) => void;
+  onReceiptReady?: (event: {
+    sessionId: SessionId;
+    pendingAt: number;
+    entries: readonly StreamEntry[];
+  }) => void;
   clock: Clock;
 };
 
@@ -60,7 +78,8 @@ export class MessageEnqueuer {
   constructor(private readonly options: MessageEnqueuerOptions) {}
 
   async enqueueMessage(input: BorgEnqueueMessageInput): Promise<BorgEnqueueMessageResult> {
-    this.validateTextOnly(input.attachments);
+    const attachments = input.attachments ?? [];
+    this.options.attachmentService.validateAttachments(attachments);
     const sourceMessageKey = this.parseSourceMessageKey(input.sourceMessageKey);
     this.validateSourceMessageKeyForInputSession(sourceMessageKey, input.session);
     const arrivedAt = this.resolveArrivedAt(input.arrivedAt);
@@ -75,22 +94,21 @@ export class MessageEnqueuer {
       const duplicate = this.options.entryIndex.lookupBySourceMessageKey(sourceMessageKey);
 
       if (duplicate !== null) {
-        this.recoverPendingDuplicateReceipt({
+        await this.recoverPendingDuplicateReceipt({
           record: duplicate,
           input,
           session,
           arrivedAt,
+          attachments,
         });
         return this.duplicateResult(duplicate);
       }
 
-      const writer = this.options.createStreamWriter(session.session_id);
+      const writer = this.options.createReceiptStreamWriter(session.session_id);
 
       try {
         const entry = await persistUserMessage(
-          {
-            activityRepository: this.options.activityRepository,
-          },
+          {},
           {
             streamWriter: writer,
             userMessage: input.userMessage,
@@ -101,12 +119,38 @@ export class MessageEnqueuer {
             senderEntityId: input.senderEntityId,
             speakerEntityId: input.senderEntityId,
             audienceEntityId: input.audienceEntityId ?? session.audience_entity_id ?? null,
+            receiptPending: attachments.length > 0,
           },
         );
+        const attachmentEntries =
+          attachments.length === 0
+            ? []
+            : await this.persistAndPerceiveReceiptAttachments({
+                attachments,
+                streamWriter: writer,
+                parentEntry: entry,
+              });
+
+        this.recordReceiptContact({
+          record: {
+            entryId: entry.id,
+            sessionId: session.session_id,
+            senderEntityId: input.senderEntityId,
+          },
+          input,
+          session,
+          arrivedAt,
+        });
 
         this.options.sessionsRepository.touch(session.session_id, {
           at: arrivedAt,
           messageCountDelta: 1,
+        });
+
+        this.options.onReceiptReady?.({
+          sessionId: session.session_id,
+          pendingAt: entry.timestamp,
+          entries: [entry, ...attachmentEntries],
         });
 
         return {
@@ -141,7 +185,7 @@ export class MessageEnqueuer {
 
   private async repairPoisonedSessionBeforeDedup(sessionId: SessionId): Promise<void> {
     try {
-      await this.options.entryIndex.backfillSession(sessionId);
+      await this.options.repairSessionStreamEntryIndex(sessionId);
     } catch (error) {
       throw new StreamError(`Stream entry index is poisoned for committed session ${sessionId}`, {
         cause: error,
@@ -150,56 +194,143 @@ export class MessageEnqueuer {
     }
   }
 
-  private recoverPendingDuplicateReceipt(context: {
+  private async recoverPendingDuplicateReceipt(context: {
     record: StreamEntryIndexRecord;
     input: BorgEnqueueMessageInput;
     session: SessionRecord;
     arrivedAt: number;
-  }): void {
-    if (this.options.isDuplicatePendingResponse?.(context.record) !== true) {
-      return;
-    }
-
+    attachments: readonly TurnInputAttachment[];
+  }): Promise<void> {
+    const receiptPending = context.record.receipt_pending === true;
     const streamEntryId = context.record.entry_id as StreamEntryId;
     const existingContact = this.options.activityRepository.getByKindAndSource("user_contact", [
       streamEntryId,
     ]);
+    const needsReceiptRecovery = receiptPending || existingContact === null;
 
-    if (existingContact === null) {
-      const speakerEntityId = context.record.sender_entity_id ?? context.input.senderEntityId;
-      const audienceEntityId =
-        context.input.audienceEntityId ?? context.session.audience_entity_id ?? null;
-
-      this.options.activityRepository.record({
-        kind: "user_contact",
-        occurredAt: context.arrivedAt,
-        sessionId: context.record.session_id,
-        turnId: null,
-        speakerEntityId,
-        actorEntityId: speakerEntityId,
-        audienceEntityId,
-        participantEntityIds: [speakerEntityId, audienceEntityId].filter(
-          (entityId): entityId is EntityId => entityId !== null,
-        ),
-        sourceStreamEntryIds: [streamEntryId],
-        status: ENQUEUED_USER_CONTACT_ACTIVITY_STATUS,
-      });
-
-      this.options.sessionsRepository.touch(context.record.session_id, {
-        at: context.arrivedAt,
-        messageCountDelta: 1,
-      });
+    if (
+      !needsReceiptRecovery &&
+      this.options.isDuplicatePendingResponse?.(context.record) !== true
+    ) {
+      return;
     }
 
-    this.options.onPendingDuplicate?.(context.record);
+    let receiptEntries: StreamEntry[] = [];
+
+    if (needsReceiptRecovery) {
+      if (context.attachments.length > 0) {
+        const writer = this.options.createReceiptStreamWriter(context.record.session_id);
+
+        try {
+          receiptEntries = await this.persistAndPerceiveReceiptAttachments({
+            attachments: context.attachments,
+            streamWriter: writer,
+            parentEntry: this.parentEntryFromDuplicateRecord(context),
+          });
+        } finally {
+          writer.close();
+        }
+      }
+
+      if (existingContact === null) {
+        this.recordReceiptContact({
+          record: {
+            entryId: streamEntryId,
+            sessionId: context.record.session_id,
+            senderEntityId: context.record.sender_entity_id ?? context.input.senderEntityId,
+          },
+          input: context.input,
+          session: context.session,
+          arrivedAt: context.arrivedAt,
+        });
+        this.options.sessionsRepository.touch(context.record.session_id, {
+          at: context.arrivedAt,
+          messageCountDelta: 1,
+        });
+      }
+    }
+
+    this.options.onReceiptReady?.({
+      sessionId: context.record.session_id,
+      pendingAt: context.record.timestamp,
+      entries: receiptEntries,
+    });
   }
 
-  private validateTextOnly(attachments: readonly unknown[] | undefined): void {
-    if (attachments !== undefined && attachments.length > 0) {
-      throw new CognitionError("enqueueMessage v1 accepts text-only messages", {
-        code: "ENQUEUE_ATTACHMENTS_UNSUPPORTED",
+  private async persistAndPerceiveReceiptAttachments(input: {
+    attachments: readonly TurnInputAttachment[];
+    streamWriter: Pick<StreamWriter, "appendMany">;
+    parentEntry: StreamEntry;
+  }): Promise<StreamEntry[]> {
+    const persisted = await this.options.attachmentService.persistParentEntryAttachments({
+      attachments: input.attachments,
+      streamWriter: input.streamWriter,
+      parentEntry: input.parentEntry,
+    });
+    this.options.entryIndex.setReceiptPending(input.parentEntry.id, false);
+
+    for (const item of persisted) {
+      if (item.record.perception_id !== null) {
+        continue;
+      }
+
+      await this.options.imagePerceptionService.perceiveAttachment({
+        attachmentId: item.attachmentId,
+        turnId: input.parentEntry.id,
       });
     }
+
+    return persisted.flatMap((item) => (item.streamEntry === null ? [] : [item.streamEntry]));
+  }
+
+  private parentEntryFromDuplicateRecord(context: {
+    record: StreamEntryIndexRecord;
+    input: BorgEnqueueMessageInput;
+  }): StreamEntry {
+    return {
+      id: context.record.entry_id as StreamEntryId,
+      timestamp: context.record.timestamp,
+      ...(context.record.entry_index === null ? {} : { entry_index: context.record.entry_index }),
+      kind: "user_msg",
+      content: context.input.userMessage,
+      ...(context.record.turn_id === null ? {} : { turn_id: context.record.turn_id }),
+      turn_status: context.record.turn_status ?? "active",
+      ...(context.input.audience === undefined ? {} : { audience: context.input.audience }),
+      sender_entity_id: context.record.sender_entity_id ?? context.input.senderEntityId,
+      reply_target_entity_id: null,
+      source_message_key: context.input.sourceMessageKey,
+      session_id: context.record.session_id,
+      compressed: false,
+    };
+  }
+
+  private recordReceiptContact(context: {
+    record: {
+      entryId: StreamEntryId;
+      sessionId: SessionId;
+      senderEntityId: EntityId;
+    };
+    input: BorgEnqueueMessageInput;
+    session: SessionRecord;
+    arrivedAt: number;
+  }): void {
+    const audienceEntityId =
+      context.input.audienceEntityId ?? context.session.audience_entity_id ?? null;
+
+    this.options.activityRepository.record({
+      kind: "user_contact",
+      occurredAt: context.arrivedAt,
+      sessionId: context.record.sessionId,
+      turnId: null,
+      speakerEntityId: context.record.senderEntityId,
+      actorEntityId: context.record.senderEntityId,
+      audienceEntityId,
+      participantEntityIds: [context.record.senderEntityId, audienceEntityId].filter(
+        (entityId): entityId is EntityId => entityId !== null,
+      ),
+      sourceStreamEntryIds: [context.record.entryId],
+      status: ENQUEUED_USER_CONTACT_ACTIVITY_STATUS,
+    });
   }
 
   private parseSourceMessageKey(key: StreamSourceMessageKey): StreamSourceMessageKey {

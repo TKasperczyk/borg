@@ -1,11 +1,29 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  AttachmentRepository,
+  attachmentMigrations,
+  type StoredAttachmentRecord,
+} from "../../attachments/index.js";
+import { backfillSessionStreamEntryIndexAndAttachments } from "../../borg/reconciliation.js";
 import type { SessionRecord } from "../../sessions/index.js";
-import type { StreamCursor, StreamEntry } from "../../stream/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamWriter,
+  streamEntryIndexMigrations,
+  type StreamCursor,
+  type StreamEntry,
+} from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { SessionBusyError, StreamError } from "../../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
+  createAttachmentId,
   createSessionId,
   createStreamEntryId,
   type SessionId,
@@ -22,6 +40,7 @@ const DEFAULT_CONFIG: ChatResponseCatchUpWorkerConfig = {
   backoffBaseMs: 25,
   maxBackoffMs: 100,
 };
+const tempDirs: string[] = [];
 
 function turnResult(): TurnResult {
   return {
@@ -168,9 +187,9 @@ function createHarness(
     build: vi.fn(options.build ?? (async () => prefixQueue.shift() ?? emptyPrefix())),
   };
   const entryIndex = {
-    backfillSession: vi.fn(options.backfill ?? (async () => ({ inserted: 0 }))),
     listSessionIdsWithPendingResponseBacklog: vi.fn(() => pendingSessionIds),
   };
+  const repairSessionStreamEntryIndex = vi.fn(options.backfill ?? (async () => ({ inserted: 0 })));
   const turnOrchestrator = {
     run: vi.fn(options.run ?? (async () => turnResult())),
   };
@@ -182,6 +201,7 @@ function createHarness(
     coordinator,
     prefixBuilder,
     entryIndex,
+    repairSessionStreamEntryIndex,
     turnOrchestrator,
     sessionsRepository,
     clock,
@@ -198,6 +218,7 @@ function createHarness(
     coordinator,
     prefixBuilder,
     entryIndex,
+    repairSessionStreamEntryIndex,
     turnOrchestrator,
     sessionsRepository,
     worker,
@@ -228,6 +249,10 @@ describe("ChatResponseCatchUpWorker", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+    }
   });
 
   it("wakes only daemon-enqueued user messages without turn ids", async () => {
@@ -518,14 +543,14 @@ describe("ChatResponseCatchUpWorker", () => {
       hasMore: true,
     });
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
-    expect(harness.entryIndex.backfillSession).not.toHaveBeenCalled();
+    expect(harness.repairSessionStreamEntryIndex).not.toHaveBeenCalled();
 
     await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
       status: "drained",
       drained: 0,
       hasMore: true,
     });
-    expect(harness.entryIndex.backfillSession).toHaveBeenCalledTimes(1);
+    expect(harness.repairSessionStreamEntryIndex).toHaveBeenCalledTimes(1);
     expect(harness.prefixBuilder.build).toHaveBeenCalledTimes(1);
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
 
@@ -536,6 +561,125 @@ describe("ChatResponseCatchUpWorker", () => {
     });
     expect(harness.prefixBuilder.build).toHaveBeenCalledTimes(2);
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("repair-only retry backfills and reconciles committed image attachment stream entries", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-worker-repair-attachment-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(streamEntryIndexMigrations, attachmentMigrations),
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const attachmentRepository = new AttachmentRepository(db);
+    const clock = new ManualClock(1_000);
+    const indexedWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+      entryIndex,
+    });
+    const parentEntry = await indexedWriter.append({
+      kind: "user_msg",
+      content: "parent",
+    });
+    indexedWriter.close();
+    const attachmentId = createAttachmentId();
+    const attachment: StoredAttachmentRecord = {
+      attachment_id: attachmentId,
+      sha256: "0".repeat(64),
+      media_type: "image/gif",
+      byte_size: 10,
+      width: 1,
+      height: 1,
+      storage_ref: "attachments/test.gif",
+      thumbnail_ref: null,
+      perception_id: null,
+      text_embedding_ref: null,
+      visual_embedding_ref: null,
+      active: false,
+      audience: null,
+      created_turn_global: null,
+      parent_entry_id: parentEntry.id,
+      stream_entry_id: null,
+      parent_turn_id: null,
+      created_at: parentEntry.timestamp,
+    };
+    attachmentRepository.insert(attachment);
+    const unindexedWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+    });
+    const imageEntry = await unindexedWriter.append({
+      kind: "user_image_attachment",
+      content: {
+        type: "image_ref",
+        attachment_id: attachmentId,
+        media_type: "image/gif",
+        parent_entry_id: parentEntry.id,
+      },
+    });
+    unindexedWriter.close();
+    const poison = new StreamError("committed image attachment append is not indexed", {
+      code: "STREAM_INDEX_POISONED",
+    });
+    const harness = createHarness({
+      prefixes: [prefix()],
+      run: async () => {
+        throw poison;
+      },
+      backfill: (sessionId) =>
+        backfillSessionStreamEntryIndexAndAttachments({
+          dataDir: tempDir,
+          sessionId,
+          entryIndex,
+          attachmentRepository,
+        }),
+    });
+
+    try {
+      expect(entryIndex.lookup(imageEntry.id)).toBeNull();
+      expect(attachmentRepository.get(attachmentId)).toMatchObject({
+        stream_entry_id: null,
+        active: false,
+      });
+
+      await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+        status: "error",
+        drained: 0,
+        hasMore: true,
+      });
+      await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+        status: "drained",
+        drained: 0,
+        hasMore: true,
+      });
+
+      expect(harness.repairSessionStreamEntryIndex).toHaveBeenCalledTimes(1);
+      expect(entryIndex.lookup(imageEntry.id)).not.toBeNull();
+      expect(attachmentRepository.get(attachmentId)).toMatchObject({
+        stream_entry_id: imageEntry.id,
+        active: true,
+      });
+
+      await backfillSessionStreamEntryIndexAndAttachments({
+        dataDir: tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+        entryIndex,
+        attachmentRepository,
+      });
+      expect(attachmentRepository.listByParentEntry(parentEntry.id)).toHaveLength(1);
+      expect(attachmentRepository.get(attachmentId)).toMatchObject({
+        stream_entry_id: imageEntry.id,
+        active: true,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("immediately re-drains when the prefix reports hasMore", async () => {

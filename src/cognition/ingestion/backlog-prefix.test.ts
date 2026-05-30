@@ -62,6 +62,7 @@ function recordFor(
     turn_id: entry.turn_id ?? null,
     turn_status: entry.turn_status ?? "active",
     active: true,
+    receipt_pending: false,
     source_message_key_source_type: null,
     source_message_key_source_external_id: null,
     source_message_key_external_message_id: null,
@@ -391,6 +392,46 @@ describe("ChatResponseBacklogPrefixBuilder", () => {
       entryIds: [queued.id],
       throughCursorInclusive: cursorFor(queued),
       includedCount: 1,
+      remainingCount: 0,
+      hasMore: false,
+    });
+  });
+
+  it("treats receipt-pending queued user messages as ordered prefix barriers", async () => {
+    const waitingForReceipt = makeEntry({ entryIndex: 0 });
+    const ready = makeEntry({ entryIndex: 1 });
+    const blockedBuilder = makeBuilder({
+      entries: [waitingForReceipt, ready],
+      records: [recordFor(waitingForReceipt, { receipt_pending: true }), recordFor(ready)],
+    });
+
+    await expect(
+      blockedBuilder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        fromCursorExclusive: null,
+      }),
+    ).resolves.toMatchObject({
+      entryIds: [],
+      throughCursorInclusive: null,
+      includedCount: 0,
+      remainingCount: 0,
+      hasMore: false,
+    });
+
+    const readyBuilder = makeBuilder({
+      entries: [waitingForReceipt, ready],
+      records: [recordFor(waitingForReceipt, { receipt_pending: false }), recordFor(ready)],
+    });
+
+    await expect(
+      readyBuilder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        fromCursorExclusive: null,
+      }),
+    ).resolves.toMatchObject({
+      entryIds: [waitingForReceipt.id, ready.id],
+      throughCursorInclusive: cursorFor(ready),
+      includedCount: 2,
       remainingCount: 0,
       hasMore: false,
     });

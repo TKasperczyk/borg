@@ -26,6 +26,7 @@ import {
   renderInboundBatch,
   type CurrentTurnUserInput,
   type CurrentTurnUserInputSenderAttribution,
+  type HydratedInboundAttachment,
   type HydratedInboundMessage,
 } from "../turn-input.js";
 import {
@@ -332,6 +333,43 @@ async function hydrateInboundBatch(input: {
   const records: StreamEntryIndexRecord[] = [];
   const sourceEntries: StreamEntry[] = [];
   const hydrated: HydratedInboundMessage[] = [];
+  const attachmentsByParentEntry = new Map<StreamEntryId, HydratedInboundAttachment[]>();
+  const perceptionByAttachmentId = new Map(
+    [...input.options.imagePerceptionRepository.listByParentEntries(input.entryIds).values()]
+      .flat()
+      .map((perception) => [perception.attachment_id, perception] as const),
+  );
+
+  for (const entryId of input.entryIds) {
+    const attachments = input.options.attachmentRepository.listByParentEntry(entryId);
+    if (attachments.length === 0) {
+      continue;
+    }
+
+    attachmentsByParentEntry.set(
+      entryId,
+      attachments.map((attachment) => {
+        const perception = perceptionByAttachmentId.get(attachment.attachment_id) ?? null;
+
+        return {
+          attachment_id: attachment.attachment_id,
+          media_type: attachment.media_type,
+          width: attachment.width,
+          height: attachment.height,
+          perception:
+            perception === null
+              ? null
+              : {
+                  perception_id: perception.perception_id,
+                  caption: perception.caption,
+                  image_kind: perception.image_kind,
+                  visible_text: perception.visible_text,
+                  search_terms: perception.search_terms,
+                },
+        };
+      }),
+    );
+  }
 
   for (const entryId of input.entryIds) {
     const record = recordsById.get(entryId);
@@ -386,6 +424,8 @@ async function hydrateInboundBatch(input: {
       entry_index: entryIndexValue,
       sender_entity_id: sourceEntry.sender_entity_id ?? null,
     });
+    const hydratedAttachments = attachmentsByParentEntry.get(sourceEntry.id);
+
     hydrated.push({
       id: sourceEntry.id,
       session_id: sourceEntry.session_id,
@@ -394,6 +434,7 @@ async function hydrateInboundBatch(input: {
       kind: "user_msg",
       content: sourceEntry.content,
       sender_entity_id: sourceEntry.sender_entity_id ?? null,
+      ...(hydratedAttachments === undefined ? {} : { attachments: hydratedAttachments }),
       ...(sourceEntry.audience === undefined ? {} : { audience: sourceEntry.audience }),
       ...(sourceEntry.source_message_key === undefined
         ? {}

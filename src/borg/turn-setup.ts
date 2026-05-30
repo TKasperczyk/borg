@@ -7,6 +7,7 @@ import type {
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionRepository,
   ImagePerceptionService,
 } from "../attachments/index.js";
 import type { SessionLock } from "../cognition/index.js";
@@ -91,6 +92,7 @@ export type BuildTurnOrchestratorOptions = {
   entryIndex?: StreamEntryIndexRepository;
   attachmentService: AttachmentService;
   attachmentRepository: AttachmentRepository;
+  imagePerceptionRepository: ImagePerceptionRepository;
   imagePerceptionService?: ImagePerceptionService;
   clock: Clock;
   tracer?: TurnTracer;
@@ -151,6 +153,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     entryIndex: options.entryIndex,
     attachmentService: options.attachmentService,
     attachmentRepository: options.attachmentRepository,
+    imagePerceptionRepository: options.imagePerceptionRepository,
     imagePerceptionService: options.imagePerceptionService,
     // Explicit so borg.ts wires a single compiler instance per process;
     // turn-orchestrator.ts falls back to defaults if omitted, but doing

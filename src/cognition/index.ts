@@ -198,6 +198,8 @@ export {
 export {
   type CurrentTurnUserInput,
   type CurrentTurnUserInputSenderAttribution,
+  type HydratedInboundAttachment,
+  type HydratedInboundImagePerception,
   type HydratedInboundMessage,
   type InboundBatchTurnInput,
   type InternalSingleMessageTurnInput,

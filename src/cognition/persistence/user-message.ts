@@ -26,6 +26,7 @@ export type PersistUserMessageInput = {
   senderEntityId?: EntityId;
   speakerEntityId?: EntityId | null;
   audienceEntityId?: EntityId | null;
+  receiptPending?: boolean;
 };
 
 export async function persistUserMessage(
@@ -40,6 +41,7 @@ export async function persistUserMessage(
     ...(input.audience === undefined ? {} : { audience: input.audience }),
     ...(input.senderEntityId === undefined ? {} : { sender_entity_id: input.senderEntityId }),
     ...(input.sourceMessageKey === undefined ? {} : { source_message_key: input.sourceMessageKey }),
+    ...(input.receiptPending === true ? { receipt_pending: true } : {}),
   });
   const speakerEntityId = input.speakerEntityId ?? input.senderEntityId ?? null;
 

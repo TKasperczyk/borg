@@ -5,9 +5,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ActivityEvent, ActivityEventRecordInput } from "../../memory/activity/index.js";
+import {
+  AttachmentBlobStore,
+  AttachmentRepository,
+  AttachmentService,
+  attachmentMigrations,
+  type ImagePerceptionService,
+  type TurnInputAttachment,
+} from "../../attachments/index.js";
+import type { PersistedParentEntryAttachment } from "../../attachments/index.js";
 import type { EntityRecord } from "../../memory/commitments/index.js";
 import type { SessionRecord } from "../../sessions/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import {
   StreamEntryIndexRepository,
   StreamReader,
@@ -19,6 +28,7 @@ import {
   type StreamSourceMessageKey,
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { AttachmentError } from "../../util/errors.js";
 import {
   createEntityId,
   createSessionId,
@@ -28,6 +38,8 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { MessageEnqueuer } from "./enqueuer.js";
+
+const GIF_1X1 = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
 
 function makeSession(input: {
   sessionId: SessionId;
@@ -80,6 +92,7 @@ function makeIndexRecord(input: {
     turn_id: null,
     turn_status: "active",
     active: true,
+    receipt_pending: false,
     source_message_key_source_type: "demo",
     source_message_key_source_external_id: "conversation-1",
     source_message_key_external_message_id: "message-1",
@@ -117,6 +130,7 @@ function makeHarness(
   options: {
     duplicate?: StreamEntryIndexRecord | null;
     append?: (input: StreamEntryInput) => Promise<StreamEntry>;
+    appendMany?: (input: readonly StreamEntryInput[]) => Promise<StreamEntry[]>;
   } = {},
 ) {
   const sessionId = createSessionId();
@@ -140,6 +154,29 @@ function makeHarness(
       appended.push(input);
       return buildEntry(input, sessionId, streamEntryId);
     });
+  const appendMany =
+    options.appendMany ??
+    vi.fn(async (inputs: readonly StreamEntryInput[]) =>
+      inputs.map((input) => buildEntry(input, sessionId, createStreamEntryId())),
+    );
+  const receiptReadyEvents: Array<{
+    sessionId: SessionId;
+    pendingAt: number;
+    entries: readonly StreamEntry[];
+  }> = [];
+  const attachmentService = {
+    validateAttachments: vi.fn(() => undefined),
+    persistParentEntryAttachments: vi.fn(async (): Promise<PersistedParentEntryAttachment[]> => []),
+  } satisfies Pick<AttachmentService, "validateAttachments" | "persistParentEntryAttachments">;
+  const imagePerceptionService = {
+    perceiveAttachment: vi.fn(async () => null),
+  } satisfies Pick<ImagePerceptionService, "perceiveAttachment">;
+  const entryIndex = {
+    lookupBySourceMessageKey: vi.fn(() => options.duplicate ?? null),
+    isPoisoned: vi.fn(() => false),
+    setReceiptPending: vi.fn(),
+  };
+  const repairSessionStreamEntryIndex = vi.fn(async () => ({ inserted: 0 }));
   const enqueuer = new MessageEnqueuer({
     sessionsRepository: {
       ensure,
@@ -166,15 +203,18 @@ function makeHarness(
         return event === undefined ? null : ({} as ActivityEvent);
       }),
     },
-    entryIndex: {
-      lookupBySourceMessageKey: vi.fn(() => options.duplicate ?? null),
-      isPoisoned: vi.fn(() => false),
-      backfillSession: vi.fn(async () => ({ inserted: 0 })),
-    },
-    createStreamWriter: vi.fn(() => ({
+    entryIndex,
+    repairSessionStreamEntryIndex,
+    attachmentService,
+    imagePerceptionService,
+    createReceiptStreamWriter: vi.fn(() => ({
       append,
+      appendMany,
       close,
     })),
+    onReceiptReady: vi.fn((event) => {
+      receiptReadyEvents.push(event);
+    }),
     clock: new ManualClock(1_500),
   });
 
@@ -187,7 +227,13 @@ function makeHarness(
     streamEntryId,
     sourceMessageKey,
     appended,
+    appendMany,
     activityEvents,
+    attachmentService,
+    imagePerceptionService,
+    entryIndex,
+    repairSessionStreamEntryIndex,
+    receiptReadyEvents,
     ensure,
     touch,
     close,
@@ -236,6 +282,7 @@ describe("MessageEnqueuer", () => {
       },
     ]);
     expect(harness.appended[0]).not.toHaveProperty("turn_id");
+    expect(harness.appended[0]).not.toHaveProperty("receipt_pending");
     expect(harness.activityEvents).toEqual([
       {
         kind: "user_contact",
@@ -281,7 +328,11 @@ describe("MessageEnqueuer", () => {
     const clock = new ManualClock(5_000);
     const touch = vi.fn();
     const closeCallbacks: Array<() => void> = [];
-    const observedAppends: StreamEntry[] = [];
+    const receiptReadyEvents: Array<{
+      sessionId: SessionId;
+      pendingAt: number;
+      entries: readonly StreamEntry[];
+    }> = [];
     let failNextRecord = true;
     const backfillSession = vi.fn((backfillSessionId: SessionId) =>
       entryIndex.backfillSession(backfillSessionId),
@@ -294,7 +345,7 @@ describe("MessageEnqueuer", () => {
 
       entryIndex.recordEntry(entry, byteOffset);
     });
-    const createStreamWriter = vi.fn((writerSessionId: SessionId) => {
+    const createReceiptStreamWriter = vi.fn((writerSessionId: SessionId) => {
       const writer = new StreamWriter({
         dataDir: tempDir,
         sessionId: writerSessionId,
@@ -307,9 +358,6 @@ describe("MessageEnqueuer", () => {
           recordEntry,
           backfillSession,
         } as never,
-        onAppend: (entries) => {
-          observedAppends.push(...entries);
-        },
       });
       closeCallbacks.push(() => writer.close());
 
@@ -342,7 +390,18 @@ describe("MessageEnqueuer", () => {
         }),
       },
       entryIndex,
-      createStreamWriter,
+      repairSessionStreamEntryIndex: backfillSession,
+      attachmentService: {
+        validateAttachments: vi.fn(() => undefined),
+        persistParentEntryAttachments: vi.fn(async () => []),
+      },
+      imagePerceptionService: {
+        perceiveAttachment: vi.fn(async () => null),
+      },
+      createReceiptStreamWriter,
+      onReceiptReady: vi.fn((event) => {
+        receiptReadyEvents.push(event);
+      }),
       clock,
     });
 
@@ -430,10 +489,9 @@ describe("MessageEnqueuer", () => {
       });
       expect(durableUsersAfterNext).toHaveLength(2);
       expect(durableUsersAfterNext.map((entry) => entry.entry_index)).toEqual([0, 1]);
-      expect(observedAppends.map((entry) => entry.id)).toEqual([
-        first.streamEntryId,
-        next.streamEntryId,
-      ]);
+      expect(receiptReadyEvents.flatMap((event) => event.entries.map((entry) => entry.id))).toEqual(
+        [first.streamEntryId, next.streamEntryId],
+      );
       expect(activityEvents).toHaveLength(2);
       expect(activityEvents[0]).toMatchObject({
         kind: "user_contact",
@@ -449,7 +507,7 @@ describe("MessageEnqueuer", () => {
         at: 5_002,
         messageCountDelta: 1,
       });
-      expect(createStreamWriter).toHaveBeenCalledTimes(2);
+      expect(createReceiptStreamWriter).toHaveBeenCalledTimes(2);
     } finally {
       consoleError.mockRestore();
       closeCallbacks.forEach((close) => close());
@@ -480,7 +538,11 @@ describe("MessageEnqueuer", () => {
     const activityEvents: ActivityEventRecordInput[] = [];
     const clock = new ManualClock(5_000);
     const touch = vi.fn();
-    const pendingDuplicateSchedules: StreamEntryIndexRecord[] = [];
+    const receiptReadyEvents: Array<{
+      sessionId: SessionId;
+      pendingAt: number;
+      entries: readonly StreamEntry[];
+    }> = [];
     const closeCallbacks: Array<() => void> = [];
     let failNextRecord = true;
     let repairAvailable = false;
@@ -503,9 +565,11 @@ describe("MessageEnqueuer", () => {
       lookupBySourceMessageKey: (key: StreamSourceMessageKey) =>
         entryIndex.lookupBySourceMessageKey(key),
       isPoisoned: (poisonedSessionId: SessionId) => entryIndex.isPoisoned(poisonedSessionId),
+      setReceiptPending: (entryId: StreamEntryId, pending: boolean) =>
+        entryIndex.setReceiptPending(entryId, pending),
       backfillSession: guardedBackfillSession,
     };
-    const createStreamWriter = vi.fn((writerSessionId: SessionId) => {
+    const createReceiptStreamWriter = vi.fn((writerSessionId: SessionId) => {
       const writer = new StreamWriter({
         dataDir: tempDir,
         sessionId: writerSessionId,
@@ -550,12 +614,20 @@ describe("MessageEnqueuer", () => {
         }),
       },
       entryIndex: sharedEntryIndex,
-      createStreamWriter,
+      repairSessionStreamEntryIndex: guardedBackfillSession,
+      attachmentService: {
+        validateAttachments: vi.fn(() => undefined),
+        persistParentEntryAttachments: vi.fn(async () => []),
+      },
+      imagePerceptionService: {
+        perceiveAttachment: vi.fn(async () => null),
+      },
+      createReceiptStreamWriter,
       isDuplicatePendingResponse: vi.fn(
         (record) => record.kind === "user_msg" && record.turn_id === null,
       ),
-      onPendingDuplicate: vi.fn((record) => {
-        pendingDuplicateSchedules.push(record);
+      onReceiptReady: vi.fn((event) => {
+        receiptReadyEvents.push(event);
       }),
       clock,
     });
@@ -585,7 +657,7 @@ describe("MessageEnqueuer", () => {
         code: "STREAM_INDEX_POISONED",
       });
       expect(new StreamReader({ dataDir: tempDir, sessionId }).tail(10)).toHaveLength(1);
-      expect(createStreamWriter).toHaveBeenCalledTimes(1);
+      expect(createReceiptStreamWriter).toHaveBeenCalledTimes(1);
 
       repairAvailable = true;
       await expect(enqueuer.enqueueMessage(enqueueInput)).resolves.toMatchObject({
@@ -606,9 +678,10 @@ describe("MessageEnqueuer", () => {
       expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(
         durableUsers[0]?.id,
       );
-      expect(createStreamWriter).toHaveBeenCalledTimes(1);
-      expect(pendingDuplicateSchedules.map((record) => record.entry_id)).toEqual([
-        durableUsers[0]?.id,
+      expect(createReceiptStreamWriter).toHaveBeenCalledTimes(1);
+      expect(receiptReadyEvents.map((event) => event.sessionId)).toEqual([sessionId]);
+      expect(receiptReadyEvents.map((event) => event.pendingAt)).toEqual([
+        durableUsers[0]?.timestamp,
       ]);
       expect(activityEvents).toHaveLength(1);
       expect(activityEvents[0]).toMatchObject({
@@ -628,11 +701,23 @@ describe("MessageEnqueuer", () => {
     }
   });
 
-  it("returns duplicates without appending, recording contact, or touching message count", async () => {
+  it("returns completed duplicates without appending, recording contact, or touching message count", async () => {
     const existingSessionId = createSessionId();
     const existingEntryId = createStreamEntryId();
     const harness = makeHarness({
       duplicate: makeIndexRecord({ entryId: existingEntryId, sessionId: existingSessionId }),
+    });
+    harness.activityEvents.push({
+      kind: "user_contact",
+      occurredAt: 3_000,
+      sessionId: existingSessionId,
+      turnId: null,
+      speakerEntityId: harness.senderEntityId,
+      actorEntityId: harness.senderEntityId,
+      audienceEntityId: harness.audienceEntityId,
+      participantEntityIds: [harness.senderEntityId, harness.audienceEntityId],
+      sourceStreamEntryIds: [existingEntryId],
+      status: "active",
     });
 
     const result = await harness.enqueuer.enqueueMessage({
@@ -656,9 +741,239 @@ describe("MessageEnqueuer", () => {
       streamEntryId: existingEntryId,
     });
     expect(harness.appended).toEqual([]);
-    expect(harness.activityEvents).toEqual([]);
+    expect(harness.activityEvents).toHaveLength(1);
+    expect(harness.attachmentService.persistParentEntryAttachments).not.toHaveBeenCalled();
+    expect(harness.imagePerceptionService.perceiveAttachment).not.toHaveBeenCalled();
     expect(harness.touch).not.toHaveBeenCalled();
     expect(harness.close).not.toHaveBeenCalled();
+  });
+
+  it("does not notify receipt readiness until attachment persistence has resolved", async () => {
+    const harness = makeHarness();
+    let releasePersistence: ((value: PersistedParentEntryAttachment[]) => void) | undefined;
+    harness.attachmentService.persistParentEntryAttachments.mockImplementation(
+      () =>
+        new Promise<PersistedParentEntryAttachment[]>((resolve) => {
+          releasePersistence = resolve;
+        }),
+    );
+    const enqueue = harness.enqueuer.enqueueMessage({
+      session: {
+        session_id: harness.sessionId,
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        label: "Demo",
+        audience_label: "Demo room",
+        conversation_kind: "thread",
+      },
+      userMessage: "hello with image",
+      senderEntityId: harness.senderEntityId,
+      sourceMessageKey: harness.sourceMessageKey,
+      attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+    });
+
+    for (let attempt = 0; attempt < 10 && releasePersistence === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    expect(harness.attachmentService.persistParentEntryAttachments).toHaveBeenCalledTimes(1);
+    expect(harness.receiptReadyEvents).toEqual([]);
+    expect(harness.touch).not.toHaveBeenCalled();
+    expect(harness.appended[0]).toMatchObject({ receipt_pending: true });
+    expect(harness.entryIndex.setReceiptPending).not.toHaveBeenCalled();
+
+    releasePersistence?.([]);
+
+    await expect(enqueue).resolves.toMatchObject({
+      status: "enqueued",
+      streamEntryId: harness.streamEntryId,
+    });
+    expect(harness.receiptReadyEvents).toHaveLength(1);
+    expect(harness.receiptReadyEvents[0]?.entries.map((entry) => entry.id)).toEqual([
+      harness.streamEntryId,
+    ]);
+    expect(harness.entryIndex.setReceiptPending).toHaveBeenCalledWith(harness.streamEntryId, false);
+  });
+
+  it("completes missing attachment and perception side effects on a pending duplicate", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-enqueue-attachment-duplicate-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(streamEntryIndexMigrations, attachmentMigrations),
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const repository = new AttachmentRepository(db);
+    const service = new AttachmentService({
+      repository,
+      blobStore: new AttachmentBlobStore(tempDir),
+      config: {
+        maxBytesPerImage: 1024,
+        maxWidth: 64,
+        maxHeight: 64,
+        maxImagesPerTurn: 4,
+      },
+      entryIndex,
+    });
+    const sessionId = createSessionId();
+    const senderEntityId = createEntityId();
+    const audienceEntityId = createEntityId();
+    const session = makeSession({ sessionId, audienceEntityId });
+    const sourceMessageKey: StreamSourceMessageKey = {
+      source_type: "demo",
+      source_external_id: "conversation-1",
+      external_message_id: "message-1",
+    };
+    const clock = new ManualClock(7_000);
+    const seedWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId,
+      clock,
+      entryIndex,
+    });
+    const userEntry = await seedWriter.append({
+      kind: "user_msg",
+      content: "committed before crash",
+      sender_entity_id: senderEntityId,
+      source_message_key: sourceMessageKey,
+      receipt_pending: true,
+    });
+    seedWriter.close();
+    const duplicate = entryIndex.lookupBySourceMessageKey(sourceMessageKey);
+    expect(duplicate).not.toBeNull();
+    const activityEvents: ActivityEventRecordInput[] = [];
+    const touch = vi.fn();
+    const receiptReadyEvents: Array<{
+      sessionId: SessionId;
+      pendingAt: number;
+      entries: readonly StreamEntry[];
+    }> = [];
+    const perceivedAttachmentIds: string[] = [];
+    const closeCallbacks: Array<() => void> = [];
+    const createReceiptStreamWriter = vi.fn((writerSessionId: SessionId) => {
+      const writer = new StreamWriter({
+        dataDir: tempDir,
+        sessionId: writerSessionId,
+        clock,
+        entryIndex,
+      });
+      closeCallbacks.push(() => writer.close());
+
+      return writer;
+    });
+    const enqueuer = new MessageEnqueuer({
+      sessionsRepository: {
+        ensure: vi.fn(() => session),
+        touch,
+      },
+      entityRepository: {
+        get: vi.fn((id: EntityId) => (id === senderEntityId ? makeEntity(id) : null)),
+      },
+      activityRepository: {
+        record: vi.fn((event: ActivityEventRecordInput) => {
+          activityEvents.push(event);
+          return {} as ActivityEvent;
+        }),
+        getByKindAndSource: vi.fn((kind, sourceStreamEntryIds) => {
+          const event = activityEvents.find(
+            (candidate) =>
+              candidate.kind === kind &&
+              candidate.sourceStreamEntryIds.length === sourceStreamEntryIds.length &&
+              candidate.sourceStreamEntryIds.every(
+                (entryId, index) => entryId === sourceStreamEntryIds[index],
+              ),
+          );
+
+          return event === undefined ? null : ({} as ActivityEvent);
+        }),
+      },
+      attachmentService: service,
+      imagePerceptionService: {
+        perceiveAttachment: vi.fn(async ({ attachmentId }) => {
+          perceivedAttachmentIds.push(attachmentId);
+          return null;
+        }),
+      },
+      entryIndex: {
+        lookupBySourceMessageKey: vi.fn(() => duplicate),
+        isPoisoned: vi.fn(() => false),
+        setReceiptPending: vi.fn((entryId: StreamEntryId, pending: boolean) =>
+          entryIndex.setReceiptPending(entryId, pending),
+        ),
+      },
+      repairSessionStreamEntryIndex: vi.fn(async () => ({ inserted: 0 })),
+      createReceiptStreamWriter,
+      isDuplicatePendingResponse: vi.fn(() => false),
+      onReceiptReady: vi.fn((event) => {
+        receiptReadyEvents.push(event);
+      }),
+      clock,
+    });
+
+    try {
+      await expect(
+        enqueuer.enqueueMessage({
+          session: {
+            session_id: sessionId,
+            source_type: "demo",
+            source_external_id: "conversation-1",
+            label: "Demo",
+            audience_label: "Demo room",
+            conversation_kind: "thread",
+          },
+          userMessage: "redelivery",
+          senderEntityId,
+          sourceMessageKey,
+          arrivedAt: 7_000,
+          attachments: [{ mediaType: "image/gif", bytes: GIF_1X1 }],
+        }),
+      ).resolves.toEqual({
+        status: "duplicate",
+        sessionId,
+        streamEntryId: userEntry.id,
+      });
+
+      const records = repository.listByParentEntry(userEntry.id);
+      const imageEntries = new StreamReader({
+        dataDir: tempDir,
+        sessionId,
+        entryIndex,
+      })
+        .tail(10)
+        .filter((entry) => entry.kind === "user_image_attachment");
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        media_type: "image/gif",
+        parent_entry_id: userEntry.id,
+        parent_turn_id: null,
+        stream_entry_id: imageEntries[0]?.id,
+        active: true,
+      });
+      expect(imageEntries).toHaveLength(1);
+      expect(imageEntries[0]).not.toHaveProperty("turn_id");
+      expect(entryIndex.lookup(userEntry.id)?.receipt_pending).toBe(false);
+      expect(perceivedAttachmentIds).toEqual([records[0]?.attachment_id]);
+      expect(activityEvents).toHaveLength(1);
+      expect(activityEvents[0]).toMatchObject({
+        kind: "user_contact",
+        sourceStreamEntryIds: [userEntry.id],
+        status: "active",
+      });
+      expect(touch).toHaveBeenCalledWith(sessionId, {
+        at: 7_000,
+        messageCountDelta: 1,
+      });
+      expect(receiptReadyEvents).toHaveLength(1);
+      expect(receiptReadyEvents[0]?.entries.map((entry) => entry.id)).toEqual([
+        imageEntries[0]?.id,
+      ]);
+    } finally {
+      closeCallbacks.forEach((close) => close());
+      db.close();
+    }
   });
 
   it("rejects mismatched or missing session source fields before ensure", async () => {
@@ -753,7 +1068,7 @@ describe("MessageEnqueuer", () => {
     expect(harness.appended).toEqual([]);
   });
 
-  it("rejects unknown senders and non-empty attachments before append", async () => {
+  it("rejects unknown senders and invalid attachments before append", async () => {
     const unknownSenderHarness = makeHarness();
 
     await expect(
@@ -776,6 +1091,11 @@ describe("MessageEnqueuer", () => {
     expect(unknownSenderHarness.appended).toEqual([]);
 
     const attachmentHarness = makeHarness();
+    attachmentHarness.attachmentService.validateAttachments.mockImplementation(() => {
+      throw new AttachmentError("Unsupported image media type: image/bmp", {
+        code: "ATTACHMENT_UNSUPPORTED_MEDIA_TYPE",
+      });
+    });
 
     await expect(
       attachmentHarness.enqueuer.enqueueMessage({
@@ -790,10 +1110,15 @@ describe("MessageEnqueuer", () => {
         userMessage: "hello",
         senderEntityId: attachmentHarness.senderEntityId,
         sourceMessageKey: attachmentHarness.sourceMessageKey,
-        attachments: [{}],
+        attachments: [
+          {
+            mediaType: "image/bmp",
+            bytes: Uint8Array.of(1, 2, 3),
+          } as unknown as TurnInputAttachment,
+        ],
       }),
     ).rejects.toMatchObject({
-      code: "ENQUEUE_ATTACHMENTS_UNSUPPORTED",
+      code: "ATTACHMENT_UNSUPPORTED_MEDIA_TYPE",
     });
     expect(attachmentHarness.appended).toEqual([]);
   });

@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import type {
   AttachmentRepository,
   AttachmentService,
+  ImagePerceptionRepository,
   ImagePerceptionService,
 } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
@@ -137,7 +138,11 @@ export type TurnOrchestratorOptions = {
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   entryIndex?: StreamEntryIndexRepository;
-  attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
+  attachmentRepository: Pick<
+    AttachmentRepository,
+    "get" | "isActiveForStreamEntry" | "listByParentEntry"
+  >;
+  imagePerceptionRepository: Pick<ImagePerceptionRepository, "listByParentEntries">;
   attachmentService: AttachmentService;
   imagePerceptionService?: ImagePerceptionService;
   /**
@@ -341,6 +346,7 @@ export class TurnOrchestrator {
       createStreamReader,
       entryIndex: options.entryIndex,
       attachmentRepository: options.attachmentRepository,
+      imagePerceptionRepository: options.imagePerceptionRepository,
       attachmentService: options.attachmentService,
       imagePerceptionService: options.imagePerceptionService,
       streamIngestionCoordinator: options.streamIngestionCoordinator,

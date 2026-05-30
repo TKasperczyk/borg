@@ -11,6 +11,28 @@ import {
 } from "../stream/index.js";
 import { parseSessionId, type SessionId } from "../util/ids.js";
 
+export async function backfillSessionStreamEntryIndexAndAttachments(options: {
+  dataDir: string;
+  sessionId: SessionId;
+  entryIndex: Pick<StreamEntryIndexRepository, "backfillSession">;
+  attachmentRepository?: Pick<AttachmentRepository, "reconcileFromStreamEntries">;
+}): Promise<{ inserted: number }> {
+  const result = await options.entryIndex.backfillSession(options.sessionId);
+
+  if (options.attachmentRepository !== undefined) {
+    const entries: StreamEntry[] = [];
+    for await (const entry of new StreamReader({
+      dataDir: options.dataDir,
+      sessionId: options.sessionId,
+    }).iterate({ kinds: ["user_image_attachment"] })) {
+      entries.push(entry);
+    }
+    options.attachmentRepository.reconcileFromStreamEntries(entries);
+  }
+
+  return result;
+}
+
 export async function backfillStreamEntryIndex(options: {
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
@@ -40,18 +62,12 @@ export async function backfillStreamEntryIndex(options: {
     .filter((sessionId): sessionId is SessionId => sessionId !== null);
 
   for (const sessionId of sessionIds) {
-    await options.entryIndex.backfillSession(sessionId);
-
-    if (options.attachmentRepository !== undefined) {
-      const entries: StreamEntry[] = [];
-      for await (const entry of new StreamReader({
-        dataDir: options.dataDir,
-        sessionId,
-      }).iterate({ kinds: ["user_image_attachment"] })) {
-        entries.push(entry);
-      }
-      options.attachmentRepository.reconcileFromStreamEntries(entries);
-    }
+    await backfillSessionStreamEntryIndexAndAttachments({
+      dataDir: options.dataDir,
+      sessionId,
+      entryIndex: options.entryIndex,
+      attachmentRepository: options.attachmentRepository,
+    });
   }
 
   options.attachmentRepository?.reconcileActiveStateFromStreamIndex();

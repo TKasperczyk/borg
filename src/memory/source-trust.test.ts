@@ -21,6 +21,7 @@ function indexedEntry(overrides: Partial<StreamEntryIndexRecord> = {}): StreamEn
     turn_id: "turn-image",
     turn_status: "active",
     active: true,
+    receipt_pending: false,
     source_message_key_source_type: null,
     source_message_key_source_external_id: null,
     source_message_key_external_message_id: null,

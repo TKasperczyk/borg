@@ -38,6 +38,7 @@ import { createEmbeddingClient, createLazyLlmClient, createLlmFactory } from "./
 import { buildStreamIngestionCoordinator } from "./ingestion-setup.js";
 import { closeBestEffort } from "./lifecycle.js";
 import { buildOfflineSetup } from "./offline-setup.js";
+import { backfillSessionStreamEntryIndexAndAttachments } from "./reconciliation.js";
 import { buildBorgRepositories } from "./repositories.js";
 import {
   openBorgLanceTables,
@@ -48,6 +49,7 @@ import {
 import { buildToolDispatcher } from "./tools-setup.js";
 import { buildTurnOrchestrator } from "./turn-setup.js";
 import type { BorgDependencies, BorgOpenOptions } from "./types.js";
+import type { SessionId } from "../util/ids.js";
 
 const CHAT_RESPONSE_CATCH_UP_CONFIG = {
   quietWindowMs: 1_000,
@@ -106,6 +108,12 @@ export async function openBorgDependencies(
       blobStore: new AttachmentBlobStore(config.dataDir),
       config: config.attachments,
       entryIndex,
+      createStreamReader: (sessionId) =>
+        new StreamReader({
+          dataDir: config.dataDir,
+          sessionId,
+          entryIndex,
+        }),
       lifecycle: imageAttachmentLifecycleService,
       tracer,
     });
@@ -240,13 +248,27 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
+    const repairSessionStreamEntryIndex = (sessionId: SessionId) =>
+      backfillSessionStreamEntryIndexAndAttachments({
+        dataDir: config.dataDir,
+        sessionId,
+        entryIndex: repositories.entryIndex,
+        attachmentRepository,
+      });
     const messageEnqueuer = new MessageEnqueuer({
       sessionsRepository: repositories.sessionsRepository,
       entityRepository: repositories.entityRepository,
       activityRepository: repositories.activityRepository,
+      attachmentService,
+      imagePerceptionService,
       entryIndex: repositories.entryIndex,
-      createStreamWriter: repositories.createStreamWriter,
+      createReceiptStreamWriter: repositories.createNonNotifyingStreamWriter,
+      repairSessionStreamEntryIndex,
       isDuplicatePendingResponse: (record) => {
+        if (record.receipt_pending === true) {
+          return true;
+        }
+
         if (record.kind !== "user_msg" || record.turn_id !== null || record.entry_index === null) {
           return false;
         }
@@ -266,8 +288,20 @@ export async function openBorgDependencies(
           )
         );
       },
-      onPendingDuplicate: (record) => {
-        catchUpWorker?.onPendingSession(record.session_id, record.timestamp);
+      onReceiptReady: (event) => {
+        try {
+          if (event.entries.length > 0) {
+            options.onStreamAppend?.(event.entries);
+          }
+        } catch (error) {
+          console.error("Stream append observer failed", {
+            sessionId: event.sessionId,
+            entryIds: event.entries.map((entry) => entry.id),
+            cause: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          catchUpWorker?.onPendingSession(event.sessionId, event.pendingAt);
+        }
       },
       clock,
     });
@@ -311,6 +345,7 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
       attachmentService,
       attachmentRepository,
+      imagePerceptionRepository: repositories.imagePerceptionRepository,
       imagePerceptionService,
       clock,
       tracer,
@@ -344,6 +379,7 @@ export async function openBorgDependencies(
       coordinator: chatResponseWatermarkCoordinator,
       prefixBuilder: chatResponseBacklogPrefixBuilder,
       entryIndex: repositories.entryIndex,
+      repairSessionStreamEntryIndex,
       turnOrchestrator,
       sessionsRepository: repositories.sessionsRepository,
       clock,
