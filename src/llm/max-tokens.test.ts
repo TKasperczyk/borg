@@ -4,7 +4,7 @@ import { getModelMaxOutputTokens } from "./max-tokens.js";
 
 describe("llm max token ceilings", () => {
   it("returns the Opus ceiling", () => {
-    expect(getModelMaxOutputTokens("claude-opus-4-7")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-opus-4-6")).toBe(64_000);
   });
 
   it("returns the Haiku ceiling", () => {

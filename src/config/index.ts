@@ -273,12 +273,12 @@ const maintenanceProcessSchema = z.enum([
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
   .object({
-    // The main cognition/extraction/background slots default to Opus 4.7.
+    // The main cognition/extraction/background slots default to Opus 4.6.
     // Recall expansion is a small structured fanout task and has its own
     // Haiku slot so it can stay fast without reusing background.
-    cognition: z.string().min(1).default("claude-opus-4-7"),
-    background: z.string().min(1).default("claude-opus-4-7"),
-    extraction: z.string().min(1).default("claude-opus-4-7"),
+    cognition: z.string().min(1).default("claude-opus-4-6"),
+    background: z.string().min(1).default("claude-opus-4-6"),
+    extraction: z.string().min(1).default("claude-opus-4-6"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })

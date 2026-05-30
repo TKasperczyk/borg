@@ -70,7 +70,7 @@ const TURN_PLAN_TOOL: LLMToolDefinition = {
   inputSchema: toToolInputSchema(turnPlanSchema),
   // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
   // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
-  // well under Opus 4.7's 4096-token minimum cacheable prefix. The
+  // well under Opus 4.6's 4096-token minimum cacheable prefix. The
   // single 6505-token cache_create observed on call 1 was actually
   // the retry path's per-turn prefix, which never gets reused because
   // the planner's baseSystemPrompt is fully dynamic. Removing the

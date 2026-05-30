@@ -27,13 +27,13 @@ import type {
   TracePhase,
 } from "./types.js";
 
-export const ASSESSOR_MODEL = "claude-opus-4-7";
+export const ASSESSOR_MODEL = "claude-opus-4-6";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
 const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 const DEFAULT_MAX_ASSESSOR_LLM_CALLS = 30;
 
-// Opus 4.7 via OAuth rejects temperature:0 with a 400; omit temperature
+// Opus 4.6 via OAuth rejects temperature:0 with a 400; omit temperature
 // for Opus models entirely. Verdicts are structured (submit_verdict tool
 // with a status enum) so determinism does not depend on temperature.
 function isOpusModel(model: string): boolean {
@@ -328,7 +328,7 @@ export class AssessorAgent {
           system: systemParam(prefix, this.scenario),
           messages,
           tools: ASSESSOR_TOOLS,
-          // Set to the standard Opus 4.7 max output. The Anthropic API
+          // Set to the standard Opus 4.6 max output. The Anthropic API
           // requires max_tokens, and at this value it forces streaming
           // mode (see the messages.stream call above). Verdict reasoning
           // + tool calls fit well under this in practice.

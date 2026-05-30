@@ -42,7 +42,7 @@ exercised.
 - **Bayesian procedural memory.** Skills are Beta(α, β) posteriors; Thompson
   sampling selects an approach; outcomes update the posterior atomically.
 
-The being targets Opus 4.7. The substrate co-produces identity with the
+The being targets Opus 4.6. The substrate co-produces identity with the
 model, so the design accepts drift when migrating to a successor Opus
 rather than aiming for model-swap conformance.
 

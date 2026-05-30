@@ -19,7 +19,7 @@ and follow the imports.
   graph edges, skills, stats
 - **Stream log:** JSONL atomic append on disk
 - **LLM:** Anthropic SDK (`@anthropic-ai/sdk`). The cognition,
-  extraction, and background slots default to Opus 4.7. borg runs
+  extraction, and background slots default to Opus 4.6. borg runs
   under OAuth subscription -- there is no per-token cost to optimize
   for, so we pay the latency for consistent quality across reasoning-heavy
   work. Recall expansion has its own `recallExpansion` slot, defaulting

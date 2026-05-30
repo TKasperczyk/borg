@@ -2136,7 +2136,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
     });
     const workingMemory = createWorkingMemoryFixture({
@@ -2217,7 +2217,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
     });
 
     await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
@@ -2255,7 +2255,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
     });
     const workingMemory = createWorkingMemoryFixture({
       hot_entities: ["Atlas"],
@@ -2348,7 +2348,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
     });
     const workingMemory = createWorkingMemoryFixture({
@@ -2472,7 +2472,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
       openQuestionsRepository: harness.openQuestionsRepository,
     });
@@ -2548,7 +2548,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
       openQuestionsRepository: harness.openQuestionsRepository,
     });
@@ -2637,7 +2637,7 @@ describe("reflector", () => {
       const reflector = createHarnessReflector(harness, {
         clock: harness.clock,
         llmClient: llm,
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-6",
         identityService: harness.identityService,
         openQuestionsRepository: harness.openQuestionsRepository,
         tracer,
@@ -2715,7 +2715,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
       openQuestionsRepository: harness.openQuestionsRepository,
       tracer,
@@ -2787,7 +2787,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
       openQuestionsRepository: harness.openQuestionsRepository,
       tracer,
@@ -2844,7 +2844,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
     });
     const retrieved = createRetrievedEpisode(episode, 0.1);
@@ -2916,7 +2916,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
     });
 
@@ -2980,7 +2980,7 @@ describe("reflector", () => {
       const reflector = createHarnessReflector(harness, {
         clock: harness.clock,
         llmClient: harness.llmClient,
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-6",
         identityService: harness.identityService,
       });
 
@@ -3029,7 +3029,7 @@ describe("reflector", () => {
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       identityService: harness.identityService,
     });
 
@@ -3106,7 +3106,7 @@ describe("reflector", () => {
     const reflector = new Reflector({
       clock: harness.clock,
       llmClient: harness.llmClient,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-6",
       episodicRepository: harness.episodicRepository,
       goalsRepository: harness.goalsRepository,
       traitsRepository: harness.traitsRepository,

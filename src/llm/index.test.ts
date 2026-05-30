@@ -777,7 +777,7 @@ describe("llm", () => {
 
     await expect(
       client.complete({
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-6",
         system: "be concise",
         messages: [{ role: "user", content: "hello" }],
         tools: [

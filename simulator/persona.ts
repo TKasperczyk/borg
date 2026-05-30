@@ -20,7 +20,7 @@ import {
 
 import type { Persona } from "./types.js";
 
-export const PERSONA_MODEL = "claude-opus-4-7";
+export const PERSONA_MODEL = "claude-opus-4-6";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
 const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";

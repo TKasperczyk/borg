@@ -131,7 +131,7 @@ describe("cross-language cognition smoke", () => {
       const classifierFailure = vi.fn();
       const perception = await new Perceiver({
         llmClient,
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-6",
         onClassifierFailure: classifierFailure,
         clock: harness.clock,
       }).perceive(chineseTurn);
@@ -192,7 +192,7 @@ describe("cross-language cognition smoke", () => {
         suppressionSet: new SuppressionSet(),
         findEntityByName: () => null,
         llmClient,
-        proceduralContextModel: "claude-opus-4-7",
+        proceduralContextModel: "claude-opus-4-6",
       });
       const openQuestionRetrieval = await harness.retrievalPipeline.searchWithContext(chineseTurn, {
         limit: 3,
