@@ -24,6 +24,17 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function deferredResponse(): {
+  promise: Promise<Response>;
+  resolve: (response: Response) => void;
+} {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function makeLiveSource(): {
   emit: (frame: LiveFrame) => void;
   live: (connectionCount?: number, wsState?: WsState) => LiveEvents;
@@ -89,10 +100,12 @@ function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
     turnResponse?: Response | Promise<Response>;
+    turnResponses?: Array<Response | Promise<Response>>;
   } = {},
 ): { fetchMock: ReturnType<typeof vi.fn>; streamCalls: () => number } {
   const streamResponses = input.streamEntries ?? [[]];
   let streamCallCount = 0;
+  let turnCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
     if (url.includes("/api/stream")) {
@@ -125,7 +138,12 @@ function installCognitionFetch(
       );
     }
     if (url.endsWith("/api/turn") && init?.method === "POST") {
-      return Promise.resolve(input.turnResponse ?? jsonResponse({ ok: true, turn_id: "turn_abc" }));
+      const response =
+        input.turnResponses?.[Math.min(turnCallCount, input.turnResponses.length - 1)] ??
+        input.turnResponse ??
+        jsonResponse({ ok: true, status: "enqueued", stream_entry_id: "strm_user_abc" });
+      turnCallCount += 1;
+      return Promise.resolve(response);
     }
     return Promise.resolve(new Response("{}", { status: 404 }));
   });
@@ -222,6 +240,18 @@ function ledgerWithText(text: string): EvidenceLedger {
   };
 }
 
+function chatUserBodies(): string[] {
+  return [...document.querySelectorAll(".chat-msg.user .body")].map(
+    (element) => element.textContent ?? "",
+  );
+}
+
+function turnPostCalls(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchMock.mock.calls.filter(
+    ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+  );
+}
+
 function Harness({
   live,
   sessionId = "default",
@@ -248,11 +278,12 @@ function Harness({
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("cognition screen", () => {
-  it("renders existing image attachments as chips inside the user turn", () => {
+  it("renders image attachments without turn ids under their parent user turn", () => {
     const entries: StreamEntry[] = [
       streamEntry({
         id: "strm_zuser",
@@ -266,7 +297,13 @@ describe("cognition screen", () => {
         timestamp: 1,
         entry_index: 2,
         kind: "user_image_attachment",
-        content: { type: "image_ref", attachment_id: "att_123", media_type: "image/png" },
+        turn_id: undefined,
+        content: {
+          type: "image_ref",
+          attachment_id: "att_123",
+          media_type: "image/png",
+          parent_entry_id: "strm_zuser",
+        },
       }),
     ];
 
@@ -296,10 +333,286 @@ describe("cognition screen", () => {
     expect(screen.getByText("ledger not loaded yet")).toBeInTheDocument();
   });
 
+  it("shows an optimistic queued user bubble immediately and marks it sent after ack", async () => {
+    const source = makeLiveSource();
+    const pendingTurn = deferredResponse();
+    installCognitionFetch({
+      turnResponse: pendingTurn.promise,
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello queued" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(() => expect(chatUserBodies()).toContain("hello queued"));
+    expect(screen.getByText("queued")).toBeInTheDocument();
+
+    await act(async () => {
+      pendingTurn.resolve(
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_user_queued",
+        }),
+      );
+      await pendingTurn.promise;
+    });
+
+    expect(screen.getByText("sent")).toBeInTheDocument();
+  });
+
+  it("adopts the live batch turn frame instead of the POST ack for visualization", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch({
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_ack",
+      }),
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello batch" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+
+    expect(document.querySelector(".turn-id")?.textContent).toContain("idle");
+    expect(screen.queryByText("strm_user_ack")).not.toBeInTheDocument();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_batch"));
+    });
+
+    expect(screen.getByText("turn_batch")).toBeInTheDocument();
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
+  });
+
+  it("releases the active turn after terminal so a later batch from rapid sends is visualized", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch({
+      turnResponses: [
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_user_a",
+        }),
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_user_b",
+        }),
+      ],
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "message A" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(turnPostCalls(fetchMock)).toHaveLength(1));
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "message B" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(turnPostCalls(fetchMock)).toHaveLength(2));
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_a"));
+    });
+    expect(screen.getByText("turn_a")).toBeInTheDocument();
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
+
+    act(() => {
+      source.emit({
+        type: "stream:append",
+        ts: Date.now(),
+        entries: [
+          streamEntry({
+            id: "strm_agent_a",
+            kind: "agent_msg",
+            turn_id: "turn_a",
+            content: "answer A",
+            response_to: {
+              kind: "stream_backlog",
+              source_entry_ids: ["strm_user_a"],
+            },
+          }),
+        ],
+      });
+      source.emit(terminalFrame("turn_a", "reflected"));
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_b"));
+    });
+
+    expect(screen.getByText("turn_b")).toBeInTheDocument();
+    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
+  });
+
+  it("does not add a second optimistic bubble for a duplicate ack", async () => {
+    const source = makeLiveSource();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "00000000-0000-4000-8000-000000000001",
+    );
+    const { fetchMock } = installCognitionFetch({
+      turnResponses: [
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_user_original",
+        }),
+        jsonResponse({
+          ok: true,
+          status: "duplicate",
+          stream_entry_id: "strm_user_original",
+        }),
+      ],
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello once" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(screen.getByText("sent")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello duplicate" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(
+      () =>
+        expect(
+          fetchMock.mock.calls.filter(
+            ([request, init]) =>
+              String(request).endsWith("/api/turn") && init?.method === "POST",
+          ),
+        ).toHaveLength(2),
+    );
+
+    expect(document.querySelectorAll(".chat-msg.user")).toHaveLength(1);
+    expect(screen.getByText("hello once")).toBeInTheDocument();
+    expect(screen.queryByText("hello duplicate")).not.toBeInTheDocument();
+  });
+
+  it("does not enqueue the same draft twice on double submit", async () => {
+    const source = makeLiveSource();
+    const pendingTurn = deferredResponse();
+    const { fetchMock } = installCognitionFetch({
+      turnResponse: pendingTurn.promise,
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "same draft" },
+    });
+    const sendButton = screen.getByRole("button", { name: "send" });
+    fireEvent.click(sendButton);
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(turnPostCalls(fetchMock)).toHaveLength(1));
+    const body = JSON.parse(String((turnPostCalls(fetchMock)[0]?.[1] as RequestInit).body)) as {
+      external_message_id: string;
+      message: string;
+    };
+    expect(body).toMatchObject({
+      message: "same draft",
+      external_message_id: expect.any(String),
+    });
+
+    await act(async () => {
+      pendingTurn.resolve(
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_same_draft",
+        }),
+      );
+      await pendingTurn.promise;
+    });
+  });
+
+  it("keeps the composer enabled so a second send can enqueue while one is running", async () => {
+    const source = makeLiveSource();
+    const firstTurn = deferredResponse();
+    const secondTurn = deferredResponse();
+    const { fetchMock } = installCognitionFetch({
+      turnResponses: [firstTurn.promise, secondTurn.promise],
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "first queued" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    await waitFor(() => expect(chatUserBodies()).toContain("first queued"));
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_running"));
+    });
+
+    const sendButton = screen.getByRole("button", { name: "send" });
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "second queued" },
+    });
+    expect(sendButton).toBeEnabled();
+    fireEvent.click(sendButton);
+
+    await waitFor(
+      () =>
+        expect(
+          fetchMock.mock.calls.filter(
+            ([request, init]) =>
+              String(request).endsWith("/api/turn") && init?.method === "POST",
+          ),
+        ).toHaveLength(2),
+    );
+    expect(chatUserBodies()).toContain("second queued");
+
+    await act(async () => {
+      firstTurn.resolve(
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_first",
+        }),
+      );
+      secondTurn.resolve(
+        jsonResponse({
+          ok: true,
+          status: "enqueued",
+          stream_entry_id: "strm_second",
+        }),
+      );
+      await Promise.all([firstTurn.promise, secondTurn.promise]);
+    });
+  });
+
   it("keeps the in-flight placeholder after POST resolves until reflect completion", async () => {
     const source = makeLiveSource();
     installCognitionFetch({
-      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_abc",
+      }),
     });
 
     render(<Harness live={source.live()} />);
@@ -328,7 +641,11 @@ describe("cognition screen", () => {
   it("scopes stream fetches and turn posts to the active session", async () => {
     const source = makeLiveSource();
     const { fetchMock } = installCognitionFetch({
-      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_abc",
+      }),
     });
 
     render(<Harness live={source.live()} sessionId="sess_custom" />);
@@ -355,9 +672,9 @@ describe("cognition screen", () => {
       const init = turnCall?.[1] as RequestInit;
       expect(JSON.parse(String(init.body))).toEqual({
         message: "hello borg",
+        external_message_id: expect.any(String),
         audience: "alice",
         session: "sess_custom",
-        stakes: "low",
       });
     });
   });
@@ -406,7 +723,11 @@ describe("cognition screen", () => {
   it("stages uploaded images and posts turns as multipart form data", async () => {
     const source = makeLiveSource();
     const { fetchMock } = installCognitionFetch({
-      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_abc",
+      }),
     });
     const file = new File([new Uint8Array([1, 2, 3])], "pixel.png", { type: "image/png" });
 
@@ -433,9 +754,9 @@ describe("cognition screen", () => {
       expect(init.body).toBeInstanceOf(FormData);
       const body = init.body as FormData;
       expect(body.get("message")).toBe("see this image");
+      expect(body.get("external_message_id")).toEqual(expect.any(String));
       expect(body.get("audience")).toBe("alice");
       expect(body.get("session")).toBe("default");
-      expect(body.get("stakes")).toBe("low");
       expect(body.getAll("attachments[]")).toEqual([file]);
     });
 
@@ -445,7 +766,11 @@ describe("cognition screen", () => {
   it("clears the in-flight placeholder on terminal turn frames", async () => {
     const source = makeLiveSource();
     installCognitionFetch({
-      turnResponse: jsonResponse({ ok: true, turn_id: "turn_abc" }),
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_abc",
+      }),
     });
 
     render(<Harness live={source.live()} />);
@@ -463,6 +788,22 @@ describe("cognition screen", () => {
     });
 
     act(() => {
+      source.emit({
+        type: "stream:append",
+        ts: Date.now(),
+        entries: [
+          streamEntry({
+            id: "strm_agent_abc",
+            kind: "agent_msg",
+            turn_id: "turn_abc",
+            content: "answer",
+            response_to: {
+              kind: "stream_backlog",
+              source_entry_ids: ["strm_user_abc"],
+            },
+          }),
+        ],
+      });
       source.emit(terminalFrame());
     });
 
@@ -572,7 +913,11 @@ describe("cognition screen", () => {
   it("ignores stale turn frames after a newer turn starts", async () => {
     const source = makeLiveSource();
     installCognitionFetch({
-      turnResponse: jsonResponse({ ok: true, turn_id: "turn_new" }),
+      turnResponse: jsonResponse({
+        ok: true,
+        status: "enqueued",
+        stream_entry_id: "strm_user_new",
+      }),
     });
 
     render(<Harness live={source.live()} />);

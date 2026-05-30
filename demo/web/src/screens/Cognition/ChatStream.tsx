@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import type { StreamEntry } from "../../api/types";
 import { Empty } from "../../components/Empty";
-import { streamEntriesToChatTurns } from "./chat-utils";
+import { streamEntriesToChatTurns, type ChatStreamEntry } from "./chat-utils";
 import { ChatMessage } from "./ChatMessage";
 
 export type ChatStreamProps = {
-  entries: readonly StreamEntry[];
+  entries: readonly ChatStreamEntry[];
   sessionId: string;
   audience: string;
   running: boolean;
@@ -33,7 +32,7 @@ export function ChatStream({ entries, sessionId, audience, running }: ChatStream
     <>
       <div className="chat-head">
         <span className="title">transcript · {shortSession(sessionId)}</span>
-        <span className="stakes">
+        <span className="chat-audience">
           <span className="label">audience</span>
           <span className="val">{audience}</span>
         </span>

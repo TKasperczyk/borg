@@ -8,7 +8,6 @@ export type TopbarProps = {
   ws_state: WsState;
   now: string;
   route?: string;
-  stakes?: string;
 };
 
 function wsLabel(state: WsState): string {
@@ -42,7 +41,6 @@ export function Topbar({
   ws_state,
   now,
   route = "cognition",
-  stakes = "routine",
 }: TopbarProps) {
   return (
     <div className="topbar">
@@ -63,10 +61,6 @@ export function Topbar({
         <div className="topbar-pill">
           <span className="k">audience</span>
           <span className="v">{audience}</span>
-        </div>
-        <div className="topbar-pill">
-          <span className="k">stakes</span>
-          <span className="v">{stakes}</span>
         </div>
         <div className="topbar-pill">
           <span className="k">turn</span>

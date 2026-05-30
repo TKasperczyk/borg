@@ -17,9 +17,9 @@ import {
   createSemanticEdgeId,
   createSemanticNodeId,
   type AttachmentId,
+  type BorgEnqueueMessageResult,
   type BorgOpenOptions,
   type StreamEntry,
-  type TurnResult,
 } from "borg";
 
 import {
@@ -72,6 +72,17 @@ function createDeferred<T>(): Deferred<T> {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function createBorgCloseStub(input: { start?: () => void } = {}): Borg {
+  return {
+    close: vi.fn(async () => {}),
+    inbox: {
+      catchUp: {
+        start: input.start ?? vi.fn(),
+      },
+    },
+  } as unknown as Borg;
 }
 
 function createEmptyReflectionResponse() {
@@ -259,6 +270,35 @@ async function requestJson(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function enqueueTextTurn(
+  app: ReturnType<typeof createDemoServerApp>["app"],
+  body: {
+    message: string;
+    external_message_id: string;
+    audience?: string;
+    session?: string;
+  },
+) {
+  const response = await requestJson(app, "/api/turn", "POST", body);
+  const text = await response.text();
+
+  expect(response.status, text).toBe(200);
+
+  const ack = JSON.parse(text) as {
+    ok: boolean;
+    status: "enqueued" | "duplicate";
+    stream_entry_id: string;
+  };
+
+  expect(ack).toMatchObject({
+    ok: true,
+    status: "enqueued",
+    stream_entry_id: expect.any(String),
+  });
+
+  return ack;
 }
 
 async function seedCorrectionEpisode(
@@ -932,27 +972,80 @@ describe("demo server", () => {
     const turn = await app.request("/api/turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "hello", audience: "Alice", stakes: "low" }),
+      body: JSON.stringify({
+        message: "hello",
+        external_message_id: "demo-text-1",
+        audience: "Alice",
+      }),
     });
     expect(turn.status).toBe(200);
-    expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+    const turnBody = (await turn.json()) as {
+      ok: boolean;
+      status: string;
+      stream_entry_id: string;
+    };
+    expect(turnBody).toMatchObject({
+      ok: true,
+      status: "enqueued",
+      stream_entry_id: expect.any(String),
+    });
+
+    const duplicateTurn = await app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "hello again",
+        external_message_id: "demo-text-1",
+        audience: "Alice",
+      }),
+    });
+    expect(duplicateTurn.status).toBe(200);
+    expect(await duplicateTurn.json()).toEqual({
+      ok: true,
+      status: "duplicate",
+      stream_entry_id: turnBody.stream_entry_id,
+    });
+    expect(borg.sessions.get(DEFAULT_SESSION_ID)).toMatchObject({
+      source_external_id: DEFAULT_SESSION_ID,
+      audience_entity_id: expect.any(String),
+      last_turn_id: null,
+      message_count: 1,
+    });
+    expect(
+      borg.stream
+        .tail(10)
+        .filter((entry) => entry.kind === "user_msg" && entry.content === "hello"),
+    ).toHaveLength(1);
+    expect(
+      borg.stream.tail(10).find((entry) => entry.id === turnBody.stream_entry_id),
+    ).toMatchObject({
+      kind: "user_msg",
+      source_message_key: {
+        source_type: "demo",
+        source_external_id: DEFAULT_SESSION_ID,
+        external_message_id: "demo-text-1",
+      },
+      audience: "Alice",
+    });
 
     const customTurn = await app.request("/api/turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: "hello custom",
+        external_message_id: "demo-custom-1",
         audience: "Alice",
-        stakes: "low",
         session: customSessionId,
       }),
     });
     const customTurnText = await customTurn.text();
     expect(customTurn.status, customTurnText).toBe(200);
-    const customTurnBody = JSON.parse(customTurnText) as { turn_id: string };
+    const customTurnBody = JSON.parse(customTurnText) as { stream_entry_id: string };
+    expect(customTurnBody).toMatchObject({ stream_entry_id: expect.any(String) });
     expect(borg.sessions.get(customSessionId)).toMatchObject({
       session_id: customSessionId,
-      last_turn_id: customTurnBody.turn_id,
+      source_external_id: customSessionId,
+      last_turn_id: null,
       message_count: 1,
     });
   });
@@ -1046,8 +1139,8 @@ describe("demo server", () => {
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const formData = new FormData();
     formData.set("message", "please look at this");
+    formData.set("external_message_id", "demo-image-1");
     formData.set("audience", "Alice");
-    formData.set("stakes", "low");
     formData.append("attachments[]", new File([PNG_1X1], "pixel.png", { type: "image/png" }));
 
     const turn = await app.request("/api/turn", {
@@ -1056,7 +1149,11 @@ describe("demo server", () => {
     });
 
     expect(turn.status).toBe(200);
-    expect(await turn.json()).toMatchObject({ ok: true, turn_id: expect.any(String) });
+    expect(await turn.json()).toMatchObject({
+      ok: true,
+      status: "enqueued",
+      stream_entry_id: expect.any(String),
+    });
 
     const attachments: StreamEntry[] = [];
     for await (const entry of borg.stream.reader().iterate({ kinds: ["user_image_attachment"] })) {
@@ -1913,14 +2010,19 @@ describe("demo server", () => {
     });
     const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const { frames, wasClosed } = collectLiveFrames(live);
 
-    const response = await borg.turn({
-      userMessage: "hello ws",
+    await enqueueTextTurn(app, {
+      message: "hello ws",
+      external_message_id: "ws-phases-1",
       audience: "Alice",
-      stakes: "low",
     });
-    expect(response.turn_id).toEqual(expect.any(String));
+    await expect(borg.inbox.catchUp.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "drained",
+      drained: 1,
+      hasMore: false,
+    });
 
     await waitFor(
       () =>
@@ -1944,7 +2046,8 @@ describe("demo server", () => {
 
     expect(perceptionStart).toBeGreaterThanOrEqual(0);
     expect(perceptionComplete).toBeGreaterThan(perceptionStart);
-    expect(frames.find((frame) => frame.type === "turn:terminal")).toMatchObject({
+    const terminalFrame = frames.find((frame) => frame.type === "turn:terminal");
+    expect(terminalFrame).toMatchObject({
       event: "turn.terminal",
       data: {
         outcome: "reflected",
@@ -1954,6 +2057,25 @@ describe("demo server", () => {
     });
     live.broadcaster.closeAll();
     expect(wasClosed()).toBe(true);
+  });
+
+  it("updates demo session last_turn_id from terminal stream appends", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    await borg.stream.append({
+      kind: "agent_msg",
+      content: "terminal",
+      turn_id: "turn_terminal_observer",
+    });
+
+    expect(borg.sessions.get(DEFAULT_SESSION_ID)).toMatchObject({
+      last_turn_id: "turn_terminal_observer",
+      message_count: 0,
+    });
   });
 
   it("broadcasts token frames between finalizer phase start and completion", async () => {
@@ -1967,12 +2089,18 @@ describe("demo server", () => {
     });
     const { borg, live } = await openHarness({ tempDir, llmClient: llm });
     closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const { frames } = collectLiveFrames(live);
 
-    await borg.turn({
-      userMessage: "hello token ws",
+    await enqueueTextTurn(app, {
+      message: "hello token ws",
+      external_message_id: "ws-token-1",
       audience: "Alice",
-      stakes: "low",
+    });
+    await expect(borg.inbox.catchUp.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "drained",
+      drained: 1,
+      hasMore: false,
     });
 
     await waitFor(() => frames.some((frame) => frame.type === "turn:token"));
@@ -2031,31 +2159,30 @@ describe("demo server", () => {
     });
     ws.send(JSON.stringify({ type: "subscribe", session_id: DEFAULT_SESSION_ID }));
 
-    const result = await borg.turn({
-      userMessage: "hello websocket terminal",
+    await enqueueTextTurn(app, {
+      message: "hello websocket terminal",
+      external_message_id: "ws-terminal-1",
       audience: "Alice",
-      stakes: "low",
+    });
+    await expect(borg.inbox.catchUp.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "drained",
+      drained: 1,
+      hasMore: false,
     });
 
     await waitFor(() =>
-      frames.some(
-        (frame) =>
-          frame.type === "turn:terminal" &&
-          (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
-      ),
+      frames.some((frame) => frame.type === "turn:terminal"),
     );
 
-    const terminalIndex = frames.findIndex(
-      (frame) =>
-        frame.type === "turn:terminal" &&
-        (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
-    );
+    const terminalIndex = frames.findIndex((frame) => frame.type === "turn:terminal");
+    const turnId = (frames[terminalIndex]?.data as { turn_id?: unknown } | undefined)?.turn_id;
+    expect(turnId).toEqual(expect.any(String));
     const phaseIndices = frames
       .map((frame, index) => ({ frame, index }))
       .filter(
         ({ frame }) =>
           frame.type.startsWith("turn:phase:") &&
-          (frame.data as { turn_id?: unknown } | undefined)?.turn_id === result.turn_id,
+          (frame.data as { turn_id?: unknown } | undefined)?.turn_id === turnId,
       )
       .map(({ index }) => index);
 
@@ -2065,7 +2192,7 @@ describe("demo server", () => {
       type: "turn:terminal",
       event: "turn.terminal",
       data: {
-        turn_id: result.turn_id,
+        turn_id: turnId,
         outcome: "reflected",
       },
     });
@@ -2212,10 +2339,10 @@ describe("demo server", () => {
     const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const turnStarted = createDeferred<void>();
-    const turnRelease = createDeferred<TurnResult>();
-    const turnSpy = vi.spyOn(borg, "turn").mockImplementation(async () => {
+    const enqueueRelease = createDeferred<BorgEnqueueMessageResult>();
+    const enqueueSpy = vi.spyOn(borg, "enqueueMessage").mockImplementation(async () => {
       turnStarted.resolve();
-      return turnRelease.promise;
+      return enqueueRelease.promise;
     });
     const resetBorg = vi.fn(async () => {});
     const { app } = createDemoServerApp({
@@ -2227,7 +2354,7 @@ describe("demo server", () => {
     const turn = app.request("/api/turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "hello" }),
+      body: JSON.stringify({ message: "hello", external_message_id: "busy-1" }),
     });
     await turnStarted.promise;
 
@@ -2239,9 +2366,72 @@ describe("demo server", () => {
     expect(reset.status).toBe(409);
     expect(resetBorg).not.toHaveBeenCalled();
 
-    turnRelease.resolve({ turn_id: "turn_gate" } as TurnResult);
+    enqueueRelease.resolve({
+      status: "enqueued",
+      sessionId: DEFAULT_SESSION_ID,
+      streamEntryId: "se_busy",
+    } as BorgEnqueueMessageResult);
     expect((await turn).status).toBe(200);
-    turnSpy.mockRestore();
+    enqueueSpy.mockRestore();
+  });
+
+  it("server entrypoint starts the catch-up worker after opening Borg", async () => {
+    vi.resetModules();
+    const previousPort = process.env.PORT;
+    process.env.PORT = "7781";
+
+    const start = vi.fn();
+    const borg = createBorgCloseStub({ start });
+    const open = vi.fn(async () => borg);
+    const serveMock = vi.fn(() => ({
+      close: vi.fn((callback?: () => void) => callback?.()),
+    }));
+    const createDemoServerAppMock = vi.fn(() => ({
+      app: { fetch: vi.fn() },
+      injectWebSocket: vi.fn(),
+    }));
+
+    vi.doMock("borg", () => ({
+      Borg: { open },
+      DemoMessageConnector: class DemoMessageConnector {},
+    }));
+    vi.doMock("@hono/node-server", () => ({ serve: serveMock }));
+    vi.doMock("../app.js", () => ({
+      createDemoServerApp: createDemoServerAppMock,
+      ensureDemoDefaultSession: vi.fn(),
+    }));
+    vi.doMock("../live.js", () => ({
+      createLiveBridge: vi.fn(() => ({
+        broadcaster: { closeAll: vi.fn() },
+        tracer: {},
+        ledgerCache: new Map(),
+        observeStreamAppend: vi.fn(),
+        onStreamAppend: vi.fn(),
+      })),
+    }));
+    vi.doMock("../reset.js", () => ({
+      createResetBorgController: vi.fn(() => vi.fn()),
+    }));
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      await import("../index.js?server-start");
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(serveMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousPort === undefined) {
+        delete process.env.PORT;
+      } else {
+        process.env.PORT = previousPort;
+      }
+      vi.doUnmock("borg");
+      vi.doUnmock("@hono/node-server");
+      vi.doUnmock("../app.js");
+      vi.doUnmock("../live.js");
+      vi.doUnmock("../reset.js");
+      vi.resetModules();
+    }
   });
 
   it("Borg requests are rejected during reset and accepted after reset completes", async () => {
@@ -2271,7 +2461,7 @@ describe("demo server", () => {
     const turn = await app.request("/api/turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "hello during reset" }),
+      body: JSON.stringify({ message: "hello during reset", external_message_id: "reset-busy-1" }),
     });
     expect(turn.status).toBe(503);
 
@@ -2328,9 +2518,13 @@ describe("demo server", () => {
     const live = createLiveBridge();
     const sessionId = createSessionId();
     const borgHandle: BorgHandle = {
-      current: { close: vi.fn(async () => {}) } as unknown as Borg,
+      current: createBorgCloseStub(),
     };
-    const nextBorg = { close: vi.fn(async () => {}) } as unknown as Borg;
+    const nextStart = vi.fn(() => {
+      expect(borgHandle.current).toBe(nextBorg);
+      expect(borgHandle.state).toBe("open");
+    });
+    const nextBorg = createBorgCloseStub({ start: nextStart });
     const resetBorg = createResetBorgController({
       dataDir: tempDir,
       live,
@@ -2342,6 +2536,7 @@ describe("demo server", () => {
 
     live.broadcaster.broadcast({ type: "turn:phase:started", ts: 1, session_id: sessionId });
     await resetBorg();
+    expect(nextStart).toHaveBeenCalledTimes(1);
     live.broadcaster.add(client);
     live.broadcaster.handleSubscriptionMessage(client, {
       type: "subscribe",
@@ -2357,9 +2552,9 @@ describe("demo server", () => {
     const live = createLiveBridge();
     const openStarted = createDeferred<void>();
     const openRelease = createDeferred<void>();
-    const nextBorg = { close: vi.fn(async () => {}) } as unknown as Borg;
+    const nextBorg = createBorgCloseStub();
     const borgHandle = {
-      current: { close: vi.fn(async () => {}) } as unknown as Borg,
+      current: createBorgCloseStub(),
     };
     const resetBorg = createResetBorgController({
       dataDir: tempDir,

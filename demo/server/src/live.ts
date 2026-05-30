@@ -31,6 +31,8 @@ type BufferedLiveFrame = {
   ts: number;
 };
 
+type StreamAppendObserver = (entries: readonly StreamEntry[]) => void;
+
 const RING_BUFFER_MAX = 64;
 const RING_BUFFER_MAX_AGE_MS = 60_000;
 
@@ -399,17 +401,37 @@ export type LiveBridge = {
   broadcaster: LiveBroadcaster;
   tracer: TurnTracer;
   ledgerCache: Map<string, unknown>;
+  observeStreamAppend(observer: StreamAppendObserver): () => void;
   onStreamAppend(entries: readonly StreamEntry[]): void;
 };
 
 export function createLiveBridge(): LiveBridge {
   const broadcaster = new LiveBroadcaster();
   const ledgerCache = new Map<string, unknown>();
+  const streamAppendObservers = new Set<StreamAppendObserver>();
 
   return {
     broadcaster,
     tracer: new WsBridgeTracer(broadcaster, ledgerCache),
     ledgerCache,
-    onStreamAppend: (entries) => broadcaster.streamAppend(entries),
+    observeStreamAppend: (observer) => {
+      streamAppendObservers.add(observer);
+      return () => {
+        streamAppendObservers.delete(observer);
+      };
+    },
+    onStreamAppend: (entries) => {
+      broadcaster.streamAppend(entries);
+
+      for (const observer of streamAppendObservers) {
+        try {
+          observer(entries);
+        } catch (error) {
+          console.error("Live stream append observer failed", {
+            cause: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    },
   };
 }

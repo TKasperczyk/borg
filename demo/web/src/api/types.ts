@@ -36,6 +36,15 @@ export type StreamEntry = {
   audience?: string;
   sender_entity_id: string | null;
   reply_target_entity_id: string | null;
+  source_message_key?: {
+    source_type: string;
+    source_external_id: string;
+    external_message_id: string;
+  };
+  response_to?: {
+    source_entry_ids?: string[];
+    [key: string]: unknown;
+  };
   persistence_class?: "assistant_self_report";
   session_id: string;
   compressed: boolean;
@@ -748,8 +757,6 @@ export type StateSnapshot = {
   version: string;
 };
 
-export type TurnStakes = "low" | "medium" | "high";
-
 export type SessionSourceType = "demo" | "slack" | "discord" | "imessage" | "autonomy";
 
 export type ConversationKind = "dm" | "channel" | "thread" | "demo";
@@ -798,16 +805,17 @@ export type SessionsResponse = {
 
 export type TurnRequest = {
   message: string;
+  external_message_id: string;
   audience: string;
   audience_entity_id?: string | null;
   session?: string;
-  stakes?: TurnStakes;
   attachments?: readonly File[];
 };
 
 export type TurnResponse = {
-  turn_id: string;
-  ok: true;
+  ok: boolean;
+  status: "enqueued" | "duplicate";
+  stream_entry_id: string;
 };
 
 export type TurnPhaseName =

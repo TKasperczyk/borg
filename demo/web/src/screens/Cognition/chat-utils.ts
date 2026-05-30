@@ -1,6 +1,13 @@
 import type { StreamEntry } from "../../api/types";
 import { sortStreamEntries, streamContentText } from "../../lib/stream-utils";
 
+export type ChatDeliveryStatus = "queued" | "sent";
+
+export type ChatStreamEntry = StreamEntry & {
+  external_message_id?: string;
+  optimistic_status?: ChatDeliveryStatus;
+};
+
 export type AttachmentRef = {
   attachmentId: string;
   mediaType?: string;
@@ -8,7 +15,7 @@ export type AttachmentRef = {
 };
 
 export type ChatTurn = {
-  entry: StreamEntry;
+  entry: ChatStreamEntry;
   role: "user" | "borg";
   text: string;
   attachments: AttachmentRef[];
@@ -20,6 +27,7 @@ type ImageRefContent = {
   type?: unknown;
   attachment_id?: unknown;
   media_type?: unknown;
+  parent_entry_id?: unknown;
 };
 
 type RichContent = {
@@ -77,10 +85,20 @@ function attachmentFromEntry(entry: StreamEntry): AttachmentRef | null {
   };
 }
 
-export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatTurn[] {
-  const ordered = sortStreamEntries(entries);
+function attachmentParentEntryId(content: unknown): string | null {
+  if (!isRecord(content)) {
+    return null;
+  }
+
+  const parentEntryId = (content as ImageRefContent).parent_entry_id;
+  return typeof parentEntryId === "string" && parentEntryId.length > 0 ? parentEntryId : null;
+}
+
+export function streamEntriesToChatTurns(entries: readonly ChatStreamEntry[]): ChatTurn[] {
+  const ordered = sortStreamEntries(entries) as ChatStreamEntry[];
   const turns: ChatTurn[] = [];
   const byTurnId = new Map<string, ChatTurn>();
+  const byEntryId = new Map<string, ChatTurn>();
 
   for (const entry of ordered) {
     if (entry.kind === "user_msg" || entry.kind === "agent_msg") {
@@ -93,6 +111,7 @@ export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatT
         refs: contentRefs(entry.content),
       };
       turns.push(turn);
+      byEntryId.set(entry.id, turn);
       if (entry.turn_id !== undefined) {
         byTurnId.set(`${entry.turn_id}:${entry.kind === "user_msg" ? "user" : "borg"}`, turn);
       }
@@ -105,7 +124,13 @@ export function streamEntriesToChatTurns(entries: readonly StreamEntry[]): ChatT
         continue;
       }
       const key = entry.turn_id === undefined ? null : `${entry.turn_id}:user`;
-      const parent = key === null ? undefined : byTurnId.get(key);
+      const parentEntryId = attachmentParentEntryId(entry.content);
+      const parent =
+        parentEntryId === null
+          ? key === null
+            ? undefined
+            : byTurnId.get(key)
+          : byEntryId.get(parentEntryId) ?? (key === null ? undefined : byTurnId.get(key));
       if (parent !== undefined) {
         parent.attachments.push(attachment);
       } else {

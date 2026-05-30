@@ -82,6 +82,7 @@ export function createResetBorgController(
       const nextBorg = await openBorg();
       options.borgHandle.current = nextBorg;
       options.borgHandle.state = "open";
+      nextBorg.inbox.catchUp.start();
       options.live.ledgerCache.clear();
       options.live.broadcaster.broadcast({ type: "borg:reset", ts: Date.now() });
     } finally {

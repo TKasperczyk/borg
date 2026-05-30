@@ -469,15 +469,13 @@ export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
   if (input.attachments !== undefined && input.attachments.length > 0) {
     const body = new FormData();
     body.set("message", input.message);
+    body.set("external_message_id", input.external_message_id);
     body.set("audience", input.audience);
     if (input.audience_entity_id !== undefined && input.audience_entity_id !== null) {
       body.set("audience_entity_id", input.audience_entity_id);
     }
     if (input.session !== undefined) {
       body.set("session", input.session);
-    }
-    if (input.stakes !== undefined) {
-      body.set("stakes", input.stakes);
     }
     for (const attachment of input.attachments) {
       body.append("attachments[]", attachment, attachment.name);
@@ -493,12 +491,12 @@ export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
     method: "POST",
     body: JSON.stringify({
       message: input.message,
+      external_message_id: input.external_message_id,
       audience: input.audience,
       ...(input.audience_entity_id === undefined || input.audience_entity_id === null
         ? {}
         : { audience_entity_id: input.audience_entity_id }),
       session: input.session,
-      stakes: input.stakes,
     }),
   });
 }

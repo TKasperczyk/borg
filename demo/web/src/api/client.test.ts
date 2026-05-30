@@ -47,24 +47,32 @@ describe("api client", () => {
     expect(url.searchParams.get("limit")).toBe("50");
   });
 
-  it("posts turns with message, audience, session, and stakes", async () => {
+  it("posts turns with message, external id, audience, and session", async () => {
     const fetchMock = mockFetch(
-      new Response(JSON.stringify({ ok: true, turn_id: "turn_123" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ ok: true, status: "enqueued", stream_entry_id: "strm_123" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
     );
 
-    await postTurn({ message: "hello", audience: "alice", session: "sess_custom", stakes: "low" });
+    await postTurn({
+      message: "hello",
+      external_message_id: "msg_123",
+      audience: "alice",
+      session: "sess_custom",
+    });
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/turn");
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       message: "hello",
+      external_message_id: "msg_123",
       audience: "alice",
       session: "sess_custom",
-      stakes: "low",
     });
   });
 

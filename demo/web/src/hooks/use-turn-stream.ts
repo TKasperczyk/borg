@@ -13,6 +13,7 @@ import type {
   TurnPhaseFrame,
   TurnPhaseName,
   TurnRequest,
+  TurnResponse,
 } from "../api/types";
 import { formatTime, sortStreamEntries, streamContentText } from "../lib/stream-utils";
 import type { LiveEvents } from "./use-live-events";
@@ -115,6 +116,15 @@ function turnIdFromLiveFrame(frame: LiveFrame): string | null {
   }
 
   return null;
+}
+
+function responseToSourceEntryIds(entry: StreamEntry): string[] {
+  const sourceEntryIds = entry.response_to?.source_entry_ids;
+  if (!Array.isArray(sourceEntryIds)) {
+    return [];
+  }
+
+  return sourceEntryIds.filter((entryId): entryId is string => typeof entryId === "string");
 }
 
 function sessionIdFromLiveFrame(frame: LiveFrame): string | null {
@@ -331,7 +341,7 @@ export type TurnStreamState = {
   eventTail: TailEvent[];
   ledgerByTurn: Map<string, EvidenceLedger>;
   lastPhase: string;
-  runTurn: (input: TurnRequest) => Promise<boolean>;
+  runTurn: (input: TurnRequest) => Promise<TurnResponse | null>;
   resetForReconnect: () => void;
   replaceTailFromEntries: (entries: readonly StreamEntry[]) => void;
 };
@@ -354,12 +364,20 @@ export function useTurnStream(
   const reflectTimeoutRef = useRef<number | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const lastDrivenTurnIdRef = useRef<string | null>(null);
+  const runningRef = useRef(false);
+  const outstandingStreamEntryIdsRef = useRef<Set<string>>(new Set());
+  const pendingPostCountRef = useRef(0);
   const pendingTurnRef = useRef<{
     requestSeq: number;
     turnId: string | null;
     ignoredTurnIds: ReadonlySet<string>;
   } | null>(null);
   const runSeqRef = useRef(0);
+
+  const setRunningState = useCallback((next: boolean) => {
+    runningRef.current = next;
+    setRunning(next);
+  }, []);
 
   useEffect(() => {
     activeTurnIdRef.current = activeTurnId;
@@ -403,13 +421,77 @@ export function useTurnStream(
     }
   }, []);
 
+  const beginPendingLiveTurn = useCallback(
+    (ignoredTurnIds: ReadonlySet<string>) => {
+      const requestSeq = runSeqRef.current + 1;
+      runSeqRef.current = requestSeq;
+      pendingTurnRef.current = {
+        requestSeq,
+        turnId: null,
+        ignoredTurnIds,
+      };
+      activeTurnIdRef.current = null;
+      setRunningState(true);
+      setActiveTurnId(null);
+      setPhases(initialPhases());
+      setTokenTextByPhase(new Map());
+      setTerminalOutcome(null);
+      setDelibPath(null);
+      setFinalAttempt(1);
+      setLastPhase("turn queued");
+      clearReflectTimeout();
+      reflectTimeoutRef.current = window.setTimeout(() => {
+        reflectTimeoutRef.current = null;
+        setRunningState(false);
+        setLastPhase("reflect timeout");
+      }, TURN_REFLECT_TIMEOUT_MS);
+    },
+    [clearReflectTimeout, setRunningState],
+  );
+
+  const ignoredCurrentTurnIds = useCallback((): ReadonlySet<string> => {
+    return new Set(
+      [activeTurnIdRef.current, lastDrivenTurnIdRef.current].filter(
+        (turnId): turnId is string => turnId !== null,
+      ),
+    );
+  }, []);
+
+  const beginPendingLiveTurnFromCurrent = useCallback(() => {
+    beginPendingLiveTurn(ignoredCurrentTurnIds());
+  }, [beginPendingLiveTurn, ignoredCurrentTurnIds]);
+
+  const completeActiveLiveTurn = useCallback(
+    (input: { releaseForOutstanding: boolean }) => {
+      clearReflectTimeout();
+
+      if (input.releaseForOutstanding && outstandingStreamEntryIdsRef.current.size > 0) {
+        beginPendingLiveTurnFromCurrent();
+        return;
+      }
+
+      setRunningState(false);
+    },
+    [beginPendingLiveTurnFromCurrent, clearReflectTimeout, setRunningState],
+  );
+
+  const markResponseSourcesAnswered = useCallback((entries: readonly StreamEntry[]) => {
+    for (const entry of entries) {
+      for (const sourceEntryId of responseToSourceEntryIds(entry)) {
+        outstandingStreamEntryIdsRef.current.delete(sourceEntryId);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     pendingTurnRef.current = null;
     activeTurnIdRef.current = null;
     lastDrivenTurnIdRef.current = null;
+    outstandingStreamEntryIdsRef.current.clear();
+    pendingPostCountRef.current = 0;
     clearReflectTimeout();
     setActiveTurnId(null);
-    setRunning(false);
+    setRunningState(false);
     setPhases(initialPhases());
     setTokenTextByPhase(new Map());
     setTerminalOutcome(null);
@@ -418,7 +500,7 @@ export function useTurnStream(
     setEventTail([]);
     setLedgerByTurn(new Map());
     setLastPhase("idle");
-  }, [clearReflectTimeout, input.sessionId]);
+  }, [clearReflectTimeout, input.sessionId, setRunningState]);
 
   const markTailSettled = useCallback((ids: readonly string[]) => {
     const timer = window.setTimeout(() => {
@@ -467,6 +549,10 @@ export function useTurnStream(
         return;
       }
 
+      if (frame.type === "stream:append") {
+        markResponseSourcesAnswered(frame.entries);
+      }
+
       pushTail(tailRowsFromFrame(frame));
 
       if (frame.type === "evidence_ledger:built" && frame.ledger !== null) {
@@ -503,8 +589,7 @@ export function useTurnStream(
         setTokenTextByPhase(new Map());
 
         if (currentTurnId === null || currentTurnId === frameTurnId) {
-          clearReflectTimeout();
-          setRunning(false);
+          completeActiveLiveTurn({ releaseForOutstanding: true });
         }
 
         return;
@@ -532,74 +617,64 @@ export function useTurnStream(
       }
 
       if (phaseFrame.type === "turn:phase:completed" && phaseFrame.data.phase === "reflect") {
-        clearReflectTimeout();
-        setRunning(false);
+        completeActiveLiveTurn({ releaseForOutstanding: false });
       }
 
       if (phaseFrame.type === "turn:phase:failed") {
-        clearReflectTimeout();
-        setRunning(false);
+        completeActiveLiveTurn({ releaseForOutstanding: false });
       }
     });
-  }, [acceptsTurnFrame, clearReflectTimeout, input.sessionId, live, pushTail]);
+  }, [
+    acceptsTurnFrame,
+    completeActiveLiveTurn,
+    input.sessionId,
+    live,
+    markResponseSourcesAnswered,
+    pushTail,
+  ]);
 
   const runTurn = useCallback(
     async (input: TurnRequest) => {
-      if (running) {
-        return false;
+      const waitingForLiveTurn =
+        pendingTurnRef.current !== null &&
+        pendingTurnRef.current.turnId === null &&
+        activeTurnIdRef.current === null;
+      let startedPendingTurn = false;
+
+      if (!runningRef.current || (!waitingForLiveTurn && activeTurnIdRef.current === null)) {
+        beginPendingLiveTurnFromCurrent();
+        startedPendingTurn = true;
       }
 
-      const requestSeq = runSeqRef.current + 1;
-      runSeqRef.current = requestSeq;
-      pendingTurnRef.current = {
-        requestSeq,
-        turnId: null,
-        ignoredTurnIds: new Set(
-          [activeTurnIdRef.current, lastDrivenTurnIdRef.current].filter(
-            (turnId): turnId is string => turnId !== null,
-          ),
-        ),
-      };
-      activeTurnIdRef.current = null;
-      setRunning(true);
-      setActiveTurnId(null);
-      setPhases(initialPhases());
-      setTokenTextByPhase(new Map());
-      setTerminalOutcome(null);
-      setDelibPath(null);
-      setFinalAttempt(1);
-      setLastPhase("turn queued");
-      clearReflectTimeout();
-      reflectTimeoutRef.current = window.setTimeout(() => {
-        reflectTimeoutRef.current = null;
-        setRunning(false);
-        setLastPhase("reflect timeout");
-      }, TURN_REFLECT_TIMEOUT_MS);
-
+      pendingPostCountRef.current += 1;
       try {
         const result = await postTurn(input);
-        const pendingTurn = pendingTurnRef.current;
-
-        if (runSeqRef.current === requestSeq && pendingTurn?.requestSeq === requestSeq) {
-          if (pendingTurn.turnId === null) {
-            pendingTurn.turnId = result.turn_id;
-            activeTurnIdRef.current = result.turn_id;
-            lastDrivenTurnIdRef.current = result.turn_id;
-            setActiveTurnId(result.turn_id);
+        if (result.status === "enqueued") {
+          outstandingStreamEntryIdsRef.current.add(result.stream_entry_id);
+          if (!runningRef.current) {
+            beginPendingLiveTurnFromCurrent();
           }
         }
-        return true;
+        return result;
       } catch {
-        if (runSeqRef.current === requestSeq) {
+        const remainingPosts = Math.max(0, pendingPostCountRef.current - 1);
+        if (
+          startedPendingTurn &&
+          remainingPosts === 0 &&
+          activeTurnIdRef.current === null &&
+          pendingTurnRef.current?.turnId === null
+        ) {
           pendingTurnRef.current = null;
           clearReflectTimeout();
-          setRunning(false);
+          setRunningState(false);
           setLastPhase("turn failed");
         }
-        return false;
+        return null;
+      } finally {
+        pendingPostCountRef.current = Math.max(0, pendingPostCountRef.current - 1);
       }
     },
-    [clearReflectTimeout, running],
+    [beginPendingLiveTurnFromCurrent, clearReflectTimeout, setRunningState],
   );
 
   const resetForReconnect = useCallback(() => {

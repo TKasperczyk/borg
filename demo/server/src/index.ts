@@ -48,6 +48,7 @@ async function openDemoBorg(): Promise<Borg> {
 const borgHandle: BorgHandle = {
   current: await openDemoBorg(),
 };
+borgHandle.current.inbox.catchUp.start();
 
 const resetBorg = createResetBorgController({ dataDir, live, borgHandle, openBorg: openDemoBorg });
 

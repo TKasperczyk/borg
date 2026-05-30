@@ -1063,7 +1063,7 @@ body {
   letter-spacing: var(--eyebrow-ls);
   color: var(--text-faint);
 }
-.chat-head .stakes {
+.chat-head .chat-audience {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1071,10 +1071,10 @@ body {
   text-transform: uppercase;
   letter-spacing: var(--eyebrow-ls);
 }
-.chat-head .stakes .label {
+.chat-head .chat-audience .label {
   color: var(--text-faint);
 }
-.chat-head .stakes .val {
+.chat-head .chat-audience .val {
   color: var(--text-mute);
 }
 .chat-stream {
@@ -1224,6 +1224,16 @@ body {
 .chat-msg .meta .when {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+.chat-msg .meta .delivery {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chat-msg .meta .delivery.sent {
+  color: var(--info);
+}
+.chat-msg.optimistic .body {
+  color: var(--text-mute);
 }
 .chat-msg .role.sys {
   color: var(--text-mute);

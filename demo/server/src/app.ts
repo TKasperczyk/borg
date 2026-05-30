@@ -262,10 +262,10 @@ const DEMO_TURN_ATTACHMENT_MEDIA_TYPES = [
 const turnAttachmentMediaTypeSchema = z.enum(DEMO_TURN_ATTACHMENT_MEDIA_TYPES);
 const turnBodySchema = z.object({
   message: z.string().trim().min(1),
+  external_message_id: z.string().trim().min(1),
   audience: z.string().trim().min(1).optional(),
   audience_entity_id: z.string().trim().min(1).optional(),
   sender_entity_id: z.string().trim().min(1).optional(),
-  stakes: z.enum(["low", "medium", "high"]).optional(),
   session: z.string().trim().min(1).optional(),
 });
 
@@ -590,6 +590,64 @@ export function ensureDemoOperatorSession(borg: Borg) {
   });
 }
 
+function parseKnownEntityId(borg: Borg, value: string, label: string): EntityId {
+  const entityId = parseRequest(entityParamSchema, { id: value }).id;
+
+  if (borg.entities.get(entityId) === null) {
+    throw new HTTPException(400, { message: `${label} entity not found` });
+  }
+
+  return entityId;
+}
+
+function resolveTurnAudienceEntityId(
+  borg: Borg,
+  input: {
+    audienceLabel: string;
+    explicitAudienceEntityId?: string;
+    existingAudienceEntityId?: EntityId | null;
+  },
+): EntityId | null {
+  if (input.explicitAudienceEntityId !== undefined) {
+    return parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience");
+  }
+
+  if (input.existingAudienceEntityId !== undefined && input.existingAudienceEntityId !== null) {
+    if (borg.entities.get(input.existingAudienceEntityId) === null) {
+      throw new HTTPException(400, { message: "audience entity not found" });
+    }
+
+    return input.existingAudienceEntityId;
+  }
+
+  return borg.entities.resolve(input.audienceLabel, {
+    kind: "person",
+    provenance: "transport_audience_label",
+  });
+}
+
+function resolveTurnSenderEntityId(
+  borg: Borg,
+  input: {
+    explicitSenderEntityId?: string;
+    audienceEntityId: EntityId | null;
+    demoCreatorEntityName: string;
+  },
+): EntityId {
+  if (input.explicitSenderEntityId !== undefined) {
+    return parseKnownEntityId(borg, input.explicitSenderEntityId, "sender");
+  }
+
+  const audienceEntity =
+    input.audienceEntityId === null ? null : borg.entities.get(input.audienceEntityId);
+
+  if (audienceEntity !== null && audienceEntity.kind !== "group") {
+    return audienceEntity.id;
+  }
+
+  return ensureDemoCreator(borg, input.demoCreatorEntityName).id;
+}
+
 async function parseJsonBody(c: Context): Promise<unknown> {
   try {
     return await c.req.json();
@@ -653,10 +711,10 @@ async function parseTurnBody(c: Context): Promise<ParsedTurnBody> {
 
   const body = parseRequest(turnBodySchema, {
     message: formData.get("message"),
+    external_message_id: formData.get("external_message_id"),
     audience: optionalFormValue(formData.get("audience")),
     audience_entity_id: optionalFormValue(formData.get("audience_entity_id")),
     sender_entity_id: optionalFormValue(formData.get("sender_entity_id")),
-    stakes: optionalFormValue(formData.get("stakes")),
     session: optionalFormValue(formData.get("session")),
   });
 
@@ -815,6 +873,29 @@ function decodeCursor(cursor: string): StreamCursor | null {
     };
   } catch {
     return null;
+  }
+}
+
+function isDemoTerminalEntry(entry: StreamEntry): entry is StreamEntry & { turn_id: string } {
+  return (
+    (entry.kind === "agent_msg" ||
+      entry.kind === "agent_suppressed" ||
+      entry.kind === "agent_observed") &&
+    typeof entry.turn_id === "string" &&
+    entry.turn_id.length > 0
+  );
+}
+
+function updateDemoSessionLastTurnIds(borg: Borg, entries: readonly StreamEntry[]): void {
+  for (const entry of entries) {
+    if (!isDemoTerminalEntry(entry)) {
+      continue;
+    }
+
+    borg.sessions.touch(entry.session_id, {
+      lastTurnId: entry.turn_id,
+      messageCountDelta: 0,
+    });
   }
 }
 
@@ -1443,6 +1524,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   ensureDemoDefaultSession(input.borg, {
     demoCreatorEntityName: input.demoCreatorEntityName,
+  });
+  input.live.observeStreamAppend((entries) => {
+    updateDemoSessionLastTurnIds(input.borg, entries);
   });
   const allowedOrigins = input.corsOrigins ?? ["http://localhost:5173"];
   const dreamPlans = new Map<
@@ -2296,31 +2380,55 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       const existingSession = input.borg.sessions.get(sessionId);
       const audienceLabel =
         body.audience ?? existingSession?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL;
-      const audienceEntityId =
-        body.audience_entity_id === undefined
-          ? (existingSession?.audience_entity_id ?? null)
-          : parseRequest(entityParamSchema, { id: body.audience_entity_id }).id;
-      const senderEntityId =
-        body.sender_entity_id === undefined
-          ? undefined
-          : parseRequest(entityParamSchema, { id: body.sender_entity_id }).id;
+      const audienceEntityId = resolveTurnAudienceEntityId(input.borg, {
+        audienceLabel,
+        explicitAudienceEntityId: body.audience_entity_id,
+        existingAudienceEntityId: existingSession?.audience_entity_id,
+      });
+      const senderEntityId = resolveTurnSenderEntityId(input.borg, {
+        explicitSenderEntityId: body.sender_entity_id,
+        audienceEntityId,
+        demoCreatorEntityName: input.demoCreatorEntityName,
+      });
+      const sourceExternalId = existingSession?.source_external_id ?? sessionId;
+      const sourceMessageKey = {
+        source_type: DEMO_SOURCE_TYPE,
+        source_external_id: sourceExternalId,
+        external_message_id: body.external_message_id,
+      };
       // Demo uploads accept png/jpeg/gif/webp images up to 8 MiB; Borg revalidates before persistence.
-      ensureDemoSession(input.borg, {
+      const session = ensureDemoSession(input.borg, {
         sessionId,
         audienceLabel,
         audienceEntityId,
+        sourceExternalId,
       });
-      const result = await input.borg.turn({
+      const result = await input.borg.enqueueMessage({
+        session: {
+          session_id: session.session_id,
+          source_type: session.source_type,
+          source_external_id: sourceExternalId,
+          source_url: session.source_url,
+          label: session.label,
+          audience_label: session.audience_label,
+          audience_entity_id: session.audience_entity_id,
+          conversation_kind: session.conversation_kind,
+          audience_role: session.audience_role,
+        },
         userMessage: body.message,
-        audience: audienceLabel,
-        stakes: body.stakes,
-        sessionId,
+        senderEntityId,
+        sourceMessageKey,
+        arrivedAt: Date.now(),
+        audience: session.audience_label,
+        audienceEntityId: session.audience_entity_id,
         attachments: body.attachments,
-        ...(senderEntityId === undefined ? {} : { senderEntityId }),
       });
-      input.borg.sessions.touch(sessionId, { lastTurnId: result.turn_id });
 
-      return c.json({ turn_id: result.turn_id, ok: true });
+      return c.json({
+        ok: true,
+        status: result.status,
+        stream_entry_id: result.streamEntryId,
+      });
     } catch (error) {
       mapBorgErrorToHttp(error);
     }

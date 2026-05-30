@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getStream, setSessionPolicy } from "../../api/client";
 import type {
@@ -6,18 +6,19 @@ import type {
   SessionRecord,
   StreamChatKind,
   StreamEntry,
-  TurnStakes,
 } from "../../api/types";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import type { TurnStreamState } from "../../hooks/use-turn-stream";
-import { mergeEntries } from "../../lib/stream-utils";
+import { mergeEntries, sortStreamEntries, streamContentText } from "../../lib/stream-utils";
 import { ChatInput } from "./ChatInput";
 import { ChatStream } from "./ChatStream";
+import type { ChatDeliveryStatus, ChatStreamEntry } from "./chat-utils";
 import { Xray } from "./Xray";
 
 const CHAT_KINDS: readonly StreamChatKind[] = ["user_msg", "agent_msg", "user_image_attachment"];
 const CHAT_PANEL_LIMIT = 16;
+const DEMO_SOURCE_TYPE = "demo";
 
 export type CognitionScreenProps = {
   sessionId: string;
@@ -33,6 +34,92 @@ function isChatEntry(entry: StreamEntry, sessionId: string, audience: string): b
     entry.session_id === sessionId &&
     CHAT_KINDS.includes(entry.kind as StreamChatKind) &&
     entry.audience === audience
+  );
+}
+
+function entryExternalMessageId(entry: ChatStreamEntry): string | null {
+  return entry.external_message_id ?? entry.source_message_key?.external_message_id ?? null;
+}
+
+function sameUserMessageForReconcile(
+  optimistic: ChatStreamEntry,
+  real: StreamEntry,
+): boolean {
+  if (optimistic.kind !== "user_msg" || real.kind !== "user_msg") {
+    return false;
+  }
+
+  const optimisticExternalId = entryExternalMessageId(optimistic);
+  const realExternalId = entryExternalMessageId(real);
+  if (optimisticExternalId !== null && realExternalId !== null) {
+    return optimisticExternalId === realExternalId;
+  }
+
+  return (
+    optimistic.session_id === real.session_id &&
+    optimistic.audience === real.audience &&
+    optimistic.sender_entity_id === real.sender_entity_id &&
+    streamContentText(optimistic.content) === streamContentText(real.content)
+  );
+}
+
+function withoutReconciledOptimisticEntries(
+  optimisticEntries: readonly ChatStreamEntry[],
+  realEntries: readonly StreamEntry[],
+): ChatStreamEntry[] {
+  return optimisticEntries.filter(
+    (optimistic) =>
+      !realEntries.some((entry) => sameUserMessageForReconcile(optimistic, entry)),
+  );
+}
+
+function optimisticUserEntry(input: {
+  externalMessageId: string;
+  message: string;
+  sessionId: string;
+  audience: string;
+  status: ChatDeliveryStatus;
+}): ChatStreamEntry {
+  return {
+    id: `optimistic:${input.externalMessageId}`,
+    timestamp: Date.now(),
+    kind: "user_msg",
+    content: input.message,
+    audience: input.audience,
+    sender_entity_id: null,
+    reply_target_entity_id: null,
+    session_id: input.sessionId,
+    compressed: false,
+    external_message_id: input.externalMessageId,
+    source_message_key: {
+      source_type: DEMO_SOURCE_TYPE,
+      source_external_id: input.sessionId,
+      external_message_id: input.externalMessageId,
+    },
+    optimistic_status: input.status,
+  };
+}
+
+function upsertOptimisticEntry(
+  current: readonly ChatStreamEntry[],
+  entry: ChatStreamEntry,
+): ChatStreamEntry[] {
+  if (current.some((item) => entryExternalMessageId(item) === entryExternalMessageId(entry))) {
+    return [...current];
+  }
+
+  return [...current, entry];
+}
+
+function markOptimisticStatus(
+  current: readonly ChatStreamEntry[],
+  externalMessageId: string,
+  status: ChatDeliveryStatus,
+): ChatStreamEntry[] {
+  return current.map((entry) =>
+    entryExternalMessageId(entry) === externalMessageId
+      ? { ...entry, optimistic_status: status }
+      : entry,
   );
 }
 
@@ -142,6 +229,7 @@ export function CognitionScreen({
 }: CognitionScreenProps) {
   const live = useLiveEventsContext();
   const [chatEntries, setChatEntries] = useState<StreamEntry[]>([]);
+  const [optimisticEntries, setOptimisticEntries] = useState<ChatStreamEntry[]>([]);
   const previousConnectionCountRef = useRef(live.connectionCount);
   const participationPolicy = session?.participation_policy ?? "active";
   const participationPolicyLocked = session?.audience_role === "operator";
@@ -155,12 +243,16 @@ export function CognitionScreen({
 
   useEffect(() => {
     setChatEntries([]);
+    setOptimisticEntries([]);
   }, [audience, sessionId]);
 
   useEffect(() => {
     const streamData = streamApi.data;
 
     if (streamData !== null) {
+      setOptimisticEntries((current) =>
+        withoutReconciledOptimisticEntries(current, streamData.entries),
+      );
       setChatEntries((current) =>
         mergeEntries(
           current.filter((entry) => entry.session_id === sessionId && entry.audience === audience),
@@ -168,7 +260,7 @@ export function CognitionScreen({
         ),
       );
     }
-  }, [audience, streamApi.data]);
+  }, [audience, sessionId, streamApi.data]);
 
   useEffect(() => {
     return live.subscribe((frame) => {
@@ -178,6 +270,7 @@ export function CognitionScreen({
 
       const matching = frame.entries.filter((entry) => isChatEntry(entry, sessionId, audience));
       if (matching.length > 0) {
+        setOptimisticEntries((current) => withoutReconciledOptimisticEntries(current, matching));
         setChatEntries((current) => mergeEntries(current, matching));
       }
     });
@@ -213,6 +306,9 @@ export function CognitionScreen({
             stream.entries,
           ),
         );
+        setOptimisticEntries((current) =>
+          withoutReconciledOptimisticEntries(current, stream.entries),
+        );
         replaceTailFromEntries(stream.entries);
       } catch {
         // The standing useApi calls retain the previous visible error/data state.
@@ -228,24 +324,57 @@ export function CognitionScreen({
     };
   }, [audience, live.connectionCount, replaceTailFromEntries, resetForReconnect, sessionId]);
 
-  const send = async (input: {
-    message: string;
-    stakes: TurnStakes;
-    attachments?: readonly File[];
-  }) => {
-    return turnStream.runTurn({
+  const visibleChatEntries = useMemo(
+    () =>
+      (sortStreamEntries([...chatEntries, ...optimisticEntries]) as ChatStreamEntry[]).slice(
+        -CHAT_PANEL_LIMIT,
+      ),
+    [chatEntries, optimisticEntries],
+  );
+
+  const send = async (input: { message: string; attachments?: readonly File[] }) => {
+    const externalMessageId = crypto.randomUUID();
+    const optimisticEntry = optimisticUserEntry({
+      externalMessageId,
+      message: input.message,
+      sessionId,
+      audience,
+      status: "queued",
+    });
+
+    setOptimisticEntries((current) => upsertOptimisticEntry(current, optimisticEntry));
+
+    const result = await turnStream.runTurn({
       ...input,
+      external_message_id: externalMessageId,
       audience,
       audience_entity_id: audienceEntityId,
       session: sessionId,
     });
+
+    if (result === null) {
+      setOptimisticEntries((current) =>
+        current.filter((entry) => entryExternalMessageId(entry) !== externalMessageId),
+      );
+      return false;
+    }
+
+    setOptimisticEntries((current) => {
+      const sent = markOptimisticStatus(current, externalMessageId, "sent");
+      const realEntry = chatEntries.find((entry) => entry.id === result.stream_entry_id);
+      return realEntry === undefined
+        ? sent
+        : withoutReconciledOptimisticEntries(sent, [realEntry]);
+    });
+
+    return true;
   };
 
   return (
     <div className="cog">
       <div className="chat">
         <ChatStream
-          entries={chatEntries.slice(-CHAT_PANEL_LIMIT)}
+          entries={visibleChatEntries}
           sessionId={sessionId}
           audience={audience}
           running={turnStream.running}
@@ -256,7 +385,7 @@ export function CognitionScreen({
           onChanged={onSessionPolicyChanged ?? (async () => undefined)}
           locked={participationPolicyLocked}
         />
-        <ChatInput audience={audience} running={turnStream.running} onSend={send} />
+        <ChatInput audience={audience} onSend={send} />
       </div>
       <div className="cog-divider"></div>
       <Xray

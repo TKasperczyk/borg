@@ -1,14 +1,11 @@
 import { useRef, useState } from "react";
 
-import type { TurnStakes } from "../../api/types";
 import { ImagePlaceholder } from "../../components/ImagePlaceholder";
 
 export type ChatInputProps = {
   audience: string;
-  running: boolean;
   onSend: (input: {
     message: string;
-    stakes: TurnStakes;
     attachments?: readonly File[];
   }) => Promise<boolean>;
 };
@@ -31,13 +28,13 @@ function formatAttachmentBytes(bytes: number): string {
   return `${(bytes / BYTES_PER_MIB).toFixed(1)} MiB`;
 }
 
-export function ChatInput({ audience, running, onSend }: ChatInputProps) {
+export function ChatInput({ audience, onSend }: ChatInputProps) {
   const [input, setInput] = useState("");
-  const [stakes, setStakes] = useState<TurnStakes>("low");
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   const [draggingOver, setDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const nextAttachmentIdRef = useRef(0);
+  const submittingDraftKeysRef = useRef<Set<string>>(new Set());
 
   const stageFiles = (files: readonly File[] | FileList) => {
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
@@ -59,23 +56,38 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
     setStaged((current) => current.filter((attachment) => attachment.id !== id));
   };
 
+  const draftKey = (message: string, attachments: readonly StagedAttachment[]): string => {
+    return `${message}\0${attachments.map((attachment) => attachment.id).join("\0")}`;
+  };
+
   const send = () => {
     const trimmed = input.trim();
     const message = trimmed.length === 0 ? "(attached image)" : trimmed;
-    if ((trimmed.length === 0 && staged.length === 0) || running) {
+    if (trimmed.length === 0 && staged.length === 0) {
       return;
     }
+    const stagedSnapshot = staged;
+    const key = draftKey(message, stagedSnapshot);
+    if (submittingDraftKeysRef.current.has(key)) {
+      return;
+    }
+    submittingDraftKeysRef.current.add(key);
+    setInput("");
+    setStaged([]);
     void (async () => {
-      const accepted = await onSend({
-        message,
-        stakes,
-        ...(staged.length === 0
-          ? {}
-          : { attachments: staged.map((attachment) => attachment.file) }),
-      });
-      if (accepted) {
-        setInput("");
-        setStaged([]);
+      try {
+        const accepted = await onSend({
+          message,
+          ...(stagedSnapshot.length === 0
+            ? {}
+            : { attachments: stagedSnapshot.map((attachment) => attachment.file) }),
+        });
+        if (!accepted) {
+          setInput((current) => (current.length === 0 ? input : current));
+          setStaged((current) => (current.length === 0 ? stagedSnapshot : current));
+        }
+      } finally {
+        submittingDraftKeysRef.current.delete(key);
       }
     })();
   };
@@ -84,16 +96,12 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
     <div
       className="chat-input-wrap"
       onDragEnter={(event) => {
-        if (!running) {
-          event.preventDefault();
-          setDraggingOver(true);
-        }
+        event.preventDefault();
+        setDraggingOver(true);
       }}
       onDragOver={(event) => {
-        if (!running) {
-          event.preventDefault();
-          setDraggingOver(true);
-        }
+        event.preventDefault();
+        setDraggingOver(true);
       }}
       onDragLeave={(event) => {
         const nextTarget = event.relatedTarget;
@@ -105,9 +113,7 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
       onDrop={(event) => {
         event.preventDefault();
         setDraggingOver(false);
-        if (!running) {
-          stageFiles(event.dataTransfer.files);
-        }
+        stageFiles(event.dataTransfer.files);
       }}
     >
       {draggingOver ? <div className="composer-dropzone">▸ drop to attach</div> : null}
@@ -131,7 +137,6 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
                 onClick={() => removeStaged(attachment.id)}
                 type="button"
                 aria-label={`remove ${attachment.file.name}`}
-                disabled={running}
               >
                 ×
               </button>
@@ -142,7 +147,7 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
       <div className="chat-input-bar">
         <span className="prompt">{">"}</span>
         <textarea
-          placeholder={running ? "borg is thinking..." : "send a turn"}
+          placeholder="send a turn"
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onPaste={(event) => {
@@ -164,7 +169,6 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
           }}
           rows={1}
           style={{ height: Math.min(96, Math.max(20, input.split("\n").length * 18)) }}
-          disabled={running}
         />
         <span className="send-hint" aria-hidden="true">
           <span className="kbd">⌘</span>
@@ -175,29 +179,6 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
         <span className="flag">
           <span className="k">--audience</span>{" "}
           <span className="v acc">{audience}</span>
-        </span>
-        <span className="flag">
-          <span className="k">--stakes</span>{" "}
-          <select
-            value={stakes}
-            onChange={(event) => setStakes(event.target.value as TurnStakes)}
-            style={{
-              background: "transparent",
-              color: "var(--text-mute)",
-              border: "0",
-              fontFamily: "var(--mono)",
-              fontSize: "var(--fs-micro)",
-              textTransform: "uppercase",
-              letterSpacing: "var(--eyebrow-ls)",
-              outline: "none",
-              cursor: "pointer",
-            }}
-            disabled={running}
-          >
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-          </select>
         </span>
         <span className="flag">
           <span className="k">--mode</span> <span className="v">auto</span>
@@ -220,7 +201,6 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
         <button
           className="btn sm ghost"
           onClick={() => fileInputRef.current?.click()}
-          disabled={running}
           type="button"
         >
           + attach
@@ -228,7 +208,7 @@ export function ChatInput({ audience, running, onSend }: ChatInputProps) {
         <button
           className="btn sm primary"
           onClick={send}
-          disabled={running || (input.trim().length === 0 && staged.length === 0)}
+          disabled={input.trim().length === 0 && staged.length === 0}
           type="button"
         >
           send

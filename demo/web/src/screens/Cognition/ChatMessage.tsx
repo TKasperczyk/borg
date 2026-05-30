@@ -34,9 +34,13 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
   const initial = turn.role === "borg" ? "ψ" : userInitial(audience);
   const name = roleName(turn, audience);
   const turnShort = shortTurnId(turn.entry.turn_id);
+  const deliveryStatus = turn.entry.optimistic_status;
 
   return (
-    <div className={`chat-msg ${turn.role}`}>
+    <div
+      className={`chat-msg ${turn.role}${deliveryStatus === undefined ? "" : " optimistic"}`}
+      data-delivery-status={deliveryStatus ?? ""}
+    >
       <div className="avatar" aria-hidden="true">
         {initial}
       </div>
@@ -51,6 +55,12 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
           )}
           <span className="sep">·</span>
           <span className="when">{formatTime(turn.entry.timestamp)}</span>
+          {deliveryStatus === undefined ? null : (
+            <>
+              <span className="sep">·</span>
+              <span className={`delivery ${deliveryStatus}`}>{deliveryStatus}</span>
+            </>
+          )}
           {turn.attachments.length === 0 ? null : (
             <>
               <span className="sep">·</span>
