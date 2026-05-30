@@ -8,7 +8,7 @@ import type { LLMClient } from "../../llm/index.js";
 import { StreamReader } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { ConfigError } from "../../util/errors.js";
-import type { SessionId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import { TurnContextCompiler, type RecencyWindow } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
@@ -31,6 +31,7 @@ export type PerceptionGatewayInput = {
   origin?: TurnOrigin;
   cognitionInput: string;
   workingMemory: WorkingMemory;
+  recencyBeforeEntryIdExclusive?: StreamEntryId;
 };
 
 export type PerceptionGatewayBeginInput = {
@@ -109,6 +110,9 @@ export class PerceptionGateway {
       this.options.createStreamReader(input.sessionId),
       {
         includeSelfTurns: input.isSelfAudience,
+        ...(input.recencyBeforeEntryIdExclusive === undefined
+          ? {}
+          : { beforeEntryIdExclusive: input.recencyBeforeEntryIdExclusive }),
       },
     );
     if (this.options.tracer.enabled) {

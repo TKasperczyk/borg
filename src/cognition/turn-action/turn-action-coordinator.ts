@@ -43,6 +43,9 @@ export type RunTurnActionInput = {
   applicableCommitments: readonly CommitmentRecord[];
   perceptionEntities: PerceptionResult["entities"];
   persistedUserEntry?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["persistedUserEntry"];
+  persistedUserEntries?: Parameters<
+    TurnPostGenerationGuardRunner["run"]
+  >[0]["persistedUserEntries"];
   retrievedEpisodes: readonly RetrievedEpisode[];
   currentUserClosureKind?: ClosureLoopDialogueAct | null;
   audienceEntityId: EntityId | null;
@@ -338,6 +341,7 @@ export class TurnActionCoordinator {
                   currentTurn: input.workingMemory.turn_counter,
                   audienceEntityId: input.audienceEntityId,
                   knownInternalIdentifiers: input.knownInternalIdentifiers,
+                  persistedUserEntries: input.persistedUserEntries,
                 }),
                 commitmentEmission,
               );

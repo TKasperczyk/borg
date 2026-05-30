@@ -84,16 +84,21 @@ export class EvidenceLedgerBuilder {
       streamOrderById.set(entry.id, index);
     }
 
-    if (
-      input.currentUserEntry !== undefined &&
-      input.currentUserEntry.session_id === input.sessionId &&
-      !streamOrderById.has(input.currentUserEntry.id)
-    ) {
-      streamOrderById.set(input.currentUserEntry.id, streamOrderById.size);
+    for (const currentUserEntry of [
+      ...(input.currentUserEntry === undefined ? [] : [input.currentUserEntry]),
+      ...(input.currentUserEntries ?? []),
+    ]) {
+      if (
+        currentUserEntry.session_id === input.sessionId &&
+        !streamOrderById.has(currentUserEntry.id)
+      ) {
+        streamOrderById.set(currentUserEntry.id, streamOrderById.size);
+      }
     }
 
     for (const entry of [
       ...streamEntries,
+      ...(input.currentUserEntries ?? []),
       ...input.retrievedEpisodes.flatMap((result) => result.citationChain),
     ]) {
       streamEntriesById.set(entry.id, entry);
@@ -116,6 +121,7 @@ export class EvidenceLedgerBuilder {
       entries: transcriptEntries,
       budget: this.options.currentSessionTranscriptTokenBudget,
       currentUserEntryId: input.currentUserEntry?.id,
+      currentUserEntryIds: input.currentUserEntries?.map((entry) => entry.id),
       resolver,
       entityRepository: this.options.entityRepository,
     });

@@ -60,6 +60,7 @@ function makeStreamWriter() {
         timestamp: 1_000,
         session_id: DEFAULT_SESSION_ID,
         compressed: input.compressed ?? false,
+        response_to: input.response_to as StreamEntry["response_to"],
         sender_entity_id:
           input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
         reply_target_entity_id:

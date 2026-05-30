@@ -5,7 +5,6 @@ import type {
   AttachmentRepository,
   AttachmentService,
   ImagePerceptionService,
-  TurnInputAttachment,
 } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
@@ -53,18 +52,21 @@ import type { ToolLoopCallRecord } from "./turn-action/index.js";
 import { TurnActionCoordinator } from "./turn-action/turn-action-coordinator.js";
 import { TurnActionStateService } from "./actions/turn-action-state-service.js";
 import { AttributionLifecycleService } from "./attribution/lifecycle-service.js";
-import type { AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { CorrectivePreferenceTurnService } from "./commitments/corrective-preference-service.js";
 import { CreatorDirectiveTurnService } from "./creator-directives/service.js";
-import type { SelfSnapshot, TurnStakes } from "./deliberation/deliberator.js";
+import type { SelfSnapshot } from "./deliberation/deliberator.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
 import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
 import type { TurnEmission } from "./generation/types.js";
 import { TurnGoalPromotionService } from "./goals/turn-goal-promotion-service.js";
-import type { StreamIngestionCoordinator } from "./ingestion/index.js";
+import type {
+  ChatResponseWatermarkCoordinator,
+  StreamIngestionCoordinator,
+} from "./ingestion/index.js";
 import { TurnLifecycleTracker } from "./lifecycle/turn-lifecycle-tracker.js";
 import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
+import type { TurnPhaseCoordinatorInput } from "./lifecycle/turn-phase/types.js";
 import type { PromptOverrideRepository } from "./prompts/override-repository.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
 import { PerceptionGateway } from "./perception/gateway.js";
@@ -77,24 +79,8 @@ import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { SessionLock } from "./session-lock.js";
 import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "./tracing/tracer.js";
-import {
-  isAutonomousLikeTurnOrigin,
-  type CognitiveMode,
-  type IntentRecord,
-  type TurnOrigin,
-} from "./types.js";
-
-export type TurnInput = {
-  userMessage: string;
-  attachments?: readonly TurnInputAttachment[];
-  audience?: string;
-  senderEntityId?: EntityId;
-  stakes?: TurnStakes;
-  sessionId?: SessionId;
-  globalTurnCounter?: number;
-  origin?: TurnOrigin;
-  autonomyTrigger?: AutonomyTriggerContext | null;
-};
+import { isInboundBatchTurnInput, type TurnOrchestratorInput } from "./turn-input.js";
+import { isAutonomousLikeTurnOrigin, type CognitiveMode, type IntentRecord } from "./types.js";
 
 export type TurnResult = {
   turn_id: string;
@@ -173,6 +159,7 @@ export type TurnOrchestratorOptions = {
    * `borg.episodic.extract()` / `borg.dream.consolidate()` calls.
    */
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
   outboundSourceTypes?: readonly SessionSourceType[];
@@ -182,6 +169,16 @@ export type TurnOrchestratorOptions = {
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
   sessionsRepository?: Pick<SessionsRepository, "count" | "get" | "list">;
 };
+
+function stripTurnLockMode(input: TurnOrchestratorInput): TurnPhaseCoordinatorInput {
+  if (isInboundBatchTurnInput(input)) {
+    const { lockMode: _lockMode, ...phaseInput } = input;
+    return phaseInput;
+  }
+
+  const { lockMode: _lockMode, ...phaseInput } = input;
+  return phaseInput;
+}
 
 export class TurnOrchestrator {
   private readonly clock: Clock;
@@ -347,6 +344,7 @@ export class TurnOrchestrator {
       attachmentService: options.attachmentService,
       imagePerceptionService: options.imagePerceptionService,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
+      chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
       outboundDelivery: options.outboundDelivery,
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
       outboundSourceTypes: options.outboundSourceTypes,
@@ -441,12 +439,18 @@ export class TurnOrchestrator {
     });
   }
 
-  async run(input: TurnInput): Promise<TurnResult> {
+  async run(input: TurnOrchestratorInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
-    const lease = isAutonomousLikeTurnOrigin(input.origin)
-      ? await this.sessionLock.tryAcquire(sessionId)
-      : await this.sessionLock.acquire(sessionId);
+    const effectiveLockMode =
+      input.lockMode ?? (isAutonomousLikeTurnOrigin(input.origin) ? "try" : "block");
+    const lease =
+      effectiveLockMode === "try"
+        ? await this.sessionLock.tryAcquire(sessionId)
+        : effectiveLockMode === "block"
+          ? await this.sessionLock.acquire(sessionId)
+          : await this.sessionLock.acquire(sessionId, { timeoutMs: effectiveLockMode.timeoutMs });
+    const phaseInput = stripTurnLockMode(input);
 
     if (lease === null) {
       throw new SessionBusyError(`Session ${sessionId} is busy`, {
@@ -475,7 +479,7 @@ export class TurnOrchestrator {
     try {
       try {
         const result = await this.turnPhaseCoordinator.run({
-          input,
+          input: phaseInput,
           globalTurnCounter,
           sessionId,
           turnId,

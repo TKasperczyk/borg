@@ -72,6 +72,7 @@ export type RunTurnReflectionInput = {
   pendingSocialAttribution: PendingSocialAttribution | null;
   suppressionSet: SuppressionSet;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   persistedPerceptionEntry?: StreamEntry;
   persistedAgentEntry: StreamEntry;
   isUserTurn: boolean;
@@ -170,14 +171,15 @@ export class TurnReflectionCoordinator {
         activeOpenQuestions,
         suppressionSet: input.suppressionSet,
         frameAnomaly: input.frameAnomaly ?? null,
-        currentTurnStreamEntryIds:
-          input.persistedUserEntryId === undefined
-            ? [input.persistedPerceptionEntry?.id, input.persistedAgentEntry.id].filter(
-                (entryId): entryId is StreamEntryId => entryId !== undefined,
-              )
-            : input.frameAnomaly !== null && input.frameAnomaly !== undefined
-              ? [input.persistedAgentEntry.id]
-              : [input.persistedUserEntryId, input.persistedAgentEntry.id],
+        currentTurnStreamEntryIds: [
+          ...(input.sourceUserEntryIds ??
+            (input.persistedUserEntryId === undefined ? [] : [input.persistedUserEntryId])),
+          ...(input.persistedUserEntryId === undefined &&
+          (input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0)
+            ? [input.persistedPerceptionEntry?.id]
+            : []),
+          input.persistedAgentEntry.id,
+        ].filter((entryId): entryId is StreamEntryId => entryId !== undefined),
       },
       input.streamWriter,
     );
@@ -213,6 +215,7 @@ export class TurnReflectionCoordinator {
       proceduralContext: input.proceduralContext,
       reflectedWorkingMemory,
       persistedUserEntryId: input.persistedUserEntryId,
+      sourceUserEntryIds: input.sourceUserEntryIds,
       persistedAgentEntryId: input.persistedAgentEntry.id,
       audienceEntityId: input.audienceEntityId,
     });

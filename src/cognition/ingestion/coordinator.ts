@@ -3,11 +3,13 @@ import {
   StreamReader,
   type StreamCursor,
   type StreamEntry,
+  type StreamResponseTo,
   type StreamWatermarkRepository,
 } from "../../stream/index.js";
-import { BorgError } from "../../util/errors.js";
+import { BorgError, CognitionError } from "../../util/errors.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
 import type { SessionId } from "../../util/ids.js";
+import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
 
@@ -30,6 +32,10 @@ function isFileMissingError(error: unknown): boolean {
 export type StreamIngestionCoordinatorOptions = {
   extractor: EpisodicExtractor;
   watermarkRepository: StreamWatermarkRepository;
+  chatResponseWatermarkCoordinator?: Pick<
+    ChatResponseWatermarkCoordinator,
+    "compareCursors" | "cursorEntryIndex" | "reconcile"
+  >;
   dataDir: string;
   /**
    * Minimum number of new stream entries past the watermark required before
@@ -53,6 +59,11 @@ export type IngestionResult = {
   error?: unknown;
 };
 
+export type AnsweredStreamWindow = {
+  responseTo: StreamResponseTo;
+  terminalCursor: StreamCursor;
+};
+
 export type IngestOptions = {
   /**
    * Override the default minEntriesThreshold for this call. Useful for
@@ -66,10 +77,23 @@ export type IngestOptions = {
    * extraction succeeds.
    */
   maxEntries?: number;
+  /**
+   * Catch-up-only guard: clamp the processed prefix to the chat-response
+   * watermark so unanswered queued user_msg entries are not extracted before a
+   * terminal response/marker exists.
+   */
+  clampToChatResponseWatermark?: boolean;
+  /**
+   * Exact answered window for a terminal response to a drained stream backlog
+   * batch. This bypasses raw contiguous cursor ingestion so interleaved
+   * unanswered user_msg entries stay out of the chunk.
+   */
+  answeredWindow?: AnsweredStreamWindow;
 };
 
 export type PreTurnCatchUpOptions = {
   maxEntries: number;
+  clampToChatResponseWatermark?: boolean;
 };
 
 type ResumeOptions = {
@@ -79,12 +103,16 @@ type ResumeOptions = {
 type ResolvedIngestOptions = {
   minEntriesThreshold: number;
   maxEntries?: number;
+  clampToChatResponseWatermark?: boolean;
+  answeredWindow?: AnsweredStreamWindow;
 };
 
 type InFlightIngestion = {
   promise: Promise<IngestionResult>;
   minEntriesThreshold: number;
   maxEntries?: number;
+  clampToChatResponseWatermark?: boolean;
+  answeredWindow?: AnsweredStreamWindow;
 };
 
 type PendingIngestionWaiter = {
@@ -95,8 +123,12 @@ type PendingIngestionWaiter = {
 type PendingIngestion = {
   minEntriesThreshold: number;
   maxEntries?: number;
+  clampToChatResponseWatermark?: boolean;
+  answeredWindow?: AnsweredStreamWindow;
   waiters: PendingIngestionWaiter[];
 };
+
+type IngestionMode = "normal" | "clamped-catch-up" | "answered-window";
 
 function mergeMaxEntries(left: number | undefined, right: number | undefined): number | undefined {
   if (left === undefined || right === undefined) {
@@ -106,15 +138,75 @@ function mergeMaxEntries(left: number | undefined, right: number | undefined): n
   return Math.max(left, right);
 }
 
-function mergeIngestOptions(
+function ingestionMode(options: ResolvedIngestOptions): IngestionMode {
+  if (options.answeredWindow !== undefined) {
+    return "answered-window";
+  }
+
+  if (options.clampToChatResponseWatermark === true) {
+    return "clamped-catch-up";
+  }
+
+  return "normal";
+}
+
+function sameCursor(left: StreamCursor | null, right: StreamCursor | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return left.ts === right.ts && left.entryId === right.entryId;
+}
+
+function sameResponseTo(left: StreamResponseTo, right: StreamResponseTo): boolean {
+  return (
+    left.kind === right.kind &&
+    sameCursor(left.from_cursor_exclusive, right.from_cursor_exclusive) &&
+    sameCursor(left.through_cursor_inclusive, right.through_cursor_inclusive) &&
+    left.count === right.count &&
+    left.source_entry_ids.length === right.source_entry_ids.length &&
+    left.source_entry_ids.every((entryId, index) => entryId === right.source_entry_ids[index])
+  );
+}
+
+function sameAnsweredWindow(left: AnsweredStreamWindow, right: AnsweredStreamWindow): boolean {
+  return (
+    sameResponseTo(left.responseTo, right.responseTo) &&
+    sameCursor(left.terminalCursor, right.terminalCursor)
+  );
+}
+
+function mergeCompatibleIngestOptions(
   left: ResolvedIngestOptions,
   right: ResolvedIngestOptions,
-): ResolvedIngestOptions {
+): ResolvedIngestOptions | null {
+  const mode = ingestionMode(left);
+
+  if (mode !== ingestionMode(right)) {
+    return null;
+  }
+
+  if (mode === "answered-window") {
+    if (
+      left.answeredWindow === undefined ||
+      right.answeredWindow === undefined ||
+      !sameAnsweredWindow(left.answeredWindow, right.answeredWindow)
+    ) {
+      return null;
+    }
+
+    return {
+      minEntriesThreshold: Math.min(left.minEntriesThreshold, right.minEntriesThreshold),
+      answeredWindow: left.answeredWindow,
+    };
+  }
+
   const maxEntries = mergeMaxEntries(left.maxEntries, right.maxEntries);
 
   return {
     minEntriesThreshold: Math.min(left.minEntriesThreshold, right.minEntriesThreshold),
     ...(maxEntries === undefined ? {} : { maxEntries }),
+    ...(mode === "clamped-catch-up" ? { clampToChatResponseWatermark: true } : {}),
   };
 }
 
@@ -133,7 +225,7 @@ export class StreamIngestionCoordinator {
   private readonly clock: Clock;
   private readonly minEntriesThreshold: number;
   private readonly inFlight = new Map<SessionId, InFlightIngestion>();
-  private readonly pending = new Map<SessionId, PendingIngestion>();
+  private readonly pending = new Map<SessionId, PendingIngestion[]>();
   private readonly trackedSessions = new Set<SessionId>();
   private readonly shutdownPendingDrain = new Set<SessionId>();
   private closePromise: Promise<void> | null = null;
@@ -156,6 +248,12 @@ export class StreamIngestionCoordinator {
     const resolvedOptions = {
       minEntriesThreshold: ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold,
       ...(ingestOptions.maxEntries === undefined ? {} : { maxEntries: ingestOptions.maxEntries }),
+      ...(ingestOptions.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
+      ...(ingestOptions.answeredWindow === undefined
+        ? {}
+        : { answeredWindow: ingestOptions.answeredWindow }),
     };
     const existing = this.inFlight.get(sessionId);
 
@@ -169,7 +267,7 @@ export class StreamIngestionCoordinator {
     this.trackedSessions.add(sessionId);
 
     if (existing !== undefined) {
-      return this.enqueueFollowUp(sessionId, mergeIngestOptions(existing, resolvedOptions));
+      return this.enqueueFollowUp(sessionId, resolvedOptions);
     }
 
     return this.startPass(sessionId, resolvedOptions);
@@ -208,6 +306,9 @@ export class StreamIngestionCoordinator {
     return this.startPass(sessionId, {
       minEntriesThreshold: 1,
       maxEntries: options.maxEntries,
+      ...(options.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
     });
   }
 
@@ -216,25 +317,69 @@ export class StreamIngestionCoordinator {
     ingestOptions: ResolvedIngestOptions,
   ): Promise<IngestionResult> {
     return new Promise<IngestionResult>((resolve, reject) => {
-      const pending = this.pending.get(sessionId);
+      const pendingQueue = this.pending.get(sessionId) ?? [];
+      const waiter = { resolve, reject };
+      const lastPending = pendingQueue.at(-1);
 
-      if (pending === undefined) {
-        this.pending.set(sessionId, {
-          ...ingestOptions,
-          waiters: [{ resolve, reject }],
-        });
-        return;
+      if (lastPending !== undefined) {
+        const merged = mergeCompatibleIngestOptions(lastPending, ingestOptions);
+
+        if (merged !== null) {
+          pendingQueue[pendingQueue.length - 1] = {
+            ...merged,
+            waiters: [...lastPending.waiters, waiter],
+          };
+          this.pending.set(sessionId, pendingQueue);
+          return;
+        }
       }
 
-      const merged = mergeIngestOptions(pending, ingestOptions);
-      pending.minEntriesThreshold = merged.minEntriesThreshold;
-      if (merged.maxEntries === undefined) {
-        delete pending.maxEntries;
-      } else {
-        pending.maxEntries = merged.maxEntries;
-      }
-      pending.waiters.push({ resolve, reject });
+      pendingQueue.push({
+        ...ingestOptions,
+        waiters: [waiter],
+      });
+      this.pending.set(sessionId, pendingQueue);
     });
+  }
+
+  private dequeueFollowUp(sessionId: SessionId): PendingIngestion | undefined {
+    const pendingQueue = this.pending.get(sessionId);
+
+    if (pendingQueue === undefined) {
+      return undefined;
+    }
+
+    const pending = pendingQueue.shift();
+
+    if (pendingQueue.length === 0) {
+      this.pending.delete(sessionId);
+    }
+
+    return pending;
+  }
+
+  private startPendingPass(sessionId: SessionId, pending: PendingIngestion): void {
+    const followUp = this.startPass(sessionId, {
+      minEntriesThreshold: pending.minEntriesThreshold,
+      ...(pending.maxEntries === undefined ? {} : { maxEntries: pending.maxEntries }),
+      ...(pending.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
+      ...(pending.answeredWindow === undefined ? {} : { answeredWindow: pending.answeredWindow }),
+    });
+
+    void followUp.then(
+      (followUpResult) => {
+        for (const waiter of pending.waiters) {
+          waiter.resolve(followUpResult);
+        }
+      },
+      (error) => {
+        for (const waiter of pending.waiters) {
+          waiter.reject(error);
+        }
+      },
+    );
   }
 
   private startPass(
@@ -303,32 +448,21 @@ export class StreamIngestionCoordinator {
       result = await this.ingestInternal(sessionId, {
         minEntriesThreshold: ingestOptions.minEntriesThreshold,
         ...(ingestOptions.maxEntries === undefined ? {} : { maxEntries: ingestOptions.maxEntries }),
+        ...(ingestOptions.clampToChatResponseWatermark === true
+          ? { clampToChatResponseWatermark: true }
+          : {}),
+        ...(ingestOptions.answeredWindow === undefined
+          ? {}
+          : { answeredWindow: ingestOptions.answeredWindow }),
       });
     } catch (error) {
       failure = error;
     }
 
-    const pending = this.pending.get(sessionId);
+    const pending = this.dequeueFollowUp(sessionId);
 
     if (pending !== undefined) {
-      this.pending.delete(sessionId);
-      const followUp = this.startPass(sessionId, {
-        minEntriesThreshold: pending.minEntriesThreshold,
-        ...(pending.maxEntries === undefined ? {} : { maxEntries: pending.maxEntries }),
-      });
-
-      void followUp.then(
-        (followUpResult) => {
-          for (const waiter of pending.waiters) {
-            waiter.resolve(followUpResult);
-          }
-        },
-        (error) => {
-          for (const waiter of pending.waiters) {
-            waiter.reject(error);
-          }
-        },
-      );
+      this.startPendingPass(sessionId, pending);
     }
 
     if (failure !== undefined) {
@@ -385,17 +519,215 @@ export class StreamIngestionCoordinator {
     return entries;
   }
 
+  private requireChatResponseWatermarkCoordinator(): NonNullable<
+    StreamIngestionCoordinatorOptions["chatResponseWatermarkCoordinator"]
+  > {
+    const coordinator = this.options.chatResponseWatermarkCoordinator;
+
+    if (coordinator === undefined) {
+      throw new CognitionError(
+        "Clamped catch-up ingestion requires chat response watermark coordination",
+        {
+          code: "CHAT_RESPONSE_WATERMARK_COORDINATOR_REQUIRED",
+        },
+      );
+    }
+
+    return coordinator;
+  }
+
+  private cursorForEntry(entry: StreamEntry): StreamCursor {
+    return {
+      ts: entry.timestamp,
+      entryId: entry.id,
+    };
+  }
+
+  private streamEntryIndex(sessionId: SessionId, entry: StreamEntry): number {
+    if (entry.entry_index !== undefined) {
+      return entry.entry_index;
+    }
+
+    return this.requireChatResponseWatermarkCoordinator().cursorEntryIndex(
+      sessionId,
+      this.cursorForEntry(entry),
+      "stream entry",
+    );
+  }
+
+  private entriesThroughCursor(
+    sessionId: SessionId,
+    entries: readonly StreamEntry[],
+    cursor: StreamCursor,
+  ): StreamEntry[] {
+    const cursorEntryIndex = this.requireChatResponseWatermarkCoordinator().cursorEntryIndex(
+      sessionId,
+      cursor,
+      "effective until",
+    );
+
+    return entries.filter((entry) => this.streamEntryIndex(sessionId, entry) <= cursorEntryIndex);
+  }
+
+  private minCursorByEntryIndex(
+    sessionId: SessionId,
+    left: StreamCursor,
+    right: StreamCursor,
+  ): StreamCursor {
+    return this.requireChatResponseWatermarkCoordinator().compareCursors(sessionId, left, right) <=
+      0
+      ? left
+      : right;
+  }
+
+  private clampEntriesToChatResponseWatermark(
+    sessionId: SessionId,
+    entries: readonly StreamEntry[],
+  ): StreamEntry[] | null {
+    const lastEntry = entries.at(-1);
+
+    if (lastEntry === undefined) {
+      return [];
+    }
+
+    const respondedThrough =
+      this.requireChatResponseWatermarkCoordinator().reconcile(sessionId).watermark;
+
+    if (respondedThrough === null) {
+      return null;
+    }
+
+    const candidateUntil = this.cursorForEntry(lastEntry);
+    const effectiveUntil = this.minCursorByEntryIndex(sessionId, respondedThrough, candidateUntil);
+
+    return this.entriesThroughCursor(sessionId, entries, effectiveUntil);
+  }
+
+  private async readEntriesById(
+    sessionId: SessionId,
+    entryIds: readonly StreamEntry["id"][],
+  ): Promise<StreamEntry[]> {
+    const wanted = new Set(entryIds);
+    const entries: StreamEntry[] = [];
+
+    if (wanted.size === 0) {
+      return entries;
+    }
+
+    const reader = new StreamReader({
+      dataDir: this.options.dataDir,
+      sessionId,
+    });
+
+    try {
+      for await (const entry of reader.iterate()) {
+        if (!wanted.has(entry.id)) {
+          continue;
+        }
+
+        entries.push(entry);
+
+        if (entries.length >= wanted.size) {
+          break;
+        }
+      }
+    } catch (error) {
+      if (isFileMissingError(error)) {
+        return [];
+      }
+
+      throw error;
+    }
+
+    return entries;
+  }
+
+  private async ingestAnsweredWindow(
+    sessionId: SessionId,
+    answeredWindow: AnsweredStreamWindow,
+  ): Promise<IngestionResult> {
+    const entryIds = [
+      ...answeredWindow.responseTo.source_entry_ids,
+      answeredWindow.terminalCursor.entryId,
+    ];
+    const entries = await this.readEntriesById(sessionId, entryIds);
+    const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+    const missingEntryId = entryIds.find((entryId) => !entriesById.has(entryId));
+
+    if (missingEntryId !== undefined) {
+      throw new CognitionError("Answered ingestion window references a missing stream entry", {
+        code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
+      });
+    }
+
+    const terminalEntry = entriesById.get(answeredWindow.terminalCursor.entryId);
+
+    if (
+      terminalEntry === undefined ||
+      terminalEntry.timestamp !== answeredWindow.terminalCursor.ts ||
+      terminalEntry.session_id !== sessionId
+    ) {
+      throw new CognitionError("Answered ingestion window terminal cursor mismatches the stream", {
+        code: "ANSWERED_INGESTION_WINDOW_TERMINAL_MISMATCH",
+      });
+    }
+
+    try {
+      const extractionResult = await this.options.extractor.extractFromStream({
+        session: sessionId,
+        entryIds,
+      });
+
+      this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
+        lastTs: answeredWindow.terminalCursor.ts,
+        lastEntryId: answeredWindow.terminalCursor.entryId,
+      });
+
+      return {
+        ran: true,
+        processedEntries: entries.length,
+        extractionResult,
+      };
+    } catch (error) {
+      try {
+        await this.options.onError?.(error, sessionId);
+      } catch {
+        // Best-effort.
+      }
+
+      return {
+        ran: false,
+        processedEntries: entries.length,
+        error,
+      };
+    }
+  }
+
   private async ingestInternal(
     sessionId: SessionId,
     ingestOptions: IngestOptions,
   ): Promise<IngestionResult> {
+    if (ingestOptions.answeredWindow !== undefined) {
+      return this.ingestAnsweredWindow(sessionId, ingestOptions.answeredWindow);
+    }
+
     const threshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
     const resumeOptions = this.resolveResumeOptions(sessionId);
-    const newEntries = await this.readEntriesPastWatermark(
+    let newEntries = await this.readEntriesPastWatermark(
       sessionId,
       resumeOptions,
       ingestOptions.maxEntries,
     );
+
+    if (ingestOptions.clampToChatResponseWatermark === true) {
+      const clampedEntries = this.clampEntriesToChatResponseWatermark(sessionId, newEntries);
+
+      if (clampedEntries === null) {
+        return { ran: false, processedEntries: 0 };
+      }
+
+      newEntries = clampedEntries;
+    }
 
     if (newEntries.length < threshold) {
       return { ran: false, processedEntries: newEntries.length };

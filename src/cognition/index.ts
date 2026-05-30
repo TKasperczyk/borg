@@ -163,6 +163,28 @@ export {
   type TurnTracer,
 } from "./tracing/tracer.js";
 export {
+  CHAT_RESPONSE_PROCESS_NAME,
+  CHAT_RESPONSE_TERMINAL_KINDS,
+  ChatResponseWatermarkCoordinator,
+  type AdvanceChatResponseWatermarkResult,
+  type ChatResponseReconcileResult,
+  type ChatResponseTerminalKind,
+  type ChatResponseWatermarkCoordinatorOptions,
+  type FindTerminalStampForBatchInput,
+} from "./ingestion/chat-response-watermark.js";
+export {
+  ChatResponseCatchUpWorker,
+  type ChatResponseCatchUpWorkerConfig,
+  type ChatResponseCatchUpWorkerOptions,
+  type DrainResult,
+} from "./ingestion/chat-response-catch-up-worker.js";
+export {
+  MessageEnqueuer,
+  type BorgEnqueueMessageInput,
+  type BorgEnqueueMessageResult,
+  type MessageEnqueuerOptions,
+} from "./ingestion/enqueuer.js";
+export {
   SessionLock,
   type SessionLockAcquireOptions,
   type SessionLockLease,
@@ -170,10 +192,20 @@ export {
 } from "./session-lock.js";
 export {
   TurnOrchestrator,
-  type TurnInput,
   type TurnOrchestratorOptions,
   type TurnResult,
 } from "./turn-orchestrator.js";
+export {
+  type CurrentTurnUserInput,
+  type CurrentTurnUserInputSenderAttribution,
+  type HydratedInboundMessage,
+  type InboundBatchTurnInput,
+  type InternalSingleMessageTurnInput,
+  type SingleMessageTurnInput,
+  type TurnInput,
+  type TurnLockMode,
+  type TurnOrchestratorInput,
+} from "./turn-input.js";
 export {
   COGNITIVE_MODES,
   TURN_ORIGINS,

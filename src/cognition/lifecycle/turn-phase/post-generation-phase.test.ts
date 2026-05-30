@@ -14,6 +14,7 @@ import {
   createSessionId,
   createStreamEntryId,
 } from "../../../util/ids.js";
+import type { StreamResponseTo } from "../../../stream/index.js";
 import { runPostGenerationPhase } from "./post-generation-phase.js";
 
 function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
@@ -75,6 +76,134 @@ function makeActionRepository(records: ActionRecord[]) {
 }
 
 describe("runPostGenerationPhase", () => {
+  it("starts live ingestion with an explicit answered window for catch-up terminal messages", async () => {
+    const sessionId = createSessionId();
+    const turnId = "turn_post_generation_answered_window";
+    const sourceEntryIds = [createStreamEntryId(), createStreamEntryId()];
+    const responseTo: StreamResponseTo = {
+      kind: "stream_backlog",
+      from_cursor_exclusive: null,
+      through_cursor_inclusive: {
+        ts: 2_000,
+        entryId: sourceEntryIds[1]!,
+      },
+      source_entry_ids: sourceEntryIds,
+      count: sourceEntryIds.length,
+    };
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const agentEntry = {
+      id: createStreamEntryId(),
+      kind: "agent_msg",
+      turn_id: turnId,
+      turn_status: "active",
+      content: "Caught up.",
+      session_id: sessionId,
+      timestamp: 3_000,
+      reply_target_entity_id: null,
+    };
+    const ingest = vi.fn(async () => ({ ran: true, processedEntries: 3 }));
+    const advanceThrough = vi.fn();
+
+    await runPostGenerationPhase({
+      options: {
+        config: DEFAULT_CONFIG,
+        clock: { now: () => 10_000 },
+        actionRepository: makeActionRepository([]),
+        tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+        chatResponseWatermarkCoordinator: { advanceThrough },
+        streamIngestionCoordinator: { ingest },
+        turnActionCoordinator: {
+          run: vi.fn(async () => ({
+            actionResult: {
+              response: "Caught up.",
+              tool_calls: [],
+              intents: [],
+              workingMemory,
+              pending_action_merge_count: 0,
+            },
+            actionEmission: { kind: "message" },
+            deliberation: {
+              path: "system_1",
+              thoughts: [],
+              usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+              retrievedEpisodes: [],
+              referencedEpisodeIds: [],
+            },
+          })),
+        },
+        discourseStateService: {
+          appendClosurePressureHistory: vi.fn(
+            (arg: { workingMemory: unknown }) => arg.workingMemory,
+          ),
+          setStopState: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+          markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+        },
+        turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
+      } as never,
+      appendHookFailureEvent: vi.fn(async () => undefined),
+      llmClient: new FakeLLMClient({ responses: [] }),
+      sessionId,
+      turnId,
+      turnInput: { userMessage: "Caught-up batch" },
+      streamWriter: { append: vi.fn(async () => agentEntry) } as never,
+      lifecycleTracker: {
+        trackPendingActionMerges: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      } as never,
+      cognitionInput: "Caught-up batch",
+      perception: { mode: "conversational", entities: [] } as never,
+      workingMemory,
+      workingMood: null as never,
+      persistedPerceptionEntry: null as never,
+      persistedUserEntryId: sourceEntryIds[0],
+      sourceUserEntryIds: sourceEntryIds,
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      deliberation: {
+        path: "system_1",
+        thoughts: [],
+        usage: null,
+        retrievedEpisodes: [],
+        referencedEpisodeIds: [],
+      } as never,
+      retrievalPhase: {
+        applicableCommitments: [],
+        retrievedEpisodes: [],
+        selfSnapshot: null,
+        retrieval: { confidence: 1 },
+        executiveFocusWithStep: null,
+        selectedSkill: null,
+        proceduralContext: null,
+        evidenceLedgerContext: { ledger: null },
+      } as never,
+      origin: "user",
+      autonomyTrigger: undefined,
+      closureLoopCurrentUserAct: null,
+      audienceEntityId: null,
+      audienceIsGroup: false,
+      senderEntityId: null,
+      socialInteractionEntityId: null,
+      pendingSocialAttribution: null,
+      suppressionSet: null as never,
+      isUserTurn: true,
+      currentTurnFrameAnomaly: null,
+      responseTo,
+    });
+
+    expect(advanceThrough).toHaveBeenCalledWith(sessionId, responseTo.through_cursor_inclusive);
+    expect(ingest).toHaveBeenCalledWith(sessionId, {
+      answeredWindow: {
+        responseTo,
+        terminalCursor: {
+          ts: agentEntry.timestamp,
+          entryId: agentEntry.id,
+        },
+      },
+    });
+  });
+
   it("archives only inactive participant actions during the post-generation scan", async () => {
     const sessionId = createSessionId();
     const audienceId = createEntityId();

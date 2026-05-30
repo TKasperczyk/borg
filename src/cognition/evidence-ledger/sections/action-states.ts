@@ -48,6 +48,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     const salienceClass = actionSalienceClass({
       thread,
       currentUserStreamEntryId: context.input.currentUserEntry?.id,
+      currentUserStreamEntryIds: context.input.currentUserEntries?.map((entry) => entry.id),
       currentTurnCounter: context.input.workingMemory.turn_counter,
     });
 

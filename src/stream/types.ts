@@ -39,6 +39,25 @@ export const streamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
+export const streamCursorSchema = z.object({
+  ts: z.number().finite(),
+  entryId: streamEntryIdSchema,
+});
+
+export const streamSourceMessageKeySchema = z.object({
+  source_type: z.string().min(1),
+  source_external_id: z.string().min(1),
+  external_message_id: z.string().min(1),
+});
+
+export const streamResponseToSchema = z.object({
+  kind: z.literal("stream_backlog"),
+  from_cursor_exclusive: streamCursorSchema.nullable(),
+  through_cursor_inclusive: streamCursorSchema,
+  source_entry_ids: z.array(streamEntryIdSchema),
+  count: z.number().int().nonnegative(),
+});
+
 export const sessionIdSchema = z
   .string()
   .refine((value) => isSessionId(value), {
@@ -66,6 +85,8 @@ export const streamEntrySchema = z.object({
   audience: z.string().min(1).optional(),
   sender_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   reply_target_entity_id: streamEntryEntityIdSchema.nullable().default(null),
+  source_message_key: streamSourceMessageKeySchema.optional(),
+  response_to: streamResponseToSchema.optional(),
   persistence_class: streamEntryPersistenceClassSchema.optional(),
   session_id: sessionIdSchema,
   compressed: z.boolean().default(false),
@@ -90,11 +111,9 @@ export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status">
   turn_status?: StreamTurnStatus;
 };
 export type StreamEntryInput = z.input<typeof streamEntryInputSchema>;
-
-export type StreamCursor = {
-  ts: number;
-  entryId: StreamEntryId;
-};
+export type StreamCursor = z.infer<typeof streamCursorSchema>;
+export type StreamSourceMessageKey = z.infer<typeof streamSourceMessageKeySchema>;
+export type StreamResponseTo = z.infer<typeof streamResponseToSchema>;
 
 export type StreamIterateOptions = {
   sinceTs?: number;

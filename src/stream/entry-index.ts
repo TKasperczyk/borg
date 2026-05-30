@@ -3,12 +3,15 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.js";
 import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../util/ids.js";
+import { serializeJsonValue } from "../util/json-value.js";
 
 import { getSessionStreamPath } from "./path.js";
 import {
   type SessionId,
+  type StreamCursor,
   type StreamEntry,
   type StreamEntryKind,
+  type StreamSourceMessageKey,
   type StreamTurnStatus,
   streamEntrySchema,
 } from "./types.js";
@@ -30,13 +33,27 @@ export const streamEntryIndexMigrations: Migration[] = [
     up: (db) => {
       db.exec(`
         CREATE TABLE stream_entry_index (
-        entry_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        byte_offset INTEGER NOT NULL,
-        timestamp INTEGER NOT NULL,
-        kind TEXT NULL,
-        sender_entity_id TEXT NULL
-      , turn_id TEXT NULL, turn_status TEXT NULL, active INTEGER NOT NULL DEFAULT 1, entry_index INTEGER NULL);
+          entry_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          byte_offset INTEGER NOT NULL,
+          timestamp INTEGER NOT NULL,
+          kind TEXT NULL,
+          sender_entity_id TEXT NULL,
+          turn_id TEXT NULL,
+          turn_status TEXT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          entry_index INTEGER NULL,
+          source_message_key_source_type TEXT NULL,
+          source_message_key_source_external_id TEXT NULL,
+          source_message_key_external_message_id TEXT NULL,
+          response_to_kind TEXT NULL,
+          response_to_from_cursor_ts INTEGER NULL,
+          response_to_from_cursor_entry_id TEXT NULL,
+          response_to_through_cursor_ts INTEGER NULL,
+          response_to_through_cursor_entry_id TEXT NULL,
+          response_to_source_entry_ids TEXT NULL,
+          response_to_count INTEGER NULL
+        );
         CREATE INDEX idx_stream_entry_active
         ON stream_entry_index(active);
         CREATE INDEX idx_stream_entry_session
@@ -46,6 +63,23 @@ export const streamEntryIndexMigrations: Migration[] = [
         ON stream_entry_index(session_id, entry_index);
         CREATE INDEX idx_stream_entry_session_kind
         ON stream_entry_index(session_id, kind);
+        CREATE UNIQUE INDEX idx_stream_entry_source_message_key
+        ON stream_entry_index(
+          source_message_key_source_type,
+          source_message_key_source_external_id,
+          source_message_key_external_message_id
+        )
+        WHERE kind = 'user_msg'
+          AND source_message_key_source_type IS NOT NULL
+          AND source_message_key_source_external_id IS NOT NULL
+          AND source_message_key_external_message_id IS NOT NULL;
+        CREATE INDEX idx_stream_entry_response_to_through_cursor
+        ON stream_entry_index(
+          response_to_kind,
+          response_to_through_cursor_ts,
+          response_to_through_cursor_entry_id
+        )
+        WHERE response_to_through_cursor_entry_id IS NOT NULL;
         CREATE TABLE stream_quarantine_refs (
         marker_entry_id TEXT NOT NULL,
         marker_session_id TEXT NOT NULL,
@@ -73,6 +107,16 @@ export type StreamEntryIndexRecord = {
   turn_id: string | null;
   turn_status: StreamTurnStatus | null;
   active: boolean;
+  source_message_key_source_type: string | null;
+  source_message_key_source_external_id: string | null;
+  source_message_key_external_message_id: string | null;
+  response_to_kind: string | null;
+  response_to_from_cursor_ts: number | null;
+  response_to_from_cursor_entry_id: StreamEntryId | null;
+  response_to_through_cursor_ts: number | null;
+  response_to_through_cursor_entry_id: StreamEntryId | null;
+  response_to_source_entry_ids: string | null;
+  response_to_count: number | null;
 };
 
 export type IndexedEntryFacts = Pick<
@@ -91,6 +135,16 @@ type StreamEntryIndexRow = {
   turn_id?: string | null;
   turn_status?: string | null;
   active?: number | null;
+  source_message_key_source_type?: string | null;
+  source_message_key_source_external_id?: string | null;
+  source_message_key_external_message_id?: string | null;
+  response_to_kind?: string | null;
+  response_to_from_cursor_ts?: number | null;
+  response_to_from_cursor_entry_id?: string | null;
+  response_to_through_cursor_ts?: number | null;
+  response_to_through_cursor_entry_id?: string | null;
+  response_to_source_entry_ids?: string | null;
+  response_to_count?: number | null;
 };
 
 type SessionEntryCountRow = {
@@ -105,20 +159,16 @@ type MissingKindSampleRow = {
   entry_id: string;
 };
 
-type MissingTrustFactsCountRow = {
-  missing_trust_fact_count: number;
-};
-
-type MissingEntryIndexCountRow = {
-  missing_entry_index_count: number;
-};
-
 type NextEntryIndexRow = {
   next_entry_index: number;
 };
 
 type QuarantineRefRow = {
   referenced_entry_id: string;
+};
+
+type SessionIdRow = {
+  session_id: string;
 };
 
 export type StreamEntryIndexRepositoryOptions = {
@@ -131,6 +181,66 @@ export type LegacyMissingKindRowsReport = {
   count: number;
   sampleEntryIds: string[];
 };
+
+export type LookupSessionStreamBacklogResponseStampsInput = {
+  sessionId: SessionId;
+  terminalKinds: readonly StreamEntryKind[];
+};
+
+export type LookupExactStreamBacklogResponseStampInput = {
+  sessionId: SessionId;
+  terminalKinds: readonly StreamEntryKind[];
+  fromCursorExclusive: StreamCursor | null;
+  throughCursorInclusive: StreamCursor;
+  sourceEntryIds: readonly StreamEntryId[];
+  count: number;
+};
+
+type StreamEntryIndexStampColumns = Pick<
+  StreamEntryIndexRecord,
+  | "source_message_key_source_type"
+  | "source_message_key_source_external_id"
+  | "source_message_key_external_message_id"
+  | "response_to_kind"
+  | "response_to_from_cursor_ts"
+  | "response_to_from_cursor_entry_id"
+  | "response_to_through_cursor_ts"
+  | "response_to_through_cursor_entry_id"
+  | "response_to_source_entry_ids"
+  | "response_to_count"
+>;
+
+const EMPTY_STAMP_COLUMNS: StreamEntryIndexStampColumns = {
+  source_message_key_source_type: null,
+  source_message_key_source_external_id: null,
+  source_message_key_external_message_id: null,
+  response_to_kind: null,
+  response_to_from_cursor_ts: null,
+  response_to_from_cursor_entry_id: null,
+  response_to_through_cursor_ts: null,
+  response_to_through_cursor_entry_id: null,
+  response_to_source_entry_ids: null,
+  response_to_count: null,
+};
+
+function stampColumnsFromEntry(entry: StreamEntry): StreamEntryIndexStampColumns {
+  const sourceMessageKey = entry.source_message_key;
+  const responseTo = entry.response_to;
+
+  return {
+    source_message_key_source_type: sourceMessageKey?.source_type ?? null,
+    source_message_key_source_external_id: sourceMessageKey?.source_external_id ?? null,
+    source_message_key_external_message_id: sourceMessageKey?.external_message_id ?? null,
+    response_to_kind: responseTo?.kind ?? null,
+    response_to_from_cursor_ts: responseTo?.from_cursor_exclusive?.ts ?? null,
+    response_to_from_cursor_entry_id: responseTo?.from_cursor_exclusive?.entryId ?? null,
+    response_to_through_cursor_ts: responseTo?.through_cursor_inclusive.ts ?? null,
+    response_to_through_cursor_entry_id: responseTo?.through_cursor_inclusive.entryId ?? null,
+    response_to_source_entry_ids:
+      responseTo === undefined ? null : serializeJsonValue(responseTo.source_entry_ids),
+    response_to_count: responseTo?.count ?? null,
+  };
+}
 
 function parseIndexedStreamLine(
   line: string,
@@ -176,6 +286,24 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
         ? null
         : (row.turn_status as StreamTurnStatus),
     active: row.active === null || row.active === undefined ? true : row.active !== 0,
+    source_message_key_source_type: row.source_message_key_source_type ?? null,
+    source_message_key_source_external_id: row.source_message_key_source_external_id ?? null,
+    source_message_key_external_message_id: row.source_message_key_external_message_id ?? null,
+    response_to_kind: row.response_to_kind ?? null,
+    response_to_from_cursor_ts: row.response_to_from_cursor_ts ?? null,
+    response_to_from_cursor_entry_id:
+      row.response_to_from_cursor_entry_id === null ||
+      row.response_to_from_cursor_entry_id === undefined
+        ? null
+        : (row.response_to_from_cursor_entry_id as StreamEntryId),
+    response_to_through_cursor_ts: row.response_to_through_cursor_ts ?? null,
+    response_to_through_cursor_entry_id:
+      row.response_to_through_cursor_entry_id === null ||
+      row.response_to_through_cursor_entry_id === undefined
+        ? null
+        : (row.response_to_through_cursor_entry_id as StreamEntryId),
+    response_to_source_entry_ids: row.response_to_source_entry_ids ?? null,
+    response_to_count: row.response_to_count ?? null,
   };
 }
 
@@ -320,6 +448,7 @@ export class StreamEntryIndexRepository {
   private readonly db: SqliteDatabase;
   private readonly dataDir: string;
   private readonly logger: LoggerLike;
+  private readonly poisonedSessions = new Set<SessionId>();
 
   constructor(options: StreamEntryIndexRepositoryOptions) {
     this.db = options.db;
@@ -338,14 +467,19 @@ export class StreamEntryIndexRepository {
     turnId: string | null = null,
     turnStatus: StreamTurnStatus | null = null,
     active = true,
+    stampColumns: StreamEntryIndexStampColumns = EMPTY_STAMP_COLUMNS,
   ): void {
     this.db
       .prepare(
         `INSERT INTO stream_entry_index (
            entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
-           turn_id, turn_status, active
+           turn_id, turn_status, active,
+           source_message_key_source_type, source_message_key_source_external_id,
+           source_message_key_external_message_id, response_to_kind, response_to_from_cursor_ts,
+           response_to_from_cursor_entry_id, response_to_through_cursor_ts,
+           response_to_through_cursor_entry_id, response_to_source_entry_ids, response_to_count
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
@@ -355,7 +489,17 @@ export class StreamEntryIndexRepository {
            sender_entity_id = excluded.sender_entity_id,
            turn_id = excluded.turn_id,
            turn_status = excluded.turn_status,
-           active = excluded.active`,
+           active = excluded.active,
+           source_message_key_source_type = excluded.source_message_key_source_type,
+           source_message_key_source_external_id = excluded.source_message_key_source_external_id,
+           source_message_key_external_message_id = excluded.source_message_key_external_message_id,
+           response_to_kind = excluded.response_to_kind,
+           response_to_from_cursor_ts = excluded.response_to_from_cursor_ts,
+           response_to_from_cursor_entry_id = excluded.response_to_from_cursor_entry_id,
+           response_to_through_cursor_ts = excluded.response_to_through_cursor_ts,
+           response_to_through_cursor_entry_id = excluded.response_to_through_cursor_entry_id,
+           response_to_source_entry_ids = excluded.response_to_source_entry_ids,
+           response_to_count = excluded.response_to_count`,
       )
       .run(
         entryId,
@@ -368,6 +512,16 @@ export class StreamEntryIndexRepository {
         turnId,
         turnStatus,
         active ? 1 : 0,
+        stampColumns.source_message_key_source_type,
+        stampColumns.source_message_key_source_external_id,
+        stampColumns.source_message_key_external_message_id,
+        stampColumns.response_to_kind,
+        stampColumns.response_to_from_cursor_ts,
+        stampColumns.response_to_from_cursor_entry_id,
+        stampColumns.response_to_through_cursor_ts,
+        stampColumns.response_to_through_cursor_entry_id,
+        stampColumns.response_to_source_entry_ids,
+        stampColumns.response_to_count,
       );
   }
 
@@ -385,6 +539,7 @@ export class StreamEntryIndexRepository {
       entry.turn_id ?? null,
       entry.turn_status ?? "active",
       streamEntryIsActive(entry, inactiveRefs),
+      stampColumnsFromEntry(entry),
     );
 
     if (inactiveRefs.streamEntryIds.size > 0) {
@@ -424,6 +579,18 @@ export class StreamEntryIndexRepository {
       .get(sessionId) as NextEntryIndexRow;
 
     return row.next_entry_index;
+  }
+
+  isPoisoned(sessionId: SessionId): boolean {
+    return this.poisonedSessions.has(sessionId);
+  }
+
+  markPoisoned(sessionId: SessionId): void {
+    this.poisonedSessions.add(sessionId);
+  }
+
+  clearPoisoned(sessionId: SessionId): void {
+    this.poisonedSessions.delete(sessionId);
   }
 
   private recordQuarantineRefs(entry: StreamEntry): void {
@@ -482,12 +649,69 @@ export class StreamEntryIndexRepository {
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
               , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
          FROM stream_entry_index
          WHERE entry_id = ?`,
       )
       .get(entryId) as StreamEntryIndexRow | undefined;
 
     return row === undefined ? null : recordFromRow(row);
+  }
+
+  lookupBySourceMessageKey(key: StreamSourceMessageKey): StreamEntryIndexRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT entry_id, session_id, byte_offset, timestamp
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
+         FROM stream_entry_index
+         WHERE source_message_key_source_type = ?
+           AND source_message_key_source_external_id = ?
+           AND source_message_key_external_message_id = ?
+           AND kind = 'user_msg'`,
+      )
+      .get(key.source_type, key.source_external_id, key.external_message_id) as
+      | StreamEntryIndexRow
+      | undefined;
+
+    if (row === undefined) {
+      return null;
+    }
+
+    const record = recordFromRow(row);
+
+    if (
+      record.kind !== "user_msg" ||
+      record.source_message_key_source_type !== key.source_type ||
+      record.source_message_key_source_external_id !== key.source_external_id ||
+      record.source_message_key_external_message_id !== key.external_message_id
+    ) {
+      return null;
+    }
+
+    return record;
+  }
+
+  listSessionIdsWithPendingResponseBacklog(): SessionId[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT session_id
+         FROM stream_entry_index
+         WHERE kind = 'user_msg'
+           AND turn_id IS NULL
+         ORDER BY session_id ASC`,
+      )
+      .all() as SessionIdRow[];
+
+    return rows.map((row) => row.session_id as SessionId);
   }
 
   lookupMany(entryIds: readonly string[]): Map<string, StreamEntryIndexRecord> {
@@ -501,6 +725,11 @@ export class StreamEntryIndexRepository {
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
               , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
          FROM stream_entry_index
          WHERE entry_id IN (${uniqueIds.map(() => "?").join(", ")})`,
       )
@@ -523,6 +752,11 @@ export class StreamEntryIndexRepository {
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
               , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
          FROM stream_entry_index
          WHERE session_id = ? AND kind = ?
          ORDER BY byte_offset ASC`,
@@ -530,6 +764,101 @@ export class StreamEntryIndexRepository {
       .all(input.sessionId, input.kind) as StreamEntryIndexRow[];
 
     return rows.map(recordFromRow);
+  }
+
+  lookupSessionStreamBacklogResponseStamps(
+    input: LookupSessionStreamBacklogResponseStampsInput,
+  ): StreamEntryIndexRecord[] {
+    const terminalKinds = [...new Set(input.terminalKinds)];
+
+    if (terminalKinds.length === 0) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT entry_id, session_id, byte_offset, timestamp
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
+         FROM stream_entry_index
+         WHERE session_id = ?
+           AND response_to_kind = 'stream_backlog'
+           AND kind IN (${terminalKinds.map(() => "?").join(", ")})
+         ORDER BY byte_offset ASC`,
+      )
+      .all(input.sessionId, ...terminalKinds) as StreamEntryIndexRow[];
+
+    return rows.map(recordFromRow);
+  }
+
+  lookupExactStreamBacklogResponseStamp(
+    input: LookupExactStreamBacklogResponseStampInput,
+  ): StreamEntryIndexRecord | null {
+    const terminalKinds = [...new Set(input.terminalKinds)];
+
+    if (terminalKinds.length === 0) {
+      return null;
+    }
+
+    const serializedSourceEntryIds = serializeJsonValue(input.sourceEntryIds);
+    const terminalKindPlaceholders = terminalKinds.map(() => "?").join(", ");
+    const baseSql = `SELECT entry_id, session_id, byte_offset, timestamp
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
+         FROM stream_entry_index
+         WHERE response_to_kind = 'stream_backlog'
+           AND response_to_through_cursor_ts = ?
+           AND response_to_through_cursor_entry_id = ?
+           AND session_id = ?
+           AND kind IN (${terminalKindPlaceholders})`;
+    const tailSql = `AND response_to_source_entry_ids = ?
+           AND response_to_count = ?
+         ORDER BY byte_offset ASC
+         LIMIT 1`;
+    const row =
+      input.fromCursorExclusive === null
+        ? (this.db
+            .prepare(
+              `${baseSql}
+           AND response_to_from_cursor_ts IS NULL
+           AND response_to_from_cursor_entry_id IS NULL
+           ${tailSql}`,
+            )
+            .get(
+              input.throughCursorInclusive.ts,
+              input.throughCursorInclusive.entryId,
+              input.sessionId,
+              ...terminalKinds,
+              serializedSourceEntryIds,
+              input.count,
+            ) as StreamEntryIndexRow | undefined)
+        : (this.db
+            .prepare(
+              `${baseSql}
+           AND response_to_from_cursor_ts = ?
+           AND response_to_from_cursor_entry_id = ?
+           ${tailSql}`,
+            )
+            .get(
+              input.throughCursorInclusive.ts,
+              input.throughCursorInclusive.entryId,
+              input.sessionId,
+              ...terminalKinds,
+              input.fromCursorExclusive.ts,
+              input.fromCursorExclusive.entryId,
+              serializedSourceEntryIds,
+              input.count,
+            ) as StreamEntryIndexRow | undefined);
+
+    return row === undefined ? null : recordFromRow(row);
   }
 
   quarantinedSharedStateArtifactRefs(): ReadonlySet<StreamEntryId> {
@@ -548,48 +877,22 @@ export class StreamEntryIndexRepository {
     const streamPath = getSessionStreamPath(this.dataDir, sessionId);
 
     if (!existsSync(streamPath)) {
+      this.clearPoisoned(sessionId);
       return { inserted: 0 };
     }
 
-    const coverage = this.db
-      .prepare(
-        `SELECT COUNT(*) AS entry_count
-         FROM stream_entry_index
-         WHERE session_id = ?`,
-      )
-      .get(sessionId) as SessionEntryCountRow;
-    const missingKindCoverage = this.db
-      .prepare(
-        `SELECT COUNT(*) AS missing_kind_count
-         FROM stream_entry_index
-         WHERE session_id = ? AND kind IS NULL`,
-      )
-      .get(sessionId) as MissingKindCountRow;
-    const missingTrustFactsCoverage = this.db
-      .prepare(
-        `SELECT COUNT(*) AS missing_trust_fact_count
-         FROM stream_entry_index
-         WHERE session_id = ? AND turn_status IS NULL`,
-      )
-      .get(sessionId) as MissingTrustFactsCountRow;
-    const missingEntryIndexCoverage = this.db
-      .prepare(
-        `SELECT COUNT(*) AS missing_entry_index_count
-         FROM stream_entry_index
-         WHERE session_id = ? AND entry_index IS NULL`,
-      )
-      .get(sessionId) as MissingEntryIndexCountRow;
     const fileDescriptor = openSync(streamPath, "r");
 
     try {
       const fileSize = fstatSync(fileDescriptor).size;
 
       if (fileSize === 0) {
+        this.clearPoisoned(sessionId);
         return { inserted: 0 };
       }
 
       const scannedEntries: { entry: StreamEntry; byteOffset: number; entryIndex: number }[] = [];
-      const fileEntryCount = scanForwardStreamEntries(
+      scanForwardStreamEntries(
         fileDescriptor,
         fileSize,
         streamPath,
@@ -598,7 +901,7 @@ export class StreamEntryIndexRepository {
           scannedEntries.push({
             entry,
             byteOffset,
-            entryIndex: entry.entry_index ?? scannedEntries.length,
+            entryIndex: scannedEntries.length,
           });
         },
       );
@@ -608,22 +911,17 @@ export class StreamEntryIndexRepository {
         sessionId,
       );
 
-      if (
-        coverage.entry_count === fileEntryCount &&
-        missingKindCoverage.missing_kind_count === 0 &&
-        missingTrustFactsCoverage.missing_trust_fact_count === 0 &&
-        missingEntryIndexCoverage.missing_entry_index_count === 0
-      ) {
-        return { inserted: 0 };
-      }
-
       const insertMissing = this.db.transaction((): number => {
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
              entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
-             turn_id, turn_status, active
+             turn_id, turn_status, active,
+             source_message_key_source_type, source_message_key_source_external_id,
+             source_message_key_external_message_id, response_to_kind, response_to_from_cursor_ts,
+             response_to_from_cursor_entry_id, response_to_through_cursor_ts,
+             response_to_through_cursor_entry_id, response_to_source_entry_ids, response_to_count
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (entry_id) DO UPDATE SET
              session_id = excluded.session_id,
              byte_offset = excluded.byte_offset,
@@ -633,7 +931,17 @@ export class StreamEntryIndexRepository {
              sender_entity_id = excluded.sender_entity_id,
              turn_id = excluded.turn_id,
              turn_status = excluded.turn_status,
-             active = excluded.active
+             active = excluded.active,
+             source_message_key_source_type = excluded.source_message_key_source_type,
+             source_message_key_source_external_id = excluded.source_message_key_source_external_id,
+             source_message_key_external_message_id = excluded.source_message_key_external_message_id,
+             response_to_kind = excluded.response_to_kind,
+             response_to_from_cursor_ts = excluded.response_to_from_cursor_ts,
+             response_to_from_cursor_entry_id = excluded.response_to_from_cursor_entry_id,
+             response_to_through_cursor_ts = excluded.response_to_through_cursor_ts,
+             response_to_through_cursor_entry_id = excluded.response_to_through_cursor_entry_id,
+             response_to_source_entry_ids = excluded.response_to_source_entry_ids,
+             response_to_count = excluded.response_to_count
            WHERE stream_entry_index.session_id != excluded.session_id
               OR stream_entry_index.byte_offset != excluded.byte_offset
               OR stream_entry_index.entry_index IS NOT excluded.entry_index
@@ -642,7 +950,17 @@ export class StreamEntryIndexRepository {
               OR stream_entry_index.sender_entity_id IS NOT excluded.sender_entity_id
               OR stream_entry_index.turn_id IS NOT excluded.turn_id
               OR stream_entry_index.turn_status IS NOT excluded.turn_status
-              OR stream_entry_index.active IS NOT excluded.active`,
+              OR stream_entry_index.active IS NOT excluded.active
+              OR stream_entry_index.source_message_key_source_type IS NOT excluded.source_message_key_source_type
+              OR stream_entry_index.source_message_key_source_external_id IS NOT excluded.source_message_key_source_external_id
+              OR stream_entry_index.source_message_key_external_message_id IS NOT excluded.source_message_key_external_message_id
+              OR stream_entry_index.response_to_kind IS NOT excluded.response_to_kind
+              OR stream_entry_index.response_to_from_cursor_ts IS NOT excluded.response_to_from_cursor_ts
+              OR stream_entry_index.response_to_from_cursor_entry_id IS NOT excluded.response_to_from_cursor_entry_id
+              OR stream_entry_index.response_to_through_cursor_ts IS NOT excluded.response_to_through_cursor_ts
+              OR stream_entry_index.response_to_through_cursor_entry_id IS NOT excluded.response_to_through_cursor_entry_id
+              OR stream_entry_index.response_to_source_entry_ids IS NOT excluded.response_to_source_entry_ids
+              OR stream_entry_index.response_to_count IS NOT excluded.response_to_count`,
         );
         let inserted = 0;
 
@@ -651,6 +969,8 @@ export class StreamEntryIndexRepository {
         );
 
         for (const { entry, byteOffset, entryIndex } of scannedEntries) {
+          const stampColumns = stampColumnsFromEntry(entry);
+
           inserted += Number(
             insert.run(
               entry.id,
@@ -663,6 +983,16 @@ export class StreamEntryIndexRepository {
               entry.turn_id ?? null,
               entry.turn_status ?? "active",
               streamEntryIsActive(entry, inactiveRefs) ? 1 : 0,
+              stampColumns.source_message_key_source_type,
+              stampColumns.source_message_key_source_external_id,
+              stampColumns.source_message_key_external_message_id,
+              stampColumns.response_to_kind,
+              stampColumns.response_to_from_cursor_ts,
+              stampColumns.response_to_from_cursor_entry_id,
+              stampColumns.response_to_through_cursor_ts,
+              stampColumns.response_to_through_cursor_entry_id,
+              stampColumns.response_to_source_entry_ids,
+              stampColumns.response_to_count,
             ).changes,
           );
         }
@@ -670,8 +1000,12 @@ export class StreamEntryIndexRepository {
         return inserted;
       });
 
+      const inserted = insertMissing();
+
+      this.clearPoisoned(sessionId);
+
       return {
-        inserted: insertMissing(),
+        inserted,
       };
     } finally {
       closeSync(fileDescriptor);

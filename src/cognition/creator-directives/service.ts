@@ -38,6 +38,7 @@ export type ExtractCreatorDirectivesForTurnInput = {
   currentSenderDisplayName?: string | null;
   sourceSessionId: SessionId;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   recentHistory: readonly RecencyMessage[];
   sessionId?: SessionId;
   sessionAudienceRole: SessionAudienceRole;
@@ -316,7 +317,7 @@ export class CreatorDirectiveTurnService {
     candidate: CreatorDirectiveCandidate;
     createdByEntityId: EntityId;
     sourceSessionId: SessionId;
-    sourceStreamEntryId: StreamEntryId;
+    sourceStreamEntryIds: readonly StreamEntryId[];
     subjectEntityId: EntityId | null;
     allowedEntityIds: readonly EntityId[];
     excludedEntityIds: readonly EntityId[];
@@ -328,8 +329,8 @@ export class CreatorDirectiveTurnService {
       kind: input.candidate.kind,
       createdByEntityId: input.createdByEntityId,
       sourceSessionId: input.sourceSessionId,
-      authorizationStreamEntryIds: [input.sourceStreamEntryId],
-      contentSourceStreamEntryIds: [input.sourceStreamEntryId],
+      authorizationStreamEntryIds: [...input.sourceStreamEntryIds],
+      contentSourceStreamEntryIds: [...input.sourceStreamEntryIds],
       subjectKind: input.candidate.subject_kind,
       subjectEntityId: input.subjectEntityId,
       semanticSlot: input.candidate.semantic_slot,
@@ -360,7 +361,15 @@ export class CreatorDirectiveTurnService {
       return [];
     }
 
-    if (input.persistedUserEntryId === undefined) {
+    const sourceUserEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? []
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
+    const currentUserStreamEntryId = input.persistedUserEntryId ?? sourceUserEntryIds[0];
+
+    if (currentUserStreamEntryId === undefined) {
       this.reject({
         turnId: input.turnId,
         sessionId: input.sessionId,
@@ -396,7 +405,8 @@ export class CreatorDirectiveTurnService {
     try {
       candidates = await extractor.extract({
         userMessage: input.userMessage,
-        currentUserStreamEntryId: input.persistedUserEntryId,
+        currentUserStreamEntryId,
+        currentUserStreamEntryIds: sourceUserEntryIds,
         recentHistory: input.recentHistory,
         audienceEntityId: input.audienceEntityId,
         currentSenderEntityId: input.currentSenderEntityId,
@@ -469,7 +479,7 @@ export class CreatorDirectiveTurnService {
             candidate,
             createdByEntityId: input.currentSenderEntityId,
             sourceSessionId: input.sourceSessionId,
-            sourceStreamEntryId: input.persistedUserEntryId,
+            sourceStreamEntryIds: sourceUserEntryIds,
             subjectEntityId: resolution.subjectEntityId,
             allowedEntityIds: resolution.allowedEntityIds,
             excludedEntityIds: resolution.excludedEntityIds,

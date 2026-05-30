@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -10,11 +10,28 @@ import { createEntityId, createSessionId, createStreamEntryId } from "../util/id
 
 import {
   DEFAULT_SESSION_ID,
+  getSessionStreamPath,
+  getStreamDirectory,
   QUARANTINED_USER_ENTRY_EVENT,
   StreamEntryIndexRepository,
+  StreamReader,
   StreamWriter,
   streamEntryIndexMigrations,
+  type StreamEntry,
 } from "./index.js";
+
+type StreamEntryStampRow = {
+  source_message_key_source_type: string | null;
+  source_message_key_source_external_id: string | null;
+  source_message_key_external_message_id: string | null;
+  response_to_kind: string | null;
+  response_to_from_cursor_ts: number | null;
+  response_to_from_cursor_entry_id: string | null;
+  response_to_through_cursor_ts: number | null;
+  response_to_through_cursor_entry_id: string | null;
+  response_to_source_entry_ids: string | null;
+  response_to_count: number | null;
+};
 
 describe("stream entry index", () => {
   const tempDirs: string[] = [];
@@ -74,6 +91,51 @@ describe("stream entry index", () => {
     }
   });
 
+  it("backfills entry_index from file order when embedded entry indexes collide", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const first: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: 100,
+      entry_index: 7,
+      kind: "user_msg",
+      content: "first duplicate embedded index",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+    };
+    const second: StreamEntry = {
+      ...first,
+      id: createStreamEntryId(),
+      timestamp: 101,
+      content: "second duplicate embedded index",
+    };
+
+    try {
+      mkdirSync(getStreamDirectory(tempDir), { recursive: true });
+      writeFileSync(
+        getSessionStreamPath(tempDir, DEFAULT_SESSION_ID),
+        `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
+      );
+
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+
+      expect(entryIndex.lookup(first.id)?.entry_index).toBe(0);
+      expect(entryIndex.lookup(second.id)?.entry_index).toBe(1);
+      expect(entryIndex.nextEntryIndex(DEFAULT_SESSION_ID)).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("records sender entity ids and backfills legacy null senders", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -112,6 +174,584 @@ describe("stream entry index", () => {
       });
       expect(entryIndex.lookup(tagged.id)?.sender_entity_id).toBe(senderEntityId);
       expect(entryIndex.lookup(legacy.id)?.sender_entity_id).toBeNull();
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("persists source message and response stamp columns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const sourceMessageKey = {
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        external_message_id: "message-1",
+      };
+      const source = await writer.append({
+        kind: "user_msg",
+        content: "source keyed",
+        source_message_key: sourceMessageKey,
+      });
+      const responseTo = {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: source.timestamp,
+          entryId: source.id,
+        },
+        source_entry_ids: [source.id],
+        count: 1,
+      };
+      const response = await writer.append({
+        kind: "agent_msg",
+        content: "processed backlog",
+        response_to: responseTo,
+      });
+      const selectStampRow = db.prepare(
+        `SELECT source_message_key_source_type, source_message_key_source_external_id,
+                source_message_key_external_message_id, response_to_kind,
+                response_to_from_cursor_ts, response_to_from_cursor_entry_id,
+                response_to_through_cursor_ts, response_to_through_cursor_entry_id,
+                response_to_source_entry_ids, response_to_count
+         FROM stream_entry_index
+         WHERE entry_id = ?`,
+      );
+
+      expect(selectStampRow.get(source.id) as StreamEntryStampRow).toEqual({
+        source_message_key_source_type: sourceMessageKey.source_type,
+        source_message_key_source_external_id: sourceMessageKey.source_external_id,
+        source_message_key_external_message_id: sourceMessageKey.external_message_id,
+        response_to_kind: null,
+        response_to_from_cursor_ts: null,
+        response_to_from_cursor_entry_id: null,
+        response_to_through_cursor_ts: null,
+        response_to_through_cursor_entry_id: null,
+        response_to_source_entry_ids: null,
+        response_to_count: null,
+      });
+      expect(selectStampRow.get(response.id) as StreamEntryStampRow).toEqual({
+        source_message_key_source_type: null,
+        source_message_key_source_external_id: null,
+        source_message_key_external_message_id: null,
+        response_to_kind: responseTo.kind,
+        response_to_from_cursor_ts: null,
+        response_to_from_cursor_entry_id: null,
+        response_to_through_cursor_ts: responseTo.through_cursor_inclusive.ts,
+        response_to_through_cursor_entry_id: responseTo.through_cursor_inclusive.entryId,
+        response_to_source_entry_ids: JSON.stringify(responseTo.source_entry_ids),
+        response_to_count: responseTo.count,
+      });
+      expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(source.id);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("lists uncapped sessions with pending response backlog", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      const pending = await writer.append({
+        kind: "user_msg",
+        content: "pending",
+      });
+      await writer.append({
+        kind: "user_msg",
+        content: "already turn-bound",
+        turn_id: "turn-answered",
+      });
+      await writer.append({
+        kind: "agent_msg",
+        content: "not pending",
+      });
+      const inactivePending = await otherWriter.append({
+        kind: "user_msg",
+        content: "pending even if inactive",
+      });
+
+      db.prepare("UPDATE stream_entry_index SET active = 0 WHERE entry_id = ?").run(
+        inactivePending.id,
+      );
+
+      expect(new Set(entryIndex.listSessionIdsWithPendingResponseBacklog())).toEqual(
+        new Set([pending.session_id, otherSessionId]),
+      );
+    } finally {
+      writer.close();
+      otherWriter.close();
+      db.close();
+    }
+  });
+
+  it("allows non-user source keys without shadowing user-message duplicates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const sourceMessageKey = {
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        external_message_id: "message-1",
+      };
+
+      await writer.append({
+        kind: "agent_msg",
+        content: "not an inbound message",
+        source_message_key: sourceMessageKey,
+      });
+
+      expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)).toBeNull();
+
+      const user = await writer.append({
+        kind: "user_msg",
+        content: "inbound message",
+        source_message_key: sourceMessageKey,
+      });
+
+      expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(user.id);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("rejects duplicate source message keys", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const sourceMessageKey = {
+      source_type: "demo",
+      source_external_id: "conversation-1",
+      external_message_id: "message-1",
+    };
+    const first: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: 100,
+      entry_index: 0,
+      kind: "user_msg",
+      content: "first",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+      source_message_key: sourceMessageKey,
+    };
+    const duplicate: StreamEntry = {
+      ...first,
+      id: createStreamEntryId(),
+      timestamp: 101,
+      entry_index: 1,
+      content: "duplicate",
+    };
+
+    try {
+      entryIndex.recordEntry(first, 0);
+
+      expect(() => entryIndex.recordEntry(duplicate, 100)).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills source message and response stamp columns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const sourceMessageKey = {
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        external_message_id: "message-1",
+      };
+      const source = await writer.append({
+        kind: "user_msg",
+        content: "source keyed",
+        source_message_key: sourceMessageKey,
+      });
+      const responseTo = {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: source.timestamp,
+          entryId: source.id,
+        },
+        source_entry_ids: [source.id],
+        count: 1,
+      };
+      const response = await writer.append({
+        kind: "agent_msg",
+        content: "processed backlog",
+        response_to: responseTo,
+      });
+
+      db.prepare(
+        `UPDATE stream_entry_index
+         SET source_message_key_source_type = NULL,
+             source_message_key_source_external_id = NULL,
+             source_message_key_external_message_id = NULL,
+             response_to_kind = NULL,
+             response_to_from_cursor_ts = NULL,
+             response_to_from_cursor_entry_id = NULL,
+             response_to_through_cursor_ts = NULL,
+             response_to_through_cursor_entry_id = NULL,
+             response_to_source_entry_ids = NULL,
+             response_to_count = NULL`,
+      ).run();
+
+      await expect(entryIndex.backfillSession(DEFAULT_SESSION_ID)).resolves.toEqual({
+        inserted: 2,
+      });
+
+      expect(entryIndex.lookup(source.id)).toMatchObject({
+        source_message_key_source_type: sourceMessageKey.source_type,
+        source_message_key_source_external_id: sourceMessageKey.source_external_id,
+        source_message_key_external_message_id: sourceMessageKey.external_message_id,
+      });
+      expect(entryIndex.lookup(response.id)).toMatchObject({
+        response_to_kind: responseTo.kind,
+        response_to_from_cursor_ts: null,
+        response_to_from_cursor_entry_id: null,
+        response_to_through_cursor_ts: responseTo.through_cursor_inclusive.ts,
+        response_to_through_cursor_entry_id: responseTo.through_cursor_inclusive.entryId,
+        response_to_source_entry_ids: JSON.stringify(responseTo.source_entry_ids),
+        response_to_count: responseTo.count,
+      });
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("self-repairs source message and response stamp columns after committed index update failure", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      entryIndex,
+    });
+    let failingWriter: StreamWriter | null = null;
+
+    try {
+      const sourceMessageKey = {
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        external_message_id: "message-1",
+      };
+      const source = await writer.append({
+        kind: "user_msg",
+        content: "source keyed before index outage",
+        source_message_key: sourceMessageKey,
+      });
+      const responseTo = {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: source.timestamp,
+          entryId: source.id,
+        },
+        source_entry_ids: [source.id],
+        count: 1,
+      };
+      const failingIndex = {
+        isPoisoned: (sessionId: typeof DEFAULT_SESSION_ID) => entryIndex.isPoisoned(sessionId),
+        markPoisoned: (sessionId: typeof DEFAULT_SESSION_ID) => entryIndex.markPoisoned(sessionId),
+        nextEntryIndex: (sessionId: typeof DEFAULT_SESSION_ID) =>
+          entryIndex.nextEntryIndex(sessionId),
+        recordEntry: vi.fn(() => {
+          throw new Error("index update unavailable after fsync");
+        }),
+        backfillSession: vi.fn((sessionId: typeof DEFAULT_SESSION_ID) =>
+          entryIndex.backfillSession(sessionId),
+        ),
+      };
+
+      db.prepare(
+        `UPDATE stream_entry_index
+         SET source_message_key_source_type = NULL,
+             source_message_key_source_external_id = NULL,
+             source_message_key_external_message_id = NULL
+         WHERE entry_id = ?`,
+      ).run(source.id);
+
+      failingWriter = new StreamWriter({
+        dataDir: tempDir,
+        clock,
+        logger: { error: vi.fn() },
+        entryIndex: failingIndex as never,
+      });
+
+      const appendedResponse = await failingWriter.append({
+        kind: "agent_msg",
+        content: "durable response before index failure",
+        response_to: responseTo,
+      });
+
+      const durableEntries = new StreamReader({ dataDir: tempDir }).tail(10);
+      const durableResponse = durableEntries.find(
+        (entry) => entry.content === "durable response before index failure",
+      );
+
+      expect(durableEntries.map((entry) => entry.kind)).toEqual(["user_msg", "agent_msg"]);
+      expect(durableResponse).toMatchObject({
+        kind: "agent_msg",
+        response_to: responseTo,
+      });
+      expect(durableResponse!.id).toBe(appendedResponse.id);
+      expect(failingIndex.backfillSession).toHaveBeenCalledTimes(1);
+      expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(source.id);
+      expect(entryIndex.lookup(durableResponse!.id)).toMatchObject({
+        response_to_kind: responseTo.kind,
+        response_to_from_cursor_ts: null,
+        response_to_from_cursor_entry_id: null,
+        response_to_through_cursor_ts: responseTo.through_cursor_inclusive.ts,
+        response_to_through_cursor_entry_id: responseTo.through_cursor_inclusive.entryId,
+        response_to_source_entry_ids: JSON.stringify(responseTo.source_entry_ids),
+        response_to_count: responseTo.count,
+      });
+    } finally {
+      failingWriter?.close();
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("looks up stream backlog response stamps in append order for terminal kinds", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const source = await writer.append({
+        kind: "user_msg",
+        content: "source keyed",
+      });
+      const responseTo = {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: source.timestamp,
+          entryId: source.id,
+        },
+        source_entry_ids: [source.id],
+        count: 1,
+      };
+      const observed = await writer.append({
+        kind: "agent_observed",
+        content: { observation: "terminal" },
+        response_to: responseTo,
+      });
+      await writer.append({
+        kind: "thought",
+        content: { note: "not terminal" },
+        response_to: responseTo,
+      });
+      const suppressed = await writer.append({
+        kind: "agent_suppressed",
+        content: { reason: "terminal" },
+        response_to: responseTo,
+      });
+      const agent = await writer.append({
+        kind: "agent_msg",
+        content: "terminal",
+        response_to: responseTo,
+      });
+
+      expect(
+        entryIndex
+          .lookupSessionStreamBacklogResponseStamps({
+            sessionId: DEFAULT_SESSION_ID,
+            terminalKinds: ["agent_msg", "agent_suppressed", "agent_observed"],
+          })
+          .map((record) => record.entry_id),
+      ).toEqual([observed.id, suppressed.id, agent.id]);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("looks up exact stream backlog response stamps and rejects identity mismatches", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const first = await writer.append({
+        kind: "user_msg",
+        content: "first",
+      });
+      const second = await writer.append({
+        kind: "user_msg",
+        content: "second",
+      });
+      const fromCursor = {
+        ts: first.timestamp,
+        entryId: first.id,
+      };
+      const throughCursor = {
+        ts: second.timestamp,
+        entryId: second.id,
+      };
+      const terminalKinds = ["agent_msg", "agent_suppressed", "agent_observed"] as const;
+      const stamps = [];
+
+      for (const kind of terminalKinds) {
+        stamps.push(
+          await writer.append({
+            kind,
+            content: { terminal: kind },
+            response_to: {
+              kind: "stream_backlog",
+              from_cursor_exclusive: fromCursor,
+              through_cursor_inclusive: throughCursor,
+              source_entry_ids: [first.id, second.id],
+              count: 2,
+            },
+          }),
+        );
+      }
+
+      for (const [index, kind] of terminalKinds.entries()) {
+        expect(
+          entryIndex.lookupExactStreamBacklogResponseStamp({
+            sessionId: DEFAULT_SESSION_ID,
+            terminalKinds: [kind],
+            fromCursorExclusive: fromCursor,
+            throughCursorInclusive: throughCursor,
+            sourceEntryIds: [first.id, second.id],
+            count: 2,
+          })?.entry_id,
+        ).toBe(stamps[index]?.id);
+      }
+
+      expect(
+        entryIndex.lookupExactStreamBacklogResponseStamp({
+          sessionId: DEFAULT_SESSION_ID,
+          terminalKinds,
+          fromCursorExclusive: fromCursor,
+          throughCursorInclusive: throughCursor,
+          sourceEntryIds: [second.id, first.id],
+          count: 2,
+        }),
+      ).toBeNull();
+      expect(
+        entryIndex.lookupExactStreamBacklogResponseStamp({
+          sessionId: DEFAULT_SESSION_ID,
+          terminalKinds,
+          fromCursorExclusive: fromCursor,
+          throughCursorInclusive: throughCursor,
+          sourceEntryIds: [first.id, second.id],
+          count: 1,
+        }),
+      ).toBeNull();
+      expect(
+        entryIndex.lookupExactStreamBacklogResponseStamp({
+          sessionId: DEFAULT_SESSION_ID,
+          terminalKinds,
+          fromCursorExclusive: null,
+          throughCursorInclusive: throughCursor,
+          sourceEntryIds: [first.id, second.id],
+          count: 2,
+        }),
+      ).toBeNull();
     } finally {
       writer.close();
       db.close();

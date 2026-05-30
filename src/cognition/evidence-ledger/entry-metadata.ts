@@ -167,5 +167,21 @@ export function currentUserMessageStateMetadata(
   input: EvidenceLedgerBuildInput,
   entityRepository: SpeakerEntityRepository | undefined,
 ): Record<string, unknown> | undefined {
+  const senderIds = [
+    ...new Set(
+      (input.currentUserEntries ?? []).flatMap((entry) =>
+        entry.sender_entity_id === null ? [] : [entry.sender_entity_id],
+      ),
+    ),
+  ];
+
+  if (senderIds.length === 1) {
+    return speakerStateMetadata(entityRepository, senderIds[0]);
+  }
+
+  if ((input.currentUserEntries ?? []).length > 0) {
+    return undefined;
+  }
+
   return speakerStateMetadata(entityRepository, input.currentUserEntry?.sender_entity_id);
 }

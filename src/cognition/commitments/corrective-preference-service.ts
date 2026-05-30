@@ -48,6 +48,7 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   turnId: string;
   userMessage: string;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
   committedByEntityId?: EntityId | null;
@@ -217,14 +218,22 @@ export class CorrectivePreferenceTurnService {
     turnId?: string;
     sessionId?: SessionId;
     persistedUserEntryId?: StreamEntryId;
+    sourceUserEntryIds?: readonly StreamEntryId[];
     participantRoster?: ParticipantRoster | null;
     relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
   }): boolean {
     const allowedStreamEntryIds = new Set<StreamEntryId>();
     const streamEntryKindById = new Map<StreamEntryId, StreamEntry["kind"]>();
 
-    if (input.persistedUserEntryId !== undefined) {
-      allowedStreamEntryIds.add(input.persistedUserEntryId);
+    const sourceUserEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? []
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
+
+    for (const streamEntryId of sourceUserEntryIds) {
+      allowedStreamEntryIds.add(streamEntryId);
     }
 
     for (const entry of input.relationshipEvidenceStreamEntries ?? []) {
@@ -237,7 +246,7 @@ export class CorrectivePreferenceTurnService {
       participantRoster: input.participantRoster ?? null,
       allowedRelationshipEvidenceStreamEntryIds: allowedStreamEntryIds,
       relationshipEvidenceStreamEntryTrust: (streamEntryId) => {
-        if (streamEntryId === input.persistedUserEntryId) {
+        if (sourceUserEntryIds.some((sourceUserEntryId) => sourceUserEntryId === streamEntryId)) {
           return { allowed: true };
         }
 
@@ -423,6 +432,7 @@ export class CorrectivePreferenceTurnService {
     const correctiveExtraction = await correctivePreferenceExtractor.extractWithSlotNegations({
       userMessage: input.userMessage,
       currentUserStreamEntryId: input.persistedUserEntryId ?? null,
+      currentUserStreamEntryIds: input.sourceUserEntryIds,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
       speakerEntityId: input.committedByEntityId ?? null,
@@ -453,6 +463,7 @@ export class CorrectivePreferenceTurnService {
         sessionId: input.sessionId,
         persistedUserEntryId: input.persistedUserEntryId,
         participantRoster: input.participantRoster ?? null,
+        sourceUserEntryIds: input.sourceUserEntryIds,
         relationshipEvidenceStreamEntries: input.relationshipEvidenceStreamEntries,
       })
     ) {
@@ -469,19 +480,30 @@ export class CorrectivePreferenceTurnService {
         }),
         committedByEntityId: input.committedByEntityId ?? null,
         sourceStreamEntryIds:
-          input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId],
+          input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+            ? input.persistedUserEntryId === undefined
+              ? undefined
+              : [input.persistedUserEntryId]
+            : [...input.sourceUserEntryIds],
         nowMs: this.options.clock.now(),
       });
     }
 
-    if (input.persistedUserEntryId !== undefined) {
+    const sourceUserEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? []
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
+
+    if (sourceUserEntryIds.length > 0) {
       for (const negation of correctiveExtraction.slot_negations) {
         try {
           const result = this.options.relationalSlotRepository.applyNegation({
             subject_entity_id: negation.subject_entity_id,
             slot_key: negation.slot_key,
             rejected_value: negation.rejected_value,
-            source_stream_entry_ids: [input.persistedUserEntryId],
+            source_stream_entry_ids: sourceUserEntryIds,
           });
 
           if (result?.previous !== null && result?.previous !== undefined) {

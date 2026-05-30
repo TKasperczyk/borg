@@ -42,6 +42,7 @@ import type {
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
+import type { ChatResponseCatchUpWorker } from "../cognition/ingestion/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
@@ -479,6 +480,10 @@ export type BorgMaintenanceFacade = {
   };
 };
 
+export type BorgInboxFacade = {
+  catchUp: ChatResponseCatchUpWorker;
+};
+
 export type BorgWorkmemFacade = {
   load: (sessionId?: SessionId) => WorkingMemory;
   clear: (sessionId?: SessionId) => void;
@@ -535,6 +540,7 @@ export type BorgFacades = {
   dream: BorgDreamFacade;
   autonomy: BorgAutonomyFacade;
   maintenance: BorgMaintenanceFacade;
+  inbox: BorgInboxFacade;
   workmem: BorgWorkmemFacade;
   prompts: BorgPromptsFacade;
   sessions: BorgSessionsFacade;

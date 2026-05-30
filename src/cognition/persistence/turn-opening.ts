@@ -1,7 +1,7 @@
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
 import type { PersistedTurnAttachment, TurnInputAttachment } from "../../attachments/index.js";
 import type { EntityId } from "../../util/ids.js";
-import type { ActivityEventStatus, ActivityRepository } from "../../memory/activity/index.js";
+import type { ActivityRepository } from "../../memory/activity/index.js";
 import type {
   PendingSocialAttribution,
   PendingTraitAttribution,
@@ -10,8 +10,7 @@ import type {
 } from "../../memory/working/index.js";
 import type { SuppressionSet } from "../attention/index.js";
 import type { PerceptionResult } from "../types.js";
-
-const ACTIVE_TURN_STATUS = "active";
+import { ACTIVE_USER_MESSAGE_TURN_STATUS, persistUserMessage } from "./user-message.js";
 
 export type TurnOpeningPersistenceOptions = {
   workingMemoryStore: Pick<WorkingMemoryStore, "save">;
@@ -64,34 +63,17 @@ export class TurnOpeningPersistence {
     const persistedUserEntry =
       input.persistUserMessage === false
         ? null
-        : await input.streamWriter.append({
-            kind: "user_msg",
-            content: input.userMessage,
-            turn_id: input.turnId,
-            turn_status: ACTIVE_TURN_STATUS,
-            ...(input.audience === undefined ? {} : { audience: input.audience }),
-            ...(input.senderEntityId === undefined
-              ? {}
-              : { sender_entity_id: input.senderEntityId }),
+        : await persistUserMessage(this.options, {
+            streamWriter: input.streamWriter,
+            turnId: input.turnId,
+            userMessage: input.userMessage,
+            turnStatus: ACTIVE_USER_MESSAGE_TURN_STATUS,
+            activityStatus: ACTIVE_USER_MESSAGE_TURN_STATUS,
+            audience: input.audience,
+            senderEntityId: input.senderEntityId,
+            speakerEntityId: input.speakerEntityId,
+            audienceEntityId: input.audienceEntityId,
           });
-    if (persistedUserEntry !== null) {
-      const speakerEntityId = input.speakerEntityId ?? input.senderEntityId ?? null;
-
-      this.options.activityRepository?.record({
-        kind: "user_contact",
-        occurredAt: persistedUserEntry.timestamp,
-        sessionId: persistedUserEntry.session_id,
-        turnId: input.turnId,
-        speakerEntityId,
-        actorEntityId: speakerEntityId,
-        audienceEntityId: input.audienceEntityId ?? null,
-        participantEntityIds: [speakerEntityId, input.audienceEntityId ?? null].filter(
-          (entityId): entityId is EntityId => entityId !== null,
-        ),
-        sourceStreamEntryIds: [persistedUserEntry.id],
-        status: activityStatusForStreamEntry(persistedUserEntry),
-      });
-    }
     const persistedAttachments =
       persistedUserEntry === null ||
       input.attachments === undefined ||
@@ -126,7 +108,7 @@ export class TurnOpeningPersistence {
         : await input.streamWriter.append({
             kind: "perception",
             turn_id: input.turnId,
-            turn_status: ACTIVE_TURN_STATUS,
+            turn_status: ACTIVE_USER_MESSAGE_TURN_STATUS,
             content: {
               mode: input.perception.mode,
               isOperational: input.perception.isOperational === true,
@@ -148,10 +130,4 @@ export class TurnOpeningPersistence {
       workingMemory,
     };
   }
-}
-
-function activityStatusForStreamEntry(
-  entry: Pick<StreamEntry, "turn_status">,
-): ActivityEventStatus {
-  return entry.turn_status === "aborted" ? "inactive" : "active";
 }

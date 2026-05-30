@@ -108,6 +108,7 @@ function rawTailStreamIds(
   entries: readonly TranscriptStreamEntry[],
   budget: number,
   currentUserEntryId: string | undefined,
+  currentUserEntryIds: ReadonlySet<string>,
 ): Set<string> {
   const tailBudget = Math.max(1, Math.floor(budget * TRANSCRIPT_RAW_TAIL_BUDGET_FRACTION));
   const ids = new Set<string>();
@@ -116,7 +117,11 @@ function rawTailStreamIds(
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
 
-    if (entry === undefined || entry.id === currentUserEntryId) {
+    if (
+      entry === undefined ||
+      entry.id === currentUserEntryId ||
+      currentUserEntryIds.has(entry.id)
+    ) {
       continue;
     }
 
@@ -137,8 +142,9 @@ function shouldKeepRawCompactedTranscriptEntry(
   entry: TranscriptStreamEntry,
   tailIds: ReadonlySet<string>,
   currentUserEntryId: string | undefined,
+  currentUserEntryIds: ReadonlySet<string>,
 ): boolean {
-  if (entry.id === currentUserEntryId) {
+  if (entry.id === currentUserEntryId || currentUserEntryIds.has(entry.id)) {
     return false;
   }
 
@@ -153,25 +159,34 @@ export function compactTranscriptEntries(input: {
   entries: readonly TranscriptStreamEntry[];
   budget: number;
   currentUserEntryId?: string;
+  currentUserEntryIds?: readonly string[];
   resolver: ScopeResolver;
   entityRepository?: SpeakerEntityRepository;
 }): TranscriptCompactionResult {
+  const currentUserEntryIds = new Set(input.currentUserEntryIds ?? []);
   const transcriptTokens = estimateTranscriptTokens(input.entries);
 
   if (transcriptTokens <= input.budget) {
+    const rawEntries = input.entries.filter((entry) => !currentUserEntryIds.has(entry.id));
+
     return {
-      entries: input.entries.map((entry) =>
+      entries: rawEntries.map((entry) =>
         transcriptRawEntry(entry, input.resolver, input.entityRepository),
       ),
-      rawStreamIds: new Set(input.entries.map((entry) => entry.id)),
+      rawStreamIds: new Set(rawEntries.map((entry) => entry.id)),
       compacted: false,
       originalTokenEstimate: transcriptTokens,
       compactedEntryCount: 0,
-      rawPreservedUserEntryCount: input.entries.filter((entry) => entry.kind === "user_msg").length,
+      rawPreservedUserEntryCount: rawEntries.filter((entry) => entry.kind === "user_msg").length,
     };
   }
 
-  const tailIds = rawTailStreamIds(input.entries, input.budget, input.currentUserEntryId);
+  const tailIds = rawTailStreamIds(
+    input.entries,
+    input.budget,
+    input.currentUserEntryId,
+    currentUserEntryIds,
+  );
   const renderedEntries: EvidenceLedgerEntry[] = [];
   const rawStreamIds = new Set<string>();
   let compactedRun: TranscriptStreamEntry[] = [];
@@ -189,13 +204,26 @@ export function compactTranscriptEntries(input: {
   };
 
   for (const entry of input.entries) {
-    if (shouldKeepRawCompactedTranscriptEntry(entry, tailIds, input.currentUserEntryId)) {
+    if (
+      shouldKeepRawCompactedTranscriptEntry(
+        entry,
+        tailIds,
+        input.currentUserEntryId,
+        currentUserEntryIds,
+      )
+    ) {
       flushCompactedRun();
       renderedEntries.push(transcriptRawEntry(entry, input.resolver, input.entityRepository));
       rawStreamIds.add(entry.id);
       if (entry.kind === "user_msg") {
         rawPreservedUserEntryCount += 1;
       }
+      continue;
+    }
+
+    if (currentUserEntryIds.has(entry.id)) {
+      flushCompactedRun();
+      compactedEntryCount += 1;
       continue;
     }
 

@@ -21,6 +21,16 @@ function indexedEntry(overrides: Partial<StreamEntryIndexRecord> = {}): StreamEn
     turn_id: "turn-image",
     turn_status: "active",
     active: true,
+    source_message_key_source_type: null,
+    source_message_key_source_external_id: null,
+    source_message_key_external_message_id: null,
+    response_to_kind: null,
+    response_to_from_cursor_ts: null,
+    response_to_from_cursor_entry_id: null,
+    response_to_through_cursor_ts: null,
+    response_to_through_cursor_entry_id: null,
+    response_to_source_entry_ids: null,
+    response_to_count: null,
     ...overrides,
   };
 }

@@ -89,17 +89,35 @@ function createMaintenanceScheduler(
   };
 }
 
+function createCatchUpWorker(
+  enabled: boolean,
+  stop: (options?: { graceful?: boolean }) => Promise<void> = async () => {},
+) {
+  const worker: DaemonBorg["inbox"]["catchUp"] = {
+    isEnabled: vi.fn(() => enabled),
+    start: vi.fn(),
+    stop: vi.fn(stop),
+  };
+
+  return {
+    worker,
+  };
+}
+
 function createBorg(options: {
   autonomyEnabled: boolean;
   maintenanceEnabled: boolean;
+  catchUpEnabled?: boolean;
   autonomyStop?: (options?: { graceful?: boolean }) => Promise<void>;
   maintenanceStop?: (options?: { graceful?: boolean }) => Promise<void>;
+  catchUpStop?: (options?: { graceful?: boolean }) => Promise<void>;
 }) {
   const autonomy = createAutonomyScheduler(options.autonomyEnabled, options.autonomyStop);
   const maintenance = createMaintenanceScheduler(
     options.maintenanceEnabled,
     options.maintenanceStop,
   );
+  const catchUp = createCatchUpWorker(options.catchUpEnabled ?? true, options.catchUpStop);
   const borg: DaemonBorg = {
     autonomy: {
       scheduler: autonomy.scheduler,
@@ -107,12 +125,16 @@ function createBorg(options: {
     maintenance: {
       scheduler: maintenance.scheduler,
     },
+    inbox: {
+      catchUp: catchUp.worker,
+    },
     close: vi.fn(async () => {}),
   };
 
   return {
     autonomy,
     borg,
+    catchUp,
     maintenance,
   };
 }
@@ -151,7 +173,7 @@ async function startDaemon(
 
 describe("daemon", () => {
   it("starts both schedulers and stops them cleanly when both are enabled", async () => {
-    const { autonomy, borg, maintenance } = createBorg({
+    const { autonomy, borg, catchUp, maintenance } = createBorg({
       autonomyEnabled: true,
       maintenanceEnabled: true,
     });
@@ -160,12 +182,14 @@ describe("daemon", () => {
     expect(result.status).toBe("started");
     expect(autonomy.scheduler.start).toHaveBeenCalledTimes(1);
     expect(maintenance.scheduler.start).toHaveBeenCalledTimes(1);
+    expect(catchUp.worker.start).toHaveBeenCalledTimes(1);
 
     await autonomy.emitTick();
     await maintenance.emitTick(maintenanceTick("heavy"));
 
     expect(logs).toContain("[daemon] autonomy scheduler started");
     expect(logs).toContain("[daemon] maintenance scheduler started");
+    expect(logs).toContain("[daemon] inbox catch-up worker started");
     expect(logs.some((line) => line.startsWith("[daemon] autonomy tick "))).toBe(true);
     expect(logs.some((line) => line.startsWith("[daemon] maintenance tick "))).toBe(true);
 
@@ -173,6 +197,7 @@ describe("daemon", () => {
 
     expect(autonomy.scheduler.stop).toHaveBeenCalledWith({ graceful: true });
     expect(maintenance.scheduler.stop).toHaveBeenCalledWith({ graceful: true });
+    expect(catchUp.worker.stop).toHaveBeenCalledWith({ graceful: true });
     expect(borg.close).toHaveBeenCalledTimes(1);
   });
 
@@ -210,6 +235,7 @@ describe("daemon", () => {
     const { autonomy, borg, maintenance } = createBorg({
       autonomyEnabled: false,
       maintenanceEnabled: false,
+      catchUpEnabled: false,
     });
     const { logs, result } = await startDaemon(borg);
 
@@ -217,12 +243,12 @@ describe("daemon", () => {
     expect(autonomy.scheduler.start).not.toHaveBeenCalled();
     expect(maintenance.scheduler.start).not.toHaveBeenCalled();
     expect(borg.close).toHaveBeenCalledTimes(1);
-    expect(logs).toContain("[daemon] autonomy and maintenance disabled; exiting");
+    expect(logs).toContain("[daemon] autonomy, maintenance, and inbox catch-up disabled; exiting");
   });
 
   it("stops both schedulers during signal shutdown even when one stop throws", async () => {
     const stopFailure = new Error("autonomy stop failed");
-    const { autonomy, borg, maintenance } = createBorg({
+    const { autonomy, borg, catchUp, maintenance } = createBorg({
       autonomyEnabled: true,
       maintenanceEnabled: true,
       autonomyStop: async () => {
@@ -254,6 +280,7 @@ describe("daemon", () => {
 
     expect(autonomy.scheduler.stop).toHaveBeenCalledWith({ graceful: true });
     expect(maintenance.scheduler.stop).toHaveBeenCalledWith({ graceful: true });
+    expect(catchUp.worker.stop).toHaveBeenCalledWith({ graceful: true });
     expect(borg.close).toHaveBeenCalledTimes(1);
     expect(exits).toEqual([1]);
     expect(logs).toContain("[daemon] autonomy scheduler stop failed Error: autonomy stop failed");

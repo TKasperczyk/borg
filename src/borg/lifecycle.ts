@@ -47,6 +47,13 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
           graceful: true,
         }),
     },
+    {
+      label: "chat response catch-up worker",
+      close: () =>
+        deps.chatResponseCatchUpWorker.stop({
+          graceful: true,
+        }),
+    },
   ] as const;
 
   const schedulerStopResults = await Promise.allSettled(

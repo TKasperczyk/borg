@@ -115,6 +115,7 @@ export const stopUntilSubstantiveContentSchema = z
   .object({
     provenance: discourseStopProvenanceSchema,
     source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+    source_stream_entry_ids: z.array(workingStreamEntryIdSchema).optional(),
     reason: z.string().min(1),
     since_turn: z.number().int().nonnegative(),
   })
@@ -151,6 +152,7 @@ export const recentSuppressionEntrySchema = z
     reason: z.string().min(1),
     ts: z.number().finite(),
     source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+    source_stream_entry_ids: z.array(workingStreamEntryIdSchema).optional(),
   })
   .strict();
 

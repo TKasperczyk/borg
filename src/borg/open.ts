@@ -9,6 +9,13 @@ import {
   ImagePerceptionService,
 } from "../attachments/index.js";
 import { SessionLock } from "../cognition/index.js";
+import {
+  ChatResponseBacklogPrefixBuilder,
+  ChatResponseCatchUpWorker,
+  ChatResponseWatermarkCoordinator,
+  MessageEnqueuer,
+  type ChatResponseCatchUpWorkerConfig,
+} from "../cognition/ingestion/index.js";
 import { compositeTracer, createTurnTracer } from "../cognition/tracing/tracer.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -42,12 +49,20 @@ import { buildToolDispatcher } from "./tools-setup.js";
 import { buildTurnOrchestrator } from "./turn-setup.js";
 import type { BorgDependencies, BorgOpenOptions } from "./types.js";
 
+const CHAT_RESPONSE_CATCH_UP_CONFIG = {
+  quietWindowMs: 1_000,
+  maxWaitMs: 5_000,
+  backoffBaseMs: 1_000,
+  maxBackoffMs: 60_000,
+} satisfies ChatResponseCatchUpWorkerConfig;
+
 export async function openBorgDependencies(
   options: BorgOpenOptions = {},
 ): Promise<BorgDependencies> {
   const clock = options.clock ?? new SystemClock();
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
+  let catchUpWorker: ChatResponseCatchUpWorker | undefined;
 
   try {
     const resolvedConfig = resolveBorgConfig(options);
@@ -103,6 +118,13 @@ export async function openBorgDependencies(
       attachmentService,
     );
     const lazyLlmClient = createLazyLlmClient(llmFactory);
+    const onStreamAppend: NonNullable<BorgOpenOptions["onStreamAppend"]> = (entries) => {
+      try {
+        options.onStreamAppend?.(entries);
+      } finally {
+        catchUpWorker?.onAppend(entries);
+      }
+    };
     const repositories = await buildBorgRepositories({
       config,
       sqlite,
@@ -118,7 +140,7 @@ export async function openBorgDependencies(
       tracer,
       attachmentRepository,
       entryIndex,
-      onStreamAppend: options.onStreamAppend,
+      onStreamAppend,
     });
     const imagePerceptionService = new ImagePerceptionService({
       repository: repositories.imagePerceptionRepository,
@@ -136,6 +158,10 @@ export async function openBorgDependencies(
     const streamWatermarkRepository = new StreamWatermarkRepository({
       db: sqlite,
       clock,
+    });
+    const chatResponseWatermarkCoordinator = new ChatResponseWatermarkCoordinator({
+      watermarkRepository: streamWatermarkRepository,
+      entryIndex: repositories.entryIndex,
     });
     const toolDispatcher = buildToolDispatcher({
       retrievalPipeline: repositories.retrievalPipeline,
@@ -210,7 +236,39 @@ export async function openBorgDependencies(
       relationalSlotRepository: repositories.relationalSlotRepository,
       workingMemoryStore: repositories.workingMemoryStore,
       streamWatermarkRepository,
+      chatResponseWatermarkCoordinator,
       createStreamWriter: repositories.createStreamWriter,
+      clock,
+    });
+    const messageEnqueuer = new MessageEnqueuer({
+      sessionsRepository: repositories.sessionsRepository,
+      entityRepository: repositories.entityRepository,
+      activityRepository: repositories.activityRepository,
+      entryIndex: repositories.entryIndex,
+      createStreamWriter: repositories.createStreamWriter,
+      isDuplicatePendingResponse: (record) => {
+        if (record.kind !== "user_msg" || record.turn_id !== null || record.entry_index === null) {
+          return false;
+        }
+
+        const watermark = chatResponseWatermarkCoordinator.getWatermark(record.session_id);
+
+        if (watermark === null) {
+          return true;
+        }
+
+        return (
+          record.entry_index >
+          chatResponseWatermarkCoordinator.cursorEntryIndex(
+            record.session_id,
+            watermark,
+            "duplicate response watermark",
+          )
+        );
+      },
+      onPendingDuplicate: (record) => {
+        catchUpWorker?.onPendingSession(record.session_id, record.timestamp);
+      },
       clock,
     });
     const turnOrchestrator = buildTurnOrchestrator({
@@ -245,6 +303,7 @@ export async function openBorgDependencies(
       toolDispatcher,
       sessionLock,
       streamIngestionCoordinator,
+      chatResponseWatermarkCoordinator,
       outboundDelivery,
       autonomousOutboundPolicy,
       outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
@@ -272,6 +331,24 @@ export async function openBorgDependencies(
           ),
       }),
     );
+    const chatResponseBacklogPrefixBuilder = new ChatResponseBacklogPrefixBuilder({
+      entryIndex: repositories.entryIndex,
+      createStreamReader: (sessionId) =>
+        new StreamReader({
+          dataDir: config.dataDir,
+          sessionId,
+          entryIndex: repositories.entryIndex,
+        }),
+    });
+    catchUpWorker = new ChatResponseCatchUpWorker({
+      coordinator: chatResponseWatermarkCoordinator,
+      prefixBuilder: chatResponseBacklogPrefixBuilder,
+      entryIndex: repositories.entryIndex,
+      turnOrchestrator,
+      sessionsRepository: repositories.sessionsRepository,
+      clock,
+      config: CHAT_RESPONSE_CATCH_UP_CONFIG,
+    });
     const autonomyScheduler = buildAutonomyScheduler({
       config,
       commitmentRepository: repositories.commitmentRepository,
@@ -350,6 +427,9 @@ export async function openBorgDependencies(
       autonomyScheduler,
       maintenanceScheduler,
       streamIngestionCoordinator,
+      chatResponseWatermarkCoordinator,
+      chatResponseCatchUpWorker: catchUpWorker,
+      messageEnqueuer,
       auditLog: offline.auditLog,
       maintenanceOrchestrator: offline.maintenanceOrchestrator,
       offlineProcesses: offline.offlineProcesses,

@@ -171,6 +171,19 @@ function uniqueEntityIds(ids: readonly EntityId[]): EntityId[] {
   return dedupePreservingOrder(ids);
 }
 
+function singleSenderEntityId(
+  entries: readonly Pick<StreamEntry, "sender_entity_id">[],
+): EntityId | null {
+  const senderIds = uniqueEntityIds(
+    entries.flatMap((entry) => {
+      const senderEntityId = entry.sender_entity_id ?? null;
+      return senderEntityId === null ? [] : [senderEntityId];
+    }),
+  );
+
+  return senderIds.length === 1 ? (senderIds[0] ?? null) : null;
+}
+
 function participantEntityIds(input: {
   audienceEntityId: EntityId | null;
   audienceEntityKind?: "person" | "group" | "self" | "abstract" | null;
@@ -300,15 +313,22 @@ export function buildCreatorDirectiveBriefing(input: {
 function currentTurnEligibleCreatorDirectives(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   currentUserEntryId?: StreamEntryId;
+  currentUserEntryIds?: readonly StreamEntryId[];
 }): CreatorDirectiveApplicable[] {
-  const currentUserEntryId = input.currentUserEntryId;
+  const currentUserEntryIds = new Set([
+    ...(input.currentUserEntryId === undefined ? [] : [input.currentUserEntryId]),
+    ...(input.currentUserEntryIds ?? []),
+  ]);
 
-  if (currentUserEntryId === undefined) {
+  if (currentUserEntryIds.size === 0) {
     return [...input.applicable];
   }
 
   return input.applicable.filter(
-    (item) => !item.directive.authorization_stream_entry_ids.includes(currentUserEntryId),
+    (item) =>
+      !item.directive.authorization_stream_entry_ids.some((entryId) =>
+        currentUserEntryIds.has(entryId),
+      ),
   );
 }
 
@@ -320,6 +340,7 @@ function traceCreatorDirectiveRendered(input: {
   sessionId?: SessionId;
   applicable: readonly CreatorDirectiveApplicable[];
   currentUserEntryId?: StreamEntryId;
+  currentUserEntryIds?: readonly StreamEntryId[];
   currentAudienceEntityId: EntityId | null;
   participantEntityIds: readonly EntityId[];
 }): void {
@@ -327,10 +348,17 @@ function traceCreatorDirectiveRendered(input: {
     return;
   }
 
+  const currentUserEntryIds = new Set([
+    ...(input.currentUserEntryId === undefined ? [] : [input.currentUserEntryId]),
+    ...(input.currentUserEntryIds ?? []),
+  ]);
+
   for (const item of input.applicable.slice(0, CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT)) {
     const sameTurnNPlusOne =
-      input.currentUserEntryId !== undefined &&
-      item.directive.authorization_stream_entry_ids.includes(input.currentUserEntryId);
+      currentUserEntryIds.size > 0 &&
+      item.directive.authorization_stream_entry_ids.some((entryId) =>
+        currentUserEntryIds.has(entryId),
+      );
     const renderedMode = sameTurnNPlusOne
       ? "omitted"
       : item.render_mode === "omit"
@@ -352,12 +380,14 @@ function traceCreatorDirectiveRendered(input: {
 export function buildCreatorDirectiveBriefingForTurn(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   currentUserEntryId?: StreamEntryId;
+  currentUserEntryIds?: readonly StreamEntryId[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
   return buildCreatorDirectiveBriefing({
     applicable: currentTurnEligibleCreatorDirectives({
       applicable: input.applicable,
       currentUserEntryId: input.currentUserEntryId,
+      currentUserEntryIds: input.currentUserEntryIds,
     }),
     entityRepository: input.entityRepository,
   });
@@ -436,6 +466,7 @@ export async function runRetrievalPhase(input: {
   audienceEntityId: EntityId | null;
   audienceEntity: ReturnType<TurnPhaseCoordinatorOptions["entityRepository"]["get"]> | null;
   currentSenderBorgRole?: BorgRole | null;
+  operatorOnlyDirectivesAllowed?: boolean;
   audienceProfile: ReturnType<TurnPhaseCoordinatorOptions["socialRepository"]["getProfile"]>;
   sessionAudienceRole?: SessionAudienceRole;
   perception: PerceptionResult;
@@ -452,6 +483,7 @@ export async function runRetrievalPhase(input: {
   participantRoster: ParticipantRoster | null;
   participantProfiles: readonly ParticipantProfileContext[];
   persistedUserEntry?: StreamEntry;
+  currentUserEntries?: readonly StreamEntry[];
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   closureLoopAssessment: ClosureLoopAssessment | null;
 }): Promise<TurnRetrievalPhaseResult> {
@@ -518,7 +550,7 @@ export async function runRetrievalPhase(input: {
     audienceEntityKind: input.audienceEntity?.kind ?? null,
     activeParticipants: input.activeParticipants,
   });
-  const creatorDirectiveApplicable =
+  const creatorDirectiveApplicableRaw =
     input.options.creatorDirectiveRepository === undefined
       ? []
       : input.options.creatorDirectiveRepository.listApplicable({
@@ -527,12 +559,25 @@ export async function runRetrievalPhase(input: {
           participantEntityIds: creatorDirectiveParticipantEntityIds,
           sessionRole: input.sessionAudienceRole ?? "participant",
         });
+  const creatorDirectiveApplicable =
+    input.operatorOnlyDirectivesAllowed === false
+      ? creatorDirectiveApplicableRaw.map((item) =>
+          item.directive.disclosure_policy.content_scope === "operator_only"
+            ? {
+                ...item,
+                render_mode: "omit" as const,
+                reason: "operator_only_omitted" as const,
+              }
+            : item,
+        )
+      : creatorDirectiveApplicableRaw;
   traceCreatorDirectiveRendered({
     tracer: input.options.tracer,
     turnId: input.turnId,
     sessionId: input.sessionId,
     applicable: creatorDirectiveApplicable,
     currentUserEntryId: input.persistedUserEntry?.id,
+    currentUserEntryIds: input.currentUserEntries?.map((entry) => entry.id),
     currentAudienceEntityId: input.audienceEntityId,
     participantEntityIds: creatorDirectiveParticipantEntityIds,
   });
@@ -540,6 +585,7 @@ export async function runRetrievalPhase(input: {
     applicable: currentTurnEligibleCreatorDirectives({
       applicable: creatorDirectiveApplicable,
       currentUserEntryId: input.persistedUserEntry?.id,
+      currentUserEntryIds: input.currentUserEntries?.map((entry) => entry.id),
     }),
     entityRepository: input.options.entityRepository,
   });
@@ -563,7 +609,8 @@ export async function runRetrievalPhase(input: {
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
       currentUserMessage: input.turnInput.userMessage,
-      currentUserEntry: input.persistedUserEntry,
+      currentUserEntry: input.persistedUserEntry ?? input.currentUserEntries?.[0],
+      currentUserEntries: input.currentUserEntries,
       globalTurnCounter: input.turnInput.globalTurnCounter,
       workingMemory: input.workingMemory,
       applicableCommitments,
@@ -639,6 +686,8 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     options: input.options,
     sessionId: input.input.sessionId,
     currentUserEntryId: input.input.currentUserEntry?.id,
+    currentUserEntryIds: input.input.currentUserEntries?.map((entry) => entry.id),
+    currentUserEntries: input.input.currentUserEntries,
   });
   const sessionReentryContinuity = buildSessionReentryContinuityPrompt({
     isUserTurn: input.input.isUserTurn,
@@ -782,8 +831,39 @@ async function countPriorUserTurnsForSession(input: {
   options: TurnPhaseCoordinatorOptions;
   sessionId: SessionId;
   currentUserEntryId?: StreamEntryId;
+  currentUserEntryIds?: readonly StreamEntryId[];
+  currentUserEntries?: readonly StreamEntry[];
 }): Promise<number> {
+  const currentUserEntryIds = new Set([
+    ...(input.currentUserEntryId === undefined ? [] : [input.currentUserEntryId]),
+    ...(input.currentUserEntryIds ?? []),
+  ]);
+
   if (input.options.entryIndex !== undefined) {
+    if (input.currentUserEntries !== undefined && input.currentUserEntries.length > 0) {
+      const currentRecords = input.options.entryIndex.lookupMany(
+        input.currentUserEntries.map((entry) => entry.id),
+      );
+      const currentEntryIndexes = input.currentUserEntries.flatMap((entry) => {
+        const indexed = currentRecords.get(entry.id)?.entry_index ?? entry.entry_index ?? null;
+
+        return indexed === null ? [] : [indexed];
+      });
+
+      if (currentEntryIndexes.length > 0) {
+        const oldestCurrentEntryIndex = Math.min(...currentEntryIndexes);
+
+        return input.options.entryIndex
+          .lookupSessionEntriesByKind({
+            sessionId: input.sessionId,
+            kind: "user_msg",
+          })
+          .filter((record) => record.entry_index !== null)
+          .filter((record) => record.active)
+          .filter((record) => record.entry_index! < oldestCurrentEntryIndex).length;
+      }
+    }
+
     return input.options.entryIndex.countSessionEntriesByKind({
       sessionId: input.sessionId,
       kind: "user_msg",
@@ -793,14 +873,24 @@ async function countPriorUserTurnsForSession(input: {
 
   const entries = await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId));
 
-  return entries.filter(
-    (entry) => entry.kind === "user_msg" && entry.id !== input.currentUserEntryId,
-  ).length;
+  if (input.currentUserEntries !== undefined && input.currentUserEntries.length > 0) {
+    const currentIds = new Set(input.currentUserEntries.map((entry) => entry.id));
+    const firstCurrentIndex = entries.findIndex((entry) => currentIds.has(entry.id));
+
+    if (firstCurrentIndex >= 0) {
+      return entries.slice(0, firstCurrentIndex).filter((entry) => entry.kind === "user_msg")
+        .length;
+    }
+  }
+
+  return entries.filter((entry) => entry.kind === "user_msg" && !currentUserEntryIds.has(entry.id))
+    .length;
 }
 
 function sharedStateLastUpdatedTurnByStreamEntryId(input: {
   entries: readonly Pick<StreamEntry, "id" | "turn_id">[];
   currentUserEntry: StreamEntry;
+  currentUserEntries?: readonly StreamEntry[];
   currentTurnId?: string;
   currentTurnCounter?: number;
 }): Record<string, number> {
@@ -845,6 +935,10 @@ function sharedStateLastUpdatedTurnByStreamEntryId(input: {
     [input.currentUserEntry.id]: input.currentTurnCounter,
   };
 
+  for (const currentUserEntry of input.currentUserEntries ?? []) {
+    turnCounterByStreamEntryId[currentUserEntry.id] = input.currentTurnCounter;
+  }
+
   for (const entry of input.entries) {
     if (entry.turn_id === undefined) {
       continue;
@@ -873,7 +967,7 @@ function streamEntryFromIndexedFacts(
 
 function createIndexedSourceTrustLookup(input: {
   entryIndex?: Pick<NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>, "lookupEntriesById">;
-  currentUserEntry: StreamEntry;
+  currentUserEntries: readonly StreamEntry[];
 }): {
   lookup: (streamEntryIds: readonly StreamEntryId[]) => Map<StreamEntryId, IndexedEntryFacts>;
   entriesForKnownFacts: () => Pick<StreamEntry, "id" | "kind" | "turn_id">[];
@@ -881,16 +975,18 @@ function createIndexedSourceTrustLookup(input: {
   const factsById = new Map<StreamEntryId, IndexedEntryFacts>();
 
   const rememberCurrentUserEntry = (): void => {
-    if (!factsById.has(input.currentUserEntry.id)) {
-      factsById.set(input.currentUserEntry.id, {
-        entry_id: input.currentUserEntry.id,
-        session_id: input.currentUserEntry.session_id,
-        timestamp: input.currentUserEntry.timestamp,
-        kind: input.currentUserEntry.kind,
-        turn_id: input.currentUserEntry.turn_id ?? null,
-        turn_status: input.currentUserEntry.turn_status ?? "active",
-        active: input.currentUserEntry.turn_status !== "aborted",
-      });
+    for (const currentUserEntry of input.currentUserEntries) {
+      if (!factsById.has(currentUserEntry.id)) {
+        factsById.set(currentUserEntry.id, {
+          entry_id: currentUserEntry.id,
+          session_id: currentUserEntry.session_id,
+          timestamp: currentUserEntry.timestamp,
+          kind: currentUserEntry.kind,
+          turn_id: currentUserEntry.turn_id ?? null,
+          turn_status: currentUserEntry.turn_status ?? "active",
+          active: currentUserEntry.turn_status !== "aborted",
+        });
+      }
     }
   };
 
@@ -1058,7 +1154,16 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   const previousArtifact =
     input.previousArtifact ?? input.options.sharedStateRepository.get(audienceEntityId);
 
-  if (!input.input.isUserTurn || input.input.currentUserEntry === undefined) {
+  const currentUserEntries =
+    input.input.currentUserEntries === undefined || input.input.currentUserEntries.length === 0
+      ? input.input.currentUserEntry === undefined
+        ? []
+        : [input.input.currentUserEntry]
+      : [...input.input.currentUserEntries];
+  const currentUserEntry = input.input.currentUserEntry ?? currentUserEntries[0];
+  const currentUserStreamEntryIds = currentUserEntries.map((entry) => entry.id);
+
+  if (!input.input.isUserTurn || currentUserEntry === undefined) {
     return { artifact: previousArtifact, appliedOperationCount: 0 };
   }
 
@@ -1075,7 +1180,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       ? null
       : createIndexedSourceTrustLookup({
           entryIndex: input.options.entryIndex,
-          currentUserEntry: input.input.currentUserEntry,
+          currentUserEntries,
         });
   const currentSessionTrustEntries =
     indexedSourceTrustLookup === null
@@ -1087,10 +1192,10 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     indexedSourceTrustLookup === null
       ? buildSharedStateSourceTrustValidator({
           currentSessionEntries: currentSessionTrustEntries.some(
-            (entry) => entry.id === input.input.currentUserEntry?.id,
+            (entry) => entry.id === currentUserEntry.id,
           )
             ? (currentSessionTrustEntries as StreamEntry[])
-            : [...(currentSessionTrustEntries as StreamEntry[]), input.input.currentUserEntry],
+            : [...(currentSessionTrustEntries as StreamEntry[]), ...currentUserEntries],
           quarantinedStreamEntryIds,
         })
       : buildIndexedSharedStateSourceTrustValidator({
@@ -1143,7 +1248,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     relationalSlotsContext.flatMap((slot) => slot.evidence_stream_entry_ids),
   );
   const sourceTrustFactIds = uniqueStreamEntryIds([
-    input.input.currentUserEntry.id,
+    ...currentUserStreamEntryIds,
     ...ledgerPromptContext.visibleStreamEntryIds,
     ...ledgerPromptContext.offLimitsSourceStreamEntryIds,
     ...relationalSlotEvidenceStreamEntryIds,
@@ -1153,15 +1258,14 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   const lastUpdatedSourceTrustEntries =
     sourceTrustFacts === null
       ? currentSessionTrustEntries
-      : [
-          {
-            id: input.input.currentUserEntry.id,
-            turn_id: input.input.currentUserEntry.turn_id,
-          },
-        ];
+      : currentUserEntries.map((entry) => ({
+          id: entry.id,
+          turn_id: entry.turn_id,
+        }));
   const lastUpdatedTurnByStreamEntryId = sharedStateLastUpdatedTurnByStreamEntryId({
     entries: lastUpdatedSourceTrustEntries,
-    currentUserEntry: input.input.currentUserEntry,
+    currentUserEntry,
+    currentUserEntries,
     currentTurnId: input.input.turnId,
     currentTurnCounter: turnCounter,
   });
@@ -1176,7 +1280,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   });
   const renderOptions = {
     ...sharedStateRenderOptions(input.options.config),
-    currentUserStreamEntryId: input.input.currentUserEntry.id,
+    currentUserStreamEntryId: currentUserEntry.id,
     ledgerStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
     recentlyRetrievedEntryIds,
     activeOpenQuestionIds: activeOpenQuestions.map((question) => question.id as OpenQuestionId),
@@ -1231,7 +1335,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
         repository: input.options.sharedStateRepository,
         audienceEntityId,
         previousArtifact,
-        currentUserStreamEntryId: input.input.currentUserEntry.id,
+        currentUserStreamEntryId: currentUserEntry.id,
         nowMs: input.options.clock.now(),
       });
 
@@ -1329,7 +1433,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
   const offLimitsRelationalSlotEvidenceStreamEntryIds = relationalSlotEvidenceStreamEntryIds.filter(
     (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
   );
-  const currentUserStreamEntryId = input.input.currentUserEntry.id;
+  const currentUserStreamEntryId = currentUserEntry.id;
   const sharedStateLlmClient = input.options.llmFactory();
   const semanticBeliefRevision =
     input.options.semanticNodeRepository === undefined ||
@@ -1348,7 +1452,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     repository: input.options.sharedStateRepository,
     audienceEntityId,
     selfEntityId,
-    speakerEntityId: input.input.currentUserEntry.sender_entity_id,
+    speakerEntityId: singleSenderEntityId(currentUserEntries),
     participants: (input.input.activeParticipants ?? []).map((participant) => ({
       entityId: participant.entityId,
       displayName: participant.displayName,
@@ -1362,9 +1466,9 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     allowedSourceStreamEntryIds: uniqueStreamEntryIds([
       ...ledgerPromptContext.visibleStreamEntryIds,
       ...trustedRelationalSlotEvidenceStreamEntryIds,
-    ]).filter((id) => id !== currentUserStreamEntryId),
+    ]).filter((id) => !currentUserStreamEntryIds.some((sourceId) => sourceId === id)),
     offLimitsSourceStreamEntryIds: uniqueStreamEntryIds([
-      currentUserStreamEntryId,
+      ...currentUserStreamEntryIds,
       ...ledgerPromptContext.offLimitsSourceStreamEntryIds,
       ...offLimitsRelationalSlotEvidenceStreamEntryIds,
     ]),

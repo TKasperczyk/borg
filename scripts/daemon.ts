@@ -40,12 +40,21 @@ type MaintenanceSchedulerLike = {
   ): void;
 };
 
+type CatchUpWorkerLike = {
+  isEnabled(): boolean;
+  start(): void;
+  stop(options?: SchedulerStopOptions): Promise<void>;
+};
+
 export type DaemonBorg = {
   autonomy: {
     scheduler: AutonomySchedulerLike;
   };
   maintenance: {
     scheduler: MaintenanceSchedulerLike;
+  };
+  inbox: {
+    catchUp: CatchUpWorkerLike;
   };
   close(): Promise<void>;
 };
@@ -108,6 +117,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 async function stopSchedulers(
   autonomyScheduler: AutonomySchedulerLike,
   maintenanceScheduler: MaintenanceSchedulerLike,
+  catchUpWorker: CatchUpWorkerLike,
   timeoutMs: number,
   write: (line: string) => void,
 ): Promise<unknown[]> {
@@ -119,6 +129,10 @@ async function stopSchedulers(
     {
       name: "maintenance",
       stop: () => maintenanceScheduler.stop({ graceful: true }),
+    },
+    {
+      name: "inbox catch-up",
+      stop: () => catchUpWorker.stop({ graceful: true }),
     },
   ] as const;
 
@@ -158,6 +172,7 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<DaemonR
   const borg = await (options.openBorg?.() ?? Borg.open());
   const autonomyScheduler = borg.autonomy.scheduler;
   const maintenanceScheduler = borg.maintenance.scheduler;
+  const catchUpWorker = borg.inbox.catchUp;
   const write = options.writeStderr ?? writeStderr;
   const signalTarget = options.signalTarget ?? process;
   const exit = options.exit ?? ((code?: number) => process.exit(code));
@@ -175,6 +190,7 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<DaemonR
     const errors = await stopSchedulers(
       autonomyScheduler,
       maintenanceScheduler,
+      catchUpWorker,
       shutdownTimeoutMs,
       write,
     );
@@ -225,9 +241,10 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<DaemonR
 
   const autonomyEnabled = autonomyScheduler.isEnabled();
   const maintenanceEnabled = maintenanceScheduler.isEnabled();
+  const catchUpEnabled = catchUpWorker.isEnabled();
 
-  if (!autonomyEnabled && !maintenanceEnabled) {
-    write("[daemon] autonomy and maintenance disabled; exiting");
+  if (!autonomyEnabled && !maintenanceEnabled && !catchUpEnabled) {
+    write("[daemon] autonomy, maintenance, and inbox catch-up disabled; exiting");
     await borg.close();
     return {
       status: "disabled",
@@ -247,6 +264,13 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<DaemonR
     write("[daemon] maintenance scheduler started");
   } else {
     write("[daemon] maintenance scheduler disabled");
+  }
+
+  if (catchUpEnabled) {
+    catchUpWorker.start();
+    write("[daemon] inbox catch-up worker started");
+  } else {
+    write("[daemon] inbox catch-up worker disabled");
   }
 
   write("[daemon] started");

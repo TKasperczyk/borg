@@ -114,6 +114,34 @@ export class StreamWriter {
     return count;
   }
 
+  private poisonedIndexError(streamPath: string, cause: unknown): StreamError {
+    return new StreamError(
+      `Stream entry index is poisoned for committed session ${this.sessionId}`,
+      {
+        cause,
+        code: "STREAM_INDEX_POISONED",
+      },
+    );
+  }
+
+  private async repairPoisonedSessionBeforeAppend(streamPath: string): Promise<void> {
+    if (this.entryIndex === undefined) {
+      return;
+    }
+
+    try {
+      await this.entryIndex.backfillSession(this.sessionId);
+    } catch (repairError) {
+      this.logger.error("Failed to repair poisoned stream entry index before append", {
+        streamPath,
+        sessionId: this.sessionId,
+        repairCause: repairError instanceof Error ? repairError.message : String(repairError),
+      });
+
+      throw this.poisonedIndexError(streamPath, repairError);
+    }
+  }
+
   private async appendEntries(inputs: readonly StreamEntryInput[]): Promise<StreamEntry[]> {
     const streamDir = getStreamDirectory(this.dataDir);
     const streamPath = getSessionStreamPath(this.dataDir, this.sessionId);
@@ -128,6 +156,10 @@ export class StreamWriter {
         let fileDescriptor: number | undefined;
 
         try {
+          if (this.entryIndex?.isPoisoned(this.sessionId) === true) {
+            await this.repairPoisonedSessionBeforeAppend(streamPath);
+          }
+
           // We intentionally open the stream file in append mode so the kernel uses
           // O_APPEND semantics for each write, while the lock file provides
           // best-effort cross-process serialization around multi-line appends.
@@ -182,10 +214,21 @@ export class StreamWriter {
                 cause: error instanceof Error ? error.message : String(error),
               });
 
-              throw new StreamError(`Failed to update stream entry index for ${streamPath}`, {
-                cause: error,
-                code: "STREAM_INDEX_UPDATE_FAILED",
-              });
+              try {
+                await this.entryIndex.backfillSession(this.sessionId);
+              } catch (repairError) {
+                this.logger.error("Failed to repair stream entry index after committed append", {
+                  streamPath,
+                  sessionId: this.sessionId,
+                  entryIds: entries.map((entry) => entry.id),
+                  updateCause: error instanceof Error ? error.message : String(error),
+                  repairCause:
+                    repairError instanceof Error ? repairError.message : String(repairError),
+                });
+
+                this.entryIndex.markPoisoned(this.sessionId);
+                throw this.poisonedIndexError(streamPath, repairError);
+              }
             }
           }
 

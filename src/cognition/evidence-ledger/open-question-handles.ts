@@ -70,6 +70,10 @@ export function relevantOpenQuestionStreamIds(
     streamIds.add(input.currentUserEntry.id);
   }
 
+  for (const entry of input.currentUserEntries ?? []) {
+    streamIds.add(entry.id);
+  }
+
   for (const item of input.retrievedEvidence) {
     for (const streamId of item.provenance?.streamIds ?? []) {
       streamIds.add(streamId);

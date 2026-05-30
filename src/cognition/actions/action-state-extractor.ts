@@ -195,12 +195,18 @@ export type ActionStateExtractorOptions = {
 export type ExtractActionStatesInput = {
   userMessage: string;
   currentUserStreamEntryId: StreamEntryId;
+  currentUserStreamEntryIds?: readonly StreamEntryId[];
   currentAgentStreamEntryId?: StreamEntryId;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
   sessionId?: SessionId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  senderAttribution?: readonly {
+    entryId: StreamEntryId;
+    senderEntityId: EntityId | null;
+    senderDisplayName?: string;
+  }[];
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
@@ -245,6 +251,9 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
       content: JSON.stringify({
         current_user_message: input.userMessage,
         current_user_stream_entry_id: input.currentUserStreamEntryId,
+        current_user_stream_entry_ids: [
+          ...(input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId]),
+        ],
         recent_history: input.recentHistory.slice(-8).map((message) => ({
           role: message.role,
           content: message.content,
@@ -253,6 +262,11 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
         current_session_id: input.sessionId ?? null,
         speaker_entity_id: input.speakerEntityId ?? null,
         speaker_display_name: input.speakerDisplayName ?? null,
+        sender_attribution: (input.senderAttribution ?? []).map((item) => ({
+          stream_entry_id: item.entryId,
+          sender_entity_id: item.senderEntityId,
+          sender_display_name: item.senderDisplayName ?? null,
+        })),
         current_agent_stream_entry_id: input.currentAgentStreamEntryId ?? null,
         active_actions_for_reference: (input.activeActionsForReference ?? []).map(
           compactActionForPrompt,
@@ -412,16 +426,16 @@ function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
 
 function hasCurrentUserEvidence(
   candidate: ParsedActionStateCandidate,
-  currentUserStreamEntryId: StreamEntryId,
+  currentUserStreamEntryIds: readonly StreamEntryId[],
 ): boolean {
-  return candidate.evidence_stream_entry_ids.some(
-    (entryId) => entryId === currentUserStreamEntryId,
-  );
+  const currentIds = new Set<string>(currentUserStreamEntryIds);
+
+  return candidate.evidence_stream_entry_ids.some((entryId) => currentIds.has(entryId));
 }
 
 function allowedEvidenceStreamEntryIds(input: ExtractActionStatesInput): Set<string> {
   return new Set([
-    input.currentUserStreamEntryId,
+    ...(input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId]),
     ...(input.currentAgentStreamEntryId === undefined ? [] : [input.currentAgentStreamEntryId]),
   ]);
 }
@@ -431,7 +445,10 @@ function hasAllowedEvidence(
   input: ExtractActionStatesInput,
 ): boolean {
   if (input.postTurnSelfPerformance === undefined) {
-    return hasCurrentUserEvidence(candidate, input.currentUserStreamEntryId);
+    return hasCurrentUserEvidence(
+      candidate,
+      input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId],
+    );
   }
 
   const allowed = allowedEvidenceStreamEntryIds(input);
@@ -459,31 +476,61 @@ function stateTimestampPatch(
   return { [timestampField]: timestamp };
 }
 
+function speakerEntityIdForCandidateEvidence(input: {
+  candidate: ParsedActionStateCandidate;
+  senderAttribution?: ExtractActionStatesInput["senderAttribution"];
+  fallbackSpeakerEntityId: EntityId | null;
+}): EntityId | null {
+  const evidenceIds = new Set(input.candidate.evidence_stream_entry_ids);
+  const senderIds = [
+    ...new Set(
+      (input.senderAttribution ?? []).flatMap((item) =>
+        evidenceIds.has(item.entryId) && item.senderEntityId !== null ? [item.senderEntityId] : [],
+      ),
+    ),
+  ];
+
+  return senderIds.length === 1 ? (senderIds[0] ?? null) : input.fallbackSpeakerEntityId;
+}
+
 function toActionRecord(input: {
   candidate: ParsedActionStateCandidate;
-  currentUserStreamEntryId: StreamEntryId;
+  currentUserStreamEntryIds: readonly StreamEntryId[];
   audienceEntityId: EntityId | null;
   sessionId: SessionId | null;
   speakerEntityId: EntityId | null;
+  senderAttribution?: ExtractActionStatesInput["senderAttribution"];
   goalId: GoalId | null;
   openQuestionId: OpenQuestionId | null;
   nowMs: number;
   turnCounter: number | null;
 }): ActionRecord {
+  const candidateEvidenceIds = new Set(input.candidate.evidence_stream_entry_ids);
+  const sourceStreamEntryIds = input.currentUserStreamEntryIds.filter((entryId) =>
+    candidateEvidenceIds.has(entryId),
+  );
+  const provenanceStreamEntryIds =
+    sourceStreamEntryIds.length === 0 ? [...input.currentUserStreamEntryIds] : sourceStreamEntryIds;
+  const actorEntityId =
+    input.candidate.actor === "user"
+      ? speakerEntityIdForCandidateEvidence({
+          candidate: input.candidate,
+          senderAttribution: input.senderAttribution,
+          fallbackSpeakerEntityId: input.speakerEntityId,
+        })
+      : null;
+
   return {
     id: createActionId(),
     description: input.candidate.description,
-    actor:
-      input.candidate.actor === "user" && input.speakerEntityId !== null
-        ? input.speakerEntityId
-        : input.candidate.actor,
+    actor: input.candidate.actor === "user" ? (actorEntityId ?? "user") : input.candidate.actor,
     audience_entity_id: input.candidate.audience_entity_id ?? input.audienceEntityId,
     goal_id: input.goalId,
     open_question_id: input.openQuestionId,
     state: input.candidate.state,
     confidence: input.candidate.confidence,
     provenance_episode_ids: [],
-    provenance_stream_entry_ids: [input.currentUserStreamEntryId],
+    provenance_stream_entry_ids: provenanceStreamEntryIds,
     created_at: input.nowMs,
     updated_at: input.nowMs,
     considering_at: null,
@@ -996,10 +1043,13 @@ export class ActionStateExtractor {
 
       const record = toActionRecord({
         candidate,
-        currentUserStreamEntryId: input.currentUserStreamEntryId,
+        currentUserStreamEntryIds: input.currentUserStreamEntryIds ?? [
+          input.currentUserStreamEntryId,
+        ],
         audienceEntityId: input.audienceEntityId,
         sessionId: input.sessionId ?? null,
         speakerEntityId: input.speakerEntityId ?? null,
+        senderAttribution: input.senderAttribution,
         goalId: input.goalId ?? null,
         openQuestionId: input.openQuestionId ?? null,
         nowMs,

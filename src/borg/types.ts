@@ -11,7 +11,12 @@ import type {
   ImageAttachmentLifecycleService,
   ImagePerceptionRepository,
 } from "../attachments/index.js";
-import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
+import type {
+  ChatResponseCatchUpWorker,
+  ChatResponseWatermarkCoordinator,
+  MessageEnqueuer,
+  StreamIngestionCoordinator,
+} from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
@@ -134,6 +139,9 @@ export type BorgDependencies = {
   autonomyScheduler: AutonomyScheduler;
   maintenanceScheduler: MaintenanceScheduler;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  chatResponseWatermarkCoordinator: ChatResponseWatermarkCoordinator;
+  chatResponseCatchUpWorker: ChatResponseCatchUpWorker;
+  messageEnqueuer: MessageEnqueuer;
   auditLog: AuditLog;
   maintenanceOrchestrator: MaintenanceOrchestrator;
   offlineProcesses: Record<OfflineProcessName, OfflineProcess>;

@@ -1,7 +1,10 @@
 // Creates the optional live stream ingestion coordinator used after turns.
 
 import type { Config } from "../config/index.js";
-import { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
+import {
+  StreamIngestionCoordinator,
+  type ChatResponseWatermarkCoordinator,
+} from "../cognition/ingestion/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
@@ -22,6 +25,7 @@ export type BuildIngestionCoordinatorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   workingMemoryStore: WorkingMemoryStore;
   streamWatermarkRepository: StreamWatermarkRepository;
+  chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
 };
@@ -50,6 +54,7 @@ export function buildStreamIngestionCoordinator(
       clock: options.clock,
     }),
     watermarkRepository: options.streamWatermarkRepository,
+    chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
     dataDir: options.config.dataDir,
     clock: options.clock,
     onError: (error, sessionId) => {

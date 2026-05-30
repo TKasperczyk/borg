@@ -1,4 +1,4 @@
-import type { StreamWriter } from "../../stream/index.js";
+import type { StreamResponseTo, StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ClosurePressureHistoryReason, WorkingMemory } from "../../memory/working/index.js";
@@ -55,6 +55,7 @@ export type SetTurnDiscourseStopStateInput = {
   workingMemory: WorkingMemory;
   provenance: Parameters<typeof setStopUntilSubstantiveContent>[1]["provenance"];
   sourceStreamEntryId?: StreamEntryId;
+  sourceStreamEntryIds?: readonly StreamEntryId[];
   reason: string;
   turnId: string;
   sessionId?: SessionId;
@@ -64,6 +65,8 @@ export type AppendSuppressionMarkerInput = {
   streamWriter: Pick<StreamWriter, "append">;
   reason: SuppressionReason;
   userEntryId?: AgentSuppressedStreamContent["user_entry_id"];
+  userEntryIds?: readonly StreamEntryId[];
+  responseTo?: StreamResponseTo;
   turnId: string;
   audience?: string;
   noOutputCategories?: readonly FinalizerNoOutputCategory[];
@@ -75,6 +78,8 @@ export type AppendObservationMarkerInput = {
   streamWriter: Pick<StreamWriter, "append">;
   reason: string;
   userEntryId?: AgentObservedStreamContent["user_entry_id"];
+  userEntryIds?: readonly StreamEntryId[];
+  responseTo?: StreamResponseTo;
   turnId: string;
   audience?: string;
 };
@@ -90,6 +95,7 @@ export class TurnDiscourseStateService {
     const next = setStopUntilSubstantiveContent(input.workingMemory, {
       provenance: input.provenance,
       sourceStreamEntryId: input.sourceStreamEntryId,
+      sourceStreamEntryIds: input.sourceStreamEntryIds,
       reason: input.reason,
       sinceTurn: input.workingMemory.turn_counter,
     });
@@ -105,6 +111,9 @@ export class TurnDiscourseStateService {
         ...(input.sourceStreamEntryId === undefined
           ? {}
           : { sourceStreamEntryId: input.sourceStreamEntryId }),
+        ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+          ? {}
+          : { sourceStreamEntryIds: [...input.sourceStreamEntryIds] }),
       });
     }
 
@@ -184,10 +193,12 @@ export class TurnDiscourseStateService {
     reason: string;
     turnId: string;
     sourceStreamEntryId?: StreamEntryId;
+    sourceStreamEntryIds?: readonly StreamEntryId[];
     sessionId?: SessionId;
   }): WorkingMemory {
     const next = markClosureLoopNamed(input.workingMemory, {
       sourceStreamEntryId: input.sourceStreamEntryId,
+      sourceStreamEntryIds: input.sourceStreamEntryIds,
       reason: input.reason,
       turn: input.workingMemory.turn_counter,
     });
@@ -203,6 +214,9 @@ export class TurnDiscourseStateService {
         ...(input.sourceStreamEntryId === undefined
           ? {}
           : { sourceStreamEntryId: input.sourceStreamEntryId }),
+        ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+          ? {}
+          : { sourceStreamEntryIds: [...input.sourceStreamEntryIds] }),
       });
     }
 
@@ -275,6 +289,9 @@ export class TurnDiscourseStateService {
         reason: input.reason,
         turn_id: input.turnId,
         ...(input.userEntryId === undefined ? {} : { user_entry_id: input.userEntryId }),
+        ...(input.userEntryIds === undefined || input.userEntryIds.length === 0
+          ? {}
+          : { user_entry_ids: [...input.userEntryIds] }),
         ...(input.noOutputCategories === undefined
           ? {}
           : { no_output_categories: [...input.noOutputCategories] }),
@@ -285,6 +302,7 @@ export class TurnDiscourseStateService {
           ? {}
           : { structural_no_output_flags: [...input.structuralNoOutputFlags] }),
       } satisfies AgentSuppressedStreamContent,
+      ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });
   }
@@ -298,7 +316,11 @@ export class TurnDiscourseStateService {
         reason: input.reason,
         turn_id: input.turnId,
         ...(input.userEntryId === undefined ? {} : { user_entry_id: input.userEntryId }),
+        ...(input.userEntryIds === undefined || input.userEntryIds.length === 0
+          ? {}
+          : { user_entry_ids: [...input.userEntryIds] }),
       } satisfies AgentObservedStreamContent,
+      ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });
   }
@@ -307,6 +329,7 @@ export class TurnDiscourseStateService {
     workingMemory: WorkingMemory;
     reason: SuppressionReason;
     sourceStreamEntryId: StreamEntryId;
+    sourceStreamEntryIds?: readonly StreamEntryId[];
     turnId: string;
     sessionId?: SessionId;
   }): WorkingMemory {
@@ -314,6 +337,7 @@ export class TurnDiscourseStateService {
       turnId: input.turnId,
       reason: input.reason,
       sourceStreamEntryId: input.sourceStreamEntryId,
+      sourceStreamEntryIds: input.sourceStreamEntryIds,
       ts: this.clock.now(),
     });
 
@@ -338,6 +362,7 @@ export class TurnDiscourseStateService {
         workingMemory,
         provenance: finalizerNoOutputReason,
         sourceStreamEntryId: input.sourceStreamEntryId,
+        sourceStreamEntryIds: input.sourceStreamEntryIds,
         reason:
           input.reason === "manifest_no_output"
             ? "Legacy finalizer emitted no_output for this turn."
@@ -357,6 +382,7 @@ export class TurnDiscourseStateService {
         workingMemory,
         provenance: "commitment_guard",
         sourceStreamEntryId: input.sourceStreamEntryId,
+        sourceStreamEntryIds: input.sourceStreamEntryIds,
         reason:
           input.reason === "commitment_violation"
             ? "Commitment guard suppressed this turn because output violated an enforceable commitment."
@@ -377,6 +403,7 @@ export class TurnDiscourseStateService {
       return this.markClosureLoopNamed({
         workingMemory,
         sourceStreamEntryId: input.sourceStreamEntryId,
+        sourceStreamEntryIds: input.sourceStreamEntryIds,
         reason:
           input.reason === "no_output_tool" || input.reason === "finalizer_no_output"
             ? "Closure loop detected; finalizer chose no_output."

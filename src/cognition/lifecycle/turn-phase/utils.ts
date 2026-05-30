@@ -1,6 +1,6 @@
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import type { SharedStateRenderOptions } from "../../evidence-ledger/index.js";
-import type { StreamIngestionCoordinator } from "../../ingestion/index.js";
+import type { AnsweredStreamWindow, StreamIngestionCoordinator } from "../../ingestion/index.js";
 import { appendInternalFailureEvent } from "../../../memory/self/index.js";
 import type { StreamWriter } from "../../../stream/index.js";
 import type { Config } from "../../../config/index.js";
@@ -60,6 +60,7 @@ export async function catchUpStreamIngestion(input: {
   sessionId: SessionId;
   streamWriter: StreamWriter;
   maxEntries: number;
+  clampToChatResponseWatermark?: boolean;
   appendHookFailureEvent: AppendHookFailureEvent;
 }): Promise<void> {
   if (input.coordinator === undefined) {
@@ -69,6 +70,9 @@ export async function catchUpStreamIngestion(input: {
   try {
     const result = await input.coordinator.catchUp(input.sessionId, {
       maxEntries: input.maxEntries,
+      ...(input.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
     });
 
     if (result.error !== undefined) {
@@ -93,9 +97,15 @@ export async function catchUpStreamIngestion(input: {
 export function startLiveIngestion(
   coordinator: StreamIngestionCoordinator | undefined,
   sessionId: SessionId,
+  options: { answeredWindow?: AnsweredStreamWindow } = {},
 ): void {
   if (coordinator !== undefined) {
-    void coordinator.ingest(sessionId).catch((error) => {
+    const ingestPromise =
+      options.answeredWindow === undefined
+        ? coordinator.ingest(sessionId)
+        : coordinator.ingest(sessionId, { answeredWindow: options.answeredWindow });
+
+    void ingestPromise.catch((error) => {
       console.error("Live stream ingestion failed", error);
     });
   }

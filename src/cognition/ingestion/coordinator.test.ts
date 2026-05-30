@@ -2,29 +2,39 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { EntityRepository } from "../../memory/commitments/index.js";
+import { commitmentMigrations, EntityRepository } from "../../memory/commitments/index.js";
 import { EpisodicExtractor } from "../../memory/episodic/extractor.js";
 import { episodicMigrations } from "../../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/episodic/repository.js";
+import {
+  relationalSlotMigrations,
+  RelationalSlotRepository,
+} from "../../memory/relational-slots/index.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import {
+  StreamEntryIndexRepository,
   StreamReader,
   StreamWatermarkRepository,
   StreamWriter,
+  streamEntryIndexMigrations,
   streamWatermarkMigrations,
+  type StreamEntry,
+  type StreamResponseTo,
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID, type StreamEntryId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type StreamEntryId } from "../../util/ids.js";
 
+import { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 import { StreamIngestionCoordinator } from "./coordinator.js";
+import { catchUpStreamIngestion } from "../lifecycle/turn-phase/utils.js";
 
 type ExtractCall = {
   session?: unknown;
@@ -38,6 +48,7 @@ type ExtractCall = {
     ts: number;
     entryId: StreamEntryId;
   };
+  entryIds?: readonly StreamEntryId[];
 };
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -124,6 +135,60 @@ describe("StreamIngestionCoordinator", () => {
       repo: new StreamWatermarkRepository({ db, clock: new ManualClock(1_000) }),
       close: () => db.close(),
     };
+  }
+
+  function openIndexedRepos(dataDir: string): {
+    watermarkRepository: StreamWatermarkRepository;
+    entryIndex: StreamEntryIndexRepository;
+    chatResponseWatermarkCoordinator: ChatResponseWatermarkCoordinator;
+    close: () => void;
+  } {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(streamWatermarkMigrations, streamEntryIndexMigrations),
+    });
+    const clock = new ManualClock(1_000);
+    const watermarkRepository = new StreamWatermarkRepository({ db, clock });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
+    const chatResponseWatermarkCoordinator = new ChatResponseWatermarkCoordinator({
+      watermarkRepository,
+      entryIndex,
+    });
+
+    return {
+      watermarkRepository,
+      entryIndex,
+      chatResponseWatermarkCoordinator,
+      close: () => db.close(),
+    };
+  }
+
+  async function appendIndexedEntry(
+    dataDir: string,
+    entryIndex: StreamEntryIndexRepository,
+    input: {
+      kind: "user_msg" | "agent_msg" | "agent_suppressed" | "agent_observed";
+      content: unknown;
+      ts: number;
+      responseTo?: StreamResponseTo;
+      senderEntityId?: EntityId | null;
+    },
+  ): Promise<StreamEntry> {
+    const writer = new StreamWriter({
+      dataDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new ManualClock(input.ts),
+      entryIndex,
+    });
+    try {
+      return await writer.append({
+        kind: input.kind,
+        content: input.content,
+        ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
+        ...(input.senderEntityId === undefined ? {} : { sender_entity_id: input.senderEntityId }),
+      });
+    } finally {
+      writer.close();
+    }
   }
 
   it("no-ops when there are fewer new entries than the threshold", async () => {
@@ -375,6 +440,62 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
+  it("normal pre-turn catch-up retries missed live ingestion without a chat-response watermark", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, chatResponseWatermarkCoordinator, close } =
+      openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "missed normal turn",
+      ts: 100,
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "missed normal response",
+      ts: 110,
+    });
+
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      chatResponseWatermarkCoordinator,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+    const streamWriter = new StreamWriter({
+      dataDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new ManualClock(200),
+      entryIndex,
+    });
+
+    try {
+      await catchUpStreamIngestion({
+        coordinator,
+        sessionId: DEFAULT_SESSION_ID,
+        streamWriter,
+        maxEntries: 10,
+        appendHookFailureEvent: vi.fn(),
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.untilCursor).toEqual({
+        ts: 110,
+        entryId: expect.any(String),
+      });
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: 110,
+        lastEntryId: expect.any(String),
+      });
+      expect(chatResponseWatermarkCoordinator.getWatermark(DEFAULT_SESSION_ID)).toBeNull();
+    } finally {
+      streamWriter.close();
+      close();
+    }
+  });
+
   it("bounds pre-turn catch-up by max entries and leaves the remainder for later passes", async () => {
     const dataDir = createTempDir();
     await seedStream(dataDir, [
@@ -468,6 +589,325 @@ describe("StreamIngestionCoordinator", () => {
       expect(calls).toHaveLength(1);
     } finally {
       close();
+    }
+  });
+
+  it("does not ingest a clamped pre-turn catch-up when no user entries have been answered", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, chatResponseWatermarkCoordinator, close } =
+      openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "queued but unanswered",
+      ts: 100,
+    });
+
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      chatResponseWatermarkCoordinator,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.catchUp(DEFAULT_SESSION_ID, {
+        maxEntries: 10,
+        clampToChatResponseWatermark: true,
+      });
+
+      expect(result.ran).toBe(false);
+      expect(calls).toHaveLength(0);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("clamps catch-up by entry_index when same-timestamp entries straddle the response watermark", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, chatResponseWatermarkCoordinator, close } =
+      openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const firstUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "answered first",
+      ts: 100,
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "terminal answer",
+      ts: 100,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: firstUser.timestamp,
+          entryId: firstUser.id,
+        },
+        source_entry_ids: [firstUser.id],
+        count: 1,
+      },
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "same millisecond but unanswered",
+      ts: 100,
+    });
+
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      chatResponseWatermarkCoordinator,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.catchUp(DEFAULT_SESSION_ID, {
+        maxEntries: 10,
+        clampToChatResponseWatermark: true,
+      });
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(1);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.untilCursor).toEqual({
+        ts: firstUser.timestamp,
+        entryId: firstUser.id,
+      });
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: firstUser.timestamp,
+        lastEntryId: firstUser.id,
+      });
+      expect(chatResponseWatermarkCoordinator.getWatermark(DEFAULT_SESSION_ID)).toEqual({
+        ts: firstUser.timestamp,
+        entryId: firstUser.id,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("does not apply the chat-response clamp to normal ingestion", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, chatResponseWatermarkCoordinator, close } =
+      openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "normal live turn",
+      ts: 100,
+    });
+
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      chatResponseWatermarkCoordinator,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(result.ran).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(100);
+    } finally {
+      close();
+    }
+  });
+
+  it("ingests an explicit answered window without sweeping interleaved unanswered entries", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const firstUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "batch one",
+      ts: 100,
+    });
+    const secondUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "batch two",
+      ts: 110,
+    });
+    const interleavedUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "queued after drained batch",
+      ts: 120,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "batch answer",
+      ts: 130,
+    });
+    const responseTo: StreamResponseTo = {
+      kind: "stream_backlog",
+      from_cursor_exclusive: null,
+      through_cursor_inclusive: {
+        ts: secondUser.timestamp,
+        entryId: secondUser.id,
+      },
+      source_entry_ids: [firstUser.id, secondUser.id],
+      count: 2,
+    };
+
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow: {
+          responseTo,
+          terminalCursor: {
+            ts: terminal.timestamp,
+            entryId: terminal.id,
+          },
+        },
+      });
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(3);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.entryIds).toEqual([firstUser.id, secondUser.id, terminal.id]);
+      expect(calls[0]?.entryIds).not.toContain(interleavedUser.id);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: terminal.timestamp,
+        lastEntryId: terminal.id,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("lets relational-slot provenance cite drained batch user ids in an explicit answered window", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(dataDir, "lancedb"),
+    });
+    const db = openDatabase(join(dataDir, "borg.db"), {
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+        relationalSlotMigrations,
+        streamEntryIndexMigrations,
+      ),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
+    const entityRepository = new EntityRepository({ db, clock });
+    const relationalSlotRepository = new RelationalSlotRepository({ db, clock });
+    const senderId = entityRepository.resolve("Batch Sender");
+    const firstUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "first batch assertion",
+      ts: 100,
+      senderEntityId: senderId,
+    });
+    const secondUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "second batch assertion",
+      ts: 110,
+      senderEntityId: senderId,
+    });
+    const interleavedUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "not answered by this terminal",
+      ts: 120,
+      senderEntityId: senderId,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "answered drained batch",
+      ts: 130,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 20,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: EPISODE_TOOL_NAME,
+              input: {
+                episodes: [],
+                relational_slot_updates: [
+                  {
+                    subject_entity_id: senderId,
+                    slot_key: "partner.name",
+                    asserted_value: "Marta",
+                    source_stream_entry_ids: [firstUser.id, secondUser.id],
+                    confirmation_kind: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir,
+      episodicRepository: new EpisodicRepository({
+        table,
+        db,
+        clock,
+      }),
+      embeddingClient: {
+        async embed(): Promise<Float32Array> {
+          return Float32Array.from([1, 0, 0, 0]);
+        },
+        async embedBatch(texts): Promise<Float32Array[]> {
+          return texts.map(() => Float32Array.from([1, 0, 0, 0]));
+        },
+      },
+      llmClient: llm,
+      model: "haiku",
+      entityRepository,
+      relationalSlotRepository,
+      clock,
+    });
+
+    try {
+      await extractor.extractFromStream({
+        session: DEFAULT_SESSION_ID,
+        entryIds: [firstUser.id, secondUser.id, terminal.id],
+      });
+
+      const slot = relationalSlotRepository.findBySubjectAndKey(senderId, "partner.name");
+
+      expect(slot).toMatchObject({
+        subject_entity_id: senderId,
+        slot_key: "partner.name",
+        value: "Marta",
+        evidence_stream_entry_ids: [firstUser.id, secondUser.id],
+      });
+      const extractionPrompt = String(llm.requests[0]?.messages?.[0]?.content ?? "");
+      expect(extractionPrompt).toContain(firstUser.id);
+      expect(extractionPrompt).toContain(secondUser.id);
+      expect(extractionPrompt).toContain(terminal.id);
+      expect(extractionPrompt).not.toContain(interleavedUser.id);
+    } finally {
+      db.close();
+      await store.close();
     }
   });
 
@@ -745,6 +1185,218 @@ describe("StreamIngestionCoordinator", () => {
         entryId: firstWatermark?.lastEntryId,
       });
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(210);
+    } finally {
+      close();
+    }
+  });
+
+  it("runs a queued normal pass after an in-flight answered window without reusing the exact window", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const firstUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "drained batch",
+      ts: 100,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "batch answer",
+      ts: 110,
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "normal followup",
+      ts: 120,
+    });
+    const normalTail = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "normal answer",
+      ts: 130,
+    });
+    const responseTo: StreamResponseTo = {
+      kind: "stream_backlog",
+      from_cursor_exclusive: null,
+      through_cursor_inclusive: {
+        ts: firstUser.timestamp,
+        entryId: firstUser.id,
+      },
+      source_entry_ids: [firstUser.id],
+      count: 1,
+    };
+    let releaseFirstPass: (() => void) | undefined;
+    let notifyFirstPassStarted: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+
+          if (calls.length === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const answeredWindow = {
+        responseTo,
+        terminalCursor: {
+          ts: terminal.timestamp,
+          entryId: terminal.id,
+        },
+      };
+      const answeredPromise = coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow });
+      await firstPassStarted;
+
+      const normalPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+      releaseFirstPass?.();
+
+      const [answeredResult, normalResult] = await Promise.all([answeredPromise, normalPromise]);
+
+      expect(answeredResult.ran).toBe(true);
+      expect(normalResult.ran).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.entryIds).toEqual([firstUser.id, terminal.id]);
+      expect(calls[1]?.entryIds).toBeUndefined();
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      });
+      expect(calls[1]?.untilCursor).toEqual({
+        ts: normalTail.timestamp,
+        entryId: normalTail.id,
+      });
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: normalTail.timestamp,
+        lastEntryId: normalTail.id,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("runs a queued normal pass after an in-flight clamped catch-up without carrying the clamp", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, chatResponseWatermarkCoordinator, close } =
+      openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "answered backlog",
+      ts: 100,
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "backlog marker",
+      ts: 110,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "normal followup",
+      ts: 120,
+    });
+    const normalTail = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "normal answer",
+      ts: 130,
+    });
+    let releaseFirstPass: (() => void) | undefined;
+    let notifyFirstPassStarted: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+
+          if (calls.length === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository,
+      chatResponseWatermarkCoordinator,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const clampedPromise = coordinator.catchUp(DEFAULT_SESSION_ID, {
+        maxEntries: 10,
+        clampToChatResponseWatermark: true,
+      });
+      await firstPassStarted;
+
+      const normalPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+      releaseFirstPass?.();
+
+      const [clampedResult, normalResult] = await Promise.all([clampedPromise, normalPromise]);
+
+      expect(clampedResult.ran).toBe(true);
+      expect(clampedResult.processedEntries).toBe(1);
+      expect(normalResult.ran).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.untilCursor).toEqual({
+        ts: answeredUser.timestamp,
+        entryId: answeredUser.id,
+      });
+      expect(calls[1]?.entryIds).toBeUndefined();
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: answeredUser.timestamp,
+        entryId: answeredUser.id,
+      });
+      expect(calls[1]?.untilCursor).toEqual({
+        ts: normalTail.timestamp,
+        entryId: normalTail.id,
+      });
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: normalTail.timestamp,
+        lastEntryId: normalTail.id,
+      });
     } finally {
       close();
     }

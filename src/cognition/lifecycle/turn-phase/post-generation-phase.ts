@@ -12,12 +12,18 @@ import {
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import { isDirectedOutboundTurnOrigin, type PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
-import type { StreamEntry, StreamEntryInput, StreamWriter } from "../../../stream/index.js";
-import type { EntityId, SessionId } from "../../../util/ids.js";
+import type {
+  StreamEntry,
+  StreamEntryInput,
+  StreamResponseTo,
+  StreamWriter,
+} from "../../../stream/index.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
 import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
 import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { valueAppearsIn } from "../../../util/text-presence.js";
+import { CognitionError } from "../../../util/errors.js";
 import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
 import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
 import {
@@ -28,6 +34,7 @@ import {
 } from "../../../memory/actions/index.js";
 import { archiveStaleAction } from "../../../memory/lifecycle-ops/index.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput, TurnPhaseResult } from "./types.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../../turn-input.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { TurnDeliberationPhaseResult } from "./deliberation-phase.js";
 import type { TurnRetrievalPhaseResult } from "./retrieval-phase.js";
@@ -70,15 +77,22 @@ type PersistedMessageEmission = {
 function currentTurnSharedStateEntries(input: {
   retrievalPhase: TurnRetrievalPhaseResult;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntry["id"][];
 }): SharedStateEntry[] {
-  if (input.persistedUserEntryId === undefined) {
+  const sourceUserEntryIds = new Set([
+    ...(input.persistedUserEntryId === undefined ? [] : [input.persistedUserEntryId]),
+    ...(input.sourceUserEntryIds ?? []),
+  ]);
+
+  if (sourceUserEntryIds.size === 0) {
     return [];
   }
 
-  const persistedUserEntryId = input.persistedUserEntryId;
-
   return (input.retrievalPhase.evidenceLedgerContext.ledger?.sharedState?.entries ?? []).filter(
-    (entry) => entry.last_updated_stream_entry_ids.includes(persistedUserEntryId),
+    (entry) =>
+      entry.last_updated_stream_entry_ids.some((streamEntryId) =>
+        sourceUserEntryIds.has(streamEntryId),
+      ),
   );
 }
 
@@ -120,6 +134,7 @@ async function persistMessageEmission(input: {
   response: string;
   actionResult: Pick<ActionResult, "tool_calls">;
   actionEmission: Extract<PendingTurnEmission, { kind: "message" }>;
+  responseTo?: StreamResponseTo;
 }): Promise<PersistedMessageEmission> {
   const streamInput: Omit<StreamEntryInput, "kind" | "content"> = {
     turn_id: input.turnId,
@@ -129,6 +144,7 @@ async function persistMessageEmission(input: {
     ...(input.actionEmission.persistence_class === undefined
       ? {}
       : { persistence_class: input.actionEmission.persistence_class }),
+    ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
     ...(input.turnInput.audience === undefined ? {} : { audience: input.turnInput.audience }),
   };
 
@@ -162,6 +178,49 @@ async function persistMessageEmission(input: {
       ...streamInput,
     }),
   };
+}
+
+function advanceChatResponseWatermark(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  responseTo?: StreamResponseTo;
+}): void {
+  if (input.responseTo === undefined) {
+    return;
+  }
+
+  if (input.options.chatResponseWatermarkCoordinator === undefined) {
+    throw new CognitionError("Inbound batch terminal output requires watermark coordination", {
+      code: "CHAT_RESPONSE_WATERMARK_COORDINATOR_REQUIRED",
+    });
+  }
+
+  input.options.chatResponseWatermarkCoordinator.advanceThrough(
+    input.sessionId,
+    input.responseTo.through_cursor_inclusive,
+  );
+}
+
+function startTerminalLiveIngestion(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  responseTo?: StreamResponseTo;
+  terminalEntry: StreamEntry;
+}): void {
+  if (input.responseTo === undefined) {
+    startLiveIngestion(input.options.streamIngestionCoordinator, input.sessionId);
+    return;
+  }
+
+  startLiveIngestion(input.options.streamIngestionCoordinator, input.sessionId, {
+    answeredWindow: {
+      responseTo: input.responseTo,
+      terminalCursor: {
+        ts: input.terminalEntry.timestamp,
+        entryId: input.terminalEntry.id,
+      },
+    },
+  });
 }
 
 function activityParticipantEntityIds(input: {
@@ -309,10 +368,14 @@ export async function runPostGenerationPhase(input: {
     TurnPhaseCoordinatorOptions["turnReflectionCoordinator"]["run"]
   >[0]["workingMood"];
   persistedUserEntry?: StreamEntry;
+  sourceUserEntries?: readonly StreamEntry[];
   persistedPerceptionEntry: Parameters<
     TurnPhaseCoordinatorOptions["turnReflectionCoordinator"]["run"]
   >[0]["persistedPerceptionEntry"];
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
+  responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
   deliberation: TurnDeliberationPhaseResult["deliberation"];
@@ -352,6 +415,7 @@ export async function runPostGenerationPhase(input: {
     applicableCommitments: input.retrievalPhase.applicableCommitments,
     perceptionEntities: input.perception.entities,
     persistedUserEntry: input.persistedUserEntry,
+    persistedUserEntries: input.sourceUserEntries,
     retrievedEpisodes: input.retrievalPhase.retrievedEpisodes,
     currentUserClosureKind: input.closureLoopCurrentUserAct,
     audienceEntityId: input.audienceEntityId,
@@ -379,6 +443,7 @@ export async function runPostGenerationPhase(input: {
             response: actionResult.response,
             actionResult,
             actionEmission,
+            responseTo: input.responseTo,
           })
         : actionEmission.kind === "observed"
           ? {
@@ -386,6 +451,8 @@ export async function runPostGenerationPhase(input: {
                 streamWriter: input.streamWriter,
                 reason: actionEmission.reason,
                 userEntryId: input.persistedUserEntryId,
+                userEntryIds: input.sourceUserEntryIds,
+                responseTo: input.responseTo,
                 turnId: input.turnId,
                 audience: input.turnInput.audience,
               }),
@@ -395,6 +462,8 @@ export async function runPostGenerationPhase(input: {
                 streamWriter: input.streamWriter,
                 reason: actionEmission.reason,
                 userEntryId: input.persistedUserEntryId,
+                userEntryIds: input.sourceUserEntryIds,
+                responseTo: input.responseTo,
                 turnId: input.turnId,
                 audience: input.turnInput.audience,
                 noOutputCategories: actionEmission.no_output_categories,
@@ -405,6 +474,11 @@ export async function runPostGenerationPhase(input: {
     completedSub: (result) => `entry=${result.entry.kind}`,
   });
   const persistedAgentEntry = persistedEmission.entry;
+  advanceChatResponseWatermark({
+    options: input.options,
+    sessionId: input.sessionId,
+    responseTo: input.responseTo,
+  });
   const activityRepository = input.options.activityRepository;
 
   const shouldRecordActivity =
@@ -459,6 +533,8 @@ export async function runPostGenerationPhase(input: {
       actionResult,
       actionEmission,
       persistedAgentEntry,
+      sourceUserEntryIds: input.sourceUserEntryIds,
+      responseTo: input.responseTo,
       correctiveCommitment: input.correctiveCommitment,
       correctiveCommitmentSupersession: input.correctiveCommitmentSupersession,
       perceptionMode: input.perception.mode,
@@ -568,6 +644,7 @@ export async function runPostGenerationPhase(input: {
         pendingSocialAttribution: input.pendingSocialAttribution,
         suppressionSet: input.suppressionSet,
         persistedUserEntryId: input.persistedUserEntryId,
+        sourceUserEntryIds: input.sourceUserEntryIds,
         persistedPerceptionEntry: input.persistedPerceptionEntry,
         persistedAgentEntry,
         isUserTurn: input.isUserTurn,
@@ -580,12 +657,20 @@ export async function runPostGenerationPhase(input: {
     completedSub: () =>
       `emission=${actionEmission.kind} retrieved=${deliberation.retrievedEpisodes.length}`,
   });
-  if (actionEmission.kind === "message" && input.persistedUserEntryId !== undefined) {
+  const closeActionSourceUserEntryIds =
+    input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+      ? input.persistedUserEntryId === undefined
+        ? []
+        : [input.persistedUserEntryId]
+      : [...input.sourceUserEntryIds];
+
+  if (actionEmission.kind === "message" && closeActionSourceUserEntryIds.length > 0) {
     await input.options.turnActionStateService.closeBorgSelfPerformedActions({
       llmClient: input.llmClient,
       turnId: input.turnId,
       userMessage: input.turnInput.userMessage,
-      persistedUserEntryId: input.persistedUserEntryId,
+      persistedUserEntryId: closeActionSourceUserEntryIds[0]!,
+      sourceUserEntryIds: closeActionSourceUserEntryIds,
       persistedAgentEntryId: persistedAgentEntry.id,
       agentResponse: actionResult.response,
       recentHistory: [],
@@ -595,6 +680,7 @@ export async function runPostGenerationPhase(input: {
       currentTurnSharedStateEntries: currentTurnSharedStateEntries({
         retrievalPhase: input.retrievalPhase,
         persistedUserEntryId: input.persistedUserEntryId,
+        sourceUserEntryIds: input.sourceUserEntryIds,
       }),
       turnCounter: lifecycleTurnCounter,
     });
@@ -614,7 +700,12 @@ export async function runPostGenerationPhase(input: {
     supersession: input.correctiveCommitmentSupersession,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
-  startLiveIngestion(input.options.streamIngestionCoordinator, input.sessionId);
+  startTerminalLiveIngestion({
+    options: input.options,
+    sessionId: input.sessionId,
+    responseTo: input.responseTo,
+    terminalEntry: persistedAgentEntry,
+  });
 
   return {
     turn_id: input.turnId,
@@ -646,6 +737,8 @@ export async function suppressFromClosureLoopPhase(input: {
   turnInput: TurnPhaseInput;
   workingMemory: WorkingMemory;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
   perceptionMode: CognitiveMode;
@@ -656,12 +749,14 @@ export async function suppressFromClosureLoopPhase(input: {
     reason: input.reason,
     turnId: input.turnId,
     sourceStreamEntryId: input.persistedUserEntryId,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
     sessionId: input.sessionId,
   });
   workingMemory = input.options.discourseStateService.setStopState({
     workingMemory,
     provenance: "finalizer_no_output",
     sourceStreamEntryId: input.persistedUserEntryId,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
     reason: "Closure loop already named; suppressing another closure-only turn.",
     turnId: input.turnId,
     sessionId: input.sessionId,
@@ -691,6 +786,8 @@ export async function suppressFromClosureLoopPhase(input: {
         streamWriter: input.streamWriter,
         reason: "finalizer_no_output",
         userEntryId: input.persistedUserEntryId,
+        userEntryIds: input.sourceUserEntryIds,
+        responseTo: input.responseTo,
         turnId: input.turnId,
         audience: input.turnInput.audience,
       }),
@@ -701,10 +798,16 @@ export async function suppressFromClosureLoopPhase(input: {
     reason: "finalizer_no_output",
     markerEntryId: suppressionMarker.id,
   };
+  advanceChatResponseWatermark({
+    options: input.options,
+    sessionId: input.sessionId,
+    responseTo: input.responseTo,
+  });
   const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: suppressionActionResult.workingMemory,
     reason: "finalizer_no_output",
     sourceStreamEntryId: suppressionMarker.id,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,
     sessionId: input.sessionId,
   });
@@ -739,6 +842,14 @@ export async function suppressFromClosureLoopPhase(input: {
     sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
   });
+  if (input.responseTo !== undefined) {
+    startTerminalLiveIngestion({
+      options: input.options,
+      sessionId: input.sessionId,
+      responseTo: input.responseTo,
+      terminalEntry: suppressionMarker,
+    });
+  }
 
   return suppressedTurnPhaseResult({
     turnId: input.turnId,
@@ -766,6 +877,8 @@ export async function suppressFromGenerationGatePhase(input: {
   turnInput: TurnPhaseInput;
   workingMemory: WorkingMemory;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  responseTo?: StreamResponseTo;
   gateResult: Awaited<ReturnType<GenerationGate["evaluate"]>>;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
@@ -780,6 +893,7 @@ export async function suppressFromGenerationGatePhase(input: {
       workingMemory,
       provenance: "generation_gate",
       sourceStreamEntryId: input.persistedUserEntryId,
+      sourceStreamEntryIds: input.sourceUserEntryIds,
       reason: input.gateResult.explanation,
       turnId: input.turnId,
       sessionId: input.sessionId,
@@ -811,6 +925,8 @@ export async function suppressFromGenerationGatePhase(input: {
         streamWriter: input.streamWriter,
         reason: suppressionReason,
         userEntryId: input.persistedUserEntryId,
+        userEntryIds: input.sourceUserEntryIds,
+        responseTo: input.responseTo,
         turnId: input.turnId,
         audience: input.turnInput.audience,
       }),
@@ -821,10 +937,16 @@ export async function suppressFromGenerationGatePhase(input: {
     reason: suppressionReason,
     markerEntryId: suppressionMarker.id,
   };
+  advanceChatResponseWatermark({
+    options: input.options,
+    sessionId: input.sessionId,
+    responseTo: input.responseTo,
+  });
   const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: suppressionActionResult.workingMemory,
     reason: suppressionReason,
     sourceStreamEntryId: suppressionMarker.id,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,
     sessionId: input.sessionId,
   });
@@ -859,6 +981,14 @@ export async function suppressFromGenerationGatePhase(input: {
     sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
   });
+  if (input.responseTo !== undefined) {
+    startTerminalLiveIngestion({
+      options: input.options,
+      sessionId: input.sessionId,
+      responseTo: input.responseTo,
+      terminalEntry: suppressionMarker,
+    });
+  }
 
   return suppressedTurnPhaseResult({
     turnId: input.turnId,
@@ -887,6 +1017,8 @@ async function suppressFromActionPhase(input: {
   actionResult: Awaited<ReturnType<TurnActionCoordinator["run"]>>["actionResult"];
   actionEmission: Extract<PendingTurnEmission, { kind: "suppressed" }>;
   persistedAgentEntry: StreamEntry;
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
   perceptionMode: CognitiveMode;
@@ -910,6 +1042,7 @@ async function suppressFromActionPhase(input: {
     workingMemory: input.actionResult.workingMemory,
     reason: input.actionEmission.reason,
     sourceStreamEntryId: input.persistedAgentEntry.id,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,
     sessionId: input.sessionId,
   });
@@ -962,6 +1095,14 @@ async function suppressFromActionPhase(input: {
     sessionId: input.sessionId,
     turnCounter: actionLifecycleTurnCounter(input.turnInput, input.actionResult.workingMemory),
   });
+  if (input.responseTo !== undefined) {
+    startTerminalLiveIngestion({
+      options: input.options,
+      sessionId: input.sessionId,
+      responseTo: input.responseTo,
+      terminalEntry: input.persistedAgentEntry,
+    });
+  }
 
   return suppressedTurnPhaseResult({
     turnId: input.turnId,

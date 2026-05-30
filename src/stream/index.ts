@@ -4,12 +4,15 @@ export {
   STREAM_ENTRY_KINDS,
   STREAM_ENTRY_PERSISTENCE_CLASSES,
   isNarrativeStreamEntry,
+  streamCursorSchema,
   streamEntryInputSchema,
   streamEntryIdSchema,
   streamEntryEntityIdSchema,
   streamEntryKindSchema,
   streamEntryPersistenceClassSchema,
   streamEntrySchema,
+  streamResponseToSchema,
+  streamSourceMessageKeySchema,
   streamTurnStatusSchema,
   type SessionId,
   type StreamEntry,
@@ -17,6 +20,8 @@ export {
   type StreamEntryInput,
   type StreamEntryKind,
   type StreamEntryPersistenceClass,
+  type StreamResponseTo,
+  type StreamSourceMessageKey,
   type NarrativeStreamEntryKind,
   type StreamTurnStatus,
   type StreamIterateOptions,
@@ -34,6 +39,8 @@ export {
   StreamEntryIndexRepository,
   streamEntryIndexMigrations,
   type IndexedEntryFacts,
+  type LookupExactStreamBacklogResponseStampInput,
+  type LookupSessionStreamBacklogResponseStampsInput,
   type StreamEntryIndexRecord,
   type StreamEntryIndexRepositoryOptions,
 } from "./entry-index.js";
@@ -43,6 +50,7 @@ export {
   type StreamWatermark,
   type StreamWatermarkRepositoryOptions,
 } from "./watermark.js";
+export { streamCursorFromWatermark, streamCursorsEqual } from "./cursor.js";
 export {
   ABORTED_TURN_EVENT,
   QUARANTINED_USER_ENTRY_EVENT,

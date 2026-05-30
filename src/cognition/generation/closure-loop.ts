@@ -173,7 +173,23 @@ export function buildClosureLoopMessageWindow(input: {
   recentHistory: readonly RecencyMessage[];
   currentUserMessage: string;
   currentUserEntryId: StreamEntryId;
+  currentUserMessages?: readonly {
+    entryId: StreamEntryId;
+    content: string;
+    ts: number;
+  }[];
 }): ClosureLoopMessageForClassification[] {
+  const currentUserMessages =
+    input.currentUserMessages === undefined || input.currentUserMessages.length === 0
+      ? [
+          {
+            entryId: input.currentUserEntryId,
+            content: input.currentUserMessage,
+            ts: Number.MAX_SAFE_INTEGER,
+          },
+        ]
+      : input.currentUserMessages;
+
   return [
     ...input.recentHistory
       .filter((message) => message.kind !== "agent_observed")
@@ -187,13 +203,13 @@ export function buildClosureLoopMessageWindow(input: {
           ts: message.ts,
         }),
       ),
-    {
-      message_ref: input.currentUserEntryId,
-      role: "user",
-      content: input.currentUserMessage,
-      stream_entry_id: input.currentUserEntryId,
-      ts: Number.MAX_SAFE_INTEGER,
-    },
+    ...currentUserMessages.map((message) => ({
+      message_ref: message.entryId,
+      role: "user" as const,
+      content: message.content,
+      stream_entry_id: message.entryId,
+      ts: message.ts,
+    })),
   ];
 }
 
@@ -666,9 +682,14 @@ function summarizeClosureLoopResponseShape(response: LLMCompleteResult): JsonVal
 export function assessClosureLoopClassification(input: {
   classification: ClosureLoopClassification;
   suppliedMessages: readonly ClosureLoopMessageForClassification[];
-  currentUserRef: string;
+  currentUserRef?: string;
+  currentUserRefs?: readonly string[];
 }): ClosureLoopAssessment {
   const supplied = new Map(input.suppliedMessages.map((message) => [message.message_ref, message]));
+  const currentUserRefs = new Set(
+    input.currentUserRefs ??
+      [input.currentUserRef].flatMap((ref) => (ref === undefined ? [] : [ref])),
+  );
   const ordered = input.classification.messages
     .filter((message) => supplied.has(message.message_ref))
     .sort((left, right) => {
@@ -699,7 +720,14 @@ export function assessClosureLoopClassification(input: {
     pendingUserClosure = false;
   }
 
-  const currentUser = ordered.find((message) => message.message_ref === input.currentUserRef);
+  let currentUser: (typeof ordered)[number] | undefined;
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const message = ordered[index];
+    if (message !== undefined && currentUserRefs.has(message.message_ref)) {
+      currentUser = message;
+      break;
+    }
+  }
   const currentUserAct = currentUser?.role === "user" ? currentUser.act : null;
   const currentUserClosureShaped =
     currentUser?.role === "user" ? currentUser.is_closure_shaped : false;
@@ -740,12 +768,26 @@ export function assessClosureLoopClassification(input: {
 
 export function assessDegradedClosureLoopFallback(input: {
   suppliedMessages: readonly ClosureLoopMessageForClassification[];
-  currentUserRef: string;
+  currentUserRef?: string;
+  currentUserRefs?: readonly string[];
   priorClosureLoopActive: boolean;
 }): ClosureLoopAssessment {
-  const currentUser = input.suppliedMessages.find(
-    (message) => message.message_ref === input.currentUserRef && message.role === "user",
+  const currentUserRefs = new Set(
+    input.currentUserRefs ??
+      [input.currentUserRef].flatMap((ref) => (ref === undefined ? [] : [ref])),
   );
+  let currentUser: (typeof input.suppliedMessages)[number] | undefined;
+  for (let index = input.suppliedMessages.length - 1; index >= 0; index -= 1) {
+    const message = input.suppliedMessages[index];
+    if (
+      message !== undefined &&
+      currentUserRefs.has(message.message_ref) &&
+      message.role === "user"
+    ) {
+      currentUser = message;
+      break;
+    }
+  }
   const currentUserShort = (currentUser?.content.trim().length ?? Number.POSITIVE_INFINITY) < 80;
   const ambiguousClosureBeat = input.priorClosureLoopActive && currentUserShort;
   const sourceStreamEntryIds: StreamEntryId[] = [];

@@ -18,6 +18,7 @@ import type {
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 
 export type TurnActionStateServiceOptions = {
@@ -34,6 +35,8 @@ export type ExtractTurnActionStatesInput = {
   isUserTurn: boolean;
   userMessage: string;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
   sessionId?: SessionId | null;
@@ -50,6 +53,7 @@ export type CloseBorgSelfPerformedActionsInput = {
   turnId: string;
   userMessage: string;
   persistedUserEntryId: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   persistedAgentEntryId: StreamEntryId;
   agentResponse: string;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
@@ -71,7 +75,15 @@ export class TurnActionStateService {
   async extract(input: ExtractTurnActionStatesInput): Promise<ActionId[]> {
     const sessionId = input.sessionId ?? undefined;
 
-    if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+    const sourceUserEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? []
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
+    const currentUserStreamEntryId = input.persistedUserEntryId ?? sourceUserEntryIds[0];
+
+    if (!input.isUserTurn || currentUserStreamEntryId === undefined) {
       return [];
     }
 
@@ -126,12 +138,14 @@ export class TurnActionStateService {
     ]).slice(0, 80);
     const actionStateRecords = await actionStateExtractor.extract({
       userMessage: input.userMessage,
-      currentUserStreamEntryId: input.persistedUserEntryId,
+      currentUserStreamEntryId,
+      currentUserStreamEntryIds: sourceUserEntryIds,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
       sessionId: input.sessionId ?? null,
       speakerEntityId: input.speakerEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      senderAttribution: input.senderAttribution,
       goalId: input.goalId ?? null,
       openQuestionId: input.openQuestionId ?? null,
       turnCounter: input.turnCounter ?? null,
@@ -154,8 +168,12 @@ export class TurnActionStateService {
       return;
     }
 
+    const sourceUserEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
     const currentTurnBorgActions = activeBorgActions.filter((action) =>
-      action.provenance_stream_entry_ids.includes(input.persistedUserEntryId),
+      action.provenance_stream_entry_ids.some((entryId) => sourceUserEntryIds.includes(entryId)),
     );
 
     if (currentTurnBorgActions.length === 0 && input.currentTurnSharedStateEntries.length === 0) {
@@ -190,6 +208,7 @@ export class TurnActionStateService {
     await actionStateExtractor.extract({
       userMessage: input.userMessage,
       currentUserStreamEntryId: input.persistedUserEntryId,
+      currentUserStreamEntryIds: sourceUserEntryIds,
       currentAgentStreamEntryId: input.persistedAgentEntryId,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,

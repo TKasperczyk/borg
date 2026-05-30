@@ -38,7 +38,9 @@ function errorCode(error: unknown): unknown {
 }
 
 function isCommittedStreamIndexUpdateFailure(error: unknown): boolean {
-  return errorCode(error) === "STREAM_INDEX_UPDATE_FAILED";
+  const code = errorCode(error);
+
+  return code === "STREAM_INDEX_UPDATE_FAILED" || code === "STREAM_INDEX_POISONED";
 }
 
 function describeCaughtError(error: unknown): string {
@@ -717,6 +719,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     maintenance: {
       scheduler: deps.maintenanceScheduler,
       config: maintenanceConfigSnapshot,
+    },
+    inbox: {
+      catchUp: deps.chatResponseCatchUpWorker,
     },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),

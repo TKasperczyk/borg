@@ -1,6 +1,11 @@
 // Borg public facade: exposes stable APIs while setup details live in focused modules.
 
-import type { TurnInput, TurnResult } from "./cognition/index.js";
+import type {
+  BorgEnqueueMessageInput,
+  BorgEnqueueMessageResult,
+  TurnInput,
+  TurnResult,
+} from "./cognition/index.js";
 import { createBorgFacades } from "./borg/facade.js";
 import { closeBorgDependencies } from "./borg/lifecycle.js";
 import { openBorgDependencies } from "./borg/open.js";
@@ -19,6 +24,7 @@ export type {
   BorgEpisodeSearchOptions,
   BorgOpenOptions,
 } from "./borg/types.js";
+export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognition/index.js";
 
 /**
  * Public Borg library facade.
@@ -49,6 +55,7 @@ export class Borg {
   readonly dream: BorgFacades["dream"];
   readonly autonomy: BorgFacades["autonomy"];
   readonly maintenance: BorgFacades["maintenance"];
+  readonly inbox: BorgFacades["inbox"];
   readonly workmem: BorgFacades["workmem"];
   readonly prompts: BorgFacades["prompts"];
   readonly sessions: BorgFacades["sessions"];
@@ -77,6 +84,7 @@ export class Borg {
     this.dream = facades.dream;
     this.autonomy = facades.autonomy;
     this.maintenance = facades.maintenance;
+    this.inbox = facades.inbox;
     this.workmem = facades.workmem;
     this.prompts = facades.prompts;
     this.sessions = facades.sessions;
@@ -88,6 +96,13 @@ export class Borg {
    */
   turn(input: TurnInput): Promise<TurnResult> {
     return this.deps.turnOrchestrator.run(input);
+  }
+
+  /**
+   * Durably enqueue an inbound chat message without running a cognition turn.
+   */
+  enqueueMessage(input: BorgEnqueueMessageInput): Promise<BorgEnqueueMessageResult> {
+    return this.deps.messageEnqueuer.enqueueMessage(input);
   }
 
   /**

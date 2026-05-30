@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ABORTED_TURN_EVENT, StreamReader, StreamWriter } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId, type StreamEntryId } from "../../util/ids.js";
 
 import { TurnContextCompiler } from "./compiler.js";
 
@@ -79,6 +79,55 @@ describe("TurnContextCompiler", () => {
     ]);
     expect(window.latest_ts).toBe(1_030);
     expect(window.total_chars).toBeGreaterThan(0);
+  });
+
+  it("keeps normal-turn recency on the original unlimited tail path for large recent entries", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+    const largeUserMessage = "x".repeat(700 * 1024);
+
+    try {
+      await writer.append({ kind: "user_msg", content: largeUserMessage });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler({ maxChars: 1 }).compile(makeReader(dataDir));
+
+    expect(window.messages).toHaveLength(1);
+    expect(window.messages[0]?.content).toBe(largeUserMessage);
+  });
+
+  it("excludes a pending inbound batch and newer queued entries before recency compilation", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+    let oldestBatchEntryId: StreamEntryId | null = null;
+
+    try {
+      await writer.append({ kind: "user_msg", content: "prior user" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "prior assistant" });
+      clock.advance(10);
+      const firstBatch = await writer.append({ kind: "user_msg", content: "pending one" });
+      oldestBatchEntryId = firstBatch.id;
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "pending two" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "newer queued" });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir), {
+      beforeEntryIdExclusive: oldestBatchEntryId ?? undefined,
+    });
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      "prior user",
+      "prior assistant",
+    ]);
   });
 
   it("preserves user message content when a sender id is present", async () => {

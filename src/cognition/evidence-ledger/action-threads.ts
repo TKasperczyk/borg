@@ -301,10 +301,14 @@ export function isTerminalRenderedActionState(state: ActionState): boolean {
 function isCurrentTurnAction(
   action: ActionRecord,
   currentUserStreamEntryId: StreamEntryId | undefined,
+  currentUserStreamEntryIds: readonly StreamEntryId[] = [],
 ): boolean {
   return (
-    currentUserStreamEntryId !== undefined &&
-    action.provenance_stream_entry_ids.includes(currentUserStreamEntryId)
+    (currentUserStreamEntryId !== undefined &&
+      action.provenance_stream_entry_ids.includes(currentUserStreamEntryId)) ||
+    currentUserStreamEntryIds.some((entryId) =>
+      action.provenance_stream_entry_ids.includes(entryId),
+    )
   );
 }
 
@@ -332,6 +336,7 @@ function referencedWithinTurns(input: {
 export function actionSalienceClass(input: {
   thread: ActionThread;
   currentUserStreamEntryId?: StreamEntryId;
+  currentUserStreamEntryIds?: readonly StreamEntryId[];
   currentTurnCounter?: number;
 }): EvidenceLedgerActionSalienceClass | null {
   const action = input.thread.current;
@@ -341,7 +346,9 @@ export function actionSalienceClass(input: {
   }
 
   if (isTerminalRenderedActionState(action.state)) {
-    if (isCurrentTurnAction(action, input.currentUserStreamEntryId)) {
+    if (
+      isCurrentTurnAction(action, input.currentUserStreamEntryId, input.currentUserStreamEntryIds)
+    ) {
       return "completed_recent";
     }
 
@@ -355,7 +362,11 @@ export function actionSalienceClass(input: {
   }
 
   if (action.actor === "borg") {
-    return isCurrentTurnAction(action, input.currentUserStreamEntryId)
+    return isCurrentTurnAction(
+      action,
+      input.currentUserStreamEntryId,
+      input.currentUserStreamEntryIds,
+    )
       ? "borg_current_turn_action"
       : "borg_memory_tracking_action";
   }

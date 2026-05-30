@@ -14,6 +14,7 @@ export const RECENT_SUPPRESSIONS_LIMIT = 3;
 export type SetStopUntilSubstantiveContentInput = {
   provenance: DiscourseStopProvenance;
   sourceStreamEntryId?: StreamEntryId;
+  sourceStreamEntryIds?: readonly StreamEntryId[];
   reason: string;
   sinceTurn: number;
 };
@@ -31,6 +32,7 @@ export type SetClosureLoopDetectedInput = {
 
 export type MarkClosureLoopNamedInput = {
   sourceStreamEntryId?: StreamEntryId;
+  sourceStreamEntryIds?: readonly StreamEntryId[];
   reason: string;
   turn: number;
 };
@@ -46,6 +48,7 @@ export type AppendRecentSuppressionInput = {
   reason: string;
   ts: number;
   sourceStreamEntryId?: StreamEntryId;
+  sourceStreamEntryIds?: readonly StreamEntryId[];
 };
 
 function baseDiscourseState(workingMemory: WorkingMemory): WorkingMemory["discourse_state"] {
@@ -67,6 +70,9 @@ export function setStopUntilSubstantiveContent(
     ...(input.sourceStreamEntryId === undefined
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
+    ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+      ? {}
+      : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
   };
 
   return {
@@ -158,6 +164,9 @@ export function appendRecentSuppression(
     ...(input.sourceStreamEntryId === undefined
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
+    ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+      ? {}
+      : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
   };
   const next = capNewest([...(state.recent_suppressions ?? []), entry], RECENT_SUPPRESSIONS_LIMIT);
 
@@ -181,9 +190,11 @@ export function markClosureLoopNamed(
   }
 
   const sourceStreamEntryIds =
-    input.sourceStreamEntryId === undefined
-      ? active.source_stream_entry_ids
-      : [...active.source_stream_entry_ids, input.sourceStreamEntryId];
+    input.sourceStreamEntryIds !== undefined && input.sourceStreamEntryIds.length > 0
+      ? [...active.source_stream_entry_ids, ...input.sourceStreamEntryIds]
+      : input.sourceStreamEntryId === undefined
+        ? active.source_stream_entry_ids
+        : [...active.source_stream_entry_ids, input.sourceStreamEntryId];
   const state: ClosureLoopState = {
     status: "named",
     source_stream_entry_ids: sourceStreamEntryIds,

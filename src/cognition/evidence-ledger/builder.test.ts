@@ -21,6 +21,7 @@ import {
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import { renderInboundBatch, type HydratedInboundMessage } from "../turn-input.js";
 import {
   createEpisodeFixture,
   createRetrievalScoreFixture,
@@ -3613,6 +3614,85 @@ describe("EvidenceLedgerBuilder", () => {
 
     expect(transcriptEntry).toBeDefined();
     expect(retrievedEntry).toBeUndefined();
+  });
+
+  it("excludes all catch-up batch source ids from transcript duplication", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const priorUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "Earlier context remains transcript evidence.",
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: "Earlier assistant context remains transcript evidence.",
+    });
+    const batchEntryA = await writer.append({
+      kind: "user_msg",
+      content: "First pending batch message.",
+    });
+    const batchEntryB = await writer.append({
+      kind: "user_msg",
+      content: "Second pending batch message.",
+    });
+    const batchMessages: readonly HydratedInboundMessage[] = [batchEntryA, batchEntryB].map(
+      (entry) => ({
+        id: entry.id,
+        session_id: entry.session_id,
+        entry_index: entry.entry_index ?? 0,
+        timestamp: entry.timestamp,
+        kind: "user_msg" as const,
+        content: String(entry.content),
+        sender_entity_id: entry.sender_entity_id,
+      }),
+    );
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: renderInboundBatch({ entries: batchMessages }),
+      currentUserEntry: batchEntryA,
+      currentUserEntries: [batchEntryA, batchEntryB],
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    const currentUserMessage = ledger.sections.find(
+      (section) => section.id === "current_user_message",
+    )?.entries[0];
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+
+    expect(currentUserMessage?.text).toContain("First pending batch message.");
+    expect(currentUserMessage?.text).toContain("Second pending batch message.");
+    expect(transcriptEntries.map((entry) => entry.id)).toEqual([
+      `current_session_stream:${priorUserEntry.id}`,
+      `current_session_stream:${assistantEntry.id}`,
+    ]);
+    expect(
+      transcriptEntries.some(
+        (entry) =>
+          entry.id === `current_session_stream:${batchEntryA.id}` ||
+          entry.id === `current_session_stream:${batchEntryB.id}`,
+      ),
+    ).toBe(false);
   });
 
   it("keeps retrieved raw stream evidence whose stream id is not in the transcript", async () => {

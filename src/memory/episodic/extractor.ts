@@ -125,6 +125,7 @@ export type ExtractFromStreamOptions = {
   sinceCursor?: StreamCursor;
   untilTs?: number;
   untilCursor?: StreamCursor;
+  entryIds?: readonly StreamEntryId[];
 };
 
 export type ExtractFromStreamResult = {
@@ -178,18 +179,31 @@ function isEpisodicSourceEntry(entry: StreamEntry): boolean {
   return isNarrativeStreamEntry(entry);
 }
 
-function suppressedUserEntryId(entry: StreamEntry): string | null {
+function suppressedUserEntryIdsFromMarker(entry: StreamEntry): string[] {
   if (entry.kind !== "agent_suppressed") {
-    return null;
+    return [];
   }
 
   if (entry.content === null || typeof entry.content !== "object" || Array.isArray(entry.content)) {
-    return null;
+    return [];
   }
 
-  const userEntryId = (entry.content as { user_entry_id?: unknown }).user_entry_id;
+  const content = entry.content as { user_entry_id?: unknown; user_entry_ids?: unknown };
+  const userEntryIds = new Set<string>();
 
-  return typeof userEntryId === "string" && userEntryId.length > 0 ? userEntryId : null;
+  if (typeof content.user_entry_id === "string" && content.user_entry_id.length > 0) {
+    userEntryIds.add(content.user_entry_id);
+  }
+
+  if (Array.isArray(content.user_entry_ids)) {
+    for (const userEntryId of content.user_entry_ids) {
+      if (typeof userEntryId === "string" && userEntryId.length > 0) {
+        userEntryIds.add(userEntryId);
+      }
+    }
+  }
+
+  return [...userEntryIds];
 }
 
 function streamOrderComparator(
@@ -921,6 +935,10 @@ export class EpisodicExtractor {
     });
     const streamEntries: StreamEntry[] = [];
     const contextEntries: StreamEntry[] = [];
+    const explicitEntryIds =
+      extractOptions.entryIds === undefined
+        ? null
+        : new Set<StreamEntryId>(extractOptions.entryIds);
 
     for await (const entry of reader.iterate({
       kinds: EPISODIC_CONTEXT_STREAM_KINDS,
@@ -929,19 +947,25 @@ export class EpisodicExtractor {
       untilTs: extractOptions.untilTs,
       untilCursor: extractOptions.untilCursor,
     })) {
+      if (explicitEntryIds !== null && !explicitEntryIds.has(entry.id)) {
+        continue;
+      }
+
       contextEntries.push(entry);
 
       if (isEpisodicSourceEntry(entry)) {
         streamEntries.push(entry);
+      }
+
+      if (explicitEntryIds !== null && contextEntries.length >= explicitEntryIds.size) {
+        break;
       }
     }
 
     const activeContextEntries = filterActiveStreamEntries(contextEntries);
     const activeStreamEntryIds = new Set(activeContextEntries.map((entry) => entry.id));
     const suppressedUserEntryIds = new Set(
-      activeContextEntries
-        .map((entry) => suppressedUserEntryId(entry))
-        .filter((entryId): entryId is string => entryId !== null),
+      activeContextEntries.flatMap((entry) => suppressedUserEntryIdsFromMarker(entry)),
     );
     const extractableStreamEntries = streamEntries
       .filter((entry) => activeStreamEntryIds.has(entry.id))

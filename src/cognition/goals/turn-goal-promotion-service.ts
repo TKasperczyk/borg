@@ -55,6 +55,7 @@ export type ExtractTurnGoalPromotionsInput = {
   temporalCue: TemporalCue | null;
   activeGoals: readonly GoalRecord[];
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
 };
 
@@ -114,6 +115,7 @@ export class TurnGoalPromotionService {
       audienceEntityId: input.audienceEntityId,
       ownerEntityId: input.ownerEntityId ?? null,
       persistedUserEntryId: input.persistedUserEntryId,
+      sourceUserEntryIds: input.sourceUserEntryIds,
       turnId: input.turnId,
       sessionId: input.sessionId,
       onHookFailure: input.onHookFailure,
@@ -125,6 +127,7 @@ export class TurnGoalPromotionService {
     audienceEntityId: EntityId | null;
     ownerEntityId: EntityId | null;
     persistedUserEntryId?: StreamEntryId;
+    sourceUserEntryIds?: readonly StreamEntryId[];
     turnId: string;
     sessionId?: SessionId;
     onHookFailure: (
@@ -134,7 +137,11 @@ export class TurnGoalPromotionService {
     ) => Promise<void>;
   }): Promise<PersistedGoalPromotionIds> {
     const sourceStreamEntryIds =
-      input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId];
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? undefined
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
     const persisted: PersistedGoalPromotionIds = {
       goalIds: [],
       executiveStepIds: [],

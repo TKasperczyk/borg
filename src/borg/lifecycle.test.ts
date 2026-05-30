@@ -24,6 +24,9 @@ describe("borg lifecycle", () => {
       maintenanceScheduler: {
         stop: vi.fn().mockResolvedValue(undefined),
       },
+      chatResponseCatchUpWorker: {
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
       reviewQueueRepository: {
         flushEnqueueHooks,
       },
@@ -45,6 +48,7 @@ describe("borg lifecycle", () => {
   it("attempts both scheduler stops when one stop throws", async () => {
     const autonomyError = new Error("autonomy stop failed");
     const maintenanceStop = vi.fn().mockResolvedValue(undefined);
+    const catchUpStop = vi.fn().mockResolvedValue(undefined);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const deps = {
@@ -55,6 +59,9 @@ describe("borg lifecycle", () => {
       },
       maintenanceScheduler: {
         stop: maintenanceStop,
+      },
+      chatResponseCatchUpWorker: {
+        stop: catchUpStop,
       },
       reviewQueueRepository: {
         flushEnqueueHooks: vi.fn().mockResolvedValue(undefined),
@@ -69,6 +76,7 @@ describe("borg lifecycle", () => {
 
     await expect(closeBorgDependencies(deps)).rejects.toThrow(AggregateError);
     expect(maintenanceStop).toHaveBeenCalledWith({ graceful: true });
+    expect(catchUpStop).toHaveBeenCalledWith({ graceful: true });
     expect(consoleError).toHaveBeenCalledWith("Failed to close autonomy scheduler", autonomyError);
   });
 
@@ -81,6 +89,9 @@ describe("borg lifecycle", () => {
         stop: vi.fn().mockResolvedValue(undefined),
       },
       maintenanceScheduler: {
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+      chatResponseCatchUpWorker: {
         stop: vi.fn().mockResolvedValue(undefined),
       },
       reviewQueueRepository: {

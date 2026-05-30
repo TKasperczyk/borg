@@ -4,6 +4,7 @@ import {
   isNarrativeStreamEntry,
   type StreamEntry,
 } from "../../stream/index.js";
+import type { StreamEntryId } from "../../util/ids.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 
@@ -26,11 +27,18 @@ export type TurnContextCompilerOptions = {
    * see scheduler-generated self-conversation in their dialogue context.
    */
   includeSelfTurns?: boolean;
+  /**
+   * Exclude this entry and anything newer from the recency window. Used by
+   * catch-up turns where pre-persisted user messages are the current input,
+   * not prior dialogue context.
+   */
+  beforeEntryIdExclusive?: StreamEntryId;
 };
 
 const DEFAULT_MAX_MESSAGES = 16;
 const DEFAULT_MAX_CHARS = 24_000;
 const OBSERVATION_REASON_MAX_CHARS = 160;
+const BOUNDARY_REVERSE_SCAN_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * Number of trailing stream entries to read in order to find `maxMessages`
@@ -185,11 +193,31 @@ export class TurnContextCompiler {
 
   compile(
     streamReader: StreamReader,
-    options: Pick<TurnContextCompilerOptions, "includeSelfTurns"> = {},
+    options: Pick<TurnContextCompilerOptions, "includeSelfTurns" | "beforeEntryIdExclusive"> = {},
   ): RecencyWindow {
     const includeSelfTurns = options.includeSelfTurns ?? this.includeSelfTurns;
     const tailSize = Math.max(this.maxMessages * TAIL_MULTIPLIER, this.maxMessages);
-    const recent = filterActiveStreamEntries(streamReader.tail(tailSize));
+    let beforeBoundaryReached = options.beforeEntryIdExclusive === undefined;
+    const recentEntries =
+      options.beforeEntryIdExclusive === undefined
+        ? streamReader.tail(tailSize)
+        : streamReader.scanReverse({
+            maxEntries: tailSize,
+            maxBytes: BOUNDARY_REVERSE_SCAN_MAX_BYTES,
+            budgetFilter: () => beforeBoundaryReached,
+            filter: (entry) => {
+              if (beforeBoundaryReached) {
+                return true;
+              }
+
+              if (entry.id === options.beforeEntryIdExclusive) {
+                beforeBoundaryReached = true;
+              }
+
+              return false;
+            },
+          }).entries;
+    const recent = filterActiveStreamEntries(recentEntries);
 
     // Keep only conversation entries; preserve stream order.
     const conversational: Array<{

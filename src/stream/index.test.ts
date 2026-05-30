@@ -172,6 +172,61 @@ describe("stream", () => {
     expect(entry?.reply_target_entity_id).toBe(replyTargetEntityId);
   });
 
+  it("persists and reads optional source message and response stamps", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const sourceMessageKey = {
+      source_type: "demo",
+      source_external_id: "conversation-1",
+      external_message_id: "message-1",
+    };
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      const sourceEntry = await writer.append({
+        kind: "user_msg",
+        content: "source keyed",
+        source_message_key: sourceMessageKey,
+      });
+      const responseTo = {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: sourceEntry.timestamp,
+          entryId: sourceEntry.id,
+        },
+        source_entry_ids: [sourceEntry.id],
+        count: 1,
+      };
+
+      await writer.append({
+        kind: "agent_msg",
+        content: "processed backlog",
+        response_to: responseTo,
+      });
+      await writer.append({
+        kind: "thought",
+        content: { note: "ordinary" },
+      });
+
+      const entries = new StreamReader({
+        dataDir: tempDir,
+      }).tail(3);
+
+      expect(entries[0]?.source_message_key).toEqual(sourceMessageKey);
+      expect(entries[0]).not.toHaveProperty("response_to");
+      expect(entries[1]?.response_to).toEqual(responseTo);
+      expect(entries[1]).not.toHaveProperty("source_message_key");
+      expect(entries[2]).not.toHaveProperty("source_message_key");
+      expect(entries[2]).not.toHaveProperty("response_to");
+    } finally {
+      writer.close();
+    }
+  });
+
   it("parses legacy stream entries without sender ids as null", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -936,21 +991,27 @@ describe("stream", () => {
     });
   });
 
-  it("surfaces stream entry index update failures after a committed append", async () => {
+  it("poisons the session when a committed append cannot repair the index", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const logger = {
       error: vi.fn(),
     };
     const indexError = new Error("index is unavailable");
+    const markPoisoned = vi.fn();
     const writer = new StreamWriter({
       dataDir: tempDir,
       clock: new ManualClock(1),
       logger,
       entryIndex: {
+        isPoisoned: vi.fn(() => false),
+        markPoisoned,
         nextEntryIndex: vi.fn(() => 0),
         recordEntry: vi.fn(() => {
           throw indexError;
+        }),
+        backfillSession: vi.fn(() => {
+          throw new Error("backfill is unavailable");
         }),
       } as never,
     });
@@ -961,7 +1022,7 @@ describe("stream", () => {
         content: "committed before index failure",
       }),
     ).rejects.toMatchObject({
-      code: "STREAM_INDEX_UPDATE_FAILED",
+      code: "STREAM_INDEX_POISONED",
     });
 
     expect(logger.error).toHaveBeenCalledWith(
@@ -970,6 +1031,16 @@ describe("stream", () => {
         sessionId: DEFAULT_SESSION_ID,
         entryIds: [expect.stringMatching(/^strm_/)],
         cause: "index is unavailable",
+      }),
+    );
+    expect(markPoisoned).toHaveBeenCalledWith(DEFAULT_SESSION_ID);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Failed to repair stream entry index after committed append",
+      expect.objectContaining({
+        sessionId: DEFAULT_SESSION_ID,
+        entryIds: [expect.stringMatching(/^strm_/)],
+        updateCause: "index is unavailable",
+        repairCause: "backfill is unavailable",
       }),
     );
     expect(new StreamReader({ dataDir: tempDir }).tail(1)).toMatchObject([

@@ -54,6 +54,7 @@ export type RunTurnPostGenerationGuardInput = {
   response: string;
   sessionId: SessionId;
   persistedUserEntry?: StreamEntry;
+  persistedUserEntries?: readonly StreamEntry[];
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
   closureLoop: ClosureLoopState | null;
@@ -84,6 +85,7 @@ function collectInternalIdentifiers(input: {
   turnId: string;
   sessionId: SessionId;
   persistedUserEntry?: StreamEntry;
+  persistedUserEntries?: readonly StreamEntry[];
   currentSessionStreamEntries: readonly StreamEntry[];
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
@@ -101,6 +103,11 @@ function collectInternalIdentifiers(input: {
   addInternalIdentifier(identifiers, input.sessionId);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.id);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.session_id);
+  for (const entry of input.persistedUserEntries ?? []) {
+    addInternalIdentifier(identifiers, entry.id);
+    addInternalIdentifier(identifiers, entry.session_id);
+    addInternalIdentifier(identifiers, entry.sender_entity_id);
+  }
   addInternalIdentifier(identifiers, input.audienceEntityId);
   for (const entry of input.currentSessionStreamEntries) {
     addInternalIdentifier(identifiers, entry.id);
@@ -249,6 +256,7 @@ export class TurnPostGenerationGuardRunner {
         turnId: input.turnId,
         sessionId: input.sessionId,
         persistedUserEntry: input.persistedUserEntry,
+        persistedUserEntries: input.persistedUserEntries,
         currentSessionStreamEntries,
         retrievedEpisodes: input.retrievedEpisodes,
         activeCommitments: input.activeCommitments,

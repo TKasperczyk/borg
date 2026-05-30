@@ -185,6 +185,7 @@ export type TurnEmission =
 export type AgentSuppressedStreamContent = {
   reason: GenerationSuppressionReason;
   user_entry_id?: StreamEntryId;
+  user_entry_ids?: StreamEntryId[];
   turn_id?: string;
   no_output_categories?: FinalizerNoOutputCategory[];
   primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
@@ -194,6 +195,7 @@ export type AgentSuppressedStreamContent = {
 export type AgentObservedStreamContent = {
   reason: string;
   user_entry_id?: StreamEntryId;
+  user_entry_ids?: StreamEntryId[];
   turn_id?: string;
 };
 

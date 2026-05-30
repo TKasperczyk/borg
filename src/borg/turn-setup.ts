@@ -1,6 +1,9 @@
 // Wires the per-turn cognitive orchestrator and its session-scoped dependencies.
 
-import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
+import type {
+  ChatResponseWatermarkCoordinator,
+  StreamIngestionCoordinator,
+} from "../cognition/ingestion/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
@@ -80,6 +83,7 @@ export type BuildTurnOrchestratorOptions = {
   toolDispatcher: ToolDispatcher;
   sessionLock: SessionLock;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
   outboundSourceTypes?: readonly SessionSourceType[];
@@ -155,6 +159,9 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.streamIngestionCoordinator === undefined
       ? {}
       : { streamIngestionCoordinator: options.streamIngestionCoordinator }),
+    ...(options.chatResponseWatermarkCoordinator === undefined
+      ? {}
+      : { chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator }),
     ...(options.outboundDelivery === undefined
       ? {}
       : { outboundDelivery: options.outboundDelivery }),

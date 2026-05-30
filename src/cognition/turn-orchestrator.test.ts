@@ -27,6 +27,7 @@ import {
 } from "./generation/closure-loop.js";
 import { CLOSURE_RESPONSE_AUDIT_TOOL_NAME } from "./generation/closure-pressure-guard.js";
 import { setClosureLoopDetected } from "./generation/discourse-state.js";
+import type { TurnOrchestratorInput } from "./turn-input.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import {
   createTestConfig,
@@ -34,7 +35,7 @@ import {
   type DeepPartial,
 } from "../offline/test-support.js";
 import type { Config } from "../config/index.js";
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import { StreamReader, StreamWriter, type StreamEntry } from "../stream/index.js";
 import {
   DEFAULT_SESSION_ID,
   createEpisodeId,
@@ -44,6 +45,8 @@ import {
   type EntityId,
   type EpisodeId,
 } from "../util/ids.js";
+import { CognitionError, SessionBusyError } from "../util/errors.js";
+import type { SessionLock } from "./session-lock.js";
 import type { IntentRecord } from "./types.js";
 
 type TraceEvent = {
@@ -77,6 +80,7 @@ async function openTestBorg(
     env?: NodeJS.ProcessEnv;
     configOverrides?: DeepPartial<Config>;
     outboundConnectors?: BorgOpenOptions["outboundConnectors"];
+    liveExtraction?: boolean;
   } = {},
 ) {
   const configOverrides = options.configOverrides ?? {};
@@ -126,7 +130,7 @@ async function openTestBorg(
     llmClient: llm,
     env: options.env,
     tracerPath: options.tracerPath,
-    liveExtraction: false,
+    liveExtraction: options.liveExtraction ?? false,
     outboundConnectors: options.outboundConnectors,
   });
 }
@@ -899,6 +903,18 @@ function simpleSuccessfulTurnResponses(finalizerText: string) {
   ];
 }
 
+function inboundBatchEntryFromStream(entry: StreamEntry) {
+  if (entry.kind !== "user_msg" || typeof entry.content !== "string") {
+    throw new Error("Expected text user_msg entry");
+  }
+
+  if (entry.entry_index === undefined) {
+    throw new Error("Expected indexed stream entry");
+  }
+
+  return entry;
+}
+
 async function removeTempDir(path: string): Promise<void> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -915,6 +931,1330 @@ async function removeTempDir(path: string): Promise<void> {
     }
   }
 }
+
+async function expectCognitionErrorCode(task: Promise<unknown>, code: string): Promise<void> {
+  let thrown: unknown;
+
+  try {
+    await task;
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(CognitionError);
+  expect((thrown as CognitionError).code).toBe(code);
+}
+
+async function expectSessionBusyErrorCode(task: Promise<unknown>, code: string): Promise<void> {
+  let thrown: unknown;
+
+  try {
+    await task;
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(SessionBusyError);
+  expect((thrown as SessionBusyError).code).toBe(code);
+}
+
+function getSessionLock(borg: Borg): SessionLock {
+  const internal = borg as unknown as {
+    deps: {
+      turnOrchestrator: {
+        sessionLock: SessionLock;
+      };
+    };
+  };
+
+  return internal.deps.turnOrchestrator.sessionLock;
+}
+
+function runInternalTurn(borg: Borg, input: TurnOrchestratorInput): ReturnType<Borg["turn"]> {
+  const internal = borg as unknown as {
+    deps: {
+      turnOrchestrator: {
+        run(input: TurnOrchestratorInput): ReturnType<Borg["turn"]>;
+      };
+    };
+  };
+
+  return internal.deps.turnOrchestrator.run(input);
+}
+
+describe("TurnOrchestrator session lock mode", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  it("uses blocking acquisition for normal user turns without lockMode", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-user-block-lock-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("User turn used blocking lock."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire");
+
+    try {
+      const sessionId = createSessionId();
+
+      await borg.turn({
+        sessionId,
+        userMessage: "normal user lock mode turn",
+      });
+
+      expect(acquireSpy).toHaveBeenCalledTimes(1);
+      expect(acquireSpy).toHaveBeenCalledWith(sessionId);
+      expect(tryAcquireSpy).not.toHaveBeenCalled();
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("uses try acquisition for autonomous turns without lockMode", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomous-try-lock-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_250);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createEmitAnswerResponse("Autonomous turn used try lock."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire");
+
+    try {
+      const sessionId = createSessionId();
+
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+
+      await borg.turn({
+        sessionId,
+        userMessage: "Review the planning room state.",
+        audience: "Planning Room",
+        origin: "autonomous",
+        stakes: "low",
+      });
+
+      expect(tryAcquireSpy).toHaveBeenCalledTimes(1);
+      expect(tryAcquireSpy).toHaveBeenCalledWith(sessionId);
+      expect(acquireSpy).not.toHaveBeenCalled();
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("surfaces failed try lockMode acquisition as SESSION_TURN_BUSY", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-try-lock-busy-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_500);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire").mockResolvedValue(null);
+
+    try {
+      const sessionId = createSessionId();
+
+      await expectSessionBusyErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          lockMode: "try",
+          userMessage: "busy try lock turn",
+        }),
+        "SESSION_TURN_BUSY",
+      );
+
+      expect(tryAcquireSpy).toHaveBeenCalledTimes(1);
+      expect(tryAcquireSpy).toHaveBeenCalledWith(sessionId);
+      expect(acquireSpy).not.toHaveBeenCalled();
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("passes explicit timeout lockMode through blocking acquisition", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-timeout-lock-mode-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_750);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Timed lock turn."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire");
+
+    try {
+      const sessionId = createSessionId();
+
+      await runInternalTurn(borg, {
+        sessionId,
+        lockMode: { timeoutMs: 250 },
+        userMessage: "timed lock turn",
+      });
+
+      expect(acquireSpy).toHaveBeenCalledTimes(1);
+      expect(acquireSpy).toHaveBeenCalledWith(sessionId, { timeoutMs: 250 });
+      expect(tryAcquireSpy).not.toHaveBeenCalled();
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+});
+
+describe("TurnOrchestrator inbound batch catch-up", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  async function enqueueBatch(
+    borg: Borg,
+    clock: ManualClock,
+    sessionId: ReturnType<typeof createSessionId>,
+  ) {
+    const senderEntityId = borg.entities.resolve("Batch Sender");
+    const session = {
+      session_id: sessionId,
+      source_type: "demo" as const,
+      source_external_id: "catch-up-thread",
+      label: "Catch-up Thread",
+      audience_label: "Catch-up Thread",
+      conversation_kind: "thread" as const,
+    };
+
+    await borg.enqueueMessage({
+      session,
+      userMessage: "first pending message",
+      senderEntityId,
+      sourceMessageKey: {
+        source_type: "demo",
+        source_external_id: "catch-up-thread",
+        external_message_id: "m1",
+      },
+      arrivedAt: clock.now(),
+    });
+    clock.advance(10);
+    await borg.enqueueMessage({
+      session,
+      userMessage: "second pending message",
+      senderEntityId,
+      sourceMessageKey: {
+        source_type: "demo",
+        source_external_id: "catch-up-thread",
+        external_message_id: "m2",
+      },
+      arrivedAt: clock.now(),
+    });
+
+    return borg.stream
+      .tail(10, { session: sessionId })
+      .filter((entry): entry is StreamEntry & { kind: "user_msg" } => entry.kind === "user_msg")
+      .map(inboundBatchEntryFromStream);
+  }
+
+  it("uses try acquisition for user-origin catch-up when lockMode requests it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-try-lock-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_500);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Caught up with try lock."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire");
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await expect(
+        runInternalTurn(borg, {
+          sessionId,
+          lockMode: "try",
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: entries.map((entry) => entry.id),
+          },
+        }),
+      ).resolves.toMatchObject({
+        response: "Caught up with try lock.",
+      });
+
+      const tail = borg.stream.tail(20, { session: sessionId });
+      const agentEntry = tail.find((entry) => entry.kind === "agent_msg");
+
+      expect(tryAcquireSpy).toHaveBeenCalledTimes(1);
+      expect(tryAcquireSpy).toHaveBeenCalledWith(sessionId);
+      expect(acquireSpy).not.toHaveBeenCalled();
+      expect(agentEntry?.response_to).toMatchObject({
+        kind: "stream_backlog",
+        source_entry_ids: entries.map((entry) => entry.id),
+        count: 2,
+      });
+      expect(llm.requests.map((request) => request.budget)).toContain("action-state-extractor");
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("uses blocking acquisition for catch-up batches without lockMode", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-block-lock-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_750);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Caught up with block lock."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const sessionLock = getSessionLock(borg);
+    const acquireSpy = vi.spyOn(sessionLock, "acquire");
+    const tryAcquireSpy = vi.spyOn(sessionLock, "tryAcquire");
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      expect(acquireSpy).toHaveBeenCalledTimes(1);
+      expect(acquireSpy).toHaveBeenCalledWith(sessionId);
+      expect(tryAcquireSpy).not.toHaveBeenCalled();
+    } finally {
+      acquireSpy.mockRestore();
+      tryAcquireSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("rejects inbound batches that use autonomous origin to request try behavior", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-autonomous-origin-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_900);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          origin: "autonomous",
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: entries.map((entry) => entry.id),
+          },
+        }),
+        "INBOUND_BATCH_REQUIRES_USER_ORIGIN",
+      );
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("runs a catch-up turn without duplicating user_msg and stamps agent_msg response_to", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Caught up."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+      const internal = borg as unknown as {
+        deps: Pick<BorgDependencies, "chatResponseWatermarkCoordinator">;
+      };
+      const originalAdvance = internal.deps.chatResponseWatermarkCoordinator.advanceThrough.bind(
+        internal.deps.chatResponseWatermarkCoordinator,
+      );
+      const advanceCalls: unknown[] = [];
+
+      internal.deps.chatResponseWatermarkCoordinator.advanceThrough = (
+        advanceSessionId,
+        cursor,
+      ) => {
+        expect(
+          borg.stream
+            .tail(10, { session: advanceSessionId })
+            .some((entry) => entry.kind === "agent_msg"),
+        ).toBe(true);
+        advanceCalls.push(cursor);
+        return originalAdvance(advanceSessionId, cursor);
+      };
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const tail = borg.stream.tail(20, { session: sessionId });
+      const userEntries = tail.filter((entry) => entry.kind === "user_msg");
+      const agentEntry = tail.find((entry) => entry.kind === "agent_msg");
+      const responseTo = {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: entries[1]!.timestamp,
+          entryId: entries[1]!.id,
+        },
+        source_entry_ids: entries.map((entry) => entry.id),
+        count: 2,
+      };
+      const finalizerPrompt = requestTextMessages(firstFinalizerRequest(llm.requests)).join("\n");
+      const reflectionPayload = parseReflectionPayload(findReflectionRequest(llm));
+
+      expect(userEntries.map((entry) => entry.id)).toEqual(entries.map((entry) => entry.id));
+      expect(agentEntry?.response_to).toEqual(responseTo);
+      expect(advanceCalls).toEqual([responseTo.through_cursor_inclusive]);
+      expect(internal.deps.chatResponseWatermarkCoordinator.getWatermark(sessionId)).toEqual(
+        responseTo.through_cursor_inclusive,
+      );
+      expect(finalizerPrompt.indexOf("first pending message")).toBeLessThan(
+        finalizerPrompt.indexOf("second pending message"),
+      );
+      expect(finalizerPrompt).toContain(`stream_entry_id="${entries[0]!.id}"`);
+      expect(finalizerPrompt).toContain('sender_display_name="Batch Sender"');
+      expect(reflectionPayload.current_turn_stream_entry_ids).toEqual([
+        entries[0]!.id,
+        entries[1]!.id,
+        agentEntry?.id,
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not request the chat-response clamp for normal pre-turn catch-up", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-normal-catchup-no-clamp-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_302_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Normal turn."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, undefined, {
+      liveExtraction: true,
+    });
+
+    try {
+      const sessionId = createSessionId();
+      const internal = borg as unknown as {
+        deps: Pick<BorgDependencies, "streamIngestionCoordinator">;
+      };
+      const catchUp = vi.fn(async () => ({
+        ran: false,
+        processedEntries: 0,
+      }));
+      const ingest = vi.fn(async () => ({
+        ran: false,
+        processedEntries: 0,
+      }));
+
+      if (internal.deps.streamIngestionCoordinator === undefined) {
+        throw new Error("Expected live extraction coordinator");
+      }
+
+      internal.deps.streamIngestionCoordinator.catchUp = catchUp as never;
+      internal.deps.streamIngestionCoordinator.ingest = ingest as never;
+
+      await borg.turn({
+        sessionId,
+        userMessage: "normal turn message",
+      });
+
+      expect(catchUp).toHaveBeenCalledTimes(1);
+      expect(catchUp).toHaveBeenCalledWith(sessionId, {
+        maxEntries: expect.any(Number),
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps post-batch queued user_msg entries out of the catch-up live ingestion window", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-interleave-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_305_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Caught up."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, undefined, {
+      liveExtraction: true,
+    });
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+      const senderEntityId = borg.entities.resolve("Batch Sender");
+      const session = {
+        session_id: sessionId,
+        source_type: "demo" as const,
+        source_external_id: "catch-up-thread",
+        label: "Catch-up Thread",
+        audience_label: "Catch-up Thread",
+        conversation_kind: "thread" as const,
+      };
+      clock.advance(10);
+      const interleaved = await borg.enqueueMessage({
+        session,
+        userMessage: "third pending message",
+        senderEntityId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: "catch-up-thread",
+          external_message_id: "m3",
+        },
+        arrivedAt: clock.now(),
+      });
+      const internal = borg as unknown as {
+        deps: Pick<
+          BorgDependencies,
+          "chatResponseWatermarkCoordinator" | "streamIngestionCoordinator"
+        >;
+      };
+      const ingest = vi.fn(async (_sessionId: unknown, _options: unknown) => ({
+        ran: true,
+        processedEntries: 3,
+      }));
+
+      if (internal.deps.streamIngestionCoordinator === undefined) {
+        throw new Error("Expected live extraction coordinator");
+      }
+
+      const catchUp = vi.fn(async () => ({
+        ran: false,
+        processedEntries: 0,
+      }));
+      internal.deps.streamIngestionCoordinator.catchUp = catchUp as never;
+      internal.deps.streamIngestionCoordinator.ingest = ingest as never;
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const tail = borg.stream.tail(20, { session: sessionId });
+      const agentEntry = tail.find((entry) => entry.kind === "agent_msg");
+      const responseTo = {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: entries[1]!.timestamp,
+          entryId: entries[1]!.id,
+        },
+        source_entry_ids: entries.map((entry) => entry.id),
+        count: 2,
+      };
+
+      expect(agentEntry).toBeDefined();
+      expect(catchUp).toHaveBeenCalledWith(sessionId, {
+        maxEntries: expect.any(Number),
+        clampToChatResponseWatermark: true,
+      });
+      expect(ingest).toHaveBeenCalledWith(sessionId, {
+        answeredWindow: {
+          responseTo,
+          terminalCursor: {
+            ts: agentEntry?.timestamp,
+            entryId: agentEntry?.id,
+          },
+        },
+      });
+      const liveIngestOptions = ingest.mock.calls[0]?.[1] as
+        | { answeredWindow?: { responseTo: { source_entry_ids: readonly string[] } } }
+        | undefined;
+
+      expect(liveIngestOptions?.answeredWindow?.responseTo.source_entry_ids).not.toContain(
+        interleaved.streamEntryId,
+      );
+      expect(internal.deps.chatResponseWatermarkCoordinator.getWatermark(sessionId)).toEqual(
+        responseTo.through_cursor_inclusive,
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("stamps response_to on catch-up suppression markers", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-suppressed-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_310_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createEmitNoOutputResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const marker = borg.stream
+        .tail(20, { session: sessionId })
+        .find((entry) => entry.kind === "agent_suppressed");
+
+      expect(marker?.response_to).toMatchObject({
+        kind: "stream_backlog",
+        source_entry_ids: entries.map((entry) => entry.id),
+        count: 2,
+      });
+      expect(marker?.content).toMatchObject({
+        user_entry_ids: entries.map((entry) => entry.id),
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("stamps response_to on catch-up observation markers", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-observed-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_320_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createEmitObserveResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const marker = borg.stream
+        .tail(20, { session: sessionId })
+        .find((entry) => entry.kind === "agent_observed");
+
+      expect(marker?.response_to).toMatchObject({
+        kind: "stream_backlog",
+        source_entry_ids: entries.map((entry) => entry.id),
+        count: 2,
+      });
+      expect(marker?.content).toMatchObject({
+        user_entry_ids: entries.map((entry) => entry.id),
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rejects forged batch payloads and duplicate source ids before hydration", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-forged-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_330_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: [entries[0]!.id, entries[0]!.id],
+          },
+        }),
+        "INBOUND_BATCH_DUPLICATE_ENTRY",
+      );
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: entries.map((entry) => entry.id),
+            entries: [
+              {
+                id: entries[0]!.id,
+                content: "forged current input",
+              },
+            ],
+          } as never,
+        }),
+        "INBOUND_BATCH_INPUT_CONFLICT",
+      );
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rejects non-contiguous catch-up batches before running the pipeline", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-gap-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_340_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const senderEntityId = borg.entities.resolve("Batch Sender");
+      const sessionId = createSessionId();
+      const session = {
+        session_id: sessionId,
+        source_type: "demo" as const,
+        source_external_id: "catch-up-gap",
+        label: "Catch-up Gap",
+        audience_label: "Catch-up Gap",
+        conversation_kind: "thread" as const,
+      };
+
+      for (const index of [1, 2, 3]) {
+        await borg.enqueueMessage({
+          session,
+          userMessage: `pending ${index}`,
+          senderEntityId,
+          sourceMessageKey: {
+            source_type: "demo",
+            source_external_id: "catch-up-gap",
+            external_message_id: `gap-${index}`,
+          },
+          arrivedAt: clock.now(),
+        });
+        clock.advance(10);
+      }
+
+      const entries = borg.stream
+        .tail(10, { session: sessionId })
+        .filter((entry): entry is StreamEntry & { kind: "user_msg" } => entry.kind === "user_msg")
+        .map(inboundBatchEntryFromStream);
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: [entries[0]!.id, entries[2]!.id],
+          },
+        }),
+        "INBOUND_BATCH_NOT_CONTIGUOUS",
+      );
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rejects replay when an exact terminal stamp already exists", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-replay-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_350_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const entries = await enqueueBatch(borg, clock, sessionId);
+
+      await borg.stream.append(
+        {
+          kind: "agent_msg",
+          content: "already responded",
+          response_to: {
+            kind: "stream_backlog",
+            from_cursor_exclusive: null,
+            through_cursor_inclusive: {
+              ts: entries[1]!.timestamp,
+              entryId: entries[1]!.id,
+            },
+            source_entry_ids: entries.map((entry) => entry.id),
+            count: entries.length,
+          },
+        },
+        { session: sessionId },
+      );
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: entries.map((entry) => entry.id),
+          },
+        }),
+        "INBOUND_BATCH_ALREADY_RESPONDED",
+      );
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("requires group batch senders from the session audience even when input omits audience", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-group-sender-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_360_000);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("unused"),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const sessionId = createSessionId();
+      const audienceEntityId = borg.entities.resolve("Batch Room", { kind: "group" });
+      borg.sessions.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        source_external_id: "batch-room",
+        label: "Batch Room",
+        audience_label: "Batch Room",
+        audience_entity_id: audienceEntityId,
+        conversation_kind: "channel",
+      });
+      const entry = await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "group message without sender",
+        },
+        { session: sessionId },
+      );
+
+      await expectCognitionErrorCode(
+        runInternalTurn(borg, {
+          sessionId,
+          inboundBatch: {
+            kind: "stream_backlog",
+            entryIds: [entry.id],
+          },
+        }),
+        "GROUP_BATCH_SENDER_REQUIRED",
+      );
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("attributes multi-sender catch-up action evidence to each source sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-sender-attribution-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_365_000);
+    const sessionId = createSessionId();
+    let alice: EntityId | null = null;
+    let ben: EntityId | null = null;
+    let entries: Array<StreamEntry & { kind: "user_msg" }> = [];
+    const actionStateForSenders = Object.assign(
+      (options: LLMCompleteOptions) => {
+        const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+          sender_attribution?: unknown;
+        };
+
+        if (alice === null || ben === null) {
+          throw new Error("expected sender entities before action-state extraction");
+        }
+
+        expect(payload.sender_attribution).toEqual([
+          {
+            stream_entry_id: entries[0]!.id,
+            sender_entity_id: alice,
+            sender_display_name: "Alice",
+          },
+          {
+            stream_entry_id: entries[1]!.id,
+            sender_entity_id: ben,
+            sender_display_name: "Ben",
+          },
+        ]);
+
+        return createActionStateResponse([
+          {
+            description: "check the release notes",
+            actor: "user",
+            state: "committed_to_do",
+            evidence_stream_entry_ids: [entries[0]!.id],
+          },
+          {
+            description: "update the deployment checklist",
+            actor: "user",
+            state: "committed_to_do",
+            evidence_stream_entry_ids: [entries[1]!.id],
+          },
+        ]);
+      },
+      { budget: "action-state-extractor" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateForSenders,
+        createEmitAnswerResponse("I will keep the source senders separate."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const groupId = borg.entities.resolve("Batch Room", { kind: "group" });
+      const aliceId = borg.entities.resolve("Alice", { kind: "person" });
+      const benId = borg.entities.resolve("Ben", { kind: "person" });
+      alice = aliceId;
+      ben = benId;
+      const session = {
+        session_id: sessionId,
+        source_type: "demo" as const,
+        source_external_id: "batch-room-senders",
+        label: "Batch Room",
+        audience_label: "Batch Room",
+        audience_entity_id: groupId,
+        conversation_kind: "channel" as const,
+      };
+
+      await borg.enqueueMessage({
+        session,
+        userMessage: "I will check the release notes.",
+        senderEntityId: aliceId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: "batch-room-senders",
+          external_message_id: "sender-1",
+        },
+        arrivedAt: clock.now(),
+        audience: "Batch Room",
+        audienceEntityId: groupId,
+      });
+      clock.advance(10);
+      await borg.enqueueMessage({
+        session,
+        userMessage: "I will update the deployment checklist.",
+        senderEntityId: benId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: "batch-room-senders",
+          external_message_id: "sender-2",
+        },
+        arrivedAt: clock.now(),
+        audience: "Batch Room",
+        audienceEntityId: groupId,
+      });
+
+      entries = borg.stream
+        .tail(10, { session: sessionId })
+        .filter((entry): entry is StreamEntry & { kind: "user_msg" } => entry.kind === "user_msg");
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      expect(
+        borg.actions
+          .list({ actor: aliceId, limit: 10 })
+          .some((record) => record.description === "check the release notes"),
+      ).toBe(true);
+      expect(
+        borg.actions
+          .list({ actor: benId, limit: 10 })
+          .some((record) => record.description === "update the deployment checklist"),
+      ).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses all privileged authority surfaces for multi-sender group catch-up", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-multi-authority-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_370_000);
+    const operatorSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "roleplay_inversion",
+          confidence: 0.98,
+          rationale: "The classifier flagged a frame assignment.",
+        }),
+        createEmitAnswerResponse("Handled without privileged authority."),
+        createIntentUpdateReflectionResponse("Track the multi-sender batch"),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      outboundConnectors: [new DemoMessageConnector()],
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "activityRepository">;
+    };
+
+    try {
+      const creatorId = borg.entities.resolve("Tom");
+      const secondSenderId = borg.entities.resolve("Riley");
+      const groupId = borg.entities.resolve("Operator Room", { kind: "group" });
+      borg.entities.setBorgRole(creatorId, "creator");
+      borg.sessions.ensure({
+        session_id: otherSessionId,
+        source_type: "demo",
+        source_external_id: "other-session",
+        label: "Other Session",
+        audience_label: "Other Session",
+        conversation_kind: "thread",
+        status: "active",
+        last_activity_at: clock.now() - 5_000,
+      });
+      internal.deps.activityRepository?.record({
+        kind: "user_contact",
+        occurredAt: clock.now() - 4_000,
+        sessionId: otherSessionId,
+        turnId: "turn_other_contact",
+        speakerEntityId: secondSenderId,
+        actorEntityId: secondSenderId,
+        audienceEntityId: secondSenderId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        source_external_id: "operator-room",
+        label: "Operator Room",
+        audience_label: "Operator Room",
+        audience_entity_id: groupId,
+        conversation_kind: "channel",
+        audience_role: "operator",
+      });
+      borg.creatorDirectives.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: operatorSessionId,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "system",
+        canonicalFact: null,
+        operationalDirective: "operator-only diagnostic directive",
+        disclosurePolicy: {
+          content_scope: "operator_only",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+          subject_may_know: null,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: [],
+        },
+        priority: 10,
+        createdAt: clock.now(),
+      });
+
+      const session = {
+        session_id: operatorSessionId,
+        source_type: "demo" as const,
+        source_external_id: "operator-room",
+        label: "Operator Room",
+        audience_label: "Operator Room",
+        audience_entity_id: groupId,
+        conversation_kind: "channel" as const,
+        audience_role: "operator" as const,
+      };
+      await borg.enqueueMessage({
+        session,
+        userMessage: "first operator-room pending message",
+        senderEntityId: creatorId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: "operator-room",
+          external_message_id: "multi-1",
+        },
+        arrivedAt: clock.now(),
+        audience: "Operator Room",
+        audienceEntityId: groupId,
+      });
+      clock.advance(10);
+      await borg.enqueueMessage({
+        session,
+        userMessage: "second operator-room pending message",
+        senderEntityId: secondSenderId,
+        sourceMessageKey: {
+          source_type: "demo",
+          source_external_id: "operator-room",
+          external_message_id: "multi-2",
+        },
+        arrivedAt: clock.now(),
+        audience: "Operator Room",
+        audienceEntityId: groupId,
+      });
+
+      const entries = borg.stream
+        .tail(10, { session: operatorSessionId })
+        .filter((entry): entry is StreamEntry & { kind: "user_msg" } => entry.kind === "user_msg")
+        .map(inboundBatchEntryFromStream);
+
+      await runInternalTurn(borg, {
+        sessionId: operatorSessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: entries.map((entry) => entry.id),
+        },
+      });
+
+      const finalizerRequest = firstFinalizerRequest(llm.requests);
+      const finalizerSystem = systemText(finalizerRequest);
+      const streamEntries = borg.stream.tail(100, { session: operatorSessionId });
+      const traceEvents = readTraceEvents(tracePath);
+      const quarantineEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+
+      expect(quarantineEvent).toBeDefined();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly.disposition",
+          disposition: "quarantine",
+          session_audience_role: "operator",
+          current_sender_borg_role: null,
+        }),
+      );
+      expect(finalizerSystem).not.toContain("operator-only diagnostic directive");
+      expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
+      expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
+      expect(finalizerSystem).not.toContain("contacted Borg");
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses privileged authority when an inbound batch mixes creator and null senders", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-null-sender-authority-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_380_000);
+    const operatorSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "roleplay_inversion",
+          confidence: 0.98,
+          rationale: "The classifier flagged a frame assignment.",
+        }),
+        createEmitAnswerResponse("Handled without privileged authority."),
+        createIntentUpdateReflectionResponse("Track the null-sender batch"),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      outboundConnectors: [new DemoMessageConnector()],
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "activityRepository">;
+    };
+
+    try {
+      const creatorId = borg.entities.resolve("Tom");
+      const secondSenderId = borg.entities.resolve("Riley");
+      borg.entities.setBorgRole(creatorId, "creator");
+      borg.sessions.ensure({
+        session_id: otherSessionId,
+        source_type: "demo",
+        source_external_id: "other-session-null-sender",
+        label: "Other Session",
+        audience_label: "Other Session",
+        conversation_kind: "thread",
+        status: "active",
+        last_activity_at: clock.now() - 5_000,
+      });
+      internal.deps.activityRepository?.record({
+        kind: "user_contact",
+        occurredAt: clock.now() - 4_000,
+        sessionId: otherSessionId,
+        turnId: "turn_other_contact_null_sender",
+        speakerEntityId: secondSenderId,
+        actorEntityId: secondSenderId,
+        audienceEntityId: secondSenderId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        source_external_id: "operator-dm-null-sender",
+        label: "Operator DM",
+        audience_label: "Tom",
+        audience_entity_id: creatorId,
+        conversation_kind: "dm",
+        audience_role: "operator",
+      });
+      borg.creatorDirectives.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: operatorSessionId,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "system",
+        canonicalFact: null,
+        operationalDirective: "operator-only null-sender directive",
+        disclosurePolicy: {
+          content_scope: "operator_only",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+          subject_may_know: null,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: [],
+        },
+        priority: 10,
+        createdAt: clock.now(),
+      });
+
+      const firstEntry = await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "first operator pending message",
+          audience: "Tom",
+          sender_entity_id: creatorId,
+        },
+        { session: operatorSessionId },
+      );
+      clock.advance(10);
+      const secondEntry = await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "second operator pending message",
+          audience: "Tom",
+        },
+        { session: operatorSessionId },
+      );
+
+      await runInternalTurn(borg, {
+        sessionId: operatorSessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: [firstEntry.id, secondEntry.id],
+        },
+      });
+
+      const finalizerRequest = firstFinalizerRequest(llm.requests);
+      const finalizerSystem = systemText(finalizerRequest);
+      const streamEntries = borg.stream.tail(100, { session: operatorSessionId });
+      const traceEvents = readTraceEvents(tracePath);
+      const quarantineEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+
+      expect(quarantineEvent).toBeDefined();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly.disposition",
+          disposition: "quarantine",
+          session_audience_role: "operator",
+          current_sender_borg_role: null,
+        }),
+      );
+      expect(finalizerSystem).not.toContain("operator-only null-sender directive");
+      expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
+      expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
+      expect(finalizerSystem).not.toContain("contacted Borg");
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
+    } finally {
+      await borg.close();
+    }
+  });
+});
 
 describe("TurnOrchestrator operator session snapshot", () => {
   const tempDirs: string[] = [];

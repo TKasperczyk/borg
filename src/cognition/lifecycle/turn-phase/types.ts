@@ -16,7 +16,10 @@ import type { TurnDiscourseStateService } from "../../generation/turn-discourse-
 import type { TurnEmission } from "../../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../../generation/turn-post-generation-guard.js";
 import type { TurnGoalPromotionService } from "../../goals/turn-goal-promotion-service.js";
-import type { StreamIngestionCoordinator } from "../../ingestion/index.js";
+import type {
+  ChatResponseWatermarkCoordinator,
+  StreamIngestionCoordinator,
+} from "../../ingestion/index.js";
 import type { PerceptionGateway } from "../../perception/gateway.js";
 import type { TurnOpeningPersistence } from "../../persistence/turn-opening.js";
 import type { TurnReflectionCoordinator } from "../../reflection/turn-reflection-coordinator.js";
@@ -25,6 +28,7 @@ import type { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
 import type { TurnTerminalOutcome, TurnTracer } from "../../tracing/tracer.js";
 import type { PromptOverrideRepository } from "../../prompts/override-repository.js";
 import type { CognitiveMode, IntentRecord, TurnOrigin } from "../../types.js";
+import type { TurnOrchestratorInput } from "../../turn-input.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -55,6 +59,10 @@ import type { ToolDispatcher } from "../../../tools/index.js";
 import type { Clock } from "../../../util/clock.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
+
+type WithoutLockMode<T> = T extends unknown ? Omit<T, "lockMode"> & { lockMode?: never } : never;
+
+export type TurnPhaseCoordinatorInput = WithoutLockMode<TurnOrchestratorInput>;
 
 export type TurnPhaseInput = {
   userMessage: string;
@@ -117,12 +125,18 @@ export type TurnPhaseCoordinatorOptions = {
   createStreamReader: (sessionId: SessionId) => StreamReader;
   entryIndex?: Pick<
     StreamEntryIndexRepository,
-    "countSessionEntriesByKind" | "lookupEntriesById" | "quarantinedSharedStateArtifactRefs"
+    | "countSessionEntriesByKind"
+    | "lookup"
+    | "lookupEntriesById"
+    | "lookupMany"
+    | "lookupSessionEntriesByKind"
+    | "quarantinedSharedStateArtifactRefs"
   >;
   attachmentService: AttachmentService;
   attachmentRepository: Pick<AttachmentRepository, "get" | "isActiveForStreamEntry">;
   imagePerceptionService?: ImagePerceptionService;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
+  chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
   outboundSourceTypes?: readonly SessionSourceType[];
@@ -147,7 +161,7 @@ export type TurnPhaseCoordinatorOptions = {
 };
 
 export type RunTurnPhasesInput = {
-  input: TurnPhaseInput;
+  input: TurnPhaseCoordinatorInput;
   globalTurnCounter?: number;
   sessionId: SessionId;
   turnId: string;

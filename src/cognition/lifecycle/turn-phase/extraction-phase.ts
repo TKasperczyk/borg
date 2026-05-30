@@ -6,12 +6,13 @@ import type { RecencyMessage } from "../../recency/index.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { StreamEntry, StreamWriter } from "../../../stream/index.js";
-import type { EntityId, SessionId } from "../../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { BorgRole } from "../../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../../sessions/index.js";
 import { runsExtraction } from "../../types.js";
 import { isCreatorInOperatorContext } from "../../authority.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../../turn-input.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import type { AppendHookFailureEvent } from "./utils.js";
 
@@ -74,6 +75,9 @@ export async function runExtractionPhase(input: {
   sessionAudienceRole: SessionAudienceRole;
   participantRoster: ParticipantRoster | null;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
+  distinctSenderCount?: number;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   streamWriter: StreamWriter;
   trackAppliedSlotNegation: Parameters<
@@ -116,10 +120,20 @@ export async function runExtractionPhase(input: {
   // in an operator context (same authority gate as manual outbound). Other
   // turns get an empty candidate set, so the extractor cannot redirect a
   // commitment away from the current audience.
-  const crossAudienceAllowed = isCreatorInOperatorContext({
-    currentSenderBorgRole: input.currentSenderBorgRole,
-    sessionAudienceRole: input.sessionAudienceRole,
-  });
+  const effectiveDistinctSenderCount =
+    input.distinctSenderCount ?? (input.currentSenderEntityId === null ? 0 : 1);
+  const authoritySenderEntityId =
+    effectiveDistinctSenderCount === 1 ? input.currentSenderEntityId : null;
+  const authoritySenderDisplayName =
+    effectiveDistinctSenderCount === 1 ? input.currentSenderDisplayName : null;
+  const authoritySenderBorgRole =
+    effectiveDistinctSenderCount === 1 ? input.currentSenderBorgRole : null;
+  const crossAudienceAllowed =
+    effectiveDistinctSenderCount === 1 &&
+    isCreatorInOperatorContext({
+      currentSenderBorgRole: authoritySenderBorgRole,
+      sessionAudienceRole: input.sessionAudienceRole,
+    });
   const crossAudienceCandidateAudiences =
     crossAudienceAllowed && input.options.sessionsRepository !== undefined
       ? dedupeCrossAudienceTargets(
@@ -152,6 +166,7 @@ export async function runExtractionPhase(input: {
             turnId: input.turnId,
             userMessage: input.turnInput.userMessage,
             persistedUserEntryId: input.persistedUserEntryId,
+            sourceUserEntryIds: input.sourceUserEntryIds,
             recentHistory: input.recentHistory,
             audienceEntityId: input.audienceEntityId,
             committedByEntityId: input.groupSpeakerEntityId,
@@ -177,6 +192,8 @@ export async function runExtractionPhase(input: {
         isUserTurn: input.isUserTurn,
         userMessage: input.turnInput.userMessage,
         persistedUserEntryId: input.persistedUserEntryId,
+        sourceUserEntryIds: input.sourceUserEntryIds,
+        senderAttribution: input.senderAttribution,
         recentHistory: input.recentHistory,
         audienceEntityId: input.audienceEntityId,
         sessionId: input.sessionId,
@@ -200,6 +217,7 @@ export async function runExtractionPhase(input: {
             temporalCue: input.perception.temporalCue,
             activeGoals: activeGoalsForPromotion,
             persistedUserEntryId: input.persistedUserEntryId,
+            sourceUserEntryIds: input.sourceUserEntryIds,
             onHookFailure: (hook, error, details) =>
               input.appendHookFailureEvent(input.streamWriter, hook, error, details),
           })
@@ -213,11 +231,12 @@ export async function runExtractionPhase(input: {
         isUserTurn: input.isUserTurn,
         userMessage: input.turnInput.userMessage,
         audienceEntityId: input.audienceEntityId,
-        currentSenderEntityId: input.currentSenderEntityId,
-        currentSenderBorgRole: input.currentSenderBorgRole,
-        currentSenderDisplayName: input.currentSenderDisplayName,
+        currentSenderEntityId: authoritySenderEntityId,
+        currentSenderBorgRole: authoritySenderBorgRole,
+        currentSenderDisplayName: authoritySenderDisplayName,
         sourceSessionId: input.sessionId,
         persistedUserEntryId: input.persistedUserEntryId,
+        sourceUserEntryIds: input.sourceUserEntryIds,
         recentHistory: input.recentHistory,
         sessionId: input.sessionId,
         sessionAudienceRole: input.sessionAudienceRole,

@@ -56,6 +56,7 @@ export async function runDeliberationPhase(input: {
   autonomousOutbound?: AutonomousOutboundPromptContext | null;
   operatorSessionSnapshot: OperatorSessionSnapshot | null;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntryIds?: readonly StreamEntry["id"][];
   currentUserContent?: readonly BorgUserContentBlock[];
   perception: PerceptionResult;
   workingMemory: WorkingMemory;

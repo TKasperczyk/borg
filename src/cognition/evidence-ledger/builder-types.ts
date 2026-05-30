@@ -49,6 +49,7 @@ export type EvidenceLedgerBuildInput = {
   audienceEntityId: EntityId | null;
   currentUserMessage: string;
   currentUserEntry?: StreamEntry;
+  currentUserEntries?: readonly StreamEntry[];
   workingMemory: WorkingMemory;
   applicableCommitments: readonly CommitmentRecord[];
   retrievedEvidence: readonly EvidenceItem[];

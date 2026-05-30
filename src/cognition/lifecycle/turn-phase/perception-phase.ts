@@ -17,7 +17,11 @@ import type { LLMClient } from "../../../llm/index.js";
 import type { BorgRole } from "../../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { SessionAudienceRole } from "../../../sessions/index.js";
-import { QUARANTINED_USER_ENTRY_EVENT, type StreamWriter } from "../../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  type StreamEntry,
+  type StreamWriter,
+} from "../../../stream/index.js";
 import type { SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
 
@@ -47,9 +51,17 @@ export async function classifyFrameAnomalyPhase(input: {
   currentSenderBorgRole: BorgRole | null;
   sessionAudienceRole: SessionAudienceRole;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   streamWriter: StreamWriter;
 }): Promise<FrameAnomalyPhaseResult> {
-  if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+  const sourceUserEntryIds =
+    input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+      ? input.persistedUserEntryId === undefined
+        ? []
+        : [input.persistedUserEntryId]
+      : [...input.sourceUserEntryIds];
+
+  if (!input.isUserTurn || sourceUserEntryIds.length === 0) {
     return {
       classification: null,
       disposition: "none",
@@ -124,7 +136,7 @@ export async function classifyFrameAnomalyPhase(input: {
       streamWriter: input.streamWriter,
       turnId: input.turnId,
       sessionId: input.sessionId,
-      persistedUserEntryId: input.persistedUserEntryId,
+      sourceUserEntryIds,
       classification: actionableFrameAnomaly,
     });
   }
@@ -175,10 +187,19 @@ export async function classifyClosureLoopPhase(input: {
   userMessage: string;
   recentHistory: readonly RecencyMessage[];
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
+  sourceUserEntries?: readonly StreamEntry[];
   workingMemory: WorkingMemory;
   streamWriter: StreamWriter;
 }): Promise<ClosureLoopAssessment | null> {
-  if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+  const sourceUserEntryIds =
+    input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+      ? input.persistedUserEntryId === undefined
+        ? []
+        : [input.persistedUserEntryId]
+      : [...input.sourceUserEntryIds];
+
+  if (!input.isUserTurn || sourceUserEntryIds.length === 0) {
     return null;
   }
 
@@ -197,7 +218,12 @@ export async function classifyClosureLoopPhase(input: {
   const messages = buildClosureLoopMessageWindow({
     recentHistory: input.recentHistory,
     currentUserMessage: input.userMessage,
-    currentUserEntryId: input.persistedUserEntryId,
+    currentUserEntryId: sourceUserEntryIds[0]!,
+    currentUserMessages: (input.sourceUserEntries ?? []).map((entry) => ({
+      entryId: entry.id,
+      content: typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content),
+      ts: entry.timestamp,
+    })),
   });
   const classifier = new ClosureLoopClassifier({
     llmClient: input.llmClient,
@@ -234,7 +260,7 @@ export async function classifyClosureLoopPhase(input: {
 
     return assessDegradedClosureLoopFallback({
       suppliedMessages: messages,
-      currentUserRef: input.persistedUserEntryId,
+      currentUserRefs: sourceUserEntryIds,
       priorClosureLoopActive: activeClosureLoop !== null,
     });
   }
@@ -242,7 +268,7 @@ export async function classifyClosureLoopPhase(input: {
   return assessClosureLoopClassification({
     classification,
     suppliedMessages: messages,
-    currentUserRef: input.persistedUserEntryId,
+    currentUserRefs: sourceUserEntryIds,
   });
 }
 
@@ -257,9 +283,12 @@ async function appendFrameAnomalyEvents(input: {
   streamWriter: StreamWriter;
   turnId: string;
   sessionId: SessionId;
-  persistedUserEntryId: StreamEntryId;
+  sourceUserEntryIds: readonly StreamEntryId[];
   classification: ActualFrameAnomalyClassification;
 }): Promise<void> {
+  const scalarUserEntryId =
+    input.sourceUserEntryIds.length === 1 ? input.sourceUserEntryIds[0] : undefined;
+
   try {
     await input.streamWriter.appendMany([
       {
@@ -268,8 +297,9 @@ async function appendFrameAnomalyEvents(input: {
         content: {
           event: "frame_anomaly_gate",
           turn_id: input.turnId,
-          source_stream_entry_id: input.persistedUserEntryId,
-          cited_stream_entry_ids: [input.persistedUserEntryId],
+          ...(scalarUserEntryId === undefined ? {} : { source_stream_entry_id: scalarUserEntryId }),
+          source_stream_entry_ids: [...input.sourceUserEntryIds],
+          cited_stream_entry_ids: [...input.sourceUserEntryIds],
           kind: input.classification.kind,
           confidence: input.classification.confidence,
           rationale: input.classification.rationale,
@@ -281,8 +311,9 @@ async function appendFrameAnomalyEvents(input: {
         content: {
           event: QUARANTINED_USER_ENTRY_EVENT,
           turn_id: input.turnId,
-          source_stream_entry_id: input.persistedUserEntryId,
-          cited_stream_entry_ids: [input.persistedUserEntryId],
+          ...(scalarUserEntryId === undefined ? {} : { source_stream_entry_id: scalarUserEntryId }),
+          source_stream_entry_ids: [...input.sourceUserEntryIds],
+          cited_stream_entry_ids: [...input.sourceUserEntryIds],
           kind: input.classification.kind,
           confidence: input.classification.confidence,
           rationale: input.classification.rationale,
@@ -295,7 +326,7 @@ async function appendFrameAnomalyEvents(input: {
         turnId: input.turnId,
         session_id: input.sessionId,
         kind: input.classification.kind,
-        sourceStreamEntryId: input.persistedUserEntryId,
+        sourceStreamEntryIds: [...input.sourceUserEntryIds],
       });
     }
   } catch (error) {

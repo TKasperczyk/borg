@@ -167,6 +167,7 @@ export type CreatorDirectiveExtractorOptions = {
 export type ExtractCreatorDirectivesInput = {
   userMessage: string;
   currentUserStreamEntryId?: StreamEntryId | null;
+  currentUserStreamEntryIds?: readonly StreamEntryId[];
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
   currentSenderEntityId: EntityId | null;
@@ -240,6 +241,7 @@ function buildCreatorDirectiveMessages(input: ExtractCreatorDirectivesInput): LL
       content: JSON.stringify({
         current_user_message: input.userMessage,
         current_user_stream_entry_id: input.currentUserStreamEntryId ?? null,
+        current_user_stream_entry_ids: [...(input.currentUserStreamEntryIds ?? [])],
         recent_history: input.recentHistory.slice(-8).map((message) => ({
           role: message.role,
           content: message.content,

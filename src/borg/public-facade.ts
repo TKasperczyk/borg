@@ -1103,6 +1103,26 @@ export type BorgMaintenanceFacade = {
   };
 };
 
+export type BorgInboxCatchUpDrainResult = {
+  sessionId: SessionId;
+  status: "empty" | "drained" | "busy" | "error";
+  drained: number;
+  hasMore: boolean;
+  error?: string;
+};
+
+export type BorgInboxCatchUpController = {
+  isEnabled(): boolean;
+  start(): void;
+  stop(options?: { graceful?: boolean }): Promise<void>;
+  onAppend(entries: readonly StreamEntry[]): void;
+  tick(sessionId: SessionId): Promise<BorgInboxCatchUpDrainResult>;
+};
+
+export type BorgInboxFacade = {
+  catchUp: BorgInboxCatchUpController;
+};
+
 export type BorgWorkmemFacade = {
   load(sessionId?: SessionId): WorkingMemory;
   clear(sessionId?: SessionId): void;
@@ -1159,6 +1179,7 @@ export type BorgFacades = {
   dream: BorgDreamFacade;
   autonomy: BorgAutonomyFacade;
   maintenance: BorgMaintenanceFacade;
+  inbox: BorgInboxFacade;
   workmem: BorgWorkmemFacade;
   prompts: BorgPromptsFacade;
   sessions: BorgSessionsFacade;

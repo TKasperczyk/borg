@@ -24,6 +24,7 @@ export type PendingProceduralAttemptTrackerInput = {
   proceduralContext?: ProceduralContext | null;
   reflectedWorkingMemory: WorkingMemory;
   persistedUserEntryId?: StreamEntryId;
+  sourceUserEntryIds?: readonly StreamEntryId[];
   persistedAgentEntryId: StreamEntryId;
   audienceEntityId: EntityId | null;
 };
@@ -48,7 +49,8 @@ export class PendingProceduralAttemptTracker {
             (compactTurnText(input.actionResult.response, 1_000) || "No explicit approach stated."),
           selected_skill_id: input.selectedSkill?.skill.id ?? null,
           source_stream_ids: [
-            ...(input.persistedUserEntryId === undefined ? [] : [input.persistedUserEntryId]),
+            ...(input.sourceUserEntryIds ??
+              (input.persistedUserEntryId === undefined ? [] : [input.persistedUserEntryId])),
             input.persistedAgentEntryId,
           ],
           turn_counter: input.reflectedWorkingMemory.turn_counter,

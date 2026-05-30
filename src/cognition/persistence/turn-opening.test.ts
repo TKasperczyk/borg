@@ -38,6 +38,7 @@ function makeStreamWriter(sequence: string[]) {
       session_id: DEFAULT_SESSION_ID,
       compressed: input.compressed ?? false,
       turn_status: input.turn_status ?? activeTurnStatus,
+      response_to: input.response_to as StreamEntry["response_to"],
       sender_entity_id:
         input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
       reply_target_entity_id:
