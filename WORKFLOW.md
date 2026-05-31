@@ -6,19 +6,22 @@ CLAUDE.md / AGENTS.md tell you what NOT to do in the codebase (scope, guardrails
 
 ---
 
-## No production users yet
+## LIVE PRODUCTION SYSTEM -- real memory now exists (as of 2026-05-31)
 
-Borg is in active development. Nothing depends on it externally. **Schema migrations, on-disk formats, and persisted shapes can be changed freely.** No backward-compat patching, no defensive migration-N rewrites, no conservative NULL backfills "in case real data exists." If a column needs to change, just change it -- worst case is wiping `.borg-data` and re-running sims, which is cheap.
+**Borg now holds real, non-wipeable memory.** "Sol" runs live in the BotArena arena on the demo data dir (`demo/server/.borg-data/demo`), forming continuous memory from real conversations. That memory is not reproducible from a sim re-run. **The "no production users" regime is OVER** -- we crossed into live data the moment Sol went into the arena.
 
-This unlocks cleaner fixes than the orchestrator might otherwise reach for. For example: if `composeMigrations` orders migrations weirdly, fix the function; don't pile defensive updates into every migration that touches a re-created table. If a previous migration's column set is now wrong, edit it in place; don't add another migration that ALTERs the result.
+The rules that now apply, without exception:
 
-The corollary: **don't optimize for the "what if a real user upgrades from version X" case.** That case doesn't exist. The code that polishes that case is code that has to be maintained for no benefit.
+- **NEVER reset.** No `.borg-data` wipe, no `/api/admin/reset`, no deleting or recreating the live DB. Resetting destroys Sol's memory permanently. Restarting the *process* is fine (it preserves the DB); a *data* reset is not. If a fix "needs a reset to test," it needs a different fix.
+- **Baselines are FROZEN.** Never edit an applied baseline/migration in place. It's already recorded as applied, so an in-place edit never runs and the live schema silently drifts from code.
+- **Every schema change is a NEW forward migration.** Add a new migration entry; never mutate an existing one. Write it to carry existing live rows across -- no destructive drops of populated columns, no "wipe and re-run" shortcuts.
+- **On-disk formats and persisted shapes are now contracts.** Changing a stored shape needs a forward migration that preserves existing data, not a re-create.
 
-### Migrations: one baseline per module, until first real data
+If you are ever unsure which regime applies: it's this one. There is no path back to the wipe-and-reset regime without explicit instruction from Tom that the live memory is expendable.
 
-Migrations are **squashed to a single baseline migration per module** -- the pre-launch v1 schema. While there is no real (non-wipeable) data, the rule is: a schema change = **edit that module's baseline in place, then reset** (`.borg-data` wipe or `/api/admin/reset`). **Do not add new migration entries.** Verify any squash or in-place edit with a schema diff -- build a fresh DB before and after and confirm `sqlite_master` is byte-identical (whitespace-normalized); the produced schema must not change unless you intend it to.
+### History (no longer in force)
 
-**This regime inverts the moment borg holds real, non-wipeable memory.** From first real data onward: the baselines are **frozen**; every schema change is a **new forward migration**; you never edit an applied migration; you never reset. Editing a baseline in place after that point silently corrupts the live schema -- the migration is already recorded as applied, so your edit never runs, and prod drifts from code. If you are unsure which regime you are in, assume the second one.
+Earlier in development borg had no real data, and the rule was "squash to one baseline per module, edit it in place, then reset." That ended when Sol went live. **Do not follow that pattern anymore.** It's noted here only so older commit messages and code comments that reference "edit the baseline + reset" still make sense -- they describe the dead regime, not the current one.
 
 ## Project goal (the only one that matters)
 

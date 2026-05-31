@@ -12,6 +12,15 @@ Borg is a cognitive-memory harness for an **LLM-based entity**, not a Chinese Ro
 
 If a proposed fix adds a rule, branch, regex, or word-list to handle a case, stop -- you are almost certainly building the wrong thing. The instinct to reach for that is the single most expensive recurring error here.
 
+# LIVE SYSTEM -- real memory now exists. NEVER RESET. (as of 2026-05-31)
+
+Borg now holds **real, non-wipeable memory.** "Sol" runs live in the BotArena arena on the demo data dir (`demo/server/.borg-data/demo`), forming continuous memory from real conversations that cannot be reproduced from a sim re-run. The old "no production users / edit the baseline + reset" development regime is **OVER.** Absolutes:
+
+- **NEVER reset.** No `.borg-data` wipe, no `/api/admin/reset`, no deleting or recreating the live DB. A reset destroys Sol's memory permanently. (Restarting the *process* preserves the DB and is fine; a *data* reset is not.)
+- **Baselines/applied migrations are FROZEN -- never edit one in place.** It's already recorded as applied, so the edit never runs and the live schema silently drifts from code.
+- **Every schema change is a NEW forward migration** that carries existing live rows across. No destructive drops of populated columns without a data-preserving path.
+- If unsure which regime applies: it's this one. See WORKFLOW.md for the full rule.
+
 ## Workflow
 
 The dev-loop process (sprint cycle, GPT Pro review submission, sim runs, ChatGPT mechanics, end-state goals) lives in `WORKFLOW.md` at the repo root. Read it after this file when starting a fresh session.
