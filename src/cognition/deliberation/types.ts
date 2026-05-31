@@ -113,10 +113,28 @@ export type CreatorDirectiveBriefingPrivateOperationDirective = {
   createdAt: number;
 };
 
+// A fact-bearing directive that governs the current session (activation active) but whose
+// content may NOT be disclosed to the current audience. Borg holds it privately for
+// orientation/action; it must not be volunteered or confirmed. Parallel to the
+// private_operation lane that response_policy/routing_instruction already have.
+export type CreatorDirectiveBriefingPrivateKnowledgeDirective = {
+  renderMode: "private_knowledge";
+  kind: "self_identity" | "subject_fact" | "disclosure_boundary";
+  subjectKind: CreatorDirectiveSubjectKind;
+  subjectLabel: string;
+  semanticSlot: CreatorDirectiveSemanticSlot | null;
+  semanticValue: string | null;
+  canonicalFact: string | null;
+  mentionPolicy: CreatorDirectiveMentionPolicy;
+  priority: number;
+  createdAt: number;
+};
+
 export type CreatorDirectiveBriefingDirective =
   | CreatorDirectiveBriefingContentDirective
   | CreatorDirectiveBriefingBoundaryDirective
-  | CreatorDirectiveBriefingPrivateOperationDirective;
+  | CreatorDirectiveBriefingPrivateOperationDirective
+  | CreatorDirectiveBriefingPrivateKnowledgeDirective;
 
 export type CreatorDirectiveBriefing = {
   directives: readonly CreatorDirectiveBriefingDirective[];

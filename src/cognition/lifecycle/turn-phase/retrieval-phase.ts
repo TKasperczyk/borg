@@ -272,6 +272,19 @@ function isPrivateOperationCreatorDirectiveKind(
   return kind === "response_policy" || kind === "routing_instruction";
 }
 
+type CreatorDirectiveContentBearingKind = Extract<
+  CreatorDirectiveKind,
+  "self_identity" | "subject_fact" | "disclosure_boundary"
+>;
+
+function isContentBearingCreatorDirectiveKind(
+  kind: CreatorDirectiveKind,
+): kind is CreatorDirectiveContentBearingKind {
+  return (
+    kind === "self_identity" || kind === "subject_fact" || kind === "disclosure_boundary"
+  );
+}
+
 function canRenderCreatorDirectivePrivateOperation(
   item: CreatorDirectiveApplicable,
 ): item is CreatorDirectiveApplicable & {
@@ -302,9 +315,34 @@ function canRenderCreatorDirectivePrivateOperation(
   });
 }
 
+// A fact-bearing directive that governs the current session but whose content the current
+// audience may not be told. Borg holds it privately for orientation/action; it must not be
+// disclosed. Mirror of canRenderCreatorDirectivePrivateOperation for content-bearing kinds.
+// Gated to render_mode === "omit": "content" is the disclose-to-audience lane and "boundary"
+// has its own visible-wall lane; "omit" is the active-but-silent case that otherwise has none.
+function canRenderCreatorDirectivePrivateKnowledge(
+  item: CreatorDirectiveApplicable,
+): item is CreatorDirectiveApplicable & {
+  directive: CreatorDirective & { kind: CreatorDirectiveContentBearingKind };
+} {
+  if (!item.activation.active) {
+    return false;
+  }
+
+  if (item.render_mode !== "omit") {
+    return false;
+  }
+
+  if (!isContentBearingCreatorDirectiveKind(item.directive.kind)) {
+    return false;
+  }
+
+  return contentPayloadForCreatorDirective(item.directive) !== null;
+}
+
 function creatorDirectiveBriefingLane(
   item: CreatorDirectiveApplicable,
-): "content" | "boundary" | "private_operation" | "omitted" {
+): "content" | "private_knowledge" | "boundary" | "private_operation" | "omitted" {
   if (!item.activation.active) {
     return "omitted";
   }
@@ -320,7 +358,11 @@ function creatorDirectiveBriefingLane(
     return "boundary";
   }
 
-  return canRenderCreatorDirectivePrivateOperation(item) ? "private_operation" : "omitted";
+  if (canRenderCreatorDirectivePrivateOperation(item)) {
+    return "private_operation";
+  }
+
+  return canRenderCreatorDirectivePrivateKnowledge(item) ? "private_knowledge" : "omitted";
 }
 
 export function buildCreatorDirectiveBriefing(input: {
@@ -370,6 +412,31 @@ export function buildCreatorDirectiveBriefing(input: {
       createdAt: item.directive.created_at,
     }))
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+  const privateKnowledgeDirectives = input.applicable
+    .filter(canRenderCreatorDirectivePrivateKnowledge)
+    .flatMap((item) => {
+      const payload = contentPayloadForCreatorDirective(item.directive);
+
+      if (payload === null) {
+        return [];
+      }
+
+      return [
+        {
+          renderMode: "private_knowledge" as const,
+          kind: item.directive.kind,
+          subjectKind: item.directive.subject_kind,
+          subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
+          semanticSlot: item.directive.semantic_slot,
+          semanticValue: payload.semanticValue,
+          canonicalFact: payload.canonicalFact,
+          mentionPolicy: item.directive.disclosure_policy.mention_policy,
+          priority: item.directive.priority,
+          createdAt: item.directive.created_at,
+        },
+      ];
+    })
+    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
   const boundaryDirectives = input.applicable
     .filter(
       (item) =>
@@ -383,7 +450,12 @@ export function buildCreatorDirectiveBriefing(input: {
       createdAt: item.directive.created_at,
     }))
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
-  const directives = [...contentDirectives, ...privateOperationDirectives, ...boundaryDirectives];
+  const directives = [
+    ...contentDirectives,
+    ...privateKnowledgeDirectives,
+    ...privateOperationDirectives,
+    ...boundaryDirectives,
+  ];
 
   return directives.length === 0 ? null : { directives };
 }

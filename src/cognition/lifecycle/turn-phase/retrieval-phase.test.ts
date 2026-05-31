@@ -302,7 +302,7 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
-  it("briefs active non-disclosable operational directives as private operations only", () => {
+  it("briefs active non-disclosable facts as private knowledge and behavioral rules as private operations", () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
     });
@@ -367,7 +367,22 @@ describe("creator directive retrieval briefing", () => {
         entityRepository: { get: () => null },
       });
 
+      // The denied subject_fact surfaces as private_knowledge (canonical_fact only; its
+      // operational_directive is NOT promoted into the private_operation lane). The
+      // behavioral rule renders as a private_operation. Facts sort ahead of operations.
       expect(briefing?.directives).toEqual([
+        {
+          renderMode: "private_knowledge",
+          kind: "subject_fact",
+          subjectKind: "entity",
+          subjectLabel: "unknown",
+          semanticSlot: null,
+          semanticValue: null,
+          canonicalFact: "This hidden fact is not disclosable to the audience.",
+          mentionPolicy: "answer_if_asked",
+          priority: 7,
+          createdAt: 1_500,
+        },
         {
           renderMode: "private_operation",
           kind: "response_policy",
