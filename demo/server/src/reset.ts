@@ -49,6 +49,7 @@ async function closeHandleForReset(handle: BorgHandle): Promise<void> {
 
   handle.state = "closing";
   try {
+    await handle.current.autonomy.scheduler.stop().catch(() => undefined);
     await handle.current.close();
   } finally {
     handle.state = "dead";
@@ -83,6 +84,7 @@ export function createResetBorgController(
       options.borgHandle.current = nextBorg;
       options.borgHandle.state = "open";
       nextBorg.inbox.catchUp.start();
+      nextBorg.autonomy.scheduler.start();
       options.live.ledgerCache.clear();
       options.live.resetTraceState();
       options.live.broadcaster.broadcast({ type: "borg:reset", ts: Date.now() });

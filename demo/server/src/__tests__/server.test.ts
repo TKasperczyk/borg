@@ -82,6 +82,12 @@ function createBorgCloseStub(input: { start?: () => void } = {}): Borg {
         start: input.start ?? vi.fn(),
       },
     },
+    autonomy: {
+      scheduler: {
+        start: vi.fn(),
+        stop: vi.fn(async () => {}),
+      },
+    },
   } as unknown as Borg;
 }
 

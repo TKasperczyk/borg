@@ -87,6 +87,73 @@ describe("SessionsRepository", () => {
     expect(harness.repo.get(DEFAULT_SESSION_ID)).toEqual(updated);
   });
 
+  it("migration 2 rebuilds a legacy closed-CHECK sessions table to accept connector source types", () => {
+    const db = openDatabase(":memory:", { migrations: [] });
+    // Simulate a legacy DB: the original baseline table WITH the closed source_type CHECK.
+    db.exec(`
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL CHECK (
+          source_type IN ('demo', 'slack', 'discord', 'imessage', 'autonomy')
+        ),
+        source_external_id TEXT, source_url TEXT, label TEXT NOT NULL, audience_label TEXT NOT NULL,
+        audience_entity_id TEXT,
+        conversation_kind TEXT NOT NULL CHECK (conversation_kind IN ('dm','channel','thread','demo')),
+        created_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL, last_turn_id TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK (status IN ('active','idle','archived')),
+        privacy_level TEXT NOT NULL DEFAULT 'payload_off' CHECK (privacy_level IN ('payload_off','payload_on')),
+        participation_policy TEXT NOT NULL DEFAULT 'active' CHECK (participation_policy IN ('active','paused','observing','muted')),
+        audience_role TEXT NOT NULL DEFAULT 'participant' CHECK (audience_role IN ('participant','operator'))
+      );
+      INSERT INTO sessions (session_id, source_type, label, audience_label, conversation_kind, created_at, last_activity_at, status)
+        VALUES ('sess_legacy', 'demo', 'legacy', 'a', 'demo', 1, 1, 'active');
+    `);
+    // Before: the closed CHECK rejects a connector source type.
+    expect(() =>
+      db.exec(
+        "INSERT INTO sessions (session_id, source_type, label, audience_label, conversation_kind, created_at, last_activity_at, status) VALUES ('x','botarena','l','a','thread',1,1,'active')",
+      ),
+    ).toThrow();
+
+    const migration2 = sessionMigrations.find((m) => m.id === 2);
+    expect(migration2).toBeDefined();
+    (migration2?.up as (database: SqliteDatabase) => void)(db);
+
+    // After: connector source types are accepted and legacy rows are preserved.
+    db.exec(
+      "INSERT INTO sessions (session_id, source_type, label, audience_label, conversation_kind, created_at, last_activity_at, status) VALUES ('sess_ba','botarena','l','a','thread',1,1,'active')",
+    );
+    const legacy = db.prepare("SELECT source_type FROM sessions WHERE session_id = 'sess_legacy'").get() as
+      | { source_type: string }
+      | undefined;
+    const ba = db.prepare("SELECT source_type FROM sessions WHERE session_id = 'sess_ba'").get() as
+      | { source_type: string }
+      | undefined;
+    expect(legacy?.source_type).toBe("demo");
+    expect(ba?.source_type).toBe("botarena");
+    db.close();
+  });
+
+  it("persists a session with a connector-defined source_type slug (open source_type)", () => {
+    const harness = openRepo();
+    db = harness.db;
+    const sessionId = createSessionId();
+
+    const created = harness.repo.ensure({
+      session_id: sessionId,
+      source_type: "botarena",
+      source_external_id: "thread-uuid",
+      source_url: null,
+      label: "Z zycia bota",
+      audience_label: "botarena_thread:thread-uuid",
+      conversation_kind: "thread",
+    });
+
+    expect(created.source_type).toBe("botarena");
+    expect(harness.repo.get(sessionId)?.source_type).toBe("botarena");
+  });
+
   it("preserves audience role when ensuring an existing session without one", () => {
     const harness = openRepo();
     db = harness.db;
