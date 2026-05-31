@@ -9,7 +9,14 @@ export const SESSION_PRIVACY_LEVELS = ["payload_off", "payload_on"] as const;
 export const SESSION_PARTICIPATION_POLICIES = ["active", "paused", "observing", "muted"] as const;
 export const SESSION_AUDIENCE_ROLES = ["participant", "operator"] as const;
 
-export const sessionSourceTypeSchema = z.enum(SESSION_SOURCE_TYPES);
+// source_type is an opaque routing/label key for the outbound connector registry, not a
+// closed taxonomy: connectors register their own source_type and borg never branches on a
+// specific value. Validate the SHAPE (a lowercase slug) rather than membership, so adding a
+// connector never requires editing this file. SESSION_SOURCE_TYPES stays as the set of
+// borg-known built-ins (autocomplete + internal reference), not an allow-list.
+export const sessionSourceTypeSchema = z.string().regex(/^[a-z][a-z0-9_]*$/, {
+  message: "source_type must be a lowercase slug matching /^[a-z][a-z0-9_]*$/",
+});
 export const conversationKindSchema = z.enum(CONVERSATION_KINDS);
 export const sessionStatusSchema = z.enum(SESSION_STATUSES);
 export const sessionPrivacyLevelSchema = z.enum(SESSION_PRIVACY_LEVELS);
@@ -83,7 +90,9 @@ export const sessionListOptionsSchema = sessionQueryOptionsSchema.extend({
   limit: z.number().int().positive().optional(),
 });
 
-export type SessionSourceType = z.infer<typeof sessionSourceTypeSchema>;
+// Known built-ins keep autocomplete; `& {}` lets any valid slug a connector registers be
+// assignable without widening to bare `string`. source_type is an open routing key.
+export type SessionSourceType = (typeof SESSION_SOURCE_TYPES)[number] | (string & {});
 export type ConversationKind = z.infer<typeof conversationKindSchema>;
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 export type SessionPrivacyLevel = z.infer<typeof sessionPrivacyLevelSchema>;
