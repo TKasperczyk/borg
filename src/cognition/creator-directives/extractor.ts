@@ -8,6 +8,7 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import {
+  creatorDirectiveActivationScopeSchema,
   creatorDirectiveContentScopeSchema,
   creatorDirectiveDeniedAudienceBehaviorSchema,
   creatorDirectiveEntityIdSchema,
@@ -16,6 +17,7 @@ import {
   creatorDirectiveSemanticSlotSchema,
   creatorDirectiveSubjectKindSchema,
   creatorDirectiveTopicTagSchema,
+  type CreatorDirectiveActivationScope,
   type CreatorDirectiveContentScope,
   type CreatorDirectiveDeniedAudienceBehavior,
   type CreatorDirectiveKind,
@@ -42,10 +44,18 @@ export const CREATOR_DIRECTIVE_TOOL_NAME = "EmitCreatorDirectives";
 
 const entityLabelSchema = z.string().trim().min(1).max(256);
 
+const defaultCreatorDirectiveExtractorActivationPolicy = {
+  scope: "same_as_disclosure" as const,
+  entity_ids: [] as EntityId[],
+  entity_labels: [] as string[],
+  excluded_entity_ids: [] as EntityId[],
+  excluded_entity_labels: [] as string[],
+};
+
 const creatorDirectiveExtractorDisclosurePolicySchema = z
   .object({
     content_scope: creatorDirectiveContentScopeSchema.describe(
-      "Visibility scope. Use operator_only when durable visibility is ambiguous.",
+      "Disclosure permission: who may be told or shown the content.",
     ),
     allowed_entity_ids: z.array(creatorDirectiveEntityIdSchema).default([]),
     allowed_entity_labels: z.array(entityLabelSchema).default([]),
@@ -59,6 +69,19 @@ const creatorDirectiveExtractorDisclosurePolicySchema = z
   })
   .strict();
 
+const creatorDirectiveExtractorActivationPolicySchema = z
+  .object({
+    scope: creatorDirectiveActivationScopeSchema.describe(
+      "Activation scope: which sessions or audiences this directive governs.",
+    ),
+    entity_ids: z.array(creatorDirectiveEntityIdSchema).default([]),
+    entity_labels: z.array(entityLabelSchema).default([]),
+    excluded_entity_ids: z.array(creatorDirectiveEntityIdSchema).default([]),
+    excluded_entity_labels: z.array(entityLabelSchema).default([]),
+  })
+  .strict()
+  .default(defaultCreatorDirectiveExtractorActivationPolicy);
+
 const creatorDirectiveCandidateSchema = z
   .object({
     kind: creatorDirectiveKindSchema,
@@ -68,8 +91,9 @@ const creatorDirectiveCandidateSchema = z
     semantic_slot: creatorDirectiveSemanticSlotSchema.nullable(),
     semantic_value: z.string().trim().min(1).nullable(),
     canonical_fact: z.string().trim().min(1).nullable(),
-    operational_directive: z.string().trim().min(1),
+    operational_directive: z.string().trim().min(1).nullable().optional(),
     disclosure_policy: creatorDirectiveExtractorDisclosurePolicySchema,
+    activation_policy: creatorDirectiveExtractorActivationPolicySchema,
     priority: z.number().int(),
     confidence: z.number().min(0).max(1),
     reason: z.string().trim().min(1),
@@ -91,6 +115,17 @@ const creatorDirectiveCandidateSchema = z
         message: "semantic_slot requires semantic_value",
       });
     }
+
+    if (
+      (value.kind === "response_policy" || value.kind === "routing_instruction") &&
+      (value.operational_directive === undefined || value.operational_directive === null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["operational_directive"],
+        message: "behavioral creator directive requires operational_directive",
+      });
+    }
   });
 
 export const creatorDirectiveExtractionOutputSchema = z
@@ -103,7 +138,7 @@ export const creatorDirectiveExtractionOutputSchema = z
 
 const CREATOR_DIRECTIVE_TOOL = {
   name: CREATOR_DIRECTIVE_TOOL_NAME,
-  description: "Extract explicit durable creator disclosure directives from the current user turn.",
+  description: "Extract explicit durable creator directives from the current user turn.",
   inputSchema: toToolInputSchema(creatorDirectiveExtractionOutputSchema),
 } satisfies LLMToolDefinition;
 
@@ -124,6 +159,14 @@ export type CreatorDirectiveExtractorDisclosurePolicy = {
   topic_tags: string[];
 };
 
+export type CreatorDirectiveExtractorActivationPolicy = {
+  scope: CreatorDirectiveActivationScope;
+  entity_ids: EntityId[];
+  entity_labels: string[];
+  excluded_entity_ids: EntityId[];
+  excluded_entity_labels: string[];
+};
+
 export type CreatorDirectiveCandidate = {
   kind: CreatorDirectiveKind;
   subject_kind: CreatorDirectiveSubjectKind;
@@ -132,8 +175,9 @@ export type CreatorDirectiveCandidate = {
   semantic_slot: CreatorDirectiveSemanticSlot | null;
   semantic_value: string | null;
   canonical_fact: string | null;
-  operational_directive: string;
+  operational_directive: string | null;
   disclosure_policy: CreatorDirectiveExtractorDisclosurePolicy;
+  activation_policy: CreatorDirectiveExtractorActivationPolicy;
   priority: number;
   confidence: number;
   reason: string;
@@ -189,7 +233,7 @@ function toCandidate(
     semantic_slot: input.semantic_slot,
     semantic_value: input.semantic_value,
     canonical_fact: input.canonical_fact,
-    operational_directive: input.operational_directive.trim(),
+    operational_directive: input.operational_directive?.trim() ?? null,
     disclosure_policy: {
       content_scope: input.disclosure_policy.content_scope,
       allowed_entity_ids: [...input.disclosure_policy.allowed_entity_ids],
@@ -201,6 +245,13 @@ function toCandidate(
       denied_audience_behavior: input.disclosure_policy.denied_audience_behavior,
       boundary_prompt: input.disclosure_policy.boundary_prompt,
       topic_tags: [...input.disclosure_policy.topic_tags],
+    },
+    activation_policy: {
+      scope: input.activation_policy.scope,
+      entity_ids: [...input.activation_policy.entity_ids],
+      entity_labels: [...input.activation_policy.entity_labels],
+      excluded_entity_ids: [...input.activation_policy.excluded_entity_ids],
+      excluded_entity_labels: [...input.activation_policy.excluded_entity_labels],
     },
     priority: input.priority,
     confidence: input.confidence,

@@ -1,6 +1,5 @@
 import type { Config } from "../config/index.js";
 import {
-  evaluateCreatorDirectiveRenderMode,
   type CreatorDirective,
   type CreatorDirectiveRepository,
 } from "../memory/creator-directives/index.js";
@@ -44,7 +43,7 @@ export type AutonomousOutboundPromptContext = {
 export type AutonomousOutboundPolicyOptions = {
   config: Config["autonomy"]["proactiveOutbound"];
   sessionsRepository: Pick<SessionsRepository, "get" | "list">;
-  creatorDirectiveRepository: Pick<CreatorDirectiveRepository, "list">;
+  creatorDirectiveRepository: Pick<CreatorDirectiveRepository, "list" | "listApplicable">;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   transportSourceTypes?: readonly SessionSourceType[];
   clock: Clock;
@@ -281,15 +280,25 @@ export class AutonomousOutboundPolicy {
       subjectEntityId: target.audience_entity_id,
       topicTag: PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG,
     });
+    if (directives.length === 0) {
+      return false;
+    }
+
+    const applicableByDirectiveId = new Map(
+      this.options.creatorDirectiveRepository
+        .listApplicable({
+          currentAudienceEntityId: target.audience_entity_id,
+          currentSenderBorgRole: null,
+          participantEntityIds: [target.audience_entity_id],
+          sessionRole: target.audience_role,
+        })
+        .map((item) => [item.directive.id, item]),
+    );
 
     return directives.some(
       (directive) =>
         directiveTargetsSessionAudience(directive, target) &&
-        evaluateCreatorDirectiveRenderMode(directive, {
-          currentAudienceEntityId: target.audience_entity_id,
-          currentSenderBorgRole: null,
-          sessionRole: target.audience_role,
-        }) === "content",
+        applicableByDirectiveId.get(directive.id)?.activation.active === true,
     );
   }
 

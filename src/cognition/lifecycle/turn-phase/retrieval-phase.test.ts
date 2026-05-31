@@ -10,6 +10,7 @@ import { sharedStateMigrations } from "../../../memory/decision-artifacts/index.
 import { SharedStateRepository } from "../../../memory/decision-artifacts/repository.js";
 import {
   CreatorDirectiveRepository,
+  creatorDirectiveDisclosureBlocksPrivateOperation,
   creatorDirectiveMigrations,
   type DisclosurePolicy,
 } from "../../../memory/creator-directives/index.js";
@@ -178,7 +179,6 @@ describe("creator directive retrieval briefing", () => {
         priority: 7,
         createdAt: 1_500,
       });
-
       const operatorBriefing = buildCreatorDirectiveBriefingForTurn({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
@@ -302,6 +302,317 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
+  it("briefs active non-disclosable operational directives as private operations only", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+
+    try {
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: audienceId,
+        operationalDirective: "Conduct the private intake flow for this audience.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [audienceId],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+      repository.queue({
+        kind: "subject_fact",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: audienceId,
+        canonicalFact: "This hidden fact is not disclosable to the audience.",
+        operationalDirective: "Do not turn hidden facts into private operations.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [audienceId],
+          excluded_entity_ids: [],
+        },
+        priority: 7,
+        createdAt: 1_500,
+      });
+
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable: repository.listApplicable({
+          currentAudienceEntityId: audienceId,
+          participantEntityIds: [audienceId],
+          sessionRole: "participant",
+        }),
+        entityRepository: { get: () => null },
+      });
+
+      expect(briefing?.directives).toEqual([
+        {
+          renderMode: "private_operation",
+          kind: "response_policy",
+          operationalDirective: "Conduct the private intake flow for this audience.",
+          priority: 8,
+          createdAt: 1_000,
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("blocks private-operation briefing when the audience is a subject who may not know", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const aliceId = createEntityId();
+
+    try {
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: aliceId,
+        operationalDirective: "Use the private response flow for Alice.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: false,
+          mention_policy: "never_mention" as const,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [aliceId],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+
+      const applicable = repository.listApplicable({
+        currentAudienceEntityId: aliceId,
+        participantEntityIds: [aliceId],
+        sessionRole: "participant",
+      });
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable,
+        entityRepository: { get: () => null },
+      });
+      const applicableDirective = applicable[0];
+
+      expect(applicableDirective).toBeDefined();
+      if (applicableDirective === undefined) {
+        throw new Error("expected queued directive to be applicable");
+      }
+
+      expect(applicableDirective).toMatchObject({
+        activation: { active: true, reason: "explicit_allow" },
+        disclosure: { render_mode: "omit", reason: "subject_may_not_know" },
+      });
+      expect(
+        creatorDirectiveDisclosureBlocksPrivateOperation({
+          directive: applicableDirective.directive,
+          recipientEntityIds: applicableDirective.recipient_entity_ids,
+        }),
+      ).toBe(true);
+      // This suppression is intentional for genuine subject-confidential facts.
+      // The extractor must use subject_may_know=null for behavioral directives
+      // that still need to reach the subject's prompt as private operations.
+      expect(
+        briefing?.directives.some((directive) => directive.renderMode === "private_operation") ??
+          false,
+      ).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not brief private operations for explicitly excluded omit audiences", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const audienceId = createEntityId();
+
+    try {
+      const directive = repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: audienceId,
+        operationalDirective: "Conduct the operational flow for non-excluded audiences.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "all_except",
+          excluded_entity_ids: [audienceId],
+          denied_audience_behavior: "omit",
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "public",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+      const applicable = repository.listApplicable({
+        currentAudienceEntityId: audienceId,
+        participantEntityIds: [audienceId],
+        sessionRole: "participant",
+      });
+      const applicableDirective = applicable.find((item) => item.directive.id === directive.id);
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable,
+        entityRepository: { get: () => null },
+      });
+
+      expect(applicableDirective).toMatchObject({
+        activation: {
+          active: true,
+          reason: "public",
+        },
+        disclosure: {
+          render_mode: "omit",
+          reason: "unauthorized_omit",
+        },
+      });
+      expect(briefing).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not brief inactive content or boundary directives", () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const inactiveContent = repository.queue({
+        kind: "subject_fact",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: alice,
+        canonicalFact: "This public-disclosure fact is not active for Alice.",
+        operationalDirective: "Do not brief inactive content.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "public",
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [bob],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+      const inactiveBoundary = repository.queue({
+        kind: "disclosure_boundary",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: alice,
+        canonicalFact: "This boundary content is not active for Alice.",
+        operationalDirective: "Do not brief inactive boundaries.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "all_except",
+          excluded_entity_ids: [alice],
+          denied_audience_behavior: "render_boundary_when_relevant",
+          boundary_prompt:
+            "A creator-defined confidentiality boundary applies to this inactive directive.",
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [bob],
+          excluded_entity_ids: [],
+        },
+        priority: 7,
+        createdAt: 1_500,
+      });
+      const applicable = repository.listApplicable({
+        currentAudienceEntityId: alice,
+        participantEntityIds: [alice],
+        sessionRole: "participant",
+      });
+      const byId = Object.fromEntries(applicable.map((item) => [item.directive.id, item]));
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable,
+        entityRepository: { get: () => null },
+      });
+
+      expect(byId[inactiveContent.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "unauthorized_omit",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+      expect(byId[inactiveBoundary.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "unauthorized_omit",
+        },
+        disclosure: {
+          render_mode: "boundary",
+          reason: "explicit_exclude_boundary",
+        },
+      });
+      expect(briefing).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("emits creator_directive_rendered trace events for considered directives", async () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
@@ -347,6 +658,27 @@ describe("creator directive retrieval briefing", () => {
         }),
         priority: 7,
         createdAt: 1_500,
+      });
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: audienceId,
+        operationalDirective: "Use the active non-disclosable operational lane.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only",
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [audienceId],
+          excluded_entity_ids: [],
+        },
+        priority: 6,
+        createdAt: 2_000,
       });
 
       const retrieval = {
@@ -511,7 +843,7 @@ describe("creator directive retrieval briefing", () => {
 
       const renderedEvents = events.filter((event) => event.event === "creator_directive_rendered");
 
-      expect(renderedEvents).toHaveLength(2);
+      expect(renderedEvents).toHaveLength(3);
       expect(renderedEvents).toEqual([
         expect.objectContaining({
           data: expect.objectContaining({
@@ -533,7 +865,212 @@ describe("creator directive retrieval briefing", () => {
             reason: "unauthorized_omit",
           }),
         }),
+        expect.objectContaining({
+          data: expect.objectContaining({
+            turnId: "turn-creator-directive-rendered",
+            session_id: DEFAULT_SESSION_ID,
+            current_audience_entity_id: audienceId,
+            participant_entity_ids: [audienceId],
+            render_mode: "private_operation",
+            reason: "operator_only_omitted",
+          }),
+        }),
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("suppresses activation operator-only directives in mixed-sender turns", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+
+    try {
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: creatorId,
+        operationalDirective: "Use this only when operator-only authority is intact.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "public",
+        }),
+        activationPolicy: {
+          scope: "operator_only",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+
+      const retrieval = {
+        evidence: [],
+        episodes: [],
+        semantic: null,
+        open_questions: [],
+        recall_intents: [],
+        contradiction_present: false,
+        contradictionRouting: {
+          contradictions: [],
+        },
+        confidence: null,
+      } as never;
+      const options = {
+        config: {
+          ...DEFAULT_CONFIG,
+          generation: {
+            ...DEFAULT_CONFIG.generation,
+            evidenceLedger: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger,
+              enabled: false,
+            },
+          },
+        },
+        creatorDirectiveRepository: repository,
+        sharedStateRepository: {
+          get: () => null,
+        },
+        entityRepository: {
+          get: () => null,
+          findByName: () => null,
+          resolve: () => creatorId,
+        },
+        socialRepository: {
+          getProfile: () => null,
+        },
+        relationalSlotRepository: {
+          list: () => [],
+          listConstrained: () => [],
+        },
+        actionRepository: {
+          list: () => [],
+          get: () => null,
+          update: vi.fn(),
+        },
+        commitmentRepository: {
+          list: () => [],
+        },
+        goalsRepository: {
+          list: () => [],
+        },
+        openQuestionsRepository: {
+          list: () => [],
+        },
+        attachmentRepository: {
+          get: () => null,
+          isActiveForStreamEntry: () => true,
+        },
+        clock: new FixedClock(3_000),
+        tracer: {
+          enabled: false,
+          emit: vi.fn(),
+        },
+        selfContextBuilder: {
+          build: vi.fn(async () => ({
+            selfSnapshot: {
+              values: [],
+              goals: [],
+              traits: [],
+            },
+            activeScoringValues: [],
+            retrievalScoringFeatures: {
+              goalVectors: [],
+              valueVectors: [],
+            },
+            executiveFocus: {
+              selected_goal: null,
+              selected_score: null,
+              candidates: [],
+              threshold: 0,
+            },
+          })),
+        },
+        turnRetrievalCoordinator: {
+          coordinate: vi.fn(async () => ({
+            applicableCommitments: [],
+            pendingCorrections: [],
+            affectiveTrajectory: [],
+            retrieval,
+            retrievedEpisodes: [],
+            retrievedSemantic: null,
+            proceduralContext: null,
+            selectedSkill: null,
+            retrievalOptions: {},
+            reRetrieve: vi.fn(async () => retrieval),
+          })),
+        },
+        createStreamReader: () =>
+          ({
+            async *iterate() {},
+          }) as StreamReader,
+      } as unknown as TurnPhaseCoordinatorOptions;
+
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-mixed-sender-operator-only",
+        turnInput: {
+          userMessage: "mixed sender batch",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "mixed sender batch",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: creatorId,
+        audienceEntity: null,
+        currentSenderBorgRole: null,
+        operatorOnlyDirectivesAllowed: false,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(
+        repository.listApplicable({
+          currentAudienceEntityId: creatorId,
+          sessionRole: "operator",
+        })[0]?.activation,
+      ).toMatchObject({
+        active: true,
+        reason: "operator_only",
+      });
+      expect(result.creatorDirectiveBriefing).toBeNull();
     } finally {
       db.close();
     }

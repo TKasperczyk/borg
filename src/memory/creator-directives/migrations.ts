@@ -31,12 +31,24 @@ export const creatorDirectiveMigrations = [
             semantic_slot IS NULL OR semantic_slot IN ('public_name')
           ),
           canonical_fact TEXT NULL,
-          operational_directive TEXT NOT NULL,
+          operational_directive TEXT NULL,
           content_scope TEXT NOT NULL CHECK (
             content_scope IN ('operator_only', 'public', 'allow_list', 'subject_only', 'all_except')
           ),
           allowed_entity_ids TEXT NOT NULL DEFAULT '[]',
           excluded_entity_ids TEXT NOT NULL DEFAULT '[]',
+          activation_scope TEXT NOT NULL DEFAULT 'same_as_disclosure' CHECK (
+            activation_scope IN (
+              'same_as_disclosure',
+              'operator_only',
+              'public',
+              'allow_list',
+              'subject_only',
+              'all_except'
+            )
+          ),
+          activation_entity_ids TEXT NOT NULL DEFAULT '[]',
+          activation_excluded_entity_ids TEXT NOT NULL DEFAULT '[]',
           subject_may_know INTEGER NULL CHECK (
             subject_may_know IS NULL OR subject_may_know IN (0, 1)
           ),

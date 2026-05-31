@@ -284,6 +284,132 @@ describe("AutonomousOutboundPolicy", () => {
     ]);
   });
 
+  it("authorizes activation-active routing directives without requiring content disclosure", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const creatorId = createEntityId();
+    const aliceId = createEntityId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      audience_entity_id: aliceId,
+      conversation_kind: "demo",
+    });
+    harness.creatorDirectiveRepository.queue({
+      kind: "routing_instruction",
+      createdByEntityId: creatorId,
+      sourceSessionId: currentSessionId,
+      authorizationStreamEntryIds: [createStreamEntryId()],
+      contentSourceStreamEntryIds: [createStreamEntryId()],
+      subjectKind: "entity",
+      subjectEntityId: aliceId,
+      operationalDirective: "Creator permits autonomous outreach to this audience.",
+      disclosurePolicy: {
+        content_scope: "operator_only",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: null,
+        mention_policy: "proactive",
+        denied_audience_behavior: "omit",
+        boundary_prompt: null,
+        topic_tags: [PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG],
+      },
+      activationPolicy: {
+        scope: "allow_list",
+        allowed_entity_ids: [aliceId],
+        excluded_entity_ids: [],
+      },
+      priority: 10,
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+      }),
+      ["demo"],
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBe("creator_directive");
+    expect(policy.promptContext(currentSessionId)?.targets).toEqual([
+      expect.objectContaining({
+        session_id: targetSession.session_id,
+        authorization: "creator_directive",
+      }),
+    ]);
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).not.toThrow();
+  });
+
+  it("does not authorize routing directives that are not activation-active for the target", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    const currentSessionId = createSessionId();
+    const creatorId = createEntityId();
+    const aliceId = createEntityId();
+    const bobId = createEntityId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      audience_entity_id: aliceId,
+      conversation_kind: "demo",
+    });
+    harness.creatorDirectiveRepository.queue({
+      kind: "routing_instruction",
+      createdByEntityId: creatorId,
+      sourceSessionId: currentSessionId,
+      authorizationStreamEntryIds: [createStreamEntryId()],
+      contentSourceStreamEntryIds: [createStreamEntryId()],
+      subjectKind: "entity",
+      subjectEntityId: aliceId,
+      operationalDirective: "Creator permits autonomous outreach when the directive is active.",
+      disclosurePolicy: {
+        content_scope: "subject_only",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: true,
+        mention_policy: "proactive",
+        denied_audience_behavior: "omit",
+        boundary_prompt: null,
+        topic_tags: [PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG],
+      },
+      activationPolicy: {
+        scope: "allow_list",
+        allowed_entity_ids: [bobId],
+        excluded_entity_ids: [],
+      },
+      priority: 10,
+    });
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+      }),
+      ["demo"],
+    );
+
+    expect(policy.authorizationForTarget(targetSession)).toBeNull();
+    expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).toThrow(/not structurally authorized/);
+  });
+
   it("omits prompt targets and rejects when the rolling outbound cap is exhausted", async () => {
     const harness = setup();
     cleanups.push(() => {

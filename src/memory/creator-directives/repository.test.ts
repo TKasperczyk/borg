@@ -12,7 +12,12 @@ import {
 import { creatorDirectiveMigrations } from "./migrations.js";
 import { CreatorDirectiveRepository, evaluateCreatorDirectiveRenderMode } from "./repository.js";
 import { creatorDirectiveQueueInputSchema, creatorDirectiveSchema } from "./types.js";
-import type { CreatorDirective, CreatorDirectiveQueueInput, DisclosurePolicy } from "./types.js";
+import type {
+  ActivationPolicy,
+  CreatorDirective,
+  CreatorDirectiveQueueInput,
+  DisclosurePolicy,
+} from "./types.js";
 
 const BOUNDARY_PROMPT =
   "A creator-defined confidentiality boundary applies. Decline to discuss confidential details.";
@@ -39,6 +44,15 @@ function disclosurePolicy(overrides: Partial<DisclosurePolicy> = {}): Disclosure
     denied_audience_behavior: "omit",
     boundary_prompt: null,
     topic_tags: [],
+    ...overrides,
+  };
+}
+
+function activationPolicy(overrides: Partial<ActivationPolicy> = {}): ActivationPolicy {
+  return {
+    scope: "same_as_disclosure",
+    allowed_entity_ids: [],
+    excluded_entity_ids: [],
     ...overrides,
   };
 }
@@ -221,6 +235,121 @@ describe("CreatorDirectiveRepository", () => {
       db.close();
     }
   });
+
+  it("queues and round-trips fact-only subject facts without operational directives", () => {
+    const { db, repository } = createRepository();
+    const subject = createEntityId();
+    const audience = createEntityId();
+
+    try {
+      const input = queueInput({
+        kind: "subject_fact",
+        subjectKind: "entity",
+        subjectEntityId: subject,
+        canonicalFact: "The launch review is scheduled for Monday.",
+        operationalDirective: null,
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "allow_list",
+          allowed_entity_ids: [audience],
+          subject_may_know: true,
+        }),
+        activationPolicy: activationPolicy({
+          scope: "allow_list",
+          allowed_entity_ids: [audience],
+        }),
+      });
+      const schemaResult = creatorDirectiveQueueInputSchema.safeParse(input);
+
+      expect(schemaResult.success).toBe(true);
+
+      const directive = repository.queue(input);
+
+      expect(directive).toMatchObject({
+        kind: "subject_fact",
+        canonical_fact: "The launch review is scheduled for Monday.",
+        operational_directive: null,
+      });
+      expect(repository.get(directive.id)).toEqual(directive);
+
+      const applicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: audience,
+          participantEntityIds: [audience],
+          sessionRole: "participant",
+        }),
+      );
+
+      expect(applicable[directive.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "explicit_allow",
+        },
+        render_mode: "content",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["response_policy", "routing_instruction"] as const)(
+    "requires operational directives for %s records",
+    (kind) => {
+      const { db, repository } = createRepository();
+      const input = queueInput({
+        kind,
+        canonicalFact: null,
+        operationalDirective: null,
+      });
+
+      try {
+        const schemaResult = creatorDirectiveQueueInputSchema.safeParse(input);
+        expect(schemaResult.success).toBe(false);
+        if (schemaResult.success) {
+          throw new Error("expected behavioral directive without operationalDirective to fail");
+        }
+        expect(schemaResult.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: ["operationalDirective"],
+              message: "behavioral creator directive requires operationalDirective",
+            }),
+          ]),
+        );
+
+        let error: unknown = null;
+        try {
+          repository.queue(input);
+        } catch (caught) {
+          error = caught;
+        }
+        expect(error).toBeInstanceOf(StorageError);
+        expect(error).toMatchObject({ code: "CREATOR_DIRECTIVE_INVALID" });
+
+        const valid = repository.queue({
+          ...input,
+          operationalDirective: "Use this behavioral directive when active.",
+        });
+        const storedSchemaResult = creatorDirectiveSchema.safeParse({
+          ...valid,
+          operational_directive: null,
+        });
+        expect(storedSchemaResult.success).toBe(false);
+        if (storedSchemaResult.success) {
+          throw new Error("expected stored behavioral directive without operational_directive to fail");
+        }
+        expect(storedSchemaResult.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: ["operational_directive"],
+              message: "behavioral creator directive requires operational_directive",
+            }),
+          ]),
+        );
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it("rejects empty authorization stream entry anchors", () => {
     const { db, repository } = createRepository();
@@ -507,6 +636,341 @@ describe("CreatorDirectiveRepository", () => {
       expect(directive.disclosure_policy.excluded_entity_ids).toEqual([excluded]);
       expect(applicable[directive.id]?.render_mode).toBe("boundary");
       expect(applicable[directive.id]?.reason).toBe("explicit_exclude_boundary");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("activates allow-listed participant sessions without disclosing operator-only content", () => {
+    const { db, repository } = createRepository();
+    const creator = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          kind: "response_policy",
+          createdByEntityId: creator,
+          operationalDirective: "Use this creator-authorized response policy when active.",
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+          }),
+          activationPolicy: activationPolicy({
+            scope: "allow_list",
+            allowed_entity_ids: [alice],
+          }),
+        }),
+      );
+
+      const aliceApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          participantEntityIds: [alice],
+          sessionRole: "participant",
+        }),
+      );
+      expect(aliceApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "explicit_allow",
+        },
+        disclosure: {
+          render_mode: "omit",
+          reason: "operator_only_omitted",
+        },
+        render_mode: "omit",
+        reason: "operator_only_omitted",
+      });
+
+      const bobApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: bob,
+          participantEntityIds: [bob],
+          sessionRole: "participant",
+        }),
+      );
+      expect(bobApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "unauthorized_omit",
+        },
+        disclosure: {
+          render_mode: "omit",
+          reason: "operator_only_omitted",
+        },
+        render_mode: "omit",
+      });
+
+      const operatorApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          currentSenderBorgRole: "creator",
+          sessionRole: "operator",
+        }),
+      );
+      expect(operatorApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "explicit_allow",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "operator_only",
+        },
+        render_mode: "content",
+        reason: "operator_only",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps all_except activation inactive when an excluded recipient is present", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [bob],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+          activationPolicy: activationPolicy({
+            scope: "all_except",
+            excluded_entity_ids: [bob],
+          }),
+        }),
+      );
+
+      const bobApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: bob,
+          sessionRole: "participant",
+        }),
+      );
+      expect(bobApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "explicit_exclude",
+        },
+        disclosure: {
+          render_mode: "boundary",
+          reason: "explicit_exclude_boundary",
+        },
+        render_mode: "boundary",
+      });
+
+      const groupApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [alice, bob],
+          sessionRole: "participant",
+        }),
+      );
+      expect(groupApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "group_contains_excluded_entity",
+        },
+        disclosure: {
+          render_mode: "boundary",
+          reason: "group_contains_excluded_entity",
+        },
+        render_mode: "boundary",
+        reason: "group_contains_excluded_entity",
+      });
+
+      const aliceApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          sessionRole: "participant",
+        }),
+      );
+      expect(aliceApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "all_except",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+        render_mode: "content",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies activation allow_list exclusions before allowed recipient intersection", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const directive = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+          }),
+          activationPolicy: activationPolicy({
+            scope: "allow_list",
+            allowed_entity_ids: [alice],
+            excluded_entity_ids: [bob],
+          }),
+        }),
+      );
+
+      const bobApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: bob,
+          sessionRole: "participant",
+        }),
+      );
+      expect(bobApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "explicit_exclude",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+
+      const groupApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [alice, bob],
+          sessionRole: "participant",
+        }),
+      );
+      expect(groupApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "group_contains_excluded_entity",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+
+      const aliceApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          sessionRole: "participant",
+        }),
+      );
+      expect(aliceApplicable[directive.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "explicit_allow",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("defaults activation to same_as_disclosure and preserves legacy render applicability", () => {
+    const { db, repository } = createRepository();
+    const creator = createEntityId();
+    const audience = createEntityId();
+    const other = createEntityId();
+
+    try {
+      const publicDirective = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+          }),
+          priority: 10,
+        }),
+      );
+      const deniedDirective = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [other],
+          }),
+          priority: 9,
+        }),
+      );
+      const boundaryDirective = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [audience],
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+          priority: 8,
+        }),
+      );
+      const operatorOnly = repository.queue(
+        queueInput({
+          createdByEntityId: creator,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+          }),
+          priority: 7,
+        }),
+      );
+
+      expect(publicDirective.activation_policy).toEqual({
+        scope: "same_as_disclosure",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+      });
+
+      const participantApplicable = repository.listApplicable({
+        currentAudienceEntityId: audience,
+        sessionRole: "participant",
+      });
+      for (const item of participantApplicable) {
+        expect(item.disclosure).toEqual({
+          render_mode: item.render_mode,
+          reason: item.reason,
+        });
+        expect(item.activation.active).toBe(item.render_mode !== "omit");
+      }
+
+      const participantById = applicableById(participantApplicable);
+      expect(participantById[publicDirective.id]?.activation.active).toBe(true);
+      expect(participantById[deniedDirective.id]?.activation.active).toBe(false);
+      expect(participantById[boundaryDirective.id]?.activation.active).toBe(true);
+      expect(participantById[operatorOnly.id]?.activation.active).toBe(false);
+
+      const operatorById = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: creator,
+          currentSenderBorgRole: "creator",
+          sessionRole: "operator",
+        }),
+      );
+      expect(operatorById[operatorOnly.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "same_as_disclosure",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "operator_only",
+        },
+        render_mode: "content",
+      });
     } finally {
       db.close();
     }

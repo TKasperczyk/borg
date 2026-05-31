@@ -2481,6 +2481,8 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
         }),
       );
       expect(finalizerSystem).not.toContain("operator-only null-sender directive");
+      expect(finalizerSystem).not.toContain('mode="private_operation"');
+      expect(finalizerSystem).not.toContain("<operational_directive>");
       expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
       expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
       expect(finalizerSystem).not.toContain("contacted Borg");
@@ -2728,6 +2730,220 @@ describe("TurnOrchestrator creator identity prompt", () => {
         "scope_boundary: This block authorizes only the creator's name and creator relationship.",
       );
       expect(finalizerSystem).not.toContain("<borg_creator_context>");
+    } finally {
+      await borg.close();
+    }
+  });
+});
+
+describe("TurnOrchestrator creator directive briefing prompt", () => {
+  const tempDirs: string[] = [];
+  const briefingCloseTag = "</borg_creator_directive_briefing>";
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  function creatorDirectiveBriefingBlock(system: string): string | null {
+    const start = system.indexOf("<borg_creator_directive_briefing>");
+
+    if (start < 0) {
+      return null;
+    }
+
+    const end = system.indexOf(briefingCloseTag, start);
+
+    expect(end).toBeGreaterThan(start);
+
+    return system.slice(start, end + briefingCloseTag.length);
+  }
+
+  function countOccurrences(text: string, needle: string): number {
+    return text.split(needle).length - 1;
+  }
+
+  it("activates operator-only response policies as private operations for the allow-listed participant", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-creator-directive-briefing-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_184_000);
+    const operatorSessionId = createSessionId();
+    const aliceSessionId = createSessionId();
+    const bobSessionId = createSessionId();
+    const expectAliceDirective =
+      "Expect contact from Alice; conduct a multi-turn exchange with her.";
+    const relayAnswerDirective =
+      "When the image instruction arrives, parse the answer and provide it to Alice.";
+    const sarahFact = "Tom's cat's name is SARAH.";
+    const llm = new FakeLLMClient({
+      responses: [
+        ...simpleSuccessfulTurnResponses("Alice turn completed."),
+        ...simpleSuccessfulTurnResponses("Bob turn completed."),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const tomId = borg.entities.resolve("Tom");
+      const aliceId = borg.entities.resolve("Alice");
+      const bobId = borg.entities.resolve("Bob");
+      borg.entities.setBorgRole(tomId, "creator");
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        source_external_id: "operator-briefing",
+        label: "Operator Briefing",
+        audience_label: "Tom",
+        audience_entity_id: tomId,
+        conversation_kind: "dm",
+        audience_role: "operator",
+      });
+      borg.sessions.ensure({
+        session_id: aliceSessionId,
+        source_type: "demo",
+        source_external_id: "alice-dm",
+        label: "Alice DM",
+        audience_label: "Alice",
+        audience_entity_id: aliceId,
+        conversation_kind: "dm",
+      });
+      borg.sessions.ensure({
+        session_id: bobSessionId,
+        source_type: "demo",
+        source_external_id: "bob-dm",
+        label: "Bob DM",
+        audience_label: "Bob",
+        audience_entity_id: bobId,
+        conversation_kind: "dm",
+      });
+
+      const expectAliceRecord = borg.creatorDirectives.queue({
+        kind: "response_policy",
+        createdByEntityId: tomId,
+        sourceSessionId: operatorSessionId,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "system",
+        canonicalFact: null,
+        operationalDirective: expectAliceDirective,
+        disclosurePolicy: {
+          content_scope: "operator_only",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+          subject_may_know: null,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: [],
+        },
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [aliceId],
+          excluded_entity_ids: [],
+        },
+        priority: 20,
+        createdAt: clock.now(),
+      });
+      const relayAnswerRecord = borg.creatorDirectives.queue({
+        kind: "response_policy",
+        createdByEntityId: tomId,
+        sourceSessionId: operatorSessionId,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "system",
+        canonicalFact: null,
+        operationalDirective: relayAnswerDirective,
+        disclosurePolicy: {
+          content_scope: "operator_only",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+          subject_may_know: null,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: [],
+        },
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [aliceId],
+          excluded_entity_ids: [],
+        },
+        priority: 19,
+        createdAt: clock.now() + 1,
+      });
+      const sarahRecord = borg.creatorDirectives.queue({
+        kind: "subject_fact",
+        createdByEntityId: tomId,
+        sourceSessionId: operatorSessionId,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "entity",
+        subjectEntityId: tomId,
+        canonicalFact: sarahFact,
+        operationalDirective: "Answer with this fact when Alice asks about Tom's cat.",
+        disclosurePolicy: {
+          content_scope: "allow_list",
+          allowed_entity_ids: [tomId, aliceId],
+          excluded_entity_ids: [],
+          subject_may_know: true,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: [],
+        },
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [aliceId],
+          excluded_entity_ids: [],
+        },
+        priority: 18,
+        createdAt: clock.now() + 2,
+      });
+
+      await borg.turn({
+        sessionId: aliceSessionId,
+        audience: "Alice",
+        userMessage: "Hi, Tom said you might be expecting me.",
+        stakes: "low",
+      });
+      await borg.turn({
+        sessionId: bobSessionId,
+        audience: "Bob",
+        userMessage: "Hi, did Tom brief you about Alice?",
+        stakes: "low",
+      });
+
+      const requests = finalizerRequests(llm.requests);
+      const aliceBriefing = creatorDirectiveBriefingBlock(systemText(requests[0]));
+      const bobSystem = systemText(requests[1]);
+      const bobBriefing = creatorDirectiveBriefingBlock(bobSystem);
+
+      expect(aliceBriefing).not.toBeNull();
+      expect(countOccurrences(aliceBriefing ?? "", 'mode="private_operation"')).toBe(2);
+      expect(
+        countOccurrences(aliceBriefing ?? "", 'kind="response_policy" mode="private_operation"'),
+      ).toBe(2);
+      expect(aliceBriefing).toContain(
+        `<operational_directive>${expectAliceDirective}</operational_directive>`,
+      );
+      expect(aliceBriefing).toContain(
+        `<operational_directive>${relayAnswerDirective}</operational_directive>`,
+      );
+      expect(aliceBriefing).toContain('kind="subject_fact"');
+      expect(aliceBriefing).toContain(`<canonical_fact>${sarahFact}</canonical_fact>`);
+      expect(aliceBriefing).toContain("<mention_policy>answer_if_asked</mention_policy>");
+      expect(aliceBriefing).toContain('id_alias="cd_');
+      expect(aliceBriefing).not.toContain(expectAliceRecord.id);
+      expect(aliceBriefing).not.toContain(relayAnswerRecord.id);
+      expect(aliceBriefing).not.toContain(sarahRecord.id);
+      expect(aliceBriefing).not.toContain("cdir_");
+
+      expect(bobBriefing).toBeNull();
+      expect(bobSystem).not.toContain('mode="private_operation"');
+      expect(bobSystem).not.toContain(expectAliceDirective);
+      expect(bobSystem).not.toContain(relayAnswerDirective);
+      expect(bobSystem).not.toContain(sarahFact);
     } finally {
       await borg.close();
     }

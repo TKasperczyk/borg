@@ -1,10 +1,14 @@
 export { creatorDirectiveMigrations } from "./migrations.js";
 export {
   CreatorDirectiveRepository,
+  creatorDirectiveDisclosureBlocksPrivateOperation,
+  creatorDirectiveHasEntity,
   evaluateCreatorDirectiveRenderMode,
   type CreatorDirectiveRepositoryOptions,
 } from "./repository.js";
 export {
+  CREATOR_DIRECTIVE_ACTIVATION_REASONS,
+  CREATOR_DIRECTIVE_ACTIVATION_SCOPES,
   CREATOR_DIRECTIVE_CONTENT_SCOPES,
   CREATOR_DIRECTIVE_DENIED_AUDIENCE_BEHAVIORS,
   CREATOR_DIRECTIVE_KINDS,
@@ -14,7 +18,10 @@ export {
   CREATOR_DIRECTIVE_SEMANTIC_SLOTS,
   CREATOR_DIRECTIVE_STATUSES,
   CREATOR_DIRECTIVE_SUBJECT_KINDS,
+  activationPolicySchema,
   creatorDirectiveApplicableOptionsSchema,
+  creatorDirectiveActivationReasonSchema,
+  creatorDirectiveActivationScopeSchema,
   creatorDirectiveContentScopeSchema,
   creatorDirectiveDeniedAudienceBehaviorSchema,
   creatorDirectiveEntityIdSchema,
@@ -33,7 +40,10 @@ export {
   creatorDirectiveSubjectKindSchema,
   creatorDirectiveTopicTagSchema,
   disclosurePolicySchema,
+  type ActivationPolicy,
   type CreatorDirective,
+  type CreatorDirectiveActivationReason,
+  type CreatorDirectiveActivationScope,
   type CreatorDirectiveApplicable,
   type CreatorDirectiveApplicableOptions,
   type CreatorDirectiveContentScope,

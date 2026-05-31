@@ -36,6 +36,14 @@ export const CREATOR_DIRECTIVE_CONTENT_SCOPES = [
   "subject_only",
   "all_except",
 ] as const;
+export const CREATOR_DIRECTIVE_ACTIVATION_SCOPES = [
+  "same_as_disclosure",
+  "operator_only",
+  "public",
+  "allow_list",
+  "subject_only",
+  "all_except",
+] as const;
 export const CREATOR_DIRECTIVE_MENTION_POLICIES = [
   "proactive",
   "answer_if_asked",
@@ -59,6 +67,30 @@ export const CREATOR_DIRECTIVE_RENDER_REASONS = [
   "group_contains_excluded_entity",
   "same_turn_n_plus_one",
 ] as const;
+export const CREATOR_DIRECTIVE_ACTIVATION_REASONS = [
+  "same_as_disclosure",
+  "same_as_disclosure_omitted",
+  "operator_only",
+  "operator_only_omitted",
+  "public",
+  "explicit_allow",
+  "unauthorized_omit",
+  "subject_allowed",
+  "subject_not_present",
+  "all_except",
+  "explicit_exclude",
+  "group_contains_excluded_entity",
+] as const;
+
+const DEFAULT_CREATOR_DIRECTIVE_ACTIVATION_POLICY: {
+  scope: "same_as_disclosure";
+  allowed_entity_ids: EntityId[];
+  excluded_entity_ids: EntityId[];
+} = {
+  scope: "same_as_disclosure",
+  allowed_entity_ids: [],
+  excluded_entity_ids: [],
+};
 
 export const creatorDirectiveIdSchema = z
   .string()
@@ -93,17 +125,27 @@ export const creatorDirectiveKindSchema = z.enum(CREATOR_DIRECTIVE_KINDS);
 export const creatorDirectiveSubjectKindSchema = z.enum(CREATOR_DIRECTIVE_SUBJECT_KINDS);
 export const creatorDirectiveSemanticSlotSchema = z.enum(CREATOR_DIRECTIVE_SEMANTIC_SLOTS);
 export const creatorDirectiveContentScopeSchema = z.enum(CREATOR_DIRECTIVE_CONTENT_SCOPES);
+export const creatorDirectiveActivationScopeSchema = z.enum(CREATOR_DIRECTIVE_ACTIVATION_SCOPES);
 export const creatorDirectiveMentionPolicySchema = z.enum(CREATOR_DIRECTIVE_MENTION_POLICIES);
 export const creatorDirectiveDeniedAudienceBehaviorSchema = z.enum(
   CREATOR_DIRECTIVE_DENIED_AUDIENCE_BEHAVIORS,
 );
 export const creatorDirectiveRenderModeSchema = z.enum(CREATOR_DIRECTIVE_RENDER_MODES);
 export const creatorDirectiveRenderReasonSchema = z.enum(CREATOR_DIRECTIVE_RENDER_REASONS);
+export const creatorDirectiveActivationReasonSchema = z.enum(CREATOR_DIRECTIVE_ACTIVATION_REASONS);
 
 export const creatorDirectiveTopicTagSchema = z
   .string()
   .transform((value) => value.normalize("NFKC").trim().toLowerCase())
   .pipe(z.string().min(1).max(64));
+
+const operationalDirectiveSchema = z.string().trim().min(1);
+
+function creatorDirectiveKindRequiresOperationalDirective(
+  kind: z.infer<typeof creatorDirectiveKindSchema>,
+): boolean {
+  return kind === "response_policy" || kind === "routing_instruction";
+}
 
 export const disclosurePolicySchema = z
   .object({
@@ -216,6 +258,121 @@ export const disclosurePolicySchema = z
     }
   });
 
+export const activationPolicySchema = z
+  .object({
+    scope: creatorDirectiveActivationScopeSchema,
+    allowed_entity_ids: z.array(creatorDirectiveEntityIdSchema),
+    excluded_entity_ids: z.array(creatorDirectiveEntityIdSchema),
+  })
+  .superRefine((value, ctx) => {
+    if (value.scope === "same_as_disclosure") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "same_as_disclosure scope requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "same_as_disclosure scope requires empty excluded_entity_ids",
+        });
+      }
+    }
+
+    if (value.scope === "public") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "public scope requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "public scope requires empty excluded_entity_ids",
+        });
+      }
+    }
+
+    if (value.scope === "allow_list" && value.allowed_entity_ids.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "allow_list requires at least one allowed entity",
+      });
+    }
+
+    if (value.scope === "allow_list") {
+      const allowedEntityIds = new Set(value.allowed_entity_ids);
+      if (value.excluded_entity_ids.some((id) => allowedEntityIds.has(id))) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "allow_list allowed and excluded entity ids must not overlap",
+        });
+      }
+    }
+
+    if (value.scope === "all_except" && value.allowed_entity_ids.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "all_except requires empty allowed_entity_ids",
+      });
+    }
+
+    if (value.scope === "all_except" && value.excluded_entity_ids.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["excluded_entity_ids"],
+        message: "all_except requires at least one excluded entity",
+      });
+    }
+
+    if (value.scope === "operator_only") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "operator_only requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "operator_only requires empty excluded_entity_ids",
+        });
+      }
+    }
+
+    if (value.scope === "subject_only") {
+      if (value.allowed_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowed_entity_ids"],
+          message: "subject_only requires empty allowed_entity_ids",
+        });
+      }
+
+      if (value.excluded_entity_ids.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["excluded_entity_ids"],
+          message: "subject_only requires empty excluded_entity_ids",
+        });
+      }
+    }
+  });
+
 function subjectMayKnowPolicyIsValid(input: {
   subjectEntityId: EntityId | null | undefined;
   policy: DisclosurePolicy;
@@ -249,8 +406,9 @@ export const creatorDirectiveSchema = z
     subject_entity_id: creatorDirectiveEntityIdSchema.nullable(),
     semantic_slot: creatorDirectiveSemanticSlotSchema.nullable(),
     canonical_fact: z.string().trim().min(1).nullable(),
-    operational_directive: z.string().trim().min(1),
+    operational_directive: operationalDirectiveSchema.nullable(),
     disclosure_policy: disclosurePolicySchema,
+    activation_policy: activationPolicySchema,
     priority: z.number().int(),
     superseded_by: creatorDirectiveIdSchema.nullable(),
     revoked_reason: z.string().trim().min(1).nullable(),
@@ -277,6 +435,14 @@ export const creatorDirectiveSchema = z
       });
     }
 
+    if (value.activation_policy.scope === "subject_only" && value.subject_entity_id === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subject_entity_id"],
+        message: "subject_only activation requires subject_entity_id",
+      });
+    }
+
     if (
       !subjectMayKnowPolicyIsValid({
         subjectEntityId: value.subject_entity_id,
@@ -297,6 +463,17 @@ export const creatorDirectiveSchema = z
         message: "slotted creator directive requires canonical_fact",
       });
     }
+
+    if (
+      creatorDirectiveKindRequiresOperationalDirective(value.kind) &&
+      value.operational_directive === null
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["operational_directive"],
+        message: "behavioral creator directive requires operational_directive",
+      });
+    }
   });
 
 export const creatorDirectiveQueueInputSchema = z
@@ -312,8 +489,9 @@ export const creatorDirectiveQueueInputSchema = z
     semanticSlot: creatorDirectiveSemanticSlotSchema.nullable().optional(),
     semanticValue: z.string().trim().min(1).nullable().optional(),
     canonicalFact: z.string().trim().min(1).nullable().optional(),
-    operationalDirective: z.string().trim().min(1),
+    operationalDirective: operationalDirectiveSchema.nullable().optional(),
     disclosurePolicy: disclosurePolicySchema,
+    activationPolicy: activationPolicySchema.default(DEFAULT_CREATOR_DIRECTIVE_ACTIVATION_POLICY),
     priority: z.number().int(),
     createdAt: z.number().int().finite().optional(),
   })
@@ -338,6 +516,17 @@ export const creatorDirectiveQueueInputSchema = z
         code: "custom",
         path: ["subjectEntityId"],
         message: "subject_only requires subjectEntityId",
+      });
+    }
+
+    if (
+      value.activationPolicy.scope === "subject_only" &&
+      (value.subjectEntityId === undefined || value.subjectEntityId === null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subjectEntityId"],
+        message: "subject_only activation requires subjectEntityId",
       });
     }
 
@@ -375,6 +564,17 @@ export const creatorDirectiveQueueInputSchema = z
         message: "semanticValue requires semanticSlot",
       });
     }
+
+    if (
+      creatorDirectiveKindRequiresOperationalDirective(value.kind) &&
+      (value.operationalDirective === undefined || value.operationalDirective === null)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["operationalDirective"],
+        message: "behavioral creator directive requires operationalDirective",
+      });
+    }
   });
 
 export const creatorDirectiveListFilterSchema = z
@@ -400,25 +600,39 @@ export const creatorDirectiveApplicableOptionsSchema = z
   .strict();
 
 export type DisclosurePolicy = z.infer<typeof disclosurePolicySchema>;
+export type ActivationPolicy = z.infer<typeof activationPolicySchema>;
 export type CreatorDirective = z.infer<typeof creatorDirectiveSchema>;
 export type CreatorDirectiveStatus = z.infer<typeof creatorDirectiveStatusSchema>;
 export type CreatorDirectiveKind = z.infer<typeof creatorDirectiveKindSchema>;
 export type CreatorDirectiveSubjectKind = z.infer<typeof creatorDirectiveSubjectKindSchema>;
 export type CreatorDirectiveSemanticSlot = z.infer<typeof creatorDirectiveSemanticSlotSchema>;
 export type CreatorDirectiveContentScope = z.infer<typeof creatorDirectiveContentScopeSchema>;
+export type CreatorDirectiveActivationScope = z.infer<typeof creatorDirectiveActivationScopeSchema>;
 export type CreatorDirectiveMentionPolicy = z.infer<typeof creatorDirectiveMentionPolicySchema>;
 export type CreatorDirectiveDeniedAudienceBehavior = z.infer<
   typeof creatorDirectiveDeniedAudienceBehaviorSchema
 >;
 export type CreatorDirectiveRenderMode = z.infer<typeof creatorDirectiveRenderModeSchema>;
 export type CreatorDirectiveRenderReason = z.infer<typeof creatorDirectiveRenderReasonSchema>;
-export type CreatorDirectiveQueueInput = z.infer<typeof creatorDirectiveQueueInputSchema>;
+export type CreatorDirectiveActivationReason = z.infer<
+  typeof creatorDirectiveActivationReasonSchema
+>;
+export type CreatorDirectiveQueueInput = z.input<typeof creatorDirectiveQueueInputSchema>;
 export type CreatorDirectiveListFilter = z.infer<typeof creatorDirectiveListFilterSchema>;
 export type CreatorDirectiveApplicableOptions = z.infer<
   typeof creatorDirectiveApplicableOptionsSchema
 >;
 export type CreatorDirectiveApplicable = {
   directive: CreatorDirective;
+  recipient_entity_ids: readonly EntityId[];
+  activation: {
+    active: boolean;
+    reason: CreatorDirectiveActivationReason;
+  };
+  disclosure: {
+    render_mode: CreatorDirectiveRenderMode;
+    reason: CreatorDirectiveRenderReason;
+  };
   render_mode: CreatorDirectiveRenderMode;
   reason: CreatorDirectiveRenderReason;
 };

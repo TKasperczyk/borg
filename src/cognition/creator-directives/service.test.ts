@@ -18,8 +18,15 @@ import {
 } from "../../util/ids.js";
 import { CREATOR_DIRECTIVE_TOOL_NAME } from "./extractor.js";
 import { CreatorDirectiveTurnService } from "./service.js";
+import { buildCreatorDirectiveBriefingForTurn } from "../lifecycle/turn-phase/retrieval-phase.js";
 
-function creatorDirectiveResponse(candidate: Record<string, unknown>): LLMCompleteResult {
+function creatorDirectiveResponse(
+  candidateOrCandidates: Record<string, unknown> | readonly Record<string, unknown>[],
+): LLMCompleteResult {
+  const candidates = Array.isArray(candidateOrCandidates)
+    ? candidateOrCandidates
+    : [candidateOrCandidates];
+
   return {
     text: "",
     input_tokens: 4,
@@ -32,7 +39,7 @@ function creatorDirectiveResponse(candidate: Record<string, unknown>): LLMComple
         input: {
           decision: "creator_directive",
           reason: "The creator gave explicit durable disclosure guidance.",
-          candidates: [candidate],
+          candidates,
         },
       },
     ],
@@ -278,6 +285,141 @@ describe("CreatorDirectiveTurnService", () => {
           validationStatus: "accepted",
         }),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("persists separate static and event-shaped durable facts from one briefing", async () => {
+    const harness = createHarness();
+    const userEntryId = createStreamEntryId();
+    const staticFact = "Tom's cat is named Sarah.";
+    const eventFact =
+      "Alice is expected to contact Borg as a participant in Tom's test about the cat name.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse([
+          candidate({
+            kind: "subject_fact",
+            subject_kind: "entity",
+            subject_entity_id: harness.creatorId,
+            subject_label: null,
+            semantic_slot: null,
+            semantic_value: null,
+            canonical_fact: staticFact,
+            operational_directive: null,
+            disclosure_policy: {
+              content_scope: "allow_list",
+              allowed_entity_ids: [],
+              allowed_entity_labels: ["Alice"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["test"],
+            },
+            activation_policy: {
+              scope: "allow_list",
+              entity_ids: [],
+              entity_labels: ["Alice"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+            },
+          }),
+          candidate({
+            kind: "subject_fact",
+            subject_kind: "entity",
+            subject_entity_id: null,
+            subject_label: "Alice",
+            semantic_slot: null,
+            semantic_value: null,
+            canonical_fact: eventFact,
+            operational_directive: null,
+            disclosure_policy: {
+              content_scope: "allow_list",
+              allowed_entity_ids: [],
+              allowed_entity_labels: ["Alice"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+              subject_may_know: true,
+              mention_policy: "answer_if_asked",
+              denied_audience_behavior: "omit",
+              boundary_prompt: null,
+              topic_tags: ["test"],
+            },
+            activation_policy: {
+              scope: "allow_list",
+              entity_ids: [],
+              entity_labels: ["Alice"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+            },
+          }),
+        ]),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          persistedUserEntryId: userEntryId,
+          userMessage:
+            "You'll be contacted by Alice; she'll ask about my cat's name, Sarah. Feel free to tell her about this test.",
+        }),
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result.map((directive) => directive.canonical_fact)).toEqual([
+        staticFact,
+        eventFact,
+      ]);
+      expect(result.map((directive) => directive.operational_directive)).toEqual([null, null]);
+      expect(result).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            canonical_fact: eventFact,
+            subject_entity_id: harness.aliceId,
+            disclosure_policy: expect.objectContaining({
+              content_scope: "allow_list",
+              allowed_entity_ids: [harness.aliceId],
+            }),
+            activation_policy: {
+              scope: "allow_list",
+              allowed_entity_ids: [harness.aliceId],
+              excluded_entity_ids: [],
+            },
+          }),
+        ]),
+      );
+
+      const aliceApplicable = harness.repository.listApplicable({
+        currentAudienceEntityId: harness.aliceId,
+        participantEntityIds: [harness.aliceId],
+        sessionRole: "participant",
+      });
+      const briefing = buildCreatorDirectiveBriefingForTurn({
+        applicable: aliceApplicable,
+        entityRepository: { get: harness.get },
+      });
+
+      expect(aliceApplicable).toHaveLength(2);
+      expect(aliceApplicable).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            directive: expect.objectContaining({ canonical_fact: eventFact }),
+            activation: { active: true, reason: "explicit_allow" },
+            render_mode: "content",
+          }),
+        ]),
+      );
+      expect(
+        briefing?.directives.flatMap((directive) =>
+          directive.renderMode === "content" ? [directive.canonicalFact] : [],
+        ),
+      ).toEqual([staticFact, eventFact]);
     } finally {
       harness.db.close();
     }
@@ -606,6 +748,146 @@ describe("CreatorDirectiveTurnService", () => {
         ),
       ).toHaveLength(1);
       expect(harness.resolve).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("creates unknown activation labels in creator-directive context", async () => {
+    const harness = createHarness();
+    const sessionId = createSessionId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            activation_policy: {
+              scope: "allow_list",
+              entity_ids: [],
+              entity_labels: ["Mallory"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          sessionId,
+        }),
+      );
+
+      const mallory = [...harness.entities.values()].find(
+        (entity) => entity.canonical_name === "Mallory",
+      );
+
+      expect(result).toHaveLength(1);
+      expect(mallory).toBeDefined();
+      expect(mallory).toMatchObject({
+        canonical_name: "Mallory",
+        name_provenance: "creator_directive",
+      });
+      expect(result[0]?.activation_policy).toEqual({
+        scope: "allow_list",
+        allowed_entity_ids: [mallory!.id],
+        excluded_entity_ids: [],
+      });
+      expect(harness.resolve).toHaveBeenCalledWith("Mallory", {
+        kind: "person",
+        provenance: "creator_directive",
+      });
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("rejects ambiguous activation label matches", async () => {
+    const harness = createHarness();
+    const sessionId = createSessionId();
+    const firstMallory = createEntityId();
+    const secondMallory = createEntityId();
+    harness.entities.set(firstMallory, entityRecord(firstMallory, "Mallory"));
+    harness.entities.set(secondMallory, entityRecord(secondMallory, "Mallory"));
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            activation_policy: {
+              scope: "allow_list",
+              entity_ids: [],
+              entity_labels: ["Mallory"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+          sessionId,
+        }),
+      );
+
+      expect(result).toEqual([]);
+      expect(harness.repository.list()).toEqual([]);
+      expect(harness.resolve).not.toHaveBeenCalledWith("Mallory", expect.anything());
+      expect(harness.tracer.emit).toHaveBeenCalledWith(
+        "creator_directive_candidate_rejected",
+        expect.objectContaining({
+          turnId: "turn-creator-directive",
+          session_id: sessionId,
+          validationStatus: "rejected",
+          reason: "ambiguous_activation_entity",
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("persists resolved activation ids on directives", async () => {
+    const harness = createHarness();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        creatorDirectiveResponse(
+          candidate({
+            activation_policy: {
+              scope: "allow_list",
+              entity_ids: [],
+              entity_labels: ["Alice"],
+              excluded_entity_ids: [],
+              excluded_entity_labels: [],
+            },
+          }),
+        ),
+      ],
+    });
+
+    try {
+      const result = await harness.service.extractAndPersist(
+        baseInput(harness.creatorId, {
+          llmClient,
+        }),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.activation_policy).toEqual({
+        scope: "allow_list",
+        allowed_entity_ids: [harness.aliceId],
+        excluded_entity_ids: [],
+      });
+      expect(harness.repository.get(result[0]!.id)?.activation_policy).toEqual({
+        scope: "allow_list",
+        allowed_entity_ids: [harness.aliceId],
+        excluded_entity_ids: [],
+      });
     } finally {
       harness.db.close();
     }

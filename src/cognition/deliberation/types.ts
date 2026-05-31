@@ -105,9 +105,18 @@ export type CreatorDirectiveBriefingBoundaryDirective = {
   createdAt: number;
 };
 
+export type CreatorDirectiveBriefingPrivateOperationDirective = {
+  renderMode: "private_operation";
+  kind: "response_policy" | "routing_instruction";
+  operationalDirective: string;
+  priority: number;
+  createdAt: number;
+};
+
 export type CreatorDirectiveBriefingDirective =
   | CreatorDirectiveBriefingContentDirective
-  | CreatorDirectiveBriefingBoundaryDirective;
+  | CreatorDirectiveBriefingBoundaryDirective
+  | CreatorDirectiveBriefingPrivateOperationDirective;
 
 export type CreatorDirectiveBriefing = {
   directives: readonly CreatorDirectiveBriefingDirective[];

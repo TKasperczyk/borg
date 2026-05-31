@@ -16,3 +16,4 @@ tmp
 .codex
 .mcp.json
 .design-dump/
+.tmp/

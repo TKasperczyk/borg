@@ -44,6 +44,7 @@ import type {
   CreatorDirectiveApplicable,
   CreatorDirectiveKind,
 } from "../../../memory/creator-directives/index.js";
+import { creatorDirectiveDisclosureBlocksPrivateOperation } from "../../../memory/creator-directives/index.js";
 import {
   DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
   DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
@@ -260,6 +261,68 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
   }
 }
 
+type CreatorDirectivePrivateOperationKind = Extract<
+  CreatorDirectiveKind,
+  "response_policy" | "routing_instruction"
+>;
+
+function isPrivateOperationCreatorDirectiveKind(
+  kind: CreatorDirectiveKind,
+): kind is CreatorDirectivePrivateOperationKind {
+  return kind === "response_policy" || kind === "routing_instruction";
+}
+
+function canRenderCreatorDirectivePrivateOperation(
+  item: CreatorDirectiveApplicable,
+): item is CreatorDirectiveApplicable & {
+  directive: CreatorDirective & {
+    kind: CreatorDirectivePrivateOperationKind;
+    operational_directive: string;
+  };
+} {
+  if (!item.activation.active) {
+    return false;
+  }
+
+  if (item.disclosure.render_mode === "content") {
+    return false;
+  }
+
+  if (!isPrivateOperationCreatorDirectiveKind(item.directive.kind)) {
+    return false;
+  }
+
+  if (item.directive.operational_directive === null) {
+    return false;
+  }
+
+  return !creatorDirectiveDisclosureBlocksPrivateOperation({
+    directive: item.directive,
+    recipientEntityIds: item.recipient_entity_ids,
+  });
+}
+
+function creatorDirectiveBriefingLane(
+  item: CreatorDirectiveApplicable,
+): "content" | "boundary" | "private_operation" | "omitted" {
+  if (!item.activation.active) {
+    return "omitted";
+  }
+
+  if (item.render_mode === "content") {
+    return contentPayloadForCreatorDirective(item.directive) === null ? "omitted" : "content";
+  }
+
+  if (
+    item.render_mode === "boundary" &&
+    item.directive.disclosure_policy.boundary_prompt !== null
+  ) {
+    return "boundary";
+  }
+
+  return canRenderCreatorDirectivePrivateOperation(item) ? "private_operation" : "omitted";
+}
+
 export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   entityRepository: Pick<EntityRepository, "get">;
@@ -267,6 +330,10 @@ export function buildCreatorDirectiveBriefing(input: {
   const contentDirectives = input.applicable
     .flatMap((item) => {
       if (item.render_mode !== "content") {
+        return [];
+      }
+
+      if (!item.activation.active) {
         return [];
       }
 
@@ -293,9 +360,20 @@ export function buildCreatorDirectiveBriefing(input: {
       ];
     })
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+  const privateOperationDirectives = input.applicable
+    .filter(canRenderCreatorDirectivePrivateOperation)
+    .map((item) => ({
+      renderMode: "private_operation" as const,
+      kind: item.directive.kind,
+      operationalDirective: item.directive.operational_directive,
+      priority: item.directive.priority,
+      createdAt: item.directive.created_at,
+    }))
+    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
   const boundaryDirectives = input.applicable
     .filter(
       (item) =>
+        item.activation.active &&
         item.render_mode === "boundary" &&
         item.directive.disclosure_policy.boundary_prompt !== null,
     )
@@ -305,7 +383,7 @@ export function buildCreatorDirectiveBriefing(input: {
       createdAt: item.directive.created_at,
     }))
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
-  const directives = [...contentDirectives, ...boundaryDirectives];
+  const directives = [...contentDirectives, ...privateOperationDirectives, ...boundaryDirectives];
 
   return directives.length === 0 ? null : { directives };
 }
@@ -359,11 +437,7 @@ function traceCreatorDirectiveRendered(input: {
       item.directive.authorization_stream_entry_ids.some((entryId) =>
         currentUserEntryIds.has(entryId),
       );
-    const renderedMode = sameTurnNPlusOne
-      ? "omitted"
-      : item.render_mode === "omit"
-        ? "omitted"
-        : item.render_mode;
+    const renderedMode = sameTurnNPlusOne ? "omitted" : creatorDirectiveBriefingLane(item);
 
     input.tracer.emit("creator_directive_rendered", {
       turnId: input.turnId,
@@ -373,6 +447,10 @@ function traceCreatorDirectiveRendered(input: {
       participant_entity_ids: [...input.participantEntityIds],
       render_mode: renderedMode,
       reason: sameTurnNPlusOne ? "same_turn_n_plus_one" : item.reason,
+      activation_active: item.activation.active,
+      activation_reason: item.activation.reason,
+      disclosure_render_mode: item.disclosure.render_mode,
+      disclosure_reason: item.disclosure.reason,
     });
   }
 }
@@ -562,9 +640,18 @@ export async function runRetrievalPhase(input: {
   const creatorDirectiveApplicable =
     input.operatorOnlyDirectivesAllowed === false
       ? creatorDirectiveApplicableRaw.map((item) =>
-          item.directive.disclosure_policy.content_scope === "operator_only"
+          item.directive.disclosure_policy.content_scope === "operator_only" ||
+          item.directive.activation_policy.scope === "operator_only"
             ? {
                 ...item,
+                activation: {
+                  active: false,
+                  reason: "operator_only_omitted" as const,
+                },
+                disclosure: {
+                  render_mode: "omit" as const,
+                  reason: "operator_only_omitted" as const,
+                },
                 render_mode: "omit" as const,
                 reason: "operator_only_omitted" as const,
               }

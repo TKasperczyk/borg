@@ -1,6 +1,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { BorgRole, EntityRepository } from "../../memory/commitments/index.js";
 import type {
+  ActivationPolicy,
   CreatorDirective,
   CreatorDirectiveQueueInput,
   CreatorDirectiveRepository,
@@ -52,6 +53,8 @@ type CandidateResolution =
       subjectEntityId: EntityId | null;
       allowedEntityIds: EntityId[];
       excludedEntityIds: EntityId[];
+      activationEntityIds: EntityId[];
+      activationExcludedEntityIds: EntityId[];
     }
   | { accepted: false; reason: string };
 
@@ -251,11 +254,35 @@ export class CreatorDirectiveTurnService {
       return excluded;
     }
 
+    const activation = this.resolveEntityIdList({
+      ids: candidate.activation_policy.entity_ids,
+      labels: candidate.activation_policy.entity_labels,
+      unknownReason: "unknown_activation_entity",
+      ambiguousReason: "ambiguous_activation_entity",
+    });
+
+    if (!activation.accepted) {
+      return activation;
+    }
+
+    const activationExcluded = this.resolveEntityIdList({
+      ids: candidate.activation_policy.excluded_entity_ids,
+      labels: candidate.activation_policy.excluded_entity_labels,
+      unknownReason: "unknown_activation_excluded_entity",
+      ambiguousReason: "ambiguous_activation_excluded_entity",
+    });
+
+    if (!activationExcluded.accepted) {
+      return activationExcluded;
+    }
+
     return {
       accepted: true,
       subjectEntityId,
       allowedEntityIds: allowed.ids,
       excludedEntityIds: excluded.ids,
+      activationEntityIds: activation.ids,
+      activationExcludedEntityIds: activationExcluded.ids,
     };
   }
 
@@ -313,6 +340,18 @@ export class CreatorDirectiveTurnService {
     };
   }
 
+  private buildActivationPolicy(input: {
+    candidate: CreatorDirectiveCandidate;
+    activationEntityIds: readonly EntityId[];
+    activationExcludedEntityIds: readonly EntityId[];
+  }): ActivationPolicy {
+    return {
+      scope: input.candidate.activation_policy.scope,
+      allowed_entity_ids: uniqueEntityIds(input.activationEntityIds),
+      excluded_entity_ids: uniqueEntityIds(input.activationExcludedEntityIds),
+    };
+  }
+
   private buildQueueInput(input: {
     candidate: CreatorDirectiveCandidate;
     createdByEntityId: EntityId;
@@ -321,6 +360,8 @@ export class CreatorDirectiveTurnService {
     subjectEntityId: EntityId | null;
     allowedEntityIds: readonly EntityId[];
     excludedEntityIds: readonly EntityId[];
+    activationEntityIds: readonly EntityId[];
+    activationExcludedEntityIds: readonly EntityId[];
     turnId: string;
     sessionId?: SessionId;
     candidateIndex: number;
@@ -344,6 +385,11 @@ export class CreatorDirectiveTurnService {
         turnId: input.turnId,
         sessionId: input.sessionId,
         candidateIndex: input.candidateIndex,
+      }),
+      activationPolicy: this.buildActivationPolicy({
+        candidate: input.candidate,
+        activationEntityIds: input.activationEntityIds,
+        activationExcludedEntityIds: input.activationExcludedEntityIds,
       }),
       priority: input.candidate.priority,
     };
@@ -483,6 +529,8 @@ export class CreatorDirectiveTurnService {
             subjectEntityId: resolution.subjectEntityId,
             allowedEntityIds: resolution.allowedEntityIds,
             excludedEntityIds: resolution.excludedEntityIds,
+            activationEntityIds: resolution.activationEntityIds,
+            activationExcludedEntityIds: resolution.activationExcludedEntityIds,
             turnId: input.turnId,
             sessionId: input.sessionId,
             candidateIndex: index,

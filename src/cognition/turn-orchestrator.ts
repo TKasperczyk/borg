@@ -273,7 +273,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
     });
     const creatorDirectiveTurnService = new CreatorDirectiveTurnService({
-      model: options.config.anthropic.models.recallExpansion,
+      model: options.config.anthropic.models.creatorDirective,
       creatorDirectiveRepository: options.creatorDirectiveRepository,
       entityRepository: options.entityRepository,
       tracer: this.tracer,

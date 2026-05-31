@@ -36,6 +36,7 @@ describe("config", () => {
       background: "claude-opus-4-6",
       extraction: "claude-opus-4-6",
       recallExpansion: "claude-haiku-4-5-20251001",
+      creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
     expect(config.host_capabilities).toContain("Inputs available to you");
@@ -520,6 +521,7 @@ describe("config", () => {
       background: "claude-opus-4-6",
       extraction: "claude-opus-4-6",
       recallExpansion: "claude-haiku-4-5-20251001",
+      creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
   });

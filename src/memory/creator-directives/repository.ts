@@ -14,12 +14,15 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  activationPolicySchema,
   creatorDirectiveApplicableOptionsSchema,
   creatorDirectiveListFilterSchema,
   creatorDirectiveQueueInputSchema,
   creatorDirectiveSchema,
   disclosurePolicySchema,
+  type ActivationPolicy,
   type CreatorDirective,
+  type CreatorDirectiveActivationReason,
   type CreatorDirectiveApplicable,
   type CreatorDirectiveApplicableOptions,
   type CreatorDirectiveListFilter,
@@ -63,6 +66,14 @@ function normalizeDisclosurePolicy(policy: DisclosurePolicy): DisclosurePolicy {
   });
 }
 
+function normalizeActivationPolicy(policy: ActivationPolicy): ActivationPolicy {
+  return activationPolicySchema.parse({
+    ...policy,
+    allowed_entity_ids: uniqueIds(policy.allowed_entity_ids),
+    excluded_entity_ids: uniqueIds(policy.excluded_entity_ids),
+  });
+}
+
 function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective {
   const disclosurePolicy = disclosurePolicySchema.parse({
     content_scope: row.content_scope,
@@ -76,6 +87,17 @@ function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective 
         ? null
         : String(row.boundary_prompt),
     topic_tags: parseStoredArray<string>(row.topic_tags, "topic_tags"),
+  });
+  const activationPolicy = activationPolicySchema.parse({
+    scope: row.activation_scope,
+    allowed_entity_ids: parseStoredArray<EntityId>(
+      row.activation_entity_ids,
+      "activation_entity_ids",
+    ),
+    excluded_entity_ids: parseStoredArray<EntityId>(
+      row.activation_excluded_entity_ids,
+      "activation_excluded_entity_ids",
+    ),
   });
   const parsed = creatorDirectiveSchema.safeParse({
     id: row.id,
@@ -107,6 +129,7 @@ function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective 
         : String(row.canonical_fact),
     operational_directive: row.operational_directive,
     disclosure_policy: disclosurePolicy,
+    activation_policy: activationPolicy,
     priority: Number(row.priority),
     superseded_by:
       row.superseded_by === null || row.superseded_by === undefined
@@ -134,16 +157,62 @@ function hasEntity(values: readonly EntityId[], entityId: EntityId | null): bool
   return entityId !== null && values.includes(entityId);
 }
 
-type CreatorDirectiveRenderEvaluation = {
+function excludedRecipientReason(
+  excludedEntityIds: readonly EntityId[],
+  recipientEntityIds: readonly EntityId[],
+): Extract<
+  CreatorDirectiveActivationReason,
+  "explicit_exclude" | "group_contains_excluded_entity"
+> | null {
+  const excluded = recipientEntityIds.find((recipientEntityId) =>
+    hasEntity(excludedEntityIds, recipientEntityId),
+  );
+
+  if (excluded === undefined) {
+    return null;
+  }
+
+  return recipientEntityIds.length > 1 ? "group_contains_excluded_entity" : "explicit_exclude";
+}
+
+function disclosurePolicyBlocksPrivateOperation(input: {
+  directive: CreatorDirective;
+  recipientEntityIds: readonly EntityId[];
+}): boolean {
+  const policy = input.directive.disclosure_policy;
+
+  if (
+    input.recipientEntityIds.some((recipientEntityId) =>
+      hasEntity(policy.excluded_entity_ids, recipientEntityId),
+    )
+  ) {
+    return true;
+  }
+
+  return (
+    policy.subject_may_know === false &&
+    input.directive.subject_entity_id !== null &&
+    input.recipientEntityIds.some(
+      (recipientEntityId) => recipientEntityId === input.directive.subject_entity_id,
+    )
+  );
+}
+
+type CreatorDirectiveDisclosureEvaluation = {
   render_mode: CreatorDirectiveRenderMode;
   reason: CreatorDirectiveRenderReason;
+};
+
+type CreatorDirectiveActivationEvaluation = {
+  active: boolean;
+  reason: CreatorDirectiveActivationReason;
 };
 
 function boundaryOrOmit(
   directive: CreatorDirective,
   boundaryReason: CreatorDirectiveRenderReason,
   omitReason: CreatorDirectiveRenderReason = "unauthorized_omit",
-): CreatorDirectiveRenderEvaluation {
+): CreatorDirectiveDisclosureEvaluation {
   if (directive.disclosure_policy.denied_audience_behavior !== "render_boundary_when_relevant") {
     return { render_mode: "omit", reason: omitReason };
   }
@@ -151,11 +220,22 @@ function boundaryOrOmit(
   return { render_mode: "boundary", reason: boundaryReason };
 }
 
-function evaluateRenderEvaluation(
+function isCreatorOperator(
+  directive: CreatorDirective,
+  options: CreatorDirectiveApplicableOptions,
+): boolean {
+  return (
+    options.sessionRole === "operator" &&
+    (options.currentSenderBorgRole === "creator" ||
+      options.currentAudienceEntityId === directive.created_by_entity_id)
+  );
+}
+
+function evaluateDisclosureRenderMode(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
   audienceId: EntityId | null = options.currentAudienceEntityId,
-): CreatorDirectiveRenderEvaluation {
+): CreatorDirectiveDisclosureEvaluation {
   const policy = directive.disclosure_policy;
 
   if (hasEntity(policy.excluded_entity_ids, audienceId)) {
@@ -192,12 +272,7 @@ function evaluateRenderEvaluation(
   }
 
   if (policy.content_scope === "operator_only") {
-    const isCreatorOperator =
-      options.sessionRole === "operator" &&
-      (options.currentSenderBorgRole === "creator" ||
-        options.currentAudienceEntityId === directive.created_by_entity_id);
-
-    return isCreatorOperator
+    return isCreatorOperator(directive, options)
       ? { render_mode: "content", reason: "operator_only" }
       : { render_mode: "omit", reason: "operator_only_omitted" };
   }
@@ -214,34 +289,34 @@ function evaluateRenderMode(
   options: CreatorDirectiveApplicableOptions,
   audienceId: EntityId | null = options.currentAudienceEntityId,
 ): CreatorDirectiveRenderMode {
-  return evaluateRenderEvaluation(directive, options, audienceId).render_mode;
+  return evaluateDisclosureRenderMode(directive, options, audienceId).render_mode;
 }
 
 function effectiveRecipientEntityIds(
   options: CreatorDirectiveApplicableOptions,
-): readonly (EntityId | null)[] {
+): readonly EntityId[] {
   const participantEntityIds = options.participantEntityIds ?? [];
 
   if (participantEntityIds.length === 0) {
-    return [options.currentAudienceEntityId];
+    return options.currentAudienceEntityId === null ? [] : [options.currentAudienceEntityId];
   }
 
   return uniqueIds(participantEntityIds);
 }
 
-function evaluateApplicableRenderMode(
+function evaluateApplicableDisclosureRenderMode(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
-): CreatorDirectiveRenderEvaluation {
+): CreatorDirectiveDisclosureEvaluation {
   const recipientEntityIds = effectiveRecipientEntityIds(options);
 
   if (recipientEntityIds.length <= 1) {
-    return evaluateRenderEvaluation(directive, options, recipientEntityIds[0] ?? null);
+    return evaluateDisclosureRenderMode(directive, options, recipientEntityIds[0] ?? null);
   }
 
   const recipientEvaluations = recipientEntityIds.map((recipientEntityId) => ({
     isExcluded: hasEntity(directive.disclosure_policy.excluded_entity_ids, recipientEntityId),
-    evaluation: evaluateRenderEvaluation(directive, options, recipientEntityId),
+    evaluation: evaluateDisclosureRenderMode(directive, options, recipientEntityId),
   }));
 
   const firstBoundary = recipientEvaluations.find(
@@ -271,6 +346,90 @@ function evaluateApplicableRenderMode(
   }
 
   return recipientEvaluations[0]?.evaluation ?? { render_mode: "content", reason: "public" };
+}
+
+function evaluateActivationMode(
+  directive: CreatorDirective,
+  options: CreatorDirectiveApplicableOptions,
+  disclosure: CreatorDirectiveDisclosureEvaluation,
+): CreatorDirectiveActivationEvaluation {
+  const policy = directive.activation_policy;
+  const recipientEntityIds = effectiveRecipientEntityIds(options);
+
+  if (policy.scope === "same_as_disclosure") {
+    return disclosure.render_mode === "omit"
+      ? { active: false, reason: "same_as_disclosure_omitted" }
+      : { active: true, reason: "same_as_disclosure" };
+  }
+
+  if (policy.scope === "operator_only") {
+    return isCreatorOperator(directive, options)
+      ? { active: true, reason: "operator_only" }
+      : { active: false, reason: "operator_only_omitted" };
+  }
+
+  if (policy.scope === "public") {
+    return { active: true, reason: "public" };
+  }
+
+  if (policy.scope === "allow_list") {
+    const exclusionReason = excludedRecipientReason(policy.excluded_entity_ids, recipientEntityIds);
+
+    if (exclusionReason !== null) {
+      return {
+        active: false,
+        reason: exclusionReason,
+      };
+    }
+
+    return recipientEntityIds.some((recipientEntityId) =>
+      hasEntity(policy.allowed_entity_ids, recipientEntityId),
+    )
+      ? { active: true, reason: "explicit_allow" }
+      : { active: false, reason: "unauthorized_omit" };
+  }
+
+  if (policy.scope === "subject_only") {
+    return directive.subject_entity_id !== null &&
+      recipientEntityIds.some(
+        (recipientEntityId) => recipientEntityId === directive.subject_entity_id,
+      )
+      ? { active: true, reason: "subject_allowed" }
+      : { active: false, reason: "subject_not_present" };
+  }
+
+  if (policy.scope === "all_except") {
+    const exclusionReason = excludedRecipientReason(policy.excluded_entity_ids, recipientEntityIds);
+
+    if (exclusionReason !== null) {
+      return {
+        active: false,
+        reason: exclusionReason,
+      };
+    }
+
+    return { active: true, reason: "all_except" };
+  }
+
+  return { active: false, reason: "unauthorized_omit" };
+}
+
+function evaluateApplicableDirective(
+  directive: CreatorDirective,
+  options: CreatorDirectiveApplicableOptions,
+): CreatorDirectiveApplicable {
+  const recipientEntityIds = effectiveRecipientEntityIds(options);
+  const disclosure = evaluateApplicableDisclosureRenderMode(directive, options);
+  const activation = evaluateActivationMode(directive, options, disclosure);
+
+  return {
+    directive,
+    recipient_entity_ids: recipientEntityIds,
+    activation,
+    disclosure,
+    render_mode: disclosure.render_mode,
+    reason: disclosure.reason,
+  };
 }
 
 export type CreatorDirectiveRepositoryOptions = {
@@ -315,8 +474,9 @@ export class CreatorDirectiveRepository {
       semantic_slot: semanticSlot,
       canonical_fact:
         semanticSlot === null ? (parsed.data.canonicalFact ?? null) : parsed.data.semanticValue,
-      operational_directive: parsed.data.operationalDirective,
+      operational_directive: parsed.data.operationalDirective ?? null,
       disclosure_policy: normalizeDisclosurePolicy(parsed.data.disclosurePolicy),
+      activation_policy: normalizeActivationPolicy(parsed.data.activationPolicy),
       priority: parsed.data.priority,
       superseded_by: null,
       revoked_reason: null,
@@ -324,6 +484,7 @@ export class CreatorDirectiveRepository {
       updated_at: now,
     });
     const policy = record.disclosure_policy;
+    const activationPolicy = record.activation_policy;
 
     const persist = this.db.transaction(() => {
       this.db
@@ -334,9 +495,10 @@ export class CreatorDirectiveRepository {
               authorization_stream_entry_ids, content_source_stream_entry_ids,
               subject_kind, subject_entity_id, semantic_slot, canonical_fact,
               operational_directive, content_scope, allowed_entity_ids, excluded_entity_ids,
+              activation_scope, activation_entity_ids, activation_excluded_entity_ids,
               subject_may_know, mention_policy, denied_audience_behavior, boundary_prompt,
               topic_tags, priority, superseded_by, revoked_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -356,6 +518,9 @@ export class CreatorDirectiveRepository {
           policy.content_scope,
           serializeJsonValue(policy.allowed_entity_ids),
           serializeJsonValue(policy.excluded_entity_ids),
+          activationPolicy.scope,
+          serializeJsonValue(activationPolicy.allowed_entity_ids),
+          serializeJsonValue(activationPolicy.excluded_entity_ids),
           toStoredBoolean(policy.subject_may_know),
           policy.mention_policy,
           policy.denied_audience_behavior,
@@ -458,15 +623,9 @@ export class CreatorDirectiveRepository {
   listApplicable(options: CreatorDirectiveApplicableOptions): CreatorDirectiveApplicable[] {
     const parsed = creatorDirectiveApplicableOptionsSchema.parse(options);
 
-    return this.list({ status: "active" }).map((directive) => {
-      const evaluation = evaluateApplicableRenderMode(directive, parsed);
-
-      return {
-        directive,
-        render_mode: evaluation.render_mode,
-        reason: evaluation.reason,
-      };
-    });
+    return this.list({ status: "active" }).map((directive) =>
+      evaluateApplicableDirective(directive, parsed),
+    );
   }
 
   private supersedeActiveDirective(
@@ -593,4 +752,8 @@ export class CreatorDirectiveRepository {
   }
 }
 
-export { evaluateRenderMode as evaluateCreatorDirectiveRenderMode };
+export {
+  disclosurePolicyBlocksPrivateOperation as creatorDirectiveDisclosureBlocksPrivateOperation,
+  evaluateRenderMode as evaluateCreatorDirectiveRenderMode,
+  hasEntity as creatorDirectiveHasEntity,
+};
