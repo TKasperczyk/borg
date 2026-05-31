@@ -147,6 +147,93 @@ function creatorDirectiveKindRequiresOperationalDirective(
   return kind === "response_policy" || kind === "routing_instruction";
 }
 
+type ScopeEntityFieldIssueContext = {
+  addIssue(issue: { code: "custom"; path: string[]; message: string }): void;
+};
+
+type SharedScopeEntityFieldScope = Exclude<
+  z.infer<typeof creatorDirectiveContentScopeSchema>,
+  "operator_only"
+>;
+
+function addScopeEntityFieldIssues(
+  ctx: ScopeEntityFieldIssueContext,
+  scope: SharedScopeEntityFieldScope,
+  allowedEntityIds: readonly EntityId[],
+  excludedEntityIds: readonly EntityId[],
+): void {
+  if (scope === "public") {
+    if (allowedEntityIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "public scope requires empty allowed_entity_ids",
+      });
+    }
+
+    if (excludedEntityIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["excluded_entity_ids"],
+        message: "public scope requires empty excluded_entity_ids",
+      });
+    }
+  }
+
+  if (scope === "allow_list" && allowedEntityIds.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["allowed_entity_ids"],
+      message: "allow_list requires at least one allowed entity",
+    });
+  }
+
+  if (scope === "allow_list") {
+    const allowedEntityIdSet = new Set(allowedEntityIds);
+    if (excludedEntityIds.some((id) => allowedEntityIdSet.has(id))) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["excluded_entity_ids"],
+        message: "allow_list allowed and excluded entity ids must not overlap",
+      });
+    }
+  }
+
+  if (scope === "all_except" && allowedEntityIds.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["allowed_entity_ids"],
+      message: "all_except requires empty allowed_entity_ids",
+    });
+  }
+
+  if (scope === "all_except" && excludedEntityIds.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["excluded_entity_ids"],
+      message: "all_except requires at least one excluded entity",
+    });
+  }
+
+  if (scope === "subject_only") {
+    if (allowedEntityIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["allowed_entity_ids"],
+        message: "subject_only requires empty allowed_entity_ids",
+      });
+    }
+
+    if (excludedEntityIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["excluded_entity_ids"],
+        message: "subject_only requires empty excluded_entity_ids",
+      });
+    }
+  }
+}
+
 export const disclosurePolicySchema = z
   .object({
     content_scope: creatorDirectiveContentScopeSchema,
@@ -159,57 +246,13 @@ export const disclosurePolicySchema = z
     topic_tags: z.array(creatorDirectiveTopicTagSchema).max(32),
   })
   .superRefine((value, ctx) => {
-    if (value.content_scope === "public") {
-      if (value.allowed_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["allowed_entity_ids"],
-          message: "public scope requires empty allowed_entity_ids",
-        });
-      }
-
-      if (value.excluded_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "public scope requires empty excluded_entity_ids",
-        });
-      }
-    }
-
-    if (value.content_scope === "allow_list" && value.allowed_entity_ids.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["allowed_entity_ids"],
-        message: "allow_list requires at least one allowed entity",
-      });
-    }
-
-    if (value.content_scope === "allow_list") {
-      const allowedEntityIds = new Set(value.allowed_entity_ids);
-      if (value.excluded_entity_ids.some((id) => allowedEntityIds.has(id))) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "allow_list allowed and excluded entity ids must not overlap",
-        });
-      }
-    }
-
-    if (value.content_scope === "all_except" && value.allowed_entity_ids.length > 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["allowed_entity_ids"],
-        message: "all_except requires empty allowed_entity_ids",
-      });
-    }
-
-    if (value.content_scope === "all_except" && value.excluded_entity_ids.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["excluded_entity_ids"],
-        message: "all_except requires at least one excluded entity",
-      });
+    if (value.content_scope !== "operator_only") {
+      addScopeEntityFieldIssues(
+        ctx,
+        value.content_scope,
+        value.allowed_entity_ids,
+        value.excluded_entity_ids,
+      );
     }
 
     if (value.content_scope === "operator_only" && value.allowed_entity_ids.length > 0) {
@@ -221,22 +264,6 @@ export const disclosurePolicySchema = z
     }
 
     if (value.content_scope === "subject_only") {
-      if (value.allowed_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["allowed_entity_ids"],
-          message: "subject_only requires empty allowed_entity_ids",
-        });
-      }
-
-      if (value.excluded_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "subject_only requires empty excluded_entity_ids",
-        });
-      }
-
       if (value.subject_may_know === false) {
         ctx.addIssue({
           code: "custom",
@@ -283,59 +310,6 @@ export const activationPolicySchema = z
       }
     }
 
-    if (value.scope === "public") {
-      if (value.allowed_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["allowed_entity_ids"],
-          message: "public scope requires empty allowed_entity_ids",
-        });
-      }
-
-      if (value.excluded_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "public scope requires empty excluded_entity_ids",
-        });
-      }
-    }
-
-    if (value.scope === "allow_list" && value.allowed_entity_ids.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["allowed_entity_ids"],
-        message: "allow_list requires at least one allowed entity",
-      });
-    }
-
-    if (value.scope === "allow_list") {
-      const allowedEntityIds = new Set(value.allowed_entity_ids);
-      if (value.excluded_entity_ids.some((id) => allowedEntityIds.has(id))) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "allow_list allowed and excluded entity ids must not overlap",
-        });
-      }
-    }
-
-    if (value.scope === "all_except" && value.allowed_entity_ids.length > 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["allowed_entity_ids"],
-        message: "all_except requires empty allowed_entity_ids",
-      });
-    }
-
-    if (value.scope === "all_except" && value.excluded_entity_ids.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["excluded_entity_ids"],
-        message: "all_except requires at least one excluded entity",
-      });
-    }
-
     if (value.scope === "operator_only") {
       if (value.allowed_entity_ids.length > 0) {
         ctx.addIssue({
@@ -354,22 +328,13 @@ export const activationPolicySchema = z
       }
     }
 
-    if (value.scope === "subject_only") {
-      if (value.allowed_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["allowed_entity_ids"],
-          message: "subject_only requires empty allowed_entity_ids",
-        });
-      }
-
-      if (value.excluded_entity_ids.length > 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["excluded_entity_ids"],
-          message: "subject_only requires empty excluded_entity_ids",
-        });
-      }
+    if (value.scope !== "same_as_disclosure" && value.scope !== "operator_only") {
+      addScopeEntityFieldIssues(
+        ctx,
+        value.scope,
+        value.allowed_entity_ids,
+        value.excluded_entity_ids,
+      );
     }
   });
 
