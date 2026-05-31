@@ -372,7 +372,8 @@ describe("creator directive retrieval briefing", () => {
       // behavioral rule renders as a private_operation. Facts sort ahead of operations.
       expect(briefing?.directives).toEqual([
         {
-          renderMode: "private_knowledge",
+          renderMode: "private",
+          privateKind: "knowledge",
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "unknown",
@@ -384,7 +385,8 @@ describe("creator directive retrieval briefing", () => {
           createdAt: 1_500,
         },
         {
-          renderMode: "private_operation",
+          renderMode: "private",
+          privateKind: "operation",
           kind: "response_policy",
           operationalDirective: "Conduct the private intake flow for this audience.",
           priority: 8,
@@ -461,8 +463,10 @@ describe("creator directive retrieval briefing", () => {
       // The extractor must use subject_may_know=null for behavioral directives
       // that still need to reach the subject's prompt as private operations.
       expect(
-        briefing?.directives.some((directive) => directive.renderMode === "private_operation") ??
-          false,
+        briefing?.directives.some(
+          (directive) =>
+            directive.renderMode === "private" && directive.privateKind === "operation",
+        ) ?? false,
       ).toBe(false);
     } finally {
       db.close();

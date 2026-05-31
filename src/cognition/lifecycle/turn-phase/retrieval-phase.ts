@@ -402,41 +402,45 @@ export function buildCreatorDirectiveBriefing(input: {
       ];
     })
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
-  const privateOperationDirectives = input.applicable
-    .filter(canRenderCreatorDirectivePrivateOperation)
-    .map((item) => ({
-      renderMode: "private_operation" as const,
-      kind: item.directive.kind,
-      operationalDirective: item.directive.operational_directive,
-      priority: item.directive.priority,
-      createdAt: item.directive.created_at,
-    }))
-    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
-  const privateKnowledgeDirectives = input.applicable
-    .filter(canRenderCreatorDirectivePrivateKnowledge)
-    .flatMap((item) => {
-      const payload = contentPayloadForCreatorDirective(item.directive);
+  const privateDirectives = [
+    ...input.applicable
+      .filter(canRenderCreatorDirectivePrivateKnowledge)
+      .flatMap((item) => {
+        const payload = contentPayloadForCreatorDirective(item.directive);
 
-      if (payload === null) {
-        return [];
-      }
+        if (payload === null) {
+          return [];
+        }
 
-      return [
-        {
-          renderMode: "private_knowledge" as const,
-          kind: item.directive.kind,
-          subjectKind: item.directive.subject_kind,
-          subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
-          semanticSlot: item.directive.semantic_slot,
-          semanticValue: payload.semanticValue,
-          canonicalFact: payload.canonicalFact,
-          mentionPolicy: item.directive.disclosure_policy.mention_policy,
-          priority: item.directive.priority,
-          createdAt: item.directive.created_at,
-        },
-      ];
-    })
-    .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
+        return [
+          {
+            renderMode: "private" as const,
+            privateKind: "knowledge" as const,
+            kind: item.directive.kind,
+            subjectKind: item.directive.subject_kind,
+            subjectLabel: subjectLabelForCreatorDirective(item.directive, input.entityRepository),
+            semanticSlot: item.directive.semantic_slot,
+            semanticValue: payload.semanticValue,
+            canonicalFact: payload.canonicalFact,
+            mentionPolicy: item.directive.disclosure_policy.mention_policy,
+            priority: item.directive.priority,
+            createdAt: item.directive.created_at,
+          },
+        ];
+      })
+      .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt),
+    ...input.applicable
+      .filter(canRenderCreatorDirectivePrivateOperation)
+      .map((item) => ({
+        renderMode: "private" as const,
+        privateKind: "operation" as const,
+        kind: item.directive.kind,
+        operationalDirective: item.directive.operational_directive,
+        priority: item.directive.priority,
+        createdAt: item.directive.created_at,
+      }))
+      .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt),
+  ];
   const boundaryDirectives = input.applicable
     .filter(
       (item) =>
@@ -452,8 +456,7 @@ export function buildCreatorDirectiveBriefing(input: {
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
   const directives = [
     ...contentDirectives,
-    ...privateKnowledgeDirectives,
-    ...privateOperationDirectives,
+    ...privateDirectives,
     ...boundaryDirectives,
   ];
 

@@ -664,7 +664,8 @@ describe("buildBaseSystemPrompt", () => {
     const section = buildCreatorDirectiveBriefingSection({
       directives: [
         {
-          renderMode: "private_knowledge",
+          renderMode: "private",
+          privateKind: "knowledge",
           kind: "subject_fact",
           subjectKind: "entity",
           subjectLabel: "Alice",
@@ -740,7 +741,8 @@ describe("buildBaseSystemPrompt", () => {
           createdAt: 1,
         },
         {
-          renderMode: "private_operation",
+          renderMode: "private",
+          privateKind: "operation",
           kind: "response_policy",
           operationalDirective:
             "Expect Alice; use the prepared relay from cdir_aaaaaaaaaaaaaaaa.",
@@ -761,7 +763,8 @@ describe("buildBaseSystemPrompt", () => {
           createdAt: 2,
         },
         {
-          renderMode: "private_operation",
+          renderMode: "private",
+          privateKind: "operation",
           kind: "routing_instruction",
           operationalDirective: "Route the session through the intake path.",
           priority: 9,
@@ -846,7 +849,8 @@ describe("buildBaseSystemPrompt", () => {
       // operation. It renders as private_knowledge (canonical_fact only).
       expect(briefing?.directives).toHaveLength(1);
       expect(briefing?.directives?.[0]).toMatchObject({
-        renderMode: "private_knowledge",
+        renderMode: "private",
+        privateKind: "knowledge",
         kind: "subject_fact",
         canonicalFact: "The hidden subject fact is not disclosable.",
       });

@@ -40,8 +40,7 @@ import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
 import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "../../generation/canonical-stop-phrase.js";
 import type {
   CreatorDirectiveBriefingContentDirective,
-  CreatorDirectiveBriefingPrivateKnowledgeDirective,
-  CreatorDirectiveBriefingPrivateOperationDirective,
+  CreatorDirectiveBriefingPrivateDirective,
   DeliberationContext,
   SelfSnapshot,
   TrustedCreatorContext,
@@ -324,7 +323,7 @@ function renderContentPayload(directive: CreatorDirectiveBriefingContentDirectiv
 }
 
 function renderPrivateOperationPayload(
-  directive: CreatorDirectiveBriefingPrivateOperationDirective,
+  directive: Extract<CreatorDirectiveBriefingPrivateDirective, { privateKind: "operation" }>,
 ): string {
   return [
     `    <operational_directive>${escapeCreatorDirectiveXmlText(directive.operationalDirective)}</operational_directive>`,
@@ -333,7 +332,7 @@ function renderPrivateOperationPayload(
 }
 
 function renderPrivateKnowledgePayload(
-  directive: CreatorDirectiveBriefingPrivateKnowledgeDirective,
+  directive: Extract<CreatorDirectiveBriefingPrivateDirective, { privateKind: "knowledge" }>,
 ): string | null {
   if (directive.semanticSlot !== null) {
     return directive.semanticValue === null
@@ -364,16 +363,26 @@ export function buildCreatorDirectiveBriefingSection(
     left: (typeof briefing.directives)[number],
     right: (typeof briefing.directives)[number],
   ) => right.priority - left.priority || left.createdAt - right.createdAt;
+  const byPrivateKindPriorityAndAge = (
+    left: CreatorDirectiveBriefingPrivateDirective,
+    right: CreatorDirectiveBriefingPrivateDirective,
+  ) => {
+    if (left.privateKind !== right.privateKind) {
+      return left.privateKind === "knowledge" ? -1 : 1;
+    }
+
+    return byPriorityAndAge(left, right);
+  };
   const sorted = [
     ...briefing.directives
       .filter((directive) => directive.renderMode === "content")
       .sort(byPriorityAndAge),
     ...briefing.directives
-      .filter((directive) => directive.renderMode === "private_knowledge")
-      .sort(byPriorityAndAge),
-    ...briefing.directives
-      .filter((directive) => directive.renderMode === "private_operation")
-      .sort(byPriorityAndAge),
+      .filter(
+        (directive): directive is CreatorDirectiveBriefingPrivateDirective =>
+          directive.renderMode === "private",
+      )
+      .sort(byPrivateKindPriorityAndAge),
     ...briefing.directives
       .filter((directive) => directive.renderMode === "boundary")
       .sort(byPriorityAndAge),
@@ -381,35 +390,37 @@ export function buildCreatorDirectiveBriefingSection(
   let renderedCount = 0;
 
   for (const directive of sorted) {
-    if (directive.renderMode === "private_operation") {
-      renderedCount += 1;
-      lines.push(
-        `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_operation">`,
-        renderPrivateOperationPayload(directive),
-        "  </directive>",
-      );
+    if (directive.renderMode === "private") {
+      if (directive.privateKind === "operation") {
+        renderedCount += 1;
+        lines.push(
+          `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_operation">`,
+          renderPrivateOperationPayload(directive),
+          "  </directive>",
+        );
+      } else {
+        const payload = renderPrivateKnowledgePayload(directive);
+
+        if (payload === null) {
+          continue;
+        }
+
+        renderedCount += 1;
+        lines.push(
+          `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_knowledge">`,
+          `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
+          `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
+          payload,
+          `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
+          `    <audience_disclosure>${escapeCreatorDirectiveXmlText(CREATOR_DIRECTIVE_PRIVATE_KNOWLEDGE_AUDIENCE_DISCLOSURE)}</audience_disclosure>`,
+          "  </directive>",
+        );
+      }
     } else if (directive.renderMode === "boundary") {
       renderedCount += 1;
       lines.push(
         `  <directive id_alias="cd_${renderedCount}" kind="disclosure_boundary" mode="boundary">`,
         `    <boundary_prompt>${escapeCreatorDirectiveXmlText(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT)}</boundary_prompt>`,
-        "  </directive>",
-      );
-    } else if (directive.renderMode === "private_knowledge") {
-      const payload = renderPrivateKnowledgePayload(directive);
-
-      if (payload === null) {
-        continue;
-      }
-
-      renderedCount += 1;
-      lines.push(
-        `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_knowledge">`,
-        `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
-        `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
-        payload,
-        `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
-        `    <audience_disclosure>${escapeCreatorDirectiveXmlText(CREATOR_DIRECTIVE_PRIVATE_KNOWLEDGE_AUDIENCE_DISCLOSURE)}</audience_disclosure>`,
         "  </directive>",
       );
     } else {
