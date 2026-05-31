@@ -22,7 +22,9 @@ exercised.
   procedural (how I do things, as Bayesian skills), affective (how I felt / feel),
   self (values, goals, traits, autobiographical arc, growth markers,
   open questions), commitments (scoped promises + guard), social (per-person
-  trust/history), plus ephemeral working memory per turn.
+  trust/history), relational-slot (evidence-backed relationship facts, e.g.
+  kinship, with established/contested/quarantined states), plus ephemeral
+  working memory per turn.
 - **Explicit cognitive loop.** Perception → Attention → Deliberation → Action →
   Reflection. System 1 / System 2 branching with internal monologue persisted
   as stream entries.
@@ -33,8 +35,9 @@ exercised.
 - **Commitment awareness, not filter.** Rules injected into the prompt so
   the agent knows them before speaking. Post-hoc check with Sonnet revision,
   refusal-aware (compliant refusals don't falsely trigger).
-- **Offline dream cycle.** Eight processes (consolidator, reflector, curator,
-  overseer, ruminator, self-narrator, procedural-synthesizer, belief-reviser)
+- **Offline dream cycle.** Ten processes (consolidator, reflector,
+  semantic-extractor, curator, overseer, review-resolver, ruminator,
+  self-narrator, procedural-synthesizer, belief-reviser)
   with plan/apply parity, budget caps, append-only audit log, and reversible
   maintenance where a reverser is registered (a few destructive prunes of
   transient observability data, e.g. retrieval-log trim, are recorded as
@@ -58,8 +61,9 @@ Requires:
 - An OpenAI-compatible embeddings endpoint (defaults to LM Studio on
   `localhost:1234` with `text-embedding-qwen3-embedding-8b`, 4096 dims)
 - Anthropic credentials for cognition. `anthropic.auth` defaults to `auto`,
-  which prefers a Claude Code OAuth token (see `borg auth status`) and
-  falls back to `ANTHROPIC_API_KEY` if no OAuth token is available. Set
+  which uses `ANTHROPIC_API_KEY` (env or config) when present and otherwise
+  falls back to a Claude Code OAuth token (`ANTHROPIC_AUTH_TOKEN`, then the
+  shared Claude credentials file; see `borg auth status`). Set
   `BORG_ANTHROPIC_AUTH=api-key` (and provide `ANTHROPIC_API_KEY`) or
   `BORG_ANTHROPIC_AUTH=oauth` to pin the mode.
 
@@ -98,7 +102,7 @@ borg episode show <id>
 borg episode extract [--since 1h]
 
 borg goal add|list|done|block|progress
-borg value add|list|affirm|bind
+borg value add|list|affirm
 borg trait show
 
 borg turn "<message>" [--session] [--audience] [--stakes low|medium|high]
@@ -109,11 +113,14 @@ borg semantic edge add|list
 borg semantic walk <node-id> [--depth 2]
 borg commitment add|list|revoke [--audience]
 borg review list|resolve
+borg correction forget|why|correct|about-me|events
 
 borg dream [--process ...] [--dry-run] [--budget N] [--output plan.json]
 borg dream {consolidate,reflect,curate,oversee,ruminate,narrate}
 borg dream apply --plan plan.json
 borg audit list|revert
+borg maintenance tick [--cadence light|heavy]
+borg trace <action> [path]
 
 borg period current|list|open|close|show
 borg growth list|add
@@ -134,12 +141,22 @@ const borg = await Borg.open();
 // per-turn cognition
 const result = await borg.turn({ userMessage: "...", audience: "alice" });
 
+// durable async ingest (stream-as-inbox): enqueue + ack without running a
+// turn. A background catch-up worker (borg.inbox.catchUp) later drains the
+// queued backlog into coalesced turns. See ARCHITECTURE.md.
+await borg.enqueueMessage({
+  userMessage: "...",
+  senderEntityId,
+  session: { /* SessionEnsureInput + source_external_id */ },
+  sourceMessageKey, // transport-level dedup key
+});
+
 // memory access
 await borg.episodic.search("...", { limit: 5 });
 await borg.self.goals.add({
   description: "...",
   priority: 0.5,
-  provenance: { kind: "user" },
+  provenance: { kind: "manual" },
 });
 await borg.skills.select("debugging pgvector similarity");
 await borg.mood.current(sessionId);
