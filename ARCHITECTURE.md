@@ -34,8 +34,12 @@ do those things.
 The composition root wires storage, repositories, LLM clients, retrieval,
 turn orchestration, live ingestion, offline processes, and schedulers into one
 runtime graph (entry point: `src/borg/open.ts`). The public facade exposes the
-library-level operations for turns, memory access, correction, stream access,
-and dream maintenance (entry point: `src/borg/facade.ts`).
+library-level operations for turns, durable message ingest, memory access,
+correction, stream access, and dream maintenance. The top-level operations --
+`turn()` for a synchronous turn and `enqueueMessage()` for durable async ingest
+-- live on the `Borg` class (entry point: `src/borg.ts`); its namespaced
+sub-facades, including `inbox.catchUp`, are built by `createBorgFacades`
+(entry point: `src/borg/facade.ts`).
 
 ## The Mental Model
 
@@ -81,6 +85,12 @@ Typed repositories hold the current operational state, and vector stores make
 retrieval possible. But when Borg needs to answer "where did this come from?"
 the trail ends at Stream IDs.
 
+The Stream also doubles as Borg's durable inbox. Inbound messages are committed
+as `user_msg` entries before they are acknowledged and before any turn runs; a
+queued message is simply a `user_msg` whose turn id is still absent. The same
+append-only log that serves as audit trail is therefore also the work queue a
+later turn drains. See Async Ingest: The Stream As Inbox.
+
 Appends are crash-conscious. Borg commits the Stream entry before updating
 derived lookup state. If that lookup update fails, the committed entry is
 still on disk and the error is treated as a consistency incident. Startup
@@ -93,7 +103,11 @@ thing later became unsafe as evidence.
 
 The Stream lookup layer carries active and inactive status, prior-turn counts,
 source-trust facts, citation status markers, and cross-session quarantine
-references. Fallback scans can preserve correctness in small harnesses, but
+references. It also carries the inbox dimension: a `receipt_pending` readiness
+flag, a unique `source_message_key` index for transport-level dedup, and the
+`response_to` backlog-stamp columns (the cursor span and source entries a turn
+answered) that track which queued messages a turn has closed. Fallback scans can
+preserve correctness in small harnesses, but
 production paths rely on the indexed view to keep source checks bounded by the
 question being asked rather than by total session length.
 
@@ -137,10 +151,16 @@ active, idle, or archived status), and three orthogonal control dimensions:
 - Privacy level is a declared dimension reserved for payload handling. It is
   not yet load-bearing in cognition.
 
-Writes come from the host wiring each surface (ensuring a record on contact,
-touching it after each turn) and from operator controls that set participation
-policy. Reads shape audience resolution, the available emission tools,
-operator-only prompt context, and cross-session features.
+Writes come from the host wiring each surface (ensuring a record on contact and
+touching it both as messages arrive and after each turn) and from operator
+controls that set participation policy. Reads shape audience resolution, the
+available emission tools, operator-only prompt context, and cross-session
+features.
+
+Each session also has a responded-through watermark -- a per-session cursor,
+keyed by `(process_name, session_id)`, recording which queued messages have
+already been answered. It is what lets durable async ingest answer a backlog
+once and only once. See Async Ingest: The Stream As Inbox.
 
 Operator authority is a two-key structural condition, not one flag. The session
 says "this is the operator channel" when its audience role is operator; the
@@ -449,6 +469,13 @@ Structured image perception is a recall bridge, not the source of truth. It
 summarizes visible content for embedding and retrieval, but the original image
 remains the stronger source whenever it can be reattached.
 
+On the durable ingest path an image is perceived when it arrives, not when its
+turn runs. `enqueueMessage` persists the blob, the attachment record, and a
+best-effort perception linked to the queued message before it acknowledges, and
+a `receipt_pending` flag on that message holds the backlog until the attachment
+has landed. The coalescing turn then reads the stored perception rather than
+re-running vision. See Async Ingest: The Stream As Inbox.
+
 Payloads are content-addressed cache records. Artifacts are per-attachment,
 audience-scoped evidence records. The same bytes can share one payload while
 each upload keeps its own audience, parent turn, source entry, and active state.
@@ -473,16 +500,87 @@ Visible text inside images is observed content, not instructions. It can be
 reported, cited, or reasoned about as part of the image, but it does not gain
 authority over Borg's system, developer, or user instructions.
 
+## Async Ingest: The Stream As Inbox
+
+Most chat transports cannot wait several seconds for a turn to finish before
+acknowledging a message. Borg therefore separates receiving a message from
+answering it. Inbound messages are durably enqueued and acknowledged
+immediately, and a background worker drains them into turns later. The
+append-only Stream is the queue: a message that has arrived but not yet been
+answered is just a `user_msg` entry whose turn id is still absent (entry point:
+`src/cognition/ingestion/enqueuer.ts`).
+
+`Borg.enqueueMessage()` is the ingest entry point (`src/borg.ts`). It commits
+the `user_msg` Stream entry -- and, for an image, its blob, attachment record,
+and perception -- to disk before it returns an acknowledgement, and runs no
+cognition. The contract is at-least-once: because the durable commit precedes
+the ack, a crash in between can at worst redeliver a message Borg already holds.
+Transport-level redelivery is absorbed by a unique `source_message_key` index, so
+a second arrival of the same key is recorded as a duplicate rather than queued
+again. The direct `Borg.turn()` API still exists for synchronous single-message
+callers, but durable enqueue is the primary path for real chat surfaces.
+
+Draining is the job of the chat-response catch-up worker (entry point:
+`src/cognition/ingestion/chat-response-catch-up-worker.ts`, exposed as
+`borg.inbox.catchUp`). It wakes when a queued `user_msg` is appended, scans the
+whole backlog once at startup, and serializes per session so a session never
+drains concurrently with itself. A quiet-window timer with a maximum wait lets a
+burst of messages settle before a turn opens, so messages that arrive together
+are answered together rather than one turn each.
+
+When the worker drains a session it does not open one turn per message. It builds
+a bounded, oldest-first, contiguous prefix of the unanswered backlog and
+coalesces it into a single turn whose input is an inbound batch rather than a
+lone message. That turn renders the batch oldest-first as the current user input
+and persists no new user message, because the entries are already on disk. If the
+backlog exceeds the bound, the turn answers the prefix and the worker re-drains
+the remainder.
+
+What has already been answered is tracked by the responded-through watermark
+introduced under Sessions, a per-session cursor under the process name
+`chat-response` (entry point:
+`src/cognition/ingestion/chat-response-watermark.ts`). Before a batch turn
+generates, the worker reconciles this watermark against the terminal response
+stamps already on the Stream and verifies the batch is exactly the contiguous
+unanswered prefix: it refuses to proceed if a terminal stamp already covers these
+messages, and it never advances the watermark past a message that was not shown.
+This reconcile-before-generate gate is what makes at-least-once delivery safe -- a
+redelivered or crash-replayed batch is recognized as already answered instead of
+answered twice. When the turn emits, it stamps the answered entries with a
+`response_to` record of the cursor span and source entries it covered, which is
+how the next reconciliation knows the prefix is closed.
+
+This durable reply gate is distinct from the best-effort episodic catch-up that
+runs inside every turn. To keep the two from fighting, catch-up episodic
+ingestion is clamped to the responded-through watermark, so queued-but-unanswered
+messages are not extracted as orphan episodes ahead of the turn that will answer
+them; the drained batch is instead paired with its terminal output as an answered
+window and ingested together.
+
+Image attachments ride the same path. They are persisted and perceived when they
+arrive, linked to the queued `user_msg`, so the coalescing turn reads stored
+perception rather than re-running vision. A `receipt_pending` flag on the queued
+entry acts as an ordered-prefix barrier: the watermark cannot advance past a
+message whose image is still landing, so a backlog is never answered around a
+half-ingested attachment. See Visual Attachments.
+
+Coalescing has one consequence for authority. A batch that mixes more than one
+distinct sender has no single current sender, so the operator, creator, and
+cross-session authority that keys on "the current sender is the creator" is
+withheld for that batch -- not by a new rule, but because the two-key condition
+under Sessions has no single sender to satisfy. See Audience Scoping.
+
 ## A Single Turn End To End
 
-A turn begins when the harness receives a user-origin, autonomous, or
-directed-outbound input and opens a coordinated turn lifecycle (entry point:
-`src/cognition/lifecycle/turn-phase-coordinator.ts`). Autonomous inputs come
-from the Autonomy Scheduler; directed-outbound inputs come from the entity
-sending a message into another session (see Autonomy and Proactive Outbound). The lifecycle is ordered
-so that Borg first catches up and interprets the input, then records the
-turn-opening evidence, then retrieves the right context, then reasons, then
-emits once, then reflects.
+A turn opens around a coordinated lifecycle (entry point:
+`src/cognition/lifecycle/turn-phase-coordinator.ts`). Its input is one of: a
+coalesced inbound batch drained from the durable queue -- the primary chat path,
+see Async Ingest: The Stream As Inbox -- a single message handed straight to
+`Borg.turn()`, an autonomous wake from the Autonomy Scheduler, or a
+directed-outbound message the entity is sending into another session (see
+Autonomy and Proactive Outbound). The lifecycle is ordered so that Borg first
+catches up and interprets the input, then records the turn-opening evidence, then
+retrieves the right context, then reasons, then emits once, then reflects.
 
 The order is not incidental. Borg should not retrieve blindly before it knows
 the message's mode, audience, entities, affect, and temporal shape. It should
@@ -499,6 +597,14 @@ a stale substrate when prior entries have already committed to disk.
 Pre-turn ingestion is best-effort catch-up. If it fails, Borg records an
 internal failure event and continues the turn, which can mean reasoning over a
 stale derived substrate while preserving observability.
+
+This best-effort episodic catch-up is distinct from the
+reconcile-before-generate gate that opens a coalesced inbound-batch turn. That
+gate is not best-effort: it verifies against the responded-through watermark that
+the batch is the unanswered contiguous prefix before any generation happens, and
+on the batch path the episodic catch-up above is additionally clamped to that
+watermark so unanswered queued messages are not ingested early. See Async Ingest:
+The Stream As Inbox.
 
 Borg then resolves the audience. In a one-to-one session the audience can be a
 person. In a group channel the audience can be a group, and the current sender
@@ -910,6 +1016,11 @@ episodes and other derived records. The next turn catches up before it starts,
 which gives Borg a consistent boundary without forcing all extraction to block
 the current user response.
 
+On the durable ingest path this catch-up is clamped to the responded-through
+watermark so queued-but-unanswered messages do not become orphan episodes ahead
+of the turn that answers them; a drained batch is instead paired with its
+terminal output as an answered window and ingested together.
+
 ## Retrieval And Grounding
 
 Retrieval is unified rather than band-specific from the caller's perspective.
@@ -1026,8 +1137,10 @@ Writes come from extraction: when the creator speaks in an operator session, an
 LLM turns those instructions into structured directive records. That write path
 is gated structurally to the creator-in-an-operator-session case, and the
 extracted records are checked for structural consistency -- scope against entity
-sets, slot against value, internal-id hygiene -- but never for whether their
-wording is acceptable. Reads happen during retrieval, where applicable
+sets, slot against value -- but never for whether their wording is acceptable.
+Internal-id hygiene is handled separately, at render time: directive text is
+scrubbed of id-shaped substrings as it composes into the model-facing prompt, as
+defense-in-depth rather than a write-time check. Reads happen during retrieval, where applicable
 directives are rendered into a dedicated trusted briefing in the deliberation
 prompt, beside Commitments and the creator-identity context. That briefing is
 its own prompt section, not part of the Evidence Ledger.
@@ -1319,8 +1432,10 @@ turn can only do what any turn can do -- reason, call host-provided tools, emit
 or stay silent -- and whether it claims an action it cannot perform is the
 model's judgment against the host-capabilities block, not something the harness
 gates. The scheduler also does not start itself: a runtime opts in by starting
-it, and one self-invocation source fires only the wakes the entity itself queued
-through a tool.
+it, and one self-invocation source fires only the wakes the entity itself queued.
+Those are one-time self-scheduled wakes: the entity can create, list, and cancel
+them through a dedicated `scheduledWakes` tool surface, each stored in its own
+table and fired once by a `scheduled_wake` trigger.
 
 See A Single Turn End To End for the lifecycle an autonomous input enters, and
 Offline Maintenance for the separate between-turns maintenance path.
@@ -1642,8 +1757,8 @@ and does not roll back the turn.
 
 A hard turn abort is different. If a turn phase throws across the coordinated
 lifecycle, Borg rolls back tracked Working Memory, Action, Goal, Open Question,
-episodic, and relational-slot effects, appends an aborted-turn marker, and
-rethrows. Stream entries already written remain in audit history but are
+Executive Step, episodic, and relational-slot effects, appends an aborted-turn
+marker, and rethrows. Stream entries already written remain in audit history but are
 marked inactive by turn status for recency, citation, and source-trust paths.
 
 The point is to keep failure modes explicit. Silent wrong memory is worse than
