@@ -17,6 +17,7 @@ import {
   type Borg,
   type CommitmentEnforcementClass,
   type CommitmentRecord,
+  type CreatorDirective,
   type EntityId,
   type ImageMediaType,
   type ImagePerceptionRecord,
@@ -1019,6 +1020,31 @@ function mapCommitment(borg: Borg, record: CommitmentRecord) {
   };
 }
 
+function creatorDirectiveText(record: CreatorDirective): string | null {
+  return record.operational_directive ?? record.canonical_fact;
+}
+
+function mapCreatorDirective(borg: Borg, record: CreatorDirective) {
+  return {
+    id: record.id,
+    kind: record.kind,
+    text: creatorDirectiveText(record),
+    canonical_fact: record.canonical_fact,
+    operational_directive: record.operational_directive,
+    activation_scope: record.activation_policy.scope,
+    activation_allowed_entity_ids: record.activation_policy.allowed_entity_ids,
+    activation_excluded_entity_ids: record.activation_policy.excluded_entity_ids,
+    content_scope: record.disclosure_policy.content_scope,
+    mention_policy: record.disclosure_policy.mention_policy,
+    status: record.status,
+    subject_kind: record.subject_kind,
+    subject_entity_id: record.subject_entity_id,
+    subject_entity_name: entityLabel(borg, record.subject_entity_id),
+    priority: record.priority,
+    created_at: record.created_at,
+  };
+}
+
 function mapEpisode(
   borg: Borg,
   item: Awaited<ReturnType<Borg["episodic"]["list"]>>["items"][number],
@@ -1882,6 +1908,14 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       );
 
     return c.json({ commitments });
+  });
+
+  app.get("/api/creator-directives", (c) => {
+    const directives = input.borg.creatorDirectives
+      .list({ status: "active" })
+      .map((record) => mapCreatorDirective(input.borg, record));
+
+    return c.json({ directives });
   });
 
   app.post("/api/commitments", async (c) => {

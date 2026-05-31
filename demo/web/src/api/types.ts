@@ -391,6 +391,61 @@ export type CommitmentsResponse = {
   commitments: CommitmentItem[];
 };
 
+export type CreatorDirectiveKind =
+  | "self_identity"
+  | "subject_fact"
+  | "disclosure_boundary"
+  | "response_policy"
+  | "routing_instruction";
+
+export type CreatorDirectiveStatus = "active" | "superseded" | "revoked";
+
+export type CreatorDirectiveSubjectKind = "borg_self" | "entity" | "system" | "unknown";
+
+export type CreatorDirectiveActivationScope =
+  | "same_as_disclosure"
+  | "operator_only"
+  | "public"
+  | "allow_list"
+  | "subject_only"
+  | "all_except";
+
+export type CreatorDirectiveContentScope =
+  | "operator_only"
+  | "public"
+  | "allow_list"
+  | "subject_only"
+  | "all_except";
+
+export type CreatorDirectiveMentionPolicy =
+  | "proactive"
+  | "answer_if_asked"
+  | "only_if_topic_raised"
+  | "never_mention";
+
+export type CreatorDirectiveItem = {
+  id: string;
+  kind: CreatorDirectiveKind;
+  text: string | null;
+  canonical_fact: string | null;
+  operational_directive: string | null;
+  activation_scope: CreatorDirectiveActivationScope;
+  activation_allowed_entity_ids: string[];
+  activation_excluded_entity_ids: string[];
+  content_scope: CreatorDirectiveContentScope;
+  mention_policy: CreatorDirectiveMentionPolicy;
+  status: CreatorDirectiveStatus;
+  subject_kind: CreatorDirectiveSubjectKind;
+  subject_entity_id: string | null;
+  subject_entity_name: string | null;
+  priority: number;
+  created_at: number;
+};
+
+export type CreatorDirectivesResponse = {
+  directives: CreatorDirectiveItem[];
+};
+
 export type SocialMemoryItem = {
   entity_id: string;
   name: string | null;

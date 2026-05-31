@@ -19,6 +19,7 @@ import { StatusBar } from "./components/StatusBar";
 import { Topbar } from "./components/Topbar";
 import { CognitionScreen } from "./screens/Cognition";
 import { CommitScreen } from "./screens/Commit";
+import { DirectivesScreen } from "./screens/Directives";
 import { DreamScreen } from "./screens/Dream";
 import { GraphScreen } from "./screens/Graph";
 import { IdentityScreen } from "./screens/Identity";
@@ -131,6 +132,7 @@ export function App() {
             {route === "memory" ? <MemoryScreen sessionId={sessionId} /> : null}
             {route === "identity" ? <IdentityScreen /> : null}
             {route === "commit" ? <CommitScreen /> : null}
+            {route === "directives" ? <DirectivesScreen /> : null}
             {route === "shared" ? <SharedScreen /> : null}
             {route === "dream" ? <DreamScreen /> : null}
             {route === "graph" ? <GraphScreen /> : null}

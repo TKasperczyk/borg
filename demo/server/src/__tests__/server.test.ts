@@ -16,6 +16,7 @@ import {
   createMaintenanceRunId,
   createSemanticEdgeId,
   createSemanticNodeId,
+  createStreamEntryId,
   type AttachmentId,
   type BorgEnqueueMessageResult,
   type BorgOpenOptions,
@@ -1768,6 +1769,92 @@ describe("demo server", () => {
         }),
       ],
     });
+  });
+
+  it("GET /api/creator-directives lists active creator directives", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const creatorId = borg.entities.resolve("Tom");
+    const aliceId = borg.entities.resolve("Alice");
+    const active = borg.creatorDirectives.queue({
+      kind: "subject_fact",
+      createdByEntityId: creatorId,
+      sourceSessionId: DEFAULT_SESSION_ID,
+      authorizationStreamEntryIds: [createStreamEntryId()],
+      contentSourceStreamEntryIds: [createStreamEntryId()],
+      subjectKind: "entity",
+      subjectEntityId: aliceId,
+      canonicalFact: "Alice is the launch reviewer.",
+      disclosurePolicy: {
+        content_scope: "public",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: null,
+        mention_policy: "only_if_topic_raised",
+        denied_audience_behavior: "omit",
+        boundary_prompt: null,
+        topic_tags: ["demo"],
+      },
+      priority: 6,
+      createdAt: clock.now(),
+    });
+    const revoked = borg.creatorDirectives.queue({
+      kind: "response_policy",
+      createdByEntityId: creatorId,
+      sourceSessionId: DEFAULT_SESSION_ID,
+      authorizationStreamEntryIds: [createStreamEntryId()],
+      contentSourceStreamEntryIds: [createStreamEntryId()],
+      subjectKind: "system",
+      operationalDirective: "Use the old response policy.",
+      disclosurePolicy: {
+        content_scope: "operator_only",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: null,
+        mention_policy: "answer_if_asked",
+        denied_audience_behavior: "omit",
+        boundary_prompt: null,
+        topic_tags: [],
+      },
+      priority: 4,
+      createdAt: clock.now(),
+    });
+    borg.creatorDirectives.revoke(revoked.id, "demo smoke");
+
+    const response = await app.request("/api/creator-directives");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      directives: Array<{
+        id: string;
+        kind: string;
+        text: string | null;
+        canonical_fact: string | null;
+        operational_directive: string | null;
+        activation_scope: string;
+        content_scope: string;
+        mention_policy: string;
+        status: string;
+        subject_entity_name: string | null;
+      }>;
+    };
+    expect(body.directives.map((directive) => directive.id)).not.toContain(revoked.id);
+    expect(body.directives).toEqual([
+      expect.objectContaining({
+        id: active.id,
+        kind: "subject_fact",
+        text: "Alice is the launch reviewer.",
+        canonical_fact: "Alice is the launch reviewer.",
+        operational_directive: null,
+        activation_scope: "same_as_disclosure",
+        content_scope: "public",
+        mention_policy: "only_if_topic_raised",
+        status: "active",
+        subject_entity_name: "Alice",
+      }),
+    ]);
   });
 
   it("operator-authored commitment can be forgotten via correction (cross-sprint A+B)", async () => {

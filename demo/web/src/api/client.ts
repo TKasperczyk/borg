@@ -9,6 +9,7 @@ import type {
   CorrectionReviewsResponse,
   CorrectMemoryRequest,
   CreateCommitmentRequest,
+  CreatorDirectivesResponse,
   CreateGoalRequest,
   CreateGrowthMarkerRequest,
   CreateValueRequest,
@@ -367,6 +368,10 @@ export async function postCommitmentRevoke(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function getCreatorDirectives(): Promise<CreatorDirectivesResponse> {
+  return fetchJson<CreatorDirectivesResponse>("api/creator-directives");
 }
 
 export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {
