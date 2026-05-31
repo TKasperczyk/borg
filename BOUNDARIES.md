@@ -13,15 +13,19 @@ The system answers two genuinely different questions about "who may see this", a
 are kept in two separate structures **by design, not by accident**:
 
 1. **The episode audience firewall** -- *"who was in the room when this happened?"*
-   Involuntary experiential memory, scoped at the episode level. Two states only
-   (`src/memory/episodic/audience-filter.ts`, `isEpisodeAccessVisible`):
-   - `shared` (`audience_entity_id === null`) -> visible to everyone, or
-   - `private-to-one` (`audience = X`) -> visible **only** when the viewer's audience is
-     exactly `X`.
+   Involuntary experiential memory, scoped at the episode level. One predicate
+   (`src/memory/episodic/audience-filter.ts`, `isEpisodeAccessVisible`): an episode is
+   visible to a viewer iff
+   - its `audience_entity_id` is `NULL` (public), **or**
+   - its `shared` flag is `true` (explicitly broadcast), **or**
+   - its `audience_entity_id` exactly matches the viewer's audience (private-to-one).
 
-   `deriveEpisodeAccess` (`src/memory/episodic/extractor.ts`) stamps this mechanically:
-   0 audiences -> shared; exactly 1 -> private to that one; **more than 1 -> the episode
-   is dropped, not stored.** Multi-audience content cannot exist as a single episode.
+   `deriveEpisodeAccess` (`src/memory/episodic/extractor.ts`) stamps newly-extracted episodes
+   into just two of those shapes: 0 source audiences -> `{audience: null, shared: true}`
+   (public); exactly 1 -> `{audience: X, shared: false}` (private to X); **more than 1 -> the
+   episode is dropped, not stored.** Multi-audience content cannot exist as a single episode.
+   (`shared = true` on a *non-null* audience is a secondary broadcast path -- it is honored by
+   the predicate but never produced by normal derivation.)
 
    Semantic-graph node **and edge** visibility derive *transitively* from this one
    predicate (`src/retrieval/semantic-retrieval.ts`): a node/edge is admissible only if a
