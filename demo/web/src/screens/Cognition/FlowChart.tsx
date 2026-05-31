@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 
-import type { TurnTerminalOutcome } from "../../api/types";
+import type { TurnPhaseName, TurnTerminalOutcome } from "../../api/types";
 import type { PhaseState } from "../../hooks/use-turn-stream";
 import { ParticleField, type ParticleTarget } from "./ParticleField";
 
@@ -20,6 +20,7 @@ export type FlowChartProps = {
   phases: readonly PhaseState[];
   activeTurnId: string | null;
   tokenTextByPhase: Map<string, string>;
+  detailByPhase: Map<string, string[]>;
   terminalOutcome: TurnTerminalOutcome | null;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
@@ -56,7 +57,7 @@ type EndpointNode = {
 };
 
 type PhaseNode = {
-  id: string;
+  id: TurnPhaseName;
   kind: "phase" | "gate";
   x: number;
   y: number;
@@ -103,7 +104,7 @@ const PHASE_IDS = [
   "guards",
   "persist",
   "reflect",
-] as const;
+] as const satisfies ReadonlyArray<TurnPhaseName>;
 
 const PHASES_LAYOUT: readonly PhaseNode[] = [
   // tier 1 -- left -> right
@@ -134,6 +135,9 @@ const NODES: Record<string, LayoutNode> = (() => {
   for (const p of PHASES_LAYOUT) map[p.id] = p;
   return map;
 })();
+const PHASE_LABELS: Record<string, string> = Object.fromEntries(
+  PHASES_LAYOUT.map((phase) => [phase.id, phase.label]),
+);
 
 // Same edge topology as upstream -- the routing changes, not the graph. The
 // delib -> final transition is the S1/S2 fork, drawn separately.
@@ -265,13 +269,14 @@ type PhaseStatus = PhaseState["status"];
 
 type PhasesRecord = Record<
   string,
-  { status: PhaseStatus; sub?: string; durationMs?: number }
+  { name?: string; status: PhaseStatus; sub?: string; durationMs?: number }
 >;
 
 function buildPhaseRecord(phases: readonly PhaseState[]): PhasesRecord {
   const out: PhasesRecord = {};
   for (const phase of phases) {
     out[phase.id] = {
+      name: phase.name,
       status: phase.status,
       sub: phase.sub,
       durationMs: phase.durationMs,
@@ -288,12 +293,24 @@ function deriveActiveStreamPhase(
   phases: PhasesRecord,
   activeTurnId: string | null,
   tokenTextByPhase: ReadonlyMap<string, string>,
-): "delib" | "final" | null {
+  detailByPhase: ReadonlyMap<string, readonly string[]>,
+): TurnPhaseName | null {
   if (phases.final?.status === "running") return "final";
   if (phases.delib?.status === "running") return "delib";
+  for (const phase of PHASE_IDS) {
+    if (phases[phase]?.status === "running") return phase;
+  }
   if (activeTurnId !== null) {
-    if ((tokenTextByPhase.get(tokenKey(activeTurnId, "final")) ?? "").length > 0) return "final";
-    if ((tokenTextByPhase.get(tokenKey(activeTurnId, "delib")) ?? "").length > 0) return "delib";
+    for (let index = PHASE_IDS.length - 1; index >= 0; index -= 1) {
+      const phase = PHASE_IDS[index]!;
+      const key = tokenKey(activeTurnId, phase);
+      if (
+        (tokenTextByPhase.get(key) ?? "").length > 0 ||
+        (detailByPhase.get(key)?.length ?? 0) > 0
+      ) {
+        return phase;
+      }
+    }
   }
   return null;
 }
@@ -522,38 +539,42 @@ function Edge({
 function ActiveStream({
   phases,
   tokenText,
+  detailLines,
   delibPath,
   finalAttempt,
   activeStreamPhase,
 }: {
   phases: PhasesRecord;
   tokenText: string;
+  detailLines: readonly string[];
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
-  activeStreamPhase: "delib" | "final" | null;
+  activeStreamPhase: TurnPhaseName | null;
 }) {
   const phase = activeStreamPhase;
   const status: PhaseStatus | "idle" = phase ? phases[phase]?.status ?? "queue" : "idle";
   const isRunning = status === "running";
-  const phaseName =
-    phase === "final" ? "finalizer" : phase === "delib" ? "deliberation" : null;
-
-  const meta =
-    phase === "final"
-      ? `attempt ${finalAttempt}`
-      : phase === "delib"
-        ? delibPath === "system_2"
-          ? "S2 · plan"
-          : delibPath === "system_1"
-            ? "S1 · fast"
-            : "path pending"
-        : "no stream";
+  const phaseName = phase ? phases[phase]?.name ?? PHASE_LABELS[phase] ?? phase : null;
+  const tokenPhase = phase === "delib" || phase === "final";
+  const delibMeta =
+    delibPath === "system_2"
+      ? "S2 · plan"
+      : delibPath === "system_1"
+        ? "S1 · fast"
+        : "path pending";
+  // Detail lines are stored and rendered oldest-to-newest so the latest phase
+  // update lands at the bottom, matching token stream reading order.
+  const detailText = detailLines.join("\n");
 
   const body = !phase
-    ? "waiting for delib or final to produce tokens"
-    : tokenText.length > 0
-      ? tokenText
-      : "stream open…";
+    ? "waiting for a running phase"
+    : tokenPhase
+      ? tokenText.length > 0
+        ? tokenText
+        : "stream open…"
+      : detailText.length > 0
+        ? detailText
+        : "stream open…";
 
   return (
     <div className={`flow-active-stream ${!phase ? "idle" : ""}`} data-status={status}>
@@ -568,13 +589,25 @@ function ActiveStream({
           ) : null}
         </span>
         <span className="meta">
-          {phase ? (
+          {phase === "final" ? (
             <>
-              <span className={`chip ${finalAttempt > 1 ? "warn" : "acc"}`}>{meta}</span>
-              {phase === "final" && delibPath ? (
+              <span className={`chip ${finalAttempt > 1 ? "warn" : "acc"}`}>
+                attempt {finalAttempt}
+              </span>
+              {delibPath ? (
                 <span className="chip">{delibPath === "system_2" ? "via S2" : "via S1"}</span>
               ) : null}
             </>
+          ) : phase === "delib" ? (
+            <span className={`chip ${finalAttempt > 1 ? "warn" : "acc"}`}>{delibMeta}</span>
+          ) : phase ? (
+            <span
+              className={`chip ${
+                status === "running" ? "acc" : status === "fail" ? "warn" : ""
+              }`.trim()}
+            >
+              {status}
+            </span>
           ) : null}
         </span>
       </div>
@@ -596,6 +629,7 @@ export function FlowChart({
   phases,
   activeTurnId,
   tokenTextByPhase,
+  detailByPhase,
   terminalOutcome,
   delibPath,
   finalAttempt,
@@ -604,13 +638,17 @@ export function FlowChart({
 }: FlowChartProps) {
   const phasesRecord = useMemo(() => buildPhaseRecord(phases), [phases]);
   const activeStreamPhase = useMemo(
-    () => deriveActiveStreamPhase(phasesRecord, activeTurnId, tokenTextByPhase),
-    [phasesRecord, activeTurnId, tokenTextByPhase],
+    () => deriveActiveStreamPhase(phasesRecord, activeTurnId, tokenTextByPhase, detailByPhase),
+    [phasesRecord, activeTurnId, tokenTextByPhase, detailByPhase],
   );
   const streamTokenText =
     activeTurnId === null || activeStreamPhase === null
       ? ""
       : tokenTextByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? "";
+  const streamDetailLines =
+    activeTurnId === null || activeStreamPhase === null
+      ? []
+      : detailByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? [];
 
   const phStatus = (id: string): PhaseStatus => phasesRecord[id]?.status ?? "queue";
 
@@ -933,6 +971,7 @@ export function FlowChart({
       <ActiveStream
         phases={phasesRecord}
         tokenText={streamTokenText}
+        detailLines={streamDetailLines}
         delibPath={delibPath}
         finalAttempt={finalAttempt}
         activeStreamPhase={activeStreamPhase}

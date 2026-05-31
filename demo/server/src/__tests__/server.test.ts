@@ -639,6 +639,43 @@ describe("demo server", () => {
     expect(detailFrame?.summary).toContain("empty=null");
   });
 
+  it("attributes unhandled turn-scoped trace events to the current phase", () => {
+    const live = createLiveBridge();
+    const { frames } = collectLiveFrames(live);
+
+    live.tracer.emit("turn_phase.started", {
+      turnId: "turn_detail",
+      turn_id: "turn_detail",
+      session_id: DEFAULT_SESSION_ID,
+      phase: "retrieval",
+      sub: "running",
+    });
+    live.tracer.emit("retrieval.completed", {
+      turnId: "turn_detail",
+      turn_id: "turn_detail",
+      session_id: DEFAULT_SESSION_ID,
+      episodeCount: 2,
+      semanticHits: 4,
+      confidence: 0.82,
+    });
+
+    const detailFrame = frames.find(
+      (frame) => frame.type === "turn:phase:detail" && frame.event === "retrieval.completed",
+    );
+
+    expect(detailFrame).toMatchObject({
+      type: "turn:phase:detail",
+      turn_id: "turn_detail",
+      session_id: DEFAULT_SESSION_ID,
+      phase: "retrieval",
+      event: "retrieval.completed",
+      summary: expect.any(String),
+    });
+    expect(detailFrame?.summary).toContain("episodeCount=2");
+    expect(detailFrame?.summary).toContain("semanticHits=4");
+    expect(detailFrame?.summary).toContain("confidence=0.82");
+  });
+
   it("does not broadcast unhandled trace events without a turn id", () => {
     const live = createLiveBridge();
     const { frames } = collectLiveFrames(live);

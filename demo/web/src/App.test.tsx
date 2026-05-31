@@ -22,6 +22,7 @@ vi.mock("./hooks/use-turn-stream", () => ({
     running: false,
     phases: [],
     tokenTextByPhase: new Map(),
+    detailByPhase: new Map(),
     terminalOutcome: null,
     delibPath: null,
     finalAttempt: 1,

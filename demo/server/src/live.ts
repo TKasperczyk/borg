@@ -303,11 +303,16 @@ export class LiveBroadcaster {
 export class WsBridgeTracer implements TurnTracer {
   readonly enabled = true;
   readonly includePayloads = true;
+  private readonly currentPhaseByTurnId = new Map<string, string>();
 
   constructor(
     private readonly broadcaster: LiveBroadcaster,
     private readonly ledgerCache: Map<string, unknown>,
   ) {}
+
+  resetTraceState(): void {
+    this.currentPhaseByTurnId.clear();
+  }
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
     const turnId =
@@ -318,6 +323,9 @@ export class WsBridgeTracer implements TurnTracer {
           : null;
 
     if (event === "turn_phase.started") {
+      if (turnId !== null && typeof data.phase === "string") {
+        this.currentPhaseByTurnId.set(turnId, data.phase);
+      }
       this.broadcaster.broadcast({
         type: "turn:phase:started",
         ts: Date.now(),
@@ -384,6 +392,9 @@ export class WsBridgeTracer implements TurnTracer {
     }
 
     if (event === "turn.terminal") {
+      if (turnId !== null) {
+        this.currentPhaseByTurnId.delete(turnId);
+      }
       this.broadcaster.broadcast({
         type: "turn:terminal",
         ts: Date.now(),
@@ -461,12 +472,14 @@ export class WsBridgeTracer implements TurnTracer {
     }
 
     if (turnId !== null) {
+      const phase =
+        typeof data.phase === "string" ? data.phase : this.currentPhaseByTurnId.get(turnId);
       this.broadcaster.broadcast({
         type: "turn:phase:detail",
         ts: Date.now(),
         turn_id: turnId,
         ...(typeof data.session_id === "string" ? { session_id: data.session_id } : {}),
-        ...(typeof data.phase === "string" ? { phase: data.phase } : {}),
+        ...(phase === undefined ? {} : { phase }),
         event,
         summary: summarizeTraceEventData(data),
       });
@@ -478,6 +491,7 @@ export type LiveBridge = {
   broadcaster: LiveBroadcaster;
   tracer: TurnTracer;
   ledgerCache: Map<string, unknown>;
+  resetTraceState(): void;
   observeStreamAppend(observer: StreamAppendObserver): () => void;
   onStreamAppend(entries: readonly StreamEntry[]): void;
 };
@@ -485,12 +499,16 @@ export type LiveBridge = {
 export function createLiveBridge(): LiveBridge {
   const broadcaster = new LiveBroadcaster();
   const ledgerCache = new Map<string, unknown>();
+  const tracer = new WsBridgeTracer(broadcaster, ledgerCache);
   const streamAppendObservers = new Set<StreamAppendObserver>();
 
   return {
     broadcaster,
-    tracer: new WsBridgeTracer(broadcaster, ledgerCache),
+    tracer,
     ledgerCache,
+    resetTraceState: () => {
+      tracer.resetTraceState();
+    },
     observeStreamAppend: (observer) => {
       streamAppendObservers.add(observer);
       return () => {

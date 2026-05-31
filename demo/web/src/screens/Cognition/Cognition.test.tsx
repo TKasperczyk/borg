@@ -893,6 +893,37 @@ describe("cognition screen", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders running non-LLM phase details inside the active stream pane", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.change(screen.getByPlaceholderText("send a turn"), {
+      target: { value: "hello borg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+    expect(await screen.findByText(/borg is thinking/)).toBeInTheDocument();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "retrieval"));
+      source.emit({
+        type: "turn:phase:detail",
+        ts: Date.now(),
+        turn_id: "turn_abc",
+        session_id: "default",
+        phase: "retrieval",
+        event: "retrieval.completed",
+        summary: "episodeCount=2 semanticHits=4 confidence=0.82",
+      });
+    });
+
+    expect(document.querySelector(".flow-active-head")?.textContent).toMatch(/retrieval/i);
+    expect(document.querySelector(".flow-active-body")?.textContent).toContain(
+      "retrieval.completed · episodeCount=2 semanticHits=4 confidence=0.82",
+    );
+  });
+
   it("renders accumulated token text inside the active streaming phase", async () => {
     const source = makeLiveSource();
     installCognitionFetch();

@@ -411,6 +411,7 @@ export function CognitionScreen({
         phases={turnStream.phases}
         activeTurnId={turnStream.activeTurnId}
         tokenTextByPhase={turnStream.tokenTextByPhase}
+        detailByPhase={turnStream.detailByPhase}
         terminalOutcome={turnStream.terminalOutcome}
         delibPath={turnStream.delibPath}
         finalAttempt={turnStream.finalAttempt}

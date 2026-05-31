@@ -10,6 +10,7 @@ import type {
   StreamEntry,
   TurnTerminalFrame,
   TurnTerminalOutcome,
+  TurnPhaseDetailFrame,
   TurnPhaseFrame,
   TurnPhaseName,
   TurnRequest,
@@ -38,6 +39,7 @@ export type TailEvent = {
 };
 
 const TURN_REFLECT_TIMEOUT_MS = 60_000;
+const DETAIL_LINES_PER_PHASE = 10;
 
 const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
   { id: "ingest", name: "ingest" },
@@ -149,7 +151,7 @@ function sessionIdFromLiveFrame(frame: LiveFrame): string | null {
   return null;
 }
 
-function tokenKey(turnId: string, phase: TurnPhaseName): string {
+function tokenKey(turnId: string, phase: string): string {
   return `${turnId}:${phase}`;
 }
 
@@ -343,11 +345,27 @@ function appendTokenText(
   return next;
 }
 
+function appendPhaseDetail(
+  current: Map<string, string[]>,
+  frame: TurnPhaseDetailFrame,
+): Map<string, string[]> {
+  if (frame.phase === undefined) {
+    return current;
+  }
+
+  const next = new Map(current);
+  const key = tokenKey(frame.turn_id, frame.phase);
+  const line = `${frame.event} · ${frame.summary}`;
+  next.set(key, [...(next.get(key) ?? []), line].slice(-DETAIL_LINES_PER_PHASE));
+  return next;
+}
+
 export type TurnStreamState = {
   activeTurnId: string | null;
   running: boolean;
   phases: PhaseState[];
   tokenTextByPhase: Map<string, string>;
+  detailByPhase: Map<string, string[]>;
   terminalOutcome: TurnTerminalOutcome | null;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
@@ -367,6 +385,7 @@ export function useTurnStream(
   const [running, setRunning] = useState(false);
   const [phases, setPhases] = useState<PhaseState[]>(initialPhases);
   const [tokenTextByPhase, setTokenTextByPhase] = useState(() => new Map<string, string>());
+  const [detailByPhase, setDetailByPhase] = useState(() => new Map<string, string[]>());
   const [terminalOutcome, setTerminalOutcome] = useState<TurnTerminalOutcome | null>(null);
   const [delibPath, setDelibPath] = useState<"system_1" | "system_2" | null>(null);
   const [finalAttempt, setFinalAttempt] = useState(1);
@@ -448,6 +467,7 @@ export function useTurnStream(
       setActiveTurnId(null);
       setPhases(initialPhases());
       setTokenTextByPhase(new Map());
+      setDetailByPhase(new Map());
       setTerminalOutcome(null);
       setDelibPath(null);
       setFinalAttempt(1);
@@ -507,6 +527,7 @@ export function useTurnStream(
     setRunningState(false);
     setPhases(initialPhases());
     setTokenTextByPhase(new Map());
+    setDetailByPhase(new Map());
     setTerminalOutcome(null);
     setDelibPath(null);
     setFinalAttempt(1);
@@ -583,6 +604,11 @@ export function useTurnStream(
         return;
       }
 
+      if (frame.type === "borg:reset") {
+        setDetailByPhase(new Map());
+        return;
+      }
+
       if (frame.type === "turn:delib_path") {
         setDelibPath(frame.path);
         return;
@@ -600,6 +626,7 @@ export function useTurnStream(
         setLastPhase(`terminal ${frame.data.outcome}`);
         setTerminalOutcome(frame.data.outcome);
         setTokenTextByPhase(new Map());
+        setDetailByPhase(new Map());
 
         if (currentTurnId === null || currentTurnId === frameTurnId) {
           completeActiveLiveTurn({ releaseForOutstanding: true });
@@ -609,6 +636,7 @@ export function useTurnStream(
       }
 
       if (frame.type === "turn:phase:detail") {
+        setDetailByPhase((current) => appendPhaseDetail(current, frame));
         return;
       }
 
@@ -708,6 +736,7 @@ export function useTurnStream(
       running,
       phases,
       tokenTextByPhase,
+      detailByPhase,
       terminalOutcome,
       delibPath,
       finalAttempt,
@@ -721,6 +750,7 @@ export function useTurnStream(
     [
       activeTurnId,
       delibPath,
+      detailByPhase,
       eventTail,
       finalAttempt,
       lastPhase,
