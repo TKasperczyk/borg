@@ -24,9 +24,10 @@ import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "..
 import { emotionalArcSchema } from "../affective/types.js";
 import { computeEpisodeHeat, computeEpisodeHeatForTimestamp } from "./heat.js";
 import {
-  isEpisodeInGlobalIdentityScope,
-  isEpisodeVisibleToAudience,
+  isEpisodeVisibleToCapability,
   normalizeEpisodeAccess,
+  resolveViewerCapability,
+  type ViewerCapability,
 } from "./access.js";
 
 import {
@@ -453,81 +454,72 @@ export class EpisodicRepository {
     };
   }
 
-  private buildVisibilityWhereClause(
-    audienceEntityId: EntityId | null | undefined,
-    crossAudience = false,
-    globalIdentitySelfAudienceEntityId?: EntityId | null,
-  ): string | undefined {
-    if (globalIdentitySelfAudienceEntityId !== undefined) {
-      return globalIdentitySelfAudienceEntityId === null
-        ? "audience_entity_id IS NULL"
-        : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
-            globalIdentitySelfAudienceEntityId,
-          )})`;
+  private buildVisibilityWhereClause(capability: ViewerCapability): string | undefined {
+    switch (capability.kind) {
+      case "unrestricted":
+        return undefined;
+      case "self_continuity":
+        return capability.selfAudienceEntityId === null
+          ? "audience_entity_id IS NULL"
+          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+              capability.selfAudienceEntityId,
+            )})`;
+      case "audience":
+        return capability.audienceEntityId === null
+          ? "(audience_entity_id IS NULL OR shared = true)"
+          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+              capability.audienceEntityId,
+            )} OR shared = true)`;
+      default: {
+        const exhaustive: never = capability;
+        throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
+      }
     }
-
-    if (crossAudience) {
-      return undefined;
-    }
-
-    if (audienceEntityId === null || audienceEntityId === undefined) {
-      return "(audience_entity_id IS NULL OR shared = true)";
-    }
-
-    return `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
-      audienceEntityId,
-    )} OR shared = true)`;
   }
 
   private buildOptionsVisibilityWhereClause(options: EpisodeVisibilityOptions): string | undefined {
-    return this.buildVisibilityWhereClause(
-      options.audienceEntityId,
-      options.crossAudience,
-      options.globalIdentitySelfAudienceEntityId,
-    );
+    return this.buildVisibilityWhereClause(resolveViewerCapability(options));
   }
 
   private buildIndexedVisibilityWhereClause(
-    options: EpisodeVisibilityOptions,
+    capability: ViewerCapability,
     alias: string,
   ): {
     sql: string;
     params: unknown[];
   } {
-    if (options.globalIdentitySelfAudienceEntityId !== undefined) {
-      return options.globalIdentitySelfAudienceEntityId === null
-        ? {
-            sql: `${alias}.audience_entity_id IS NULL`,
-            params: [],
-          }
-        : {
-            sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ?)`,
-            params: [options.globalIdentitySelfAudienceEntityId],
-          };
+    switch (capability.kind) {
+      case "unrestricted":
+        return { sql: "1 = 1", params: [] };
+      case "self_continuity":
+        return capability.selfAudienceEntityId === null
+          ? {
+              sql: `${alias}.audience_entity_id IS NULL`,
+              params: [],
+            }
+          : {
+              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ?)`,
+              params: [capability.selfAudienceEntityId],
+            };
+      case "audience":
+        return capability.audienceEntityId === null
+          ? {
+              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.shared = 1)`,
+              params: [],
+            }
+          : {
+              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ? OR ${alias}.shared = 1)`,
+              params: [capability.audienceEntityId],
+            };
+      default: {
+        const exhaustive: never = capability;
+        throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
+      }
     }
-
-    if (options.crossAudience === true) {
-      return {
-        sql: "1 = 1",
-        params: [],
-      };
-    }
-
-    if (options.audienceEntityId === null || options.audienceEntityId === undefined) {
-      return {
-        sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.shared = 1)`,
-        params: [],
-      };
-    }
-
-    return {
-      sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ? OR ${alias}.shared = 1)`,
-      params: [options.audienceEntityId],
-    };
   }
 
   private buildIndexedVisibilityBranches(
-    options: EpisodeVisibilityOptions,
+    capability: ViewerCapability,
     order: IndexedEpisodeOrder,
   ): IndexedVisibilityBranch[] {
     const globalIndexName =
@@ -537,62 +529,64 @@ export class EpisodicRepository {
     const sharedIndexName =
       order === "heat" ? "idx_episode_index_shared_heat" : "idx_episode_index_shared_recent";
 
-    if (
-      options.crossAudience === true &&
-      options.globalIdentitySelfAudienceEntityId === undefined
-    ) {
-      return [
-        {
-          where: "archived = 0",
+    switch (capability.kind) {
+      case "unrestricted":
+        return [
+          {
+            where: "archived = 0",
+            params: [],
+            indexName: globalIndexName,
+          },
+        ];
+      case "self_continuity": {
+        const publicBranch = {
+          where: "archived = 0 AND audience_entity_id IS NULL",
           params: [],
-          indexName: globalIndexName,
-        },
-      ];
-    }
-
-    if (options.globalIdentitySelfAudienceEntityId !== undefined) {
-      const publicBranch = {
-        where: "archived = 0 AND audience_entity_id IS NULL",
-        params: [],
-        indexName: audienceIndexName,
-      };
-
-      if (options.globalIdentitySelfAudienceEntityId === null) {
-        return [publicBranch];
-      }
-
-      return [
-        publicBranch,
-        {
-          where: "archived = 0 AND audience_entity_id = ?",
-          params: [options.globalIdentitySelfAudienceEntityId],
           indexName: audienceIndexName,
-        },
-      ];
+        };
+
+        if (capability.selfAudienceEntityId === null) {
+          return [publicBranch];
+        }
+
+        return [
+          publicBranch,
+          {
+            where: "archived = 0 AND audience_entity_id = ?",
+            params: [capability.selfAudienceEntityId],
+            indexName: audienceIndexName,
+          },
+        ];
+      }
+      case "audience": {
+        const branches: IndexedVisibilityBranch[] = [
+          {
+            where: "archived = 0 AND audience_entity_id IS NULL",
+            params: [],
+            indexName: audienceIndexName,
+          },
+          {
+            where: "archived = 0 AND shared = 1",
+            params: [],
+            indexName: sharedIndexName,
+          },
+        ];
+
+        if (capability.audienceEntityId !== null) {
+          branches.push({
+            where: "archived = 0 AND audience_entity_id = ?",
+            params: [capability.audienceEntityId],
+            indexName: audienceIndexName,
+          });
+        }
+
+        return branches;
+      }
+      default: {
+        const exhaustive: never = capability;
+        throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
+      }
     }
-
-    const branches: IndexedVisibilityBranch[] = [
-      {
-        where: "archived = 0 AND audience_entity_id IS NULL",
-        params: [],
-        indexName: audienceIndexName,
-      },
-      {
-        where: "archived = 0 AND shared = 1",
-        params: [],
-        indexName: sharedIndexName,
-      },
-    ];
-
-    if (options.audienceEntityId !== null && options.audienceEntityId !== undefined) {
-      branches.push({
-        where: "archived = 0 AND audience_entity_id = ?",
-        params: [options.audienceEntityId],
-        indexName: audienceIndexName,
-      });
-    }
-
-    return branches;
   }
 
   private async listEpisodesWhere(where: string | undefined): Promise<Episode[]> {
@@ -769,7 +763,7 @@ export class EpisodicRepository {
     order: IndexedEpisodeOrder,
     limit: number,
   ): EpisodeId[] {
-    const branches = this.buildIndexedVisibilityBranches(options, order);
+    const branches = this.buildIndexedVisibilityBranches(resolveViewerCapability(options), order);
     const orderBy =
       order === "heat"
         ? "heat_score DESC, updated_at DESC, episode_id DESC"
@@ -1288,29 +1282,18 @@ export class EpisodicRepository {
     });
     const statsById = this.getStatsMany(ranked.map((item) => item.episode.id));
     const results: EpisodeSearchCandidate[] = [];
+    const viewer = resolveViewerCapability(options);
 
     for (const item of ranked) {
       const episode = item.episode;
       const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
       const similarity = item.similarity;
 
-      if (
-        options.globalIdentitySelfAudienceEntityId !== undefined &&
-        !isEpisodeInGlobalIdentityScope(episode, options.globalIdentitySelfAudienceEntityId)
-      ) {
+      if (!isEpisodeVisibleToCapability(episode, viewer)) {
         continue;
       }
 
       if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
-        continue;
-      }
-
-      if (
-        options.globalIdentitySelfAudienceEntityId === undefined &&
-        !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
-          crossAudience: options.crossAudience,
-        })
-      ) {
         continue;
       }
 
@@ -1367,7 +1350,7 @@ export class EpisodicRepository {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
     await this.ensureEpisodeIndexBackfilled();
 
-    const visibility = this.buildIndexedVisibilityWhereClause(options, "ei");
+    const visibility = this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei");
     const clauses = ["ei.archived = 0", visibility.sql];
     const params: unknown[] = [...visibility.params];
 
@@ -1448,7 +1431,7 @@ export class EpisodicRepository {
 
     const normalizedTermList = [...normalizedTerms];
     const termPlaceholders = sqlPlaceholders(normalizedTermList.length);
-    const visibility = this.buildIndexedVisibilityWhereClause(options, "ei");
+    const visibility = this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei");
     const visibilityParams = visibility.params;
     const rows = this.db
       .prepare(
