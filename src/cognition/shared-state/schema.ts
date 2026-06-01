@@ -22,6 +22,7 @@ import {
 } from "./constants.js";
 import {
   sharedStatePatchSchema,
+  type SharedStateArtifactAudienceContext,
   type SharedStateArtifactParticipantContext,
   type SharedStateCanonicalizationCandidates,
   type SharedStateCompileDegradedReason,
@@ -86,6 +87,7 @@ export type CompileSharedStateArtifactInput = {
   model?: string;
   repository?: Pick<SharedStateRepository, "get" | "upsert">;
   audienceEntityId: EntityId;
+  currentAudience?: SharedStateArtifactAudienceContext | null;
   selfEntityId: EntityId;
   speakerEntityId?: EntityId | null;
   participants: readonly SharedStateArtifactParticipantContext[];

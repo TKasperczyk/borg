@@ -287,6 +287,11 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
       "durable decisions and constraints for this audience",
     );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain(
+      "Every artifact entry must pertain to the current audience",
+    );
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("must not be added to this artifact");
+    expect(SHARED_STATE_SYSTEM_PROMPT).toContain("directive layer");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("canonical shared planning state");
     expect(SHARED_STATE_SYSTEM_PROMPT).not.toContain("shared planning decision state");
@@ -302,6 +307,97 @@ describe("compileSharedStateArtifact", () => {
     );
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Do not emit cosmetic or provenance-only updates");
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Every add, update, and supersede replacement");
+  });
+
+  it("omits standing rules for a different audience while preserving current-audience rules", async () => {
+    const otherAudience = createEntityId();
+    const currentAudienceName = "Audience A";
+    const otherAudienceName = "Audience B";
+    const crossAudienceLlm = new FakeLLMClient({
+      responses: [
+        (options: Parameters<FakeLLMClient["complete"]>[0]) => {
+          const requestPayload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+            current_audience?: unknown;
+            participant_entities?: unknown;
+          };
+
+          expect(options.system).toContain(
+            "Every artifact entry must pertain to the current audience",
+          );
+          expect(requestPayload.current_audience).toEqual({
+            entity_id: audience,
+            display_name: currentAudienceName,
+            kind: "person",
+          });
+          expect(requestPayload.participant_entities).toContainEqual({
+            entity_id: otherAudience,
+            display_name: otherAudienceName,
+          });
+
+          return emitSharedStateArtifactPatchResponse({ operations: [] });
+        },
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(crossAudienceLlm),
+      currentAudience: {
+        entityId: audience,
+        displayName: currentAudienceName,
+        kind: "person",
+      },
+      participants: [
+        { entityId: audience, displayName: currentAudienceName },
+        { entityId: otherAudience, displayName: otherAudienceName },
+      ],
+      currentUserMessage: "Para el segundo publico, mantened las respuestas breves.",
+      promptVisibleLedger:
+        "The durable standing rule in scope governs the other listed audience, not the current audience.",
+    });
+
+    expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
+
+    const currentAudienceRuleSource = createStreamEntryId();
+    const currentAudienceLlm = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "rule.current_audience.response_style",
+              new_key_reason: "current audience standing response style",
+              kind: "locked",
+              text: "The current audience wants brief responses.",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentAudienceRuleSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(currentAudienceLlm),
+      currentAudience: {
+        entityId: audience,
+        displayName: currentAudienceName,
+        kind: "person",
+      },
+      participants: [{ entityId: audience, displayName: currentAudienceName }],
+      currentUserMessage: "Para este publico, mantened las respuestas breves.",
+      promptVisibleLedger: "The durable standing rule in scope governs the current audience.",
+      allowedSourceStreamEntryIds: [currentAudienceRuleSource],
+    });
+
+    expect(repository.get(audience)?.entries).toEqual([
+      expect.objectContaining({
+        state_key: "rule.current_audience.response_style",
+        kind: "locked",
+        text: "The current audience wants brief responses.",
+        owner_entity_id: audience,
+        provenance_stream_entry_ids: [currentAudienceRuleSource],
+      }),
+    ]);
   });
 
   it("passes relational slots as structured compiler context", async () => {

@@ -141,6 +141,12 @@ export type SharedStateArtifactParticipantContext = {
   displayName?: string | null;
 };
 
+export type SharedStateArtifactAudienceContext = {
+  entityId: EntityId;
+  displayName?: string | null;
+  kind?: "person" | "group" | "self" | "abstract" | null;
+};
+
 export type SharedStateCanonicalizationCandidate = {
   id: string;
   text: string;
@@ -285,6 +291,7 @@ export type AllowedCanonicalizationIds = {
 
 export type CompileSharedStateArtifactInputBase = {
   audienceEntityId: EntityId;
+  currentAudience?: SharedStateArtifactAudienceContext | null;
   selfEntityId: EntityId;
   speakerEntityId?: EntityId | null;
   participants: readonly SharedStateArtifactParticipantContext[];

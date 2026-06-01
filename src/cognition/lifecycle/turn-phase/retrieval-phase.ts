@@ -1596,6 +1596,10 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     (streamEntryId) => sourceTrustValidator(streamEntryId).allowed === false,
   );
   const currentUserStreamEntryId = currentUserEntry.id;
+  const audienceEntity =
+    typeof input.options.entityRepository.get === "function"
+      ? input.options.entityRepository.get(audienceEntityId)
+      : null;
   const sharedStateLlmClient = input.options.llmFactory();
   const semanticBeliefRevision =
     input.options.semanticNodeRepository === undefined ||
@@ -1613,6 +1617,11 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     model: input.options.config.anthropic.models.recallExpansion,
     repository: input.options.sharedStateRepository,
     audienceEntityId,
+    currentAudience: {
+      entityId: audienceEntityId,
+      displayName: audienceEntity?.canonical_name ?? null,
+      kind: audienceEntity?.kind ?? null,
+    },
     selfEntityId,
     speakerEntityId: singleSenderEntityId(currentUserEntries),
     participants: (input.input.activeParticipants ?? []).map((participant) => ({

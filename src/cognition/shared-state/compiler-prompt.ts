@@ -5,6 +5,7 @@ import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
 import type {
+  SharedStateArtifactAudienceContext,
   SharedStateArtifactParticipantContext,
   SharedStateActionCanonicalizationCandidate,
   SharedStateCanonicalizationCandidate,
@@ -31,6 +32,7 @@ export function buildCanonicalizationCandidatePromptPayload(
 
 export function buildSharedStateArtifactMessages(input: {
   audienceEntityId: EntityId;
+  currentAudience?: SharedStateArtifactAudienceContext | null;
   selfEntityId: EntityId;
   speakerEntityId: EntityId | null;
   participants: readonly SharedStateArtifactParticipantContext[];
@@ -49,12 +51,21 @@ export function buildSharedStateArtifactMessages(input: {
   const canonicalizationCandidates = buildCanonicalizationCandidatePromptPayload(
     input.canonicalizationCandidates,
   );
+  const currentAudienceParticipant = input.participants.find(
+    (participant) => participant.entityId === input.audienceEntityId,
+  );
 
   return [
     {
       role: "user",
       content: JSON.stringify({
         audience_entity_id: input.audienceEntityId,
+        current_audience: {
+          entity_id: input.audienceEntityId,
+          display_name:
+            input.currentAudience?.displayName ?? currentAudienceParticipant?.displayName ?? null,
+          kind: input.currentAudience?.kind ?? null,
+        },
         self_entity_id: input.selfEntityId,
         speaker_entity_id: input.speakerEntityId,
         participant_entities: input.participants.map((participant) => ({

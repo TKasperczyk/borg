@@ -628,6 +628,7 @@ export async function compileSharedStateArtifact(
   ]);
   const messageInput = {
     audienceEntityId: input.audienceEntityId,
+    currentAudience: input.currentAudience,
     selfEntityId: input.selfEntityId,
     speakerEntityId,
     participants: input.participants,
