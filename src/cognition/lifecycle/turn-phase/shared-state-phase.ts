@@ -384,7 +384,6 @@ const SHARED_STATE_IN_FLIGHT_KINDS = [
   "live",
   "low_salience_live",
   "dormant_live",
-  "pending",
   "tentative",
 ] as const satisfies readonly SharedStateEntryKind[];
 const SHARED_STATE_ACTION_CANDIDATE_LIMIT = 80;

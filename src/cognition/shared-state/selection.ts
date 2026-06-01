@@ -15,12 +15,10 @@ import type {
 export const SHARED_STATE_RESERVED_KINDS = [
   "live",
   "invalidated",
-  "pending",
 ] as const satisfies readonly SharedStateEntryKind[];
 
 export const SHARED_STATE_RENDER_FILL_ORDER = [
   "live",
-  "pending",
   "invalidated",
   "locked",
   "low_salience_live",
@@ -101,7 +99,7 @@ function newestStateChangeReservedIds(input: {
 
   return new Set(
     input.entries
-      .filter((entry) => entry.kind === "live" || entry.kind === "pending")
+      .filter((entry) => entry.kind === "live")
       .sort(compareSharedStateArtifactEntriesByNewestStateChange)
       .slice(0, input.limit)
       .map((entry) => entry.id),
@@ -225,7 +223,7 @@ function sharedStateEntrySalienceScore(
     return 400;
   }
 
-  if (entry.kind === "pending" || entry.kind === "invalidated") {
+  if (entry.kind === "invalidated") {
     return 300;
   }
 
@@ -480,7 +478,9 @@ export function selectSharedStateArtifactEntriesForRenderWithSummary(input: {
     takeFromKind(kind, categoryLimit);
   }
 
-  const orderByKind = new Map(SHARED_STATE_RENDER_FILL_ORDER.map((kind, index) => [kind, index]));
+  const orderByKind = new Map<SharedStateEntryKind, number>(
+    SHARED_STATE_RENDER_FILL_ORDER.map((kind, index) => [kind, index]),
+  );
 
   return {
     entries: selected.sort(
@@ -514,7 +514,12 @@ export function onePerKindTokenDropFloor(
     return 0;
   }
 
-  if (kind === "tentative" || kind === "low_salience_live" || kind === "dormant_live") {
+  if (
+    kind === "tentative" ||
+    kind === "low_salience_live" ||
+    kind === "dormant_live" ||
+    kind === "pending"
+  ) {
     return 0;
   }
 

@@ -282,7 +282,7 @@ describe("renderSharedStateArtifact", () => {
         sharedStateEntry({ audience, source, kind: "invalidated", index: 100 + index }),
       ),
       ...Array.from({ length: 5 }, (_, index) =>
-        sharedStateEntry({ audience, source, kind: "pending", index: 200 + index }),
+        sharedStateEntry({ audience, source, kind: "tentative", index: 200 + index }),
       ),
       ...Array.from({ length: 25 }, (_, index) =>
         sharedStateEntry({ audience, source, kind: "locked", index: 300 + index }),
@@ -292,7 +292,7 @@ describe("renderSharedStateArtifact", () => {
 
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(5);
     expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(5);
-    expect(rendered.match(/kind=pending/g)?.length ?? 0).toBe(5);
+    expect(rendered.match(/kind=tentative/g)?.length ?? 0).toBe(5);
     expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(14);
     expect(rendered).toContain("11 locked");
   });
@@ -301,7 +301,7 @@ describe("renderSharedStateArtifact", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
     const pressureText = "token pressure ".repeat(120);
-    const entries = (["live", "invalidated", "pending", "locked"] as const).flatMap(
+    const entries = (["live", "invalidated", "tentative", "locked"] as const).flatMap(
       (kind, kindIndex) =>
         Array.from({ length: 3 }, (_, index) =>
           sharedStateEntry({
@@ -320,9 +320,10 @@ describe("renderSharedStateArtifact", () => {
       }) ?? "";
 
     expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(1_800);
-    expect(rendered.match(/kind=live/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(rendered.match(/kind=pending/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(2);
+    expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(1);
+    expect(rendered.match(/kind=tentative/g)?.length ?? 0).toBe(0);
+    expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(0);
     expect(rendered).toContain("SharedStateArtifact omitted:");
   });
 
@@ -357,7 +358,6 @@ describe("renderSharedStateArtifact", () => {
         reservedSlots: {
           live: 8,
           invalidated: 0,
-          pending: 0,
         },
         lockedMaxEntries: 14,
       }) ?? "";
@@ -384,7 +384,6 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       maxEntries: {
         locked: 12,
         live: 6,
-        pending: 0,
         invalidated: 0,
         tentative: 0,
       },
@@ -429,7 +428,6 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       maxEntries: {
         locked: 100,
         live: 3,
-        pending: 0,
         invalidated: 0,
         tentative: 0,
       },
@@ -469,7 +467,6 @@ describe("buildSharedStateArtifactPromptSummary", () => {
         maxEntries: {
           locked: 1,
           live: 1,
-          pending: 0,
           invalidated: 0,
           tentative: 0,
         },
@@ -498,7 +495,6 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       maxEntries: {
         locked: 1,
         live: 0,
-        pending: 0,
         invalidated: 0,
         tentative: 0,
       },

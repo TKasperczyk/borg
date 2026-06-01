@@ -3064,9 +3064,6 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .ss-entry.tentative::before {
   background: var(--warn);
 }
-.ss-entry.pending::before {
-  background: var(--purple);
-}
 .ss-entry.invalidated::before {
   background: var(--bad);
 }

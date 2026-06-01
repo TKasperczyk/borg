@@ -395,6 +395,69 @@ function installFetch(): ReturnType<typeof vi.fn> {
                 open_question_ids: [],
               },
             },
+            {
+              id: "ss_2",
+              audience_entity_id: "ent_1",
+              state_key: "decision.low",
+              kind: "low_salience_live",
+              text: "low salience route detail",
+              owner_entity_id: null,
+              provenance_stream_entry_ids: ["strm_1"],
+              last_updated_stream_entry_ids: ["strm_1"],
+              created_at: 1,
+              last_updated_at: 2,
+              last_updated_turn_global: null,
+              superseded_by_id: null,
+              rank: 1,
+              canonicalizes: {
+                goal_ids: [],
+                commitment_ids: [],
+                action_ids: [],
+                open_question_ids: [],
+              },
+            },
+            {
+              id: "ss_3",
+              audience_entity_id: "ent_1",
+              state_key: "decision.dormant",
+              kind: "dormant_live",
+              text: "dormant route detail",
+              owner_entity_id: null,
+              provenance_stream_entry_ids: ["strm_1"],
+              last_updated_stream_entry_ids: ["strm_1"],
+              created_at: 1,
+              last_updated_at: 2,
+              last_updated_turn_global: null,
+              superseded_by_id: null,
+              rank: 2,
+              canonicalizes: {
+                goal_ids: [],
+                commitment_ids: [],
+                action_ids: [],
+                open_question_ids: [],
+              },
+            },
+            {
+              id: "ss_4",
+              audience_entity_id: "ent_1",
+              state_key: "decision.legacy",
+              kind: "pending",
+              text: "legacy pending route detail",
+              owner_entity_id: null,
+              provenance_stream_entry_ids: ["strm_1"],
+              last_updated_stream_entry_ids: ["strm_1"],
+              created_at: 1,
+              last_updated_at: 2,
+              last_updated_turn_global: null,
+              superseded_by_id: null,
+              rank: 3,
+              canonicalizes: {
+                goal_ids: [],
+                commitment_ids: [],
+                action_ids: [],
+                open_question_ids: [],
+              },
+            },
           ],
         }),
       );
@@ -603,6 +666,11 @@ describe("P2 screens", () => {
 
     expect(await screen.findByText("alice likes terse answers")).toBeInTheDocument();
     expect(screen.getAllByText("locked")[0]).toBeInTheDocument();
+    expect(screen.getByText("live - low salience")).toBeInTheDocument();
+    expect(screen.getByText("live - dormant")).toBeInTheDocument();
+    expect(screen.getByText("pending (legacy)")).toBeInTheDocument();
+    expect(screen.getByText("live 2")).toBeInTheDocument();
+    expect(screen.queryByText("pending 1")).not.toBeInTheDocument();
   });
 
   it("links dream belief-revision rows to the unified review screen", async () => {

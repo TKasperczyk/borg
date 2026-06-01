@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   makeLiveSharedStateEntry,
   makeLockedSharedStateEntry,
-  makePendingSharedStateEntry,
   makeSharedStateArtifact,
+  makeTentativeSharedStateEntry,
 } from "../test-support/factories/shared-state.js";
 import { createEntityId, createSharedStateEntryId, createStreamEntryId } from "../util/ids.js";
 import {
@@ -67,7 +67,7 @@ describe("buildSessionReentryContinuityPrompt", () => {
         last_updated_at: 2_000,
         last_updated_stream_entry_ids: [latestRef],
       }),
-      makePendingSharedStateEntry({
+      makeTentativeSharedStateEntry({
         audience_entity_id: audienceEntityId,
         state_key: "incident.customer-note",
         last_updated_at: 1_500,
@@ -115,7 +115,7 @@ describe("buildSessionReentryContinuityPrompt", () => {
     expect(result.promptSection).toContain("active_keyed_entry_count=3");
     expect(result.promptSection).toContain("active_legacy_unkeyed_entry_count=1");
     expect(result.promptSection).toContain(
-      "locked=2 live=1 low_salience_live=0 dormant_live=0 tentative=0 invalidated=0 pending=1",
+      "locked=2 live=1 low_salience_live=0 dormant_live=0 tentative=1 invalidated=0 pending=0",
     );
     expect(result.promptSection).toContain("state_key_bucket=incident.rollback");
     expect(result.promptSection).toContain("state_key_bucket=incident.customer-note");

@@ -15,9 +15,16 @@ const DEFAULT_SHARED_STATE_KIND_SOFT_CAPS = {
   low_salience_live: 4,
   dormant_live: 1,
   invalidated: 4,
-  pending: 4,
   tentative: 2,
-} as const satisfies Record<SharedStateEntryKind, number>;
+} as const satisfies Partial<Record<SharedStateEntryKind, number>>;
+const SHARED_STATE_LIFECYCLE_CAPPED_KINDS = [
+  "locked",
+  "live",
+  "low_salience_live",
+  "dormant_live",
+  "invalidated",
+  "tentative",
+] as const satisfies readonly SharedStateEntryKind[];
 const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
 const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
   "dormant_live",
@@ -25,7 +32,6 @@ const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
   "live",
   "tentative",
   "invalidated",
-  "pending",
   "locked",
 ] as const satisfies readonly SharedStateEntryKind[];
 
@@ -37,10 +43,16 @@ type LifecycleEntry = Pick<
 function normalizeLifecycleKindSoftCaps(
   options: SharedStateLifecycleOptions | undefined,
 ): Record<SharedStateEntryKind, number> {
-  return {
-    ...DEFAULT_SHARED_STATE_KIND_SOFT_CAPS,
-    ...(options?.kindSoftCaps ?? {}),
-  };
+  const caps = Object.fromEntries(SHARED_STATE_ENTRY_KINDS.map((kind) => [kind, 0])) as Record<
+    SharedStateEntryKind,
+    number
+  >;
+
+  for (const kind of SHARED_STATE_LIFECYCLE_CAPPED_KINDS) {
+    caps[kind] = options?.kindSoftCaps?.[kind] ?? DEFAULT_SHARED_STATE_KIND_SOFT_CAPS[kind] ?? 0;
+  }
+
+  return caps;
 }
 
 function lifecycleMaxActiveEntries(options: SharedStateLifecycleOptions | undefined): number {
@@ -235,7 +247,7 @@ function newestStateChangeReservedIds(
 
   return new Set(
     activeLifecycleEntries(entries)
-      .filter((entry) => entry.kind === "live" || entry.kind === "pending")
+      .filter((entry) => entry.kind === "live")
       .sort(compareLifecycleNewestStateChangePriority)
       .slice(0, limit)
       .map((entry) => entry.id),

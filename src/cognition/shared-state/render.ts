@@ -32,7 +32,6 @@ const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 const DEFAULT_SHARED_STATE_RESERVED_SLOTS = {
   live: 8,
   invalidated: 3,
-  pending: 3,
 } as const satisfies Partial<Record<SharedStateEntryKind, number>>;
 const DEFAULT_SHARED_STATE_LOCKED_CAP = 14;
 const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;

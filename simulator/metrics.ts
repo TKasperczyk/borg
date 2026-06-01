@@ -97,7 +97,7 @@ const TERMINAL_ACTION_STATES: readonly ActionState[] = [
   "expired",
   "archived",
 ];
-const SHARED_STATE_RECENT_RENDER_KINDS = ["live", "pending", "invalidated"] as const;
+const SHARED_STATE_RECENT_RENDER_KINDS = ["live", "invalidated"] as const;
 const DEFAULT_SHARED_STATE_MAX_ACTIVE_ENTRIES = 40;
 const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
 const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;

@@ -75,15 +75,15 @@ describe("applySharedStateArtifactLifecycleCap", () => {
         updatedAt: 10_000 + index,
       }),
     );
-    const pending = Array.from({ length: 5 }, (_, index) =>
+    const invalidated = Array.from({ length: 5 }, (_, index) =>
       sharedStateEntry({
         audience,
-        kind: "pending",
+        kind: "invalidated",
         rank: 200 + index,
         updatedAt: 2_000 + index,
       }),
     );
-    const entries = [...locked, ...live, ...pending];
+    const entries = [...locked, ...live, ...invalidated];
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
     const capped = applySharedStateArtifactLifecycleCap({
@@ -96,7 +96,6 @@ describe("applySharedStateArtifactLifecycleCap", () => {
         kindSoftCaps: {
           locked: 14,
           live: 8,
-          pending: 3,
           invalidated: 3,
           tentative: 2,
         },
@@ -109,7 +108,7 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     expect(capped.postPlanActiveEntryCount).toBe(25);
     expect(capped.newestReservedEntryCount).toBe(3);
     expect(pruned.filter((kind) => kind === "live")).toHaveLength(2);
-    expect(pruned.filter((kind) => kind === "pending")).toHaveLength(2);
+    expect(pruned.filter((kind) => kind === "invalidated")).toHaveLength(2);
     expect(pruned.filter((kind) => kind === "locked")).toHaveLength(0);
   });
 
@@ -122,7 +121,6 @@ describe("applySharedStateArtifactLifecycleCap", () => {
         "live",
         "tentative",
         "invalidated",
-        "pending",
         "locked",
       ] as const
     ).map((kind, index) =>
@@ -140,7 +138,7 @@ describe("applySharedStateArtifactLifecycleCap", () => {
       operations: [],
       nowMs: 20_000,
       options: {
-        maxActiveEntries: 4,
+        maxActiveEntries: 3,
         newestStateChangeReservedSlots: 0,
         kindSoftCaps: {
           locked: 0,
@@ -149,7 +147,6 @@ describe("applySharedStateArtifactLifecycleCap", () => {
           dormant_live: 0,
           tentative: 0,
           invalidated: 0,
-          pending: 0,
         },
       },
     });

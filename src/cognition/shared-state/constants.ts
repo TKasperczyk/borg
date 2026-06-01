@@ -1,3 +1,5 @@
+import { CANONICAL_SHARED_STATE_ENTRY_KINDS } from "../../memory/decision-artifacts/types.js";
+
 export const SHARED_STATE_TOOL_NAME = "EmitSharedStatePatch";
 export const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
 export const SHARED_STATE_TOOL_NAME_ALIASES = [DECISION_ARTIFACT_TOOL_NAME] as const;
@@ -10,10 +12,4 @@ export const MAX_PATCH_OUTPUT_TOKENS = 8_000;
 export const SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD = 35_000;
 export const MAX_OPERATIONS_PER_COMPILE = 40;
 
-export const SHARED_STATE_TOOL_ENTRY_KINDS = [
-  "locked",
-  "live",
-  "tentative",
-  "invalidated",
-  "pending",
-] as const;
+export const SHARED_STATE_TOOL_ENTRY_KINDS = CANONICAL_SHARED_STATE_ENTRY_KINDS;

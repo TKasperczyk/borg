@@ -437,7 +437,7 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
         return [
           `operation ${rejection.operationIndex} add state_key=${rejection.stateKey ?? "unknown"}`,
           `collides with locked entry ${lockedIds}`,
-          "update/supersede the locked entry, or mark unsettled material tentative/pending",
+          "update/supersede the locked entry, or mark unsettled material tentative",
         ].join("; ");
       }
 

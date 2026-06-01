@@ -25,10 +25,17 @@ const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES = {
   live: 8,
   low_salience_live: 2,
   dormant_live: 0,
-  pending: 6,
   invalidated: 4,
   tentative: 2,
-} as const satisfies Record<SharedStateEntryKind, number>;
+} as const satisfies Partial<Record<SharedStateEntryKind, number>>;
+const SHARED_STATE_PROMPT_SUMMARY_CONFIGURABLE_KINDS = [
+  "locked",
+  "live",
+  "low_salience_live",
+  "dormant_live",
+  "invalidated",
+  "tentative",
+] as const satisfies readonly SharedStateEntryKind[];
 const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_TOKEN_BUDGET = 6_000;
 const DEFAULT_SHARED_STATE_PROMPT_SUMMARY_ENTRY_TEXT_TOKENS = 1_000;
 
@@ -78,15 +85,17 @@ function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOption
   summaryTokenBudget: number;
   maxEntryTextTokens: number;
 } {
-  const maxEntries: Record<SharedStateEntryKind, number> = {
-    ...DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES,
-  };
+  const maxEntries = Object.fromEntries(
+    SHARED_STATE_ENTRY_KINDS.map((kind) => [kind, 0]),
+  ) as Record<SharedStateEntryKind, number>;
 
-  for (const kind of SHARED_STATE_ENTRY_KINDS) {
+  for (const kind of SHARED_STATE_PROMPT_SUMMARY_CONFIGURABLE_KINDS) {
     const configured = options.maxEntries?.[kind];
 
     if (configured !== undefined && Number.isFinite(configured)) {
       maxEntries[kind] = Math.max(0, Math.floor(configured));
+    } else {
+      maxEntries[kind] = DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES[kind] ?? 0;
     }
   }
 
@@ -226,7 +235,6 @@ function selectedSharedStatePromptSummaryEntries(input: {
     maxEntries: totalMaxEntries,
     reservedSlots: {
       live: input.maxEntries.live,
-      pending: input.maxEntries.pending,
       invalidated: input.maxEntries.invalidated,
     },
     lockedMaxEntries: input.maxEntries.locked,
@@ -307,7 +315,7 @@ function sharedStatePromptSummaryDropIndex(input: {
 
   return tokenDropIndexForKinds({
     entries: input.entries,
-    kinds: ["live", "pending", "locked"],
+    kinds: ["live", "locked"],
     minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
   });
 }

@@ -441,6 +441,7 @@ export {
 export { type WorkingMemory } from "./memory/working/index.js";
 export {
   ACTIVE_SHARED_STATE_ENTRY_KINDS,
+  CANONICAL_SHARED_STATE_ENTRY_KINDS,
   DEMOTED_LIVE_SHARED_STATE_ENTRY_KINDS,
   SHARED_STATE_ENTRY_KINDS,
   type SharedStateArtifact,

@@ -27,6 +27,17 @@ export const SHARED_STATE_ENTRY_KINDS = [
   "pending",
 ] as const;
 
+/**
+ * Conceptual shared-state lifecycle exposed to the compiler/model.
+ * `low_salience_live` and `dormant_live` remain stored as internal salience
+ * demotions of `live`; `pending` remains readable for legacy rows only.
+ */
+export const CANONICAL_SHARED_STATE_ENTRY_KINDS = [
+  "locked",
+  "live",
+  "tentative",
+  "invalidated",
+] as const;
 export const ACTIVE_SHARED_STATE_ENTRY_KINDS = ["locked", "live"] as const;
 export const DEMOTED_LIVE_SHARED_STATE_ENTRY_KINDS = ["low_salience_live", "dormant_live"] as const;
 

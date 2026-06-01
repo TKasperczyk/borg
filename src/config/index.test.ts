@@ -113,7 +113,6 @@ describe("config", () => {
           low_salience_live: 4,
           dormant_live: 1,
           invalidated: 4,
-          pending: 4,
           tentative: 2,
         },
         recentTurnThreshold: 5,
@@ -123,7 +122,6 @@ describe("config", () => {
         renderReservedSlots: {
           live: 8,
           invalidated: 3,
-          pending: 3,
         },
         renderLockedCap: 14,
         newestStateChangeReservedSlots: 3,
@@ -133,7 +131,6 @@ describe("config", () => {
             live: 8,
             low_salience_live: 2,
             dormant_live: 0,
-            pending: 6,
             invalidated: 4,
             tentative: 2,
           },

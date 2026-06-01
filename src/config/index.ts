@@ -112,7 +112,6 @@ const sharedStateKindSoftCapsSchema = z
     low_salience_live: z.number().int().positive().default(4),
     dormant_live: z.number().int().positive().default(1),
     invalidated: z.number().int().positive().default(4),
-    pending: z.number().int().positive().default(4),
     tentative: z.number().int().positive().default(2),
   })
   .strict()
@@ -121,7 +120,6 @@ const sharedStateRenderReservedSlotsSchema = z
   .object({
     live: z.number().int().nonnegative().default(8),
     invalidated: z.number().int().nonnegative().default(3),
-    pending: z.number().int().nonnegative().default(3),
   })
   .strict()
   .prefault({});
@@ -131,7 +129,6 @@ const sharedStatePreviousArtifactSummaryMaxEntriesSchema = z
     live: z.number().int().nonnegative().default(8),
     low_salience_live: z.number().int().nonnegative().default(2),
     dormant_live: z.number().int().nonnegative().default(0),
-    pending: z.number().int().nonnegative().default(6),
     invalidated: z.number().int().nonnegative().default(4),
     tentative: z.number().int().nonnegative().default(2),
   })

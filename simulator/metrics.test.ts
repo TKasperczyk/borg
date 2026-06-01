@@ -2029,8 +2029,8 @@ describe("MetricsCapture", () => {
 
     expect(row.shared_state_at_cap_turns).toBe(2);
     expect(row.shared_state_compile_evaluated_turns).toBe(3);
-    expect(row.shared_state_omitted_recent_entries).toBe(6);
-    expect(row.shared_state_omitted_recent_entries_total_across_compiles).toBe(6);
+    expect(row.shared_state_omitted_recent_entries).toBe(5);
+    expect(row.shared_state_omitted_recent_entries_total_across_compiles).toBe(5);
     expect(row.shared_state_omitted_live_recent_operational).toBe(18);
     expect(row.shared_state_omitted_live_recent_operational_total_across_compiles).toBe(18);
     expect(row.shared_state_omitted_live_recent_operational_final_compile).toBe(11);

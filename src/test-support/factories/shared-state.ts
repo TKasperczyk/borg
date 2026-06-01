@@ -59,10 +59,10 @@ export function makeLiveSharedStateEntry(
   return makeSharedStateEntry({ ...overrides, kind: "live" });
 }
 
-export function makePendingSharedStateEntry(
+export function makeTentativeSharedStateEntry(
   overrides: Partial<SharedStateEntry> = {},
 ): SharedStateEntry {
-  return makeSharedStateEntry({ ...overrides, kind: "pending" });
+  return makeSharedStateEntry({ ...overrides, kind: "tentative" });
 }
 
 export function makeInvalidatedSharedStateEntry(

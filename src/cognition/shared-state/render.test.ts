@@ -89,7 +89,7 @@ describe("summarizeSharedStateArtifactRender", () => {
         entry({ audience, kind: "live", rank: 100 + index, updatedAt: 10_000 + index }),
       ),
       ...Array.from({ length: 5 }, (_, index) =>
-        entry({ audience, kind: "pending", rank: 200 + index, updatedAt: 2_000 + index }),
+        entry({ audience, kind: "tentative", rank: 200 + index, updatedAt: 2_000 + index }),
       ),
     ];
 
@@ -98,7 +98,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 8,
-        pending: 3,
         invalidated: 3,
       },
       lockedMaxEntries: 14,
@@ -177,7 +176,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       lockedMaxEntries: 0,
@@ -268,7 +266,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       lockedMaxEntries: 6,
@@ -320,7 +317,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       newestStateChangeReservedSlots: 0,
@@ -359,7 +355,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       newestStateChangeReservedSlots: 0,
@@ -399,7 +394,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       newestStateChangeReservedSlots: 0,
@@ -438,7 +432,6 @@ describe("summarizeSharedStateArtifactRender", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 0,
-        pending: 0,
         invalidated: 0,
       },
       lockedMaxEntries: 1,
@@ -545,7 +538,6 @@ describe("renderSharedStateArtifact", () => {
         maxTokens: 50_000,
         reservedSlots: {
           live: 1,
-          pending: 0,
           invalidated: 0,
         },
         newestStateChangeReservedSlots: 0,
@@ -555,7 +547,6 @@ describe("renderSharedStateArtifact", () => {
       maxTokens: 50_000,
       reservedSlots: {
         live: 1,
-        pending: 0,
         invalidated: 0,
       },
       newestStateChangeReservedSlots: 0,
@@ -642,7 +633,6 @@ describe("renderSharedStateArtifact", () => {
         maxTokens: 50_000,
         reservedSlots: {
           live: 0,
-          pending: 0,
           invalidated: 0,
         },
         lockedMaxEntries: 6,
@@ -694,7 +684,6 @@ describe("renderSharedStateArtifact", () => {
         maxTokens: 1_000,
         reservedSlots: {
           live: 0,
-          pending: 0,
           invalidated: 0,
         },
         lockedMaxEntries: 2,

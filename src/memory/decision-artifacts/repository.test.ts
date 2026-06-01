@@ -151,6 +151,56 @@ describe("SharedStateRepository", () => {
     expect(artifact?.entries[0]?.state_key).toBeNull();
   });
 
+  it("reads legacy pending entries from storage", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+
+    db.prepare(
+      `
+        INSERT INTO decision_artifacts (
+          audience_entity_id, record_version, created_at, updated_at,
+          last_compiled_at, last_compiled_stream_entry_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+    ).run(audience, 1, clock.now(), clock.now(), null, null);
+    db.prepare(
+      `
+        INSERT INTO decision_artifact_entries (
+          id, audience_entity_id, state_key, kind, text, owner_entity_id,
+          provenance_stream_entry_ids, last_updated_stream_entry_ids,
+          created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      entryId,
+      audience,
+      "decision.awaiting_verification",
+      "pending",
+      "Legacy pending shared-state entry",
+      null,
+      serializeJsonValue([source]),
+      serializeJsonValue([source]),
+      clock.now(),
+      clock.now(),
+      null,
+      0,
+      serializeJsonValue({
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [],
+        open_question_ids: [],
+      }),
+    );
+
+    expect(repository.get(audience)?.entries[0]).toMatchObject({
+      id: entryId,
+      kind: "pending",
+      state_key: "decision.awaiting_verification",
+      text: "Legacy pending shared-state entry",
+    });
+  });
+
   it("rejects add writes without a state key and accepts keyed adds", () => {
     const rejectedAudience = createEntityId();
     const acceptedAudience = createEntityId();

@@ -47,7 +47,9 @@ import {
   SHARED_STATE_SYSTEM_PROMPT,
   SHARED_STATE_TOOL_NAME,
 } from "./compiler.js";
+import { SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
+import { sharedStatePatchSchema } from "./types.js";
 
 let defaultStateKeyCounter = 0;
 
@@ -229,6 +231,28 @@ function evidenceLedger(entries: readonly EvidenceLedgerEntry[]): EvidenceLedger
 }
 
 describe("compileSharedStateArtifact", () => {
+  it("keeps pending out of the EmitSharedStatePatch tool schema", () => {
+    expect(SHARED_STATE_TOOL_ENTRY_KINDS).toEqual([
+      "locked",
+      "live",
+      "tentative",
+      "invalidated",
+    ]);
+    expect(
+      sharedStatePatchSchema.safeParse({
+        operations: [
+          {
+            type: "add",
+            state_key: "decision.awaiting_verification",
+            kind: "pending",
+            text: "Awaiting external verification.",
+            source_stream_entry_ids: [createStreamEntryId()],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
   let db: SqliteDatabase;
   let repository: SharedStateRepository;
   let clock: FixedClock;
@@ -2260,7 +2284,6 @@ describe("compileSharedStateArtifact", () => {
       previousArtifactSummaryOptions: {
         maxEntries: {
           live: 0,
-          pending: 0,
         },
       },
     });
@@ -2908,8 +2931,8 @@ describe("compileSharedStateArtifact", () => {
           },
           {
             type: "add",
-            kind: "pending",
-            text: `Pending long-plan decision ${index}`,
+            kind: "tentative",
+            text: `Tentative long-plan decision ${index}`,
             owner_entity_id: audience,
             source_stream_entry_ids: [priorAllowedStreamEntryId],
           },
@@ -3227,7 +3250,6 @@ describe("compileSharedStateArtifact", () => {
       "live",
       "tentative",
       "invalidated",
-      "pending",
     ] as const satisfies readonly SharedStateEntryKind[];
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
@@ -3263,7 +3285,7 @@ describe("compileSharedStateArtifact", () => {
           rejectionReasons: [],
           applied: true,
           operation_counts_by_kind: {
-            add: 5,
+            add: 4,
             update: 0,
             supersede: 0,
             prune: 0,

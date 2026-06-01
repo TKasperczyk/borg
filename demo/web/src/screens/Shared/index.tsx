@@ -6,37 +6,58 @@ import { Tag, type TagKind } from "../../components/Tag";
 import { useApi } from "../../hooks/use-api";
 import { dateLabel, shortId } from "../screen-utils";
 
-type LifecycleFilter = SharedStateEntryKind | "all";
+type PrimaryLifecycleKind = "locked" | "live" | "tentative" | "invalidated";
+type LifecycleFilter = PrimaryLifecycleKind | "all";
 
-const LIFECYCLE: SharedStateEntryKind[] = [
+const LIFECYCLE: PrimaryLifecycleKind[] = [
   "locked",
   "live",
-  "low_salience_live",
-  "dormant_live",
   "tentative",
-  "pending",
   "invalidated"
 ];
 
-function cssState(kind: SharedStateEntryKind): string {
-  if (kind === "dormant_live" || kind === "low_salience_live") {
-    return "dormant";
+function primaryLifecycleKind(kind: SharedStateEntryKind): PrimaryLifecycleKind {
+  if (kind === "low_salience_live" || kind === "dormant_live") {
+    return "live";
+  }
+  if (kind === "pending") {
+    return "tentative";
   }
   return kind;
 }
 
-function lifecycleColor(kind: SharedStateEntryKind): string {
+function lifecycleLabel(kind: SharedStateEntryKind | PrimaryLifecycleKind): string {
+  if (kind === "low_salience_live") {
+    return "live - low salience";
+  }
+  if (kind === "dormant_live") {
+    return "live - dormant";
+  }
+  if (kind === "pending") {
+    return "pending (legacy)";
+  }
+  return kind;
+}
+
+function cssState(kind: SharedStateEntryKind): string {
+  if (kind === "dormant_live" || kind === "low_salience_live") {
+    return "live";
+  }
+  if (kind === "pending") {
+    return "tentative";
+  }
+  return kind;
+}
+
+function lifecycleColor(kind: PrimaryLifecycleKind): string {
   if (kind === "locked") {
     return "var(--acc)";
   }
-  if (kind === "live" || kind === "low_salience_live") {
+  if (kind === "live") {
     return "var(--info)";
   }
   if (kind === "tentative") {
     return "var(--warn)";
-  }
-  if (kind === "pending") {
-    return "var(--purple)";
   }
   if (kind === "invalidated") {
     return "var(--bad)";
@@ -48,14 +69,11 @@ function tagKind(kind: SharedStateEntryKind): TagKind {
   if (kind === "locked") {
     return "acc";
   }
-  if (kind === "live" || kind === "low_salience_live") {
+  if (kind === "live" || kind === "low_salience_live" || kind === "dormant_live") {
     return "info";
   }
-  if (kind === "tentative") {
+  if (kind === "tentative" || kind === "pending") {
     return "warn";
-  }
-  if (kind === "pending") {
-    return "purple";
   }
   if (kind === "invalidated") {
     return "bad";
@@ -78,12 +96,19 @@ export function SharedScreen({ sessionId }: { sessionId: string }) {
   const sharedApi = useApi(() => getSharedState(selectedAudience), [selectedAudience]);
   const [filter, setFilter] = useState<LifecycleFilter>("all");
   const entries = sharedApi.data?.entries ?? [];
-  const filtered = filter === "all" ? entries : entries.filter((entry) => entry.kind === filter);
+  const filtered =
+    filter === "all" ? entries : entries.filter((entry) => primaryLifecycleKind(entry.kind) === filter);
   const counts = useMemo(
-    () =>
-      Object.fromEntries(
-        LIFECYCLE.map((kind) => [kind, entries.filter((entry) => entry.kind === kind).length])
-      ) as Record<SharedStateEntryKind, number>,
+    () => {
+      const next = Object.fromEntries(LIFECYCLE.map((kind) => [kind, 0])) as Record<
+        PrimaryLifecycleKind,
+        number
+      >;
+      for (const entry of entries) {
+        next[primaryLifecycleKind(entry.kind)] += 1;
+      }
+      return next;
+    },
     [entries]
   );
   const lastCompile = entries.length === 0 ? null : Math.max(...entries.map((entry) => entry.last_updated_at));
@@ -134,7 +159,7 @@ export function SharedScreen({ sessionId }: { sessionId: string }) {
               style={kind !== "all" && filter !== kind ? { color: lifecycleColor(kind) } : undefined}
               onClick={() => setFilter(kind)}
             >
-              {kind}
+              {kind === "all" ? kind : lifecycleLabel(kind)}
               {kind === "all" ? "" : ` ${counts[kind] ?? 0}`}
             </span>
           ))}
@@ -153,7 +178,7 @@ export function SharedScreen({ sessionId }: { sessionId: string }) {
       <div className="shared">
         {filtered.length === 0 ? (
           <div className="notice">
-            no {filter === "all" ? "" : `${filter} `}entries for audience '{selectedAudience}'
+            no {filter === "all" ? "" : `${lifecycleLabel(filter)} `}entries for audience '{selectedAudience}'
           </div>
         ) : null}
         {filtered.map((entry) => (
@@ -176,7 +201,7 @@ function SharedEntryCard({ entry, audience }: { entry: SharedStateEntry; audienc
     <div className={`ss-entry ${cssState(entry.kind)}`}>
       <div className="h">
         <Tag kind={tagKind(entry.kind)} dot>
-          {entry.kind}
+          {lifecycleLabel(entry.kind)}
         </Tag>
         <span className="id">[{shortId(entry.id)}]</span>
         <span style={{ flex: 1 }}></span>
