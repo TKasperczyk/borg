@@ -1232,6 +1232,67 @@ describe("review queue", () => {
     );
   });
 
+  it("deduplicates open relationship-claim ungrounded reviews by structural claim identity", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(9_000),
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const refs = {
+      target_type: "semantic_node_candidate",
+      label: "Birthday lunch siblings",
+      description: "The siblings are attending lunch.",
+      relationship_claim_label_families: ["kinship"],
+      relationship_claims: [
+        {
+          label_family: "kinship",
+          subject_text: "attendees",
+          object_text: "siblings",
+          evidence_stream_entry_ids: [],
+        },
+      ],
+      ungrounded_relationship_claims: [
+        {
+          object_text: "siblings",
+          evidence_stream_entry_ids: [],
+          subject_text: "attendees",
+          label_family: "kinship",
+        },
+      ],
+    };
+
+    const first = harness.reviewQueueRepository.enqueue({
+      kind: "relationship_claim_ungrounded",
+      refs,
+      reason: "relationship claim needs grounding",
+    });
+    const second = harness.reviewQueueRepository.enqueue({
+      kind: "relationship_claim_ungrounded",
+      refs: {
+        ...refs,
+        relationship_claim_label_families: ["kinship"],
+      },
+      reason: "same relationship claim needs grounding again",
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(
+      harness.reviewQueueRepository.list({
+        kind: "relationship_claim_ungrounded",
+        openOnly: true,
+      }),
+    ).toHaveLength(1);
+
+    await harness.reviewQueueRepository.resolve(first.id, "dismiss");
+    const third = harness.reviewQueueRepository.enqueue({
+      kind: "relationship_claim_ungrounded",
+      refs,
+      reason: "relationship claim recurred after resolution",
+    });
+
+    expect(third.id).not.toBe(first.id);
+  });
+
   it("keeps semantic pair reviews open when required nodes are missing", async () => {
     const db = openDatabase(":memory:", {
       migrations: [...semanticMigrations],

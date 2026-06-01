@@ -19,6 +19,7 @@ import { ReviewResolverProcess } from "./index.js";
 
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 const NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME = "EmitNewInsightVerdict";
+const SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME = "EmitSemanticPairVerdict";
 
 type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 type TraceEvent = { event: TurnTraceEventName } & TurnTraceData;
@@ -62,6 +63,22 @@ function newInsightResolverResponse(input: Record<string, unknown>): LLMComplete
       {
         id: "toolu_new_insight_review_resolver",
         name: NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
+function semanticPairResolverResponse(input: Record<string, unknown>): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 7,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_semantic_pair_review_resolver",
+        name: SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME,
         input,
       },
     ],
@@ -460,6 +477,7 @@ describe("review resolver process", () => {
       status: "superseded",
       corrected_by: winner.id,
     });
+    expect(llm.requests[0]?.tools?.[0]?.name).toBe(REVIEW_RESOLVER_TOOL_NAME);
     expect(prompt).toContain("vector_only_merge_candidate");
     expect(prompt).toContain("Do not populate stream citations");
   });
@@ -530,6 +548,295 @@ describe("review resolver process", () => {
     });
     expect(storedFirst?.status).toBe("active");
     expect(storedSecond?.status).toBe("active");
+  });
+
+  it("resolves contradiction supersede verdicts with a validated semantic-pair winner", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "Atlas launch plan replaced the older deployment-platform wording.",
+    );
+    const winner = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas launch plan",
+        description: "Atlas is the current deployment launch plan.",
+        confidence: 0.9,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const loser = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Deployment platform launch plan",
+        description: "The deployment platform launch plan is the current Atlas plan.",
+        confidence: 0.5,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      reason: "Direct contradiction edge recorded for review",
+      refs: {
+        node_ids: [loser.id, winner.id],
+        node_labels: [loser.label, winner.label],
+      },
+    });
+    llm.pushResponse(
+      semanticPairResolverResponse({
+        decision: "supersede",
+        winner_node_id: winner.id,
+        rationale: "The Atlas node is better grounded and more current.",
+        confidence: "high",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const storedWinner = await harness.semanticNodeRepository.get(winner.id);
+    const storedLoser = await harness.semanticNodeRepository.get(loser.id);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.errors).toEqual([]);
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "supersede",
+    });
+    expect(storedWinner?.status).toBe("active");
+    expect(storedLoser).toMatchObject({
+      status: "superseded",
+      corrected_by: winner.id,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.name).toBe(SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME);
+    expect(prompt).toContain("evidence_by_node");
+    expect(prompt).toContain("Atlas launch plan replaced");
+  });
+
+  it("keeps invalid semantic-pair winners out of the handler and marks needs_manual", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "Atlas and rollback notes need review.");
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas note",
+        description: "Atlas is the deployment note.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Rollback note",
+        description: "Rollback is the deployment note.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const invalidWinnerId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      reason: "Direct contradiction edge recorded for review",
+      refs: {
+        node_ids: [first.id, second.id],
+      },
+    });
+    const resolveSpy = vi.spyOn(harness.reviewQueueRepository, "resolve");
+    llm.pushResponse(
+      semanticPairResolverResponse({
+        decision: "supersede",
+        winner_node_id: invalidWinnerId,
+        rationale: "The judge named a node outside the reviewed pair.",
+        confidence: "medium",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const storedFirst = await harness.semanticNodeRepository.get(first.id);
+    const storedSecond = await harness.semanticNodeRepository.get(second.id);
+
+    expect(result.errors).toEqual([]);
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(open).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "semantic_pair_winner_out_of_pair",
+    });
+    expect(storedFirst?.status).toBe("active");
+    expect(storedSecond?.status).toBe("active");
+  });
+
+  it("routes non-vector duplicate pairs through the semantic-pair judge for keep_both", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "Atlas the service and Atlas the trip are separate.",
+    );
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas service",
+        description: "Atlas is a deployment service.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas trip",
+        description: "Atlas is a travel planning codename.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "duplicate",
+      reason: "Semantic pair duplicate review",
+      refs: {
+        node_ids: [first.id, second.id],
+        node_labels: [first.label, second.label],
+      },
+    });
+    llm.pushResponse(
+      semanticPairResolverResponse({
+        decision: "keep_both",
+        rationale: "The nodes describe different contexts.",
+        confidence: "high",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.errors).toEqual([]);
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "keep_both",
+    });
+    expect(llm.requests[0]?.tools?.[0]?.name).toBe(SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME);
+    expect(prompt).not.toContain("vector_match");
+    expect(prompt).not.toContain("Do not populate stream citations");
+  });
+
+  it("dismisses semantic-pair false positives without mutating either node", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "Atlas and rollback notes are compatible.");
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas note",
+        description: "Atlas is a deployment service.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Rollback note",
+        description: "Rollback planning supports Atlas deployments.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      reason: "Direct contradiction edge recorded for review",
+      refs: {
+        node_ids: [first.id, second.id],
+      },
+    });
+    llm.pushResponse(
+      semanticPairResolverResponse({
+        decision: "dismiss",
+        rationale: "The review flag is spurious.",
+        confidence: "high",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const storedFirst = await harness.semanticNodeRepository.get(first.id);
+    const storedSecond = await harness.semanticNodeRepository.get(second.id);
+
+    expect(result.errors).toEqual([]);
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "dismiss",
+    });
+    expect(storedFirst?.status).toBe("active");
+    expect(storedSecond?.status).toBe("active");
+  });
+
+  it("auto-dismisses relationship-claim ungrounded reviews up to the cap without LLM calls", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const items: ReviewQueueItem[] = [];
+
+    for (let index = 0; index < 3; index += 1) {
+      items.push(
+        harness.reviewQueueRepository.enqueue({
+          kind: "relationship_claim_ungrounded",
+          reason:
+            "Semantic node candidate asserted a sensitive relationship without accepted relationship evidence.",
+          refs: {
+            target_type: "semantic_node_candidate",
+            label: `Ungrounded relationship ${index}`,
+            description: `Ungrounded relationship candidate ${index}.`,
+            relationship_claim_label_families: ["kinship"],
+            relationship_claims: [
+              {
+                label_family: "kinship",
+                subject_text: `subject ${index}`,
+                object_text: `object ${index}`,
+              },
+            ],
+            ungrounded_relationship_claims: [
+              {
+                label_family: "kinship",
+                subject_text: `subject ${index}`,
+                object_text: `object ${index}`,
+              },
+            ],
+          },
+        }),
+      );
+    }
+
+    const result = await runResolver(harness, 2);
+    const resolved = items.filter(
+      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at !== null,
+    );
+    const open = items.filter(
+      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at === null,
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(2);
+    expect(resolved).toHaveLength(2);
+    expect(
+      resolved.every(
+        (item) => harness.reviewQueueRepository.get(item.id)?.resolution === "dismiss",
+      ),
+    ).toBe(true);
+    expect(open).toHaveLength(1);
+    expect(llm.requests).toHaveLength(0);
   });
 
   it("accepts grounded new insight proposals through the existing review handler", async () => {

@@ -150,6 +150,16 @@ const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
     .passthrough(),
 ]);
 
+const relationshipClaimUngroundedDedupeRefsSchema = z
+  .object({
+    target_type: z.literal("semantic_node_candidate"),
+    label: z.string().min(1),
+    relationship_claim_label_families: z.array(z.string().min(1)).default([]),
+    relationship_claims: z.array(z.unknown()).default([]),
+    ungrounded_relationship_claims: z.array(z.unknown()).default([]),
+  })
+  .passthrough();
+
 export type ReviewTransactionScope = "sqlite" | "cross_store_applying_state" | "external";
 
 export type ReviewApplyOutcome = {
@@ -289,6 +299,48 @@ function beliefRevisionReasonCode(refs: BeliefRevisionRefs): BeliefRevisionReaso
 
 function uniqueEpisodeIds(ids: readonly Episode["id"][]): Episode["id"][] {
   return [...new Set(ids)];
+}
+
+function canonicalizeForJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => canonicalizeForJson(entry));
+  }
+
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalizeForJson(entry)]),
+    );
+  }
+
+  return value === undefined ? null : value;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalizeForJson(value));
+}
+
+function sortedCanonicalValues(values: readonly unknown[]): string[] {
+  return values.map((value) => canonicalJson(value)).sort();
+}
+
+function relationshipClaimUngroundedDedupeKey(refs: Record<string, unknown>): string | null {
+  const parsed = relationshipClaimUngroundedDedupeRefsSchema.safeParse(refs);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  return canonicalJson({
+    target_type: parsed.data.target_type,
+    label: parsed.data.label,
+    relationship_claim_label_families: [...parsed.data.relationship_claim_label_families].sort(),
+    relationship_claims: sortedCanonicalValues(parsed.data.relationship_claims),
+    ungrounded_relationship_claims: sortedCanonicalValues(
+      parsed.data.ungrounded_relationship_claims,
+    ),
+  });
 }
 
 function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
@@ -431,6 +483,39 @@ export class ReviewQueueRepository {
     return "unknown";
   }
 
+  private findOpenRelationshipClaimUngroundedDuplicate(
+    input: ReviewQueueInsertInput,
+  ): ReviewQueueItem | null {
+    if (input.kind !== "relationship_claim_ungrounded") {
+      return null;
+    }
+
+    const nextKey = relationshipClaimUngroundedDedupeKey(input.refs);
+
+    if (nextKey === null) {
+      return null;
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id, kind, refs, reason, created_at, resolved_at, resolution
+          FROM review_queue
+          WHERE kind = 'relationship_claim_ungrounded' AND resolved_at IS NULL
+          ORDER BY created_at DESC, id DESC
+        `,
+      )
+      .all() as Record<string, unknown>[];
+
+    for (const item of rows.map((row) => mapReviewRow(row))) {
+      if (relationshipClaimUngroundedDedupeKey(item.refs) === nextKey) {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
   private traceReviewQueueDecision(input: {
     item: Pick<ReviewQueueItem, "id" | "kind" | "refs">;
     decision:
@@ -461,6 +546,12 @@ export class ReviewQueueRepository {
 
   enqueue(input: ReviewQueueInsertInput): ReviewQueueItem {
     const parsed = reviewKindSchema.parse(input.kind);
+    const duplicate = this.findOpenRelationshipClaimUngroundedDuplicate(input);
+
+    if (duplicate !== null) {
+      return duplicate;
+    }
+
     const timestamp = this.clock.now();
     const result = this.db
       .prepare(
