@@ -163,6 +163,10 @@ describe("runExtractionPhase", () => {
 
     expect(extractAndApply).toHaveBeenCalledWith(
       expect.objectContaining({
+        isUserTurn: true,
+        currentSenderEntityId: null,
+        currentSenderBorgRole: null,
+        sessionAudienceRole: "operator",
         crossAudienceTargeting: expect.objectContaining({
           allowed: false,
           candidateAudiences: [],
@@ -255,6 +259,10 @@ describe("runExtractionPhase", () => {
 
     expect(extractAndApply).toHaveBeenCalledWith(
       expect.objectContaining({
+        isUserTurn: true,
+        currentSenderEntityId: creatorId,
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
         crossAudienceTargeting: expect.objectContaining({
           allowed: true,
         }),

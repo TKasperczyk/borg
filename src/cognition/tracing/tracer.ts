@@ -90,6 +90,7 @@ export type TurnTraceEventName =
   | "commitment_classification.downgraded"
   | "corrective_preference.candidate_rejected_ungrounded"
   | "corrective_preference.cross_audience_scope"
+  | "corrective_preference.cross_audience_creator_deferred"
   | "creator_directive_candidate_extracted"
   | "creator_directive_policy_normalized"
   | "creator_directive_persisted"

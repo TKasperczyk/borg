@@ -164,12 +164,16 @@ export async function runExtractionPhase(input: {
         ? input.options.correctivePreferenceTurnService.extractAndApply({
             llmClient: input.llmClient,
             turnId: input.turnId,
+            isUserTurn: input.isUserTurn,
             userMessage: input.turnInput.userMessage,
             persistedUserEntryId: input.persistedUserEntryId,
             sourceUserEntryIds: input.sourceUserEntryIds,
             recentHistory: input.recentHistory,
             audienceEntityId: input.audienceEntityId,
             committedByEntityId: input.groupSpeakerEntityId,
+            currentSenderEntityId: authoritySenderEntityId,
+            currentSenderBorgRole: authoritySenderBorgRole,
+            sessionAudienceRole: input.sessionAudienceRole,
             speakerDisplayName: input.groupSpeakerDisplayName,
             participantRoster: input.participantRoster,
             crossAudienceTargeting: {

@@ -25,6 +25,13 @@ import { CorrectivePreferenceTurnService } from "./corrective-preference-service
 
 type AddCommitmentInput = Parameters<IdentityService["addCommitment"]>[0];
 
+const defaultCorrectiveTurnContext = {
+  isUserTurn: true,
+  currentSenderEntityId: null,
+  currentSenderBorgRole: null,
+  sessionAudienceRole: "participant" as const,
+};
+
 function correctivePreferenceResponse(
   input: {
     supersedesCommitmentId?: CommitmentId | null;
@@ -170,6 +177,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-group-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "For me, keep my trip tasks separate from the channel.",
       persistedUserEntryId: userEntryId,
       recentHistory: [],
@@ -242,6 +250,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-compaction-style-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage:
         "From now on, surface durable decisions and held context explicitly at wrap points.",
       persistedUserEntryId: userEntryId,
@@ -362,6 +371,7 @@ describe("CorrectivePreferenceTurnService", () => {
       const result = await service.extractAndApply({
         llmClient: llm,
         turnId,
+        ...defaultCorrectiveTurnContext,
         userMessage: testCase.directive,
         persistedUserEntryId: userEntryId,
         recentHistory: [],
@@ -453,6 +463,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-medical-context-noun-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Keep appointment status precise.",
       persistedUserEntryId: userEntryId,
       recentHistory: [],
@@ -502,6 +513,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-ungrounded-relationship-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Make sure future replies respect the care-planning constraint.",
       persistedUserEntryId: userEntryId,
       recentHistory: [],
@@ -565,6 +577,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-assistant-evidence-relationship-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Make sure future replies respect the care-planning constraint.",
       persistedUserEntryId: userEntryId,
       relationshipEvidenceStreamEntries: [{ id: assistantEntryId, kind: "agent_msg" }],
@@ -635,6 +648,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-outside-evidence-relationship-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Make sure future replies respect the care-planning constraint.",
       persistedUserEntryId: userEntryId,
       recentHistory: [],
@@ -702,6 +716,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-grounded-relationship-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "My current user message explicitly grounds the parent constraint.",
       persistedUserEntryId: userEntryId,
       recentHistory: [],
@@ -755,6 +770,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-roster-grounded-relationship-commitment",
+      ...defaultCorrectiveTurnContext,
       userMessage: "The roster grounds this family role.",
       persistedUserEntryId: createStreamEntryId(),
       recentHistory: [],
@@ -819,6 +835,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-valid-supersession",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Actually, keep Alice's trip tasks separate.",
       persistedUserEntryId: createStreamEntryId(),
       recentHistory: [],
@@ -882,6 +899,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-invalid-supersession",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Actually, keep Alice's trip tasks separate.",
       persistedUserEntryId: createStreamEntryId(),
       recentHistory: [],
@@ -948,6 +966,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const result = await service.extractAndApply({
       llmClient: llm,
       turnId: "turn-revoked-supersession",
+      ...defaultCorrectiveTurnContext,
       userMessage: "Actually, keep Alice's trip tasks separate.",
       persistedUserEntryId: createStreamEntryId(),
       recentHistory: [],
@@ -1014,6 +1033,10 @@ describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
 
   function turnInput(input: {
     audienceEntityId: ReturnType<typeof createEntityId>;
+    isUserTurn?: boolean;
+    currentSenderEntityId?: ReturnType<typeof createEntityId> | null;
+    currentSenderBorgRole?: "creator" | null;
+    sessionAudienceRole?: "participant" | "operator";
     crossAudienceTargeting: {
       allowed: boolean;
       candidateAudiences: readonly {
@@ -1028,11 +1051,18 @@ describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
         responses: [audienceRuleResponse(input.appliesToAudienceEntityId)],
       }),
       turnId: "turn-cross-audience",
+      isUserTurn: input.isUserTurn ?? defaultCorrectiveTurnContext.isUserTurn,
       userMessage: "In the Project Crew channel, proactively flag deploy risks.",
       persistedUserEntryId: createStreamEntryId(),
       recentHistory: [],
       audienceEntityId: input.audienceEntityId,
       committedByEntityId: input.audienceEntityId,
+      currentSenderEntityId:
+        input.currentSenderEntityId ?? defaultCorrectiveTurnContext.currentSenderEntityId,
+      currentSenderBorgRole:
+        input.currentSenderBorgRole ?? defaultCorrectiveTurnContext.currentSenderBorgRole,
+      sessionAudienceRole:
+        input.sessionAudienceRole ?? defaultCorrectiveTurnContext.sessionAudienceRole,
       speakerDisplayName: "Tom",
       crossAudienceTargeting: input.crossAudienceTargeting,
       sessionId: DEFAULT_SESSION_ID,
@@ -1123,5 +1153,128 @@ describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
     );
 
     expect(result.commitment?.restricted_audience).toBe(operatorAudience);
+  });
+
+  it("defers creator/operator cross-audience candidates to creator directives", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const creatorId = createEntityId();
+    const emit = vi.fn();
+    const { service, addCommitment } = makeService({
+      enabled: true,
+      includePayloads: false,
+      emit,
+    });
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        currentSenderEntityId: creatorId,
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
+        appliesToAudienceEntityId: groupAudience,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment).toBeNull();
+    expect(result.commitmentSupersession).toBeNull();
+
+    await service.persistCommitment({
+      commitment: result.commitment,
+      supersession: result.commitmentSupersession,
+      turnId: "turn-cross-audience",
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+    });
+
+    expect(addCommitment).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
+      "corrective_preference.cross_audience_creator_deferred",
+      expect.objectContaining({
+        validationStatus: "deferred",
+        reason: "creator_operator_cross_audience_deferred_to_creator_directive",
+        requested_audience_entity_id: groupAudience,
+        current_sender_entity_id: creatorId,
+      }),
+    );
+  });
+
+  it("keeps non-creator cross-audience candidates in commitments", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const speakerId = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        currentSenderEntityId: speakerId,
+        currentSenderBorgRole: null,
+        sessionAudienceRole: "operator",
+        appliesToAudienceEntityId: groupAudience,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment).toMatchObject({
+      kind: "audience_rule",
+      restricted_audience: groupAudience,
+    });
+  });
+
+  it("keeps creator/operator within-audience candidates in commitments", async () => {
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const creatorId = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        currentSenderEntityId: creatorId,
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
+        appliesToAudienceEntityId: null,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment).toMatchObject({
+      kind: "audience_rule",
+      restricted_audience: operatorAudience,
+    });
+  });
+
+  it("keeps creator cross-audience candidates outside operator sessions in commitments", async () => {
+    const participantAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const creatorId = createEntityId();
+    const { service } = makeService();
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: participantAudience,
+        currentSenderEntityId: creatorId,
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "participant",
+        appliesToAudienceEntityId: groupAudience,
+        crossAudienceTargeting: { allowed: false, candidateAudiences: [] },
+      }),
+    );
+
+    expect(result.commitment).toMatchObject({
+      kind: "audience_rule",
+      restricted_audience: participantAudience,
+    });
   });
 });

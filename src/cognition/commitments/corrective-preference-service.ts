@@ -3,6 +3,7 @@ import {
   commitmentSchema,
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
+  type BorgRole,
   type CommitmentRecord,
   type CommitmentRepository,
 } from "../../memory/commitments/index.js";
@@ -14,6 +15,7 @@ import type {
 } from "../../memory/relational-slots/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type { StreamEntry } from "../../stream/index.js";
+import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { Clock } from "../../util/clock.js";
 import {
   createCommitmentId,
@@ -46,12 +48,16 @@ export type CorrectivePreferenceTurnServiceOptions = {
 export type ExtractCorrectivePreferenceForTurnInput = {
   llmClient: LLMClient;
   turnId: string;
+  isUserTurn: boolean;
   userMessage: string;
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
   committedByEntityId?: EntityId | null;
+  currentSenderEntityId: EntityId | null;
+  currentSenderBorgRole: BorgRole | null;
+  sessionAudienceRole: SessionAudienceRole;
   speakerDisplayName?: string | null;
   participantRoster?: ParticipantRoster | null;
   relationshipEvidenceStreamEntries?: readonly Pick<StreamEntry, "id" | "kind">[];
@@ -346,6 +352,46 @@ export class CorrectivePreferenceTurnService {
     });
   }
 
+  private traceCrossAudienceCreatorRuleDeferred(input: {
+    turnId?: string;
+    sessionId?: SessionId;
+    candidate: CorrectivePreferenceCandidate;
+    currentAudienceEntityId: EntityId | null;
+    currentSenderEntityId: EntityId | null;
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("corrective_preference.cross_audience_creator_deferred", {
+      turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      validationStatus: "deferred",
+      reason: "creator_operator_cross_audience_deferred_to_creator_directive",
+      requested_audience_entity_id: input.candidate.applies_to_audience_entity_id,
+      current_audience_entity_id: input.currentAudienceEntityId,
+      current_sender_entity_id: input.currentSenderEntityId,
+      directive_family: input.candidate.directive_family,
+      kind: input.candidate.kind,
+    });
+  }
+
+  private shouldDeferCrossAudienceCreatorRule(input: {
+    candidate: CorrectivePreferenceCandidate;
+    isUserTurn: boolean;
+    currentSenderEntityId: EntityId | null;
+    currentSenderBorgRole: BorgRole | null;
+    sessionAudienceRole: SessionAudienceRole;
+  }): boolean {
+    return (
+      input.isUserTurn &&
+      input.sessionAudienceRole === "operator" &&
+      input.currentSenderBorgRole === "creator" &&
+      input.currentSenderEntityId !== null &&
+      input.candidate.applies_to_audience_entity_id !== null
+    );
+  }
+
   // Resolve the audience a corrective commitment is scoped to. Default is the
   // current session audience. A different audience is honored ONLY when the
   // turn was authorized to cross-target (input.allowed, set upstream to the
@@ -467,26 +513,44 @@ export class CorrectivePreferenceTurnService {
         relationshipEvidenceStreamEntries: input.relationshipEvidenceStreamEntries,
       })
     ) {
-      acceptedCorrectiveCandidate = correctiveCandidate;
-      correctiveCommitment = buildCorrectivePreferenceCommitment({
+      const shouldDeferToCreatorDirective = this.shouldDeferCrossAudienceCreatorRule({
         candidate: correctiveCandidate,
-        restrictedAudience: this.resolveCorrectiveRestrictedAudience({
-          candidate: correctiveCandidate,
-          currentAudienceEntityId: input.audienceEntityId,
-          allowed: crossAudienceAllowed,
-          candidateAudiences: crossAudienceCandidates,
+        isUserTurn: input.isUserTurn,
+        currentSenderEntityId: input.currentSenderEntityId,
+        currentSenderBorgRole: input.currentSenderBorgRole,
+        sessionAudienceRole: input.sessionAudienceRole,
+      });
+
+      if (shouldDeferToCreatorDirective) {
+        this.traceCrossAudienceCreatorRuleDeferred({
           turnId: input.turnId,
           sessionId: input.sessionId,
-        }),
-        committedByEntityId: input.committedByEntityId ?? null,
-        sourceStreamEntryIds:
-          input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
-            ? input.persistedUserEntryId === undefined
-              ? undefined
-              : [input.persistedUserEntryId]
-            : [...input.sourceUserEntryIds],
-        nowMs: this.options.clock.now(),
-      });
+          candidate: correctiveCandidate,
+          currentAudienceEntityId: input.audienceEntityId,
+          currentSenderEntityId: input.currentSenderEntityId,
+        });
+      } else {
+        acceptedCorrectiveCandidate = correctiveCandidate;
+        correctiveCommitment = buildCorrectivePreferenceCommitment({
+          candidate: correctiveCandidate,
+          restrictedAudience: this.resolveCorrectiveRestrictedAudience({
+            candidate: correctiveCandidate,
+            currentAudienceEntityId: input.audienceEntityId,
+            allowed: crossAudienceAllowed,
+            candidateAudiences: crossAudienceCandidates,
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+          }),
+          committedByEntityId: input.committedByEntityId ?? null,
+          sourceStreamEntryIds:
+            input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+              ? input.persistedUserEntryId === undefined
+                ? undefined
+                : [input.persistedUserEntryId]
+              : [...input.sourceUserEntryIds],
+          nowMs: this.options.clock.now(),
+        });
+      }
     }
 
     const sourceUserEntryIds =
