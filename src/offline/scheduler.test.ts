@@ -62,8 +62,12 @@ function createFakeProcessRegistry(): Record<OfflineProcessName, OfflineProcess>
     "semantic-extractor",
     "curator",
     "overseer",
+    "review-resolver",
     "ruminator",
     "self-narrator",
+    "procedural-synthesizer",
+    "belief-reviser",
+    "creator-directive-reconciler",
   ];
 
   return names.reduce(

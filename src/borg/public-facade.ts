@@ -870,7 +870,8 @@ export type BorgReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "relationship_claim_ungrounded";
+  | "relationship_claim_ungrounded"
+  | "creator_directive_reconciliation";
 
 export type BorgReviewResolution =
   | "keep_both"
@@ -961,6 +962,7 @@ export type BorgOfflineResult = {
     rejected: number;
   };
   pending_episode_count?: number;
+  pending_family_count?: number;
   run_capped?: boolean;
 };
 

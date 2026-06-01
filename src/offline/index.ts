@@ -20,6 +20,15 @@ export {
   type BeliefReviserProcessOptions,
 } from "./belief-reviser/index.js";
 export { ConsolidatorProcess, type ConsolidatorProcessOptions } from "./consolidator/index.js";
+export {
+  CreatorDirectiveReconcilerProcess,
+  creatorDirectiveReconcilerPlanSchema,
+  DIRECTIVE_RECONCILIATION_TOOL,
+  NON_SLOTTED_RECONCILABLE_DIRECTIVE_KINDS,
+  type CreatorDirectiveReconcilerPlan,
+  type CreatorDirectiveReconcilerProcessOptions,
+  type DirectiveReconciliationToolInput,
+} from "./creator-directive-reconciler/index.js";
 export { CuratorProcess, type CuratorProcessOptions } from "./curator/index.js";
 export { offlineMigrations } from "./migrations.js";
 export {

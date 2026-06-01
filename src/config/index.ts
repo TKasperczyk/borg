@@ -268,6 +268,7 @@ const maintenanceProcessSchema = z.enum([
   "self-narrator",
   "procedural-synthesizer",
   "belief-reviser",
+  "creator-directive-reconciler",
 ]);
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
@@ -477,6 +478,13 @@ const configBaseSchema = z.object({
           consecutiveParseFailureLimit: z.number().int().positive().default(5),
         })
         .prefault({}),
+      creatorDirectiveReconciler: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxFamiliesPerRun: z.number().int().positive().default(8),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
     })
     .prefault({}),
   maintenance: z
@@ -501,6 +509,7 @@ const configBaseSchema = z.object({
           "self-narrator",
           "procedural-synthesizer",
           "belief-reviser",
+          "creator-directive-reconciler",
         ]),
     })
     .prefault({}),
@@ -1341,6 +1350,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "beliefReviser", "consecutiveParseFailureLimit"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_CONSECUTIVE_PARSE_FAILURE_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "creatorDirectiveReconciler", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "creatorDirectiveReconciler", "maxFamiliesPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_MAX_FAMILIES_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "creatorDirectiveReconciler", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_BUDGET"),
   );
   setConfigOverride(
     overrides,

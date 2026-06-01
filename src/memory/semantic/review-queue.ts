@@ -37,6 +37,7 @@ export const REVIEW_KINDS = [
   "belief_revision",
   "skill_split",
   "relationship_claim_ungrounded",
+  "creator_directive_reconciliation",
 ] as const;
 export const REVIEW_RESOLUTIONS = [
   "keep_both",
@@ -421,6 +422,10 @@ export class ReviewQueueRepository {
       itemOrInput.kind === "relationship_claim_ungrounded"
     ) {
       return "semantic-extractor";
+    }
+
+    if (itemOrInput.kind === "creator_directive_reconciliation") {
+      return "creator-directive-reconciler";
     }
 
     return "unknown";

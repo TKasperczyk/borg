@@ -43,6 +43,7 @@ describe("sessions facade", () => {
           selfNarrator: { enabled: false },
           proceduralSynthesizer: { enabled: false },
           beliefReviser: { enabled: false },
+          creatorDirectiveReconciler: { enabled: false },
           semanticExtractor: { enabled: false },
         },
       }),

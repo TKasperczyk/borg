@@ -7,6 +7,7 @@ import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
@@ -33,6 +34,7 @@ import {
   AuditLog,
   BeliefReviserProcess,
   ConsolidatorProcess,
+  CreatorDirectiveReconcilerProcess,
   CuratorProcess,
   MaintenanceOrchestrator,
   OverseerProcess,
@@ -86,6 +88,7 @@ export type BuildOfflineSetupOptions = {
   entityRepository: EntityRepository;
   relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
   workingMemoryStore?: WorkingMemoryStore;
@@ -163,6 +166,10 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       consecutiveParseFailureLimit:
         options.config.offline.beliefReviser.consecutiveParseFailureLimit,
     }),
+    "creator-directive-reconciler": new CreatorDirectiveReconcilerProcess({
+      creatorDirectiveRepository: options.creatorDirectiveRepository,
+      registry: reverserRegistry,
+    }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
   options.reviewQueueRepository.registerHandler(
     createSkillSplitReviewQueueHandler(
@@ -205,6 +212,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       entityRepository: options.entityRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       commitmentRepository: options.commitmentRepository,
+      creatorDirectiveRepository: options.creatorDirectiveRepository,
       skillRepository: options.skillRepository,
       proceduralEvidenceRepository: options.proceduralEvidenceRepository,
       workingMemoryStore: options.workingMemoryStore,

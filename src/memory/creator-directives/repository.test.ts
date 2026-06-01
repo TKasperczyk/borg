@@ -335,7 +335,9 @@ describe("CreatorDirectiveRepository", () => {
         });
         expect(storedSchemaResult.success).toBe(false);
         if (storedSchemaResult.success) {
-          throw new Error("expected stored behavioral directive without operational_directive to fail");
+          throw new Error(
+            "expected stored behavioral directive without operational_directive to fail",
+          );
         }
         expect(storedSchemaResult.error.issues).toEqual(
           expect.arrayContaining([
@@ -1357,6 +1359,123 @@ describe("CreatorDirectiveRepository", () => {
       expect(repository.list({ status: "active" }).map((record) => record.id)).toEqual([
         replacement.id,
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reverses a supersede only when survivor and record version still match", () => {
+    const { db, repository, clock } = createRepository();
+
+    try {
+      const original = repository.queue(queueInput({ priority: 3 }));
+      const replacement = repository.queue(queueInput({ priority: 4 }));
+      const otherReplacement = repository.queue(queueInput({ priority: 5 }));
+
+      clock.set(2_000);
+      const superseded = repository.supersede(original.id, replacement.id);
+
+      expect(superseded).toMatchObject({
+        id: original.id,
+        status: "superseded",
+        superseded_by: replacement.id,
+        record_version: 2,
+      });
+
+      expect(repository.reverseSupersede(original.id, otherReplacement.id, 2)).toBeNull();
+      expect(repository.reverseSupersede(original.id, replacement.id, 1)).toBeNull();
+
+      clock.set(3_000);
+      const restored = repository.reverseSupersede(original.id, replacement.id, 2);
+
+      expect(restored).toMatchObject({
+        id: original.id,
+        status: "active",
+        superseded_by: null,
+        record_version: 3,
+        updated_at: 3_000,
+      });
+      expect(repository.reverseSupersede(original.id, replacement.id, 3)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("atomically supersedes a directive family only when all planned rows still match", () => {
+    const { db, repository, clock } = createRepository();
+
+    try {
+      const firstLoser = repository.queue(queueInput({ priority: 1 }));
+      const secondLoser = repository.queue(queueInput({ priority: 2 }));
+      const survivor = repository.queue(queueInput({ priority: 9 }));
+
+      clock.set(2_000);
+      const superseded = repository.supersedeFamilyAtomic({
+        survivorId: survivor.id,
+        expectedSurvivorVersion: 1,
+        losers: [
+          { id: firstLoser.id, expectedVersion: 1 },
+          { id: secondLoser.id, expectedVersion: 1 },
+        ],
+      });
+
+      expect(superseded).toEqual([
+        { id: firstLoser.id, record_version: 2 },
+        { id: secondLoser.id, record_version: 2 },
+      ]);
+      expect(repository.get(firstLoser.id)).toMatchObject({
+        status: "superseded",
+        superseded_by: survivor.id,
+        record_version: 2,
+        updated_at: 2_000,
+      });
+      expect(repository.get(secondLoser.id)).toMatchObject({
+        status: "superseded",
+        superseded_by: survivor.id,
+        record_version: 2,
+        updated_at: 2_000,
+      });
+      expect(repository.get(survivor.id)).toMatchObject({
+        status: "active",
+        record_version: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("aborts a family supersede without writes when any planned row is stale", () => {
+    const { db, repository } = createRepository();
+
+    try {
+      const firstLoser = repository.queue(queueInput({ priority: 1 }));
+      const secondLoser = repository.queue(queueInput({ priority: 2 }));
+      const survivor = repository.queue(queueInput({ priority: 9 }));
+
+      repository.revoke(survivor.id, "creator withdrew it");
+
+      const superseded = repository.supersedeFamilyAtomic({
+        survivorId: survivor.id,
+        expectedSurvivorVersion: 1,
+        losers: [
+          { id: firstLoser.id, expectedVersion: 1 },
+          { id: secondLoser.id, expectedVersion: 1 },
+        ],
+      });
+
+      expect(superseded).toBeNull();
+      expect(repository.get(firstLoser.id)).toMatchObject({
+        status: "active",
+        record_version: 1,
+      });
+      expect(repository.get(secondLoser.id)).toMatchObject({
+        status: "active",
+        record_version: 1,
+      });
+      expect(repository.get(survivor.id)).toMatchObject({
+        status: "revoked",
+        record_version: 2,
+      });
     } finally {
       db.close();
     }

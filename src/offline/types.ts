@@ -5,6 +5,7 @@ import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
@@ -44,6 +45,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "self-narrator",
   "procedural-synthesizer",
   "belief-reviser",
+  "creator-directive-reconciler",
 ] as const;
 
 export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];
@@ -76,6 +78,7 @@ export type OfflineResult = {
     rejected: number;
   };
   pending_episode_count?: number;
+  pending_family_count?: number;
   run_capped?: boolean;
 };
 
@@ -119,6 +122,7 @@ export type OfflineContext = {
   entityRepository: EntityRepository;
   relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
   workingMemoryStore?: WorkingMemoryStore;

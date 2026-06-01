@@ -37,6 +37,25 @@ export {
   type ReviewTransactionScope,
 } from "./review-queue.js";
 export {
+  CREATOR_DIRECTIVE_RECONCILIATION_CONFIDENCE_LEVELS,
+  CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_KIND,
+  CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS,
+  CREATOR_DIRECTIVE_RECONCILIATION_VERDICTS,
+  createCreatorDirectiveReconciliationReviewQueueHandler,
+  creatorDirectiveReconciliationConfidenceSchema,
+  creatorDirectiveReconciliationFamilyKeySchema,
+  creatorDirectiveReconciliationJudgmentSchema,
+  creatorDirectiveReconciliationReviewRefsSchema,
+  creatorDirectiveReconciliationSubkindSchema,
+  creatorDirectiveReconciliationVerdictSchema,
+  creatorDirectiveScopeEquivalenceSnapshotSchema,
+  type CreatorDirectiveReconciliationFamilyKey,
+  type CreatorDirectiveReconciliationJudgment,
+  type CreatorDirectiveReconciliationReviewRefs,
+  type CreatorDirectiveReconciliationSubkind,
+  type CreatorDirectiveScopeEquivalenceSnapshot,
+} from "./review-handlers/creator-directive-reconciliation.js";
+export {
   beliefRevisionReviewRefsSchema,
   createBeliefRevisionReviewQueueHandler,
   type BeliefRevisionReviewRefs,

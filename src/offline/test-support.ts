@@ -23,6 +23,10 @@ import {
   commitmentMigrations,
 } from "../memory/commitments/index.js";
 import {
+  CreatorDirectiveRepository,
+  creatorDirectiveMigrations,
+} from "../memory/creator-directives/index.js";
+import {
   RelationalSlotRepository,
   relationalSlotMigrations,
 } from "../memory/relational-slots/index.js";
@@ -364,6 +368,10 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.offline.beliefReviser,
         ...overrides.offline?.beliefReviser,
       },
+      creatorDirectiveReconciler: {
+        ...DEFAULT_CONFIG.offline.creatorDirectiveReconciler,
+        ...overrides.offline?.creatorDirectiveReconciler,
+      },
       semanticExtractor: {
         ...DEFAULT_CONFIG.offline.semanticExtractor,
         ...overrides.offline?.semanticExtractor,
@@ -469,6 +477,7 @@ export type OfflineTestHarness = {
   entityRepository: EntityRepository;
   relationalSlotRepository: RelationalSlotRepository;
   commitmentRepository: CommitmentRepository;
+  creatorDirectiveRepository: CreatorDirectiveRepository;
   skillRepository: SkillRepository;
   proceduralContextStatsRepository: ProceduralContextStatsRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
@@ -516,6 +525,7 @@ export async function createOfflineTestHarness(
       retrievalMigrations,
       semanticMigrations,
       commitmentMigrations,
+      creatorDirectiveMigrations,
       relationalSlotMigrations,
       sharedStateMigrations,
       socialMigrations,
@@ -645,6 +655,10 @@ export async function createOfflineTestHarness(
     db,
     clock,
     identityEventRepository,
+  });
+  const creatorDirectiveRepository = new CreatorDirectiveRepository({
+    db,
+    clock,
   });
   const relationalSlotRepository = new RelationalSlotRepository({
     db,
@@ -816,6 +830,7 @@ export async function createOfflineTestHarness(
     entityRepository,
     relationalSlotRepository,
     commitmentRepository,
+    creatorDirectiveRepository,
     skillRepository,
     proceduralContextStatsRepository,
     proceduralEvidenceRepository,
@@ -858,6 +873,7 @@ export async function createOfflineTestHarness(
       entityRepository,
       relationalSlotRepository,
       commitmentRepository,
+      creatorDirectiveRepository,
       skillRepository,
       proceduralEvidenceRepository,
       retrievalPipeline,

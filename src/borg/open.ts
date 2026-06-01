@@ -227,6 +227,7 @@ export async function openBorgDependencies(
       entityRepository: repositories.entityRepository,
       relationalSlotRepository: repositories.relationalSlotRepository,
       commitmentRepository: repositories.commitmentRepository,
+      creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       skillRepository: repositories.skillRepository,
       proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
       workingMemoryStore: repositories.workingMemoryStore,

@@ -76,6 +76,7 @@ function createProcessRegistry(
     "self-narrator",
     "procedural-synthesizer",
     "belief-reviser",
+    "creator-directive-reconciler",
   ];
 
   return Object.fromEntries(
@@ -136,6 +137,7 @@ describe("maintenance orchestrator", () => {
         "self-narrator": process,
         "procedural-synthesizer": process,
         "belief-reviser": process,
+        "creator-directive-reconciler": process,
       },
     });
 

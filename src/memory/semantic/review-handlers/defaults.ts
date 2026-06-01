@@ -11,6 +11,7 @@ import { createNewInsightReviewQueueHandler } from "./new-insight.js";
 import { createSemanticPairReviewQueueHandler } from "./semantic-pair.js";
 import { createTemporalDriftReviewQueueHandler } from "./temporal-drift.js";
 import { createRelationshipClaimUngroundedReviewQueueHandler } from "./relationship-claim-ungrounded.js";
+import { createCreatorDirectiveReconciliationReviewQueueHandler } from "./creator-directive-reconciliation.js";
 
 type ReviewQueueHandlerRegistrar =
   | Pick<ReviewQueueHandlerRegistry, "register">
@@ -37,4 +38,5 @@ export function registerBuiltinReviewQueueHandlers(registrar: ReviewQueueHandler
   registerHandler(registrar, createIdentityInconsistencyReviewQueueHandler());
   registerHandler(registrar, createBeliefRevisionReviewQueueHandler());
   registerHandler(registrar, createRelationshipClaimUngroundedReviewQueueHandler());
+  registerHandler(registrar, createCreatorDirectiveReconciliationReviewQueueHandler());
 }

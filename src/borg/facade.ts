@@ -201,6 +201,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       "self-narrator": deps.config.offline.selfNarrator.enabled,
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.enabled,
       "belief-reviser": deps.config.offline.beliefReviser.enabled,
+      "creator-directive-reconciler": deps.config.offline.creatorDirectiveReconciler.enabled,
     })
       .filter(([, enabled]) => enabled)
       .map(([name]) => name as OfflineProcessName);
@@ -222,6 +223,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       "self-narrator": deps.config.offline.selfNarrator.budget,
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.budget,
       "belief-reviser": null,
+      "creator-directive-reconciler": deps.config.offline.creatorDirectiveReconciler.budget,
     } satisfies Partial<Record<OfflineProcessName, number | null>>,
   });
 

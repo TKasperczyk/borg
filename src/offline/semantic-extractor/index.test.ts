@@ -111,6 +111,7 @@ function createProcessRegistry(
     "self-narrator",
     "procedural-synthesizer",
     "belief-reviser",
+    "creator-directive-reconciler",
   ];
 
   return Object.fromEntries(

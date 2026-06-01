@@ -54,6 +54,11 @@ describe("config", () => {
       maxInputTokensPerRun: 150_000,
       budget: 60_000,
     });
+    expect(config.offline.creatorDirectiveReconciler).toEqual({
+      enabled: true,
+      maxFamiliesPerRun: 8,
+      budget: 60_000,
+    });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
@@ -342,6 +347,9 @@ describe("config", () => {
           enabled: false,
           maxLlmCalls: 4,
         },
+        creatorDirectiveReconciler: {
+          maxFamiliesPerRun: 4,
+        },
         semanticExtractor: {
           maxEpisodesPerRun: 3,
         },
@@ -391,6 +399,8 @@ describe("config", () => {
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
         BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
+        BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_MAX_FAMILIES_PER_RUN: "6",
+        BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_BUDGET: "14000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
@@ -462,6 +472,8 @@ describe("config", () => {
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
+    expect(config.offline.creatorDirectiveReconciler.maxFamiliesPerRun).toBe(6);
+    expect(config.offline.creatorDirectiveReconciler.budget).toBe(14_000);
     expect(config.offline.semanticExtractor.maxEpisodesPerRun).toBe(3);
     expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);

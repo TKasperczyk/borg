@@ -264,6 +264,7 @@ function metricsRow(turn: number): MetricsRow {
       belief_revision: 0,
       skill_split: 0,
       relationship_claim_ungrounded: 0,
+      creator_directive_reconciliation: 0,
     },
     frame_anomaly_classifier_calls: 0,
     frame_anomaly_classified_normal_count: 0,

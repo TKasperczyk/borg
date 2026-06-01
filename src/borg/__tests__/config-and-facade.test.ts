@@ -93,6 +93,7 @@ describe("Borg", () => {
           selfNarrator: { enabled: false },
           proceduralSynthesizer: { enabled: false },
           beliefReviser: { enabled: false },
+          creatorDirectiveReconciler: { enabled: false },
           semanticExtractor: { enabled: false },
         },
       }),
