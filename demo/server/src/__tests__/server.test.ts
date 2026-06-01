@@ -36,6 +36,7 @@ import {
 import type { AttachmentService } from "../../../../src/attachments/index.js";
 import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/perception.js";
 import type { Episode, EpisodicRepository } from "../../../../src/memory/episodic/index.js";
+import type { CreatorDirectiveRepository } from "../../../../src/memory/creator-directives/index.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
 import type { ReviewQueueRepository } from "../../../../src/memory/semantic/review-queue.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
@@ -58,6 +59,7 @@ type BorgTestInternals = {
     attachmentService: AttachmentService;
     auditLog: AuditLog;
     createStreamWriter(sessionId: typeof DEFAULT_SESSION_ID): StreamWriter;
+    creatorDirectiveRepository: CreatorDirectiveRepository;
     episodicRepository: EpisodicRepository;
     relationalSlotRepository: RelationalSlotRepository;
     reviewQueueRepository: ReviewQueueRepository;
@@ -145,6 +147,38 @@ function createImagePerceptionResponse() {
       },
     },
   ];
+}
+
+function createDirectiveReconciliationResponse(
+  judgments: Array<{
+    member_ids: string[];
+    verdict: "same_intent" | "conflicting" | "independent";
+    resolution: "supersede_to_survivor" | "revoke_stale" | "keep_independent" | "escalate";
+    survivor_id?: string | null;
+    loser_ids?: string[];
+    confidence: "high" | "medium" | "low";
+    rationale: string;
+  }>,
+) {
+  return {
+    text: "",
+    input_tokens: 20,
+    output_tokens: 10,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_directive_reconciliation",
+        name: "EmitDirectiveReconciliation",
+        input: {
+          judgments: judgments.map((judgment) => ({
+            survivor_id: null,
+            loser_ids: [],
+            ...judgment,
+          })),
+        },
+      },
+    ],
+  };
 }
 
 function createHarnessOpenOptions(input: {
@@ -437,6 +471,55 @@ function creatorDirectiveReconciliationRefs(
       rationale: "Fixture directives share content but differ by scope.",
     },
   };
+}
+
+async function seedCreatorDirectiveMergeAudit(
+  borg: Borg,
+  clock: ManualClock,
+  llm: FakeLLMClient,
+): Promise<{
+  audit: ReturnType<AuditLog["list"]>[number];
+  loser: CreatorDirective;
+  survivor: CreatorDirective;
+}> {
+  const loser = queueCreatorDirectiveFixture(borg, clock, {
+    text: "Prefer concise sleep-phase operator summaries.",
+    priority: 1,
+  });
+  clock.advance(1);
+  const survivor = queueCreatorDirectiveFixture(borg, clock, {
+    text: "Prefer brief sleep-phase operator summaries.",
+    priority: 9,
+  });
+
+  llm.pushResponse(
+    createDirectiveReconciliationResponse([
+      {
+        member_ids: [loser.id, survivor.id],
+        verdict: "same_intent",
+        resolution: "supersede_to_survivor",
+        survivor_id: survivor.id,
+        loser_ids: [loser.id],
+        confidence: "high",
+        rationale: "The records express the same creator directive.",
+      },
+    ]),
+  );
+
+  const result = await borg.dream({ processes: ["creator-directive-reconciler"] });
+  expect(result.errors).toEqual([]);
+  const audit = borg.audit
+    .list({ process: "creator-directive-reconciler" })
+    .find(
+      (row) =>
+        row.action === "creator_directive_merge" && row.targets.survivor_id === survivor.id,
+    );
+
+  if (audit === undefined) {
+    throw new Error("Expected creator directive merge audit row");
+  }
+
+  return { audit, loser, survivor };
 }
 
 async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
@@ -1641,6 +1724,94 @@ describe("demo server", () => {
     expect(reviewResolveSpy).toHaveBeenCalledWith(review.id, {
       decision: "dismiss",
       reason: "not actionable",
+    });
+  });
+
+  it("POST /api/dream/audit/:id/revert reverts reversible reconciler audit rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient();
+    const { borg, clock, live } = await openHarness({ tempDir, llmClient: llm });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const { audit, loser, survivor } = await seedCreatorDirectiveMergeAudit(borg, clock, llm);
+
+    expect(borg.creatorDirectives.get(loser.id)).toMatchObject({
+      status: "superseded",
+      superseded_by: survivor.id,
+    });
+
+    const response = await app.request(`/api/dream/audit/${audit.id}/revert`, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: audit.id,
+      action: "creator_directive_merge",
+      reverted_at: expect.any(Number),
+      reverted_by: "demo_operator",
+    });
+    expect(borg.creatorDirectives.get(loser.id)).toMatchObject({
+      status: "active",
+      superseded_by: null,
+    });
+    expect(borg.audit.list().find((row) => row.id === audit.id)).toMatchObject({
+      reverted_at: expect.any(Number),
+      reverted_by: "demo_operator",
+    });
+  });
+
+  it("POST /api/dream/audit/:id/revert reports operator conflicts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient();
+    const { borg, clock, live } = await openHarness({ tempDir, llmClient: llm });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const alreadyReverted = await seedCreatorDirectiveMergeAudit(borg, clock, llm);
+    const firstResponse = await app.request(`/api/dream/audit/${alreadyReverted.audit.id}/revert`, {
+      method: "POST",
+    });
+    expect(firstResponse.status).toBe(200);
+
+    const secondResponse = await app.request(
+      `/api/dream/audit/${alreadyReverted.audit.id}/revert`,
+      { method: "POST" },
+    );
+    expect(secondResponse.status).toBe(409);
+    expect(await secondResponse.json()).toMatchObject({
+      error: { message: "audit row is already reverted" },
+    });
+
+    const drifted = await seedCreatorDirectiveMergeAudit(borg, clock, llm);
+    const internal = borg as unknown as BorgTestInternals;
+    const loserVersion = borg.creatorDirectives.get(drifted.loser.id)?.record_version;
+    const replacement = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Replacement directive for drifted audit setup.",
+      priority: 10,
+    });
+
+    expect(loserVersion).toEqual(expect.any(Number));
+    internal.deps.creatorDirectiveRepository.reverseSupersede(
+      drifted.loser.id,
+      drifted.survivor.id,
+      loserVersion!,
+    );
+    internal.deps.creatorDirectiveRepository.supersede(drifted.loser.id, replacement.id);
+
+    const staleResponse = await app.request(`/api/dream/audit/${drifted.audit.id}/revert`, {
+      method: "POST",
+    });
+    expect(staleResponse.status).toBe(409);
+    expect(await staleResponse.json()).toMatchObject({
+      error: { message: expect.stringContaining("Creator directive merge reversal is stale") },
+    });
+
+    const missingResponse = await app.request("/api/dream/audit/999999/revert", {
+      method: "POST",
+    });
+    expect(missingResponse.status).toBe(404);
+    expect(await missingResponse.json()).toMatchObject({
+      error: { message: "audit row not found" },
     });
   });
 

@@ -621,6 +621,104 @@ describe("P2 screens", () => {
     expect(openReview).toHaveBeenCalledTimes(1);
   });
 
+  it("reverts only reversible unreverted dream audit rows", async () => {
+    const live = makeLiveSource();
+    const reversibleRow = {
+      id: 7,
+      run_id: "run_audit",
+      process: "creator-directive-reconciler",
+      action: "creator_directive_merge",
+      targets: { survivor_id: "cdir_survivor", superseded_ids: ["cdir_loser"] },
+      reversal: { superseded: [{ id: "cdir_loser", expected_record_version: 2 }] },
+      applied_at: 4,
+      reverted_at: null,
+      reverted_by: null,
+    };
+    const nonReversibleRow = {
+      ...reversibleRow,
+      id: 8,
+      action: "noop",
+      targets: { id: "no_reverse" },
+      reversal: {},
+    };
+    const revertedRow = {
+      ...reversibleRow,
+      id: 9,
+      reverted_at: 6,
+      reverted_by: "demo_operator",
+    };
+    let stateCalls = 0;
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(request), "http://test.invalid");
+
+      if (url.pathname === "/api/dream/state") {
+        stateCalls += 1;
+        return Promise.resolve(
+          jsonResponse({
+            processes: [],
+            schedule: [],
+            audit_rows:
+              stateCalls === 1
+                ? [reversibleRow, nonReversibleRow, revertedRow]
+                : [{ ...reversibleRow, reverted_at: 7, reverted_by: "demo_operator" }],
+            belief_revision_rows: [],
+            scheduler: {
+              enabled: true,
+              light_interval_ms: 1,
+              heavy_interval_ms: 1,
+              light_processes: [],
+              heavy_processes: ["belief-reviser"],
+              process_budgets: {},
+            },
+          }),
+        );
+      }
+
+      if (url.pathname === "/api/dream/audit/7/revert" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({ ...reversibleRow, reverted_at: 7, reverted_by: "demo_operator" }),
+        );
+      }
+
+      if (url.pathname === "/api/dream/audit") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+    );
+
+    const enabled = await screen.findByRole("button", { name: "revert audit 7" });
+    expect(enabled).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "revert audit 8" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "revert audit 9" })).toBeDisabled();
+    expect(screen.getByText("auto-resolved")).toBeInTheDocument();
+    expect(screen.getAllByText("reverted").length).toBeGreaterThan(0);
+
+    fireEvent.click(enabled);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([request, init]) =>
+            requestPath(request) === "/api/dream/audit/7/revert" && init?.method === "POST",
+        ),
+      ).toBe(true);
+      expect(
+        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/dream/state"),
+      ).toHaveLength(2);
+      expect(
+        fetchMock.mock.calls.some((call) => requestPath(call[0]) === "/api/dream/audit"),
+      ).toBe(true);
+    });
+  });
+
   it("renders unified review rows and resolves a generic row", async () => {
     const live = makeLiveSource();
     let reviewCalls = 0;

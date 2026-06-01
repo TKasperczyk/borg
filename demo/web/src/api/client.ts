@@ -31,6 +31,7 @@ import type {
   IdentityValue,
   InvalidateSemanticEdgeRequest,
   LedgerResponse,
+  MaintenanceAuditRow,
   MemoryBandDetail,
   MemoryBandId,
   OpenQuestion,
@@ -450,6 +451,15 @@ export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {
     "api/dream/audit",
     undefined,
     new URLSearchParams({ limit: String(limit) }),
+  );
+}
+
+export async function revertDreamAudit(id: number): Promise<MaintenanceAuditRow> {
+  return fetchJson<MaintenanceAuditRow>(
+    `api/dream/audit/${encodeURIComponent(String(id))}/revert`,
+    {
+      method: "POST",
+    },
   );
 }
 

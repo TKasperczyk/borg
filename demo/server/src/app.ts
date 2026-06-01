@@ -51,6 +51,7 @@ import {
   parseSessionId,
   PROMPT_KEYS,
   semanticNodeIdSchema,
+  type AuditId,
   type BorgReviewResolutionInput,
   type PromptKey,
   type ReviewKind,
@@ -69,6 +70,8 @@ type SemanticExtractionEpisodicFacade = Borg["episodic"] & {
   listAll: () => Promise<Episode[]>;
   getStats: (id: Episode["id"]) => { archived?: boolean } | null;
 };
+
+type DemoMaintenanceAuditRow = ReturnType<Borg["audit"]["list"]>[number];
 
 const cursorPayloadSchema = z.object({
   ts: z.number().finite(),
@@ -190,6 +193,21 @@ const creatorNameBodySchema = z
 
 const auditQuerySchema = z.object({
   limit: limitSchema.default(50),
+});
+
+const auditParamSchema = z.object({
+  id: z.coerce
+    .number()
+    .int()
+    .positive()
+    .transform((value, ctx) => {
+      if (!Number.isSafeInteger(value)) {
+        ctx.addIssue({ code: "custom", message: "Invalid audit id" });
+        return z.NEVER;
+      }
+
+      return value as AuditId;
+    }),
 });
 
 const SEMANTIC_GRAPH_DEFAULT_LIMIT = 300;
@@ -816,7 +834,12 @@ function jsonError(status: number, message: string): Response {
 
 function mapBorgErrorToHttp(error: unknown): never {
   if (error instanceof BorgError) {
-    const status = error.code.endsWith("_NOT_FOUND") ? 404 : 400;
+    const status =
+      error.code.endsWith("_NOT_FOUND")
+        ? 404
+        : error.code === "MAINTENANCE_REVERSER_MISSING" || error.code.endsWith("_STALE")
+          ? 409
+          : 400;
     throw new HTTPException(status, { message: error.message });
   }
 
@@ -1187,6 +1210,20 @@ function mapReviewRow(row: ReviewQueueItem) {
     created_at: row.created_at,
     resolved_at: row.resolved_at,
     resolution: row.resolution,
+  };
+}
+
+function mapMaintenanceAuditRow(row: DemoMaintenanceAuditRow) {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    process: row.process,
+    action: row.action,
+    targets: row.targets,
+    reversal: row.reversal,
+    applied_at: row.applied_at,
+    reverted_at: row.reverted_at,
+    reverted_by: row.reverted_by,
   };
 }
 
@@ -1667,7 +1704,7 @@ async function dreamState(borg: Borg) {
     schedule: [...streamSchedule, ...dreamScheduleFromAudit(auditRows)]
       .sort((left, right) => right.scheduled_at - left.scheduled_at)
       .slice(0, 80),
-    audit_rows: auditRows,
+    audit_rows: auditRows.map((row) => mapMaintenanceAuditRow(row)),
     belief_revision_rows: borg.review
       .list({ kind: "belief_revision", openOnly: true })
       .map((row) => mapReviewRow(row)),
@@ -2476,7 +2513,38 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/dream/audit", (c) => {
     const query = parseRequest(auditQuerySchema, c.req.query());
-    return c.json({ rows: input.borg.audit.list().slice(0, query.limit) });
+    return c.json({
+      rows: input.borg.audit
+        .list()
+        .slice(0, query.limit)
+        .map((row) => mapMaintenanceAuditRow(row)),
+    });
+  });
+
+  app.post("/api/dream/audit/:id/revert", async (c) => {
+    const params = parseRequest(auditParamSchema, c.req.param());
+
+    try {
+      const current = input.borg.audit.list().find((row) => row.id === params.id);
+
+      if (current === undefined) {
+        throw new HTTPException(404, { message: "audit row not found" });
+      }
+
+      if (current.reverted_at !== null) {
+        throw new HTTPException(409, { message: "audit row is already reverted" });
+      }
+
+      const reverted = await input.borg.audit.revert(params.id, "demo_operator");
+
+      if (reverted === null) {
+        throw new HTTPException(404, { message: "audit row not found" });
+      }
+
+      return c.json(mapMaintenanceAuditRow(reverted));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
   });
 
   app.get("/api/dream/state", async (c) => c.json(await dreamState(input.borg)));

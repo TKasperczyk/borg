@@ -1,9 +1,16 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { getDreamAudit, getDreamState, postDreamApply, postDreamPlan } from "../../api/client";
+import {
+  getDreamAudit,
+  getDreamState,
+  postDreamApply,
+  postDreamPlan,
+  revertDreamAudit,
+} from "../../api/client";
 import type {
   DreamApplyResponse,
   MaintenanceTickFrame,
+  MaintenanceAuditRow,
   DreamPlanResponse,
   DreamProcessName,
   DreamProcessSummary,
@@ -59,6 +66,52 @@ function maintenanceTickSummary(frame: MaintenanceTickFrame): string {
     .join(" / ");
 }
 
+function auditHasReversal(row: MaintenanceAuditRow): boolean {
+  return Object.keys(row.reversal).length > 0;
+}
+
+function auditCanRevert(row: MaintenanceAuditRow): boolean {
+  return auditHasReversal(row) && row.reverted_at === null;
+}
+
+function auditRevertLabel(row: MaintenanceAuditRow): string {
+  if (!auditHasReversal(row)) {
+    return "not undoable";
+  }
+
+  return row.reverted_at === null ? "revert" : "reverted";
+}
+
+function auditRevertTitle(row: MaintenanceAuditRow): string {
+  if (!auditHasReversal(row)) {
+    return "No reversal payload was recorded for this audit row";
+  }
+
+  return row.reverted_at === null
+    ? "Revert this audited maintenance change"
+    : "Already reverted";
+}
+
+function auditStatusLabel(row: MaintenanceAuditRow): string {
+  if (row.reverted_at !== null) {
+    return "reverted";
+  }
+
+  if (auditHasReversal(row) && row.process === "creator-directive-reconciler") {
+    return "auto-resolved";
+  }
+
+  return "ok";
+}
+
+function auditStatusTone(row: MaintenanceAuditRow): "" | "acc" | "warn" | "bad" {
+  if (row.reverted_at !== null) {
+    return "warn";
+  }
+
+  return auditHasReversal(row) ? "acc" : "";
+}
+
 export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
@@ -69,7 +122,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const [planOpen, setPlanOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [applyResult, setApplyResult] = useState<DreamApplyResponse | null>(null);
-  const [busy, setBusy] = useState<"plan" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"plan" | "apply" | "revert" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
   // Per-process live status tracked across a dream run. A run does TWO sweeps
@@ -203,6 +256,23 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     try {
       const result = await postDreamApply(plan === null ? {} : { plan_id: plan.plan_id });
       setApplyResult(result);
+      await Promise.all([refetch(), getDreamAudit()]);
+    } catch (caught) {
+      setOperatorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revertAuditRow(row: MaintenanceAuditRow): Promise<void> {
+    if (!auditCanRevert(row)) {
+      return;
+    }
+
+    setBusy("revert");
+    setOperatorError(null);
+    try {
+      await revertDreamAudit(row.id);
       await Promise.all([refetch(), getDreamAudit()]);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
@@ -438,6 +508,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                 <th>target</th>
                 <th>reverter</th>
                 <th>status</th>
+                <th>undo</th>
               </tr>
             </thead>
             <tbody>
@@ -452,7 +523,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                     {displayTargetSummary(row.targets)}
                   </td>
                   <td>
-                    {Object.keys(row.reversal).length > 0 ? (
+                    {auditHasReversal(row) ? (
                       <Tag kind="acc" dot>
                         reverter
                       </Tag>
@@ -461,15 +532,29 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                     )}
                   </td>
                   <td>
-                    <Tag kind={row.reverted_at === null ? "acc" : "warn"} dot>
-                      {row.reverted_at === null ? "ok" : "reverted"}
+                    <Tag kind={auditStatusTone(row)} dot>
+                      {auditStatusLabel(row)}
                     </Tag>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className={auditCanRevert(row) ? "btn sm primary" : "btn sm ghost"}
+                      disabled={busy !== null || !auditCanRevert(row)}
+                      title={auditRevertTitle(row)}
+                      aria-label={`revert audit ${row.id}`}
+                      onClick={() => void revertAuditRow(row)}
+                    >
+                      {busy === "revert" && auditCanRevert(row)
+                        ? "reverting"
+                        : auditRevertLabel(row)}
+                    </button>
                   </td>
                 </tr>
               ))}
               {(state?.audit_rows.length ?? 0) === 0 ? (
                 <tr>
-                  <td colSpan={6} className="dim">
+                  <td colSpan={7} className="dim">
                     no audit rows yet
                   </td>
                 </tr>
