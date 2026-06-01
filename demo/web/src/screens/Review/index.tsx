@@ -519,26 +519,16 @@ function ReconciliationReview({
   directivesById,
   busy,
   survivor,
-  revokeIds,
-  revokeReason,
   onSurvivor,
-  onToggleRevoke,
-  onRevokeReason,
   onSupersede,
-  onRevoke,
   onKeep,
 }: {
   row: ReviewRow;
   directivesById: Map<string, CreatorDirectiveItem>;
   busy: BusyState;
   survivor: string;
-  revokeIds: string[];
-  revokeReason: string;
   onSurvivor: (value: string) => void;
-  onToggleRevoke: (value: string) => void;
-  onRevokeReason: (value: string) => void;
   onSupersede: () => void;
-  onRevoke: () => void;
   onKeep: () => void;
 }) {
   const refs = row.refs;
@@ -546,7 +536,6 @@ function ReconciliationReview({
   const ids = directiveIds(row);
   const judgment = isRecord(refs.judgment) ? refs.judgment : {};
   const differences = scopeDifferences(members);
-  const selectedRevokeIds = new Set(revokeIds);
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
@@ -583,8 +572,6 @@ function ReconciliationReview({
               member={member}
               directive={directive}
               differences={differences}
-              selectedForRevoke={selectedRevokeIds.has(id)}
-              onToggleRevoke={() => onToggleRevoke(id)}
             />
           );
         })}
@@ -625,23 +612,6 @@ function ReconciliationReview({
           </button>
         </div>
       </div>
-
-      <div style={{ display: "grid", gap: 8 }}>
-        <label className="modal-field">
-          <span>revoke reason</span>
-          <textarea value={revokeReason} onChange={(event) => onRevokeReason(event.target.value)} />
-        </label>
-        <div className="operator-actions">
-          <button
-            type="button"
-            className="btn sm ghost"
-            disabled={busy !== null || revokeIds.length === 0 || revokeReason.trim().length === 0}
-            onClick={onRevoke}
-          >
-            {busy?.id === row.id && busy.label === "revoke" ? "saving" : "revoke selected"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -651,15 +621,11 @@ function DirectiveMemberCard({
   member,
   directive,
   differences,
-  selectedForRevoke,
-  onToggleRevoke,
 }: {
   label: string;
   member: unknown;
   directive?: CreatorDirectiveItem;
   differences: Set<ScopeField>;
-  selectedForRevoke: boolean;
-  onToggleRevoke: () => void;
 }) {
   const rows: Array<[ScopeField, string]> = [
     ["content_scope", "content"],
@@ -676,12 +642,6 @@ function DirectiveMemberCard({
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <Tag>{directive?.kind ?? "directive"}</Tag>
         <span className="acc">{label}</span>
-        <label style={{ display: "inline-flex", gap: 5, alignItems: "center" }}>
-          <input type="checkbox" checked={selectedForRevoke} onChange={onToggleRevoke} />
-          <span className="dim" style={{ fontSize: 10.5 }}>
-            revoke
-          </span>
-        </label>
       </div>
       <div
         style={{
@@ -724,8 +684,6 @@ export function ReviewScreen() {
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [winners, setWinners] = useState<Record<number, string>>({});
   const [survivors, setSurvivors] = useState<Record<number, string>>({});
-  const [revokeSelections, setRevokeSelections] = useState<Record<number, string[]>>({});
-  const [revokeReasons, setRevokeReasons] = useState<Record<number, string>>({});
 
   const directivesById = useMemo(() => {
     return new Map((api.data?.directives ?? []).map((directive) => [directive.id, directive]));
@@ -779,22 +737,6 @@ export function ReviewScreen() {
     setSurvivors((current) => ({ ...current, [id]: survivor }));
   }
 
-  function toggleRevokeId(id: number, directiveId: string): void {
-    setRevokeSelections((current) => {
-      const selected = new Set(current[id] ?? []);
-      if (selected.has(directiveId)) {
-        selected.delete(directiveId);
-      } else {
-        selected.add(directiveId);
-      }
-      return { ...current, [id]: [...selected] };
-    });
-  }
-
-  function setRevokeReason(id: number, reason: string): void {
-    setRevokeReasons((current) => ({ ...current, [id]: reason }));
-  }
-
   async function submitGeneric(row: ReviewRow, action: ReviewResolution): Promise<void> {
     const ids = nodeIds(row);
     const winner = winners[row.id] ?? ids[0] ?? "";
@@ -818,18 +760,6 @@ export function ReviewScreen() {
       await resolveCreatorDirectiveReconciliation(row.id, {
         action: "supersede",
         survivor_id: survivor,
-      });
-    });
-  }
-
-  async function submitReconciliationRevoke(row: ReviewRow): Promise<void> {
-    const revokeIds = revokeSelections[row.id] ?? [];
-    const reason = revokeReasons[row.id]?.trim() ?? "";
-    await runReviewAction(row.id, "revoke", async () => {
-      await resolveCreatorDirectiveReconciliation(row.id, {
-        action: "revoke",
-        revoke_ids: revokeIds,
-        reason,
       });
     });
   }
@@ -936,13 +866,8 @@ export function ReviewScreen() {
                             directivesById={directivesById}
                             busy={busy}
                             survivor={survivor}
-                            revokeIds={revokeSelections[row.id] ?? []}
-                            revokeReason={revokeReasons[row.id] ?? ""}
                             onSurvivor={(value) => setSurvivor(row.id, value)}
-                            onToggleRevoke={(value) => toggleRevokeId(row.id, value)}
-                            onRevokeReason={(value) => setRevokeReason(row.id, value)}
                             onSupersede={() => void submitReconciliationSupersede(row)}
-                            onRevoke={() => void submitReconciliationRevoke(row)}
                             onKeep={() => void submitReconciliationKeep(row)}
                           />
                         ) : (

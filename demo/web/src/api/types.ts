@@ -625,11 +625,6 @@ export type CreatorDirectiveReconciliationRequest =
       reason?: string;
     }
   | {
-      action: "revoke";
-      revoke_ids: string[];
-      reason: string;
-    }
-  | {
       action: "keep";
       reason?: string;
     };

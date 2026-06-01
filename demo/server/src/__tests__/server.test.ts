@@ -2563,47 +2563,6 @@ describe("demo server", () => {
     });
   });
 
-  it("POST /api/reviews/:id/creator-directive-reconciliation prevalidates revoke members", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
-    tempDirs.push(tempDir);
-    const { borg, clock, live } = await openHarness({ tempDir });
-    closers.push(() => borg.close());
-    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
-    const internal = borg as unknown as BorgTestInternals;
-    const active = queueCreatorDirectiveFixture(borg, clock, {
-      text: "Active directive must not be partially revoked.",
-      contentScope: "public",
-    });
-    const inactive = queueCreatorDirectiveFixture(borg, clock, {
-      text: "Inactive directive blocks revoke.",
-      contentScope: "operator_only",
-    });
-    const review = internal.deps.reviewQueueRepository.enqueue({
-      kind: "creator_directive_reconciliation",
-      refs: creatorDirectiveReconciliationRefs([active, inactive]),
-      reason: "partial revoke fixture",
-    });
-    borg.creatorDirectives.revoke(inactive.id, "fixture inactive revoke member");
-
-    const response = await requestJson(
-      app,
-      `/api/reviews/${review.id}/creator-directive-reconciliation`,
-      "POST",
-      {
-        action: "revoke",
-        revoke_ids: [active.id, inactive.id],
-        reason: "operator tried revoke all",
-      },
-    );
-
-    expect(response.status).toBe(409);
-    expect(borg.creatorDirectives.get(active.id)).toMatchObject({ status: "active" });
-    expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
-      resolved_at: null,
-      resolution: null,
-    });
-  });
-
   it("POST /api/reviews/:id/creator-directive-reconciliation keep path mutates nothing", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

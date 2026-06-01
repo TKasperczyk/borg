@@ -510,13 +510,6 @@ const creatorDirectiveReconciliationActionBodySchema = z.discriminatedUnion("act
     .strict(),
   z
     .object({
-      action: z.literal("revoke"),
-      revoke_ids: z.array(creatorDirectiveIdSchema).min(1),
-      reason: textFieldSchema,
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal("keep"),
       reason: optionalTextFieldSchema,
     })
@@ -2390,43 +2383,6 @@ export function createDemoServerApp(args: DemoServerAppInput) {
           {
             decision: "accept",
             reason: body.reason ?? defaultReason,
-          },
-          { source: "manual" },
-        );
-
-        if (resolved === null) {
-          throw new HTTPException(404, { message: "review item not found" });
-        }
-
-        return c.json(mapReviewRow(resolved));
-      }
-
-      if (body.action === "revoke") {
-        assertCreatorDirectiveReviewMembers(refs, body.revoke_ids, "revoke_ids");
-        const members = loadCreatorDirectiveReviewMembers(input.borg, refs);
-        const directivesToRevoke = body.revoke_ids.map((id) =>
-          requireCreatorDirectiveReviewMember(members, id),
-        );
-
-        for (const directive of directivesToRevoke) {
-          assertCreatorDirectiveActive(directive);
-        }
-
-        for (const directive of directivesToRevoke) {
-          const revoked = input.borg.creatorDirectives.revoke(directive.id, body.reason);
-
-          if (revoked === null) {
-            throw new HTTPException(409, {
-              message: `creator directive ${directive.id} changed before revoke could apply`,
-            });
-          }
-        }
-
-        const resolved = await input.borg.review.resolve(
-          params.id,
-          {
-            decision: "accept",
-            reason: body.reason,
           },
           { source: "manual" },
         );
