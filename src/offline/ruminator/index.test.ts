@@ -752,6 +752,80 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("folds a duplicate whose merged dedupe_key collides with the primary's", async () => {
+    // Regression: merge_duplicate recomputes the primary's dedupe_key from the
+    // folded id-set. When that recomputed key matched the duplicate's own key,
+    // updating the primary while the duplicate still existed raised a UNIQUE
+    // violation on open_questions.dedupe_key and aborted the whole ruminator run.
+    // The duplicate must be removed first so the fold can claim the key.
+    const harness = await createOfflineTestHarness({});
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const sharedQuestion = "Does the connector still need a session id?";
+      const epA = createEpisodeId();
+      const epB = createEpisodeId();
+
+      // Same question text, different id-sets -> distinct dedupe_keys at insert.
+      const primary = harness.openQuestionsRepository.add({
+        question: sharedQuestion,
+        urgency: 0.4,
+        related_episode_ids: [epA],
+        provenance: { kind: "manual" },
+        source: "reflection",
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const duplicate = harness.openQuestionsRepository.add({
+        question: sharedQuestion,
+        urgency: 0.8,
+        related_episode_ids: [epA, epB],
+        provenance: { kind: "manual" },
+        source: "reflection",
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      // Folding the duplicate's ids into the primary yields related_episode_ids
+      // [epA, epB] with identical text -> the exact dedupe_key the duplicate holds.
+      const plan = {
+        process: "ruminator" as const,
+        items: [
+          {
+            action: "merge_duplicate" as const,
+            primary_question_id: primary.id,
+            duplicate_question_id: duplicate.id,
+            previous_primary: primary,
+            previous_duplicate: duplicate,
+            similarity: 1,
+          },
+        ],
+        errors: [],
+        tokens_used: 0,
+        budget_exhausted: false,
+      };
+
+      await expect(process.apply(harness.createContext(), plan)).resolves.toMatchObject({
+        process: "ruminator",
+        errors: [],
+      });
+
+      expect(harness.openQuestionsRepository.get(duplicate.id)).toBeNull();
+      expect(harness.openQuestionsRepository.get(primary.id)).toMatchObject({
+        status: "open",
+        urgency: 0.8,
+        related_episode_ids: [epA, epB],
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("merges near-duplicate open questions when both lack semantic-node handles", async () => {
     const tracer = new CaptureTracer();
     const firstQuestion = "Should the trip prep checklist stay open?";

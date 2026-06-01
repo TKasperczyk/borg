@@ -16,7 +16,6 @@ import { useTurnStream } from "../../hooks/use-turn-stream";
 import { ChatStream } from "./ChatStream";
 import { CognitionScreen } from "./index";
 import { LedgerView } from "./LedgerView";
-import { TailView } from "./TailView";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -275,28 +274,6 @@ function Harness({
         onSessionPolicyChanged={onSessionPolicyChanged}
       />
     </LiveEventsProvider>
-  );
-}
-
-function TailHarness({ live, sessionId = "default" }: { live: LiveEvents; sessionId?: string }) {
-  const turnStream = useTurnStream(live, { sessionId });
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          void turnStream.runTurn({
-            message: "hello borg",
-            external_message_id: "tail-test-message",
-            audience: "alice",
-            session: sessionId,
-          });
-        }}
-      >
-        start turn
-      </button>
-      <TailView events={turnStream.eventTail} />
-    </>
   );
 }
 
@@ -863,34 +840,6 @@ describe("cognition screen", () => {
     expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-done");
     expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-running");
     expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-fail");
-  });
-
-  it("renders active turn phase detail frames in TailView", async () => {
-    const source = makeLiveSource();
-    installCognitionFetch();
-
-    render(<TailHarness live={source.live()} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "start turn" }));
-
-    act(() => {
-      source.emit({
-        type: "turn:phase:detail",
-        ts: Date.now(),
-        turn_id: "turn_abc",
-        session_id: "default",
-        phase: "frame",
-        event: "frame_anomaly.disposition",
-        summary: "disposition=continue status=ok kind=topic_shift",
-      });
-    });
-
-    expect(await screen.findByText("frame_anomaly")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "frame_anomaly.disposition · disposition=continue status=ok kind=topic_shift",
-      ),
-    ).toBeInTheDocument();
   });
 
   it("renders running non-LLM phase details inside the active stream pane", async () => {

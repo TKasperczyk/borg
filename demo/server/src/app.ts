@@ -19,9 +19,12 @@ import {
   type CommitmentRecord,
   type CreatorDirective,
   type EntityId,
+  type Episode,
   type ImageMediaType,
   type ImagePerceptionRecord,
+  type MaintenanceCadence,
   type MaintenanceAuditRecord,
+  type MaintenanceTickResult,
   type MaintenancePlan,
   type OfflineProcessName,
   type OrchestratorResult,
@@ -47,12 +50,17 @@ import {
 } from "borg";
 import { z } from "zod";
 
-import type { LiveBridge } from "./live.js";
+import type { LiveBridge, MaintenanceTickFrame, MaintenanceTickFrameStatus } from "./live.js";
 import type { BorgHandle } from "./reset.js";
 
 type CursorPayload = {
   ts: number;
   entryId: string;
+};
+
+type SemanticExtractionEpisodicFacade = Borg["episodic"] & {
+  listAll: () => Promise<Episode[]>;
+  getStats: (id: Episode["id"]) => { archived?: boolean } | null;
 };
 
 const cursorPayloadSchema = z.object({
@@ -966,6 +974,9 @@ function sumRecord(record: Record<string, number>): number {
 }
 
 function sparkFrom(count: number): number[] {
+  if (count <= 0) {
+    return Array.from({ length: 15 }, () => 0);
+  }
   const base = Math.max(1, Math.min(12, count));
   return Array.from({ length: 15 }, (_, index) =>
     Math.max(1, Math.round(base * (0.45 + index / 20))),
@@ -1312,7 +1323,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
   const growthMarkers = borg.self.growthMarkers.list({ limit: 500 });
   const periods = borg.self.autobiographical.listPeriods({ limit: 500 });
   const relationalCounts = borg.relationalSlots.countByState();
-  const audiences = listAudiences(borg, sessionId);
 
   return [
     {
@@ -1391,7 +1401,7 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "social",
       desc: "per-entity trust and history",
       count: borg.social.list(500).length,
-      growth: sparkFrom(audiences.length),
+      growth: sparkFrom(borg.social.list(500).length),
       stats: [{ k: "profiles", v: borg.social.list(500).length }],
     },
     {
@@ -1418,10 +1428,60 @@ function selfSnapshot(borg: Borg) {
   };
 }
 
-function dreamState(borg: Borg) {
+async function pendingSemanticExtractionEpisodes(borg: Borg): Promise<number> {
+  const episodic = borg.episodic as SemanticExtractionEpisodicFacade;
+  const processed = new Set<Episode["id"]>();
+  const [episodes, semanticNodes] = await Promise.all([
+    episodic.listAll(),
+    borg.semantic.nodes.list({ includeArchived: true, limit: 100_000 }),
+  ]);
+
+  for (const node of semanticNodes) {
+    for (const episodeId of node.source_episode_ids) {
+      processed.add(episodeId);
+    }
+  }
+
+  for (const edge of borg.semantic.edges.list({ includeInvalid: true })) {
+    for (const episodeId of edge.evidence_episode_ids) {
+      processed.add(episodeId);
+    }
+  }
+
+  for (const audit of borg.audit.list({ process: "semantic-extractor", reverted: false })) {
+    const episodeIds = audit.targets.episode_ids;
+
+    if (!Array.isArray(episodeIds)) {
+      continue;
+    }
+
+    for (const episodeId of episodeIds) {
+      if (typeof episodeId === "string") {
+        processed.add(episodeId as Episode["id"]);
+      }
+    }
+  }
+
+  let pending = 0;
+
+  for (const episode of episodes) {
+    if (episodic.getStats(episode.id)?.archived === true) {
+      continue;
+    }
+
+    if (!processed.has(episode.id)) {
+      pending += 1;
+    }
+  }
+
+  return pending;
+}
+
+async function dreamState(borg: Borg) {
   const auditRows = borg.audit.list().slice(0, 50);
   const dreamReports = borg.stream.tail(500).filter((entry) => entry.kind === "dream_report");
   const config = borg.maintenance.config();
+  const pendingExtractionEpisodes = await pendingSemanticExtractionEpisodes(borg);
 
   const processes = OFFLINE_PROCESS_NAMES.map((name) => {
     const lastRun = latestDreamRunForProcess(name, dreamReports, auditRows);
@@ -1451,6 +1511,7 @@ function dreamState(borg: Borg) {
 
   return {
     processes,
+    pending_extraction_episodes: pendingExtractionEpisodes,
     schedule: [...streamSchedule, ...dreamScheduleFromAudit(auditRows)]
       .sort((left, right) => right.scheduled_at - left.scheduled_at)
       .slice(0, 80),
@@ -1467,6 +1528,71 @@ function dreamState(borg: Borg) {
       process_budgets: config.processBudgets,
     },
   };
+}
+
+function maintenanceResultProcessNames(result: OrchestratorResult | null): OfflineProcessName[] {
+  return result?.results.map((processResult) => processResult.process) ?? [];
+}
+
+function errorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function broadcastMaintenanceTick(input: {
+  borg: Borg;
+  live: LiveBridge;
+  cadence: MaintenanceCadence | "manual";
+  status: MaintenanceTickFrameStatus;
+  result: OrchestratorResult | null;
+  ts?: number;
+  durationMs?: number;
+  errors?: number;
+  reason?: string;
+}): Promise<void> {
+  const pendingExtractionEpisodes = await pendingSemanticExtractionEpisodes(input.borg);
+  const changes = input.result?.changes.length ?? 0;
+  const errors = input.errors ?? input.result?.errors.length ?? 0;
+  const frame: MaintenanceTickFrame = {
+    type: "maintenance:tick",
+    ts: input.ts ?? Date.now(),
+    cadence: input.cadence,
+    status: input.status,
+    processes: maintenanceResultProcessNames(input.result),
+    changed: changes > 0,
+    changes,
+    errors,
+    pending_extraction_episodes: pendingExtractionEpisodes,
+    ...(input.result === null ? {} : { run_id: input.result.run_id }),
+    ...(input.durationMs === undefined ? {} : { duration_ms: Math.round(input.durationMs) }),
+    ...(input.reason === undefined ? {} : { reason: input.reason }),
+  };
+
+  input.live.broadcaster.broadcast(frame);
+}
+
+export function wireMaintenanceSchedulerLiveObserver(borg: Borg, live: LiveBridge): void {
+  borg.maintenance.scheduler.setObserver({
+    onTick: (result: MaintenanceTickResult) =>
+      broadcastMaintenanceTick({
+        borg,
+        live,
+        cadence: result.cadence,
+        status: result.status,
+        result: result.result,
+        ts: result.ts,
+        ...(result.reason === undefined ? {} : { reason: result.reason }),
+      }),
+    onError: (error: unknown, cadence: MaintenanceCadence) =>
+      broadcastMaintenanceTick({
+        borg,
+        live,
+        cadence,
+        status: "error",
+        result: null,
+        errors: 1,
+        reason: errorReason(error),
+      }),
+  });
 }
 
 export type DemoServerAppInput = {
@@ -1977,7 +2103,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json({ rows: input.borg.audit.list().slice(0, query.limit) });
   });
 
-  app.get("/api/dream/state", (c) => c.json(dreamState(input.borg)));
+  app.get("/api/dream/state", async (c) => c.json(await dreamState(input.borg)));
 
   app.get("/api/correction/reviews", (c) =>
     c.json({
@@ -2114,16 +2240,21 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       const startedAt = performance.now();
       // borg.dream.apply(...); demo v1 uses the default/global maintenance substrate.
       const result = await input.borg.dream.apply(plan);
-      const response = mapDreamApply(
-        result,
-        beforeAuditIds,
-        input.borg.audit.list(),
-        performance.now() - startedAt,
-      );
+      const durationMs = performance.now() - startedAt;
+      const response = mapDreamApply(result, beforeAuditIds, input.borg.audit.list(), durationMs);
 
       if (body.plan_id !== undefined) {
         dreamPlans.set(body.plan_id, { plan, applied: response });
       }
+
+      await broadcastMaintenanceTick({
+        borg: input.borg,
+        live: input.live,
+        cadence: "manual",
+        status: "ok",
+        result,
+        durationMs,
+      });
 
       return c.json(response);
     } catch (error) {

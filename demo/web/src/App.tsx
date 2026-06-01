@@ -8,6 +8,7 @@ import {
   openOperatorSession,
   setCreatorByName,
 } from "./api/client";
+import type { MaintenanceTickFrame } from "./api/types";
 import { LiveEventsProvider } from "./hooks/live-context";
 import { useApi } from "./hooks/use-api";
 import { useLiveEvents } from "./hooks/use-live-events";
@@ -47,6 +48,7 @@ export function App() {
   const refetchSessions = sessionsApi.refetch;
   const refetchCreator = creatorApi.refetch;
   const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
+  const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
   const live = useLiveEvents({ onReconnected: refetchState, sessionId });
   const turnStream = useTurnStream(live, { sessionId });
   const activeSession =
@@ -88,6 +90,10 @@ export function App() {
       if (frame.type === "stream:append") {
         void refetchState();
         void refetchSessions();
+      }
+      if (frame.type === "maintenance:tick") {
+        setLastMaintenanceTick(frame);
+        void refetchState();
       }
       if (frame.type === "borg:reset") {
         window.location.reload();
@@ -139,7 +145,11 @@ export function App() {
             {route === "prompts" ? <PromptsScreen /> : null}
           </div>
         </div>
-        <StatusBar state={stateApi.data} lastPhase={turnStream.lastPhase} />
+        <StatusBar
+          state={stateApi.data}
+          lastPhase={turnStream.lastPhase}
+          lastMaintenanceTick={lastMaintenanceTick}
+        />
       </div>
     </LiveEventsProvider>
   );

@@ -18,6 +18,7 @@ import type { Clock } from "../../util/clock.js";
 import { clamp } from "../../util/math.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
+import { extractedEpisodeIds } from "../extracted-episodes.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -264,6 +265,7 @@ function buildEpisodeDecayItem(
 function buildEpisodeItems(
   ctx: OfflineContext,
   episodes: readonly Episode[],
+  extractedEpisodes: ReadonlySet<Episode["id"]>,
 ): CuratorPlan["items"] {
   const nowMs = ctx.clock.now();
   const items: CuratorPlan["items"] = [];
@@ -332,6 +334,7 @@ function buildEpisodeItems(
 
     if (
       !stats.archived &&
+      extractedEpisodes.has(episode.id) &&
       compareTiers(stats.tier, "T2") <= 0 &&
       heat < ctx.config.offline.curator.archiveMinHeat &&
       ageMs >= ctx.config.offline.curator.archiveAgeDays * DAY_MS
@@ -450,11 +453,15 @@ function buildRetrievalLogPruneItem(
   };
 }
 
-function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorPlan["items"] {
+async function buildItems(
+  ctx: OfflineContext,
+  episodes: readonly Episode[],
+): Promise<CuratorPlan["items"]> {
   const retrievalLogPruneItem = buildRetrievalLogPruneItem(ctx);
+  const extractedEpisodes = await extractedEpisodeIds(ctx);
 
   return [
-    ...buildEpisodeItems(ctx, episodes),
+    ...buildEpisodeItems(ctx, episodes, extractedEpisodes),
     ...buildTraitDecayItems(ctx),
     ...buildMoodItems(ctx),
     ...buildSocialItems(ctx),
@@ -553,7 +560,7 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
 
     return curatorPlanSchema.parse({
       process: this.name,
-      items: buildItems(ctx, episodes),
+      items: await buildItems(ctx, episodes),
       errors: [] satisfies OfflineProcessError[],
       tokens_used: 0,
       budget_exhausted: false,

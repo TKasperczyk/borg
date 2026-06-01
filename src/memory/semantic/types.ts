@@ -48,7 +48,14 @@ export const semanticEdgeIdSchema = z
   })
   .transform((value) => value as SemanticEdgeId);
 
-export const semanticNodeKindSchema = z.enum(SEMANTIC_NODE_KINDS);
+// kind is an open structural shape label for semantic graph nodes, not a closed
+// taxonomy. Validate the SHAPE (a lowercase slug) rather than membership, so new
+// information shapes do not require a schema migration. SEMANTIC_NODE_KINDS stays
+// as the set of borg-known built-ins (autocomplete + internal reference), not an
+// allow-list.
+export const semanticNodeKindSchema = z.string().regex(/^[a-z][a-z0-9_]*$/, {
+  message: "kind must be a lowercase slug matching /^[a-z][a-z0-9_]*$/",
+});
 export const semanticNodeStatusSchema = z.enum(SEMANTIC_NODE_STATUSES);
 export const semanticRelationSchema = z.enum(SEMANTIC_RELATIONS);
 export const invalidationProcessSchema = z.enum(INVALIDATION_PROCESSES);
@@ -148,7 +155,9 @@ export type SemanticObservationMetadata = z.infer<typeof semanticObservationMeta
 export type SemanticNodeStatus = z.infer<typeof semanticNodeStatusSchema>;
 export type SemanticNodeCorrectionRef = z.infer<typeof semanticNodeCorrectionRefSchema>;
 export type SemanticNodePatch = z.infer<typeof semanticNodePatchSchema>;
-export type SemanticNodeKind = z.infer<typeof semanticNodeKindSchema>;
+// Known built-ins keep autocomplete; `& {}` lets any valid slug be assignable
+// without widening to bare `string`. kind is an open structural shape label.
+export type SemanticNodeKind = (typeof SEMANTIC_NODE_KINDS)[number] | (string & {});
 export type SemanticRelation = z.infer<typeof semanticRelationSchema>;
 export type InvalidationProcess = z.infer<typeof invalidationProcessSchema>;
 export type SemanticEdge = z.infer<typeof semanticEdgeSchema>;

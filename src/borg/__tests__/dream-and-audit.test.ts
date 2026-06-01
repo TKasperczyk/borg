@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AuditLog } from "../../offline/audit-log.js";
+import { createMaintenanceRunId } from "../../util/ids.js";
 import {
   FakeLLMClient,
   EpisodicRepository,
@@ -70,6 +72,20 @@ describe("Borg", () => {
       embedding: Float32Array.from([0, 1, 0, 0]),
       created_at: nowMs - 50 * 24 * 60 * 60 * 1_000,
       updated_at: nowMs - 50 * 24 * 60 * 60 * 1_000,
+    });
+    new AuditLog({ db, clock }).record({
+      run_id: createMaintenanceRunId(),
+      process: "semantic-extractor",
+      action: "extract",
+      targets: {
+        episode_ids: ["ep_cccccccccccccccc"],
+      },
+      reversal: {
+        created_node_ids: [],
+        updated_nodes: [],
+        created_edge_ids: [],
+        updated_edges: [],
+      },
     });
     db.close();
     await store.close();

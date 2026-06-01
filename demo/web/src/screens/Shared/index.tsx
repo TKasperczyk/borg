@@ -110,44 +110,45 @@ export function SharedScreen() {
 
       <div
         style={{
-          padding: "12px 20px",
+          padding: "10px 20px",
           borderBottom: "1px solid var(--line)",
           background: "var(--bg-0)",
           display: "flex",
           gap: 18,
+          alignItems: "center",
           flexWrap: "wrap"
         }}
       >
-        {LIFECYCLE.map((kind) => (
-          <div key={kind} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-mute)" }}>
-              {kind}
-            </span>
-            <span style={{ fontSize: 18, color: lifecycleColor(kind), fontVariantNumeric: "tabular-nums" }}>
-              {counts[kind] ?? 0}
-            </span>
-          </div>
-        ))}
-        <div style={{ flex: 1 }}></div>
         <div className="filter-pills">
           {(["all", ...LIFECYCLE] as const).map((kind) => (
-            <span key={kind} className={`pill ${filter === kind ? "on" : ""}`} onClick={() => setFilter(kind)}>
+            <span
+              key={kind}
+              className={`pill ${filter === kind ? "on" : ""}`}
+              style={kind !== "all" && filter !== kind ? { color: lifecycleColor(kind) } : undefined}
+              onClick={() => setFilter(kind)}
+            >
               {kind}
+              {kind === "all" ? "" : ` ${counts[kind] ?? 0}`}
             </span>
           ))}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ flex: 1 }}></div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
           <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-mute)" }}>
             last compile
           </span>
-          <span style={{ fontSize: 18, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+          <span style={{ fontSize: 12, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
             {dateLabel(lastCompile)}
           </span>
         </div>
       </div>
 
       <div className="shared">
-        {filtered.length === 0 ? <div className="notice">no entries in this view</div> : null}
+        {filtered.length === 0 ? (
+          <div className="notice">
+            no {filter === "all" ? "" : `${filter} `}entries for audience '{selectedAudience}'
+          </div>
+        ) : null}
         {filtered.map((entry) => (
           <SharedEntryCard key={entry.id} entry={entry} audience={selectedAudience} />
         ))}

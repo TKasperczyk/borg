@@ -38,6 +38,8 @@ export type TailEvent = {
   isNew: boolean;
 };
 
+type ActiveTurnDriver = "operator" | "observed";
+
 const TURN_REFLECT_TIMEOUT_MS = 60_000;
 const DETAIL_LINES_PER_PHASE = 10;
 
@@ -277,15 +279,23 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     ];
   }
 
-  return [
-    {
-      id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,
-      ts: formatTime(frame.ts),
-      kind: phaseTailKind(frame),
-      body: `${frame.type.replace("turn:phase:", "")} · ${frame.data.phase ?? "unknown"}${frame.data.sub === undefined ? "" : ` · ${frame.data.sub}`}`,
-      isNew: true,
-    },
-  ];
+  if (
+    frame.type === "turn:phase:started" ||
+    frame.type === "turn:phase:completed" ||
+    frame.type === "turn:phase:failed"
+  ) {
+    return [
+      {
+        id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,
+        ts: formatTime(frame.ts),
+        kind: phaseTailKind(frame),
+        body: `${frame.type.replace("turn:phase:", "")} · ${frame.data.phase ?? "unknown"}${frame.data.sub === undefined ? "" : ` · ${frame.data.sub}`}`,
+        isNew: true,
+      },
+    ];
+  }
+
+  return [];
 }
 
 function tailRowsFromEntries(entries: readonly StreamEntry[]): TailEvent[] {
@@ -396,6 +406,8 @@ export function useTurnStream(
   const reflectTimeoutRef = useRef<number | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const lastDrivenTurnIdRef = useRef<string | null>(null);
+  const activeTurnDriverRef = useRef<ActiveTurnDriver | null>(null);
+  const supersededTurnIdsRef = useRef<Set<string>>(new Set());
   const runningRef = useRef(false);
   const outstandingStreamEntryIdsRef = useRef<Set<string>>(new Set());
   const pendingPostCountRef = useRef(0);
@@ -418,38 +430,42 @@ export function useTurnStream(
     }
   }, [activeTurnId]);
 
-  const acceptsTurnFrame = useCallback((turnId: string): boolean => {
-    const activeTurnId = activeTurnIdRef.current;
-
-    if (activeTurnId !== null) {
-      return turnId === activeTurnId;
-    }
-
-    const pendingTurn = pendingTurnRef.current;
-
-    if (pendingTurn === null) {
-      return false;
-    }
-
-    if (pendingTurn.turnId !== null) {
-      return turnId === pendingTurn.turnId;
-    }
-
-    if (pendingTurn.ignoredTurnIds.has(turnId)) {
-      return false;
-    }
-
-    pendingTurn.turnId = turnId;
-    activeTurnIdRef.current = turnId;
-    lastDrivenTurnIdRef.current = turnId;
-    setActiveTurnId(turnId);
-    return true;
-  }, []);
-
   const clearReflectTimeout = useCallback(() => {
     if (reflectTimeoutRef.current !== null) {
       window.clearTimeout(reflectTimeoutRef.current);
       reflectTimeoutRef.current = null;
+    }
+  }, []);
+
+  const resetLiveTurnDisplay = useCallback(
+    (lastPhase: string) => {
+      setRunningState(true);
+      setPhases(initialPhases());
+      setTokenTextByPhase(new Map());
+      setDetailByPhase(new Map());
+      setTerminalOutcome(null);
+      setDelibPath(null);
+      setFinalAttempt(1);
+      setLastPhase(lastPhase);
+      clearReflectTimeout();
+      reflectTimeoutRef.current = window.setTimeout(() => {
+        reflectTimeoutRef.current = null;
+        setRunningState(false);
+        setLastPhase("reflect timeout");
+      }, TURN_REFLECT_TIMEOUT_MS);
+    },
+    [clearReflectTimeout, setRunningState],
+  );
+
+  const rememberSupersededTurnId = useCallback((turnId: string) => {
+    supersededTurnIdsRef.current.add(turnId);
+    if (supersededTurnIdsRef.current.size <= 32) {
+      return;
+    }
+
+    const oldestTurnId = supersededTurnIdsRef.current.values().next().value;
+    if (oldestTurnId !== undefined) {
+      supersededTurnIdsRef.current.delete(oldestTurnId);
     }
   }, []);
 
@@ -462,24 +478,98 @@ export function useTurnStream(
         turnId: null,
         ignoredTurnIds,
       };
+      activeTurnDriverRef.current = "operator";
       activeTurnIdRef.current = null;
-      setRunningState(true);
+      for (const turnId of ignoredTurnIds) {
+        rememberSupersededTurnId(turnId);
+      }
       setActiveTurnId(null);
-      setPhases(initialPhases());
-      setTokenTextByPhase(new Map());
-      setDetailByPhase(new Map());
-      setTerminalOutcome(null);
-      setDelibPath(null);
-      setFinalAttempt(1);
-      setLastPhase("turn queued");
-      clearReflectTimeout();
-      reflectTimeoutRef.current = window.setTimeout(() => {
-        reflectTimeoutRef.current = null;
-        setRunningState(false);
-        setLastPhase("reflect timeout");
-      }, TURN_REFLECT_TIMEOUT_MS);
+      resetLiveTurnDisplay("turn queued");
     },
-    [clearReflectTimeout, setRunningState],
+    [rememberSupersededTurnId, resetLiveTurnDisplay],
+  );
+
+  const canAdoptObservedTurn = useCallback(
+    (frameTurnId: string, frameSessionId: string | null): boolean => {
+      return (
+        input.sessionId !== undefined &&
+        frameSessionId === input.sessionId &&
+        !(activeTurnDriverRef.current === "operator" && runningRef.current) &&
+        pendingPostCountRef.current === 0 &&
+        frameTurnId.length > 0
+      );
+    },
+    [input.sessionId],
+  );
+
+  const beginObservedLiveTurn = useCallback(
+    (turnId: string) => {
+      const previousTurnId = activeTurnIdRef.current;
+      if (previousTurnId !== null && previousTurnId !== turnId) {
+        rememberSupersededTurnId(previousTurnId);
+      }
+
+      pendingTurnRef.current = null;
+      activeTurnDriverRef.current = "observed";
+      activeTurnIdRef.current = turnId;
+      lastDrivenTurnIdRef.current = turnId;
+      setActiveTurnId(turnId);
+      resetLiveTurnDisplay("observing turn");
+    },
+    [rememberSupersededTurnId, resetLiveTurnDisplay],
+  );
+
+  const acceptsTurnFrame = useCallback(
+    (turnId: string, frameSessionId: string | null): boolean => {
+      if (supersededTurnIdsRef.current.has(turnId)) {
+        return false;
+      }
+
+      const activeTurnId = activeTurnIdRef.current;
+
+      if (activeTurnId !== null) {
+        if (turnId === activeTurnId) {
+          return true;
+        }
+
+        if (canAdoptObservedTurn(turnId, frameSessionId)) {
+          beginObservedLiveTurn(turnId);
+          return true;
+        }
+
+        return false;
+      }
+
+      if (activeTurnDriverRef.current === "operator" && runningRef.current) {
+        const pendingTurn = pendingTurnRef.current;
+
+        if (pendingTurn === null) {
+          return false;
+        }
+
+        if (pendingTurn.turnId !== null) {
+          return turnId === pendingTurn.turnId;
+        }
+
+        if (pendingTurn.ignoredTurnIds.has(turnId)) {
+          return false;
+        }
+
+        pendingTurn.turnId = turnId;
+        activeTurnIdRef.current = turnId;
+        lastDrivenTurnIdRef.current = turnId;
+        setActiveTurnId(turnId);
+        return true;
+      }
+
+      if (canAdoptObservedTurn(turnId, frameSessionId)) {
+        beginObservedLiveTurn(turnId);
+        return true;
+      }
+
+      return false;
+    },
+    [beginObservedLiveTurn, canAdoptObservedTurn],
   );
 
   const ignoredCurrentTurnIds = useCallback((): ReadonlySet<string> => {
@@ -520,6 +610,8 @@ export function useTurnStream(
     pendingTurnRef.current = null;
     activeTurnIdRef.current = null;
     lastDrivenTurnIdRef.current = null;
+    activeTurnDriverRef.current = null;
+    supersededTurnIdsRef.current.clear();
     outstandingStreamEntryIdsRef.current.clear();
     pendingPostCountRef.current = 0;
     clearReflectTimeout();
@@ -579,7 +671,7 @@ export function useTurnStream(
 
       const frameTurnId = turnIdFromLiveFrame(frame);
 
-      if (frameTurnId !== null && !acceptsTurnFrame(frameTurnId)) {
+      if (frameTurnId !== null && !acceptsTurnFrame(frameTurnId, frameSessionId)) {
         return;
       }
 
@@ -686,7 +778,11 @@ export function useTurnStream(
         activeTurnIdRef.current === null;
       let startedPendingTurn = false;
 
-      if (!runningRef.current || (!waitingForLiveTurn && activeTurnIdRef.current === null)) {
+      if (
+        activeTurnDriverRef.current === "observed" ||
+        !runningRef.current ||
+        (!waitingForLiveTurn && activeTurnIdRef.current === null)
+      ) {
         beginPendingLiveTurnFromCurrent();
         startedPendingTurn = true;
       }

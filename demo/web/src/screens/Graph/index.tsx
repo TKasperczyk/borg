@@ -7,6 +7,7 @@ import type {
   SemanticGraphNodeStatus,
   SemanticGraphResponse,
 } from "../../api/types";
+import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 
 const GRAPH_LIMIT = 300;
@@ -406,7 +407,17 @@ function mountGraph(svg: SVGSVGElement, data: SemanticGraphResponse): () => void
 
 export function GraphScreen() {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const live = useLiveEventsContext();
   const api = useApi(() => getSemanticGraph(GRAPH_LIMIT), []);
+  const refetch = api.refetch;
+
+  useEffect(() => {
+    return live.subscribe((frame) => {
+      if (frame.type === "maintenance:tick") {
+        void refetch();
+      }
+    });
+  }, [live, refetch]);
 
   useEffect(() => {
     if (svgRef.current === null || api.data === null || api.data.nodes.length === 0) {
@@ -430,8 +441,13 @@ export function GraphScreen() {
     return (
       <div className="graph-screen">
         <div className="graph-canvas">
-          <div className="graph-overlay">0 nodes · 0 edges · showing 0 of 0</div>
-          <div className="graph-empty">semantic graph empty</div>
+          <div className="graph-empty">
+            <div className="graph-empty-mark">⊘</div>
+            <div className="graph-empty-title">semantic graph empty</div>
+            <div className="graph-empty-sub">
+              no entities or relations recorded for this audience yet
+            </div>
+          </div>
         </div>
       </div>
     );

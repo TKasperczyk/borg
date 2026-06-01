@@ -389,6 +389,7 @@ const configBaseSchema = z.object({
         .object({
           enabled: z.boolean().default(true),
           maxEpisodesPerRun: z.number().int().positive().default(8),
+          maxInputTokensPerRun: z.number().int().positive().default(150_000),
           budget: z.number().int().positive().default(60_000),
         })
         .prefault({}),
@@ -1099,6 +1100,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "semanticExtractor", "maxEpisodesPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_EPISODES_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "semanticExtractor", "maxInputTokensPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN"),
   );
   setConfigOverride(
     overrides,

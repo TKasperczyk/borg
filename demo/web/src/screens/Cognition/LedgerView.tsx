@@ -163,9 +163,7 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
             <span className="count">[{group.entries.length}]</span>
           </div>
           {group.entries.length === 0 ? (
-            <div className="notice" style={{ padding: 14 }}>
-              empty
-            </div>
+            <div className="lgr-empty">— none —</div>
           ) : null}
           {group.entries.map((entry) => (
             <div key={entry.id} className="lgr-item">

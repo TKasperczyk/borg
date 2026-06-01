@@ -60,20 +60,6 @@ export function Rail({ route, setRoute }: RailProps) {
         ))}
       </div>
       <div className="rail-spacer"></div>
-      <div className="rail-meta">
-        <div className="row">
-          <span className="k">tps</span>
-          <span className="v">—</span>
-        </div>
-        <div className="row">
-          <span className="k">p95</span>
-          <span className="v">—</span>
-        </div>
-        <div className="row">
-          <span className="k">emb</span>
-          <span className="v">—</span>
-        </div>
-      </div>
     </div>
   );
 }

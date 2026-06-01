@@ -168,7 +168,7 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
             }
           }}
           rows={1}
-          style={{ height: Math.min(96, Math.max(20, input.split("\n").length * 18)) }}
+          style={{ height: Math.min(120, Math.max(18, input.split("\n").length * 18)) }}
         />
         <span className="send-hint" aria-hidden="true">
           <span className="kbd">⌘</span>
@@ -215,9 +215,7 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
         </button>
         <span className="hint">
           <span className="kbd">↵</span> send
-          <span className="sep" style={{ color: "var(--text-ghost)", margin: "0 4px" }}>
-            ·
-          </span>
+          <span className="sep">·</span>
           <span className="kbd">⇧</span>
           <span className="kbd">↵</span> newline
         </span>

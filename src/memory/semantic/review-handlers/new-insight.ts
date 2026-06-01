@@ -6,6 +6,7 @@ import {
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
+  semanticNodeKindSchema,
   semanticNodeSchema,
   semanticNodeStatusSchema,
   type SemanticNode,
@@ -25,7 +26,7 @@ const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
 const reviewSemanticNodePayloadSchema = z
   .object({
     id: semanticNodeIdSchema,
-    kind: z.enum(["concept", "entity", "proposition"]),
+    kind: semanticNodeKindSchema,
     label: z.string().min(1),
     description: z.string().min(1),
     domain: z.string().min(1).nullable().default(null),

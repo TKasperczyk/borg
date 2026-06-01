@@ -19,6 +19,7 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { extractedEpisodeIds } from "../extracted-episodes.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -43,6 +44,8 @@ const semanticExtractorPlanSchema = z.object({
     .default([]),
   tokens_used: z.number().int().nonnegative(),
   budget_exhausted: z.boolean().default(false),
+  pending_episode_count: z.number().int().nonnegative().default(0),
+  run_capped: z.boolean().default(false),
 });
 
 export const semanticExtractorProcessPlanSchema = semanticExtractorPlanSchema;
@@ -188,59 +191,47 @@ function emitSemanticInsertSkipped(
   });
 }
 
-async function representedEpisodeIds(ctx: OfflineContext): Promise<Set<Episode["id"]>> {
-  const represented = new Set<Episode["id"]>();
-  const nodes = await ctx.semanticNodeRepository.list({
-    includeArchived: true,
-    limit: 100_000,
-  });
-
-  for (const node of nodes) {
-    for (const episodeId of node.source_episode_ids) {
-      represented.add(episodeId);
-    }
-  }
-
-  for (const edge of ctx.semanticEdgeRepository.listEdges({ includeInvalid: true })) {
-    for (const episodeId of edge.evidence_episode_ids) {
-      represented.add(episodeId);
-    }
-  }
-
-  return represented;
-}
-
-function auditedExtractionEpisodeIds(ctx: OfflineContext): Set<Episode["id"]> {
-  const audited = new Set<Episode["id"]>();
-
-  for (const audit of ctx.auditLog.list({ process: "semantic-extractor", reverted: false })) {
-    const episodeIds = audit.targets.episode_ids;
-
-    if (!Array.isArray(episodeIds)) {
-      continue;
-    }
-
-    for (const episodeId of episodeIds) {
-      const parsed = episodeIdSchema.safeParse(episodeId);
-
-      if (parsed.success) {
-        audited.add(parsed.data);
-      }
-    }
-  }
-
-  return audited;
-}
+const ESTIMATED_INPUT_TOKENS_PER_NARRATIVE_CHAR = 1 / 4;
+const ESTIMATED_INPUT_TOKENS_PER_EPISODE_OVERHEAD = 256;
 
 async function processedEpisodeIds(ctx: OfflineContext): Promise<Set<Episode["id"]>> {
-  return new Set([...(await representedEpisodeIds(ctx)), ...auditedExtractionEpisodeIds(ctx)]);
+  return extractedEpisodeIds(ctx);
 }
 
-async function selectEpisodesForExtraction(ctx: OfflineContext): Promise<Episode[]> {
+function compareEpisodesOldestFirst(left: Episode, right: Episode): number {
+  return (
+    left.created_at - right.created_at ||
+    left.updated_at - right.updated_at ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function estimateEpisodeInputTokens(episode: Episode): number {
+  const narrativeCharLength = Array.from(episode.narrative).length;
+
+  return (
+    Math.ceil(narrativeCharLength * ESTIMATED_INPUT_TOKENS_PER_NARRATIVE_CHAR) +
+    ESTIMATED_INPUT_TOKENS_PER_EPISODE_OVERHEAD
+  );
+}
+
+type EpisodeExtractionSelection = {
+  episodes: Episode[];
+  pendingEpisodeCount: number;
+  runCapped: boolean;
+};
+
+async function selectEpisodesForExtraction(
+  ctx: OfflineContext,
+): Promise<EpisodeExtractionSelection> {
   const maxEpisodesPerRun = ctx.config.offline.semanticExtractor.maxEpisodesPerRun;
+  const maxInputTokensPerRun = ctx.config.offline.semanticExtractor.maxInputTokensPerRun;
   const processed = await processedEpisodeIds(ctx);
-  const episodes = await ctx.episodicRepository.listAll();
+  const episodes = (await ctx.episodicRepository.listAll()).sort(compareEpisodesOldestFirst);
   const selected: Episode[] = [];
+  let selectedInputTokens = 0;
+  let eligibleCount = 0;
+  let selectionClosed = false;
 
   for (const episode of episodes) {
     if (ctx.episodicRepository.getStats(episode.id)?.archived === true) {
@@ -251,14 +242,34 @@ async function selectEpisodesForExtraction(ctx: OfflineContext): Promise<Episode
       continue;
     }
 
+    eligibleCount += 1;
+
+    if (selectionClosed) {
+      continue;
+    }
+
+    const estimatedInputTokens = estimateEpisodeInputTokens(episode);
+    const wouldExceedTokenCap =
+      selected.length > 0 && selectedInputTokens + estimatedInputTokens > maxInputTokensPerRun;
+
+    if (selected.length >= maxEpisodesPerRun || wouldExceedTokenCap) {
+      selectionClosed = true;
+      continue;
+    }
+
     selected.push(episode);
+    selectedInputTokens += estimatedInputTokens;
 
     if (selected.length >= maxEpisodesPerRun) {
-      break;
+      selectionClosed = true;
     }
   }
 
-  return selected;
+  return {
+    episodes: selected,
+    pendingEpisodeCount: Math.max(0, eligibleCount - selected.length),
+    runCapped: eligibleCount > selected.length,
+  };
 }
 
 function resultCandidateStats(input: {
@@ -329,6 +340,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
   ): Promise<SemanticExtractorProcessPlan> {
     const errors: OfflineProcessError[] = [];
     let episodeIds: Episode["id"][] = [];
+    let pendingEpisodeCount = 0;
+    let runCapped = false;
     const budget = opts.budget ?? ctx.config.offline.semanticExtractor.budget;
 
     if (!ctx.config.offline.semanticExtractor.enabled) {
@@ -339,11 +352,16 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         errors,
         tokens_used: 0,
         budget_exhausted: false,
+        pending_episode_count: pendingEpisodeCount,
+        run_capped: runCapped,
       });
     }
 
     try {
-      episodeIds = (await selectEpisodesForExtraction(ctx)).map((episode) => episode.id);
+      const selection = await selectEpisodesForExtraction(ctx);
+      episodeIds = selection.episodes.map((episode) => episode.id);
+      pendingEpisodeCount = selection.pendingEpisodeCount;
+      runCapped = selection.runCapped;
     } catch (error) {
       errors.push(offlineProcessError(this.name, error));
     }
@@ -355,6 +373,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       errors,
       tokens_used: 0,
       budget_exhausted: false,
+      pending_episode_count: pendingEpisodeCount,
+      run_capped: runCapped,
     });
   }
 
@@ -382,6 +402,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
+      pending_episode_count: parsed.pending_episode_count,
+      run_capped: parsed.run_capped,
       candidate_stats: {
         proposed: parsed.episode_ids.length,
         accepted: 0,
@@ -402,6 +424,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         tokens_used: plan.tokens_used,
         errors,
         budget_exhausted: plan.budget_exhausted,
+        pending_episode_count: plan.pending_episode_count,
+        run_capped: plan.run_capped,
         candidate_stats: {
           proposed: 0,
           accepted: 0,
@@ -444,6 +468,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         tokens_used: plan.tokens_used,
         errors,
         budget_exhausted: plan.budget_exhausted,
+        pending_episode_count: plan.pending_episode_count,
+        run_capped: plan.run_capped,
         candidate_stats: {
           proposed: archivedPostPlanIds.length,
           accepted: 0,
@@ -593,6 +619,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         tokens_used: tokensUsed,
         errors,
         budget_exhausted: budgetExhausted,
+        pending_episode_count: plan.pending_episode_count,
+        run_capped: plan.run_capped,
         candidate_stats: {
           proposed: candidateStats.proposed + archivedPostPlanIds.length,
           accepted: candidateStats.accepted,
@@ -616,6 +644,8 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         tokens_used: tokensUsed,
         errors,
         budget_exhausted: budgetExhausted,
+        pending_episode_count: plan.pending_episode_count,
+        run_capped: plan.run_capped,
         candidate_stats: {
           proposed: plan.episode_ids.length,
           accepted: 0,

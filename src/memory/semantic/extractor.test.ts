@@ -187,7 +187,9 @@ describe("semantic extractor", () => {
       ],
     });
     const extractor = new SemanticExtractor({
-      nodeRepository: {} as SemanticNodeRepository,
+      nodeRepository: {
+        listDistinctKinds: () => ["process_explanation"],
+      } as unknown as SemanticNodeRepository,
       edgeRepository: {} as SemanticEdgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
       episodicRepository: createEpisodeLookup([episode]),
@@ -223,6 +225,10 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("relationship_claims");
     expect(prompt).toContain("evidence_relational_slot_ids");
     expect(prompt).toContain("evidence_stream_entry_ids");
+    expect(prompt).toContain("Known semantic node kinds already in graph: process_explanation.");
+    expect(prompt).toContain(
+      "coin a new lowercase_slug kind only for a genuinely new information shape",
+    );
     expect(prompt).toContain("Thread roster:");
     expect(prompt).toContain("relational_slot:rslot_grounded");
   });
@@ -239,6 +245,7 @@ describe("semantic extractor", () => {
     };
     const extractor = new SemanticExtractor({
       nodeRepository: {
+        listDistinctKinds: () => [],
         findByExactLabelOrAlias: async () => [],
       } as unknown as SemanticNodeRepository,
       edgeRepository: {} as SemanticEdgeRepository,
@@ -319,6 +326,7 @@ describe("semantic extractor", () => {
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
       nodeRepository: {
+        listDistinctKinds: () => [],
         findByExactLabelOrAlias: async () => [],
       } as unknown as SemanticNodeRepository,
       edgeRepository: {} as SemanticEdgeRepository,

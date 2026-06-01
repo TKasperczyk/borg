@@ -86,6 +86,10 @@ export type BorgEpisodicFacade = {
     session?: SessionId;
   }) => Promise<ExtractFromStreamResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;
+  listAll: () => ReturnType<EpisodicRepository["listAll"]>;
+  getStats: (
+    ...args: Parameters<EpisodicRepository["getStats"]>
+  ) => ReturnType<EpisodicRepository["getStats"]>;
 };
 
 type AutobiographicalUpsertPeriodInput = Parameters<IdentityService["addPeriod"]>[0];

@@ -41,6 +41,7 @@ import type {
   EpisodeListOptions,
   EpisodeListResult,
   EpisodeSearchCandidate,
+  EpisodeStats,
 } from "../memory/episodic/types.js";
 import type { IdentityEvent, IdentityRecordType } from "../memory/identity/types.js";
 import type { ProceduralContext } from "../memory/procedural/context.js";
@@ -209,6 +210,8 @@ export type BorgEpisodicFacade = {
     session?: SessionId;
   }): Promise<BorgExtractFromStreamResult>;
   list(options?: EpisodeListOptions): Promise<EpisodeListResult>;
+  listAll(): Promise<Episode[]>;
+  getStats(id: Episode["id"]): EpisodeStats | null;
 };
 
 export type BorgValueAddInput = {
@@ -957,6 +960,8 @@ export type BorgOfflineResult = {
     accepted: number;
     rejected: number;
   };
+  pending_episode_count?: number;
+  run_capped?: boolean;
 };
 
 export type BorgOrchestratorResult = {

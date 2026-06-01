@@ -249,7 +249,7 @@ export function MemoryScreen({ sessionId }: { sessionId: string }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Panel title="identity governance" badge="guards">
           <div style={{ padding: 12 }}>
-            <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 10 }}>
+            <div className="panel-note">
               identity-bearing writes are guarded by provenance, confidence, and review routing.
             </div>
             <div className="props">
@@ -675,7 +675,7 @@ function CorrectionQueuePanel({ onResolved }: { onResolved: () => Promise<void> 
         </div>
       )}
       {rows.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: "var(--text-dim)" }}>No pending corrections.</div>
+        <div className="panel-note">No pending corrections.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {rows.map((row) => {

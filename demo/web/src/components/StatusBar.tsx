@@ -1,8 +1,9 @@
-import type { StateSnapshot } from "../api/types";
+import type { MaintenanceTickFrame, StateSnapshot } from "../api/types";
 
 export type StatusBarProps = {
   state: StateSnapshot | null;
   lastPhase?: string;
+  lastMaintenanceTick?: MaintenanceTickFrame | null;
 };
 
 function moodLabel(state: StateSnapshot | null): string {
@@ -19,7 +20,25 @@ function countValue(count: number | undefined): string {
   return count === undefined ? "—" : count.toString();
 }
 
-export function StatusBar({ state, lastPhase }: StatusBarProps) {
+function maintenanceTickLabel(frame: MaintenanceTickFrame | null | undefined): string | null {
+  if (frame === null || frame === undefined) {
+    return null;
+  }
+
+  return `${frame.cadence} ${frame.processes.length}p ${frame.changes}chg`;
+}
+
+function maintenanceTickTone(frame: MaintenanceTickFrame): "ok" | "warn" | "bad" {
+  if (frame.status === "error" || frame.errors > 0) {
+    return "bad";
+  }
+
+  return frame.changed ? "ok" : "warn";
+}
+
+export function StatusBar({ state, lastPhase, lastMaintenanceTick }: StatusBarProps) {
+  const maintenanceLabel = maintenanceTickLabel(lastMaintenanceTick);
+
   return (
     <div className="statusbar">
       <span className="seg">
@@ -29,9 +48,14 @@ export function StatusBar({ state, lastPhase }: StatusBarProps) {
       </span>
       <span className="seg">
         <span className="k">dream</span>
-        <span className="v">
-          {state === null ? "—" : `${state.counts.dream_audit_rows} audit`}
-        </span>
+        <span className="v">{state === null ? "—" : `${state.counts.dream_audit_rows} audit`}</span>
+        {maintenanceLabel === null ||
+        lastMaintenanceTick === null ||
+        lastMaintenanceTick === undefined ? null : (
+          <span className={`v ${maintenanceTickTone(lastMaintenanceTick)}`}>
+            {maintenanceLabel}
+          </span>
+        )}
       </span>
       <span className="seg">
         <span className="k">mood</span>

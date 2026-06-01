@@ -10,6 +10,25 @@ import { CuratorProcess } from "./index.js";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const HOUR_MS = 60 * 60 * 1_000;
 
+type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
+
+function recordSemanticExtractionAudit(harness: OfflineHarness, episodeIds: readonly string[]) {
+  harness.auditLog.record({
+    run_id: harness.createContext().runId,
+    process: "semantic-extractor",
+    action: "extract",
+    targets: {
+      episode_ids: [...episodeIds],
+    },
+    reversal: {
+      created_node_ids: [],
+      updated_nodes: [],
+      created_edge_ids: [],
+      updated_edges: [],
+    },
+  });
+}
+
 describe("curator process", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -79,6 +98,7 @@ describe("curator process", () => {
     harness.episodicRepository.updateStats(archiveEpisode.id, {
       tier: "T1",
     });
+    recordSemanticExtractionAudit(harness, [archiveEpisode.id]);
 
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
@@ -122,6 +142,56 @@ describe("curator process", () => {
         .map((row) => row.action)
         .sort(),
     ).toEqual(["archive", "decay", "demote", "promote"]);
+  });
+
+  it("does not archive unextracted episodes but archives extracted ones", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+
+    const unextractedEpisode = createEpisodeFixture(
+      {
+        title: "Unextracted old note",
+        created_at: nowMs - 50 * DAY_MS,
+        updated_at: nowMs - 50 * DAY_MS,
+      },
+      [0, 1, 0, 0],
+    );
+    const extractedEpisode = createEpisodeFixture(
+      {
+        title: "Extracted old note",
+        created_at: nowMs - 49 * DAY_MS,
+        updated_at: nowMs - 49 * DAY_MS,
+      },
+      [0, 1, 0, 0],
+    );
+
+    await harness.episodicRepository.insert(unextractedEpisode);
+    await harness.episodicRepository.insert(extractedEpisode);
+    harness.episodicRepository.updateStats(unextractedEpisode.id, {
+      tier: "T1",
+    });
+    harness.episodicRepository.updateStats(extractedEpisode.id, {
+      tier: "T1",
+    });
+    recordSemanticExtractionAudit(harness, [extractedEpisode.id]);
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
+      registry: harness.registry,
+    });
+
+    const plan = await process.plan(harness.createContext(), {});
+    const archiveEpisodeIds = plan.items.flatMap((item) =>
+      item.action === "archive" && "episode_id" in item ? [item.episode_id] : [],
+    );
+
+    expect(archiveEpisodeIds).toEqual([extractedEpisode.id]);
   });
 
   it("does not mutate mood_state on curator runs but still trims old mood history", async () => {

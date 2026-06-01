@@ -381,7 +381,7 @@ function Ganglion({
       ) : null}
       {(status === "running" || status === "fail") && sub ? (
         <text className="fc-node-sub" y={r + 28}>
-          {sub}
+          {sub.length > 22 ? sub.slice(0, 21) + "…" : sub}
         </text>
       ) : null}
     </g>
@@ -421,6 +421,17 @@ function Endpoint({
   );
 }
 
+// Thorn pills are content-sized so any label fits inside the box. The label is
+// uppercase + letter-spaced 8.5px mono, so per-char advance is ~6.1px. The icon
+// occupies a fixed left zone; the label is left-anchored just past it.
+const THORN_CHAR_W = 6.1;
+const THORN_ICON_X = 10;
+const THORN_LABEL_X = 18;
+const THORN_PAD_R = 9;
+function thornPillW(label: string): number {
+  return Math.round(THORN_LABEL_X + label.length * THORN_CHAR_W + THORN_PAD_R);
+}
+
 function ThornUp({
   nodeId,
   label,
@@ -433,17 +444,17 @@ function ThornUp({
   const n = NODES[nodeId]!;
   const top = topAnchor(n);
   const pillY = top.y - 50;
-  const pillW = 100;
+  const pillW = thornPillW(label);
   const pillH = 20;
   return (
     <g className={`fc-thorn ${active ? "active" : ""}`}>
       <path d={thornDrop(nodeId, "up")} className={`fc-edge branch ${active ? "fire" : ""}`} />
       <g transform={`translate(${n.x - pillW / 2} ${pillY - pillH / 2})`}>
         <rect className="fc-thorn-shape" x={0} y={0} width={pillW} height={pillH} rx={2} />
-        <text className="fc-thorn-icon" x={11} y={pillH / 2 + 3}>
+        <text className="fc-thorn-icon" x={THORN_ICON_X} y={pillH / 2 + 3}>
           {"↯"}
         </text>
-        <text className="fc-thorn-label" x={pillW / 2 + 7} y={pillH / 2 + 3}>
+        <text className="fc-thorn-label" x={THORN_LABEL_X} y={pillH / 2 + 3}>
           {label}
         </text>
       </g>
@@ -461,7 +472,7 @@ function ThornSidecar({
   active: boolean;
 }) {
   const n = NODES[nodeId]!;
-  const pillW = 92;
+  const pillW = thornPillW(label);
   const pillH = 19;
   const pillX = n.x + 40;
   const pillY = n.y + 45 - pillH / 2;
@@ -470,10 +481,10 @@ function ThornSidecar({
       <path d={thornDrop(nodeId, "side")} className={`fc-edge branch ${active ? "fire" : ""}`} />
       <g transform={`translate(${pillX} ${pillY})`}>
         <rect className="fc-thorn-shape" x={0} y={0} width={pillW} height={pillH} rx={2} />
-        <text className="fc-thorn-icon" x={11} y={pillH / 2 + 3}>
+        <text className="fc-thorn-icon" x={THORN_ICON_X} y={pillH / 2 + 3}>
           {"↯"}
         </text>
-        <text className="fc-thorn-label" x={pillW / 2 + 6} y={pillH / 2 + 3}>
+        <text className="fc-thorn-label" x={THORN_LABEL_X} y={pillH / 2 + 3}>
           {label}
         </text>
       </g>
@@ -566,15 +577,16 @@ function ActiveStream({
   // update lands at the bottom, matching token stream reading order.
   const detailText = detailLines.join("\n");
 
+  const streamPending = "stream open…";
   const body = !phase
     ? "waiting for a running phase"
     : tokenPhase
       ? tokenText.length > 0
         ? tokenText
-        : "stream open…"
+        : streamPending
       : detailText.length > 0
         ? detailText
-        : "stream open…";
+        : streamPending;
 
   return (
     <div className={`flow-active-stream ${!phase ? "idle" : ""}`} data-status={status}>

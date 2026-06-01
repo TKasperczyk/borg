@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { LiveFrame, WsState } from "../api/types";
+import type { LiveFrame, TurnPhaseName, WsState } from "../api/types";
 import type { LiveEventHandler, LiveEvents } from "./use-live-events";
 import { useTurnStream } from "./use-turn-stream";
 
@@ -36,6 +36,49 @@ function makeLiveSource(): {
   };
 }
 
+function phaseFrame(
+  type: "turn:phase:started" | "turn:phase:completed" | "turn:phase:failed",
+  phase: TurnPhaseName,
+  turnId: string,
+  sessionId?: string,
+): LiveFrame {
+  const event =
+    type === "turn:phase:started"
+      ? "turn_phase.started"
+      : type === "turn:phase:completed"
+        ? "turn_phase.completed"
+        : "turn_phase.failed";
+
+  return {
+    type,
+    event,
+    ts: Date.now(),
+    data: {
+      turnId,
+      turn_id: turnId,
+      session_id: sessionId,
+      phase,
+      duration_ms: type === "turn:phase:started" ? undefined : 12,
+      sub: type === "turn:phase:started" ? "running" : "done",
+    },
+  };
+}
+
+function terminalFrame(turnId: string, sessionId?: string): LiveFrame {
+  return {
+    type: "turn:terminal",
+    event: "turn.terminal",
+    ts: Date.now(),
+    data: {
+      turnId,
+      turn_id: turnId,
+      session_id: sessionId,
+      outcome: "reflected",
+      duration_ms: 42,
+    },
+  };
+}
+
 function DetailProbe({ live }: { live: LiveEvents }) {
   const turnStream = useTurnStream(live, { sessionId: "default" });
   const detailLines = [...turnStream.detailByPhase.values()].flat();
@@ -60,12 +103,156 @@ function DetailProbe({ live }: { live: LiveEvents }) {
   );
 }
 
+function StateProbe({
+  live,
+  sessionId = "default",
+}: {
+  live: LiveEvents;
+  sessionId?: string;
+}) {
+  const turnStream = useTurnStream(live, { sessionId });
+  const phaseStatus = (phase: TurnPhaseName) =>
+    turnStream.phases.find((candidate) => candidate.id === phase)?.status ?? "missing";
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void turnStream.runTurn({
+            message: "hello borg",
+            external_message_id: "state-test-message",
+            audience: "alice",
+            session: sessionId,
+          });
+        }}
+      >
+        start
+      </button>
+      <output data-testid="active-turn">{turnStream.activeTurnId ?? "idle"}</output>
+      <output data-testid="running">{String(turnStream.running)}</output>
+      <output data-testid="ingest-status">{phaseStatus("ingest")}</output>
+      <output data-testid="retrieval-status">{phaseStatus("retrieval")}</output>
+      <output data-testid="token-text">
+        {[...turnStream.tokenTextByPhase.values()].join("")}
+      </output>
+    </>
+  );
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("useTurnStream", () => {
+  it("observes selected-session external turns and switches to the next external turn", () => {
+    const source = makeLiveSource();
+
+    render(<StateProbe live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_without_session"));
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("idle");
+    expect(screen.getByTestId("running")).toHaveTextContent("false");
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_external_a", "default"));
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        session_id: "default",
+        turn_id: "turn_external_a",
+        phase: "ingest",
+        chunk_text: "external A",
+        sequence: 1,
+      });
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_external_a");
+    expect(screen.getByTestId("running")).toHaveTextContent("true");
+    expect(screen.getByTestId("ingest-status")).toHaveTextContent("running");
+    expect(screen.getByTestId("token-text")).toHaveTextContent("external A");
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "retrieval", "turn_external_b", "default"));
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_external_b");
+    expect(screen.getByTestId("ingest-status")).toHaveTextContent("queue");
+    expect(screen.getByTestId("retrieval-status")).toHaveTextContent("running");
+    expect(screen.getByTestId("token-text")).toHaveTextContent("");
+
+    act(() => {
+      source.emit(terminalFrame("turn_external_a", "default"));
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_external_b");
+    expect(screen.getByTestId("retrieval-status")).toHaveTextContent("running");
+  });
+
+  it("lets an operator turn preempt an observed turn and keep control until completion", async () => {
+    const source = makeLiveSource();
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({ ok: true, status: "enqueued", stream_entry_id: "strm_user_operator" }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StateProbe live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_observed", "default"));
+    });
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_observed");
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("idle");
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:completed", "ingest", "turn_observed", "default"));
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_operator", "default"));
+      source.emit(phaseFrame("turn:phase:started", "retrieval", "turn_external", "default"));
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_operator");
+    expect(screen.getByTestId("ingest-status")).toHaveTextContent("running");
+    expect(screen.getByTestId("retrieval-status")).toHaveTextContent("queue");
+
+    act(() => {
+      source.emit({
+        type: "stream:append",
+        ts: Date.now(),
+        entries: [
+          {
+            id: "strm_agent_operator",
+            timestamp: 1,
+            kind: "agent_msg",
+            content: "operator answer",
+            turn_id: "turn_operator",
+            audience: "alice",
+            sender_entity_id: null,
+            reply_target_entity_id: null,
+            response_to: {
+              source_entry_ids: ["strm_user_operator"],
+            },
+            session_id: "default",
+            compressed: false,
+          },
+        ],
+      });
+      source.emit(terminalFrame("turn_operator", "default"));
+      source.emit(phaseFrame("turn:phase:started", "retrieval", "turn_external", "default"));
+    });
+
+    expect(screen.getByTestId("active-turn")).toHaveTextContent("turn_external");
+    expect(screen.getByTestId("retrieval-status")).toHaveTextContent("running");
+  });
+
   it("accumulates active turn phase detail frames by phase", async () => {
     const source = makeLiveSource();
     const fetchMock = vi.fn(() =>

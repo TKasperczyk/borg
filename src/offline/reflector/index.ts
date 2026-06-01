@@ -17,6 +17,7 @@ import {
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
+  semanticNodeKindSchema,
   semanticNodeSchema,
   semanticNodeStatusSchema,
   type SemanticNode,
@@ -52,7 +53,7 @@ export const REFLECTOR_TOOL = {
 
 const serializableSemanticNodeSchema = z.object({
   id: semanticNodeIdSchema,
-  kind: z.enum(["concept", "entity", "proposition"]),
+  kind: semanticNodeKindSchema,
   label: z.string().min(1),
   description: z.string().min(1),
   domain: z.string().min(1).nullable().default(null),

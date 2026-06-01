@@ -17,8 +17,6 @@ export function AttachmentChip({ attachmentId, mediaType, audience, expanded = f
           <div className="att-card-caption">{mediaType ?? "image attachment"}</div>
           <div className="att-card-stats">
             <span>{audience ?? "unscoped"}</span>
-            <span>·</span>
-            <span>backend bytes when available</span>
           </div>
         </div>
       </div>

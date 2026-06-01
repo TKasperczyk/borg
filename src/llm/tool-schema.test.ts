@@ -71,7 +71,7 @@ describe("tool schemas", () => {
     }
   });
 
-  it("preserves enum constraints in derived schemas", () => {
+  it("preserves value constraints in derived schemas", () => {
     expectObjectSchema(MODE_FALLBACK_TOOL.inputSchema);
     expect(MODE_FALLBACK_TOOL.inputSchema.properties.mode).toMatchObject({
       type: "string",
@@ -80,11 +80,18 @@ describe("tool schemas", () => {
 
     expectObjectSchema(EXTRACT_SEMANTIC_TOOL.inputSchema);
     const nodesSchema = EXTRACT_SEMANTIC_TOOL.inputSchema.properties.nodes as {
+      maxItems?: number;
       items?: { properties?: Record<string, unknown> };
     };
+    const edgesSchema = EXTRACT_SEMANTIC_TOOL.inputSchema.properties.edges as {
+      maxItems?: number;
+    };
+    expect(nodesSchema.maxItems).toBe(40);
+    expect(edgesSchema.maxItems).toBe(60);
     expect(nodesSchema.items?.properties?.kind).toMatchObject({
       type: "string",
-      enum: ["concept", "entity", "proposition"],
+      pattern: "^[a-z][a-z0-9_]*$",
     });
+    expect(nodesSchema.items?.properties?.kind).not.toHaveProperty("enum");
   });
 });

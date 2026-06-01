@@ -130,6 +130,33 @@ type RuminatorReversal = {
   marker_id?: z.infer<typeof growthMarkerIdSchema>;
 };
 
+// Re-materialise a previously-deleted open question from a captured snapshot.
+// Used both to reverse a merge and to roll back a duplicate we optimistically
+// removed when folding it into a primary failed. add() re-inserts the row (its
+// dedupe_key is free again post-delete); restore() then reinstates full state.
+function reinsertOpenQuestion(
+  repository: OfflineContext["openQuestionsRepository"],
+  question: OpenQuestion,
+): void {
+  if (repository.get(question.id) === null) {
+    repository.add({
+      id: question.id,
+      question: question.question,
+      urgency: question.urgency,
+      related_episode_ids: question.related_episode_ids,
+      related_semantic_node_ids: question.related_semantic_node_ids,
+      goal_id: question.goal_id,
+      audience_entity_id: question.audience_entity_id,
+      provenance: question.provenance,
+      source: question.source,
+      created_at: question.created_at,
+      last_touched: question.last_touched,
+    });
+  }
+
+  repository.restore(question);
+}
+
 function buildResolutionPrompt(question: OpenQuestion, evidence: string): string {
   return [
     "Resolve the open question using only the evidence below.",
@@ -749,23 +776,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       }
 
       if (parsed.previous_duplicate !== undefined) {
-        if (this.options.openQuestionsRepository.get(parsed.previous_duplicate.id) === null) {
-          this.options.openQuestionsRepository.add({
-            id: parsed.previous_duplicate.id,
-            question: parsed.previous_duplicate.question,
-            urgency: parsed.previous_duplicate.urgency,
-            related_episode_ids: parsed.previous_duplicate.related_episode_ids,
-            related_semantic_node_ids: parsed.previous_duplicate.related_semantic_node_ids,
-            goal_id: parsed.previous_duplicate.goal_id,
-            audience_entity_id: parsed.previous_duplicate.audience_entity_id,
-            provenance: parsed.previous_duplicate.provenance,
-            source: parsed.previous_duplicate.source,
-            created_at: parsed.previous_duplicate.created_at,
-            last_touched: parsed.previous_duplicate.last_touched,
-          });
-        }
-
-        this.options.openQuestionsRepository.restore(parsed.previous_duplicate);
+        reinsertOpenQuestion(this.options.openQuestionsRepository, parsed.previous_duplicate);
       }
     });
     this.options.registry.register(this.name, "add_growth_marker", async ({ reversal }) => {
@@ -1098,42 +1109,56 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         }
 
         if (duplicate !== null && duplicate.status === "open") {
-          ctx.identityService.updateOpenQuestion(
-            primary.id,
-            {
-              urgency: Math.max(primary.urgency, duplicate.urgency),
-              goal_id: primary.goal_id ?? duplicate.goal_id,
-              related_episode_ids: mergeQuestionIds(
-                primary.related_episode_ids,
-                primary.resolution_evidence_episode_ids,
-                duplicate.related_episode_ids,
-                duplicate.resolution_evidence_episode_ids,
-                openQuestionProvenanceEpisodeIds(duplicate),
-              ),
-              related_semantic_node_ids: mergeSemanticNodeIds(
-                primary.related_semantic_node_ids,
-                duplicate.related_semantic_node_ids,
-              ),
-              resolution_evidence_episode_ids: mergeQuestionIds(
-                primary.resolution_evidence_episode_ids,
-                duplicate.resolution_evidence_episode_ids,
-              ),
-              resolution_evidence_stream_entry_ids: mergeQuestionStreamIds(
-                primary.resolution_evidence_stream_entry_ids,
-                duplicate.resolution_evidence_stream_entry_ids,
-                openQuestionProvenanceStreamEntryIds(duplicate),
-              ),
-            },
-            processProvenance,
-            {
-              throughReview: true,
-              reason: "open_question_duplicate_merge",
-              preserveRecordProvenance: true,
-            },
-          );
+          // Remove the duplicate BEFORE folding its evidence into the primary.
+          // The fold recomputes the primary's dedupe_key from the merged id set;
+          // if the duplicate still existed, that recomputed key could collide
+          // with the duplicate's own key (a UNIQUE violation on
+          // open_questions.dedupe_key that previously aborted the whole run).
+          // Deleting first frees the key. If the subsequent fold fails anyway
+          // (e.g. the merged key collides with a third question), we restore the
+          // duplicate so the merge stays all-or-nothing.
           await ctx.openQuestionsRepository.delete(duplicate.id, {
             expectedVersion: expectedRecordVersion(duplicate),
           });
+
+          try {
+            ctx.identityService.updateOpenQuestion(
+              primary.id,
+              {
+                urgency: Math.max(primary.urgency, duplicate.urgency),
+                goal_id: primary.goal_id ?? duplicate.goal_id,
+                related_episode_ids: mergeQuestionIds(
+                  primary.related_episode_ids,
+                  primary.resolution_evidence_episode_ids,
+                  duplicate.related_episode_ids,
+                  duplicate.resolution_evidence_episode_ids,
+                  openQuestionProvenanceEpisodeIds(duplicate),
+                ),
+                related_semantic_node_ids: mergeSemanticNodeIds(
+                  primary.related_semantic_node_ids,
+                  duplicate.related_semantic_node_ids,
+                ),
+                resolution_evidence_episode_ids: mergeQuestionIds(
+                  primary.resolution_evidence_episode_ids,
+                  duplicate.resolution_evidence_episode_ids,
+                ),
+                resolution_evidence_stream_entry_ids: mergeQuestionStreamIds(
+                  primary.resolution_evidence_stream_entry_ids,
+                  duplicate.resolution_evidence_stream_entry_ids,
+                  openQuestionProvenanceStreamEntryIds(duplicate),
+                ),
+              },
+              processProvenance,
+              {
+                throughReview: true,
+                reason: "open_question_duplicate_merge",
+                preserveRecordProvenance: true,
+              },
+            );
+          } catch (error) {
+            reinsertOpenQuestion(ctx.openQuestionsRepository, duplicate);
+            throw error;
+          }
 
           if (ctx.tracer?.enabled === true) {
             ctx.tracer.emit("open_question_resolution.transitioned", {

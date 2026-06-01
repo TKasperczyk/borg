@@ -9,6 +9,7 @@ import {
 } from "../../api/client";
 import type {
   DreamApplyResponse,
+  MaintenanceTickFrame,
   DreamPlanResponse,
   DreamProcessName,
   DreamProcessSummary,
@@ -44,6 +45,27 @@ function statusTag(status: DreamProcessSummary["last_status"]) {
   return "";
 }
 
+function maintenanceTickTone(frame: MaintenanceTickFrame): "acc" | "warn" | "bad" {
+  if (frame.status === "error" || frame.errors > 0) {
+    return "bad";
+  }
+
+  return frame.changed ? "acc" : "warn";
+}
+
+function maintenanceTickSummary(frame: MaintenanceTickFrame): string {
+  const processLabel =
+    frame.processes.length === 1 ? "1 process" : `${frame.processes.length} processes`;
+  const changeLabel = frame.changes === 1 ? "1 change" : `${frame.changes} changes`;
+  const pendingLabel =
+    frame.pending_extraction_episodes === undefined
+      ? null
+      : `${frame.pending_extraction_episodes} pending`;
+  return [`last ${frame.cadence}`, processLabel, changeLabel, pendingLabel]
+    .filter((part): part is string => part !== null)
+    .join(" / ");
+}
+
 type ReviewAction = {
   row: ReviewRow;
   action: "dismiss";
@@ -63,6 +85,7 @@ export function DreamScreen() {
   const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
   const [busy, setBusy] = useState<"plan" | "apply" | "review" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
+  const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
   // Per-process live status tracked across a dream run. A run does TWO sweeps
   // through every process: plan (dry-run, possibly LLM work) then apply
   // (commit). We surface both so the user sees activity through the full
@@ -103,6 +126,22 @@ export function DreamScreen() {
           }
           return next;
         });
+        return;
+      }
+
+      if (frame.type === "maintenance:tick") {
+        setLastMaintenanceTick(frame);
+        setRunStatus((current) => {
+          const next = new Map(current);
+          const status = frame.status === "error" || frame.errors > 0 ? "fail" : "done";
+
+          for (const process of frame.processes) {
+            next.set(process, status);
+          }
+
+          return next;
+        });
+        void refetch();
         return;
       }
     });
@@ -236,6 +275,15 @@ export function DreamScreen() {
             {state?.scheduler.enabled === true ? "scheduler enabled" : "scheduler disabled"}
           </span>
         </span>
+        {lastMaintenanceTick === null ? null : (
+          <span
+            className={`dream-live-note ${maintenanceTickTone(lastMaintenanceTick)}`}
+            aria-live="polite"
+          >
+            <span className="dot" aria-hidden="true"></span>
+            {maintenanceTickSummary(lastMaintenanceTick)}
+          </span>
+        )}
         <button
           className="btn sm"
           disabled={busy !== null}
@@ -342,6 +390,11 @@ export function DreamScreen() {
               );
             })}
           </div>
+          {(state?.schedule.length ?? 0) === 0 ? (
+            <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
+              no scheduled runs synthesized yet
+            </div>
+          ) : null}
         </div>
 
         <div className="dream-grid">
@@ -708,7 +761,13 @@ function DreamCard({
           <div>
             <div className="upper dim">budget</div>
             <div style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums", fontSize: 14 }}>
-              {process.budget === null ? "—" : process.budget}
+              {process.budget === null ? (
+                <span className="dim" style={{ fontSize: 12 }}>
+                  uncapped
+                </span>
+              ) : (
+                process.budget.toLocaleString()
+              )}
             </div>
           </div>
           <div>
@@ -728,21 +787,6 @@ function DreamCard({
           synthesized state; live budget metering ships in v2
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
-          <span title="v1 read-only" style={{ display: "inline-flex" }}>
-            <button className="btn sm" disabled>
-              plan
-            </button>
-          </span>
-          <span title="v1 read-only" style={{ display: "inline-flex" }}>
-            <button className="btn sm" disabled>
-              apply
-            </button>
-          </span>
-          <span title="v1 read-only" style={{ display: "inline-flex" }}>
-            <button className="btn sm ghost" disabled>
-              audit
-            </button>
-          </span>
           <span style={{ flex: 1 }}></span>
           <Tag kind={process.enabled ? "acc" : ""}>{process.enabled ? "enabled" : "off"}</Tag>
         </div>

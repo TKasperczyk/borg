@@ -110,14 +110,16 @@ function PromptCard({
         >
           {busy === "save" ? "saving..." : "save"}
         </button>
-        <button
-          type="button"
-          className="btn sm ghost"
-          disabled={!canReset}
-          onClick={() => void reset()}
-        >
-          {busy === "reset" ? "resetting..." : "reset to default"}
-        </button>
+        {block.overridden ? (
+          <button
+            type="button"
+            className="btn sm ghost"
+            disabled={!canReset}
+            onClick={() => void reset()}
+          >
+            {busy === "reset" ? "resetting..." : "reset to default"}
+          </button>
+        ) : null}
         {error === null ? null : (
           <span className="warn" role="alert">
             {error}

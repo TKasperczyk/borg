@@ -325,6 +325,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         });
       },
       list: (...args) => deps.episodicRepository.list(...args),
+      listAll: () => deps.episodicRepository.listAll(),
+      getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {
       values: {

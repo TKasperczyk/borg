@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("PromptsScreen", () => {
-  it("loads blocks and shows save/reset disabled when nothing is dirty", async () => {
+  it("loads blocks, disables save, and hides reset when nothing is overridden", async () => {
     const fetchMock = vi.fn((_request: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(jsonResponse(defaultPrompts())),
     );
@@ -55,9 +55,8 @@ describe("PromptsScreen", () => {
     await screen.findByText("Base identity preamble");
 
     const saveButtons = screen.getAllByRole("button", { name: "save" });
-    const resetButtons = screen.getAllByRole("button", { name: "reset to default" });
     expect(saveButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
-    expect(resetButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.queryByRole("button", { name: "reset to default" })).not.toBeInTheDocument();
   });
 
   it("saves an override via PUT and refetches", async () => {

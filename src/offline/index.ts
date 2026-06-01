@@ -12,6 +12,7 @@ export {
   withBudget,
   wrapLlmClientWithSink,
 } from "./budget.js";
+export { extractedEpisodeIds, isEpisodeExtracted } from "./extracted-episodes.js";
 export {
   BeliefReviserProcess,
   beliefReviserPlanSchema,

@@ -75,6 +75,8 @@ export type OfflineResult = {
     accepted: number;
     rejected: number;
   };
+  pending_episode_count?: number;
+  run_capped?: boolean;
 };
 
 export type OfflineProcessPlan = {

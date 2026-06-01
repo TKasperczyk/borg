@@ -225,15 +225,7 @@ export function IdentityScreen() {
     <div className="identity">
       <div className="id-hero">
         <div>
-          <div
-            style={{
-              fontSize: 10,
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              color: "var(--text-mute)",
-              marginBottom: 8,
-            }}
-          >
+          <div className="id-eyebrow">
             self::current
           </div>
           <div className="stamp">
@@ -340,6 +332,11 @@ export function IdentityScreen() {
               </div>
             </div>
           ))}
+          {identity.values.length === 0 ? (
+            <div className="dim" style={{ padding: "6px 2px", fontSize: 11.5 }}>
+              no values recorded yet
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -381,35 +378,41 @@ export function IdentityScreen() {
                   since {dateLabel(goal.created_at)}
                 </span>
                 <span style={{ flex: 1 }}></span>
-                <button
-                  className="btn sm"
-                  disabled={busy !== null || goal.status !== "active"}
-                  onClick={() =>
-                    void runAction("goal-complete", async () => {
-                      await patchGoal(goal.id, { action: "complete" });
-                    })
-                  }
-                >
-                  complete
-                </button>
-                <button
-                  className="btn sm ghost"
-                  disabled={busy !== null || goal.status !== "active"}
-                  onClick={() =>
-                    void runAction("goal-block", async () => {
-                      await patchGoal(goal.id, { action: "block" });
-                    })
-                  }
-                >
-                  block
-                </button>
-                <button
-                  className="btn sm ghost"
-                  disabled={busy !== null}
-                  onClick={() => setModal({ kind: "goal-progress", goal, note: "", progress: "" })}
-                >
-                  progress
-                </button>
+                {goal.status === "active" ? (
+                  <>
+                    <button
+                      className="btn sm"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        void runAction("goal-complete", async () => {
+                          await patchGoal(goal.id, { action: "complete" });
+                        })
+                      }
+                    >
+                      complete
+                    </button>
+                    <button
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        void runAction("goal-block", async () => {
+                          await patchGoal(goal.id, { action: "block" });
+                        })
+                      }
+                    >
+                      block
+                    </button>
+                    <button
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        setModal({ kind: "goal-progress", goal, note: "", progress: "" })
+                      }
+                    >
+                      progress
+                    </button>
+                  </>
+                ) : null}
                 <IdentityCorrectionButtons
                   busy={busy !== null}
                   id={goal.id}
@@ -421,6 +424,11 @@ export function IdentityScreen() {
               </div>
             </div>
           ))}
+          {identity.goals.length === 0 ? (
+            <div className="dim" style={{ padding: "6px 2px", fontSize: 11.5 }}>
+              no goals recorded yet
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -478,31 +486,35 @@ export function IdentityScreen() {
                   <span className="purple">bumped {dateLabel(question.last_ruminated_at)}</span>
                 )}
                 <span style={{ flex: 1 }}></span>
-                <button
-                  className="btn sm"
-                  disabled={busy !== null || question.status !== "open"}
-                  onClick={() => setModal({ kind: "question-resolve", question, text: "" })}
-                >
-                  resolve
-                </button>
-                <button
-                  className="btn sm ghost"
-                  disabled={busy !== null || question.status !== "open"}
-                  onClick={() => setModal({ kind: "question-abandon", question, text: "" })}
-                >
-                  abandon
-                </button>
-                <button
-                  className="btn sm ghost"
-                  disabled={busy !== null || question.status !== "open"}
-                  onClick={() =>
-                    void runAction("question-bump", async () => {
-                      await patchOpenQuestion(question.id, { action: "bump" });
-                    })
-                  }
-                >
-                  bump
-                </button>
+                {question.status === "open" ? (
+                  <>
+                    <button
+                      className="btn sm"
+                      disabled={busy !== null}
+                      onClick={() => setModal({ kind: "question-resolve", question, text: "" })}
+                    >
+                      resolve
+                    </button>
+                    <button
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() => setModal({ kind: "question-abandon", question, text: "" })}
+                    >
+                      abandon
+                    </button>
+                    <button
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        void runAction("question-bump", async () => {
+                          await patchOpenQuestion(question.id, { action: "bump" });
+                        })
+                      }
+                    >
+                      bump
+                    </button>
+                  </>
+                ) : null}
                 <IdentityCorrectionButtons
                   busy={busy !== null}
                   id={question.id}
@@ -512,14 +524,21 @@ export function IdentityScreen() {
                   onModal={setModal}
                 />
               </div>
-              <div className="bar-meter" style={{ marginTop: 4 }}>
-                <div
-                  className={`fill ${question.urgency > 0.6 ? "warn" : ""}`}
-                  style={{ width: `${clamp01(question.urgency) * 100}%` }}
-                ></div>
-              </div>
+              {question.status === "open" ? (
+                <div className="bar-meter" style={{ marginTop: 4 }}>
+                  <div
+                    className={`fill ${question.urgency > 0.6 ? "warn" : ""}`}
+                    style={{ width: `${clamp01(question.urgency) * 100}%` }}
+                  ></div>
+                </div>
+              ) : null}
             </div>
           ))}
+          {questions.length === 0 ? (
+            <div className="dim" style={{ padding: "6px 2px", fontSize: 11.5 }}>
+              no {questionFilter === "all" ? "" : `${questionFilter} `}questions
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -616,15 +635,7 @@ export function IdentityScreen() {
                     background: current ? "oklch(0.84 0.155 142 / 0.05)" : "transparent",
                   }}
                 >
-                  <div
-                    style={{
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.1em",
-                      color: current ? "var(--acc)" : "var(--text-mute)",
-                      marginBottom: 6,
-                    }}
-                  >
+                  <div className={`id-eyebrow${current ? " acc" : ""}`}>
                     period {index + 1}
                     {current ? " · current" : ""}
                   </div>

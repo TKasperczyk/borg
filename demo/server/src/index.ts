@@ -3,7 +3,11 @@ import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Borg, DemoMessageConnector, type MessageConnector } from "borg";
 
-import { createDemoServerApp, ensureDemoDefaultSession } from "./app.js";
+import {
+  createDemoServerApp,
+  ensureDemoDefaultSession,
+  wireMaintenanceSchedulerLiveObserver,
+} from "./app.js";
 import { createLiveBridge } from "./live.js";
 import { createResetBorgController, type BorgHandle } from "./reset.js";
 
@@ -13,7 +17,10 @@ import { createResetBorgController, type BorgHandle } from "./reset.js";
 // the plugin does -- it never references any specific platform.
 type ExternalConnectorPlugin = {
   outboundConnectors: MessageConnector[];
-  start(ctx: { getBorg: () => Borg; log?: (level: string, message: string) => void }): Promise<void>;
+  start(ctx: {
+    getBorg: () => Borg;
+    log?: (level: string, message: string) => void;
+  }): Promise<void>;
   stop(): Promise<void>;
 };
 
@@ -66,7 +73,10 @@ async function openDemoBorg(): Promise<Borg> {
     dataDir,
     tracer: live.tracer,
     onStreamAppend: live.onStreamAppend,
-    outboundConnectors: [new DemoMessageConnector(), ...(connectorPlugin?.outboundConnectors ?? [])],
+    outboundConnectors: [
+      new DemoMessageConnector(),
+      ...(connectorPlugin?.outboundConnectors ?? []),
+    ],
   });
   ensureDemoDefaultSession(borg, { demoCreatorEntityName });
   return borg;
@@ -80,6 +90,8 @@ borgHandle.current.inbox.catchUp.start();
 // (expiring commitments, dormant open questions, due goals, executive focus). Without this
 // call borg never self-initiates. Proactive outbound during those wakes is separately gated.
 borgHandle.current.autonomy.scheduler.start();
+wireMaintenanceSchedulerLiveObserver(borgHandle.current, live);
+borgHandle.current.maintenance.scheduler.start();
 
 if (connectorPlugin) {
   try {
@@ -144,6 +156,7 @@ const shutdown = async (signal: NodeJS.Signals) => {
   }
   if (borgHandle.state !== "dead" && borgHandle.state !== "closing") {
     await borgHandle.current.autonomy.scheduler.stop().catch(() => undefined);
+    await borgHandle.current.maintenance.scheduler.stop().catch(() => undefined);
     await borgHandle.current.close();
   }
 };

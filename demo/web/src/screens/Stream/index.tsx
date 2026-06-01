@@ -306,16 +306,21 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
               <span className="count">{audienceCounts[audience]}</span>
             </div>
           ))}
+          {windowAudiences.length === 0 ? (
+            <div className="opt readonly">
+              <span style={{ color: "var(--text-faint)" }}>none in window</span>
+            </div>
+          ) : null}
         </div>
         <div className="group">
           <div className="label">status</div>
-          <div className="opt on">
+          <div className="opt readonly">
             <span>active</span>
             <span className="count">
               {entries.filter((entry) => entry.turn_status !== "aborted").length}
             </span>
           </div>
-          <div className="opt on">
+          <div className="opt readonly">
             <span>aborted-turn</span>
             <span className="count">
               {entries.filter((entry) => entry.turn_status === "aborted").length}
@@ -325,24 +330,9 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       </div>
 
       <div className="stream-main">
-        <div
-          style={{
-            position: "sticky",
-            top: 0,
-            background: "var(--bg-0)",
-            borderBottom: "1px solid var(--line)",
-            padding: "8px 14px",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            fontSize: 10.5,
-            color: "var(--text-mute)",
-            zIndex: 2,
-          }}
-        >
+        <div className="stream-main-head">
           <span>{filtered.length} events</span>
-          <span className="dim">window counts</span>
-          <span style={{ flex: 1 }}></span>
+          <span className="spacer"></span>
           <span className="live-dot"></span>
           <span className="acc upper">tailing</span>
         </div>

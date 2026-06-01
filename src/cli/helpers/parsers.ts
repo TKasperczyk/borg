@@ -163,7 +163,7 @@ export function parseSemanticNodeKind(value: unknown) {
   const parsed = semanticNodeKindSchema.safeParse(value);
 
   if (!parsed.success) {
-    throw new CliError("--kind must be one of: concept, entity, proposition", {
+    throw new CliError("--kind must be a lowercase slug matching /^[a-z][a-z0-9_]*$/", {
       cause: parsed.error,
     });
   }

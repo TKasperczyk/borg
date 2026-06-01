@@ -39,6 +39,7 @@ import {
   semanticNodeIdSchema,
   semanticNodePatchSchema,
   semanticNodeSchema,
+  semanticNodeKindSchema,
   semanticObservationMetadataSchema,
   semanticRelationSchema,
   semanticNodeStatusSchema,
@@ -47,6 +48,7 @@ import {
   type SemanticNode,
   type SemanticNodeCorrectionRef,
   type SemanticNodeListOptions,
+  type SemanticNodeKind,
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
   type SemanticNodeSearchOptions,
@@ -1199,6 +1201,20 @@ export class SemanticNodeRepository {
         },
       )
     ).filter((value): value is SemanticNode => value !== null);
+  }
+
+  listDistinctKinds(): SemanticNodeKind[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT DISTINCT kind
+          FROM semantic_nodes
+          ORDER BY kind ASC
+        `,
+      )
+      .all() as Array<{ kind: string }>;
+
+    return rows.map((row) => semanticNodeKindSchema.parse(row.kind) as SemanticNodeKind);
   }
 
   async update(id: SemanticNodeId, patch: SemanticNodePatch): Promise<SemanticNode | null> {

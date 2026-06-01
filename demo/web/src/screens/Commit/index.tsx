@@ -343,8 +343,17 @@ export function CommitScreen() {
                     </div>
                   </td>
                   <td>
-                    <span className={item.audience === null ? "mute" : "acc"}>
-                      {item.audience ?? "global"}
+                    <span
+                      className={item.audience === null ? "mute" : "acc"}
+                      title={item.audience ?? "global"}
+                      style={{
+                        display: "block",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {item.audience === null ? "global" : shortId(item.audience)}
                     </span>
                   </td>
                   <td>
@@ -640,11 +649,11 @@ function CommitmentDetail({
           </div>
           <div className="row">
             <span className="k">made to</span>
-            <span className="v">{commitment.made_to ?? "—"}</span>
+            <span className="v">{commitment.made_to ?? <span className="mute">—</span>}</span>
           </div>
           <div className="row">
             <span className="k">about</span>
-            <span className="v">{commitment.about ?? "—"}</span>
+            <span className="v">{commitment.about ?? <span className="mute">—</span>}</span>
           </div>
           <div className="row">
             <span className="k">priority</span>
@@ -725,12 +734,6 @@ function CommitmentDetail({
           </button>
           <button className="btn sm ghost" disabled={busy} onClick={() => onCorrect(commitment)}>
             correct
-          </button>
-          <button className="btn sm ghost" disabled title="v1 read-only">
-            supersede
-          </button>
-          <button className="btn sm ghost" disabled title="v1 read-only">
-            view evaluation history
           </button>
         </div>
       </div>

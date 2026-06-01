@@ -1,5 +1,8 @@
 import {
   parseSessionId,
+  type MaintenanceCadence,
+  type MaintenanceTickResult,
+  type OfflineProcessName,
   type SessionId,
   type StreamEntry,
   type TurnTraceData,
@@ -14,11 +17,30 @@ type SocketLike = {
 
 type LoggerLike = Pick<Console, "error">;
 
-export type LiveFrame = {
-  type: string;
+export type MaintenanceTickFrameStatus = MaintenanceTickResult["status"] | "error";
+
+export type MaintenanceTickFrame = {
+  type: "maintenance:tick";
   ts: number;
-  [key: string]: unknown;
+  cadence: MaintenanceCadence | "manual";
+  status: MaintenanceTickFrameStatus;
+  processes: OfflineProcessName[];
+  changed: boolean;
+  changes: number;
+  errors: number;
+  pending_extraction_episodes?: number;
+  run_id?: string | null;
+  duration_ms?: number;
+  reason?: string;
 };
+
+export type LiveFrame =
+  | MaintenanceTickFrame
+  | {
+      type: string;
+      ts: number;
+      [key: string]: unknown;
+    };
 
 type LiveClient = {
   socket: SocketLike;
@@ -68,7 +90,9 @@ function firstStreamEntrySessionId(frame: LiveFrame): SessionId | undefined {
     return undefined;
   }
 
-  return parseMaybeSessionId((frame.entries[0] as { session_id?: unknown } | undefined)?.session_id);
+  return parseMaybeSessionId(
+    (frame.entries[0] as { session_id?: unknown } | undefined)?.session_id,
+  );
 }
 
 function summarizeTraceEventValue(value: unknown): string | null {
@@ -126,12 +150,15 @@ function summarizeTraceEventData(data: TurnTraceData): string {
 }
 
 function frameSessionId(frame: LiveFrame): SessionId | undefined {
-  const topLevelSessionId = parseMaybeSessionId(frame.session_id);
+  const framePayload = frame as { session_id?: unknown; data?: unknown };
+  const topLevelSessionId = parseMaybeSessionId(framePayload.session_id);
   if (topLevelSessionId !== undefined) {
     return topLevelSessionId;
   }
 
-  const dataSessionId = isObject(frame.data) ? parseMaybeSessionId(frame.data.session_id) : undefined;
+  const dataSessionId = isObject(framePayload.data)
+    ? parseMaybeSessionId(framePayload.data.session_id)
+    : undefined;
   if (dataSessionId !== undefined) {
     return dataSessionId;
   }
@@ -219,7 +246,7 @@ export class LiveBroadcaster {
   }
 
   broadcast(frame: LiveFrame): void {
-    const deliverToAll = frame.type === "borg:reset";
+    const deliverToAll = frame.type === "borg:reset" || frame.type === "maintenance:tick";
     const sessionId = deliverToAll ? undefined : frameSessionId(frame);
     if (sessionId !== undefined) {
       this.bufferSessionFrame(sessionId, frame);

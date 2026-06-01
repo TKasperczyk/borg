@@ -243,6 +243,183 @@ describe("semantic extractor process", () => {
     expect(secondPlan.episode_ids).toEqual([]);
   });
 
+  it("reports capped semantic extraction backlog after selected episodes", async () => {
+    const processedEpisode = createEpisodeFixture({ title: "Already represented" });
+    const archivedEpisode = createEpisodeFixture({ title: "Archived episode" });
+    const candidateEpisodes = [
+      createEpisodeFixture({
+        title: "Candidate oldest",
+        created_at: 1_000,
+        updated_at: 1_000,
+      }),
+      createEpisodeFixture({
+        title: "Candidate middle",
+        created_at: 2_000,
+        updated_at: 2_000,
+      }),
+      createEpisodeFixture({
+        title: "Candidate newest",
+        created_at: 3_000,
+        updated_at: 3_000,
+      }),
+    ];
+    const harness = await createOfflineTestHarness({
+      configOverrides: {
+        offline: {
+          semanticExtractor: {
+            maxEpisodesPerRun: 2,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    for (const episode of [processedEpisode, archivedEpisode, ...candidateEpisodes]) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    harness.episodicRepository.updateStats(archivedEpisode.id, { archived: true });
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        source_episode_ids: [processedEpisode.id],
+      }),
+    );
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+    const result = process.preview(plan);
+
+    expect(plan.episode_ids).toEqual(candidateEpisodes.slice(0, 2).map((episode) => episode.id));
+    expect(plan.episode_ids).not.toContain(processedEpisode.id);
+    expect(plan.episode_ids).not.toContain(archivedEpisode.id);
+    expect(plan.pending_episode_count).toBe(1);
+    expect(plan.run_capped).toBe(true);
+    expect(result.pending_episode_count).toBe(1);
+    expect(result.run_capped).toBe(true);
+  });
+
+  it("drains unprocessed episodes oldest-first across repeated extraction runs", async () => {
+    const episodes = Array.from({ length: 5 }, (_, index) =>
+      createEpisodeFixture({
+        title: `Backlog candidate ${index + 1}`,
+        narrative: `Backlog episode ${index + 1} has sparse durable content.`,
+        created_at: (index + 1) * 1_000,
+        updated_at: (index + 1) * 1_000,
+      }),
+    );
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 3 }, () =>
+        createSemanticToolResponse({
+          nodes: [],
+          edges: [],
+        }),
+      ),
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          semanticExtractor: {
+            maxEpisodesPerRun: 2,
+            maxInputTokensPerRun: 10_000,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const process = createProcess(harness);
+    const ctx = harness.createContext();
+    const firstPlan = await process.plan(ctx);
+    await process.apply(ctx, firstPlan);
+    const secondPlan = await process.plan(ctx);
+    await process.apply(ctx, secondPlan);
+    const thirdPlan = await process.plan(ctx);
+    await process.apply(ctx, thirdPlan);
+    const fourthPlan = await process.plan(ctx);
+
+    expect([...firstPlan.episode_ids, ...secondPlan.episode_ids, ...thirdPlan.episode_ids]).toEqual(
+      episodes.map((episode) => episode.id),
+    );
+    expect(firstPlan.episode_ids).toEqual(episodes.slice(0, 2).map((episode) => episode.id));
+    expect(secondPlan.episode_ids).toEqual(episodes.slice(2, 4).map((episode) => episode.id));
+    expect(thirdPlan.episode_ids).toEqual(episodes.slice(4).map((episode) => episode.id));
+    expect(fourthPlan.episode_ids).toEqual([]);
+  });
+
+  it("caps extraction selection by estimated input tokens and still selects one oversized episode", async () => {
+    const tokenBoundedHarness = await createOfflineTestHarness({
+      configOverrides: {
+        offline: {
+          semanticExtractor: {
+            maxEpisodesPerRun: 8,
+            maxInputTokensPerRun: 540,
+          },
+        },
+      },
+    });
+    cleanup.push(tokenBoundedHarness.cleanup);
+    const tokenBoundedEpisodes = Array.from({ length: 4 }, (_, index) =>
+      createEpisodeFixture({
+        title: `Token bounded ${index + 1}`,
+        narrative: "x".repeat(40),
+        created_at: (index + 1) * 1_000,
+        updated_at: (index + 1) * 1_000,
+      }),
+    );
+
+    for (const episode of tokenBoundedEpisodes) {
+      await tokenBoundedHarness.episodicRepository.insert(episode);
+    }
+
+    const tokenBoundedProcess = createProcess(tokenBoundedHarness);
+    const tokenBoundedPlan = await tokenBoundedProcess.plan(tokenBoundedHarness.createContext());
+
+    expect(tokenBoundedPlan.episode_ids).toEqual(
+      tokenBoundedEpisodes.slice(0, 2).map((episode) => episode.id),
+    );
+    expect(tokenBoundedPlan.pending_episode_count).toBe(2);
+    expect(tokenBoundedPlan.run_capped).toBe(true);
+
+    const oversizedHarness = await createOfflineTestHarness({
+      configOverrides: {
+        offline: {
+          semanticExtractor: {
+            maxEpisodesPerRun: 8,
+            maxInputTokensPerRun: 100,
+          },
+        },
+      },
+    });
+    cleanup.push(oversizedHarness.cleanup);
+    const oversizedEpisode = createEpisodeFixture({
+      title: "Oversized episode",
+      narrative: "x".repeat(2_000),
+      created_at: 1_000,
+      updated_at: 1_000,
+    });
+    const followingEpisode = createEpisodeFixture({
+      title: "Following episode",
+      narrative: "x".repeat(40),
+      created_at: 2_000,
+      updated_at: 2_000,
+    });
+
+    await oversizedHarness.episodicRepository.insert(oversizedEpisode);
+    await oversizedHarness.episodicRepository.insert(followingEpisode);
+
+    const oversizedProcess = createProcess(oversizedHarness);
+    const oversizedPlan = await oversizedProcess.plan(oversizedHarness.createContext());
+
+    expect(oversizedPlan.episode_ids).toEqual([oversizedEpisode.id]);
+    expect(oversizedPlan.pending_episode_count).toBe(1);
+    expect(oversizedPlan.run_capped).toBe(true);
+  });
+
   it("skips invalid edges while keeping valid batch candidates", async () => {
     const tracer = new CaptureTracer();
     const episode = createEpisodeFixture({

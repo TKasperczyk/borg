@@ -645,9 +645,52 @@ describe("P2 screens", () => {
     });
   });
 
+  it("refetches dream state and shows the maintenance tick indicator", async () => {
+    const live = makeLiveSource();
+    const fetchMock = installFetch();
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/dream/state"),
+      ).toHaveLength(1);
+    });
+
+    act(() => {
+      live.emit({
+        type: "maintenance:tick",
+        ts: 8,
+        cadence: "manual",
+        status: "ok",
+        processes: ["curator", "belief-reviser"],
+        changed: true,
+        changes: 2,
+        errors: 0,
+        pending_extraction_episodes: 3,
+      });
+    });
+
+    expect(await screen.findByText(/last manual/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 processes/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/dream/state"),
+      ).toHaveLength(2);
+    });
+  });
+
   it("renders semantic graph endpoint data", async () => {
     installFetch();
-    const { container } = render(<GraphScreen />);
+    const live = makeLiveSource();
+    const { container } = render(
+      <LiveEventsProvider value={live.live()}>
+        <GraphScreen />
+      </LiveEventsProvider>,
+    );
 
     expect(
       await screen.findByText(
@@ -657,6 +700,41 @@ describe("P2 screens", () => {
     await waitFor(() => {
       expect(container.querySelectorAll(".graph-node")).toHaveLength(3);
       expect(container.querySelectorAll(".graph-edge")).toHaveLength(2);
+    });
+  });
+
+  it("refetches semantic graph on maintenance ticks", async () => {
+    const live = makeLiveSource();
+    const fetchMock = installFetch();
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <GraphScreen />
+      </LiveEventsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/semantic/graph"),
+      ).toHaveLength(1);
+    });
+
+    act(() => {
+      live.emit({
+        type: "maintenance:tick",
+        ts: 9,
+        cadence: "heavy",
+        status: "ok",
+        processes: ["curator"],
+        changed: true,
+        changes: 1,
+        errors: 0,
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/semantic/graph"),
+      ).toHaveLength(2);
     });
   });
 });

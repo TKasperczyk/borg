@@ -606,6 +606,7 @@ export type DreamScheduleItem = {
 
 export type DreamStateResponse = {
   processes: DreamProcessSummary[];
+  pending_extraction_episodes?: number;
   schedule: DreamScheduleItem[];
   audit_rows: MaintenanceAuditRow[];
   belief_revision_rows: ReviewRow[];
@@ -1000,6 +1001,20 @@ export type DreamProcessCompletedFrame = LiveFrameBase & {
   candidates_accepted: number;
 };
 
+export type MaintenanceTickFrame = LiveFrameBase & {
+  type: "maintenance:tick";
+  cadence: "light" | "heavy" | "manual";
+  status: "ok" | "skipped_busy" | "skipped_empty" | "disabled" | "error";
+  processes: DreamProcessName[];
+  changed: boolean;
+  changes: number;
+  errors: number;
+  pending_extraction_episodes?: number;
+  run_id?: string | null;
+  duration_ms?: number;
+  reason?: string;
+};
+
 export type BorgResetFrame = LiveFrameBase & {
   type: "borg:reset";
 };
@@ -1016,6 +1031,7 @@ export type LiveFrame =
   | TurnPhaseDetailFrame
   | DreamProcessStartedFrame
   | DreamProcessCompletedFrame
+  | MaintenanceTickFrame
   | BorgResetFrame;
 
 export type WsState = "live" | "reconnecting" | "down";

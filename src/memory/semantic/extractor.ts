@@ -40,8 +40,12 @@ import {
   semanticObservationMetadataSchema,
   semanticRelationSchema,
   type SemanticNode,
+  type SemanticNodeKind,
   type SemanticObservationMetadata,
 } from "./types.js";
+
+const MAX_EXTRACTOR_NODES = 40;
+const MAX_EXTRACTOR_EDGES = 60;
 
 const extractorNodeSchema = z.object({
   kind: semanticNodeKindSchema,
@@ -66,12 +70,12 @@ const extractorEdgeSchema = z.object({
 });
 
 const extractorResponseSchema = z.object({
-  nodes: z.array(extractorNodeSchema).max(6),
-  edges: z.array(z.unknown()).max(8),
+  nodes: z.array(extractorNodeSchema).max(MAX_EXTRACTOR_NODES),
+  edges: z.array(z.unknown()).max(MAX_EXTRACTOR_EDGES),
 });
 const extractorResponseToolSchema = z.object({
-  nodes: z.array(extractorNodeSchema).max(6),
-  edges: z.array(extractorEdgeSchema).max(8),
+  nodes: z.array(extractorNodeSchema).max(MAX_EXTRACTOR_NODES),
+  edges: z.array(extractorEdgeSchema).max(MAX_EXTRACTOR_EDGES),
 });
 
 type ExtractorNode = z.infer<typeof extractorNodeSchema>;
@@ -144,14 +148,19 @@ type SemanticInsertSkipReason =
 function buildPrompt(input: {
   episodes: readonly Episode[];
   participantRoster?: ParticipantRoster | null;
+  knownNodeKinds: readonly SemanticNodeKind[];
 }): string {
   const roster = renderParticipantRoster(input.participantRoster);
+  const knownNodeKindGuidance =
+    input.knownNodeKinds.length === 0
+      ? "Known semantic node kinds already in graph: none."
+      : `Known semantic node kinds already in graph: ${input.knownNodeKinds.join(", ")}.`;
 
   return [
     "Extract semantic knowledge from the provided episodes.",
     `Emit your result by calling the ${EXTRACT_SEMANTIC_TOOL_NAME} tool exactly once.`,
     "Populate the tool arguments directly with arrays and objects. Do not put JSON, XML tags, or parameter wrappers inside string fields.",
-    "Return at most 6 nodes and 8 edges. Prefer the most central concepts and claims over peripheral details.",
+    "Extract all salient semantic nodes and edges that are grounded in the provided episodes.",
     "Distinguish temporally bounded events such as trips, visits, conversations, or meetings from permanent or long-term state changes such as moves, relocations, role changes, or life changes.",
     "When choosing labels and aliases, do not collapse event-scoped language into permanent-state language or the reverse.",
     "If the source wording is ambiguous, prefer the narrower event-scoped interpretation.",
@@ -161,6 +170,8 @@ function buildPrompt(input: {
     "Each edge must use from_label and to_label values that match node labels exactly.",
     "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
+    "Set node.kind to a lowercase_slug structural shape label. Reuse one of the known kinds when it fits; coin a new lowercase_slug kind only for a genuinely new information shape.",
+    knownNodeKindGuidance,
     'Emit a compact canonical domain string for each node when it helps metadata display or later filtering (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes. Domain never decides semantic compatibility; vector meaning and exact labels do.',
     "Temporal validity for edges: set valid_from_ts and valid_to_ts to numeric Unix epoch milliseconds only when the episode wording explicitly says when the relation became true or stopped being true. Resolve relative dates against the episode start time yourself. Use null when unknown. Do not infer validity dates from the episode timestamp alone.",
     RELATIONSHIP_LABELS_PROMPT,
@@ -828,6 +839,7 @@ export class SemanticExtractor {
     }
 
     let result: LLMCompleteResult;
+    const knownNodeKinds = this.options.nodeRepository.listDistinctKinds();
 
     try {
       result = await this.options.llmClient.complete({
@@ -839,12 +851,19 @@ export class SemanticExtractor {
             content: buildPrompt({
               episodes,
               participantRoster: this.options.participantRoster ?? null,
+              knownNodeKinds,
             }),
           },
         ],
         tools: [EXTRACT_SEMANTIC_TOOL],
         tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
-        max_tokens: 12_000,
+        // Opus-class extraction can emit large structured batches. This is the
+        // OUTPUT-token ceiling, which is a fixed model limit (~20k for
+        // claude-opus-4-6), independent of the much larger input context window.
+        // 20_000 is verified within the model's max and well above the prior
+        // 12_000, so dense episodes aren't truncated. Do NOT raise past the
+        // model's output cap or the request is rejected outright.
+        max_tokens: 20_000,
         budget: "semantic-extraction",
       });
     } catch (error) {

@@ -35,6 +35,7 @@ import {
   SemanticNodeRepository,
   createSemanticNodesTableSchema,
 } from "./repository.js";
+import { semanticNodeKindSchema } from "./types.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -1049,6 +1050,65 @@ describe("review queue", () => {
         confidence: 0.7,
       }),
     );
+  });
+
+  it("accepts valid open semantic node kind slugs through pending insight review storage", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(8_250),
+    });
+    cleanup.push(harness.cleanup);
+
+    const kind = semanticNodeKindSchema.parse("process_explanation");
+    const nodeId = createSemanticNodeId();
+    const episodeId = createEpisodeFixture().id;
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      refs: {
+        node_ids: [nodeId],
+        episode_ids: [episodeId],
+        evidence_cluster_key: "cluster:process-explanation",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "insert",
+            node: {
+              id: nodeId,
+              kind,
+              label: "Process explanation",
+              description: "A reflected explanation of how a process works.",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [episodeId],
+              created_at: 8_250,
+              updated_at: 8_250,
+              last_verified_at: 8_250,
+              embedding: [0, 1, 0, 0],
+              archived: false,
+              superseded_by: null,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: {
+            key: "cluster:process-explanation",
+            episode_ids: [episodeId],
+            size: 1,
+          },
+        },
+      },
+      reason: "fresh process explanation insight",
+    });
+
+    await harness.reviewQueueRepository.resolve(item.id, "accept");
+
+    const stored = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(stored?.kind).toBe(kind);
+    expect(
+      (await harness.semanticNodeRepository.list({
+        kind,
+      })).map((node) => node.id),
+    ).toEqual([nodeId]);
+    expect(harness.semanticNodeRepository.listDistinctKinds()).toContain(kind);
   });
 
   it("rejects legacy new insight refs even for dismiss", async () => {

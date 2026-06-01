@@ -51,6 +51,7 @@ describe("config", () => {
     expect(config.offline.semanticExtractor).toEqual({
       enabled: true,
       maxEpisodesPerRun: 8,
+      maxInputTokensPerRun: 150_000,
       budget: 60_000,
     });
     expect(config.offline.overseer.budget).toBeNull();
@@ -390,6 +391,7 @@ describe("config", () => {
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
         BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
+        BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
@@ -461,6 +463,7 @@ describe("config", () => {
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
     expect(config.offline.semanticExtractor.maxEpisodesPerRun).toBe(3);
+    expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
   });
 

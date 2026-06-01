@@ -126,6 +126,7 @@ function CreatorDirectiveDetail({ directive }: { directive: CreatorDirectiveItem
             color: "var(--text)",
             fontFamily: "var(--sans)",
             margin: "6px 0 10px 0",
+            overflowWrap: "anywhere",
           }}
         >
           {emptyLabel(directive.text)}
@@ -139,6 +140,7 @@ function CreatorDirectiveDetail({ directive }: { directive: CreatorDirectiveItem
         </div>
       </div>
       <div style={{ padding: 16 }}>
+        <div className="divider">identity</div>
         <div className="props">
           <div className="row">
             <span className="k">id</span>

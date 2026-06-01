@@ -36,7 +36,7 @@ import type { ReviewQueueRepository } from "../../../../src/memory/semantic/revi
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
-import { createDemoServerApp } from "../app.js";
+import { createDemoServerApp, wireMaintenanceSchedulerLiveObserver } from "../app.js";
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 import { createResetBorgController, type BorgHandle } from "../reset.js";
 
@@ -84,6 +84,12 @@ function createBorgCloseStub(input: { start?: () => void } = {}): Borg {
       },
     },
     autonomy: {
+      scheduler: {
+        start: vi.fn(),
+        stop: vi.fn(async () => {}),
+      },
+    },
+    maintenance: {
       scheduler: {
         start: vi.fn(),
         stop: vi.fn(async () => {}),
@@ -537,6 +543,27 @@ describe("demo server", () => {
     broadcaster.broadcast({ type: "borg:reset", ts: 1 });
 
     expect(frames).toEqual([expect.objectContaining({ type: "borg:reset", ts: 1 })]);
+  });
+
+  it("delivers maintenance ticks to clients that unsubscribed from global frames", () => {
+    const broadcaster = new LiveBroadcaster({ error: () => {} });
+    const frames: LiveFrame[] = [];
+    const client = { send: (data: string) => frames.push(JSON.parse(data) as LiveFrame) };
+
+    broadcaster.add(client);
+    broadcaster.handleSubscriptionMessage(client, { type: "unsubscribe_global" });
+    broadcaster.broadcast({
+      type: "maintenance:tick",
+      ts: 2,
+      cadence: "light",
+      status: "ok",
+      processes: ["curator"],
+      changed: false,
+      changes: 0,
+      errors: 0,
+    });
+
+    expect(frames).toEqual([expect.objectContaining({ type: "maintenance:tick", ts: 2 })]);
   });
 
   it("flushes buffered session frames when a client subscribes", () => {
@@ -1010,6 +1037,7 @@ describe("demo server", () => {
       belief_revision_rows: [
         expect.objectContaining({ id: seeded.review.id, kind: "belief_revision" }),
       ],
+      pending_extraction_episodes: expect.any(Number),
       scheduler: expect.objectContaining({ enabled: expect.any(Boolean) }),
     });
 
@@ -1270,6 +1298,7 @@ describe("demo server", () => {
     const { borg, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const { frames } = collectLiveFrames(live);
     const dreamPlanSpy = vi.spyOn(borg.dream, "plan");
     const dreamApplySpy = vi.spyOn(borg.dream, "apply");
     const valueAddSpy = vi.spyOn(borg.self.values, "add");
@@ -1306,6 +1335,18 @@ describe("demo server", () => {
       duration_ms: expect.any(Number),
     });
     expect(dreamApplySpy).toHaveBeenCalledTimes(1);
+    expect(frames).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "maintenance:tick",
+          cadence: "manual",
+          status: "ok",
+          processes: ["curator"],
+          errors: 0,
+          pending_extraction_episodes: expect.any(Number),
+        }),
+      ]),
+    );
 
     const repeatedApply = await requestJson(app, "/api/dream/apply", "POST", {
       plan_id: planBody.plan_id,
@@ -1516,6 +1557,65 @@ describe("demo server", () => {
       decision: "dismiss",
       reason: "not actionable",
     });
+  });
+
+  it("broadcasts maintenance tick frames from the scheduler observer", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { frames } = collectLiveFrames(live);
+    const setObserverSpy = vi.spyOn(borg.maintenance.scheduler, "setObserver");
+    const change = {
+      process: "curator" as const,
+      action: "test maintenance change",
+      targets: { id: "target_1" },
+    };
+    const result = {
+      run_id: createMaintenanceRunId(),
+      dryRun: false,
+      results: [
+        {
+          process: "curator" as const,
+          dryRun: false,
+          changes: [change],
+          tokens_used: 3,
+          errors: [],
+          budget_exhausted: false,
+        },
+      ],
+      changes: [change],
+      tokens_used: 3,
+      errors: [],
+    };
+
+    wireMaintenanceSchedulerLiveObserver(borg, live);
+    const observer = setObserverSpy.mock.calls[0]?.[0];
+    expect(observer).toBeDefined();
+    await observer?.onTick?.({
+      status: "ok",
+      cadence: "light",
+      ts: 1_800_000_000_123,
+      processes: ["curator"],
+      result,
+    });
+
+    expect(frames).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "maintenance:tick",
+          ts: 1_800_000_000_123,
+          cadence: "light",
+          status: "ok",
+          processes: ["curator"],
+          changed: true,
+          changes: 1,
+          errors: 0,
+          run_id: result.run_id,
+          pending_extraction_episodes: expect.any(Number),
+        }),
+      ]),
+    );
   });
 
   it("exposes correction endpoints for why, forget, correct, edge invalidation, and review resolution", async () => {
@@ -2349,9 +2449,7 @@ describe("demo server", () => {
       hasMore: false,
     });
 
-    await waitFor(() =>
-      frames.some((frame) => frame.type === "turn:terminal"),
-    );
+    await waitFor(() => frames.some((frame) => frame.type === "turn:terminal"));
 
     const terminalIndex = frames.findIndex((frame) => frame.type === "turn:terminal");
     const turnId = (frames[terminalIndex]?.data as { turn_id?: unknown } | undefined)?.turn_id;
@@ -2400,8 +2498,7 @@ describe("demo server", () => {
     });
     expect(
       frames.some(
-        (frame) =>
-          frame.type === "turn:phase:detail" && frame.event === "evidence_ledger.built",
+        (frame) => frame.type === "turn:phase:detail" && frame.event === "evidence_ledger.built",
       ),
     ).toBe(false);
     live.broadcaster.closeAll();
@@ -2571,10 +2668,18 @@ describe("demo server", () => {
     const serveMock = vi.fn(() => ({
       close: vi.fn((callback?: () => void) => callback?.()),
     }));
+    const liveBridgeMock = {
+      broadcaster: { closeAll: vi.fn() },
+      tracer: {},
+      ledgerCache: new Map(),
+      observeStreamAppend: vi.fn(),
+      onStreamAppend: vi.fn(),
+    };
     const createDemoServerAppMock = vi.fn(() => ({
       app: { fetch: vi.fn() },
       injectWebSocket: vi.fn(),
     }));
+    const wireMaintenanceSchedulerLiveObserverMock = vi.fn();
 
     vi.doMock("borg", () => ({
       Borg: { open },
@@ -2584,15 +2689,10 @@ describe("demo server", () => {
     vi.doMock("../app.js", () => ({
       createDemoServerApp: createDemoServerAppMock,
       ensureDemoDefaultSession: vi.fn(),
+      wireMaintenanceSchedulerLiveObserver: wireMaintenanceSchedulerLiveObserverMock,
     }));
     vi.doMock("../live.js", () => ({
-      createLiveBridge: vi.fn(() => ({
-        broadcaster: { closeAll: vi.fn() },
-        tracer: {},
-        ledgerCache: new Map(),
-        observeStreamAppend: vi.fn(),
-        onStreamAppend: vi.fn(),
-      })),
+      createLiveBridge: vi.fn(() => liveBridgeMock),
     }));
     vi.doMock("../reset.js", () => ({
       createResetBorgController: vi.fn(() => vi.fn()),
@@ -2603,6 +2703,7 @@ describe("demo server", () => {
       await import("../index.js?server-start");
       expect(open).toHaveBeenCalledTimes(1);
       expect(start).toHaveBeenCalledTimes(1);
+      expect(wireMaintenanceSchedulerLiveObserverMock).toHaveBeenCalledWith(borg, liveBridgeMock);
       expect(serveMock).toHaveBeenCalledTimes(1);
     } finally {
       if (previousPort === undefined) {
