@@ -35,6 +35,7 @@ export {
   type ReviewResolutionSource,
   type ReviewResolutionInput,
   type ReviewTransactionScope,
+  type StoredReviewKind,
 } from "./review-queue.js";
 export {
   CREATOR_DIRECTIVE_RECONCILIATION_CONFIDENCE_LEVELS,
@@ -56,6 +57,7 @@ export {
   type CreatorDirectiveReconciliationResolution,
   type CreatorDirectiveReconciliationReviewRefs,
   type CreatorDirectiveReconciliationSubkind,
+  type StoredCreatorDirectiveReconciliationSubkind,
   type CreatorDirectiveScopeEquivalenceSnapshot,
 } from "./review-handlers/creator-directive-reconciliation.js";
 export {

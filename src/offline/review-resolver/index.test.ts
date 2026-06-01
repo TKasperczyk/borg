@@ -780,65 +780,6 @@ describe("review resolver process", () => {
     expect(storedSecond?.status).toBe("active");
   });
 
-  it("auto-dismisses relationship-claim ungrounded reviews up to the cap without LLM calls", async () => {
-    const llm = new FakeLLMClient();
-    const harness = await createOfflineTestHarness({
-      llmClient: llm,
-      reviewOpenQuestionExtractor: null,
-    });
-    cleanup.push(harness.cleanup);
-    const items: ReviewQueueItem[] = [];
-
-    for (let index = 0; index < 3; index += 1) {
-      items.push(
-        harness.reviewQueueRepository.enqueue({
-          kind: "relationship_claim_ungrounded",
-          reason:
-            "Semantic node candidate asserted a sensitive relationship without accepted relationship evidence.",
-          refs: {
-            target_type: "semantic_node_candidate",
-            label: `Ungrounded relationship ${index}`,
-            description: `Ungrounded relationship candidate ${index}.`,
-            relationship_claim_label_families: ["kinship"],
-            relationship_claims: [
-              {
-                label_family: "kinship",
-                subject_text: `subject ${index}`,
-                object_text: `object ${index}`,
-              },
-            ],
-            ungrounded_relationship_claims: [
-              {
-                label_family: "kinship",
-                subject_text: `subject ${index}`,
-                object_text: `object ${index}`,
-              },
-            ],
-          },
-        }),
-      );
-    }
-
-    const result = await runResolver(harness, 2);
-    const resolved = items.filter(
-      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at !== null,
-    );
-    const open = items.filter(
-      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at === null,
-    );
-
-    expect(result.errors).toEqual([]);
-    expect(result.changes).toHaveLength(2);
-    expect(resolved).toHaveLength(2);
-    expect(
-      resolved.every(
-        (item) => harness.reviewQueueRepository.get(item.id)?.resolution === "dismiss",
-      ),
-    ).toBe(true);
-    expect(open).toHaveLength(1);
-    expect(llm.requests).toHaveLength(0);
-  });
-
   it("accepts grounded new insight proposals through the existing review handler", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
@@ -1562,7 +1503,7 @@ describe("review resolver process", () => {
     expect(llm.requests).toHaveLength(3);
   });
 
-  it("stubs valid identity inconsistency refs as needs_manual without judging", async () => {
+  it("leaves identity inconsistency reviews for manual resolution", async () => {
     const llm = new FakeLLMClient();
     const tracer = new ArrayTracer();
     const harness = await createOfflineTestHarness({
@@ -1599,16 +1540,10 @@ describe("review resolver process", () => {
     const open = harness.reviewQueueRepository.get(item.id);
 
     expect(open?.resolved_at).toBeNull();
-    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
-      verdict: "needs_manual",
-      reason: "identity_inconsistency_auto_resolution_not_yet_supported",
-    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toBeUndefined();
     expect(
       tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
-    ).toMatchObject({
-      verdict: "needs_manual",
-      reason: "identity_kind_not_yet_supported",
-    });
+    ).toBeUndefined();
     expect(llm.requests).toHaveLength(0);
   });
 });

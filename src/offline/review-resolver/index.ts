@@ -57,9 +57,7 @@ const REVIEW_RESOLVER_KINDS = [
   "duplicate",
   "new_insight",
   "misattribution",
-  "identity_inconsistency",
   "temporal_drift",
-  "relationship_claim_ungrounded",
 ] as const satisfies readonly ReviewKind[];
 
 const reviewResolverVerdictValueSchema = z.enum([
@@ -945,7 +943,7 @@ function resolvedChange(input: {
 }
 
 function isSupportedReviewResolverCandidate(item: ReviewQueueItem): boolean {
-  if (item.kind === "new_insight" || item.kind === "relationship_claim_ungrounded") {
+  if (item.kind === "new_insight") {
     return true;
   }
 
@@ -1610,25 +1608,8 @@ async function prepareDecision(input: {
     return prepareSemanticPairDecision(input);
   }
 
-  if (input.item.kind === "relationship_claim_ungrounded") {
-    return {
-      action: "resolve",
-      verdict: "dismiss",
-      resolution: "dismiss",
-      reason: "relationship_claim_ungrounded review is advisory; the candidate was not inserted",
-      appliedResolution: "dismiss",
-    };
-  }
-
   if (input.item.kind === "new_insight") {
     return prepareNewInsightDecision(input);
-  }
-
-  if (input.item.kind === "identity_inconsistency") {
-    return needsManual(
-      "identity_kind_not_yet_supported",
-      "identity_inconsistency_auto_resolution_not_yet_supported",
-    );
   }
 
   if (input.item.kind === "misattribution") {

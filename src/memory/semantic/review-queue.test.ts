@@ -1232,65 +1232,46 @@ describe("review queue", () => {
     );
   });
 
-  it("deduplicates open relationship-claim ungrounded reviews by structural claim identity", async () => {
-    const harness = await createOfflineTestHarness({
+  it("reads legacy relationship-claim ungrounded review rows", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
       clock: new FixedClock(9_000),
-      reviewOpenQuestionExtractor: null,
-    });
-    cleanup.push(harness.cleanup);
-    const refs = {
-      target_type: "semantic_node_candidate",
-      label: "Birthday lunch siblings",
-      description: "The siblings are attending lunch.",
-      relationship_claim_label_families: ["kinship"],
-      relationship_claims: [
-        {
-          label_family: "kinship",
-          subject_text: "attendees",
-          object_text: "siblings",
-          evidence_stream_entry_ids: [],
-        },
-      ],
-      ungrounded_relationship_claims: [
-        {
-          object_text: "siblings",
-          evidence_stream_entry_ids: [],
-          subject_text: "attendees",
-          label_family: "kinship",
-        },
-      ],
-    };
-
-    const first = harness.reviewQueueRepository.enqueue({
-      kind: "relationship_claim_ungrounded",
-      refs,
-      reason: "relationship claim needs grounding",
-    });
-    const second = harness.reviewQueueRepository.enqueue({
-      kind: "relationship_claim_ungrounded",
-      refs: {
-        ...refs,
-        relationship_claim_label_families: ["kinship"],
-      },
-      reason: "same relationship claim needs grounding again",
     });
 
-    expect(second.id).toBe(first.id);
-    expect(
-      harness.reviewQueueRepository.list({
+    try {
+      db.prepare(
+        `
+          INSERT INTO review_queue (kind, refs, reason, created_at, resolved_at, resolution)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        "relationship_claim_ungrounded",
+        JSON.stringify({
+          target_type: "semantic_node_candidate",
+          label: "Birthday lunch siblings",
+        }),
+        "legacy diagnostic review",
+        1_000,
+        2_000,
+        "dismiss",
+      );
+
+      const rows = reviewQueue.list({
+        openOnly: false,
+      });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
         kind: "relationship_claim_ungrounded",
-        openOnly: true,
-      }),
-    ).toHaveLength(1);
-
-    await harness.reviewQueueRepository.resolve(first.id, "dismiss");
-    const third = harness.reviewQueueRepository.enqueue({
-      kind: "relationship_claim_ungrounded",
-      refs,
-      reason: "relationship claim recurred after resolution",
-    });
-
-    expect(third.id).not.toBe(first.id);
+        resolved_at: 2_000,
+        resolution: "dismiss",
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("keeps semantic pair reviews open when required nodes are missing", async () => {

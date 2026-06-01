@@ -14,9 +14,15 @@ export const CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_KIND =
   "creator_directive_reconciliation" as const;
 export const CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS = [
   "conflict",
+  "disclosure_widening",
+] as const;
+const LEGACY_CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS = [
   "same_content_different_scope",
   "low_confidence_redundancy",
-  "disclosure_widening",
+] as const;
+const STORED_CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS = [
+  ...CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS,
+  ...LEGACY_CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS,
 ] as const;
 export const CREATOR_DIRECTIVE_RECONCILIATION_VERDICTS = [
   "same_intent",
@@ -44,6 +50,9 @@ const CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_RESOLUTIONS = new Set<ReviewResolu
 
 export const creatorDirectiveReconciliationSubkindSchema = z.enum(
   CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS,
+);
+const storedCreatorDirectiveReconciliationSubkindSchema = z.enum(
+  STORED_CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_SUBKINDS,
 );
 export const creatorDirectiveReconciliationVerdictSchema = z.enum(
   CREATOR_DIRECTIVE_RECONCILIATION_VERDICTS,
@@ -165,7 +174,7 @@ export const creatorDirectiveReconciliationJudgmentSchema = z
 export const creatorDirectiveReconciliationReviewRefsSchema = z
   .object({
     target_type: z.literal(CREATOR_DIRECTIVE_RECONCILIATION_REVIEW_KIND),
-    subkind: creatorDirectiveReconciliationSubkindSchema,
+    subkind: storedCreatorDirectiveReconciliationSubkindSchema,
     directive_ids: z.array(creatorDirectiveIdSchema).min(2),
     family_key: creatorDirectiveReconciliationFamilyKeySchema,
     members: z
@@ -188,6 +197,9 @@ export type CreatorDirectiveReconciliationReviewRefs = z.infer<
 >;
 export type CreatorDirectiveReconciliationSubkind = z.infer<
   typeof creatorDirectiveReconciliationSubkindSchema
+>;
+export type StoredCreatorDirectiveReconciliationSubkind = z.infer<
+  typeof storedCreatorDirectiveReconciliationSubkindSchema
 >;
 export type CreatorDirectiveReconciliationResolution = z.infer<
   typeof creatorDirectiveReconciliationResolutionSchema

@@ -474,7 +474,6 @@ function metricsRow(turnCounter: number): MetricsRow {
       correction: 0,
       belief_revision: 0,
       skill_split: 0,
-      relationship_claim_ungrounded: 0,
       creator_directive_reconciliation: 0,
     },
     frame_anomaly_classifier_calls: 0,

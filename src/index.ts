@@ -422,6 +422,7 @@ export {
   type ReviewQueueItem,
   type ReviewResolution,
   type ReviewResolutionInput,
+  type StoredReviewKind,
   type SemanticContext,
   type SemanticEdge,
   type SemanticEdgeListOptions,

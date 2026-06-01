@@ -512,31 +512,6 @@ export class SemanticExtractor {
     });
   }
 
-  private queueUngroundedRelationshipClaimReview(input: {
-    candidate: ExtractorNode;
-    ungroundedClaims: readonly RelationshipClaim[];
-  }): void {
-    this.options.reviewEnqueue?.({
-      kind: "relationship_claim_ungrounded",
-      refs: {
-        target_type: "semantic_node_candidate",
-        label: input.candidate.label,
-        description: input.candidate.description,
-        kind: input.candidate.kind,
-        domain: input.candidate.domain,
-        aliases: input.candidate.aliases,
-        source_episode_ids: input.candidate.source_episode_ids,
-        relationship_claim_label_families: relationshipClaimLabelFamilies(input.ungroundedClaims),
-        relationship_claims: relationshipClaimsTracePayload(input.candidate.relationship_claims),
-        ungrounded_relationship_claims: relationshipClaimsTracePayload(input.ungroundedClaims),
-      },
-      reason:
-        "Semantic node candidate asserted a sensitive relationship without accepted relationship evidence.",
-      sourceProcess: "semantic-extractor",
-      ...(this.options.traceTurnId === undefined ? {} : { traceTurnId: this.options.traceTurnId }),
-    });
-  }
-
   private async upsertNode(
     candidate: ExtractorNode,
     allowedEpisodeIds: ReadonlySet<string>,
@@ -561,11 +536,6 @@ export class SemanticExtractor {
     );
 
     if (!relationshipClaimGrounding.grounded) {
-      this.queueUngroundedRelationshipClaimReview({
-        candidate,
-        ungroundedClaims: relationshipClaimGrounding.ungroundedClaims,
-      });
-
       return {
         status: "skipped",
         reason: "relationship_claim_ungrounded",

@@ -875,8 +875,9 @@ export type BorgReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "relationship_claim_ungrounded"
   | "creator_directive_reconciliation";
+
+export type BorgStoredReviewKind = BorgReviewKind | "relationship_claim_ungrounded";
 
 export type BorgReviewResolution =
   | "keep_both"
@@ -900,7 +901,7 @@ export type BorgReviewResolutionInput =
 
 export type BorgReviewQueueItem = {
   id: number;
-  kind: BorgReviewKind;
+  kind: BorgStoredReviewKind;
   refs: Record<string, unknown>;
   reason: string;
   created_at: number;

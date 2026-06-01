@@ -29,7 +29,6 @@ const REVIEW_KIND_ORDER: ReviewKind[] = [
   "temporal_drift",
   "identity_inconsistency",
   "skill_split",
-  "relationship_claim_ungrounded",
 ];
 
 const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
@@ -42,7 +41,6 @@ const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   correction: ["accept", "reject"],
   belief_revision: ["dismiss"],
   skill_split: ["accept", "reject"],
-  relationship_claim_ungrounded: ["accept", "reject", "dismiss", "keep"],
   creator_directive_reconciliation: [],
 };
 
@@ -285,20 +283,6 @@ function correctionDetailFields(refs: Record<string, unknown>): DetailField[] {
   return fields;
 }
 
-function relationshipClaimDetailFields(refs: Record<string, unknown>): DetailField[] {
-  const fields: DetailField[] = [];
-  const ungroundedClaims = recordValue(refs, "ungrounded_relationship_claims");
-  const claims = Array.isArray(ungroundedClaims)
-    ? ungroundedClaims
-    : recordValue(refs, "relationship_claims");
-
-  addField(fields, "candidate label", recordValue(refs, "label"));
-  addField(fields, "candidate description", recordValue(refs, "description"));
-  addArrayCount(fields, "claim count", claims);
-
-  return fields;
-}
-
 function skillSplitDetailFields(refs: Record<string, unknown>): DetailField[] {
   const fields: DetailField[] = [];
   const proposal =
@@ -334,8 +318,6 @@ function detailFields(row: ReviewRow): DetailField[] {
     case "identity_inconsistency":
     case "temporal_drift":
       return repairDetailFields(row.refs);
-    case "relationship_claim_ungrounded":
-      return relationshipClaimDetailFields(row.refs);
     case "skill_split":
       return skillSplitDetailFields(row.refs);
     case "correction":

@@ -233,7 +233,7 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("relational_slot:rslot_grounded");
   });
 
-  it("queues and skips semantic nodes with ungrounded relationship claims", async () => {
+  it("traces and skips semantic nodes with ungrounded relationship claims", async () => {
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Birthday lunch", {
       narrative: "The user discussed birthday lunch attendance.",
     });
@@ -291,21 +291,7 @@ describe("semantic extractor", () => {
       insertedEdges: 0,
       skippedEdges: 0,
     });
-    expect(reviewEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "relationship_claim_ungrounded",
-        sourceProcess: "semantic-extractor",
-        traceTurnId: "turn_ungrounded_relationship",
-        refs: expect.objectContaining({
-          target_type: "semantic_node_candidate",
-          label: "Birthday lunch siblings",
-          relationship_claim_label_families: ["kinship"],
-          ungrounded_relationship_claims: [
-            expect.objectContaining({ object_text: "les membres de la famille" }),
-          ],
-        }),
-      }),
-    );
+    expect(reviewEnqueue).not.toHaveBeenCalled();
     expect(tracer.emit).toHaveBeenCalledWith("semantic_insert.skipped", {
       turnId: "turn_ungrounded_relationship",
       kind: "node",
@@ -379,18 +365,7 @@ describe("semantic extractor", () => {
       insertedNodes: 0,
       skippedNodes: 1,
     });
-    expect(reviewEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "relationship_claim_ungrounded",
-        refs: expect.objectContaining({
-          ungrounded_relationship_claims: [
-            expect.objectContaining({
-              evidence_relational_slot_ids: [contestedSlotId],
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
   it("inserts semantic relationship claims with grounded participant relational slot evidence", async () => {
@@ -562,18 +537,7 @@ describe("semantic extractor", () => {
       insertedNodes: 0,
       skippedNodes: 1,
     });
-    expect(reviewEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "relationship_claim_ungrounded",
-        refs: expect.objectContaining({
-          ungrounded_relationship_claims: [
-            expect.objectContaining({
-              evidence_stream_entry_ids: [assistantStreamId],
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
   it("rejects semantic relationship claims with stream evidence outside the source bundle", async () => {
@@ -628,18 +592,7 @@ describe("semantic extractor", () => {
       skippedNodes: 1,
     });
     expect(trust).not.toHaveBeenCalled();
-    expect(reviewEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "relationship_claim_ungrounded",
-        refs: expect.objectContaining({
-          ungrounded_relationship_claims: [
-            expect.objectContaining({
-              evidence_stream_entry_ids: [citedOutsideBundleId],
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(reviewEnqueue).not.toHaveBeenCalled();
   });
 
   it("inserts semantic nodes without relationship claims, including service context nouns", async () => {

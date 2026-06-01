@@ -440,7 +440,7 @@ function queueCreatorDirectiveFixture(
 function creatorDirectiveReconciliationRefs(
   directives: readonly CreatorDirective[],
   input: {
-    subkind?: "conflict" | "same_content_different_scope" | "low_confidence_redundancy";
+    subkind?: "conflict" | "disclosure_widening";
     verdict?: "same_intent" | "conflicting" | "independent";
   } = {},
 ) {
@@ -452,7 +452,7 @@ function creatorDirectiveReconciliationRefs(
 
   return {
     target_type: "creator_directive_reconciliation",
-    subkind: input.subkind ?? "same_content_different_scope",
+    subkind: input.subkind ?? "conflict",
     directive_ids: directives.map((directive) => directive.id),
     family_key: familyKey,
     members: directives.map((directive) => ({
@@ -2054,14 +2054,9 @@ describe("demo server", () => {
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const internal = borg as unknown as BorgTestInternals;
     const review = internal.deps.reviewQueueRepository.enqueue({
-      kind: "relationship_claim_ungrounded",
+      kind: "duplicate",
       refs: {
-        target_type: "semantic_node_candidate",
-        label: "relationship claim",
-        description: "Ungrounded relationship claim fixture.",
-        relationship_claim_label_families: ["kinship"],
-        relationship_claims: [],
-        ungrounded_relationship_claims: [],
+        node_ids: ["sem_fixtureaaaaaaa1", "sem_fixtureaaaaaaa2"],
       },
       reason: "non-correction review fixture",
     });
@@ -2079,7 +2074,7 @@ describe("demo server", () => {
     });
     expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
       id: review.id,
-      kind: "relationship_claim_ungrounded",
+      kind: "duplicate",
       resolved_at: null,
       resolution: null,
     });
@@ -2097,17 +2092,12 @@ describe("demo server", () => {
       refs: { target_type: "value", target_id: "val_fixture", patch: { description: "new" } },
       reason: "queued correction fixture",
     });
-    const relationshipReview = internal.deps.reviewQueueRepository.enqueue({
-      kind: "relationship_claim_ungrounded",
+    const duplicateReview = internal.deps.reviewQueueRepository.enqueue({
+      kind: "duplicate",
       refs: {
-        target_type: "semantic_node_candidate",
-        label: "relationship claim",
-        description: "Ungrounded relationship claim fixture.",
-        relationship_claim_label_families: ["kinship"],
-        relationship_claims: [],
-        ungrounded_relationship_claims: [],
+        node_ids: ["sem_fixtureaaaaaaa1", "sem_fixtureaaaaaaa2"],
       },
-      reason: "relationship claim fixture",
+      reason: "duplicate review fixture",
     });
 
     const allReviews = await app.request("/api/reviews");
@@ -2116,19 +2106,19 @@ describe("demo server", () => {
       rows: expect.arrayContaining([
         expect.objectContaining({ id: correctionReview.id, kind: "correction" }),
         expect.objectContaining({
-          id: relationshipReview.id,
-          kind: "relationship_claim_ungrounded",
+          id: duplicateReview.id,
+          kind: "duplicate",
         }),
       ]),
     });
 
-    const filteredReviews = await app.request("/api/reviews?kind=relationship_claim_ungrounded");
+    const filteredReviews = await app.request("/api/reviews?kind=duplicate");
     expect(filteredReviews.status).toBe(200);
     expect(await filteredReviews.json()).toMatchObject({
       rows: [
         expect.objectContaining({
-          id: relationshipReview.id,
-          kind: "relationship_claim_ungrounded",
+          id: duplicateReview.id,
+          kind: "duplicate",
         }),
       ],
     });

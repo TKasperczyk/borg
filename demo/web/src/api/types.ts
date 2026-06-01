@@ -554,7 +554,6 @@ export type ReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "relationship_claim_ungrounded"
   | "creator_directive_reconciliation";
 
 export type ReviewResolution =

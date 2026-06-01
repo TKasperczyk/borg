@@ -2896,7 +2896,9 @@ function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
   const counts = zeroCounts(REVIEW_KINDS);
 
   for (const item of borg.review.list({ openOnly: true })) {
-    counts[item.kind] += 1;
+    if (Object.hasOwn(counts, item.kind)) {
+      counts[item.kind as ReviewKind] += 1;
+    }
   }
 
   return counts;

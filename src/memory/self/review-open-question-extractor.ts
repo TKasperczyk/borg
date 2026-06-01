@@ -6,7 +6,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { reviewKindSchema, type ReviewQueueItem } from "../semantic/review-queue.js";
+import type { ReviewQueueItem } from "../semantic/review-queue.js";
 import {
   episodeIdHelpers,
   parseEpisodeId,
@@ -66,7 +66,7 @@ export type ReviewOpenQuestionContext = {
 export type ReviewOpenQuestionExtractorDegradedEvent = {
   reason: "llm_unavailable" | "llm_call_failed" | "missing_tool" | "invalid_payload";
   review_item_id: number;
-  review_kind: z.infer<typeof reviewKindSchema>;
+  review_kind: ReviewQueueItem["kind"];
   error?: string;
 };
 
