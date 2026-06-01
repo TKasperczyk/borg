@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
+  createCreatorDirectiveId,
   createEntityId,
   createSessionId,
   createStreamEntryId,
@@ -13,8 +14,13 @@ import type {
   CreatorDirectiveQueueInput,
   DisclosurePolicy,
 } from "../../memory/creator-directives/index.js";
+import { creatorDirectiveSchema } from "../../memory/creator-directives/index.js";
 import { createOfflineTestHarness, type OfflineTestHarness } from "../test-support.js";
-import { CreatorDirectiveReconcilerProcess } from "./index.js";
+import {
+  CreatorDirectiveReconcilerProcess,
+  mergeWidensDisclosure,
+  revokeWidensDisclosure,
+} from "./index.js";
 
 const TOOL_NAME = "EmitDirectiveReconciliation";
 
@@ -22,6 +28,9 @@ function reconciliationResponse(
   judgments: Array<{
     member_ids: string[];
     verdict: "same_intent" | "conflicting" | "independent";
+    resolution: "supersede_to_survivor" | "revoke_stale" | "keep_independent" | "escalate";
+    survivor_id?: string | null;
+    loser_ids?: string[];
     confidence: "high" | "medium" | "low";
     rationale: string;
   }>,
@@ -36,7 +45,11 @@ function reconciliationResponse(
         id: "toolu_1",
         name: TOOL_NAME,
         input: {
-          judgments,
+          judgments: judgments.map((judgment) => ({
+            survivor_id: null,
+            loser_ids: [],
+            ...judgment,
+          })),
         },
       },
     ],
@@ -92,6 +105,365 @@ function createProcess(harness: OfflineTestHarness): CreatorDirectiveReconcilerP
   });
 }
 
+const BOUNDARY_PROMPT = "A creator-defined confidentiality boundary applies.";
+
+const ORACLE_RENDER_RANK = {
+  omit: 0,
+  boundary: 1,
+  content: 2,
+} as const;
+
+const ORACLE_MENTION_RANK = {
+  never_mention: 0,
+  only_if_topic_raised: 1,
+  answer_if_asked: 2,
+  proactive: 3,
+} as const;
+
+const ORACLE_DENIED_RANK = {
+  omit: 0,
+  render_boundary_when_relevant: 1,
+} as const;
+
+type OracleRenderMode = keyof typeof ORACLE_RENDER_RANK;
+type OracleRealization = {
+  disclosure: number;
+  activation: number;
+  mention: number;
+  denied: number;
+  subject: number;
+};
+
+function makeDirectiveRecord(
+  overrides: {
+    id?: CreatorDirective["id"];
+    createdByEntityId?: EntityId;
+    subjectEntityId?: EntityId;
+    disclosurePolicy?: DisclosurePolicy;
+    activationPolicy?: ActivationPolicy;
+    priority?: number;
+  } = {},
+): CreatorDirective {
+  const subjectEntityId = overrides.subjectEntityId ?? createEntityId();
+
+  return creatorDirectiveSchema.parse({
+    id: overrides.id ?? createCreatorDirectiveId(),
+    record_version: 1,
+    status: "active",
+    kind: "subject_fact",
+    created_by_entity_id: overrides.createdByEntityId ?? createEntityId(),
+    source_session_id: createSessionId(),
+    authorization_stream_entry_ids: [createStreamEntryId()],
+    content_source_stream_entry_ids: [createStreamEntryId()],
+    subject_kind: "entity",
+    subject_entity_id: subjectEntityId,
+    semantic_slot: null,
+    canonical_fact: "The creator supplied a durable subject fact.",
+    operational_directive: null,
+    disclosure_policy: overrides.disclosurePolicy ?? disclosurePolicy(),
+    activation_policy: overrides.activationPolicy ?? activationPolicy(),
+    priority: overrides.priority ?? 5,
+    superseded_by: null,
+    revoked_reason: null,
+    created_at: 1_000,
+    updated_at: 1_000,
+  });
+}
+
+function seededRandom(seed: number): () => number {
+  let state = seed;
+
+  return () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+}
+
+function pick<T>(random: () => number, values: readonly T[]): T {
+  return values[Math.floor(random() * values.length)]!;
+}
+
+function randomSubset(
+  random: () => number,
+  values: readonly EntityId[],
+  options: { min: number; max?: number; excluded?: ReadonlySet<EntityId> },
+): EntityId[] {
+  const excluded = options.excluded ?? new Set<EntityId>();
+  const shuffled = [...values].filter((value) => !excluded.has(value)).sort(() => random() - 0.5);
+  const max = Math.min(options.max ?? shuffled.length, shuffled.length);
+  const length = options.min + Math.floor(random() * (max - options.min + 1));
+
+  return shuffled.slice(0, length);
+}
+
+function randomDisclosurePolicy(
+  random: () => number,
+  pool: readonly EntityId[],
+  subject: EntityId,
+): DisclosurePolicy {
+  const contentScope = pick(random, [
+    "operator_only",
+    "public",
+    "allow_list",
+    "subject_only",
+    "all_except",
+  ] as const);
+  const mentionPolicy = pick(random, [
+    "never_mention",
+    "only_if_topic_raised",
+    "answer_if_asked",
+    "proactive",
+  ] as const);
+  const deniedAudienceBehavior = pick(random, ["omit", "render_boundary_when_relevant"] as const);
+  const boundaryPrompt =
+    deniedAudienceBehavior === "render_boundary_when_relevant" ? BOUNDARY_PROMPT : null;
+  const base = {
+    subject_may_know: pick(random, [null, true] as const),
+    mention_policy: mentionPolicy,
+    denied_audience_behavior: deniedAudienceBehavior,
+    boundary_prompt: boundaryPrompt,
+    topic_tags: [],
+  };
+
+  if (contentScope === "operator_only") {
+    return disclosurePolicy({
+      ...base,
+      content_scope: contentScope,
+      subject_may_know: pick(random, [null, true, false] as const),
+    });
+  }
+
+  if (contentScope === "public") {
+    return disclosurePolicy({
+      ...base,
+      content_scope: contentScope,
+    });
+  }
+
+  if (contentScope === "allow_list") {
+    const allowed = randomSubset(random, pool, { min: 1 });
+    const excluded = randomSubset(random, pool, {
+      min: 0,
+      max: Math.max(0, pool.length - allowed.length),
+      excluded: new Set(allowed),
+    });
+
+    return disclosurePolicy({
+      ...base,
+      content_scope: contentScope,
+      allowed_entity_ids: allowed,
+      excluded_entity_ids: excluded,
+    });
+  }
+
+  if (contentScope === "subject_only") {
+    return disclosurePolicy({
+      ...base,
+      content_scope: contentScope,
+      subject_may_know: pick(random, [null, true] as const),
+    });
+  }
+
+  const subjectMayKnow = pick(random, [null, true, false] as const);
+  const excluded = new Set(randomSubset(random, pool, { min: 1 }));
+
+  if (subjectMayKnow === false) {
+    excluded.add(subject);
+  }
+
+  return disclosurePolicy({
+    ...base,
+    content_scope: contentScope,
+    excluded_entity_ids: [...excluded],
+    subject_may_know: subjectMayKnow,
+  });
+}
+
+function randomActivationPolicy(random: () => number, pool: readonly EntityId[]): ActivationPolicy {
+  const scope = pick(random, [
+    "same_as_disclosure",
+    "operator_only",
+    "public",
+    "allow_list",
+    "subject_only",
+    "all_except",
+  ] as const);
+
+  if (scope === "allow_list") {
+    const allowed = randomSubset(random, pool, { min: 1 });
+
+    return activationPolicy({
+      scope,
+      allowed_entity_ids: allowed,
+      excluded_entity_ids: randomSubset(random, pool, {
+        min: 0,
+        max: Math.max(0, pool.length - allowed.length),
+        excluded: new Set(allowed),
+      }),
+    });
+  }
+
+  if (scope === "all_except") {
+    return activationPolicy({
+      scope,
+      excluded_entity_ids: randomSubset(random, pool, { min: 1 }),
+    });
+  }
+
+  return activationPolicy({ scope });
+}
+
+function oracleDeniedMode(policy: DisclosurePolicy): OracleRenderMode {
+  return policy.denied_audience_behavior === "render_boundary_when_relevant" ? "boundary" : "omit";
+}
+
+function oracleDisclosureMode(directive: CreatorDirective, audience: EntityId): OracleRenderMode {
+  const policy = directive.disclosure_policy;
+  const excluded = new Set(policy.excluded_entity_ids);
+
+  if (excluded.has(audience)) {
+    return oracleDeniedMode(policy);
+  }
+
+  if (
+    directive.subject_entity_id !== null &&
+    policy.subject_may_know === false &&
+    audience === directive.subject_entity_id
+  ) {
+    return oracleDeniedMode(policy);
+  }
+
+  if (policy.content_scope === "public" || policy.content_scope === "all_except") {
+    return "content";
+  }
+
+  if (policy.content_scope === "allow_list") {
+    return new Set(policy.allowed_entity_ids).has(audience) ? "content" : "omit";
+  }
+
+  if (policy.content_scope === "subject_only") {
+    return directive.subject_entity_id !== null && audience === directive.subject_entity_id
+      ? "content"
+      : "omit";
+  }
+
+  return audience === directive.created_by_entity_id ? "content" : "omit";
+}
+
+function oracleActivationActive(directive: CreatorDirective, audience: EntityId): boolean {
+  const policy = directive.activation_policy;
+
+  if (policy.scope === "same_as_disclosure") {
+    return oracleDisclosureMode(directive, audience) !== "omit";
+  }
+
+  if (policy.scope === "operator_only") {
+    return audience === directive.created_by_entity_id;
+  }
+
+  if (policy.scope === "public") {
+    return true;
+  }
+
+  if (policy.scope === "allow_list") {
+    const excluded = new Set(policy.excluded_entity_ids);
+
+    if (excluded.has(audience)) {
+      return false;
+    }
+
+    return new Set(policy.allowed_entity_ids).has(audience);
+  }
+
+  if (policy.scope === "subject_only") {
+    return directive.subject_entity_id !== null && audience === directive.subject_entity_id;
+  }
+
+  return !new Set(policy.excluded_entity_ids).has(audience);
+}
+
+function oracleRealization(directive: CreatorDirective, audience: EntityId): OracleRealization {
+  return {
+    disclosure: ORACLE_RENDER_RANK[oracleDisclosureMode(directive, audience)],
+    activation: oracleActivationActive(directive, audience) ? 1 : 0,
+    mention: ORACLE_MENTION_RANK[directive.disclosure_policy.mention_policy],
+    denied: ORACLE_DENIED_RANK[directive.disclosure_policy.denied_audience_behavior],
+    subject: directive.disclosure_policy.subject_may_know === false ? 0 : 1,
+  };
+}
+
+function oracleFamilyRealization(
+  members: readonly CreatorDirective[],
+  audience: EntityId,
+): OracleRealization {
+  const realizations = members.map((member) => oracleRealization(member, audience));
+
+  return {
+    disclosure: Math.min(...realizations.map((item) => item.disclosure)),
+    activation: Math.min(...realizations.map((item) => item.activation)),
+    mention: Math.min(...realizations.map((item) => item.mention)),
+    denied: Math.min(...realizations.map((item) => item.denied)),
+    subject: Math.min(...realizations.map((item) => item.subject)),
+  };
+}
+
+function realizationStrictlyExpands(post: OracleRealization, pre: OracleRealization): boolean {
+  const postValues = [post.disclosure, post.activation, post.mention, post.denied, post.subject];
+  const preValues = [pre.disclosure, pre.activation, pre.mention, pre.denied, pre.subject];
+
+  return (
+    postValues.every((value, index) => value >= preValues[index]!) &&
+    postValues.some((value, index) => value > preValues[index]!)
+  );
+}
+
+function oracleAudienceUniverse(
+  members: readonly CreatorDirective[],
+  pool: readonly EntityId[],
+): EntityId[] {
+  const audienceIds = new Set(pool);
+
+  for (const member of members) {
+    audienceIds.add(member.created_by_entity_id);
+    if (member.subject_entity_id !== null) {
+      audienceIds.add(member.subject_entity_id);
+    }
+    for (const id of member.disclosure_policy.allowed_entity_ids) {
+      audienceIds.add(id);
+    }
+    for (const id of member.disclosure_policy.excluded_entity_ids) {
+      audienceIds.add(id);
+    }
+    for (const id of member.activation_policy.allowed_entity_ids) {
+      audienceIds.add(id);
+    }
+    for (const id of member.activation_policy.excluded_entity_ids) {
+      audienceIds.add(id);
+    }
+  }
+
+  return [...audienceIds];
+}
+
+function oraclePostStrictlyExpandsFamily(
+  survivor: CreatorDirective,
+  losers: readonly CreatorDirective[],
+  pool: readonly EntityId[],
+): boolean {
+  const beforeMembers = [survivor, ...losers];
+
+  for (const audience of oracleAudienceUniverse(beforeMembers, pool)) {
+    const before = oracleFamilyRealization(beforeMembers, audience);
+    const after = oracleFamilyRealization([survivor], audience);
+
+    if (realizationStrictlyExpands(after, before)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 describe("CreatorDirectiveReconcilerProcess", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -126,6 +498,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [older.id, survivor.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: survivor.id,
+          loser_ids: [older.id],
           confidence: "high",
           rationale: "Both records express the same creator directive.",
         },
@@ -174,7 +549,84 @@ describe("CreatorDirectiveReconcilerProcess", () => {
     });
   });
 
-  it("routes same content with different scope to review without mutation", async () => {
+  it("revokes stale equal-or-more-permissive facts and reverses the revoke", async () => {
+    const creator = createEntityId();
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const stale = queueDirective(harness, {
+      createdByEntityId: creator,
+      canonicalFact: "Atlas rollback status may be discussed broadly.",
+      disclosurePolicy: disclosurePolicy({
+        content_scope: "public",
+      }),
+      priority: 1,
+      createdAt: 1_000,
+    });
+    const survivor = queueDirective(harness, {
+      createdByEntityId: creator,
+      canonicalFact: "Atlas rollback status is operator-only.",
+      disclosurePolicy: disclosurePolicy({
+        content_scope: "operator_only",
+      }),
+      priority: 9,
+      createdAt: 2_000,
+    });
+    const llm = harness.llmClient as FakeLLMClient;
+    llm.pushResponse(
+      reconciliationResponse([
+        {
+          member_ids: [stale.id, survivor.id],
+          verdict: "same_intent",
+          resolution: "revoke_stale",
+          survivor_id: survivor.id,
+          loser_ids: [stale.id],
+          confidence: "high",
+          rationale: "The older record is stale and the newer record replaces it.",
+        },
+      ]),
+    );
+
+    const result = await createProcess(harness).run(harness.createContext(), {});
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toMatchObject({
+      action: "creator_directive_revoke",
+      targets: {
+        survivor_id: survivor.id,
+        loser_ids: [stale.id],
+      },
+    });
+    expect(harness.creatorDirectiveRepository.get(survivor.id)).toMatchObject({
+      status: "active",
+    });
+    expect(harness.creatorDirectiveRepository.get(stale.id)).toMatchObject({
+      status: "revoked",
+      record_version: 2,
+    });
+
+    const audit = harness.auditLog.list({ process: "creator-directive-reconciler" })[0];
+    expect(audit).toMatchObject({
+      action: "creator_directive_revoke",
+      targets: {
+        survivor_id: survivor.id,
+        loser_ids: [stale.id],
+      },
+    });
+
+    await harness.auditLog.revert(audit!.id, "test");
+
+    expect(harness.creatorDirectiveRepository.get(stale.id)).toMatchObject({
+      status: "active",
+      revoked_reason: null,
+      record_version: 3,
+    });
+  });
+
+  it("routes disclosure-widening resolutions to review without mutation", async () => {
     const creator = createEntityId();
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient(),
@@ -201,6 +653,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [publicDirective.id, operatorOnlyDirective.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: publicDirective.id,
+          loser_ids: [operatorOnlyDirective.id],
           confidence: "high",
           rationale: "The intent is the same, but scope must be handled outside the LLM.",
         },
@@ -214,13 +669,13 @@ describe("CreatorDirectiveReconcilerProcess", () => {
     expect(result.changes[0]).toMatchObject({
       action: "enqueue_creator_directive_reconciliation_review",
       targets: {
-        subkind: "same_content_different_scope",
+        subkind: "disclosure_widening",
       },
     });
     expect(review).toMatchObject({
       kind: "creator_directive_reconciliation",
       refs: {
-        subkind: "same_content_different_scope",
+        subkind: "disclosure_widening",
         directive_ids: [operatorOnlyDirective.id, publicDirective.id].sort(),
       },
     });
@@ -233,6 +688,313 @@ describe("CreatorDirectiveReconcilerProcess", () => {
     });
     expect(harness.creatorDirectiveRepository.get(publicDirective.id)?.status).toBe("active");
     expect(harness.creatorDirectiveRepository.get(operatorOnlyDirective.id)?.status).toBe("active");
+  });
+
+  it("routes different-creator operator-only merges to disclosure widening review", async () => {
+    const firstCreator = createEntityId();
+    const secondCreator = createEntityId();
+    const subject = createEntityId();
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const first = queueDirective(harness, {
+      createdByEntityId: firstCreator,
+      subjectKind: "entity",
+      subjectEntityId: subject,
+      canonicalFact: "Keep the Atlas operator note private.",
+      disclosurePolicy: disclosurePolicy({
+        content_scope: "operator_only",
+      }),
+    });
+    const survivor = queueDirective(harness, {
+      createdByEntityId: secondCreator,
+      subjectKind: "entity",
+      subjectEntityId: subject,
+      canonicalFact: "Keep the Atlas operator note private.",
+      disclosurePolicy: disclosurePolicy({
+        content_scope: "operator_only",
+      }),
+    });
+    const llm = harness.llmClient as FakeLLMClient;
+    llm.pushResponse(
+      reconciliationResponse([
+        {
+          member_ids: [first.id, survivor.id],
+          verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: survivor.id,
+          loser_ids: [first.id],
+          confidence: "high",
+          rationale: "The records express the same directive.",
+        },
+      ]),
+    );
+
+    const result = await createProcess(harness).run(harness.createContext(), {});
+    const review = harness.reviewQueueRepository.getOpen()[0];
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toMatchObject({
+      action: "enqueue_creator_directive_reconciliation_review",
+      targets: {
+        subkind: "disclosure_widening",
+      },
+    });
+    expect(review).toMatchObject({
+      refs: {
+        subkind: "disclosure_widening",
+        directive_ids: [first.id, survivor.id].sort(),
+      },
+    });
+    expect(harness.creatorDirectiveRepository.get(first.id)?.status).toBe("active");
+    expect(harness.creatorDirectiveRepository.get(survivor.id)?.status).toBe("active");
+  });
+
+  it("escalates deterministic disclosure-widening guard axes", () => {
+    const creator = createEntityId();
+    const otherCreator = createEntityId();
+    const subject = createEntityId();
+    const first = createEntityId();
+    const second = createEntityId();
+    const base = {
+      createdByEntityId: creator,
+      subjectEntityId: subject,
+    };
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({ content_scope: "public" }),
+          activationPolicy: activationPolicy({ scope: "public" }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({ content_scope: "public" }),
+            activationPolicy: activationPolicy({ scope: "operator_only" }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          createdByEntityId: otherCreator,
+          subjectEntityId: subject,
+          disclosurePolicy: disclosurePolicy({ content_scope: "operator_only" }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({ content_scope: "operator_only" }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [first],
+          }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({
+              content_scope: "all_except",
+              excluded_entity_ids: [first, second],
+            }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+            subject_may_know: true,
+          }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({
+              content_scope: "operator_only",
+              subject_may_know: false,
+            }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [first, second],
+          }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({
+              content_scope: "allow_list",
+              allowed_entity_ids: [first],
+            }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+            mention_policy: "proactive",
+          }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({
+              content_scope: "public",
+              mention_policy: "never_mention",
+            }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    expect(
+      mergeWidensDisclosure(
+        makeDirectiveRecord({
+          ...base,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+            denied_audience_behavior: "render_boundary_when_relevant",
+            boundary_prompt: BOUNDARY_PROMPT,
+          }),
+        }),
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({
+              content_scope: "public",
+              denied_audience_behavior: "omit",
+            }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+
+    const garbageScope = makeDirectiveRecord({
+      ...base,
+      disclosurePolicy: disclosurePolicy({ content_scope: "public" }),
+    }) as CreatorDirective;
+
+    expect(
+      mergeWidensDisclosure(
+        {
+          ...garbageScope,
+          disclosure_policy: {
+            ...garbageScope.disclosure_policy,
+            content_scope: "garbage",
+          },
+        } as unknown as CreatorDirective,
+        [
+          makeDirectiveRecord({
+            ...base,
+            disclosurePolicy: disclosurePolicy({ content_scope: "public" }),
+          }),
+        ],
+      ),
+    ).toBe(true);
+  });
+
+  it("fuzzes disclosure and activation widening against an independent oracle", () => {
+    const random = seededRandom(87_001);
+    const pool = Array.from({ length: 6 }, () => createEntityId());
+    const subject = pool[0]!;
+    const creatorPool = [pool[1]!, pool[2]!, pool[3]!];
+    const cases: Array<{
+      index: number;
+      survivor: CreatorDirective;
+      loser: CreatorDirective;
+    }> = [
+      {
+        index: -1,
+        survivor: makeDirectiveRecord({
+          createdByEntityId: creatorPool[1]!,
+          subjectEntityId: subject,
+          disclosurePolicy: disclosurePolicy({ content_scope: "operator_only" }),
+          activationPolicy: activationPolicy({ scope: "same_as_disclosure" }),
+        }),
+        loser: makeDirectiveRecord({
+          createdByEntityId: creatorPool[0]!,
+          subjectEntityId: subject,
+          disclosurePolicy: disclosurePolicy({ content_scope: "operator_only" }),
+          activationPolicy: activationPolicy({ scope: "same_as_disclosure" }),
+        }),
+      },
+    ];
+
+    for (let index = 0; index < 400; index += 1) {
+      cases.push({
+        index,
+        survivor: makeDirectiveRecord({
+          createdByEntityId: pick(random, creatorPool),
+          subjectEntityId: subject,
+          disclosurePolicy: randomDisclosurePolicy(random, pool, subject),
+          activationPolicy: randomActivationPolicy(random, pool),
+        }),
+        loser: makeDirectiveRecord({
+          createdByEntityId: pick(random, creatorPool),
+          subjectEntityId: subject,
+          disclosurePolicy: randomDisclosurePolicy(random, pool, subject),
+          activationPolicy: randomActivationPolicy(random, pool),
+        }),
+      });
+    }
+
+    for (const { index, survivor, loser } of cases) {
+      const oracleExpands = oraclePostStrictlyExpandsFamily(survivor, [loser], pool);
+
+      if (oracleExpands) {
+        const failureContext = {
+          index,
+          survivor: {
+            created_by_entity_id: survivor.created_by_entity_id,
+            disclosure_policy: survivor.disclosure_policy,
+            activation_policy: survivor.activation_policy,
+          },
+          loser: {
+            created_by_entity_id: loser.created_by_entity_id,
+            disclosure_policy: loser.disclosure_policy,
+            activation_policy: loser.activation_policy,
+          },
+        };
+        expect(mergeWidensDisclosure(survivor, [loser]), JSON.stringify(failureContext)).toBe(true);
+        expect(revokeWidensDisclosure(survivor, [loser]), JSON.stringify(failureContext)).toBe(
+          true,
+        );
+      }
+    }
   });
 
   it("routes conflicts to review", async () => {
@@ -270,6 +1032,7 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [allowFirst.id, allowSecond.id],
           verdict: "conflicting",
+          resolution: "escalate",
           confidence: "high",
           rationale: "The directives choose incompatible routing outcomes.",
         },
@@ -312,6 +1075,7 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [first.id, second.id],
           verdict: "independent",
+          resolution: "keep_independent",
           confidence: "high",
           rationale: "The directives can coexist without redundancy.",
         },
@@ -352,6 +1116,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [english.id, spanish.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: spanish.id,
+          loser_ids: [english.id],
           confidence: "high",
           rationale: "The two records express the same directive across languages.",
         },
@@ -398,6 +1165,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [firstLoser.id, secondLoser.id, survivor.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: survivor.id,
+          loser_ids: [firstLoser.id, secondLoser.id],
           confidence: "high",
           rationale: "One directive restates the other.",
         },
@@ -451,6 +1221,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [firstLoser.id, secondLoser.id, survivor.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: survivor.id,
+          loser_ids: [firstLoser.id, secondLoser.id],
           confidence: "high",
           rationale: "The records are redundant.",
         },
@@ -527,6 +1300,9 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [first.id, second.id],
           verdict: "same_intent",
+          resolution: "supersede_to_survivor",
+          survivor_id: second.id,
+          loser_ids: [first.id],
           confidence: "high",
           rationale: "The records are redundant.",
         },
@@ -568,6 +1344,7 @@ describe("CreatorDirectiveReconcilerProcess", () => {
         {
           member_ids: [first.id, second.id],
           verdict: "conflicting",
+          resolution: "escalate",
           confidence: "high",
           rationale: "The directives choose incompatible recipients.",
         },

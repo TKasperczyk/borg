@@ -452,7 +452,21 @@ export type CreatorDirectiveFamilySupersedeResult = Array<{
   record_version: number;
 }>;
 
+export type CreatorDirectiveFamilyRevokeInput = {
+  losers: Array<{
+    id: CreatorDirectiveId;
+    expectedVersion: number;
+  }>;
+  reason: string;
+};
+
+export type CreatorDirectiveFamilyRevokeResult = Array<{
+  id: CreatorDirectiveId;
+  record_version: number;
+}>;
+
 class CreatorDirectiveFamilySupersedeAbort extends Error {}
+class CreatorDirectiveFamilyRevokeAbort extends Error {}
 
 export class CreatorDirectiveRepository {
   private readonly clock: Clock;
@@ -877,6 +891,89 @@ export class CreatorDirectiveRepository {
     });
   }
 
+  revokeFamilyAtomic(
+    input: CreatorDirectiveFamilyRevokeInput,
+  ): CreatorDirectiveFamilyRevokeResult | null {
+    const parsedReason = z.string().trim().min(1).parse(input.reason);
+    const losers = z
+      .array(
+        z.object({
+          id: creatorDirectiveIdSchema,
+          expectedVersion: z.number().int().positive(),
+        }),
+      )
+      .min(1)
+      .parse(input.losers);
+    const loserIds = new Set<CreatorDirectiveId>();
+
+    for (const loser of losers) {
+      if (loserIds.has(loser.id)) {
+        return null;
+      }
+
+      loserIds.add(loser.id);
+    }
+
+    const run = this.db.transaction((): CreatorDirectiveFamilyRevokeResult | null => {
+      const currentLosers: CreatorDirective[] = [];
+
+      for (const loser of losers) {
+        const current = this.get(loser.id);
+
+        if (
+          current === null ||
+          current.status !== "active" ||
+          current.record_version !== loser.expectedVersion
+        ) {
+          return null;
+        }
+
+        currentLosers.push(current);
+      }
+
+      const updatedAt = this.clock.now();
+      const updated: CreatorDirectiveFamilyRevokeResult = [];
+
+      for (const current of currentLosers) {
+        const result = this.db
+          .prepare(
+            `
+              UPDATE creator_directives
+              SET status = 'revoked',
+                  revoked_reason = ?,
+                  updated_at = ?,
+                  record_version = record_version + 1
+              WHERE id = ?
+                AND status = 'active'
+                AND record_version = ?
+            `,
+          )
+          .run(parsedReason, updatedAt, current.id, current.record_version);
+
+        if (result.changes === 0) {
+          throw new CreatorDirectiveFamilyRevokeAbort();
+        }
+
+        updated.push({
+          id: current.id,
+          record_version: current.record_version + 1,
+        });
+      }
+
+      return updated;
+    });
+
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof CreatorDirectiveFamilyRevokeAbort) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
   revoke(id: CreatorDirectiveId, reason: string): CreatorDirective | null {
     const parsedId = parseCreatorDirectiveId(id);
     const parsedReason = z.string().trim().min(1).parse(reason);
@@ -911,6 +1008,48 @@ export class CreatorDirectiveRepository {
       record_version: current.record_version + 1,
       status: "revoked",
       revoked_reason: parsedReason,
+      updated_at: updatedAt,
+    });
+  }
+
+  reverseRevoke(id: CreatorDirectiveId, expectedRecordVersion: number): CreatorDirective | null {
+    const parsedId = parseCreatorDirectiveId(id);
+    const parsedRecordVersion = z.number().int().positive().parse(expectedRecordVersion);
+    const current = this.get(parsedId);
+
+    if (
+      current === null ||
+      current.status !== "revoked" ||
+      current.record_version !== parsedRecordVersion
+    ) {
+      return null;
+    }
+
+    const updatedAt = this.clock.now();
+    const result = this.db
+      .prepare(
+        `
+          UPDATE creator_directives
+          SET status = 'active',
+              revoked_reason = NULL,
+              updated_at = ?,
+              record_version = record_version + 1
+          WHERE id = ?
+            AND status = 'revoked'
+            AND record_version = ?
+        `,
+      )
+      .run(updatedAt, parsedId, parsedRecordVersion);
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    return creatorDirectiveSchema.parse({
+      ...current,
+      record_version: current.record_version + 1,
+      status: "active",
+      revoked_reason: null,
       updated_at: updatedAt,
     });
   }

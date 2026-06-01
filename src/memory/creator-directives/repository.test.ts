@@ -1401,6 +1401,40 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
+  it("reverses a revoke only when record version still matches", () => {
+    const { db, repository, clock } = createRepository();
+
+    try {
+      const directive = repository.queue(queueInput({ priority: 3 }));
+
+      clock.set(2_000);
+      const revoked = repository.revoke(directive.id, "creator withdrew it");
+
+      expect(revoked).toMatchObject({
+        id: directive.id,
+        status: "revoked",
+        revoked_reason: "creator withdrew it",
+        record_version: 2,
+      });
+
+      expect(repository.reverseRevoke(directive.id, 1)).toBeNull();
+
+      clock.set(3_000);
+      const restored = repository.reverseRevoke(directive.id, 2);
+
+      expect(restored).toMatchObject({
+        id: directive.id,
+        status: "active",
+        revoked_reason: null,
+        record_version: 3,
+        updated_at: 3_000,
+      });
+      expect(repository.reverseRevoke(directive.id, 3)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("atomically supersedes a directive family only when all planned rows still match", () => {
     const { db, repository, clock } = createRepository();
 
@@ -1473,6 +1507,74 @@ describe("CreatorDirectiveRepository", () => {
         record_version: 1,
       });
       expect(repository.get(survivor.id)).toMatchObject({
+        status: "revoked",
+        record_version: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("atomically revokes a directive family only when all planned rows still match", () => {
+    const { db, repository, clock } = createRepository();
+
+    try {
+      const firstLoser = repository.queue(queueInput({ priority: 1 }));
+      const secondLoser = repository.queue(queueInput({ priority: 2 }));
+
+      clock.set(2_000);
+      const revoked = repository.revokeFamilyAtomic({
+        losers: [
+          { id: firstLoser.id, expectedVersion: 1 },
+          { id: secondLoser.id, expectedVersion: 1 },
+        ],
+        reason: "creator replaced stale directives",
+      });
+
+      expect(revoked).toEqual([
+        { id: firstLoser.id, record_version: 2 },
+        { id: secondLoser.id, record_version: 2 },
+      ]);
+      expect(repository.get(firstLoser.id)).toMatchObject({
+        status: "revoked",
+        revoked_reason: "creator replaced stale directives",
+        record_version: 2,
+        updated_at: 2_000,
+      });
+      expect(repository.get(secondLoser.id)).toMatchObject({
+        status: "revoked",
+        revoked_reason: "creator replaced stale directives",
+        record_version: 2,
+        updated_at: 2_000,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("aborts a family revoke without writes when any planned row is stale", () => {
+    const { db, repository } = createRepository();
+
+    try {
+      const firstLoser = repository.queue(queueInput({ priority: 1 }));
+      const secondLoser = repository.queue(queueInput({ priority: 2 }));
+
+      repository.revoke(secondLoser.id, "creator withdrew it");
+
+      const revoked = repository.revokeFamilyAtomic({
+        losers: [
+          { id: firstLoser.id, expectedVersion: 1 },
+          { id: secondLoser.id, expectedVersion: 1 },
+        ],
+        reason: "creator replaced stale directives",
+      });
+
+      expect(revoked).toBeNull();
+      expect(repository.get(firstLoser.id)).toMatchObject({
+        status: "active",
+        record_version: 1,
+      });
+      expect(repository.get(secondLoser.id)).toMatchObject({
         status: "revoked",
         record_version: 2,
       });

@@ -4,6 +4,10 @@ export {
   creatorDirectiveDisclosureBlocksPrivateOperation,
   creatorDirectiveHasEntity,
   evaluateCreatorDirectiveRenderMode,
+  type CreatorDirectiveFamilyRevokeInput,
+  type CreatorDirectiveFamilyRevokeResult,
+  type CreatorDirectiveFamilySupersedeInput,
+  type CreatorDirectiveFamilySupersedeResult,
   type CreatorDirectiveRepositoryOptions,
 } from "./repository.js";
 export {
