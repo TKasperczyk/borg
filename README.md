@@ -36,7 +36,7 @@ flowchart TD
     Stream[("Append-only stream<br/>audit log + durable inbox")]
     Bands[("Eight memory bands<br/>+ ephemeral working memory")]
     Loop["Cognitive loop<br/>perceive · attend · deliberate · act · reflect"]
-    Dream["Offline dream cycle<br/>ten maintenance processes"]
+    Dream["Offline dream cycle<br/>eleven maintenance processes"]
 
     Stream -->|derive| Bands
     Bands -->|retrieve| Loop

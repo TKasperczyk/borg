@@ -376,6 +376,17 @@ export class CorrectivePreferenceTurnService {
     });
   }
 
+  // A creator/operator cross-audience rule belongs to the creator-directive
+  // band, not commitments, so we suppress it here and let the creator-directive
+  // extractor (active under the same isUserTurn + operator-audience + creator
+  // condition) own it. This is a SAFE, loss-TOLERANT partition, not a strictly
+  // lossless handoff: the deferral fires on any non-null cross-audience target,
+  // BEFORE resolveCorrectiveRestrictedAudience would validate/fall back, so a
+  // malformed or unlisted target is dropped rather than misfiled as a
+  // current-audience commitment. That is deliberate -- routing such a candidate
+  // into a commitment fallback would leak malformed operator authority into the
+  // commitments band. The deferral trace records the requested target so a
+  // dropped candidate stays explainable.
   private shouldDeferCrossAudienceCreatorRule(input: {
     candidate: CorrectivePreferenceCandidate;
     isUserTurn: boolean;

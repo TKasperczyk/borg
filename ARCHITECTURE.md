@@ -798,7 +798,7 @@ the model ignore visible evidence?
 Shared State is a compact, audience-scoped record of what Borg and a specific
 audience currently share (entry point: `src/cognition/shared-state/index.ts`).
 It captures decisions, live threads, tentative understandings, invalidated
-claims, pending state, and locked canonical facts that matter for continuity.
+claims, and locked canonical facts that matter for continuity.
 
 Shared State is audience-scoped because "what we know" depends on who "we" is.
 A private understanding with one person is not automatically shared with a

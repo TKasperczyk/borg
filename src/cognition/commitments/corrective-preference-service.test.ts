@@ -1203,6 +1203,63 @@ describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
     );
   });
 
+  it("suppresses creator/operator cross-audience candidates even when the target is unlisted (intentional lossy edge)", async () => {
+    // Documents the safe/loss-tolerant edge of the authority partition: the
+    // creator/operator deferral fires on ANY non-null cross-audience target,
+    // BEFORE resolveCorrectiveRestrictedAudience would validate it and fall
+    // back to the current audience (see the non-creator case above, which DOES
+    // fall back). So a creator's unlisted/invalid cross-audience target is
+    // suppressed -- NOT misfiled as a current-audience commitment. The
+    // directive band owns operator cross-audience policy; a malformed target is
+    // a safe miss, and the deferral trace records the requested target.
+    const operatorAudience = createEntityId();
+    const groupAudience = createEntityId();
+    const unlistedAudience = createEntityId();
+    const creatorId = createEntityId();
+    const emit = vi.fn();
+    const { service, addCommitment } = makeService({
+      enabled: true,
+      includePayloads: false,
+      emit,
+    });
+
+    const result = await service.extractAndApply(
+      turnInput({
+        audienceEntityId: operatorAudience,
+        currentSenderEntityId: creatorId,
+        currentSenderBorgRole: "creator",
+        sessionAudienceRole: "operator",
+        appliesToAudienceEntityId: unlistedAudience,
+        crossAudienceTargeting: {
+          allowed: true,
+          candidateAudiences: [{ entity_id: groupAudience, label: "Project Crew" }],
+        },
+      }),
+    );
+
+    expect(result.commitment).toBeNull();
+    expect(result.commitmentSupersession).toBeNull();
+
+    await service.persistCommitment({
+      commitment: result.commitment,
+      supersession: result.commitmentSupersession,
+      turnId: "turn-cross-audience",
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+    });
+
+    expect(addCommitment).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
+      "corrective_preference.cross_audience_creator_deferred",
+      expect.objectContaining({
+        validationStatus: "deferred",
+        reason: "creator_operator_cross_audience_deferred_to_creator_directive",
+        requested_audience_entity_id: unlistedAudience,
+        current_sender_entity_id: creatorId,
+      }),
+    );
+  });
+
   it("keeps non-creator cross-audience candidates in commitments", async () => {
     const operatorAudience = createEntityId();
     const groupAudience = createEntityId();
