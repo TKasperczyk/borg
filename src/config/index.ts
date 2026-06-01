@@ -516,11 +516,18 @@ const configBaseSchema = z.object({
   autonomy: z
     .object({
       // Self-initiated cognition is part of the architecture's "autonomous
-      // being" framing. Default on so a fresh deployment exercises the
-      // wake-source triggers (commitment expiring, open-question dormant,
-      // goal follow-up due, executive-focus due) once a runtime (daemon, ...)
-      // calls scheduler.start(). Library callers stay in control because
-      // start() is still explicit. maxWakesPerWindow caps the cost.
+      // being" framing. The scheduler skeleton is default on (a runtime calls
+      // scheduler.start(); library callers stay in control because start() is
+      // explicit, and maxWakesPerWindow caps the cost). But only the wake
+      // sources that can actually fire in the current regime are enabled by
+      // default: the event-driven conditions (commitment_revoked,
+      // open_question_urgency_bump), executive-focus-due, and the deliberate
+      // scheduled-wake lever. The time-threshold triggers (commitment_expiring,
+      // open_question_dormant, goal_followup_due) are default OFF -- they are
+      // structurally inert until the underlying data carries the signal they
+      // key on (commitments rarely set expires_at; dormancy/staleness windows
+      // are 7-14 days against memory that is currently days old). Their modules
+      // are retained; flip them on per-deployment once that data matures.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
@@ -556,13 +563,17 @@ const configBaseSchema = z.object({
         .object({
           commitmentExpiring: z
             .object({
-              enabled: z.boolean().default(true),
+              // Default off: commitments rarely carry expires_at, so this
+              // trigger is structurally inert. See the autonomy comment above.
+              enabled: z.boolean().default(false),
               lookaheadMs: z.number().int().positive().default(86_400_000),
             })
             .prefault({}),
           openQuestionDormant: z
             .object({
-              enabled: z.boolean().default(true),
+              // Default off: the 7-day dormancy window is inert against
+              // memory that is currently days old. See the comment above.
+              enabled: z.boolean().default(false),
               dormantMs: z.number().int().positive().default(604_800_000),
             })
             .prefault({}),
@@ -582,7 +593,9 @@ const configBaseSchema = z.object({
             .prefault({}),
           goalFollowupDue: z
             .object({
-              enabled: z.boolean().default(true),
+              // Default off: the 7-14 day follow-up/stale windows are inert
+              // against memory that is currently days old. See comment above.
+              enabled: z.boolean().default(false),
               lookaheadMs: z.number().int().positive().default(604_800_000),
               staleMs: z.number().int().positive().default(1_209_600_000),
             })
