@@ -9,7 +9,7 @@ import type {
 } from "../../cognition/tracing/tracer.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
-import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
+import { createSemanticNodeId, createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -18,6 +18,7 @@ import {
 import { ReviewResolverProcess } from "./index.js";
 
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
+const NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME = "EmitNewInsightVerdict";
 
 type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 type TraceEvent = { event: TurnTraceEventName } & TurnTraceData;
@@ -45,6 +46,22 @@ function resolverResponse(input: Record<string, unknown>): LLMCompleteResult {
       {
         id: "toolu_review_resolver",
         name: REVIEW_RESOLVER_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
+function newInsightResolverResponse(input: Record<string, unknown>): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 7,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_new_insight_review_resolver",
+        name: NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME,
         input,
       },
     ],
@@ -88,6 +105,56 @@ async function insertAssistantSource(harness: OfflineHarness, content: string) {
   );
 
   return { entry, episode };
+}
+
+function pendingNewInsightInsertRefs(input: {
+  episodeIds: Episode["id"][];
+  nodeId?: ReturnType<typeof createSemanticNodeId>;
+  label?: string;
+  description?: string;
+  confidence?: number;
+  clusterKey?: string;
+}) {
+  const nodeId = input.nodeId ?? createSemanticNodeId();
+  const clusterKey = input.clusterKey ?? "cluster:new-insight";
+
+  return {
+    node_ids: [nodeId],
+    episode_ids: input.episodeIds,
+    evidence_cluster_key: clusterKey,
+    evidence_cluster_size: input.episodeIds.length,
+    reflector_pending_insight: {
+      target: {
+        mode: "insert" as const,
+        node: {
+          id: nodeId,
+          kind: "proposition",
+          label: input.label ?? "Rollback planning preference",
+          description:
+            input.description ?? "Sol treats rollback planning as important for release work.",
+          domain: null,
+          aliases: [],
+          confidence: input.confidence ?? 0.5,
+          source_episode_ids: input.episodeIds,
+          created_at: 1_000_000,
+          updated_at: 1_000_000,
+          last_verified_at: 1_000_000,
+          embedding: [0, 0, 1, 0],
+          archived: false,
+          superseded_by: null,
+          status: "active",
+          corrected_by: null,
+          superseded_at: null,
+        },
+      },
+      candidate_support_edges: [],
+      evidence_cluster: {
+        key: clusterKey,
+        episode_ids: input.episodeIds,
+        size: input.episodeIds.length,
+      },
+    },
+  };
 }
 
 function overseerFlag(input: {
@@ -463,6 +530,235 @@ describe("review resolver process", () => {
     });
     expect(storedFirst?.status).toBe("active");
     expect(storedSecond?.status).toBe("active");
+  });
+
+  it("accepts grounded new insight proposals through the existing review handler", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "Sol repeatedly asks for rollback plans before risky release changes.",
+    );
+    const nodeId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "New low-confidence insight extracted from cluster:release",
+      refs: pendingNewInsightInsertRefs({
+        nodeId,
+        episodeIds: [source.episode.id],
+        label: "Rollback planning preference",
+        description: "Sol values rollback planning before risky release changes.",
+      }),
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "accept",
+        confidence: "high",
+        rationale: "The supplied episode directly grounds a useful self-memory.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const stored = await harness.semanticNodeRepository.get(nodeId);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.errors).toEqual([]);
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "accept",
+    });
+    expect(stored).toMatchObject({
+      id: nodeId,
+      label: "Rollback planning preference",
+      description: "Sol values rollback planning before risky release changes.",
+    });
+    expect(llm.requests[0]?.tools?.[0]?.name).toBe(NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME,
+    });
+    expect(prompt).toContain("evidence_fetch_bound");
+    expect(prompt).toContain("Sol repeatedly asks for rollback plans");
+  });
+
+  it("dismisses noisy new insight proposals without inserting the pending node", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "The release sync covered several unrelated notes.");
+    const nodeId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "New low-confidence insight extracted from cluster:noisy",
+      refs: pendingNewInsightInsertRefs({
+        nodeId,
+        episodeIds: [source.episode.id],
+        label: "Release sync identity shift",
+        description: "Sol has a stable identity shift around release syncs.",
+      }),
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "dismiss",
+        confidence: "high",
+        rationale: "The supplied evidence does not ground the proposed self-memory.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const stored = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(result.errors).toEqual([]);
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "dismiss",
+    });
+    expect(stored).toBeNull();
+  });
+
+  it("keeps ambiguous new insight proposals open with a resolver diagnostic", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "The release sync mentioned rollback planning once.",
+    );
+    const nodeId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "New low-confidence insight extracted from cluster:ambiguous",
+      refs: pendingNewInsightInsertRefs({
+        nodeId,
+        episodeIds: [source.episode.id],
+      }),
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "needs_manual",
+        confidence: "medium",
+        rationale: "The evidence is too ambiguous to decide automatically.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const stored = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(result.errors).toEqual([]);
+    expect(open).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "The evidence is too ambiguous to decide automatically.",
+      process: "review-resolver",
+    });
+    expect(stored).toBeNull();
+  });
+
+  it("processes new insight proposals only up to the configured cap", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const items: ReviewQueueItem[] = [];
+
+    for (let index = 0; index < 4; index += 1) {
+      const source = await insertSource(harness, `Release note ${index} mentioned rollback plans.`);
+      items.push(
+        harness.reviewQueueRepository.enqueue({
+          kind: "new_insight",
+          reason: `New low-confidence insight extracted from cluster:${index}`,
+          refs: pendingNewInsightInsertRefs({
+            nodeId: createSemanticNodeId(),
+            episodeIds: [source.episode.id],
+            clusterKey: `cluster:${index}`,
+          }),
+        }),
+      );
+      llm.pushResponse(
+        newInsightResolverResponse({
+          decision: "dismiss",
+          confidence: "high",
+          rationale: "The proposal should not be preserved.",
+        }),
+      );
+    }
+
+    const result = await runResolver(harness, 2);
+    const resolved = items.filter(
+      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at !== null,
+    );
+    const open = items.filter(
+      (item) => harness.reviewQueueRepository.get(item.id)?.resolved_at === null,
+    );
+
+    expect(result.changes).toHaveLength(2);
+    expect(resolved).toHaveLength(2);
+    expect(open).toHaveLength(2);
+    expect(llm.requests).toHaveLength(2);
+  });
+
+  it("leaves new insight proposals open when the review resolver budget is exhausted", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: {
+        offline: {
+          reviewResolver: {
+            budget: 10,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "Sol wants evidence before retaining memories.");
+    const nodeId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "New low-confidence insight extracted from cluster:budget",
+      refs: pendingNewInsightInsertRefs({
+        nodeId,
+        episodeIds: [source.episode.id],
+      }),
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "accept",
+        confidence: "high",
+        rationale: "The supplied episode grounds the proposed self-memory.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const stored = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(result.budget_exhausted).toBe(true);
+    expect(result.tokens_used).toBe(11);
+    expect(result.errors).toHaveLength(1);
+    expect(open).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+    expect(stored).toBeNull();
   });
 
   it("keeps needs_manual reviews open with a resolver diagnostic", async () => {
