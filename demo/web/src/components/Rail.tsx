@@ -6,6 +6,7 @@ export type RouteId =
   | "identity"
   | "commit"
   | "directives"
+  | "review"
   | "shared"
   | "dream"
   | "prompts";
@@ -27,8 +28,9 @@ export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "shared", label: "shared", short: "SHR", glyph: "∞", num: 6 },
   { id: "commit", label: "commit", short: "CMT", glyph: "↵", num: 7 },
   { id: "directives", label: "directives", short: "DIR", glyph: "§", num: 8 },
-  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 9 },
-  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 10 },
+  { id: "review", label: "review", short: "REV", glyph: "?", num: 9 },
+  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 10 },
+  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 11 },
 ];
 
 export type RailProps = {

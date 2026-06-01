@@ -10,6 +10,10 @@ import type {
   CorrectMemoryRequest,
   CreateCommitmentRequest,
   CreatorDirectivesResponse,
+  CreatorDirectiveItem,
+  CreatorDirectiveReconciliationRequest,
+  CreatorDirectiveRevokeRequest,
+  CreatorDirectiveSupersedeRequest,
   CreateGoalRequest,
   CreateGrowthMarkerRequest,
   CreateValueRequest,
@@ -33,12 +37,15 @@ import type {
   PatchCorrectionReviewRequest,
   PatchGoalRequest,
   PatchOpenQuestionRequest,
+  PatchReviewRequest,
   PatchReviewItemRequest,
   PromptBlockView,
   PromptBlocksResponse,
   PromptKey,
   RevokeCommitmentRequest,
+  ReviewKind,
   ReviewRow,
+  ReviewsResponse,
   MemoryBandsResponse,
   SemanticGraphResponse,
   SessionParticipationPolicy,
@@ -318,6 +325,29 @@ export async function getCorrectionReviews(): Promise<CorrectionReviewsResponse>
   return fetchJson<CorrectionReviewsResponse>("api/correction/reviews");
 }
 
+export async function getReviews(
+  input: {
+    openOnly?: boolean;
+    kind?: ReviewKind;
+  } = {},
+): Promise<ReviewsResponse> {
+  const params = new URLSearchParams();
+  if (input.openOnly !== undefined) {
+    params.set("open_only", input.openOnly ? "true" : "false");
+  }
+  if (input.kind !== undefined) {
+    params.set("kind", input.kind);
+  }
+  return fetchJson<ReviewsResponse>("api/reviews", undefined, params);
+}
+
+export async function patchReview(id: number, input: PatchReviewRequest): Promise<ReviewRow> {
+  return fetchJson<ReviewRow>(`api/reviews/${encodeURIComponent(String(id))}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function patchCorrectionReview(
   id: number,
   input: PatchCorrectionReviewRequest,
@@ -372,6 +402,47 @@ export async function postCommitmentRevoke(
 
 export async function getCreatorDirectives(): Promise<CreatorDirectivesResponse> {
   return fetchJson<CreatorDirectivesResponse>("api/creator-directives");
+}
+
+export async function revokeCreatorDirective(
+  id: string,
+  reason: string,
+): Promise<CreatorDirectiveItem> {
+  const input: CreatorDirectiveRevokeRequest = { reason };
+  return fetchJson<CreatorDirectiveItem>(
+    `api/creator-directives/${encodeURIComponent(id)}/revoke`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function supersedeCreatorDirective(
+  id: string,
+  replacementId: string,
+): Promise<CreatorDirectiveItem> {
+  const input: CreatorDirectiveSupersedeRequest = { replacement_id: replacementId };
+  return fetchJson<CreatorDirectiveItem>(
+    `api/creator-directives/${encodeURIComponent(id)}/supersede`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function resolveCreatorDirectiveReconciliation(
+  id: number,
+  input: CreatorDirectiveReconciliationRequest,
+): Promise<ReviewRow> {
+  return fetchJson<ReviewRow>(
+    `api/reviews/${encodeURIComponent(String(id))}/creator-directive-reconciliation`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function getDreamAudit(limit = 50): Promise<DreamAuditResponse> {

@@ -10,6 +10,8 @@ import {
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
+  REVIEW_KINDS,
+  REVIEW_RESOLUTIONS,
   SESSION_PARTICIPATION_POLICIES,
   STREAM_ENTRY_KINDS,
   VERSION,
@@ -40,13 +42,18 @@ import {
   type StoredAttachmentRecord,
   type TurnInputAttachment,
   createSessionId,
+  creatorDirectiveIdSchema,
+  creatorDirectiveReconciliationReviewRefsSchema,
   parseCommitmentId,
   parseEntityId,
   parseGoalId,
   parseOpenQuestionId,
   parseSessionId,
   PROMPT_KEYS,
+  semanticNodeIdSchema,
+  type BorgReviewResolutionInput,
   type PromptKey,
+  type ReviewKind,
 } from "borg";
 import { z } from "zod";
 
@@ -420,6 +427,24 @@ const reviewPatchBodySchema = z
   })
   .strict();
 
+const reviewQuerySchema = z
+  .object({
+    open_only: z
+      .enum(["true", "false"])
+      .optional()
+      .transform((value) => value !== "false"),
+    kind: z.enum(REVIEW_KINDS).optional(),
+  })
+  .strict();
+
+const reviewGenericPatchBodySchema = z
+  .object({
+    action: z.enum(REVIEW_RESOLUTIONS),
+    note: optionalTextFieldSchema,
+    winner_node_id: semanticNodeIdSchema.optional(),
+  })
+  .strict();
+
 const correctionCorrectBodySchema = z
   .object({
     patch: z.record(z.string(), z.unknown()),
@@ -440,6 +465,45 @@ const correctionReviewPatchBodySchema = z
     note: optionalTextFieldSchema,
   })
   .strict();
+
+const creatorDirectiveParamSchema = z.object({
+  id: creatorDirectiveIdSchema,
+});
+
+const creatorDirectiveRevokeBodySchema = z
+  .object({
+    reason: textFieldSchema,
+  })
+  .strict();
+
+const creatorDirectiveSupersedeBodySchema = z
+  .object({
+    replacement_id: creatorDirectiveIdSchema,
+  })
+  .strict();
+
+const creatorDirectiveReconciliationActionBodySchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("supersede"),
+      survivor_id: creatorDirectiveIdSchema,
+      reason: optionalTextFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("revoke"),
+      revoke_ids: z.array(creatorDirectiveIdSchema).min(1),
+      reason: textFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("keep"),
+      reason: optionalTextFieldSchema,
+    })
+    .strict(),
+]);
 
 const goalParamSchema = z.object({
   id: z.string().transform((value, ctx) => {
@@ -1126,6 +1190,93 @@ function mapReviewRow(row: ReviewQueueItem) {
   };
 }
 
+function openReviewListOptions(kind?: ReviewKind): { kind?: ReviewKind; openOnly: true } {
+  return kind === undefined ? { openOnly: true } : { kind, openOnly: true };
+}
+
+function findOpenReviewItem(borg: Borg, id: number, kind?: ReviewKind): ReviewQueueItem | null {
+  return borg.review.list(openReviewListOptions(kind)).find((row) => row.id === id) ?? null;
+}
+
+function parseCreatorDirectiveReconciliationRefs(row: ReviewQueueItem) {
+  const parsed = creatorDirectiveReconciliationReviewRefsSchema.safeParse(row.refs);
+
+  if (!parsed.success) {
+    throw new HTTPException(400, {
+      message: `creator directive reconciliation review refs are invalid: ${parsed.error.message}`,
+    });
+  }
+
+  return parsed.data;
+}
+
+function assertCreatorDirectiveReviewMembers(
+  refs: ReturnType<typeof parseCreatorDirectiveReconciliationRefs>,
+  ids: readonly string[],
+  label: string,
+): void {
+  const memberIds = new Set<string>(refs.directive_ids);
+  const seen = new Set<string>();
+
+  for (const id of ids) {
+    if (!memberIds.has(id)) {
+      throw new HTTPException(400, {
+        message: `${label} must reference creator directives in the review item`,
+      });
+    }
+
+    if (seen.has(id)) {
+      throw new HTTPException(400, {
+        message: `${label} must not contain duplicate directive ids`,
+      });
+    }
+
+    seen.add(id);
+  }
+}
+
+function loadCreatorDirectiveReviewMembers(
+  borg: Borg,
+  refs: ReturnType<typeof parseCreatorDirectiveReconciliationRefs>,
+): Map<string, CreatorDirective> {
+  const members = new Map<string, CreatorDirective>();
+
+  for (const id of refs.directive_ids) {
+    const directive = borg.creatorDirectives.get(id);
+
+    if (directive === null) {
+      throw new HTTPException(404, { message: `creator directive ${id} not found` });
+    }
+
+    members.set(id, directive);
+  }
+
+  return members;
+}
+
+function requireCreatorDirectiveReviewMember(
+  members: ReadonlyMap<string, CreatorDirective>,
+  id: string,
+): CreatorDirective {
+  const directive = members.get(id);
+
+  if (directive === undefined) {
+    throw new HTTPException(400, {
+      message: "directive id must reference creator directives in the review item",
+    });
+  }
+
+  return directive;
+}
+
+function assertCreatorDirectiveActive(directive: CreatorDirective): void {
+  if (directive.status !== "active") {
+    throw new HTTPException(409, {
+      message: `creator directive ${directive.id} changed or inactive`,
+    });
+  }
+}
+
 type SemanticGraphNodeStatus = "active" | "contested" | "contradicted" | "quarantined";
 
 function mapSemanticGraphStatus(status: SemanticNodeStatus): SemanticGraphNodeStatus {
@@ -1203,6 +1354,7 @@ function processDescription(name: OfflineProcessName): string {
     curator: "salience, heat, archive, decay",
     overseer: "flag substrate issues",
     "review-resolver": "process review queue items",
+    "creator-directive-reconciler": "reconcile redundant or conflicting creator directives",
     ruminator: "open-question rumination",
     "self-narrator": "autobiography and growth markers",
     "procedural-synthesizer": "skill abstractions",
@@ -1755,6 +1907,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         turns: await countTurns(input.borg, query.session),
         commitments: input.borg.commitments.countActive(),
         open_qs: input.borg.self.openQuestions.list({ status: "open" }).length,
+        open_reviews: input.borg.review.list({ openOnly: true }).length,
         dream_audit_rows: auditRows.length,
       },
       current_mood: input.borg.mood.current(query.session),
@@ -2042,6 +2195,229 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       .map((record) => mapCreatorDirective(input.borg, record));
 
     return c.json({ directives });
+  });
+
+  app.post("/api/creator-directives/:id/revoke", async (c) => {
+    const params = parseRequest(creatorDirectiveParamSchema, c.req.param());
+    const body = parseRequest(creatorDirectiveRevokeBodySchema, await parseJsonBody(c));
+
+    try {
+      const directive = input.borg.creatorDirectives.revoke(params.id, body.reason);
+
+      if (directive === null) {
+        throw new HTTPException(404, { message: "creator directive not found" });
+      }
+
+      return c.json(mapCreatorDirective(input.borg, directive));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/creator-directives/:id/supersede", async (c) => {
+    const params = parseRequest(creatorDirectiveParamSchema, c.req.param());
+    const body = parseRequest(creatorDirectiveSupersedeBodySchema, await parseJsonBody(c));
+
+    try {
+      if (params.id === body.replacement_id) {
+        throw new HTTPException(400, {
+          message: "replacement creator directive must be different from the superseded directive",
+        });
+      }
+
+      const replacement = input.borg.creatorDirectives.get(body.replacement_id);
+
+      if (replacement === null) {
+        throw new HTTPException(404, { message: "replacement creator directive not found" });
+      }
+
+      if (replacement.status !== "active") {
+        throw new HTTPException(400, {
+          message: "replacement creator directive must be active",
+        });
+      }
+
+      const directive = input.borg.creatorDirectives.supersede(params.id, body.replacement_id);
+
+      if (directive === null) {
+        throw new HTTPException(404, { message: "creator directive not found" });
+      }
+
+      return c.json(mapCreatorDirective(input.borg, directive));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.get("/api/reviews", (c) => {
+    const query = parseRequest(reviewQuerySchema, c.req.query());
+    const options: { kind?: ReviewKind; openOnly?: boolean } =
+      query.kind === undefined ? {} : { kind: query.kind };
+    if (query.open_only) {
+      options.openOnly = true;
+    }
+
+    return c.json({
+      rows: input.borg.review.list(options).map((row) => mapReviewRow(row)),
+    });
+  });
+
+  app.patch("/api/reviews/:id", async (c) => {
+    const params = parseRequest(reviewParamSchema, c.req.param());
+    const body = parseRequest(reviewGenericPatchBodySchema, await parseJsonBody(c));
+
+    try {
+      const reviewItem = findOpenReviewItem(input.borg, params.id);
+
+      if (reviewItem === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      if (reviewItem.kind === "creator_directive_reconciliation") {
+        throw new HTTPException(409, {
+          message:
+            "creator directive reconciliation reviews must be resolved through POST /api/reviews/:id/creator-directive-reconciliation",
+        });
+      }
+
+      const decision: BorgReviewResolutionInput = {
+        decision: body.action,
+        ...(body.winner_node_id === undefined ? {} : { winner_node_id: body.winner_node_id }),
+        ...(body.note === undefined ? {} : { reason: body.note }),
+      };
+      const resolved = await input.borg.review.resolve(params.id, decision, {
+        source: "manual",
+      });
+
+      if (resolved === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      return c.json(mapReviewRow(resolved));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
+  });
+
+  app.post("/api/reviews/:id/creator-directive-reconciliation", async (c) => {
+    const params = parseRequest(reviewParamSchema, c.req.param());
+    const body = parseRequest(
+      creatorDirectiveReconciliationActionBodySchema,
+      await parseJsonBody(c),
+    );
+
+    try {
+      const reviewItem = findOpenReviewItem(
+        input.borg,
+        params.id,
+        "creator_directive_reconciliation",
+      );
+
+      if (reviewItem === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      const refs = parseCreatorDirectiveReconciliationRefs(reviewItem);
+      const defaultReason = `creator directive reconciliation ${body.action}`;
+
+      if (body.action === "supersede") {
+        assertCreatorDirectiveReviewMembers(refs, [body.survivor_id], "survivor_id");
+        const members = loadCreatorDirectiveReviewMembers(input.borg, refs);
+        const survivor = requireCreatorDirectiveReviewMember(members, body.survivor_id);
+        assertCreatorDirectiveActive(survivor);
+        const losers = refs.directive_ids
+          .filter((id) => id !== body.survivor_id)
+          .map((id) => requireCreatorDirectiveReviewMember(members, id));
+
+        for (const loser of losers) {
+          assertCreatorDirectiveActive(loser);
+        }
+
+        const superseded = input.borg.creatorDirectives.supersedeFamilyAtomic({
+          survivorId: survivor.id,
+          expectedSurvivorVersion: survivor.record_version,
+          losers: losers.map((loser) => ({
+            id: loser.id,
+            expectedVersion: loser.record_version,
+          })),
+        });
+
+        if (superseded === null) {
+          throw new HTTPException(409, {
+            message: "creator directive reconciliation changed before supersede could apply",
+          });
+        }
+
+        const resolved = await input.borg.review.resolve(
+          params.id,
+          {
+            decision: "accept",
+            reason: body.reason ?? defaultReason,
+          },
+          { source: "manual" },
+        );
+
+        if (resolved === null) {
+          throw new HTTPException(404, { message: "review item not found" });
+        }
+
+        return c.json(mapReviewRow(resolved));
+      }
+
+      if (body.action === "revoke") {
+        assertCreatorDirectiveReviewMembers(refs, body.revoke_ids, "revoke_ids");
+        const members = loadCreatorDirectiveReviewMembers(input.borg, refs);
+        const directivesToRevoke = body.revoke_ids.map((id) =>
+          requireCreatorDirectiveReviewMember(members, id),
+        );
+
+        for (const directive of directivesToRevoke) {
+          assertCreatorDirectiveActive(directive);
+        }
+
+        for (const directive of directivesToRevoke) {
+          const revoked = input.borg.creatorDirectives.revoke(directive.id, body.reason);
+
+          if (revoked === null) {
+            throw new HTTPException(409, {
+              message: `creator directive ${directive.id} changed before revoke could apply`,
+            });
+          }
+        }
+
+        const resolved = await input.borg.review.resolve(
+          params.id,
+          {
+            decision: "accept",
+            reason: body.reason,
+          },
+          { source: "manual" },
+        );
+
+        if (resolved === null) {
+          throw new HTTPException(404, { message: "review item not found" });
+        }
+
+        return c.json(mapReviewRow(resolved));
+      }
+
+      const resolved = await input.borg.review.resolve(
+        params.id,
+        {
+          decision: "keep",
+          reason: body.reason ?? defaultReason,
+        },
+        { source: "manual" },
+      );
+
+      if (resolved === null) {
+        throw new HTTPException(404, { message: "review item not found" });
+      }
+
+      return c.json(mapReviewRow(resolved));
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
   });
 
   app.post("/api/commitments", async (c) => {

@@ -9,6 +9,7 @@ import { DreamScreen } from "./Dream";
 import { GraphScreen } from "./Graph";
 import { IdentityScreen } from "./Identity";
 import { MemoryScreen } from "./Memory";
+import { ReviewScreen } from "./Review";
 import { SharedScreen } from "./Shared";
 import { StreamScreen } from "./Stream";
 
@@ -209,7 +210,7 @@ function installFetch(): ReturnType<typeof vi.fn> {
         }),
       );
     }
-    if (url.pathname === "/api/correction/reviews") {
+    if (url.pathname === "/api/reviews") {
       return Promise.resolve(jsonResponse({ rows: [] }));
     }
     if (url.pathname === "/api/memory/bands/procedural") {
@@ -355,7 +356,7 @@ function installFetch(): ReturnType<typeof vi.fn> {
         jsonResponse({
           active_session: "default",
           audiences: ["alice"],
-          counts: { turns: 1, commitments: 1, open_qs: 1, dream_audit_rows: 1 },
+          counts: { turns: 1, commitments: 1, open_qs: 1, open_reviews: 1, dream_audit_rows: 1 },
           current_mood: {
             session_id: "default",
             valence: 0,
@@ -604,17 +605,93 @@ describe("P2 screens", () => {
     expect(screen.getAllByText("locked")[0]).toBeInTheDocument();
   });
 
-  it("renders dream belief-revision rows", async () => {
+  it("links dream belief-revision rows to the unified review screen", async () => {
     const live = makeLiveSource();
     installFetch();
+    const openReview = vi.fn();
     render(
       <LiveEventsProvider value={live.live()}>
-        <DreamScreen />
+        <DreamScreen onOpenReview={openReview} />
+      </LiveEventsProvider>,
+    );
+
+    expect(await screen.findByText("belief revisions")).toBeInTheDocument();
+    expect(screen.getByText("1 open")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "open review" }));
+    expect(openReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders unified review rows and resolves a generic row", async () => {
+    const live = makeLiveSource();
+    let reviewCalls = 0;
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews" && init?.method === undefined) {
+        reviewCalls += 1;
+        return Promise.resolve(
+          jsonResponse({
+            rows:
+              reviewCalls === 1
+                ? [
+                    {
+                      id: 41,
+                      kind: "belief_revision",
+                      refs: {
+                        target_type: "semantic_node",
+                        target_id: "semn_1111111111111111",
+                        invalidated_edge_id: "seme_1111111111111111",
+                        dependency_path_edge_ids: [],
+                        surviving_support_edge_ids: [],
+                        evidence_episode_ids: [],
+                      },
+                      reason: "dependency invalidated",
+                      created_at: 4,
+                      resolved_at: null,
+                      resolution: null,
+                    },
+                  ]
+                : [],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === "/api/reviews/41" && init?.method === "PATCH") {
+        return Promise.resolve(
+          jsonResponse({
+            id: 41,
+            kind: "belief_revision",
+            refs: {},
+            reason: "dependency invalidated",
+            created_at: 4,
+            resolved_at: 5,
+            resolution: "dismiss",
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
       </LiveEventsProvider>,
     );
 
     expect(await screen.findByText("dependency invalidated")).toBeInTheDocument();
-    expect(screen.getByText(/semantic_node:sn_1/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "dismiss" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([request, init]) =>
+            requestPath(request) === "/api/reviews/41" && init?.method === "PATCH",
+        ),
+      ).toBe(true);
+    });
+    expect(await screen.findByText("no open review rows")).toBeInTheDocument();
   });
 
   it("refetches dream state on WebSocket reconnect after the initial connection", async () => {

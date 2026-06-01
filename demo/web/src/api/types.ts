@@ -446,6 +446,14 @@ export type CreatorDirectivesResponse = {
   directives: CreatorDirectiveItem[];
 };
 
+export type CreatorDirectiveRevokeRequest = {
+  reason: string;
+};
+
+export type CreatorDirectiveSupersedeRequest = {
+  replacement_id: string;
+};
+
 export type SocialMemoryItem = {
   entity_id: string;
   name: string | null;
@@ -536,14 +544,40 @@ export type MaintenanceAuditRow = {
   reverted_by: string | null;
 };
 
+export type ReviewKind =
+  | "contradiction"
+  | "duplicate"
+  | "new_insight"
+  | "misattribution"
+  | "temporal_drift"
+  | "identity_inconsistency"
+  | "correction"
+  | "belief_revision"
+  | "skill_split"
+  | "relationship_claim_ungrounded"
+  | "creator_directive_reconciliation";
+
+export type ReviewResolution =
+  | "keep_both"
+  | "supersede"
+  | "invalidate"
+  | "dismiss"
+  | "accept"
+  | "reject"
+  | "keep"
+  | "weaken"
+  | "archive_node"
+  | "invalidate_edge";
+
 export type ReviewRow = {
   id: number;
-  kind: string;
+  kind: ReviewKind;
   refs: Record<string, unknown>;
   reason: string;
   created_at: number;
   resolved_at: number | null;
-  resolution: string | null;
+  resolution: ReviewResolution | null;
+  resolver_diagnostic?: unknown;
 };
 
 export type WhyResponse = Record<string, unknown>;
@@ -556,6 +590,10 @@ export type CorrectionForgetResponse = {
 };
 
 export type CorrectionReviewsResponse = {
+  rows: ReviewRow[];
+};
+
+export type ReviewsResponse = {
   rows: ReviewRow[];
 };
 
@@ -573,6 +611,28 @@ export type PatchCorrectionReviewRequest = {
   action: "accept" | "reject";
   note?: string;
 };
+
+export type PatchReviewRequest = {
+  action: ReviewResolution;
+  note?: string;
+  winner_node_id?: string;
+};
+
+export type CreatorDirectiveReconciliationRequest =
+  | {
+      action: "supersede";
+      survivor_id: string;
+      reason?: string;
+    }
+  | {
+      action: "revoke";
+      revoke_ids: string[];
+      reason: string;
+    }
+  | {
+      action: "keep";
+      reason?: string;
+    };
 
 export type DreamProcessName =
   | "consolidator"
@@ -807,6 +867,7 @@ export type StateSnapshot = {
     turns: number;
     commitments: number;
     open_qs: number;
+    open_reviews: number;
     dream_audit_rows: number;
   };
   current_mood: MoodSnapshot;

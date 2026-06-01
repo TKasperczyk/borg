@@ -383,6 +383,9 @@ export type BorgCreatorDirectivesFacade = {
   supersede: (
     ...args: Parameters<CreatorDirectiveRepository["supersede"]>
   ) => ReturnType<CreatorDirectiveRepository["supersede"]>;
+  supersedeFamilyAtomic: (
+    ...args: Parameters<CreatorDirectiveRepository["supersedeFamilyAtomic"]>
+  ) => ReturnType<CreatorDirectiveRepository["supersedeFamilyAtomic"]>;
   revoke: (
     ...args: Parameters<CreatorDirectiveRepository["revoke"]>
   ) => ReturnType<CreatorDirectiveRepository["revoke"]>;

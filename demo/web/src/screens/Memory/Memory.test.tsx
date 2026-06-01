@@ -135,7 +135,7 @@ describe("Memory correction actions", () => {
       if (path === "/api/memory/bands") {
         return Promise.resolve(jsonResponse(memoryBandsResponse()));
       }
-      if (path === "/api/correction/reviews") {
+      if (path === "/api/reviews") {
         return Promise.resolve(jsonResponse({ rows: [] }));
       }
       if (path === "/api/memory/bands/episodic") {
@@ -185,78 +185,51 @@ describe("Memory correction actions", () => {
     });
   });
 
-  it("accepts a correction review row and refetches the correction queue", async () => {
-    let correctionReviewCalls = 0;
+  it("shows correction review count and routes to the unified review screen", async () => {
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);
       if (path === "/api/memory/bands") {
         return Promise.resolve(jsonResponse(memoryBandsResponse()));
       }
-      if (path === "/api/correction/reviews") {
-        correctionReviewCalls += 1;
+      if (path === "/api/reviews") {
         return Promise.resolve(
           jsonResponse({
-            rows:
-              correctionReviewCalls === 1
-                ? [
-                    {
-                      id: 7,
-                      kind: "correction",
-                      refs: {
-                        target_type: "episode",
-                        target_id: EPISODE_ID,
-                        prompt_summary: "user proposed changing episode",
-                        operator_reason: "operator supplied correction reason",
-                        patch: { title: "Updated episode" },
-                      },
-                      reason: "queued",
-                      created_at: 1,
-                      resolved_at: null,
-                      resolution: null,
-                    },
-                  ]
-                : [],
-          }),
-        );
-      }
-      if (path === "/api/correction/reviews/7" && init?.method === "PATCH") {
-        return Promise.resolve(
-          jsonResponse({
-            id: 7,
-            kind: "correction",
-            refs: {},
-            reason: "queued",
-            created_at: 1,
-            resolved_at: 2,
-            resolution: "accept",
+            rows: [
+              {
+                id: 7,
+                kind: "correction",
+                refs: {
+                  target_type: "episode",
+                  target_id: EPISODE_ID,
+                  prompt_summary: "user proposed changing episode",
+                  operator_reason: "operator supplied correction reason",
+                  patch: { title: "Updated episode" },
+                },
+                reason: "queued",
+                created_at: 1,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
           }),
         );
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
+    const openReview = vi.fn();
 
-    render(<MemoryScreen sessionId="default" />);
+    render(<MemoryScreen sessionId="default" onOpenReview={openReview} />);
 
-    expect(await screen.findByText("user proposed changing episode")).toBeInTheDocument();
-    expect(screen.getByText("operator supplied correction reason")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "accept" }));
+    expect(await screen.findByText("1 pending correction review rows.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "open review" }));
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([request, init]) =>
-            requestPath(request) === "/api/correction/reviews/7" && init?.method === "PATCH",
-        ),
-      ).toBe(true);
-    });
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(
-          ([request]) => requestPath(request) === "/api/correction/reviews",
-        ),
-      ).toHaveLength(2);
-    });
-    expect(await screen.findByText("No pending corrections.")).toBeInTheDocument();
+    expect(openReview).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(
+        ([request, init]) =>
+          requestPath(request) === "/api/correction/reviews/7" && init?.method === "PATCH",
+      ),
+    ).toBe(false);
   });
 });

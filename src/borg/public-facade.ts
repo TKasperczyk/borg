@@ -738,6 +738,11 @@ export type BorgCreatorDirectivesFacade = {
   list(filter?: CreatorDirectiveListFilter): CreatorDirective[];
   listApplicable(options: CreatorDirectiveApplicableOptions): CreatorDirectiveApplicable[];
   supersede(id: CreatorDirectiveId, replacementId: CreatorDirectiveId): CreatorDirective | null;
+  supersedeFamilyAtomic(input: {
+    survivorId: CreatorDirectiveId;
+    expectedSurvivorVersion: number;
+    losers: Array<{ id: CreatorDirectiveId; expectedVersion: number }>;
+  }): Array<{ id: CreatorDirectiveId; record_version: number }> | null;
   revoke(id: CreatorDirectiveId, reason: string): CreatorDirective | null;
 };
 

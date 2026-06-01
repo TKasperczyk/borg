@@ -71,6 +71,7 @@ function stateSnapshot(input: Partial<StateSnapshot> = {}): StateSnapshot {
       turns: 0,
       commitments: 0,
       open_qs: 0,
+      open_reviews: 0,
       dream_audit_rows: 0,
     },
     current_mood: {

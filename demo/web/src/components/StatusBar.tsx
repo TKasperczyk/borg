@@ -63,6 +63,10 @@ export function StatusBar({ state, lastPhase, lastMaintenanceTick }: StatusBarPr
       </span>
       <span className="seg">
         <span className="k">review</span>
+        <span className="v">{countValue(state?.counts.open_reviews)}</span>
+      </span>
+      <span className="seg">
+        <span className="k">questions</span>
         <span className="v">{countValue(state?.counts.open_qs)}</span>
       </span>
       <span className="seg">

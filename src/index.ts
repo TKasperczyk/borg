@@ -38,6 +38,7 @@ export type {
   BorgPromptsFacade,
   BorgRelationalSlotsFacade,
   BorgReviewFacade,
+  BorgReviewResolutionInput,
   BorgSelfFacade,
   BorgSemanticFacade,
   BorgSessionsFacade,
@@ -413,7 +414,9 @@ export {
 export {
   REVIEW_KINDS,
   REVIEW_RESOLUTIONS,
+  creatorDirectiveReconciliationReviewRefsSchema,
   SEMANTIC_NODE_STATUSES,
+  semanticNodeIdSchema,
   type ExtractSemanticResult,
   type ReviewKind,
   type ReviewQueueItem,

@@ -1,19 +1,12 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import {
-  getDreamAudit,
-  getDreamState,
-  patchReviewItem,
-  postDreamApply,
-  postDreamPlan,
-} from "../../api/client";
+import { getDreamAudit, getDreamState, postDreamApply, postDreamPlan } from "../../api/client";
 import type {
   DreamApplyResponse,
   MaintenanceTickFrame,
   DreamPlanResponse,
   DreamProcessName,
   DreamProcessSummary,
-  ReviewRow,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
@@ -66,13 +59,7 @@ function maintenanceTickSummary(frame: MaintenanceTickFrame): string {
     .join(" / ");
 }
 
-type ReviewAction = {
-  row: ReviewRow;
-  action: "dismiss";
-  note: string;
-};
-
-export function DreamScreen() {
+export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
   const refetch = api.refetch;
@@ -82,8 +69,7 @@ export function DreamScreen() {
   const [planOpen, setPlanOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [applyResult, setApplyResult] = useState<DreamApplyResponse | null>(null);
-  const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
-  const [busy, setBusy] = useState<"plan" | "apply" | "review" | null>(null);
+  const [busy, setBusy] = useState<"plan" | "apply" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
   // Per-process live status tracked across a dream run. A run does TWO sweeps
@@ -218,27 +204,6 @@ export function DreamScreen() {
       const result = await postDreamApply(plan === null ? {} : { plan_id: plan.plan_id });
       setApplyResult(result);
       await Promise.all([refetch(), getDreamAudit()]);
-    } catch (caught) {
-      setOperatorError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function submitReviewAction(): Promise<void> {
-    if (reviewAction === null) {
-      return;
-    }
-
-    setBusy("review");
-    setOperatorError(null);
-    try {
-      await patchReviewItem(reviewAction.row.id, {
-        action: reviewAction.action,
-        ...(reviewAction.note.trim().length === 0 ? {} : { note: reviewAction.note.trim() }),
-      });
-      setReviewAction(null);
-      await refetch();
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -446,58 +411,22 @@ export function DreamScreen() {
             </div>
           )}
 
-          <div className="divider">belief-revision review rows</div>
-          <table className="tbl" style={{ marginBottom: 18 }}>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>target</th>
-                <th>invalidated edge</th>
-                <th>reason</th>
-                <th>created</th>
-                <th>actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(state?.belief_revision_rows ?? []).map((row) => (
-                <tr key={row.id}>
-                  <td className="acc">{row.id}</td>
-                  <td>
-                    {String(row.refs.target_type ?? "target")}:{String(row.refs.target_id ?? "—")}
-                  </td>
-                  <td className="dim">{String(row.refs.invalidated_edge_id ?? "—")}</td>
-                  <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
-                    {row.reason}
-                  </td>
-                  <td className="dim">{formatTime(row.created_at)}</td>
-                  <td>
-                    <div className="operator-actions">
-                      {/*
-                        belief_revision review rows only allow the "dismiss"
-                        resolution (BELIEF_REVISION_REVIEW_RESOLUTIONS) — applying
-                        a revision goes through the belief-reviser apply step,
-                        not the review queue. Single dismiss button reflects that.
-                      */}
-                      <button
-                        className="btn sm ghost"
-                        disabled={busy !== null}
-                        onClick={() => setReviewAction({ row, action: "dismiss", note: "" })}
-                      >
-                        dismiss
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {(state?.belief_revision_rows.length ?? 0) === 0 ? (
-                <tr>
-                  <td colSpan={6} className="dim">
-                    no open belief-revision rows
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+          <div className="divider">review rows</div>
+          <div className="panel" style={{ marginBottom: 18 }}>
+            <div className="panel-body pad">
+              <div className="props">
+                <div className="row">
+                  <span className="k">belief revisions</span>
+                  <span className="v">{state?.belief_revision_rows.length ?? 0} open</span>
+                </div>
+              </div>
+              <div className="operator-actions" style={{ marginTop: 10 }}>
+                <button className="btn sm primary" type="button" onClick={onOpenReview}>
+                  open review
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div className="divider">audit log · last 50</div>
           <table className="tbl">
@@ -657,46 +586,6 @@ export function DreamScreen() {
               This writes audit rows and a dream report for the default maintenance substrate. Audit
               rows can be reverted via `borg audit revert &lt;id&gt;`.
             </div>
-          </div>
-        )}
-      </Modal>
-      <Modal
-        open={reviewAction !== null}
-        title={
-          reviewAction === null
-            ? "review row"
-            : `${reviewAction.action} review ${reviewAction.row.id}`
-        }
-        onClose={() => setReviewAction(null)}
-        footer={
-          <>
-            <button
-              className="btn sm ghost"
-              disabled={busy !== null}
-              onClick={() => setReviewAction(null)}
-            >
-              cancel
-            </button>
-            <button
-              className="btn sm primary"
-              disabled={busy !== null}
-              onClick={() => void submitReviewAction()}
-            >
-              {busy === "review" ? "saving" : (reviewAction?.action ?? "save")}
-            </button>
-          </>
-        }
-      >
-        {reviewAction === null ? null : (
-          <div className="modal-form">
-            <label className="modal-field">
-              <span>note</span>
-              <textarea
-                value={reviewAction.note}
-                onChange={(event) => setReviewAction({ ...reviewAction, note: event.target.value })}
-                placeholder="operator note"
-              />
-            </label>
           </div>
         )}
       </Modal>

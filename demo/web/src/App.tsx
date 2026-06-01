@@ -26,6 +26,7 @@ import { GraphScreen } from "./screens/Graph";
 import { IdentityScreen } from "./screens/Identity";
 import { MemoryScreen } from "./screens/Memory";
 import { PromptsScreen } from "./screens/Prompts";
+import { ReviewScreen } from "./screens/Review";
 import { SharedScreen } from "./screens/Shared";
 import { StreamScreen } from "./screens/Stream";
 
@@ -135,12 +136,15 @@ export function App() {
               />
             ) : null}
             {route === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
-            {route === "memory" ? <MemoryScreen sessionId={sessionId} /> : null}
+            {route === "memory" ? (
+              <MemoryScreen sessionId={sessionId} onOpenReview={() => setRoute("review")} />
+            ) : null}
             {route === "identity" ? <IdentityScreen /> : null}
             {route === "commit" ? <CommitScreen /> : null}
             {route === "directives" ? <DirectivesScreen /> : null}
             {route === "shared" ? <SharedScreen sessionId={sessionId} /> : null}
-            {route === "dream" ? <DreamScreen /> : null}
+            {route === "review" ? <ReviewScreen /> : null}
+            {route === "dream" ? <DreamScreen onOpenReview={() => setRoute("review")} /> : null}
             {route === "graph" ? <GraphScreen /> : null}
             {route === "prompts" ? <PromptsScreen /> : null}
           </div>

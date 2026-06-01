@@ -13,6 +13,7 @@ import {
   ManualClock,
   createSessionId,
   createEpisodeId,
+  createCreatorDirectiveId,
   createMaintenanceRunId,
   createSemanticEdgeId,
   createSemanticNodeId,
@@ -20,6 +21,10 @@ import {
   type AttachmentId,
   type BorgEnqueueMessageResult,
   type BorgOpenOptions,
+  type CreatorDirective,
+  type CreatorDirectiveActivationScope,
+  type CreatorDirectiveContentScope,
+  type CreatorDirectiveMentionPolicy,
   type StreamEntry,
 } from "borg";
 
@@ -353,6 +358,85 @@ async function seedCorrectionEpisode(
     created_at: now,
     updated_at: now,
   });
+}
+
+function queueCreatorDirectiveFixture(
+  borg: Borg,
+  clock: ManualClock,
+  input: {
+    text?: string;
+    contentScope?: CreatorDirectiveContentScope;
+    mentionPolicy?: CreatorDirectiveMentionPolicy;
+    activationScope?: CreatorDirectiveActivationScope;
+    allowedEntityIds?: CreatorDirective["disclosure_policy"]["allowed_entity_ids"];
+    excludedEntityIds?: CreatorDirective["disclosure_policy"]["excluded_entity_ids"];
+    priority?: number;
+  } = {},
+): CreatorDirective {
+  const creatorId = borg.entities.resolve("Tom");
+
+  return borg.creatorDirectives.queue({
+    kind: "response_policy",
+    createdByEntityId: creatorId,
+    sourceSessionId: DEFAULT_SESSION_ID,
+    authorizationStreamEntryIds: [createStreamEntryId()],
+    contentSourceStreamEntryIds: [createStreamEntryId()],
+    subjectKind: "system",
+    operationalDirective: input.text ?? "Prefer precise operator-facing review behavior.",
+    disclosurePolicy: {
+      content_scope: input.contentScope ?? "public",
+      allowed_entity_ids: input.allowedEntityIds ?? [],
+      excluded_entity_ids: input.excludedEntityIds ?? [],
+      subject_may_know: null,
+      mention_policy: input.mentionPolicy ?? "only_if_topic_raised",
+      denied_audience_behavior: "omit",
+      boundary_prompt: null,
+      topic_tags: ["review"],
+    },
+    activationPolicy: {
+      scope: input.activationScope ?? "same_as_disclosure",
+      allowed_entity_ids: [],
+      excluded_entity_ids: [],
+    },
+    priority: input.priority ?? 5,
+    createdAt: clock.now(),
+  });
+}
+
+function creatorDirectiveReconciliationRefs(
+  directives: readonly CreatorDirective[],
+  input: {
+    subkind?: "conflict" | "same_content_different_scope" | "low_confidence_redundancy";
+    verdict?: "same_intent" | "conflicting" | "independent";
+  } = {},
+) {
+  const familyKey = {
+    kind: "response_policy",
+    subject_kind: "system",
+    subject_entity_id: null,
+  };
+
+  return {
+    target_type: "creator_directive_reconciliation",
+    subkind: input.subkind ?? "same_content_different_scope",
+    directive_ids: directives.map((directive) => directive.id),
+    family_key: familyKey,
+    members: directives.map((directive) => ({
+      id: directive.id,
+      family_key: familyKey,
+      scope_equivalence: {
+        created_by_entity_id: directive.created_by_entity_id,
+        disclosure_policy: directive.disclosure_policy,
+        activation_policy: directive.activation_policy,
+      },
+    })),
+    judgment: {
+      member_ids: directives.map((directive) => directive.id),
+      verdict: input.verdict ?? "same_intent",
+      confidence: "high",
+      rationale: "Fixture directives share content but differ by scope.",
+    },
+  };
 }
 
 async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
@@ -862,6 +946,7 @@ describe("demo server", () => {
         turns: expect.any(Number),
         commitments: expect.any(Number),
         open_qs: expect.any(Number),
+        open_reviews: expect.any(Number),
         dream_audit_rows: expect.any(Number),
       }),
       version: expect.any(String),
@@ -1829,6 +1914,163 @@ describe("demo server", () => {
     });
   });
 
+  it("GET /api/reviews lists open review rows across kinds and filters by kind", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const correctionReview = internal.deps.reviewQueueRepository.enqueue({
+      kind: "correction",
+      refs: { target_type: "value", target_id: "val_fixture", patch: { description: "new" } },
+      reason: "queued correction fixture",
+    });
+    const relationshipReview = internal.deps.reviewQueueRepository.enqueue({
+      kind: "relationship_claim_ungrounded",
+      refs: {
+        target_type: "semantic_node_candidate",
+        label: "relationship claim",
+        description: "Ungrounded relationship claim fixture.",
+        relationship_claim_label_families: ["kinship"],
+        relationship_claims: [],
+        ungrounded_relationship_claims: [],
+      },
+      reason: "relationship claim fixture",
+    });
+
+    const allReviews = await app.request("/api/reviews");
+    expect(allReviews.status).toBe(200);
+    expect(await allReviews.json()).toMatchObject({
+      rows: expect.arrayContaining([
+        expect.objectContaining({ id: correctionReview.id, kind: "correction" }),
+        expect.objectContaining({
+          id: relationshipReview.id,
+          kind: "relationship_claim_ungrounded",
+        }),
+      ]),
+    });
+
+    const filteredReviews = await app.request("/api/reviews?kind=relationship_claim_ungrounded");
+    expect(filteredReviews.status).toBe(200);
+    expect(await filteredReviews.json()).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: relationshipReview.id,
+          kind: "relationship_claim_ungrounded",
+        }),
+      ],
+    });
+  });
+
+  it("PATCH /api/reviews resolves generic review rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "belief_revision",
+      refs: {
+        target_type: "semantic_node",
+        target_id: createSemanticNodeId(),
+        invalidated_edge_id: createSemanticEdgeId(),
+        dependency_path_edge_ids: [],
+        surviving_support_edge_ids: [],
+        evidence_episode_ids: [],
+      },
+      reason: "generic review fixture",
+      sourceProcess: "belief-reviser",
+    });
+
+    const response = await requestJson(app, `/api/reviews/${review.id}`, "PATCH", {
+      action: "dismiss",
+      note: "not actionable",
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: review.id,
+      resolved_at: expect.any(Number),
+      resolution: "dismiss",
+    });
+  });
+
+  it("PATCH /api/reviews rejects creator-directive reconciliation rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const first = queueCreatorDirectiveFixture(borg, clock);
+    const second = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Second reconciliation member.",
+    });
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "creator_directive_reconciliation",
+      refs: creatorDirectiveReconciliationRefs([first, second]),
+      reason: "must use specialized endpoint",
+    });
+
+    const response = await requestJson(app, `/api/reviews/${review.id}`, "PATCH", {
+      action: "accept",
+      note: "wrong endpoint",
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        message: expect.stringContaining(
+          "creator directive reconciliation reviews must be resolved",
+        ),
+      },
+    });
+    expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+  });
+
+  it("PATCH /api/reviews returns 404 for already-resolved rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "belief_revision",
+      refs: {
+        target_type: "semantic_node",
+        target_id: createSemanticNodeId(),
+        invalidated_edge_id: createSemanticEdgeId(),
+        dependency_path_edge_ids: [],
+        surviving_support_edge_ids: [],
+        evidence_episode_ids: [],
+      },
+      reason: "already resolved fixture",
+      sourceProcess: "belief-reviser",
+    });
+    await borg.review.resolve(review.id, {
+      decision: "dismiss",
+      reason: "pre-resolved",
+    });
+
+    const response = await requestJson(app, `/api/reviews/${review.id}`, "PATCH", {
+      action: "dismiss",
+      note: "second resolution",
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: {
+        message: "review item not found",
+      },
+    });
+  });
+
   it("POST /api/commitments creates an operator-authored commitment and lists it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
@@ -1955,6 +2197,289 @@ describe("demo server", () => {
         subject_entity_name: "Alice",
       }),
     ]);
+  });
+
+  it("POST /api/creator-directives revoke and supersede mutate creator directives", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const revoked = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Directive to revoke from endpoint.",
+    });
+    const survivor = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Directive to survive endpoint supersede.",
+    });
+    const loser = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Directive to supersede from endpoint.",
+    });
+
+    const revokeResponse = await requestJson(
+      app,
+      `/api/creator-directives/${revoked.id}/revoke`,
+      "POST",
+      {
+        reason: "operator revoked duplicate guidance",
+      },
+    );
+    expect(revokeResponse.status).toBe(200);
+    expect(await revokeResponse.json()).toMatchObject({
+      id: revoked.id,
+      status: "revoked",
+    });
+    expect(borg.creatorDirectives.get(revoked.id)).toMatchObject({
+      status: "revoked",
+      revoked_reason: "operator revoked duplicate guidance",
+    });
+
+    const supersedeResponse = await requestJson(
+      app,
+      `/api/creator-directives/${loser.id}/supersede`,
+      "POST",
+      {
+        replacement_id: survivor.id,
+      },
+    );
+    expect(supersedeResponse.status).toBe(200);
+    expect(await supersedeResponse.json()).toMatchObject({
+      id: loser.id,
+      status: "superseded",
+    });
+    expect(borg.creatorDirectives.get(loser.id)).toMatchObject({
+      status: "superseded",
+      superseded_by: survivor.id,
+    });
+    expect(borg.creatorDirectives.get(survivor.id)).toMatchObject({ status: "active" });
+  });
+
+  it("POST /api/creator-directives/:id/supersede rejects inactive, nonexistent, and self replacements", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const loser = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Directive that should remain active.",
+    });
+    const inactiveReplacement = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Inactive replacement.",
+    });
+    borg.creatorDirectives.revoke(inactiveReplacement.id, "fixture inactive replacement");
+
+    const inactive = await requestJson(
+      app,
+      `/api/creator-directives/${loser.id}/supersede`,
+      "POST",
+      {
+        replacement_id: inactiveReplacement.id,
+      },
+    );
+    expect(inactive.status).toBe(400);
+
+    const nonexistent = await requestJson(
+      app,
+      `/api/creator-directives/${loser.id}/supersede`,
+      "POST",
+      {
+        replacement_id: createCreatorDirectiveId(),
+      },
+    );
+    expect(nonexistent.status).toBe(404);
+
+    const self = await requestJson(app, `/api/creator-directives/${loser.id}/supersede`, "POST", {
+      replacement_id: loser.id,
+    });
+    expect(self.status).toBe(400);
+    expect(borg.creatorDirectives.get(loser.id)).toMatchObject({ status: "active" });
+  });
+
+  it("POST /api/reviews/:id/creator-directive-reconciliation supersedes losers then resolves", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const survivor = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Prefer the public response policy.",
+      contentScope: "public",
+    });
+    const aliceId = borg.entities.resolve("Alice");
+    const operatorOnly = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Prefer the public response policy.",
+      contentScope: "operator_only",
+    });
+    const scopedLoser = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Prefer the public response policy.",
+      contentScope: "all_except",
+      excludedEntityIds: [aliceId],
+    });
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "creator_directive_reconciliation",
+      refs: creatorDirectiveReconciliationRefs([survivor, operatorOnly, scopedLoser]),
+      reason: "same content with different scopes",
+    });
+
+    const response = await requestJson(
+      app,
+      `/api/reviews/${review.id}/creator-directive-reconciliation`,
+      "POST",
+      {
+        action: "supersede",
+        survivor_id: survivor.id,
+        reason: "public scope wins",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: review.id,
+      resolution: "accept",
+      resolved_at: expect.any(Number),
+    });
+    expect(borg.creatorDirectives.get(survivor.id)).toMatchObject({ status: "active" });
+    expect(borg.creatorDirectives.get(operatorOnly.id)).toMatchObject({
+      status: "superseded",
+      superseded_by: survivor.id,
+    });
+    expect(borg.creatorDirectives.get(scopedLoser.id)).toMatchObject({
+      status: "superseded",
+      superseded_by: survivor.id,
+    });
+  });
+
+  it("POST /api/reviews/:id/creator-directive-reconciliation returns 409 when supersede members changed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const survivor = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Inactive survivor.",
+      contentScope: "public",
+    });
+    const loser = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Loser must remain active after failed atomic supersede.",
+      contentScope: "operator_only",
+    });
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "creator_directive_reconciliation",
+      refs: creatorDirectiveReconciliationRefs([survivor, loser]),
+      reason: "survivor went inactive",
+    });
+    borg.creatorDirectives.revoke(survivor.id, "fixture inactive survivor");
+
+    const response = await requestJson(
+      app,
+      `/api/reviews/${review.id}/creator-directive-reconciliation`,
+      "POST",
+      {
+        action: "supersede",
+        survivor_id: survivor.id,
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(borg.creatorDirectives.get(loser.id)).toMatchObject({
+      status: "active",
+      superseded_by: null,
+    });
+    expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+  });
+
+  it("POST /api/reviews/:id/creator-directive-reconciliation prevalidates revoke members", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const active = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Active directive must not be partially revoked.",
+      contentScope: "public",
+    });
+    const inactive = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Inactive directive blocks revoke.",
+      contentScope: "operator_only",
+    });
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "creator_directive_reconciliation",
+      refs: creatorDirectiveReconciliationRefs([active, inactive]),
+      reason: "partial revoke fixture",
+    });
+    borg.creatorDirectives.revoke(inactive.id, "fixture inactive revoke member");
+
+    const response = await requestJson(
+      app,
+      `/api/reviews/${review.id}/creator-directive-reconciliation`,
+      "POST",
+      {
+        action: "revoke",
+        revoke_ids: [active.id, inactive.id],
+        reason: "operator tried revoke all",
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(borg.creatorDirectives.get(active.id)).toMatchObject({ status: "active" });
+    expect(internal.deps.reviewQueueRepository.get(review.id)).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+    });
+  });
+
+  it("POST /api/reviews/:id/creator-directive-reconciliation keep path mutates nothing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const first = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Keep both scope-specific directives.",
+      contentScope: "public",
+    });
+    const second = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Keep both scope-specific directives.",
+      contentScope: "operator_only",
+    });
+    const review = internal.deps.reviewQueueRepository.enqueue({
+      kind: "creator_directive_reconciliation",
+      refs: creatorDirectiveReconciliationRefs([first, second]),
+      reason: "same content with valid separate scopes",
+    });
+    const firstVersion = first.record_version;
+    const secondVersion = second.record_version;
+
+    const response = await requestJson(
+      app,
+      `/api/reviews/${review.id}/creator-directive-reconciliation`,
+      "POST",
+      {
+        action: "keep",
+        reason: "both scopes are intentional",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: review.id,
+      resolution: "keep",
+      resolved_at: expect.any(Number),
+    });
+    expect(borg.creatorDirectives.get(first.id)).toMatchObject({
+      status: "active",
+      record_version: firstVersion,
+    });
+    expect(borg.creatorDirectives.get(second.id)).toMatchObject({
+      status: "active",
+      record_version: secondVersion,
+    });
   });
 
   it("operator-authored commitment can be forgotten via correction (cross-sprint A+B)", async () => {

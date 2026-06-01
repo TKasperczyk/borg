@@ -1,10 +1,9 @@
 import { useMemo, useState } from "react";
 
 import {
-  getCorrectionReviews,
   getMemoryBand,
   getMemoryBands,
-  patchCorrectionReview,
+  getReviews,
   postCorrectionCorrect,
   postCorrectionForget,
   postSemanticEdgeInvalidate,
@@ -14,7 +13,6 @@ import type {
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandSummary,
-  ReviewRow,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
@@ -92,15 +90,6 @@ function defaultMemoryPatch(
   }
 
   return "{}";
-}
-
-function reviewPatchSummary(row: ReviewRow): string {
-  return JSON.stringify(row.refs.patch ?? {}, null, 2);
-}
-
-function reviewOperatorReason(row: ReviewRow): string | null {
-  const reason = row.refs.operator_reason;
-  return typeof reason === "string" && reason.length > 0 ? reason : null;
 }
 
 function detailRows(
@@ -194,7 +183,13 @@ function detailRows(
   }
 }
 
-export function MemoryScreen({ sessionId }: { sessionId: string }) {
+export function MemoryScreen({
+  sessionId,
+  onOpenReview,
+}: {
+  sessionId: string;
+  onOpenReview?: () => void;
+}) {
   const api = useApi(() => getMemoryBands({ session: sessionId }), [sessionId]);
   const [activeBand, setActiveBand] = useState<MemoryBandId | null>(null);
 
@@ -259,13 +254,13 @@ export function MemoryScreen({ sessionId }: { sessionId: string }) {
               </div>
               <div className="row">
                 <span className="k">review hint</span>
-                <span className="v">see dream for belief-revision rows</span>
+                <span className="v">see review for open queue rows</span>
               </div>
             </div>
           </div>
         </Panel>
-        <Panel title="correction queue" badge="open">
-          <CorrectionQueuePanel onResolved={api.refetch} />
+        <Panel title="correction reviews" badge="open">
+          <CorrectionReviewSummaryPanel onOpenReview={onOpenReview} />
         </Panel>
       </div>
     </div>
@@ -630,34 +625,9 @@ function MemoryDrill({
   );
 }
 
-function CorrectionQueuePanel({ onResolved }: { onResolved: () => Promise<void> }) {
-  const api = useApi(getCorrectionReviews, []);
-  const [notes, setNotes] = useState<Record<number, string>>({});
-  const [busy, setBusy] = useState<number | null>(null);
-  const [operatorError, setOperatorError] = useState<string | null>(null);
-  const rows = api.data?.rows ?? [];
-
-  async function resolveCorrection(row: ReviewRow, action: "accept" | "reject"): Promise<void> {
-    setBusy(row.id);
-    setOperatorError(null);
-    try {
-      await patchCorrectionReview(row.id, {
-        action,
-        ...(notes[row.id]?.trim() ? { note: notes[row.id]!.trim() } : {}),
-      });
-      setNotes((current) => {
-        const next = { ...current };
-        delete next[row.id];
-        return next;
-      });
-      // Invalidates GET /api/correction/reviews plus any band touched by the accepted patch.
-      await Promise.all([api.refetch(), onResolved()]);
-    } catch (caught) {
-      setOperatorError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(null);
-    }
-  }
+function CorrectionReviewSummaryPanel({ onOpenReview }: { onOpenReview?: () => void }) {
+  const api = useApi(() => getReviews({ openOnly: true, kind: "correction" }), []);
+  const count = api.data?.rows.length ?? 0;
 
   if (api.loading && api.data === null) {
     return <div className="notice">loading corrections</div>;
@@ -669,63 +639,14 @@ function CorrectionQueuePanel({ onResolved }: { onResolved: () => Promise<void> 
 
   return (
     <div style={{ padding: 12 }}>
-      {operatorError === null ? null : (
-        <div className="notice bad" style={{ padding: 8 }}>
-          {operatorError}
-        </div>
-      )}
-      {rows.length === 0 ? (
-        <div className="panel-note">No pending corrections.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {rows.map((row) => {
-            const operatorReason = reviewOperatorReason(row);
-            return (
-              <div key={row.id} className="item">
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <Tag>{String(row.refs.target_type ?? "target")}</Tag>
-                  <span className="acc">{String(row.refs.target_id ?? "unknown")}</span>
-                  <span className="dim">review {row.id}</span>
-                </div>
-                <div style={{ color: "var(--text-dim)", fontSize: 11.5, marginTop: 6 }}>
-                  {String(row.refs.prompt_summary ?? row.reason)}
-                </div>
-                {operatorReason === null ? null : (
-                  <div style={{ color: "var(--text)", fontSize: 11.5, marginTop: 6 }}>
-                    {operatorReason}
-                  </div>
-                )}
-                <pre className="why-pre" style={{ marginTop: 8 }}>
-                  {reviewPatchSummary(row)}
-                </pre>
-                <label className="modal-field" style={{ marginTop: 8 }}>
-                  <span>note</span>
-                  <input
-                    value={notes[row.id] ?? ""}
-                    onChange={(event) => setNotes({ ...notes, [row.id]: event.target.value })}
-                  />
-                </label>
-                <div className="operator-actions" style={{ marginTop: 8 }}>
-                  <button
-                    className="btn sm primary"
-                    disabled={busy !== null}
-                    onClick={() => void resolveCorrection(row, "accept")}
-                  >
-                    accept
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    disabled={busy !== null}
-                    onClick={() => void resolveCorrection(row, "reject")}
-                  >
-                    reject
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <div className="panel-note">
+        {count === 0 ? "No pending corrections." : `${count} pending correction review rows.`}
+      </div>
+      <div className="operator-actions" style={{ marginTop: 10 }}>
+        <button className="btn sm primary" type="button" onClick={onOpenReview}>
+          open review
+        </button>
+      </div>
     </div>
   );
 }

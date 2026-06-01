@@ -92,6 +92,8 @@ export function createCreatorDirectivesFacade(
     list: (...args) => deps.creatorDirectiveRepository.list(...args),
     listApplicable: (...args) => deps.creatorDirectiveRepository.listApplicable(...args),
     supersede: (...args) => deps.creatorDirectiveRepository.supersede(...args),
+    supersedeFamilyAtomic: (...args) =>
+      deps.creatorDirectiveRepository.supersedeFamilyAtomic(...args),
     revoke: (...args) => deps.creatorDirectiveRepository.revoke(...args),
   };
 }
