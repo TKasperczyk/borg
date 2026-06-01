@@ -54,14 +54,16 @@ const REVIEW_RESOLVER_KINDS = [
   "temporal_drift",
 ] as const satisfies readonly ReviewKind[];
 
+const reviewResolverVerdictValueSchema = z.enum([
+  "accept_repair",
+  "dismiss_false_positive",
+  "reject_malformed",
+  "needs_manual",
+]);
+
 const reviewResolverVerdictSchema = z
   .object({
-    verdict: z.enum([
-      "accept_repair",
-      "dismiss_false_positive",
-      "reject_malformed",
-      "needs_manual",
-    ]),
+    verdict: reviewResolverVerdictValueSchema,
     reason: z.string().min(1).max(4_000),
     cited_stream_ids: z.array(streamEntryIdSchema).default([]),
     support_basis: z
@@ -79,6 +81,17 @@ const reviewResolverVerdictSchema = z
   .strict();
 
 export type ReviewResolverVerdict = z.infer<typeof reviewResolverVerdictSchema>;
+
+const vectorDuplicateReviewResolverVerdictSchema = z
+  .object({
+    verdict: reviewResolverVerdictValueSchema,
+    reason: z.string().min(1).max(4_000),
+  })
+  .strip();
+
+type VectorDuplicateReviewResolverVerdict = z.infer<
+  typeof vectorDuplicateReviewResolverVerdictSchema
+>;
 
 const reviewResolverCandidateSchema = z.object({
   review_id: z.number().int().positive(),
@@ -190,6 +203,13 @@ const reviewResolverTool = {
   description:
     "Emit one offline review queue disposition after comparing the flagged memory with the overseer-cited source entries.",
   inputSchema: toToolInputSchema(reviewResolverVerdictSchema),
+} satisfies LLMToolDefinition;
+
+const vectorDuplicateReviewResolverTool = {
+  name: REVIEW_RESOLVER_TOOL_NAME,
+  description:
+    "Emit one offline semantic duplicate review disposition after comparing only the supplied node records and vector-match metadata.",
+  inputSchema: toToolInputSchema(vectorDuplicateReviewResolverVerdictSchema),
 } satisfies LLMToolDefinition;
 
 function uniqueStreamIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
@@ -326,6 +346,10 @@ function vectorDuplicatePromptPayload(input: {
         reject_malformed: "Use when the refs or node records are broken.",
         needs_manual: "Use when compatibility is unclear or the merge requires human judgment.",
       },
+      citation_policy: {
+        stream_citations:
+          "Do not populate stream citations for this task. Vector-only duplicate merges are grounded in the two supplied semantic nodes and vector_match metadata, not in stream entries.",
+      },
       review: sanitizeRecord(input.item),
       vector_match: sanitizeRecord(input.loaded.refs),
       candidates: input.loaded.nodes.map((node) =>
@@ -365,9 +389,57 @@ function parseDecision(result: LLMCompleteResult): ReviewResolverVerdict {
   const parsed = reviewResolverVerdictSchema.safeParse(call.input);
 
   if (!parsed.success) {
-    throw new ReviewResolverParseError("Review resolver response failed schema validation", {
-      cause: parsed.error,
-    });
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.code} ${issue.message}`)
+      .join("; ");
+    // Surface the exact zod failure + raw model output so the failure is debuggable
+    // rather than an opaque "failed schema validation".
+    console.error(
+      "[review-resolver] verdict schema validation failed:",
+      issues,
+      "| raw:",
+      JSON.stringify(call.input),
+    );
+    throw new ReviewResolverParseError(
+      `Review resolver response failed schema validation: ${issues}`,
+      {
+        cause: parsed.error,
+      },
+    );
+  }
+
+  return parsed.data;
+}
+
+function parseVectorDuplicateDecision(
+  result: LLMCompleteResult,
+): VectorDuplicateReviewResolverVerdict {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === REVIEW_RESOLVER_TOOL_NAME);
+
+  if (call === undefined) {
+    throw new ReviewResolverParseError(
+      `Review resolver did not emit tool ${REVIEW_RESOLVER_TOOL_NAME}`,
+    );
+  }
+
+  const parsed = vectorDuplicateReviewResolverVerdictSchema.safeParse(call.input);
+
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.code} ${issue.message}`)
+      .join("; ");
+    console.error(
+      "[review-resolver] vector duplicate verdict schema validation failed:",
+      issues,
+      "| raw:",
+      JSON.stringify(call.input),
+    );
+    throw new ReviewResolverParseError(
+      `Review resolver vector duplicate response failed schema validation: ${issues}`,
+      {
+        cause: parsed.error,
+      },
+    );
   }
 
   return parsed.data;
@@ -408,7 +480,7 @@ async function evaluateVectorDuplicateDecision(input: {
   llmClient: LLMClient;
   item: ReviewQueueItem;
   loaded: LoadedVectorDuplicateContext;
-}): Promise<ReviewResolverVerdict> {
+}): Promise<VectorDuplicateReviewResolverVerdict> {
   const result = await input.llmClient.complete({
     model: input.ctx.config.anthropic.models.background,
     system:
@@ -419,7 +491,7 @@ async function evaluateVectorDuplicateDecision(input: {
         content: vectorDuplicatePromptPayload(input),
       },
     ],
-    tools: [reviewResolverTool],
+    tools: [vectorDuplicateReviewResolverTool],
     tool_choice: {
       type: "tool",
       name: REVIEW_RESOLVER_TOOL_NAME,
@@ -429,7 +501,7 @@ async function evaluateVectorDuplicateDecision(input: {
     budget: "review-resolver",
   });
 
-  return parseDecision(result);
+  return parseVectorDuplicateDecision(result);
 }
 
 function candidateChange(item: z.infer<typeof reviewResolverCandidateSchema>): OfflineChange {

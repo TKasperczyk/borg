@@ -368,7 +368,8 @@ describe("review resolver process", () => {
       resolverResponse({
         verdict: "accept_repair",
         reason: "The supplied node records describe the same deployment service.",
-        cited_stream_ids: [],
+        support_basis: "direct_user_or_source",
+        cited_stream_ids: [loser.id, winner.id],
       }),
     );
 
@@ -393,6 +394,75 @@ describe("review resolver process", () => {
       corrected_by: winner.id,
     });
     expect(prompt).toContain("vector_only_merge_candidate");
+    expect(prompt).toContain("Do not populate stream citations");
+  });
+
+  it("dismisses vector-only duplicate false positives without stream citations", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "Atlas platform and Atlas expedition planning are different contexts.",
+    );
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas platform",
+        description: "Atlas is the deployment service.",
+        confidence: 0.9,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas expedition planning",
+        description: "Atlas is an expedition planning codename.",
+        confidence: 0.8,
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "duplicate",
+      reason: "Vector-only semantic merge candidate with similarity 0.910",
+      refs: {
+        node_ids: [first.id, second.id],
+        node_labels: [first.label, second.label],
+        duplicate_subtype: "vector_only_merge_candidate",
+        vector_similarity: 0.91,
+        source_overlap: {
+          candidate_source_episode_ids: [source.episode.id],
+          matched_source_episode_ids: [source.episode.id],
+          overlapping_source_episode_ids: [source.episode.id],
+          overlap_count: 1,
+        },
+      },
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "dismiss_false_positive",
+        reason: "The supplied node records describe different things.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const storedFirst = await harness.semanticNodeRepository.get(first.id);
+    const storedSecond = await harness.semanticNodeRepository.get(second.id);
+
+    expect(result.errors).toEqual([]);
+    expect(result.candidate_stats).toMatchObject({
+      accepted: 1,
+      rejected: 0,
+    });
+    expect(resolved).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "dismiss",
+    });
+    expect(storedFirst?.status).toBe("active");
+    expect(storedSecond?.status).toBe("active");
   });
 
   it("keeps needs_manual reviews open with a resolver diagnostic", async () => {
@@ -492,6 +562,40 @@ describe("review resolver process", () => {
     const open = harness.reviewQueueRepository.get(item.id);
     const node = await harness.semanticNodeRepository.get(nodeId);
 
+    expect(result.candidate_stats).toMatchObject({
+      accepted: 0,
+    });
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      reason: "accept_repair_requires_loaded_non_tainted_citation",
+    });
+    expect(node?.status).toBe("active");
+  });
+
+  it("keeps overseer accept_repair gated when no cited stream is loaded and non-tainted", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { item, nodeId } = await enqueueSemanticMisattribution(harness, {
+      descriptionPatch: "Ben wrote the deployment script.",
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The repair cites no loaded non-tainted stream entry.",
+        support_basis: "direct_user_or_source",
+        cited_stream_ids: [createStreamEntryId()],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+    const node = await harness.semanticNodeRepository.get(nodeId);
+
+    expect(result.errors).toEqual([]);
     expect(result.candidate_stats).toMatchObject({
       accepted: 0,
     });
