@@ -101,11 +101,12 @@ catches real violations without misfiring on compliant refusals.
 
 ### The dream cycle
 
-Between turns, ten offline processes maintain and revise the substrate:
+Between turns, eleven offline processes maintain and revise the substrate:
 consolidation, reflection, semantic extraction, curation, oversight, review
-resolution, rumination, self-narration, procedural synthesis, and belief
-revision. Each runs with plan/apply parity and budget caps, writes to an
-append-only audit log, and is reversible wherever a reverser is registered.
+resolution, rumination, self-narration, procedural synthesis, belief revision,
+and creator-directive reconciliation. Each runs with plan/apply parity and
+budget caps, writes to an append-only audit log, and is reversible wherever a
+reverser is registered.
 
 ## Quickstart
 

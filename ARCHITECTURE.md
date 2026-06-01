@@ -806,7 +806,7 @@ group. A group decision is not automatically a personal preference. The
 audience scope propagates through retrieval, ledger rendering, semantic
 visibility, and identity-sensitive responses.
 
-The lifecycle has several conceptual states:
+The model-facing lifecycle has four conceptual states:
 
 - Locked entries are canonical for this audience and may canonicalize existing
   goals, commitments, actions, or Open Questions.
@@ -814,9 +814,11 @@ The lifecycle has several conceptual states:
 - Tentative entries are plausible but not settled.
 - Invalidated entries remain visible as displaced state rather than being
   erased.
-- Pending entries track unresolved or awaiting state.
-- Low-salience and dormant live entries are demoted live state kept under
-  lifecycle pressure.
+
+Low-salience live and dormant live are internal salience demotions of live
+state produced by aging. They stay stored and index-visible under lifecycle
+pressure, but they are not model-emitted lifecycle states. Pending is
+legacy-readable only and is no longer emitted by Shared State patches.
 
 Shared State is compiled from the Evidence Ledger by an LLM that emits patch
 operations: add, update, supersede, or prune. Deterministic code validates
@@ -850,9 +852,9 @@ contaminated by unusable sources skip canonicalization into Goals,
 Commitments, Actions, and Open Questions.
 
 Only locked Shared State entries may canonicalize durable lifecycle records.
-If a patch emits canonicalization IDs on tentative, live, pending, or
-invalidated entries, normalization drops those IDs so unsettled language
-cannot retire durable state.
+If a patch emits canonicalization IDs on tentative, live, or invalidated
+entries, normalization drops those IDs so unsettled language cannot retire
+durable state.
 
 Unsettled canonicalizations are retried. Active locked entries that point at
 nonterminal Goals, Commitments, Actions, or Open Questions remain retry work
@@ -1182,11 +1184,24 @@ Open Questions have only open, resolved, and abandoned states. Completing an
 Action can resolve its linked Open Question, and it can also resolve Open
 Questions under a linked Goal through identity-governed resolution.
 
-The Review Queue holds memory changes that are uncertain, potentially
-destructive, or semantically risky. Reviews can cover contradiction,
-duplicate, new insight, misattribution, temporal drift, identity
-inconsistency, correction, belief revision, and skill splits. Queueing a
-review is preferred over silently patching meaning-changing memory inline.
+The Review Queue holds bounded maintenance decisions that are uncertain,
+potentially destructive, authority-bearing, or semantically risky. Despite its
+historical placement in `src/memory/semantic/review-queue.ts`, it is a general
+maintenance review queue, not a semantic-memory-only queue. Reviews can cover
+semantic contradiction and duplicate decisions, new insight, misattribution,
+temporal drift, identity inconsistency, correction, belief revision, skill
+splits, and creator-directive reconciliation. Queueing a review is preferred
+over silently patching meaning-changing memory inline.
+
+`identity_inconsistency` is manual-only for the offline Review Resolver:
+identity reviews can enqueue Open Questions and be resolved through review
+handlers, but they are not in the resolver's auto-resolution set.
+`relationship_claim_ungrounded` is legacy-readable only; ungrounded
+relationship-claim extraction is telemetry now, not a review kind.
+
+The shape is to auto-resolve bounded cases through offline LLM judges, escalate
+genuine ambiguity and disclosure widening, and keep operator-undo paths where
+authority is mutated.
 
 Review enqueue hooks can create Open Questions from contradiction,
 misattribution, and identity inconsistency reviews. Similar existing questions
@@ -1396,18 +1411,21 @@ when one is due it synthesizes a turn tagged with autonomous origin and runs it
 through the same lifecycle as a user turn.
 
 Autonomy exists because a continuing entity should not be inert between
-messages. An expiring commitment, a dormant Open Question, a stale goal, a due
-executive step, or a sustained mood drop are reasons to think without being
-prompted. Autonomy is what lets the substrate's own state pull the entity into a
-turn.
+messages. The scheduler skeleton, watermarks, cooldowns, and wake budget are
+live once a runtime starts it. Proactive outbound has routing, caps, and
+creator-directive authorization machinery, but autonomous outbound posting
+remains config-gated.
 
 Wake sources come in two flavors behind one interface. Triggers are time- and
-deadline-driven: a commitment nearing expiry, a dormant question, a goal whose
-follow-up is due, a scheduled reflection or wake, an executive step past its
-due time. Conditions are state-threshold-driven: a commitment marked revoked,
-average mood valence below a level, an Open Question whose urgency crossed a
-bar. Both are scanned the same way; the split is a taxonomy of why something
-became due, not two separate engines.
+deadline-driven; conditions are state-threshold-driven. The wake sources
+enabled by default are the ones that can actually fire in the current substrate:
+`commitment_revoked`, `open_question_urgency_bump`, executive-focus due checks,
+and the deliberate `scheduled_wake` lever. The time-threshold triggers
+`commitment_expiring`, `open_question_dormant`, and `goal_followup_due` default
+off until the underlying records carry the signals they need. Scheduled
+reflection and mood-valence-drop also default off. Both trigger classes are
+scanned the same way; the split is a taxonomy of why something became due, not
+two separate engines.
 
 The scheduler decides only whether and when to wake, structurally. Each due
 event is deduped through a watermark keyed on the state version that made it
@@ -1581,6 +1599,24 @@ item, stale cleanup is skipped rather than applying an old verdict.
 Manual-review or invalid verdicts preserve the open review with review
 metadata. Borg does not force a lifecycle transition when the judge cannot
 produce a trusted disposition.
+
+### Creator-Directive Reconciler
+
+The Creator-Directive Reconciler consumes active creator-directive families
+during maintenance sleep. It is operator-authority maintenance, not
+semantic-memory maintenance: it maintains the directive authority layer
+described in Creator Directives.
+
+It asks an LLM to judge family intent: supersede to a survivor, revoke stale
+directives, keep independent directives, or escalate. It then applies only
+structurally safe supersedes and revocations. A fail-closed
+disclosure-widening guard runs at plan time and again at apply time; any
+possible widening becomes a creator-directive reconciliation review instead of
+an automatic mutation.
+
+Applied supersedes and revocations write audit reversers. Human review is
+reserved for true conflicts and disclosure widening; independent directives
+remain active without queueing.
 
 ## Belief Revision
 
