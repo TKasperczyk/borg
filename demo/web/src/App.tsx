@@ -139,7 +139,7 @@ export function App() {
             {route === "identity" ? <IdentityScreen /> : null}
             {route === "commit" ? <CommitScreen /> : null}
             {route === "directives" ? <DirectivesScreen /> : null}
-            {route === "shared" ? <SharedScreen /> : null}
+            {route === "shared" ? <SharedScreen sessionId={sessionId} /> : null}
             {route === "dream" ? <DreamScreen /> : null}
             {route === "graph" ? <GraphScreen /> : null}
             {route === "prompts" ? <PromptsScreen /> : null}

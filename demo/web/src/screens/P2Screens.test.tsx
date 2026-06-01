@@ -598,7 +598,7 @@ describe("P2 screens", () => {
 
   it("renders shared-state lifecycle entries from state audiences", async () => {
     installFetch();
-    render(<SharedScreen />);
+    render(<SharedScreen sessionId="default" />);
 
     expect(await screen.findByText("alice likes terse answers")).toBeInTheDocument();
     expect(screen.getAllByText("locked")[0]).toBeInTheDocument();

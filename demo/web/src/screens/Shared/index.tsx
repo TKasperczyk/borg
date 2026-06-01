@@ -63,11 +63,18 @@ function tagKind(kind: SharedStateEntryKind): TagKind {
   return "";
 }
 
-export function SharedScreen() {
-  const stateApi = useApi(getState, []);
+export function SharedScreen({ sessionId }: { sessionId: string }) {
+  // Audience options derive from the SELECTED session's stream (like every other
+  // session-scoped screen). Without this the screen was pinned to the default
+  // session and only ever offered default/self, hiding entries compiled under
+  // other audiences (e.g. the operator/Tom audience).
+  const stateApi = useApi(() => getState({ session: sessionId }), [sessionId]);
   const audiences = stateApi.data?.audiences ?? [];
   const [audience, setAudience] = useState<string | null>(null);
-  const selectedAudience = audience ?? audiences[0] ?? "self";
+  // Fall back to the session's first audience when no valid manual pick is held
+  // (a manual pick from a previous session may not exist in this one).
+  const selectedAudience =
+    audience !== null && audiences.includes(audience) ? audience : (audiences[0] ?? "self");
   const sharedApi = useApi(() => getSharedState(selectedAudience), [selectedAudience]);
   const [filter, setFilter] = useState<LifecycleFilter>("all");
   const entries = sharedApi.data?.entries ?? [];
