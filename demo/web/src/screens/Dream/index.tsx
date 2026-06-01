@@ -13,7 +13,7 @@ import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
-import { jsonText } from "../screen-utils";
+import { displayTargetSummary } from "../screen-utils";
 
 const PROCESS_NAMES: DreamProcessName[] = [
   "consolidator",
@@ -449,7 +449,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                   </td>
                   <td className="dim">{row.action}</td>
                   <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
-                    {jsonText(row.targets)}
+                    {displayTargetSummary(row.targets)}
                   </td>
                   <td>
                     {Object.keys(row.reversal).length > 0 ? (
@@ -519,7 +519,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                     {process.changes.map((change, index) => (
                       <div key={`${process.name}-${change.action}-${index}`} className="row">
                         <span className="k">{change.action}</span>
-                        <span className="v">{jsonText(change.targets)}</span>
+                        <span className="v">{displayTargetSummary(change.targets)}</span>
                       </div>
                     ))}
                   </div>

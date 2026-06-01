@@ -16,7 +16,7 @@ import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
-import { shortId } from "../screen-utils";
+import { displayValue, fieldLabel, isRecord, shortId } from "../screen-utils";
 
 const REVIEW_KIND_ORDER: ReviewKind[] = [
   "creator_directive_reconciliation",
@@ -67,30 +67,6 @@ type ScopeField =
   | "activation_allowed"
   | "activation_excluded";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function displayValue(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "-";
-  }
-
-  if (typeof value === "string") {
-    return value.length === 0 ? "-" : value;
-  }
-
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-
-  if (Array.isArray(value)) {
-    return value.length === 0 ? "-" : value.map(displayValue).join(", ");
-  }
-
-  return JSON.stringify(value, null, 2);
-}
-
 function recordValue(record: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(record, key) ? record[key] : undefined;
 }
@@ -99,6 +75,121 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+type DetailField = [string, unknown];
+
+function addField(fields: DetailField[], label: string, value: unknown): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (typeof value === "string" && value.length === 0) {
+    return;
+  }
+
+  fields.push([label, value]);
+}
+
+function addArrayCount(fields: DetailField[], label: string, value: unknown): void {
+  if (Array.isArray(value)) {
+    fields.push([label, value.length]);
+  }
+}
+
+function firstString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function compactPatchSummary(value: unknown): string | null {
+  if (!isRecord(value)) {
+    return firstString(value);
+  }
+
+  const entries = Object.entries(value).filter(([, item]) => item !== null && item !== undefined);
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const visible = entries.slice(0, 6).map(([key, item]) => {
+    if (Array.isArray(item)) {
+      return `${fieldLabel(key)}: ${item.length}`;
+    }
+    return `${fieldLabel(key)}: ${displayValue(item)}`;
+  });
+  if (entries.length > visible.length) {
+    visible.push(`+${entries.length - visible.length} fields`);
+  }
+  return visible.join("; ");
+}
+
+function addTopLevelArrayCounts(fields: DetailField[], refs: Record<string, unknown>): void {
+  const seen = new Set(fields.map(([label]) => label));
+
+  for (const [key, value] of Object.entries(refs)) {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      continue;
+    }
+
+    const label = `${fieldLabel(key)} count`;
+    if (!seen.has(label)) {
+      fields.push([label, value.length]);
+      seen.add(label);
+    }
+  }
+}
+
+function sourceOverlapSummary(value: unknown): string | null {
+  if (!isRecord(value)) {
+    return firstString(value);
+  }
+
+  const parts: string[] = [];
+  const overlapCount = recordValue(value, "overlap_count");
+  if (typeof overlapCount === "number") {
+    parts.push(`${overlapCount} overlapping`);
+  }
+
+  const candidateSourceEpisodes = recordValue(value, "candidate_source_episode_ids");
+  if (Array.isArray(candidateSourceEpisodes)) {
+    parts.push(`${candidateSourceEpisodes.length} candidate`);
+  }
+
+  const matchedSourceEpisodes = recordValue(value, "matched_source_episode_ids");
+  if (Array.isArray(matchedSourceEpisodes)) {
+    parts.push(`${matchedSourceEpisodes.length} matched`);
+  }
+
+  return parts.length === 0 ? null : parts.join(", ");
+}
+
+function reviewDiagnosticReason(refs: Record<string, unknown>): string | null {
+  const diagnostic = recordValue(refs, `${REVIEW_RESOLVER_REF_PREFIX}diagnostic`);
+  if (!isRecord(diagnostic)) {
+    return null;
+  }
+
+  return firstString(diagnostic.reason);
+}
+
+function pendingInsightTargetNode(refs: Record<string, unknown>): Record<string, unknown> {
+  const pendingInsight = recordValue(refs, "reflector_pending_insight");
+  if (!isRecord(pendingInsight)) {
+    return {};
+  }
+
+  const target = recordValue(pendingInsight, "target");
+  if (!isRecord(target)) {
+    return {};
+  }
+
+  const node = recordValue(target, "node");
+  if (isRecord(node)) {
+    return node;
+  }
+
+  const patch = recordValue(target, "patch");
+  return isRecord(patch) ? patch : {};
 }
 
 function nodeIds(row: ReviewRow): string[] {
@@ -138,59 +229,122 @@ function diagnosticEntries(row: ReviewRow): Array<[string, unknown]> {
   return [["resolver_diagnostic", row.resolver_diagnostic], ...refDiagnostics];
 }
 
-function detailFields(row: ReviewRow): Array<[string, unknown]> {
-  const keysByKind: Partial<Record<ReviewKind, string[]>> = {
-    contradiction: ["node_ids", "node_labels", "edge_id", "vector_similarity", "source_overlap"],
-    duplicate: [
-      "node_ids",
-      "node_labels",
-      "duplicate_subtype",
-      "vector_similarity",
-      "source_overlap",
-    ],
-    correction: ["target_type", "target_id", "prompt_summary", "operator_reason", "patch"],
-    belief_revision: [
-      "target_type",
-      "target_id",
-      "invalidated_edge_id",
-      "dependency_path_edge_ids",
-      "surviving_support_edge_ids",
-      "evidence_episode_ids",
-    ],
-    new_insight: ["target_type", "semantic_node", "candidate", "source_episode_ids"],
-    misattribution: ["target_type", "target_id", "patch", "source_stream_entry_ids"],
-    temporal_drift: [
-      "target_type",
-      "target_id",
-      "corrected_start_time",
-      "corrected_end_time",
-      "patch_description",
-    ],
-    identity_inconsistency: ["target_type", "target_id", "patch", "repair"],
-    skill_split: ["skill_id", "claimed_at", "proposal", "splits"],
-    relationship_claim_ungrounded: [
-      "target_type",
-      "label",
-      "description",
-      "relationship_claim_label_families",
-      "ungrounded_relationship_claims",
-    ],
-  };
-  const preferredKeys = keysByKind[row.kind] ?? [];
-  const preferred = preferredKeys
-    .filter((key) => recordValue(row.refs, key) !== undefined)
-    .map((key): [string, unknown] => [key, recordValue(row.refs, key)]);
-  const preferredSet = new Set(preferredKeys);
-  const extras = Object.entries(row.refs)
-    .filter(([key]) => !preferredSet.has(key))
-    .filter(([key]) => !key.startsWith(REVIEW_RESOLVER_REF_PREFIX))
-    .slice(0, 8);
+function newInsightDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+  const node = pendingInsightTargetNode(refs);
 
-  return [...preferred, ...extras];
+  addField(fields, "node label", recordValue(node, "label"));
+  addField(fields, "node description", recordValue(node, "description"));
+  addField(fields, "evidence cluster size", recordValue(refs, "evidence_cluster_size"));
+  addArrayCount(fields, "episode count", recordValue(refs, "episode_ids"));
+  addField(fields, "diagnostic reason", reviewDiagnosticReason(refs));
+
+  return fields;
 }
 
-function firstString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
+function pairDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+
+  addField(fields, "node labels", recordValue(refs, "node_labels"));
+  addField(fields, "vector similarity", recordValue(refs, "vector_similarity"));
+  addField(fields, "source overlap", sourceOverlapSummary(recordValue(refs, "source_overlap")));
+  addField(fields, "duplicate subtype", recordValue(refs, "duplicate_subtype"));
+  addField(fields, "suggested valid to", recordValue(refs, "suggested_valid_to"));
+  addField(fields, "repair text", recordValue(refs, "reason"));
+
+  return fields;
+}
+
+function repairDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+
+  addField(fields, "target type", recordValue(refs, "target_type"));
+  addField(fields, "repair op", recordValue(refs, "repair_op"));
+  addField(fields, "patch description", recordValue(refs, "patch_description"));
+  addField(fields, "corrected start time", recordValue(refs, "corrected_start_time"));
+  addField(fields, "corrected end time", recordValue(refs, "corrected_end_time"));
+  addField(fields, "suggested valid to", recordValue(refs, "suggested_valid_to"));
+  addField(fields, "repair text", recordValue(refs, "reason"));
+  addField(fields, "patch", compactPatchSummary(recordValue(refs, "patch")));
+
+  const nextPeriod = recordValue(refs, "next_period_open_payload");
+  if (isRecord(nextPeriod)) {
+    addField(fields, "next period field count", Object.keys(nextPeriod).length);
+  }
+
+  addTopLevelArrayCounts(fields, refs);
+  return fields;
+}
+
+function correctionDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+
+  addField(fields, "prompt summary", recordValue(refs, "prompt_summary"));
+  addField(fields, "operator reason", recordValue(refs, "operator_reason"));
+
+  return fields;
+}
+
+function relationshipClaimDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+  const ungroundedClaims = recordValue(refs, "ungrounded_relationship_claims");
+  const claims = Array.isArray(ungroundedClaims)
+    ? ungroundedClaims
+    : recordValue(refs, "relationship_claims");
+
+  addField(fields, "candidate label", recordValue(refs, "label"));
+  addField(fields, "candidate description", recordValue(refs, "description"));
+  addArrayCount(fields, "claim count", claims);
+
+  return fields;
+}
+
+function skillSplitDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+  const proposal =
+    firstString(recordValue(refs, "rationale")) ?? compactPatchSummary(refs.proposal);
+  const children = Array.isArray(refs.proposed_children) ? refs.proposed_children : refs.splits;
+
+  addField(fields, "proposal", proposal);
+  addArrayCount(fields, "split count", children);
+
+  return fields;
+}
+
+function creatorDirectiveReconciliationDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+  const judgment = recordValue(refs, "judgment");
+
+  addField(fields, "subkind", recordValue(refs, "subkind"));
+  addArrayCount(fields, "member count", recordValue(refs, "members"));
+  addField(fields, "rationale", isRecord(judgment) ? judgment.rationale : undefined);
+
+  return fields;
+}
+
+function detailFields(row: ReviewRow): DetailField[] {
+  switch (row.kind) {
+    case "contradiction":
+    case "duplicate":
+      return pairDetailFields(row.refs);
+    case "new_insight":
+      return newInsightDetailFields(row.refs);
+    case "belief_revision":
+    case "misattribution":
+    case "identity_inconsistency":
+    case "temporal_drift":
+      return repairDetailFields(row.refs);
+    case "relationship_claim_ungrounded":
+      return relationshipClaimDetailFields(row.refs);
+    case "skill_split":
+      return skillSplitDetailFields(row.refs);
+    case "correction":
+      return correctionDetailFields(row.refs);
+    case "creator_directive_reconciliation":
+      return creatorDirectiveReconciliationDetailFields(row.refs);
+  }
+
+  return [];
 }
 
 function memberId(member: unknown): string | null {
@@ -226,6 +380,21 @@ function scopeFieldValue(member: unknown, field: ScopeField): unknown {
     case "activation_excluded":
       return activation.excluded_entity_ids;
   }
+}
+
+function scopeFieldDisplayValue(member: unknown, field: ScopeField): unknown {
+  const value = scopeFieldValue(member, field);
+
+  if (
+    field === "disclosure_allowed" ||
+    field === "disclosure_excluded" ||
+    field === "activation_allowed" ||
+    field === "activation_excluded"
+  ) {
+    return Array.isArray(value) ? `${value.length} entities` : value;
+  }
+
+  return value;
 }
 
 function scopeDifferences(members: readonly unknown[]): Set<ScopeField> {
@@ -317,7 +486,7 @@ function GenericReviewActions({
           <select value={winner} onChange={(event) => onWinner(event.target.value)}>
             {ids.map((id) => (
               <option value={id} key={id}>
-                {id}
+                {shortId(id)}
               </option>
             ))}
           </select>
@@ -387,10 +556,8 @@ function ReconciliationReview({
           <span className="v">{displayValue(refs.subkind)}</span>
         </div>
         <div className="row">
-          <span className="k">verdict</span>
-          <span className="v">
-            {displayValue(judgment.verdict)} / {displayValue(judgment.confidence)}
-          </span>
+          <span className="k">member count</span>
+          <span className="v">{members.length}</span>
         </div>
         <div className="row">
           <span className="k">rationale</span>
@@ -407,11 +574,12 @@ function ReconciliationReview({
       >
         {members.map((member, index) => {
           const id = memberId(member) ?? ids[index] ?? `member-${index + 1}`;
+          const label = `member ${index + 1}`;
           const directive = directivesById.get(id);
           return (
             <DirectiveMemberCard
               key={id}
-              id={id}
+              label={label}
               member={member}
               directive={directive}
               differences={differences}
@@ -433,11 +601,11 @@ function ReconciliationReview({
         <label className="modal-field">
           <span>scope survivor</span>
           <select value={survivor} onChange={(event) => onSurvivor(event.target.value)}>
-            {ids.map((id) => {
+            {ids.map((id, index) => {
               const directive = directivesById.get(id);
               return (
                 <option value={id} key={id}>
-                  {shortId(id)} {directive?.content_scope ?? ""}
+                  member {index + 1} {directive?.content_scope ?? ""}
                 </option>
               );
             })}
@@ -479,14 +647,14 @@ function ReconciliationReview({
 }
 
 function DirectiveMemberCard({
-  id,
+  label,
   member,
   directive,
   differences,
   selectedForRevoke,
   onToggleRevoke,
 }: {
-  id: string;
+  label: string;
   member: unknown;
   directive?: CreatorDirectiveItem;
   differences: Set<ScopeField>;
@@ -507,7 +675,7 @@ function DirectiveMemberCard({
     <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <Tag>{directive?.kind ?? "directive"}</Tag>
-        <span className="acc">{shortId(id)}</span>
+        <span className="acc">{label}</span>
         <label style={{ display: "inline-flex", gap: 5, alignItems: "center" }}>
           <input type="checkbox" checked={selectedForRevoke} onChange={onToggleRevoke} />
           <span className="dim" style={{ fontSize: 10.5 }}>
@@ -531,7 +699,7 @@ function DirectiveMemberCard({
           <div className="row" key={field}>
             <span className={`k ${differences.has(field) ? "warn" : ""}`}>{label}</span>
             <span className={`v ${differences.has(field) ? "warn" : ""}`}>
-              {displayValue(scopeFieldValue(member, field))}
+              {displayValue(scopeFieldDisplayValue(member, field))}
             </span>
           </div>
         ))}

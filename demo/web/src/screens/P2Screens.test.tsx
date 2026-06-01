@@ -694,6 +694,98 @@ describe("P2 screens", () => {
     expect(await screen.findByText("no open review rows")).toBeInTheDocument();
   });
 
+  it("renders new insight review details without embeddings or raw internal ids", async () => {
+    const live = makeLiveSource();
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(
+          jsonResponse({
+            rows: [
+              {
+                id: 42,
+                kind: "new_insight",
+                refs: {
+                  node_ids: ["semn_abcdefghijklmnop"],
+                  episode_ids: ["ep_abcdefghijklmnop", "ep_bcdefghijklmnopq"],
+                  entity_ids: ["ent_abcdefghijklmnop"],
+                  evidence_cluster_key: "scope:private|cluster:maya",
+                  evidence_cluster_size: 3,
+                  reflector_pending_insight: {
+                    target: {
+                      mode: "insert",
+                      node: {
+                        id: "semn_abcdefghijklmnop",
+                        kind: "proposition",
+                        label: "Maya preference",
+                        description: "Maya prefers concise project memory summaries.",
+                        domain: null,
+                        aliases: [],
+                        confidence: 0.8,
+                        source_episode_ids: ["ep_abcdefghijklmnop"],
+                        created_at: 1,
+                        updated_at: 1,
+                        last_verified_at: 1,
+                        embedding: Array.from({ length: 24 }, (_, index) => index / 100),
+                        archived: false,
+                        superseded_by: null,
+                        status: "active",
+                        corrected_by: null,
+                        superseded_at: null,
+                      },
+                    },
+                    candidate_support_edges: [
+                      {
+                        id: "seme_abcdefghijklmnop",
+                        insight_node_id: "semn_abcdefghijklmnop",
+                        target_node_id: "semn_bcdefghijklmnopq",
+                        source_episode_ids: ["ep_bcdefghijklmnopq"],
+                        confidence: 0.7,
+                      },
+                    ],
+                    evidence_cluster: {
+                      key: "scope:private|cluster:maya",
+                      episode_ids: ["ep_abcdefghijklmnop", "ep_bcdefghijklmnopq"],
+                      size: 3,
+                    },
+                  },
+                },
+                reason: "low-confidence reflector insight",
+                created_at: 4,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
+      </LiveEventsProvider>,
+    );
+
+    expect(await screen.findByText("Maya preference")).toBeInTheDocument();
+    expect(screen.getByText("Maya prefers concise project memory summaries.")).toBeInTheDocument();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("evidence cluster size");
+    expect(text).toContain("episode count");
+    expect(text).toContain("3");
+    expect(text).toContain("2");
+    expect(text).not.toContain("vector(");
+    expect(text).not.toContain("semn_");
+    expect(text).not.toContain("ep_");
+    expect(text).not.toContain("ent_");
+  });
+
   it("refetches dream state on WebSocket reconnect after the initial connection", async () => {
     const live = makeLiveSource();
     const fetchMock = installFetch();
