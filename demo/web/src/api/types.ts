@@ -528,6 +528,9 @@ export type CreatorDirectiveItem = {
   id: string;
   kind: CreatorDirectiveKind;
   text: string | null;
+  source_session_id: string;
+  authorization_stream_entry_ids: string[];
+  content_source_stream_entry_ids: string[];
   canonical_fact: string | null;
   operational_directive: string | null;
   activation_scope: CreatorDirectiveActivationScope;

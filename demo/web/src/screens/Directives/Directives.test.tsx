@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { CreatorDirectiveItem } from "../../api/types";
+import type {
+  CommitmentItem,
+  CreatorDirectiveItem,
+  SessionRecord,
+  SharedStateEntry,
+} from "../../api/types";
 import { DirectivesScreen } from ".";
 
 function jsonResponse(body: unknown): Response {
@@ -34,6 +39,9 @@ function directive(input: Partial<CreatorDirectiveItem> = {}): CreatorDirectiveI
     id: "cdir_1111111111111111",
     kind: "subject_fact",
     text: "Alice is the launch reviewer.",
+    source_session_id: "sess_directive1111",
+    authorization_stream_entry_ids: ["strm_directive1111"],
+    content_source_stream_entry_ids: ["strm_directive1111"],
     canonical_fact: "Alice is the launch reviewer.",
     operational_directive: null,
     activation_scope: "same_as_disclosure",
@@ -54,6 +62,113 @@ function directive(input: Partial<CreatorDirectiveItem> = {}): CreatorDirectiveI
   };
 }
 
+function session(input: Partial<SessionRecord> = {}): SessionRecord {
+  return {
+    session_id: "sess_directive1111",
+    source_type: "demo",
+    source_external_id: null,
+    source_url: null,
+    label: "demo",
+    audience_label: "alice",
+    audience_entity_id: "ent_1111111111111111",
+    conversation_kind: "demo",
+    created_at: 1,
+    last_activity_at: 1,
+    last_turn_id: null,
+    message_count: 0,
+    status: "active",
+    privacy_level: "payload_off",
+    participation_policy: "active",
+    audience_role: "participant",
+    ...input,
+  };
+}
+
+function commitment(input: Partial<CommitmentItem> = {}): CommitmentItem {
+  return {
+    id: "cmt_1111111111111111",
+    text: "Retired commitment.",
+    type: "rule",
+    kind: "audience_rule",
+    enforcement_class: "advisory",
+    critical_domain: null,
+    state: "revoked",
+    priority: 7,
+    directive_family: "demo_family",
+    audience: "alice",
+    made_to: null,
+    about: null,
+    committed_by: null,
+    source: "online",
+    source_stream_entry_ids: ["strm_directive1111"],
+    created_at: 1,
+    expires_at: null,
+    expired_at: null,
+    revoked_at: 2,
+    revoked_reason: "canonicalized_by_artifact_entry_id=dart_1111111111111111",
+    superseded_by_id: null,
+    canonicalized_by_artifact_entry_id: "dart_1111111111111111",
+    last_reinforced_at: 1,
+    ...input,
+  };
+}
+
+function sharedEntry(input: Partial<SharedStateEntry> = {}): SharedStateEntry {
+  return {
+    id: "dart_1111111111111111",
+    audience_entity_id: "ent_1111111111111111",
+    state_key: "rule.demo",
+    kind: "locked",
+    text: "Canonical shared-state row.",
+    owner_entity_id: null,
+    provenance_stream_entry_ids: ["strm_shared1111"],
+    last_updated_stream_entry_ids: ["strm_shared1111"],
+    created_at: 1,
+    last_updated_at: 2,
+    last_updated_turn_global: 3,
+    superseded_by_id: null,
+    rank: 0,
+    canonicalizes: {
+      goal_ids: [],
+      commitment_ids: [],
+      action_ids: [],
+      open_question_ids: [],
+    },
+    ...input,
+  };
+}
+
+type SupportFixture = {
+  sessions?: SessionRecord[];
+  commitments?: CommitmentItem[];
+  sharedStateByAudience?: Record<string, SharedStateEntry[]>;
+};
+
+function supportResponse(
+  request: RequestInfo | URL,
+  fixture: SupportFixture = {},
+): Response | null {
+  const url = new URL(String(request), "http://test.invalid");
+
+  if (url.pathname === "/api/sessions") {
+    return jsonResponse({ sessions: fixture.sessions ?? [] });
+  }
+
+  if (url.pathname === "/api/commitments") {
+    return jsonResponse({ commitments: fixture.commitments ?? [] });
+  }
+
+  if (url.pathname === "/api/shared-state") {
+    const audience = url.searchParams.get("audience") ?? "self";
+    return jsonResponse({
+      audience,
+      entries: fixture.sharedStateByAudience?.[audience] ?? [],
+    });
+  }
+
+  return null;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -72,8 +187,12 @@ describe("DirectivesScreen", () => {
       const path = requestPath(request);
       const method = requestMethod(init);
       if (path === "/api/creator-directives" && method === "GET") {
-        expect(requestStatus(request)).toBe("active");
-        return Promise.resolve(jsonResponse({ directives: [active] }));
+        expect(requestStatus(request)).toBe("all");
+        return Promise.resolve(jsonResponse({ directives: [active, revoked] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
       }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });
@@ -129,14 +248,11 @@ describe("DirectivesScreen", () => {
       const path = requestPath(request);
       const method = requestMethod(init);
       if (path === "/api/creator-directives" && method === "GET") {
-        const status = requestStatus(request);
-        const directives =
-          status === "all"
-            ? [active, replacement, revoked, superseded]
-            : status === "revoked"
-              ? [revoked]
-              : [active, replacement];
-        return Promise.resolve(jsonResponse({ directives }));
+        return Promise.resolve(jsonResponse({ directives: [active, replacement, revoked, superseded] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
       }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });
@@ -149,27 +265,20 @@ describe("DirectivesScreen", () => {
 
     clickPill("all");
 
-    expect(await screen.findByText("Revoked directive.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Revoked directive.")).length).toBeGreaterThan(0);
     expect(screen.getByText("revoked: replaced by newer policy")).toBeInTheDocument();
     expect(screen.getByText(/superseded by:/)).toBeInTheDocument();
 
     clickPill("revoked");
 
-    expect(await screen.findByText("Revoked directive.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Revoked directive.")).length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(screen.queryByText("Active directive.")).not.toBeInTheDocument();
     });
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            requestPath(call[0]) === "/api/creator-directives" &&
-            requestMethod(call[1]) === "GET" &&
-            requestStatus(call[0]) === "revoked",
-        ),
-      ).toBe(true);
-    });
+    expect(
+      screen.getAllByText("revoked").some((element) => element.classList.contains("on")),
+    ).toBe(true);
   });
 
   it("jumps from a superseded row to its target directive", async () => {
@@ -189,14 +298,11 @@ describe("DirectivesScreen", () => {
       const path = requestPath(request);
       const method = requestMethod(init);
       if (path === "/api/creator-directives" && method === "GET") {
-        const status = requestStatus(request);
-        const directives =
-          status === "superseded"
-            ? [superseded]
-            : status === "all"
-              ? [replacement, superseded]
-              : [replacement];
-        return Promise.resolve(jsonResponse({ directives }));
+        return Promise.resolve(jsonResponse({ directives: [replacement, superseded] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
       }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });
@@ -212,20 +318,157 @@ describe("DirectivesScreen", () => {
       screen.getAllByRole("button", { name: `jump to directive ${replacement.id}` })[0]!,
     );
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            requestPath(call[0]) === "/api/creator-directives" &&
-            requestMethod(call[1]) === "GET" &&
-            requestStatus(call[0]) === "all",
-        ),
-      ).toBe(true);
-    });
     expect(await screen.findByText(replacement.id)).toBeInTheDocument();
     expect(
       screen.getAllByText("all").some((element) => element.classList.contains("on")),
     ).toBe(true);
+  });
+
+  it("renders structurally related shared-state lifecycle and keeps uncorrelated rows visible", async () => {
+    const selected = directive({
+      id: "cdir_policy111111",
+      kind: "response_policy",
+      text: "Selected policy.",
+      canonical_fact: null,
+      operational_directive: "Selected policy.",
+      source_session_id: "sess_tom111111111",
+      authorization_stream_entry_ids: ["strm_rule_source"],
+      content_source_stream_entry_ids: ["strm_rule_source"],
+      priority: 80,
+    });
+    const retiredCommitment = commitment({
+      id: "cmt_retired111111",
+      state: "revoked",
+      source_stream_entry_ids: ["strm_rule_source"],
+      canonicalized_by_artifact_entry_id: "dart_rule11111111",
+      revoked_reason: "canonicalized_by_artifact_entry_id=dart_rule11111111",
+    });
+    const sharedSourceOnlyCommitment = commitment({
+      id: "cmt_sourceonly111",
+      state: "revoked",
+      source_stream_entry_ids: ["strm_other_commitment"],
+      canonicalized_by_artifact_entry_id: "dart_sourceonly11",
+      revoked_reason: "canonicalized_by_artifact_entry_id=dart_sourceonly11",
+    });
+    const related = sharedEntry({
+      id: "dart_rule11111111",
+      state_key: "rule.botarena.language",
+      text: "Locked lifecycle value.",
+      provenance_stream_entry_ids: ["strm_shared_source"],
+      last_updated_stream_entry_ids: ["strm_shared_source"],
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [retiredCommitment.id],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    const sharedSourceOnly = sharedEntry({
+      id: "dart_sourceonly11",
+      state_key: "rule.shared-source-only",
+      text: "Shared-source-only lifecycle value.",
+      provenance_stream_entry_ids: ["strm_rule_source"],
+      last_updated_stream_entry_ids: ["strm_rule_source"],
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [sharedSourceOnlyCommitment.id],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    const uncorrelated = sharedEntry({
+      id: "dart_uncorrelated1",
+      state_key: "uncorrelated.thread",
+      text: "Uncorrelated lifecycle value.",
+      provenance_stream_entry_ids: ["strm_uncorrelated"],
+      last_updated_stream_entry_ids: ["strm_uncorrelated"],
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [sharedSourceOnlyCommitment.id],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    const fixture: SupportFixture = {
+      sessions: [
+        session({ session_id: "sess_tom111111111", audience_label: "Tom" }),
+        session({
+          session_id: "sess_arena111111",
+          audience_label: "botarena_thread:test",
+          audience_entity_id: "ent_arena111111111",
+        }),
+      ],
+      commitments: [retiredCommitment, sharedSourceOnlyCommitment],
+      sharedStateByAudience: {
+        Tom: [related, sharedSourceOnly, uncorrelated],
+        "botarena_thread:test": [],
+      },
+    };
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [selected] }));
+      }
+      const support = supportResponse(request, fixture);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DirectivesScreen />);
+
+    expect(await screen.findByText("rule.botarena.language")).toBeInTheDocument();
+    expect(screen.getByText(/related via canonicalized commitment/)).toHaveTextContent(
+      "revoked",
+    );
+    expect(
+      screen.getByRole("button", { name: `inspect canonical target ${retiredCommitment.id}` }),
+    ).toHaveTextContent("revoked");
+    expect(screen.getByText("rule.shared-source-only")).toBeInTheDocument();
+    expect(screen.getByText(/related via shared source/)).toBeInTheDocument();
+    expect(
+      screen.getAllByText("canonicalized commitment is revoked while selected directive is active"),
+    ).toHaveLength(1);
+    expect(screen.getByText("uncorrelated.thread")).toBeInTheDocument();
+    expect(screen.getByText(/empty shared-state audiences: botarena_thread:test/)).toBeInTheDocument();
+  });
+
+  it("shows an honest notice when session audience discovery reaches the server cap", async () => {
+    const selected = directive();
+    const cappedSessions = Array.from({ length: 1000 }, (_, index) =>
+      session({
+        session_id: `sess_cap${String(index).padStart(4, "0")}`,
+        audience_label: "Tom",
+      }),
+    );
+    const fixture: SupportFixture = {
+      sessions: cappedSessions,
+      sharedStateByAudience: {
+        Tom: [],
+      },
+    };
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [selected] }));
+      }
+      const support = supportResponse(request, fixture);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DirectivesScreen />);
+
+    expect(
+      await screen.findByText(/audience discovery reached the 1000-session server cap/),
+    ).toBeInTheDocument();
   });
 
   it("confirms revoke, posts the reason, and refetches", async () => {
@@ -250,6 +493,10 @@ describe("DirectivesScreen", () => {
             updated_at: 2,
           }),
         );
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
       }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });
@@ -314,6 +561,10 @@ describe("DirectivesScreen", () => {
           }),
         );
       }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -361,9 +612,11 @@ describe("DirectivesScreen", () => {
       const path = requestPath(request);
       const method = requestMethod(init);
       if (path === "/api/creator-directives" && method === "GET") {
-        return Promise.resolve(
-          jsonResponse({ directives: requestStatus(request) === "all" ? [revoked] : [] }),
-        );
+        return Promise.resolve(jsonResponse({ directives: [revoked] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
       }
       return Promise.resolve(new Response("{}", { status: 404 }));
     });

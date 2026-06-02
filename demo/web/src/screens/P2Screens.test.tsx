@@ -9,7 +9,6 @@ import { DreamScreen } from "./Dream";
 import { IdentityScreen } from "./Identity";
 import { MemoryScreen } from "./Memory";
 import { ReviewScreen } from "./Review";
-import { SharedScreen } from "./Shared";
 import { StreamScreen } from "./Stream";
 
 function jsonResponse(body: unknown): Response {
@@ -680,19 +679,6 @@ describe("P2 screens", () => {
       expect(screen.queryAllByText("active rule")).toHaveLength(0);
     });
     expect(screen.getAllByText("revoked rule").length).toBeGreaterThan(0);
-  });
-
-  it("renders shared-state lifecycle entries from state audiences", async () => {
-    installFetch();
-    render(<SharedScreen sessionId="default" />);
-
-    expect(await screen.findByText("alice likes terse answers")).toBeInTheDocument();
-    expect(screen.getAllByText("locked")[0]).toBeInTheDocument();
-    expect(screen.getByText("live - low salience")).toBeInTheDocument();
-    expect(screen.getByText("live - dormant")).toBeInTheDocument();
-    expect(screen.getByText("pending (legacy)")).toBeInTheDocument();
-    expect(screen.getByText("live 2")).toBeInTheDocument();
-    expect(screen.queryByText("pending 1")).not.toBeInTheDocument();
   });
 
   it("links dream belief-revision rows to the unified review screen", async () => {

@@ -125,13 +125,14 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.queryByRole("button", { name: "graph" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "shared" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "identity" })).toHaveAttribute(
       "title",
       "identity (⌘4)",
     );
     expect(screen.getByRole("button", { name: "prompts" })).toHaveAttribute(
       "title",
-      "prompts (⌘10)",
+      "prompts (⌘9)",
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "operator chat" }));

@@ -26,7 +26,6 @@ import { IdentityScreen } from "./screens/Identity";
 import { MemoryScreen } from "./screens/Memory";
 import { PromptsScreen } from "./screens/Prompts";
 import { ReviewScreen } from "./screens/Review";
-import { SharedScreen } from "./screens/Shared";
 import { StreamScreen } from "./screens/Stream";
 
 const DEFAULT_AUDIENCE = "alice";
@@ -141,7 +140,6 @@ export function App() {
             {route === "identity" ? <IdentityScreen /> : null}
             {route === "commit" ? <CommitScreen /> : null}
             {route === "directives" ? <DirectivesScreen /> : null}
-            {route === "shared" ? <SharedScreen sessionId={sessionId} /> : null}
             {route === "review" ? <ReviewScreen /> : null}
             {route === "dream" ? <DreamScreen onOpenReview={() => setRoute("review")} /> : null}
             {route === "prompts" ? <PromptsScreen /> : null}

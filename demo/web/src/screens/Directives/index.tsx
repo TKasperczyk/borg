@@ -1,19 +1,25 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import {
+  getCommitments,
   getCreatorDirectives,
+  getSessions,
+  getSharedState,
   revokeCreatorDirective,
   supersedeCreatorDirective,
 } from "../../api/client";
 import type {
+  CommitmentItem,
   CreatorDirectiveItem,
   CreatorDirectiveStatus,
   CreatorDirectiveStatusFilter,
+  SharedStateEntry,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { useApi } from "../../hooks/use-api";
+import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { dateLabel, shortId } from "../screen-utils";
 
 type SortMode = "priority_desc" | "priority_asc";
@@ -21,9 +27,82 @@ type SortMode = "priority_desc" | "priority_asc";
 type DirectiveModal =
   | { kind: "revoke"; directive: CreatorDirectiveItem; reason: string }
   | { kind: "supersede"; directive: CreatorDirectiveItem; replacementId: string };
+type SharedStateAudienceEntries = {
+  audience: string;
+  entries: SharedStateEntry[];
+};
+type DirectiveSupportData = {
+  audienceDiscoveryTruncated: boolean;
+  commitments: CommitmentItem[];
+  sharedAudiences: SharedStateAudienceEntries[];
+};
+type SharedStateRelation =
+  | {
+      kind: "canonicalized_commitment";
+      commitment: CommitmentItem;
+      streamIds: string[];
+    }
+  | {
+      kind: "shared_source";
+      streamIds: string[];
+    };
+type RelatedSharedStateEntry = {
+  audience: string;
+  entry: SharedStateEntry;
+  relations: SharedStateRelation[];
+};
 
 const STATUS_FILTERS: CreatorDirectiveStatusFilter[] = ["active", "revoked", "superseded", "all"];
 const SORT_MODES: SortMode[] = ["priority_desc", "priority_asc"];
+const SESSION_AUDIENCE_DISCOVERY_CAP = 1000;
+
+function uniqueStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const value of values) {
+    if (value.length === 0 || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+
+  return result;
+}
+
+function intersectStrings(values: readonly string[], source: ReadonlySet<string>): string[] {
+  return uniqueStrings(values.filter((value) => source.has(value)));
+}
+
+function directiveSourceStreamIds(directive: CreatorDirectiveItem): string[] {
+  return uniqueStrings([
+    ...directive.authorization_stream_entry_ids,
+    ...directive.content_source_stream_entry_ids,
+  ]);
+}
+
+async function loadDirectiveSupportData(): Promise<DirectiveSupportData> {
+  const [sessionsResponse, commitmentsResponse] = await Promise.all([
+    getSessions(),
+    getCommitments({ state: "all" }),
+  ]);
+  const audienceLabels = uniqueStrings(
+    sessionsResponse.sessions.map((session) => session.audience_label),
+  );
+  const sharedAudiences = await Promise.all(
+    audienceLabels.map(async (audience) => {
+      const response = await getSharedState(audience);
+      return { audience: response.audience, entries: response.entries };
+    }),
+  );
+
+  return {
+    audienceDiscoveryTruncated: sessionsResponse.sessions.length === SESSION_AUDIENCE_DISCOVERY_CAP,
+    commitments: commitmentsResponse.commitments,
+    sharedAudiences,
+  };
+}
 
 function statusTag(status: CreatorDirectiveStatus) {
   if (status === "active") {
@@ -167,22 +246,433 @@ function canSubmitModal(
   return replacement !== undefined && canReplaceWith(replacement, modal.directive);
 }
 
+function sharedStateRelationsForDirective(input: {
+  directive: CreatorDirectiveItem;
+  entry: SharedStateEntry;
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+}): SharedStateRelation[] {
+  const directiveSourceIds = new Set(directiveSourceStreamIds(input.directive));
+
+  if (directiveSourceIds.size === 0) {
+    return [];
+  }
+
+  const relations: SharedStateRelation[] = [];
+  const sharedSourceIntersection = intersectStrings(
+    [
+      ...input.entry.provenance_stream_entry_ids,
+      ...input.entry.last_updated_stream_entry_ids,
+    ],
+    directiveSourceIds,
+  );
+
+  if (sharedSourceIntersection.length > 0) {
+    relations.push({
+      kind: "shared_source",
+      streamIds: sharedSourceIntersection,
+    });
+  }
+
+  for (const commitmentId of input.entry.canonicalizes.commitment_ids) {
+    const commitment = input.commitmentsById.get(commitmentId);
+    if (commitment === undefined) {
+      continue;
+    }
+
+    const commitmentSourceIntersection = intersectStrings(
+      commitment.source_stream_entry_ids,
+      directiveSourceIds,
+    );
+
+    if (commitmentSourceIntersection.length > 0) {
+      relations.push({
+        kind: "canonicalized_commitment",
+        commitment,
+        streamIds: commitmentSourceIntersection,
+      });
+    }
+  }
+
+  return relations;
+}
+
+function relatedSharedStateEntries(input: {
+  directive: CreatorDirectiveItem;
+  sharedAudiences: readonly SharedStateAudienceEntries[];
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+}): RelatedSharedStateEntry[] {
+  const rows: RelatedSharedStateEntry[] = [];
+
+  for (const audience of input.sharedAudiences) {
+    for (const entry of audience.entries) {
+      const relations = sharedStateRelationsForDirective({
+        directive: input.directive,
+        entry,
+        commitmentsById: input.commitmentsById,
+      });
+
+      if (relations.length > 0) {
+        rows.push({
+          audience: audience.audience,
+          entry,
+          relations,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+function uncorrelatedSharedStateEntries(input: {
+  directives: readonly CreatorDirectiveItem[];
+  sharedAudiences: readonly SharedStateAudienceEntries[];
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+}): RelatedSharedStateEntry[] {
+  const rows: RelatedSharedStateEntry[] = [];
+
+  for (const audience of input.sharedAudiences) {
+    for (const entry of audience.entries) {
+      const relatesToAnyDirective = input.directives.some(
+        (directive) =>
+          sharedStateRelationsForDirective({
+            directive,
+            entry,
+            commitmentsById: input.commitmentsById,
+          }).length > 0,
+      );
+
+      if (!relatesToAnyDirective) {
+        rows.push({
+          audience: audience.audience,
+          entry,
+          relations: [],
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+function commitmentStatusLabel(commitment: CommitmentItem | undefined): string {
+  if (commitment === undefined) {
+    return "unknown";
+  }
+  return commitment.superseded_by_id === null ? commitment.state : "superseded";
+}
+
+function canonicalTargetRows(
+  entry: SharedStateEntry,
+  commitmentsById: ReadonlyMap<string, CommitmentItem>,
+): Array<{ channel: string; id: string; status: string }> {
+  return [
+    ...entry.canonicalizes.goal_ids.map((id) => ({
+      channel: "goal",
+      id,
+      status: "status unavailable",
+    })),
+    ...entry.canonicalizes.commitment_ids.map((id) => ({
+      channel: "commitment",
+      id,
+      status: commitmentStatusLabel(commitmentsById.get(id)),
+    })),
+    ...entry.canonicalizes.action_ids.map((id) => ({
+      channel: "action",
+      id,
+      status: "status unavailable",
+    })),
+    ...entry.canonicalizes.open_question_ids.map((id) => ({
+      channel: "open question",
+      id,
+      status: "status unavailable",
+    })),
+  ];
+}
+
+function relationLabel(relation: SharedStateRelation): string {
+  if (relation.kind === "canonicalized_commitment") {
+    return `related via canonicalized commitment ${shortId(relation.commitment.id)} (${commitmentStatusLabel(
+      relation.commitment,
+    )}) source ${relation.streamIds.map(shortId).join(", ")}`;
+  }
+
+  return `related via shared source ${relation.streamIds.map(shortId).join(", ")}`;
+}
+
+function hasRevokedCanonicalizedCommitmentRelation(
+  relations: readonly SharedStateRelation[],
+): boolean {
+  return relations.some(
+    (relation) =>
+      relation.kind === "canonicalized_commitment" && relation.commitment.state === "revoked",
+  );
+}
+
+function SharedStateLifecyclePanel({
+  directive,
+  allDirectives,
+  commitmentsById,
+  sharedAudiences,
+  audienceDiscoveryTruncated,
+  loading,
+}: {
+  directive: CreatorDirectiveItem;
+  allDirectives: readonly CreatorDirectiveItem[];
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+  sharedAudiences: readonly SharedStateAudienceEntries[];
+  audienceDiscoveryTruncated: boolean;
+  loading: boolean;
+}) {
+  const [focusedSharedEntryId, setFocusedSharedEntryId] = useState<string | null>(null);
+  const [focusedCanonicalTargetId, setFocusedCanonicalTargetId] = useState<string | null>(null);
+  const relatedRows = relatedSharedStateEntries({
+    directive,
+    sharedAudiences,
+    commitmentsById,
+  });
+  const uncorrelatedRows = uncorrelatedSharedStateEntries({
+    directives: allDirectives,
+    sharedAudiences,
+    commitmentsById,
+  });
+  const emptyAudiences = sharedAudiences
+    .filter((audience) => audience.entries.length === 0)
+    .map((audience) => audience.audience);
+  const totalEntryCount = sharedAudiences.reduce(
+    (sum, audience) => sum + audience.entries.length,
+    0,
+  );
+
+  return (
+    <>
+      <div className="divider">shared-state lifecycle</div>
+      {loading ? <div className="notice">loading shared-state lifecycle</div> : null}
+      {!loading && audienceDiscoveryTruncated ? (
+        <div className="notice" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+          audience discovery reached the 1000-session server cap; shared-state lifecycle rows from
+          older audiences may be missing
+        </div>
+      ) : null}
+      {!loading && sharedAudiences.length === 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+          no session audiences returned for shared-state lookup
+        </div>
+      ) : null}
+      {!loading && emptyAudiences.length > 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+          empty shared-state audiences: {emptyAudiences.join(", ")}
+        </div>
+      ) : null}
+      {!loading && totalEntryCount === 0 && sharedAudiences.length > 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+          no shared-state rows across session audiences
+        </div>
+      ) : null}
+      {!loading && totalEntryCount > 0 && relatedRows.length === 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+          no shared-state rows structurally relate to this directive's source stream ids
+        </div>
+      ) : null}
+      {relatedRows.map((row) => (
+        <SharedStateLifecycleRow
+          key={`related:${row.audience}:${row.entry.id}`}
+          row={row}
+          directive={directive}
+          commitmentsById={commitmentsById}
+          focusedSharedEntryId={focusedSharedEntryId}
+          focusedCanonicalTargetId={focusedCanonicalTargetId}
+          onOpenSharedEntry={setFocusedSharedEntryId}
+          onOpenCanonicalTarget={setFocusedCanonicalTargetId}
+        />
+      ))}
+
+      <div className="divider">uncorrelated shared lifecycle</div>
+      {!loading && totalEntryCount === 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+          no uncorrelated rows because no shared-state rows were returned
+        </div>
+      ) : null}
+      {!loading && totalEntryCount > 0 && uncorrelatedRows.length === 0 ? (
+        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+          all non-empty shared-state rows have at least one structural directive relation
+        </div>
+      ) : null}
+      {uncorrelatedRows.map((row) => (
+        <SharedStateLifecycleRow
+          key={`uncorrelated:${row.audience}:${row.entry.id}`}
+          row={row}
+          directive={directive}
+          commitmentsById={commitmentsById}
+          focusedSharedEntryId={focusedSharedEntryId}
+          focusedCanonicalTargetId={focusedCanonicalTargetId}
+          onOpenSharedEntry={setFocusedSharedEntryId}
+          onOpenCanonicalTarget={setFocusedCanonicalTargetId}
+        />
+      ))}
+    </>
+  );
+}
+
+function SharedStateLifecycleRow({
+  row,
+  directive,
+  commitmentsById,
+  focusedSharedEntryId,
+  focusedCanonicalTargetId,
+  onOpenSharedEntry,
+  onOpenCanonicalTarget,
+}: {
+  row: RelatedSharedStateEntry;
+  directive: CreatorDirectiveItem;
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+  focusedSharedEntryId: string | null;
+  focusedCanonicalTargetId: string | null;
+  onOpenSharedEntry: (id: string) => void;
+  onOpenCanonicalTarget: (id: string) => void;
+}) {
+  const entry = row.entry;
+  const canonicalTargets = canonicalTargetRows(entry, commitmentsById);
+  const revokedCanonicalCommitment =
+    directive.status === "active" && hasRevokedCanonicalizedCommitmentRelation(row.relations);
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${
+          focusedSharedEntryId === entry.id ? "var(--acc-dim)" : "var(--line)"
+        }`,
+        background: "var(--bg-1)",
+        padding: "10px 12px",
+        marginBottom: 8,
+      }}
+    >
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <Tag kind={tagKind(entry.kind)} dot>
+          {lifecycleLabel(entry.kind)}
+        </Tag>
+        <span className="acc" style={{ fontSize: 10.5 }}>
+          {shortId(entry.id)}
+        </span>
+        <span className="dim" style={{ fontSize: 10.5 }}>
+          audience {row.audience}
+        </span>
+      </div>
+      <div className="props" style={{ marginTop: 8 }}>
+        <div className="row">
+          <span className="k">state key</span>
+          <span className="v">{entry.state_key ?? "legacy/unkeyed"}</span>
+        </div>
+        <div className="row">
+          <span className="k">updated</span>
+          <span className="v">{dateLabel(entry.last_updated_at)}</span>
+        </div>
+        <div className="row">
+          <span className="k">sources</span>
+          <span className="v tab-num">
+            {entry.provenance_stream_entry_ids.length} provenance /{" "}
+            {entry.last_updated_stream_entry_ids.length} update
+          </span>
+        </div>
+        {entry.superseded_by_id === null ? null : (
+          <div className="row">
+            <span className="k">superseded by</span>
+            <span className="v">
+              <SupersededByChip
+                id={entry.superseded_by_id}
+                label={shortId(entry.superseded_by_id)}
+                active={focusedSharedEntryId === entry.superseded_by_id}
+                title={`Inspect shared-state entry ${entry.superseded_by_id}`}
+                ariaLabel={`inspect shared-state entry ${entry.superseded_by_id}`}
+                onOpen={onOpenSharedEntry}
+              />
+            </span>
+          </div>
+        )}
+      </div>
+      <div
+        style={{
+          fontFamily: "var(--sans)",
+          fontSize: 12,
+          lineHeight: 1.5,
+          color: "var(--text)",
+          marginTop: 8,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {entry.text}
+      </div>
+      {row.relations.length === 0 ? (
+        <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
+          no structural relation to any creator directive source stream id
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+          {row.relations.map((relation) => (
+            <div
+              key={`${relation.kind}:${relation.streamIds.join(",")}:${
+                relation.kind === "canonicalized_commitment" ? relation.commitment.id : "source"
+              }`}
+              className="dim"
+              style={{ fontSize: 10.5, lineHeight: 1.45 }}
+            >
+              {relationLabel(relation)}
+            </div>
+          ))}
+        </div>
+      )}
+      {canonicalTargets.length === 0 ? null : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {canonicalTargets.map((target) => (
+            <SupersededByChip
+              key={`${target.channel}:${target.id}`}
+              id={target.id}
+              label={`${target.channel} ${shortId(target.id)} · ${target.status}`}
+              active={focusedCanonicalTargetId === target.id}
+              title={`Inspect canonical target ${target.id}`}
+              ariaLabel={`inspect canonical target ${target.id}`}
+              onOpen={onOpenCanonicalTarget}
+            />
+          ))}
+        </div>
+      )}
+      {revokedCanonicalCommitment ? (
+        <div className="warn" style={{ fontSize: 10.5, marginTop: 8, lineHeight: 1.45 }}>
+          canonicalized commitment is revoked while selected directive is active
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function DirectivesScreen() {
   const [statusFilter, setStatusFilter] = useState<CreatorDirectiveStatusFilter>("active");
   const [sortMode, setSortMode] = useState<SortMode>("priority_desc");
-  const api = useApi(() => getCreatorDirectives({ status: statusFilter }), [statusFilter]);
+  const api = useApi(() => getCreatorDirectives({ status: "all" }), []);
+  const supportApi = useApi(loadDirectiveSupportData, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<DirectiveModal | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const rawDirectives = api.data?.directives ?? [];
+  const visibleRawDirectives = useMemo(
+    () =>
+      statusFilter === "all"
+        ? rawDirectives
+        : rawDirectives.filter((directive) => directive.status === statusFilter),
+    [rawDirectives, statusFilter],
+  );
   const directives = useMemo(
-    () => [...rawDirectives].sort(compareDirectives(sortMode)),
-    [rawDirectives, sortMode],
+    () => [...visibleRawDirectives].sort(compareDirectives(sortMode)),
+    [visibleRawDirectives, sortMode],
   );
   const directivesById = useMemo(
-    () => new Map(directives.map((directive) => [directive.id, directive])),
-    [directives],
+    () => new Map(rawDirectives.map((directive) => [directive.id, directive])),
+    [rawDirectives],
+  );
+  const commitmentsById = useMemo(
+    () => new Map((supportApi.data?.commitments ?? []).map((item) => [item.id, item])),
+    [supportApi.data?.commitments],
   );
   const selected = directives.find((item) => item.id === selectedId) ?? directives[0] ?? null;
 
@@ -276,6 +766,11 @@ export function DirectivesScreen() {
       {operatorError === null ? null : (
         <div className="notice bad" style={{ padding: 12 }}>
           {operatorError}
+        </div>
+      )}
+      {supportApi.error === null ? null : (
+        <div className="notice bad" style={{ padding: 12 }}>
+          shared-state lifecycle unavailable: {supportApi.error.message}
         </div>
       )}
 
@@ -392,7 +887,12 @@ export function DirectivesScreen() {
             <CreatorDirectiveDetail
               directive={selected}
               directives={directives}
+              allDirectives={rawDirectives}
               directivesById={directivesById}
+              commitmentsById={commitmentsById}
+              sharedAudiences={supportApi.data?.sharedAudiences ?? []}
+              audienceDiscoveryTruncated={supportApi.data?.audienceDiscoveryTruncated ?? false}
+              sharedLifecycleLoading={supportApi.loading && supportApi.data === null}
               busy={busy !== null}
               onOpenDirective={openDirectiveReference}
               onRevoke={openRevoke}
@@ -486,7 +986,12 @@ export function DirectivesScreen() {
 function CreatorDirectiveDetail({
   directive,
   directives,
+  allDirectives,
   directivesById,
+  commitmentsById,
+  sharedAudiences,
+  audienceDiscoveryTruncated,
+  sharedLifecycleLoading,
   busy,
   onOpenDirective,
   onRevoke,
@@ -494,7 +999,12 @@ function CreatorDirectiveDetail({
 }: {
   directive: CreatorDirectiveItem;
   directives: readonly CreatorDirectiveItem[];
+  allDirectives: readonly CreatorDirectiveItem[];
   directivesById: ReadonlyMap<string, CreatorDirectiveItem>;
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+  sharedAudiences: readonly SharedStateAudienceEntries[];
+  audienceDiscoveryTruncated: boolean;
+  sharedLifecycleLoading: boolean;
   busy: boolean;
   onOpenDirective: (id: string) => void;
   onRevoke: (directive: CreatorDirectiveItem) => void;
@@ -606,6 +1116,15 @@ function CreatorDirectiveDetail({
             <span className="v">{directive.operational_directive ?? "—"}</span>
           </div>
         </div>
+
+        <SharedStateLifecyclePanel
+          directive={directive}
+          allDirectives={allDirectives}
+          commitmentsById={commitmentsById}
+          sharedAudiences={sharedAudiences}
+          audienceDiscoveryTruncated={audienceDiscoveryTruncated}
+          loading={sharedLifecycleLoading}
+        />
 
         <div className="divider">operations</div>
         {directive.status === "active" ? (
