@@ -14,6 +14,32 @@ function jsonText(value: unknown): string {
   }
 }
 
+export function compactStreamText(text: string, maxLength = 220): string {
+  let compacted = "";
+  let pendingSpace = false;
+
+  for (const char of text.trim()) {
+    if (char === " " || char === "\n" || char === "\r" || char === "\t") {
+      pendingSpace = compacted.length > 0;
+      continue;
+    }
+
+    if (pendingSpace) {
+      compacted += " ";
+      pendingSpace = false;
+    }
+    compacted += char;
+  }
+
+  if (compacted.length <= maxLength) {
+    return compacted;
+  }
+  if (maxLength <= 3) {
+    return compacted.slice(0, Math.max(0, maxLength));
+  }
+  return `${compacted.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
 export function formatTime(timestamp: number | null | undefined, fallback = "never"): string {
   if (timestamp === null || timestamp === undefined) {
     return fallback;

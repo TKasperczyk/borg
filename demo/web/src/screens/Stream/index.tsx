@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { getAttachmentMetadata, getAttachmentStatuses, getStream } from "../../api/client";
 import type {
@@ -12,8 +12,20 @@ import { Tag, type TagKind } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { streamOutcomeSummary, type StreamOutcomeSummary } from "../../lib/stream-outcomes";
-import { formatTime, mergeEntries, streamContentText } from "../../lib/stream-utils";
-import { contentField, displayValue, fieldLabel, jsonText, shortId } from "../screen-utils";
+import {
+  compactStreamText,
+  formatTime,
+  mergeEntries,
+  streamContentText,
+} from "../../lib/stream-utils";
+import {
+  contentField,
+  displayValue,
+  fieldLabel,
+  isRecord,
+  jsonText,
+  shortId,
+} from "../screen-utils";
 
 const STREAM_KINDS: StreamEntryKind[] = [
   "user_msg",
@@ -106,6 +118,318 @@ function StreamOutcomeTags({ summary }: { summary: StreamOutcomeSummary }) {
         </>
       )}
     </>
+  );
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function arrayCount(value: unknown): number | undefined {
+  return Array.isArray(value) ? value.length : undefined;
+}
+
+function compactDisplayValue(value: unknown, maxLength = 80): string {
+  return compactStreamText(displayValue(value), maxLength);
+}
+
+function structuralHint(content: unknown): string {
+  if (typeof content === "string") {
+    return compactStreamText(content, 140) || "empty text";
+  }
+
+  if (Array.isArray(content)) {
+    return `${content.length} ${content.length === 1 ? "item" : "items"}`;
+  }
+
+  if (isRecord(content)) {
+    const keys = Object.keys(content);
+    if (keys.length === 0) {
+      return "empty object";
+    }
+    const visibleKeys = keys.slice(0, 4).map(fieldLabel).join(", ");
+    return `${keys.length} ${keys.length === 1 ? "field" : "fields"}: ${visibleKeys}${
+      keys.length > 4 ? ", ..." : ""
+    }`;
+  }
+
+  return displayValue(content);
+}
+
+function textSnippet(
+  content: unknown,
+  fieldNames: readonly string[] = ["text", "summary", "caption", "note"],
+): string | undefined {
+  if (typeof content === "string") {
+    const snippet = compactStreamText(content, 180);
+    return snippet.length > 0 ? snippet : undefined;
+  }
+
+  if (Array.isArray(content)) {
+    const textBlocks = content.flatMap((block) =>
+      isRecord(block) && typeof block.text === "string" ? [block.text] : [],
+    );
+    if (textBlocks.length > 0) {
+      const snippet = compactStreamText(textBlocks.join("\n"), 180);
+      return snippet.length > 0 ? snippet : undefined;
+    }
+    return undefined;
+  }
+
+  if (!isRecord(content)) {
+    return undefined;
+  }
+
+  for (const fieldName of fieldNames) {
+    const value = content[fieldName];
+    if (typeof value === "string" && value.length > 0) {
+      return compactStreamText(value, 180);
+    }
+  }
+
+  return undefined;
+}
+
+function messageSummary(content: unknown): string {
+  return textSnippet(content, ["text"]) ?? structuralHint(content);
+}
+
+function ThoughtSummary({ entry }: { entry: StreamEntry }) {
+  const snippet = textSnippet(entry.content, ["text", "summary", "note", "thought"]);
+
+  return (
+    <>
+      <Tag kind="purple" dot>
+        thought
+      </Tag>
+      <span>{snippet ?? structuralHint(entry.content)}</span>
+    </>
+  );
+}
+
+function PerceptionSummary({ entry }: { entry: StreamEntry }) {
+  const content = isRecord(entry.content) ? entry.content : null;
+  const mode = content === null ? undefined : optionalString(content.mode);
+  const entityCount = content === null ? undefined : arrayCount(content.entities);
+  const identityCount = content === null ? undefined : arrayCount(content.userIdentityNames);
+  const affectiveSignal =
+    content !== null && isRecord(content.affectiveSignal)
+      ? optionalString(content.affectiveSignal.dominant_emotion)
+      : undefined;
+  const snippet = textSnippet(entry.content, ["text", "summary", "caption", "note"]);
+
+  return (
+    <>
+      <Tag kind="info" dot>
+        perception
+      </Tag>
+      {mode === undefined ? null : <Tag>mode {fieldLabel(mode)}</Tag>}
+      {entityCount === undefined ? null : <Tag>{entityCount} entities</Tag>}
+      {identityCount === undefined || identityCount === 0 ? null : (
+        <Tag>{identityCount} identities</Tag>
+      )}
+      {affectiveSignal === undefined ? null : <Tag>emotion {fieldLabel(affectiveSignal)}</Tag>}
+      {snippet === undefined ? null : <span className="dim">{snippet}</span>}
+      {content === null && snippet === undefined ? (
+        <span>{structuralHint(entry.content)}</span>
+      ) : null}
+    </>
+  );
+}
+
+function DreamReportSummary({ entry }: { entry: StreamEntry }) {
+  const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
+  const runId = optionalString(content.run_id);
+  const processes = stringArray(content.processes);
+  const changes = optionalNumber(content.changes) ?? 0;
+  const tokensUsed = optionalNumber(content.tokens_used) ?? 0;
+  const errorCount = arrayCount(content.errors) ?? 0;
+  const budgetExhaustedProcesses = stringArray(content.budget_exhausted_processes);
+
+  return (
+    <>
+      <Tag kind="purple" dot>
+        dream
+      </Tag>
+      {runId === undefined ? null : <Tag>run {shortId(runId)}</Tag>}
+      <span className="dim">{processes.length === 0 ? "no processes" : processes.join(", ")}</span>
+      <Tag kind={changes > 0 ? "acc" : ""}>{changes} changes</Tag>
+      <Tag>{tokensUsed} tok</Tag>
+      <Tag kind={errorCount > 0 ? "bad" : "acc"}>{errorCount} errors</Tag>
+      {content.dry_run === true ? <Tag kind="warn">dry run</Tag> : null}
+      {budgetExhaustedProcesses.length === 0 ? null : (
+        <Tag kind="warn">budget {budgetExhaustedProcesses.join(", ")}</Tag>
+      )}
+    </>
+  );
+}
+
+function InternalEventSummary({ entry }: { entry: StreamEntry }) {
+  const content = isRecord(entry.content) ? entry.content : null;
+
+  if (content === null) {
+    return (
+      <>
+        <Tag>internal</Tag>
+        <span>{structuralHint(entry.content)}</span>
+      </>
+    );
+  }
+
+  const eventKind =
+    optionalString(content.event) ??
+    optionalString(content.kind) ??
+    optionalString(content.hook) ??
+    "internal event";
+  const salientFields = [
+    "trigger",
+    "outcome_summary",
+    "status",
+    "outcome",
+    "reason",
+    "source",
+    "process",
+    "action",
+    "phase",
+  ];
+  const sourceEntryCount = arrayCount(content.source_stream_entry_ids);
+  const citedEntryCount = arrayCount(content.cited_stream_entry_ids);
+
+  return (
+    <>
+      <Tag>event</Tag>
+      <span>{compactStreamText(eventKind, 80)}</span>
+      {salientFields.flatMap((fieldName) => {
+        const value = content[fieldName];
+        if (
+          value === undefined ||
+          value === null ||
+          (typeof value === "string" && value.length === 0)
+        ) {
+          return [];
+        }
+        return [
+          <Tag key={fieldName}>
+            {fieldLabel(fieldName)} {compactDisplayValue(value)}
+          </Tag>,
+        ];
+      })}
+      {sourceEntryCount === undefined ? null : <Tag>{sourceEntryCount} source refs</Tag>}
+      {citedEntryCount === undefined ? null : <Tag>{citedEntryCount} cited refs</Tag>}
+    </>
+  );
+}
+
+function ToolCallSummary({ entry }: { entry: StreamEntry }) {
+  const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
+  const toolName = optionalString(content.tool_name) ?? optionalString(content.name) ?? "tool";
+  const callId = optionalString(content.call_id);
+  const origin = optionalString(content.origin);
+
+  return (
+    <>
+      <Tag kind="warn" dot>
+        call
+      </Tag>
+      <Tag>{compactStreamText(toolName, 80)}</Tag>
+      {callId === undefined ? null : <Tag>id {shortId(callId)}</Tag>}
+      {origin === undefined ? null : <Tag>origin {fieldLabel(origin)}</Tag>}
+      {content.skipped === true ? <Tag kind="warn">skipped</Tag> : null}
+      {optionalString(content.skip_reason) === undefined ? null : (
+        <span className="dim">
+          {compactStreamText(optionalString(content.skip_reason) ?? "", 100)}
+        </span>
+      )}
+    </>
+  );
+}
+
+function ToolResultSummary({ entry }: { entry: StreamEntry }) {
+  const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
+  const callId = optionalString(content.call_id);
+  const ok = typeof content.ok === "boolean" ? content.ok : undefined;
+  const durationMs = optionalNumber(content.duration_ms);
+  const outputHint = content.output === undefined ? undefined : structuralHint(content.output);
+  const error = optionalString(content.error);
+
+  return (
+    <>
+      <Tag kind={ok === false ? "bad" : ok === true ? "acc" : "warn"} dot>
+        {ok === false ? "failed" : ok === true ? "ok" : "result"}
+      </Tag>
+      {callId === undefined ? null : <Tag>id {shortId(callId)}</Tag>}
+      {durationMs === undefined ? null : <Tag>{durationMs} ms</Tag>}
+      {error === undefined ? null : <span className="dim">{compactStreamText(error, 120)}</span>}
+      {error !== undefined || outputHint === undefined ? null : (
+        <span className="dim">output {outputHint}</span>
+      )}
+    </>
+  );
+}
+
+function attachmentSummary(entry: StreamEntry): string {
+  const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
+  const id = attachmentId(entry) ?? optionalString(content.id) ?? "attachment";
+  const type = mediaType(entry) ?? optionalString(content.kind);
+  const perceptionId = optionalString(content.perception_id);
+  const parts = [shortId(id)];
+
+  if (type !== undefined) {
+    parts.push(type);
+  }
+  if (perceptionId !== undefined) {
+    parts.push(`perception ${shortId(perceptionId)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function StreamRowSummary({ entry }: { entry: StreamEntry }): ReactNode {
+  switch (entry.kind) {
+    case "user_msg":
+    case "agent_msg":
+      return messageSummary(entry.content);
+    case "thought":
+      return <ThoughtSummary entry={entry} />;
+    case "perception":
+      return <PerceptionSummary entry={entry} />;
+    case "dream_report":
+      return <DreamReportSummary entry={entry} />;
+    case "internal_event":
+      return <InternalEventSummary entry={entry} />;
+    case "tool_call":
+      return <ToolCallSummary entry={entry} />;
+    case "tool_result":
+      return <ToolResultSummary entry={entry} />;
+    case "user_image_attachment":
+      return attachmentSummary(entry);
+    case "agent_suppressed":
+    case "agent_observed":
+      return structuralHint(entry.content);
+    default:
+      return `${(entry as { kind: string }).kind} · ${structuralHint(entry.content)}`;
+  }
+}
+
+function usesTagSummary(entry: StreamEntry): boolean {
+  return (
+    entry.kind === "thought" ||
+    entry.kind === "perception" ||
+    entry.kind === "dream_report" ||
+    entry.kind === "internal_event" ||
+    entry.kind === "tool_call" ||
+    entry.kind === "tool_result"
   );
 }
 
@@ -397,7 +721,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                 className={
                   isAttachment
                     ? "att-inline"
-                    : outcomeSummary === null
+                    : outcomeSummary === null && !usesTagSummary(entry)
                       ? "body"
                       : "body outcome-tags"
                 }
@@ -411,9 +735,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                       size="xs"
                       quarantined={attachmentStatus?.quarantined === true}
                     />
-                    <span className="body-txt">
-                      {attId ?? "attachment"} · {streamContentText(entry.content)}
-                    </span>
+                    <span className="body-txt">{attachmentSummary(entry)}</span>
                     {attachmentStatus?.quarantined === true ? (
                       <Tag kind="bad">quarantined</Tag>
                     ) : null}
@@ -421,7 +743,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                 ) : outcomeSummary !== null ? (
                   <StreamOutcomeTags summary={outcomeSummary} />
                 ) : (
-                  streamContentText(entry.content)
+                  <StreamRowSummary entry={entry} />
                 )}
               </span>
               <span className="aud">{entry.audience ?? "global"}</span>

@@ -136,6 +136,33 @@ function installFetch(): ReturnType<typeof vi.fn> {
                 structural_no_output_flags: ["with_open_question"],
               },
             }),
+            streamEntry({
+              id: "strm_dream_summary",
+              timestamp: 0.4,
+              kind: "dream_report",
+              content: {
+                run_id: "run_demo",
+                processes: ["consolidator", "curator"],
+                dry_run: false,
+                planned_at: 3,
+                changes: 2,
+                tokens_used: 99,
+                errors: [],
+                budget_exhausted_processes: [],
+                notes: [],
+              },
+            }),
+            streamEntry({
+              id: "strm_internal_summary",
+              timestamp: 0.3,
+              kind: "internal_event",
+              content: {
+                event: "frame_anomaly_gate",
+                trigger: "scheduler",
+                outcome_summary: "skipped by policy",
+                source_stream_entry_ids: ["strm_user"],
+              },
+            }),
           ],
           next_cursor: null,
         }),
@@ -618,6 +645,34 @@ describe("P2 screens", () => {
     await waitFor(() => {
       expect(screen.getAllByText(/dream_report/).length).toBeGreaterThan(0);
     });
+  });
+
+  it("renders compact stream row summaries for object content", async () => {
+    const live = makeLiveSource();
+    installFetch();
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+
+    const dreamRow = (await screen.findByText("run run_demo")).closest(".stream-row");
+    expect(dreamRow).not.toBeNull();
+    expect(dreamRow).toHaveTextContent("consolidator, curator");
+    expect(dreamRow).toHaveTextContent("2 changes");
+    expect(dreamRow).toHaveTextContent("99 tok");
+    expect(dreamRow).toHaveTextContent("0 errors");
+    expect(dreamRow).not.toHaveTextContent('{"run_id"');
+
+    const internalRow = (await screen.findByText("frame_anomaly_gate")).closest(".stream-row");
+    expect(internalRow).not.toBeNull();
+    expect(internalRow).toHaveTextContent("trigger scheduler");
+    expect(internalRow).toHaveTextContent("outcome summary skipped by policy");
+    expect(internalRow).toHaveTextContent("1 source refs");
+    expect(internalRow).not.toHaveTextContent('{"event"');
+
+    expect(screen.getByText("deliberate silence")).toBeInTheDocument();
+    expect(screen.getByText("reason finalizer no output")).toBeInTheDocument();
   });
 
   it("refetches stream rows on WebSocket reconnect after the initial connection", async () => {
