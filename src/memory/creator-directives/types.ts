@@ -60,6 +60,7 @@ export const CREATOR_DIRECTIVE_RENDER_REASONS = [
   "explicit_allow",
   "subject_allowed",
   "operator_only",
+  "self_cognition_operator_only",
   "explicit_exclude_boundary",
   "unauthorized_omit",
   "subject_may_not_know",
@@ -71,6 +72,7 @@ export const CREATOR_DIRECTIVE_ACTIVATION_REASONS = [
   "same_as_disclosure",
   "same_as_disclosure_omitted",
   "operator_only",
+  "self_cognition_operator_only",
   "operator_only_omitted",
   "public",
   "explicit_allow",
@@ -559,6 +561,7 @@ export const creatorDirectiveApplicableOptionsSchema = z
   .object({
     currentAudienceEntityId: creatorDirectiveEntityIdSchema.nullable(),
     currentSenderBorgRole: borgRoleSchema.nullable().optional(),
+    isPrivateSelfCognition: z.boolean().optional(),
     participantEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
     sessionRole: sessionAudienceRoleSchema,
   })

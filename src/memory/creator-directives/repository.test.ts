@@ -728,6 +728,122 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
+  it("treats operator-only disclosure and activation as privileged only for private self-cognition", () => {
+    const { db, repository } = createRepository();
+    const creator = createEntityId();
+    const audience = createEntityId();
+
+    try {
+      const operatorOnlyDisclosure = repository.queue(
+        queueInput({
+          createdByEntityId: creator,
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+          }),
+        }),
+      );
+      const operatorOnlyActivation = repository.queue(
+        queueInput({
+          kind: "response_policy",
+          createdByEntityId: creator,
+          operationalDirective: "Use this only in privileged private cognition.",
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "public",
+          }),
+          activationPolicy: activationPolicy({
+            scope: "operator_only",
+          }),
+        }),
+      );
+
+      const externalAbsent = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: audience,
+          participantEntityIds: [audience],
+          sessionRole: "participant",
+        }),
+      );
+      expect(externalAbsent[operatorOnlyDisclosure.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "same_as_disclosure_omitted",
+        },
+        disclosure: {
+          render_mode: "omit",
+          reason: "operator_only_omitted",
+        },
+        render_mode: "omit",
+        reason: "operator_only_omitted",
+      });
+      expect(externalAbsent[operatorOnlyActivation.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "operator_only_omitted",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+
+      const externalFalse = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: audience,
+          isPrivateSelfCognition: false,
+          participantEntityIds: [audience],
+          sessionRole: "participant",
+        }),
+      );
+      expect(externalFalse[operatorOnlyDisclosure.id]).toMatchObject({
+        activation: {
+          active: false,
+          reason: "same_as_disclosure_omitted",
+        },
+        disclosure: {
+          render_mode: "omit",
+          reason: "operator_only_omitted",
+        },
+      });
+      expect(externalFalse[operatorOnlyActivation.id]?.activation).toEqual({
+        active: false,
+        reason: "operator_only_omitted",
+      });
+
+      const selfApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: null,
+          isPrivateSelfCognition: true,
+          participantEntityIds: [],
+          sessionRole: "participant",
+        }),
+      );
+      expect(selfApplicable[operatorOnlyDisclosure.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "same_as_disclosure",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "self_cognition_operator_only",
+        },
+        render_mode: "content",
+        reason: "self_cognition_operator_only",
+      });
+      expect(selfApplicable[operatorOnlyActivation.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "self_cognition_operator_only",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "public",
+        },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps all_except activation inactive when an excluded recipient is present", () => {
     const { db, repository } = createRepository();
     const group = createEntityId();

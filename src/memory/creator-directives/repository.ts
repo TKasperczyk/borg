@@ -273,6 +273,10 @@ function evaluateDisclosureRenderMode(
   }
 
   if (policy.content_scope === "operator_only") {
+    if (options.isPrivateSelfCognition === true) {
+      return { render_mode: "content", reason: "self_cognition_operator_only" };
+    }
+
     return isCreatorOperator(directive, options)
       ? { render_mode: "content", reason: "operator_only" }
       : { render_mode: "omit", reason: "operator_only_omitted" };
@@ -364,6 +368,10 @@ function evaluateActivationMode(
   }
 
   if (policy.scope === "operator_only") {
+    if (options.isPrivateSelfCognition === true) {
+      return { active: true, reason: "self_cognition_operator_only" };
+    }
+
     return isCreatorOperator(directive, options)
       ? { active: true, reason: "operator_only" }
       : { active: false, reason: "operator_only_omitted" };

@@ -703,12 +703,18 @@ export async function runRetrievalPhase(input: {
     audienceEntityKind: input.audienceEntity?.kind ?? null,
     activeParticipants: input.activeParticipants,
   });
+  const isPrivateSelfCognition =
+    input.isSelfAudience &&
+    !input.isUserTurn &&
+    input.audienceEntityId === null &&
+    creatorDirectiveParticipantEntityIds.length === 0;
   const creatorDirectiveApplicableRaw =
     input.options.creatorDirectiveRepository === undefined
       ? []
       : input.options.creatorDirectiveRepository.listApplicable({
           currentAudienceEntityId: input.audienceEntityId,
           currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          isPrivateSelfCognition,
           participantEntityIds: creatorDirectiveParticipantEntityIds,
           sessionRole: input.sessionAudienceRole ?? "participant",
         });

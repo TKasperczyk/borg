@@ -65,6 +65,117 @@ function disclosurePolicy(overrides: Partial<DisclosurePolicy> = {}): Disclosure
   };
 }
 
+function emptyRetrievalResult() {
+  return {
+    evidence: [],
+    episodes: [],
+    semantic: null,
+    open_questions: [],
+    recall_intents: [],
+    contradiction_present: false,
+    contradictionRouting: {
+      contradictions: [],
+    },
+    confidence: null,
+  } as never;
+}
+
+function minimalRetrievalPhaseOptions(
+  creatorDirectiveRepository: CreatorDirectiveRepository,
+): TurnPhaseCoordinatorOptions {
+  const retrieval = emptyRetrievalResult();
+
+  return {
+    config: {
+      ...DEFAULT_CONFIG,
+      generation: {
+        ...DEFAULT_CONFIG.generation,
+        evidenceLedger: {
+          ...DEFAULT_CONFIG.generation.evidenceLedger,
+          enabled: false,
+        },
+      },
+    },
+    creatorDirectiveRepository,
+    sharedStateRepository: {
+      get: () => null,
+    },
+    entityRepository: {
+      get: () => null,
+      findByName: () => null,
+      resolve: () => createEntityId(),
+    },
+    socialRepository: {
+      getProfile: () => null,
+    },
+    relationalSlotRepository: {
+      list: () => [],
+      listConstrained: () => [],
+    },
+    actionRepository: {
+      list: () => [],
+      get: () => null,
+      update: vi.fn(),
+    },
+    commitmentRepository: {
+      list: () => [],
+    },
+    goalsRepository: {
+      list: () => [],
+    },
+    openQuestionsRepository: {
+      list: () => [],
+    },
+    attachmentRepository: {
+      get: () => null,
+      isActiveForStreamEntry: () => true,
+    },
+    clock: new FixedClock(3_000),
+    tracer: {
+      enabled: false,
+      emit: vi.fn(),
+    },
+    selfContextBuilder: {
+      build: vi.fn(async () => ({
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        activeScoringValues: [],
+        retrievalScoringFeatures: {
+          goalVectors: [],
+          valueVectors: [],
+        },
+        executiveFocus: {
+          selected_goal: null,
+          selected_score: null,
+          candidates: [],
+          threshold: 0,
+        },
+      })),
+    },
+    turnRetrievalCoordinator: {
+      coordinate: vi.fn(async () => ({
+        applicableCommitments: [],
+        pendingCorrections: [],
+        affectiveTrajectory: [],
+        retrieval,
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        proceduralContext: null,
+        selectedSkill: null,
+        retrievalOptions: {},
+        reRetrieve: vi.fn(async () => retrieval),
+      })),
+    },
+    createStreamReader: () =>
+      ({
+        async *iterate() {},
+      }) as StreamReader,
+  } as unknown as TurnPhaseCoordinatorOptions;
+}
+
 describe("creator directive retrieval briefing", () => {
   it("filters current-turn authorized directives from the briefing", () => {
     const db = openDatabase(":memory:", {
@@ -211,6 +322,196 @@ describe("creator directive retrieval briefing", () => {
             : [],
         ),
       ).toEqual(["Kestrel"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("briefs operator-only directives as content during self-audience private cognition only", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const externalAudienceId = createEntityId();
+    const options = minimalRetrievalPhaseOptions(repository);
+
+    try {
+      repository.queue({
+        kind: "subject_fact",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "borg_self",
+        canonicalFact: "Borg should privately reflect with this operator-only directive in view.",
+        operationalDirective: "Use this only in private self-cognition.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: null,
+        }),
+        priority: 8,
+        createdAt: 1_000,
+      });
+
+      const selfResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-self-operator-only-directive",
+        turnInput: {
+          userMessage: "",
+          audience: "self",
+          origin: "autonomous",
+          autonomyTrigger: {
+            source_name: "scheduled_reflection",
+            source_type: "trigger",
+            event_id: "scheduled-reflection:1000",
+            sort_ts: 1_000,
+            payload: {
+              interval_ms: 1_000,
+            },
+          },
+        },
+        isSelfAudience: true,
+        isUserTurn: false,
+        cognitionInput: "Autonomous wake context: scheduled_reflection",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(selfResult.creatorDirectiveBriefing?.directives).toEqual([
+        expect.objectContaining({
+          renderMode: "content",
+          kind: "subject_fact",
+          canonicalFact: "Borg should privately reflect with this operator-only directive in view.",
+        }),
+      ]);
+
+      const userOriginSelfResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-user-origin-self-operator-only-directive",
+        turnInput: {
+          userMessage: "Can you see your private directives?",
+          audience: "self",
+          origin: "user",
+        },
+        isSelfAudience: true,
+        isUserTurn: true,
+        cognitionInput: "Can you see your private directives?",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(userOriginSelfResult.creatorDirectiveBriefing).toBeNull();
+
+      const externalResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-external-operator-only-directive",
+        turnInput: {
+          userMessage: "Hi",
+          audience: "botarena",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Hi",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: externalAudienceId,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(externalResult.creatorDirectiveBriefing).toBeNull();
     } finally {
       db.close();
     }
