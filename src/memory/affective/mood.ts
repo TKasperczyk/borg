@@ -3,7 +3,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { type SessionId } from "../../util/ids.js";
-import { clamp } from "../../util/math.js";
+import { clamp, halfLifeDecay } from "../../util/math.js";
 import {
   parseStoredProvenance,
   provenanceSchema,
@@ -39,7 +39,7 @@ function parseStringArray(value: string, label: string): string[] {
 
 function decayFactor(nowMs: number, updatedAt: number, halfLifeHours: number): number {
   const elapsed = Math.max(0, nowMs - updatedAt);
-  return Math.pow(0.5, elapsed / (halfLifeHours * HOUR_MS));
+  return halfLifeDecay(elapsed, halfLifeHours * HOUR_MS);
 }
 
 function mapMoodStateRow(row: Record<string, unknown>, nowMs: number): MoodState {

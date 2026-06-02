@@ -1,5 +1,5 @@
 import type { Episode, EpisodeStats, EpisodeTier } from "./types.js";
-import { clamp } from "../../util/math.js";
+import { clamp, halfLifeDecay } from "../../util/math.js";
 
 export type DecayOptions = {
   nowMs: number;
@@ -49,7 +49,7 @@ export function applyEpisodeDecay(
   const referenceTimestamp = getReferenceTimestamp(episode, stats);
   const elapsedHours = Math.max(0, options.nowMs - referenceTimestamp) / 3_600_000;
   const decayedSalience = clamp(
-    episode.significance * Math.pow(0.5, elapsedHours / effectiveHalfLifeHours),
+    episode.significance * halfLifeDecay(elapsedHours, effectiveHalfLifeHours),
     0,
     1,
   );

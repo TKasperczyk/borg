@@ -15,7 +15,7 @@ import {
 import { traitIdSchema, traitSchema } from "../../memory/self/index.js";
 import { socialProfileSchema } from "../../memory/social/index.js";
 import type { Clock } from "../../util/clock.js";
-import { clamp } from "../../util/math.js";
+import { clamp, halfLifeDecay } from "../../util/math.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { extractedEpisodeIds } from "../extracted-episodes.js";
@@ -127,7 +127,7 @@ function decayFactor(elapsedMs: number, halfLifeDays: number): number {
     return 1;
   }
 
-  return Math.pow(0.5, elapsedMs / (halfLifeDays * DAY_MS));
+  return halfLifeDecay(elapsedMs, halfLifeDays * DAY_MS);
 }
 
 function buildEpisodeChange(item: z.infer<typeof episodePlanItemSchema>): OfflineChange {
