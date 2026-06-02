@@ -594,7 +594,16 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
       planned_at: dreamPlannedAt,
       changes: 1,
       tokens_used: 1234,
-      errors: [{ process: "belief-reviser", message: "old stream failure" }],
+      errors: [
+        {
+          process: "belief-reviser",
+          message: "old stream failure",
+          code: "legacy_error",
+          target_type: "semantic_node",
+          target_id: "semn_demo",
+          leaked_detail: "must not leave the server",
+        },
+      ],
       budget_exhausted_processes: ["belief-reviser"],
       notes: ["Budget exhausted: belief-reviser"],
     },
@@ -1236,7 +1245,15 @@ describe("demo server", () => {
           planned_at: seeded.dreamPlannedAt,
           changes: 1,
           tokens_used: 1234,
-          errors: [expect.objectContaining({ process: "belief-reviser" })],
+          errors: [
+            {
+              process: "belief-reviser",
+              message: "old stream failure",
+              code: "legacy_error",
+              target_type: "semantic_node",
+              target_id: "semn_demo",
+            },
+          ],
           budget_exhausted_processes: ["belief-reviser"],
           notes: ["Budget exhausted: belief-reviser"],
         }),
@@ -1488,6 +1505,18 @@ describe("demo server", () => {
     }
   });
 
+  it("rejects unknown memory band detail query params", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-query-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/memory/bands/episodic?limit=2&filters=archived");
+
+    expect(response.status).toBe(400);
+  });
+
   it("delegates memory band text search to facade search methods", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-search-"));
     tempDirs.push(tempDir);
@@ -1520,7 +1549,10 @@ describe("demo server", () => {
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
 
     const episodicResponse = await app.request("/api/memory/bands/episodic?query=meaning&limit=3");
-    expect(episodicSearch).toHaveBeenCalledWith("meaning", { limit: 3 });
+    expect(episodicSearch).toHaveBeenCalledWith("meaning", {
+      limit: 3,
+      recordRetrieval: false,
+    });
     expect(await episodicResponse.json()).toMatchObject({
       mode: "search",
       query: "meaning",
@@ -3610,7 +3642,12 @@ describe("demo server", () => {
     const response = await app.request("/api/prompts");
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
-      blocks: Array<{ key: string; current_text: string; overridden: boolean }>;
+      blocks: Array<{
+        key: string;
+        current_text: string;
+        current_text_kind: string;
+        overridden: boolean;
+      }>;
     };
     expect(body.blocks.map((b) => b.key)).toEqual([
       "base_identity_preamble",
@@ -3622,6 +3659,7 @@ describe("demo server", () => {
     expect(body.blocks.every((b) => b.overridden === false)).toBe(true);
     const hostCapabilitiesBlock = body.blocks.find((b) => b.key === "host_capabilities");
     expect(hostCapabilitiesBlock?.current_text).toContain(hostCapabilities);
+    expect(hostCapabilitiesBlock?.current_text_kind).toBe("runtime_composed");
     expect(hostCapabilitiesBlock?.current_text).toContain(
       "Proactive outbound messaging via wired source_type connector(s): demo",
     );
@@ -3672,8 +3710,16 @@ describe("demo server", () => {
       body: JSON.stringify({ text: "Speak crisply." }),
     });
     expect(put.status).toBe(200);
-    const putBody = (await put.json()) as { current_text: string; overridden: boolean };
-    expect(putBody).toMatchObject({ current_text: "Speak crisply.", overridden: true });
+    const putBody = (await put.json()) as {
+      current_text: string;
+      current_text_kind: string;
+      overridden: boolean;
+    };
+    expect(putBody).toMatchObject({
+      current_text: "Speak crisply.",
+      current_text_kind: "stored_override",
+      overridden: true,
+    });
 
     const list = (await (await app.request("/api/prompts")).json()) as {
       blocks: Array<{ key: string; current_text: string; overridden: boolean }>;

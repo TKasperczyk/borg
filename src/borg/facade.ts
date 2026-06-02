@@ -823,12 +823,20 @@ function createPromptsFacade(deps: BorgDependencies): BorgPromptsFacade {
     const records = repo.list();
     const record = records.find((row) => row.prompt_key === key);
     const fallback = key === "host_capabilities" ? deps.config.host_capabilities : spec.default;
+    const currentText = override ?? fallback;
+    const currentTextKind =
+      override !== null
+        ? "stored_override"
+        : currentText === spec.default
+          ? "static_default"
+          : "runtime_composed";
     return {
       key: spec.key,
       label: spec.label,
       description: spec.description,
       default_text: spec.default,
-      current_text: override ?? fallback,
+      current_text: currentText,
+      current_text_kind: currentTextKind,
       overridden: override !== null,
       updated_at: record?.updated_at ?? null,
     };

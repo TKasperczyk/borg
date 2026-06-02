@@ -214,6 +214,135 @@ describe("retrieval pipeline", () => {
     expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(1);
   });
 
+  it("can search episodic memory without recording retrieval side effects", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const recallStateRepository = new RecallStateRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const firstEntry = await writer.append({
+      kind: "user_msg",
+      content: "planning kickoff",
+    });
+    const secondEntry = await writer.append({
+      kind: "agent_msg",
+      content: "retrospective note",
+    });
+
+    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
+    await repo.insert(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0, 1, 0, 0]));
+    const episodeIds = ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"] as const;
+    type EpisodeIndexProbeRow = {
+      episode_id: string;
+      heat_score: number;
+      retrieval_count: number;
+      last_retrieved: number | null;
+    };
+    const readEpisodeIndexRows = (): EpisodeIndexProbeRow[] =>
+      db
+        .prepare(
+          `
+            SELECT episode_id, heat_score, retrieval_count, last_retrieved
+            FROM episode_index
+            WHERE episode_id IN (?, ?)
+            ORDER BY episode_id ASC
+          `,
+        )
+        .all(...episodeIds) as EpisodeIndexProbeRow[];
+    const initialEpisodeIndexRows = readEpisodeIndexRows();
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      recallStateRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const readOnlyResults = await pipeline.search("planning", {
+      limit: 2,
+      sessionId: DEFAULT_SESSION_ID,
+      turnCounter: 1,
+      recordRetrieval: false,
+    });
+    const rankedPayload = (results: ReadonlyArray<(typeof readOnlyResults)[number]>) =>
+      results.map((result) => ({
+        id: result.episode.id,
+        score: result.score,
+        scoreBreakdown: result.scoreBreakdown,
+        citationIds: result.citationChain.map((entry) => entry.id),
+      }));
+
+    expect(rankedPayload(readOnlyResults).map((result) => result.id)).toEqual([...episodeIds]);
+    expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(0);
+    expect(repo.getStats("ep_bbbbbbbbbbbbbbbb" as Episode["id"])?.retrieval_count).toBe(0);
+    expect(readEpisodeIndexRows()).toEqual(initialEpisodeIndexRows);
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }
+      ).count,
+    ).toBe(0);
+    expect(recallStateRepository.load(DEFAULT_SESSION_ID)).toBeNull();
+
+    const recordingResults = await pipeline.search("planning", {
+      limit: 2,
+      sessionId: DEFAULT_SESSION_ID,
+      turnCounter: 1,
+    });
+
+    expect(rankedPayload(recordingResults)).toEqual(rankedPayload(readOnlyResults));
+    expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(1);
+    expect(repo.getStats("ep_bbbbbbbbbbbbbbbb" as Episode["id"])?.retrieval_count).toBe(1);
+    expect(readEpisodeIndexRows()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          episode_id: "ep_aaaaaaaaaaaaaaaa",
+          retrieval_count: 1,
+          last_retrieved: 10_000,
+        }),
+        expect.objectContaining({
+          episode_id: "ep_bbbbbbbbbbbbbbbb",
+          retrieval_count: 1,
+          last_retrieved: 10_000,
+        }),
+      ]),
+    );
+    expect(readEpisodeIndexRows()).not.toEqual(initialEpisodeIndexRows);
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }
+      ).count,
+    ).toBe(2);
+    expect(recallStateRepository.load(DEFAULT_SESSION_ID)).not.toBeNull();
+  });
+
   it("includes session_id on turn-scoped retrieval trace emits", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const { store, db, episodicRepository } = await openRetrievalFixture(tempDir);

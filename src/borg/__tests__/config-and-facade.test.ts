@@ -229,6 +229,41 @@ describe("Borg", () => {
     }
   });
 
+  it("labels prompt block current text source structurally", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+      outboundConnectors: [new DemoMessageConnector()],
+    });
+
+    try {
+      const initialBlocks = borg.prompts.list();
+
+      expect(
+        initialBlocks.find((block) => block.key === "voice_and_posture")?.current_text_kind,
+      ).toBe("static_default");
+      expect(
+        initialBlocks.find((block) => block.key === "host_capabilities")?.current_text_kind,
+      ).toBe("runtime_composed");
+
+      const override = borg.prompts.set("host_capabilities", "OPERATOR HOST CAPABILITIES");
+
+      expect(override).toMatchObject({
+        key: "host_capabilities",
+        current_text: "OPERATOR HOST CAPABILITIES",
+        current_text_kind: "stored_override",
+        overridden: true,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("emits a session-ended trace event from the Borg facade", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -1247,6 +1247,7 @@ export type PromptBlockView = {
   description: string;
   default_text: string;
   current_text: string;
+  current_text_kind: "static_default" | "runtime_composed" | "stored_override";
   overridden: boolean;
   updated_at: number | null;
 };

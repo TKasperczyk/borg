@@ -59,11 +59,7 @@ type PromptDiffLine = {
 };
 
 function isRuntimeComposedHostBlock(block: PromptBlockView): boolean {
-  return (
-    block.key === "host_capabilities" &&
-    !block.overridden &&
-    block.current_text !== block.default_text
-  );
+  return block.current_text_kind === "runtime_composed";
 }
 
 function promptLines(text: string): string[] {

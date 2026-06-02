@@ -139,6 +139,7 @@ function sharedEntry(input: Partial<SharedStateEntry> = {}): SharedStateEntry {
 }
 
 type SupportFixture = {
+  stateAudiences?: string[];
   sessions?: SessionRecord[];
   commitments?: CommitmentItem[];
   sharedStateByAudience?: Record<string, SharedStateEntry[]>;
@@ -152,6 +153,29 @@ function supportResponse(
 
   if (url.pathname === "/api/sessions") {
     return jsonResponse({ sessions: fixture.sessions ?? [] });
+  }
+
+  if (url.pathname === "/api/state") {
+    return jsonResponse({
+      active_session: url.searchParams.get("session") ?? "default",
+      audiences: fixture.stateAudiences ?? [],
+      counts: {
+        turns: 0,
+        commitments: 0,
+        open_qs: 0,
+        open_reviews: 0,
+        dream_audit_rows: 0,
+      },
+      current_mood: {
+        session_id: "default",
+        valence: 0,
+        arousal: 0,
+        updated_at: 1,
+        half_life_hours: 24,
+        recent_triggers: [],
+      },
+      version: "test",
+    });
   }
 
   if (url.pathname === "/api/commitments") {
@@ -433,7 +457,132 @@ describe("DirectivesScreen", () => {
       screen.getAllByText("canonicalized commitment is revoked while selected directive is active"),
     ).toHaveLength(1);
     expect(screen.getByText("uncorrelated.thread")).toBeInTheDocument();
-    expect(screen.getByText(/empty shared-state audiences: botarena_thread:test/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/empty shared-state audiences: self, botarena_thread:test/),
+    ).toBeInTheDocument();
+  });
+
+  it("discovers shared-state rows from self and active session state audiences", async () => {
+    const selected = directive({
+      id: "cdir_stateaud11111",
+      text: "Directive with non-session lifecycle rows.",
+    });
+    const selfEntry = sharedEntry({
+      id: "dart_self111111111",
+      state_key: "self.identity.row",
+      text: "Self lifecycle row.",
+    });
+    const activeStateEntry = sharedEntry({
+      id: "dart_active111111",
+      state_key: "thread.active.row",
+      text: "Active session lifecycle row.",
+    });
+    const fixture: SupportFixture = {
+      stateAudiences: ["thread:active"],
+      sessions: [session({ audience_label: "alice" })],
+      sharedStateByAudience: {
+        self: [selfEntry],
+        "thread:active": [activeStateEntry],
+        alice: [],
+      },
+    };
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [selected] }));
+      }
+      const support = supportResponse(request, fixture);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DirectivesScreen sessionId="sess_active111111" />);
+
+    expect(await screen.findByText("self.identity.row")).toBeInTheDocument();
+    expect(screen.getByText("thread.active.row")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        (call) =>
+          requestPath(call[0]) === "/api/state" &&
+          new URL(String(call[0]), "http://test.invalid").searchParams.get("session") ===
+            "sess_active111111",
+      ),
+    ).toBe(true);
+  });
+
+  it("distinguishes superseded canonicalized commitments from explicitly revoked ones", async () => {
+    const selected = directive({
+      id: "cdir_policy222222",
+      kind: "response_policy",
+      text: "Selected superseded policy.",
+      authorization_stream_entry_ids: ["strm_superseded_source"],
+      content_source_stream_entry_ids: ["strm_superseded_source"],
+    });
+    const replacement = commitment({
+      id: "cmt_replacement111",
+      text: "Replacement commitment.",
+      state: "active",
+      source_stream_entry_ids: ["strm_replacement"],
+      revoked_at: null,
+      revoked_reason: null,
+      canonicalized_by_artifact_entry_id: null,
+    });
+    const superseded = commitment({
+      id: "cmt_superseded111",
+      state: "revoked",
+      source_stream_entry_ids: ["strm_superseded_source"],
+      canonicalized_by_artifact_entry_id: "dart_superseded1",
+      superseded_by_id: replacement.id,
+      revoked_reason: null,
+    });
+    const related = sharedEntry({
+      id: "dart_superseded1",
+      state_key: "rule.superseded",
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [superseded.id],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    const fixture: SupportFixture = {
+      sessions: [session({ audience_label: "Tom" })],
+      commitments: [replacement, superseded],
+      sharedStateByAudience: {
+        self: [],
+        Tom: [related],
+      },
+    };
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [selected] }));
+      }
+      const support = supportResponse(request, fixture);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DirectivesScreen />);
+
+    expect(await screen.findByText("rule.superseded")).toBeInTheDocument();
+    expect(screen.getByText(/related via canonicalized commitment/)).toHaveTextContent(
+      "superseded",
+    );
+    expect(
+      screen.getByText("canonicalized commitment is superseded while selected directive is active"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("canonicalized commitment is revoked while selected directive is active"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows an honest notice when session audience discovery reaches the server cap", async () => {

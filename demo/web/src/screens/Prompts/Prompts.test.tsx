@@ -19,6 +19,7 @@ function defaultPrompts() {
         description: "Opening framing block.",
         default_text: "DEFAULT PREAMBLE",
         current_text: "DEFAULT PREAMBLE",
+        current_text_kind: "static_default",
         overridden: false,
         updated_at: null,
       },
@@ -28,6 +29,7 @@ function defaultPrompts() {
         description: "Speaking style.",
         default_text: "DEFAULT VOICE",
         current_text: "DEFAULT VOICE",
+        current_text_kind: "static_default",
         overridden: false,
         updated_at: null,
       },
@@ -102,6 +104,7 @@ describe("PromptsScreen", () => {
             description: "Speaking style.",
             default_text: "DEFAULT VOICE",
             current_text: "CUSTOM VOICE",
+            current_text_kind: "stored_override",
             overridden: true,
             updated_at: 123,
           }),
@@ -142,6 +145,7 @@ describe("PromptsScreen", () => {
         {
           ...defaultPrompts().blocks[1]!,
           current_text: "CUSTOM VOICE",
+          current_text_kind: "stored_override",
           overridden: true,
           updated_at: 123,
         },
@@ -160,6 +164,7 @@ describe("PromptsScreen", () => {
           jsonResponse({
             ...overriddenPrompts.blocks[0]!,
             current_text: "DEFAULT VOICE",
+            current_text_kind: "static_default",
             overridden: false,
             updated_at: null,
           }),
@@ -196,6 +201,7 @@ describe("PromptsScreen", () => {
           description: "Runtime capabilities.",
           default_text: "STATIC HOST DEFAULT",
           current_text: "STATIC HOST DEFAULT\n\nHost-wired outbound capabilities available now.",
+          current_text_kind: "runtime_composed",
           overridden: false,
           updated_at: null,
         },
@@ -228,6 +234,7 @@ describe("PromptsScreen", () => {
           description: "Runtime capabilities.",
           default_text: "STATIC HOST DEFAULT",
           current_text: "STATIC HOST DEFAULT\n\nHost-wired outbound capabilities available now.",
+          current_text_kind: "runtime_composed",
           overridden: false,
           updated_at: null,
         },
@@ -246,6 +253,7 @@ describe("PromptsScreen", () => {
           jsonResponse({
             ...prompts.blocks[0]!,
             current_text: "EDITED HOST CAPABILITIES",
+            current_text_kind: "stored_override",
             overridden: true,
             updated_at: 123,
           }),
@@ -299,6 +307,7 @@ describe("PromptsScreen", () => {
           description: "Runtime capabilities.",
           default_text: "STATIC HOST DEFAULT",
           current_text: "CUSTOM HOST",
+          current_text_kind: "stored_override",
           overridden: true,
           updated_at: 123,
         },
@@ -314,7 +323,11 @@ describe("PromptsScreen", () => {
       }
       if (path === "/api/prompts/host_capabilities" && init?.method === "PUT") {
         return Promise.resolve(
-          jsonResponse({ ...prompts.blocks[0]!, current_text: "CUSTOM HOST 2" }),
+          jsonResponse({
+            ...prompts.blocks[0]!,
+            current_text: "CUSTOM HOST 2",
+            current_text_kind: "stored_override",
+          }),
         );
       }
       return Promise.resolve(jsonResponse({ error: { message: "unhandled" } }, 404));

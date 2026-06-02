@@ -822,6 +822,8 @@ function MemoryDrill({
     totalIsLowerBound && nextCursor !== null
       ? `${displayTotal.toLocaleString()}+`
       : displayTotal.toLocaleString();
+  const topologySelectedId =
+    selectedId !== null && correctionActionKind(selectedId) === "semantic_node" ? selectedId : null;
 
   useEffect(() => {
     setDetail(api.data);
@@ -922,6 +924,22 @@ function MemoryDrill({
     setSelectedId(null);
   }
 
+  function selectSemanticViewMode(mode: SemanticViewMode): void {
+    if (mode === semanticViewMode) {
+      return;
+    }
+
+    if (mode === "topology") {
+      if (selectedId !== null && correctionActionKind(selectedId) !== "semantic_node") {
+        setSelectedId(null);
+      }
+    } else if (selectedId !== null && rows.find((row) => row.id === selectedId) === undefined) {
+      setSelectedId(null);
+    }
+
+    setSemanticViewMode(mode);
+  }
+
   async function refetchAfterMemoryCorrection(): Promise<void> {
     // Invalidates GET /api/memory/bands and GET /api/memory/bands/:band.
     // Semantic topology is refreshed independently from GET /api/semantic/graph.
@@ -995,7 +1013,7 @@ function MemoryDrill({
                 role="tab"
                 aria-selected={semanticViewMode === mode}
                 className={`pill ${semanticViewMode === mode ? "on" : ""}`}
-                onClick={() => setSemanticViewMode(mode)}
+                onClick={() => selectSemanticViewMode(mode)}
               >
                 {mode}
               </button>
@@ -1046,7 +1064,7 @@ function MemoryDrill({
       >
         {band === "semantic" && semanticViewMode === "topology" ? (
           <div className="semantic-topology-pane">
-            <SemanticTopologyPanel selectedId={selectedId} onSelectNode={setSelectedId} />
+            <SemanticTopologyPanel selectedId={topologySelectedId} onSelectNode={setSelectedId} />
           </div>
         ) : (
           <div className="list">

@@ -139,7 +139,7 @@ export function App() {
             ) : null}
             {route === "identity" ? <IdentityScreen /> : null}
             {route === "commit" ? <CommitScreen /> : null}
-            {route === "directives" ? <DirectivesScreen /> : null}
+            {route === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
             {route === "review" ? <ReviewScreen /> : null}
             {route === "dream" ? <DreamScreen onOpenReview={() => setRoute("review")} /> : null}
             {route === "prompts" ? <PromptsScreen /> : null}

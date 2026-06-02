@@ -195,7 +195,7 @@ const memoryBandDetailQuerySchema = z.object({
   limit: limitSchema.default(50),
   cursor: optionalNonEmptyQueryString,
   query: optionalNonEmptyQueryString,
-});
+}).strict();
 
 const sessionParamSchema = z.object({
   id: z.string().transform((value, ctx) => {
@@ -1859,6 +1859,21 @@ function streamDreamRecordArray(entry: StreamEntry, key: string): Array<Record<s
   return value.filter((item): item is Record<string, unknown> => isRecord(item));
 }
 
+function streamDreamErrorArray(entry: StreamEntry): Array<Record<string, string>> {
+  return streamDreamRecordArray(entry, "errors").map((error) => {
+    const safe: Record<string, string> = {};
+
+    for (const key of ["process", "message", "code", "target_type", "target_id"]) {
+      const value = error[key];
+      if (typeof value === "string") {
+        safe[key] = value;
+      }
+    }
+
+    return safe;
+  });
+}
+
 function streamDreamNumber(entry: StreamEntry, key: string, fallback: number): number {
   if (!isRecord(entry.content)) {
     return fallback;
@@ -1894,7 +1909,7 @@ function mapDreamReport(entry: StreamEntry) {
     planned_at: streamDreamOptionalNumber(entry, "planned_at"),
     changes: streamDreamNumber(entry, "changes", 0),
     tokens_used: streamDreamNumber(entry, "tokens_used", 0),
-    errors: streamDreamRecordArray(entry, "errors"),
+    errors: streamDreamErrorArray(entry),
     budget_exhausted_processes: streamDreamStringArray(entry, "budget_exhausted_processes").filter(
       (process): process is OfflineProcessName =>
         OFFLINE_PROCESS_NAMES.includes(process as OfflineProcessName),
@@ -2555,7 +2570,10 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
       if (band === "episodic") {
         if (query.query !== undefined) {
-          const results = await input.borg.episodic.search(query.query, { limit: query.limit });
+          const results = await input.borg.episodic.search(query.query, {
+            limit: query.limit,
+            recordRetrieval: false,
+          });
           return c.json({
             band,
             mode: "search",

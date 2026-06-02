@@ -5,6 +5,7 @@ import {
   getCreatorDirectives,
   getSessions,
   getSharedState,
+  getState,
   revokeCreatorDirective,
   supersedeCreatorDirective,
 } from "../../api/client";
@@ -82,13 +83,18 @@ function directiveSourceStreamIds(directive: CreatorDirectiveItem): string[] {
   ]);
 }
 
-async function loadDirectiveSupportData(): Promise<DirectiveSupportData> {
-  const [sessionsResponse, commitmentsResponse] = await Promise.all([
+async function loadDirectiveSupportData(sessionId: string): Promise<DirectiveSupportData> {
+  const [sessionsResponse, commitmentsResponse, stateResponse] = await Promise.all([
     getSessions(),
     getCommitments({ state: "all" }),
+    getState({ session: sessionId }),
   ]);
   const audienceLabels = uniqueStrings(
-    sessionsResponse.sessions.map((session) => session.audience_label),
+    [
+      "self",
+      ...stateResponse.audiences,
+      ...sessionsResponse.sessions.map((session) => session.audience_label),
+    ],
   );
   const sharedAudiences = await Promise.all(
     audienceLabels.map(async (audience) => {
@@ -400,13 +406,21 @@ function relationLabel(relation: SharedStateRelation): string {
   return `related via shared source ${relation.streamIds.map(shortId).join(", ")}`;
 }
 
-function hasRevokedCanonicalizedCommitmentRelation(
+function canonicalizedCommitmentWarningState(
   relations: readonly SharedStateRelation[],
-): boolean {
-  return relations.some(
-    (relation) =>
-      relation.kind === "canonicalized_commitment" && relation.commitment.state === "revoked",
-  );
+): "revoked" | "superseded" | null {
+  for (const relation of relations) {
+    if (relation.kind !== "canonicalized_commitment") {
+      continue;
+    }
+
+    const state = commitmentStatusLabel(relation.commitment);
+    if (state === "revoked" || state === "superseded") {
+      return state;
+    }
+  }
+
+  return null;
 }
 
 function SharedStateLifecyclePanel({
@@ -456,7 +470,7 @@ function SharedStateLifecyclePanel({
       ) : null}
       {!loading && sharedAudiences.length === 0 ? (
         <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
-          no session audiences returned for shared-state lookup
+          no shared-state audiences returned for lookup
         </div>
       ) : null}
       {!loading && emptyAudiences.length > 0 ? (
@@ -466,7 +480,7 @@ function SharedStateLifecyclePanel({
       ) : null}
       {!loading && totalEntryCount === 0 && sharedAudiences.length > 0 ? (
         <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
-          no shared-state rows across session audiences
+          no shared-state rows across discovered audiences
         </div>
       ) : null}
       {!loading && totalEntryCount > 0 && relatedRows.length === 0 ? (
@@ -533,8 +547,8 @@ function SharedStateLifecycleRow({
 }) {
   const entry = row.entry;
   const canonicalTargets = canonicalTargetRows(entry, commitmentsById);
-  const revokedCanonicalCommitment =
-    directive.status === "active" && hasRevokedCanonicalizedCommitmentRelation(row.relations);
+  const canonicalCommitmentWarningState =
+    directive.status === "active" ? canonicalizedCommitmentWarningState(row.relations) : null;
 
   return (
     <div
@@ -636,20 +650,21 @@ function SharedStateLifecycleRow({
           ))}
         </div>
       )}
-      {revokedCanonicalCommitment ? (
+      {canonicalCommitmentWarningState === null ? null : (
         <div className="warn" style={{ fontSize: 10.5, marginTop: 8, lineHeight: 1.45 }}>
-          canonicalized commitment is revoked while selected directive is active
+          canonicalized commitment is {canonicalCommitmentWarningState} while selected directive is
+          active
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
 
-export function DirectivesScreen() {
+export function DirectivesScreen({ sessionId = "default" }: { sessionId?: string }) {
   const [statusFilter, setStatusFilter] = useState<CreatorDirectiveStatusFilter>("active");
   const [sortMode, setSortMode] = useState<SortMode>("priority_desc");
   const api = useApi(() => getCreatorDirectives({ status: "all" }), []);
-  const supportApi = useApi(loadDirectiveSupportData, []);
+  const supportApi = useApi(() => loadDirectiveSupportData(sessionId), [sessionId]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<DirectiveModal | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

@@ -592,6 +592,112 @@ describe("Memory correction actions", () => {
     ).toBe(true);
   });
 
+  it("does not feed semantic edge row selection into topology highlight state", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      window.clearTimeout(id);
+    });
+
+    const edgeId = "seme_edge00000000";
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[1]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/semantic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "semantic",
+            mode: "browse",
+            nodes: [
+              semanticNode(
+                LOADED_SEMANTIC_NODE_ID,
+                "Loaded semantic node",
+                "Loaded semantic node description",
+              ),
+            ],
+            edges: [
+              {
+                id: edgeId,
+                from_node_id: LOADED_SEMANTIC_NODE_ID,
+                to_node_id: OFF_PAGE_SEMANTIC_NODE_ID,
+                relation: "related_to",
+                confidence: 0.7,
+                evidence_episode_ids: ["ep_source000000000"],
+                source_count: 1,
+                valid_from: 1,
+                valid_to: null,
+                invalidated_at: null,
+                invalidated_by_edge_id: null,
+                invalidated_by_review_id: null,
+                invalidated_by_process: null,
+                invalidated_reason: null,
+              },
+            ],
+            next_cursor: null,
+          }),
+        );
+      }
+      if (url.pathname === "/api/semantic/graph") {
+        return Promise.resolve(
+          jsonResponse({
+            nodes: [
+              {
+                id: LOADED_SEMANTIC_NODE_ID,
+                label: "Loaded semantic node",
+                status: "active",
+                kind: "entity",
+                edge_count: 1,
+              },
+              {
+                id: OFF_PAGE_SEMANTIC_NODE_ID,
+                label: "Off page semantic node",
+                status: "active",
+                kind: "entity",
+                edge_count: 1,
+              },
+            ],
+            edges: [
+              {
+                id: edgeId,
+                source: LOADED_SEMANTIC_NODE_ID,
+                target: OFF_PAGE_SEMANTIC_NODE_ID,
+                type: "related_to",
+                weight: 0.7,
+              },
+            ],
+            total_nodes: 2,
+            total_edges: 1,
+            rendered: { nodes: 2, edges: 1 },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={testLiveEvents()}>
+        <MemoryScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+
+    const semanticLabels = await screen.findAllByText("semantic");
+    fireEvent.click(semanticLabels[0]?.closest(".band-card") ?? semanticLabels[0]!);
+    fireEvent.click(await screen.findByText(/--related_to->/));
+    fireEvent.click(screen.getByRole("tab", { name: "topology" }));
+
+    expect(await screen.findByTestId("semantic-topology-svg")).toBeInTheDocument();
+    expect(screen.queryByText(/selected seme_/)).not.toBeInTheDocument();
+  });
+
   it("shows correction review count and routes to the unified review screen", async () => {
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);

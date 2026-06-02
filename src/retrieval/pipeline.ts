@@ -172,6 +172,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   sessionId?: SessionId;
   turnCounter?: number;
   traceTurnId?: string;
+  recordRetrieval?: boolean;
 };
 
 export type RetrievalGetEpisodeOptions = {
@@ -410,8 +411,10 @@ export class RetrievalPipeline {
       ),
     );
 
-    for (const result of episodeProjection.episodes) {
-      this.options.episodicRepository.recordRetrieval(result.episode.id, nowMs, result.score);
+    if (options.recordRetrieval !== false) {
+      for (const result of episodeProjection.episodes) {
+        this.options.episodicRepository.recordRetrieval(result.episode.id, nowMs, result.score);
+      }
     }
 
     const context = assembleRetrievedContext({
@@ -427,7 +430,7 @@ export class RetrievalPipeline {
       expectedCount: limit,
     });
 
-    if (recallStateContext !== null) {
+    if (recallStateContext !== null && options.recordRetrieval !== false) {
       this.options.recallStateRepository?.save(
         this.refreshRecallState(recallStateContext, {
           freshEvidence,
