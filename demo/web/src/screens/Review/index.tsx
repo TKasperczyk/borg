@@ -1195,9 +1195,13 @@ export function ReviewScreen() {
                           />
                         ) : (
                           <div
-                            style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 14 }}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "minmax(0, 1fr) 320px",
+                              gap: 14,
+                            }}
                           >
-                            <div style={{ display: "grid", gap: 10 }}>
+                            <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
                               <ReviewPairDrillthrough row={row} open={pairReview && expanded} />
                               <ReviewDetail row={row} />
                             </div>
