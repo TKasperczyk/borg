@@ -4,6 +4,8 @@ import {
   getMemoryBand,
   getMemoryBands,
   getReviews,
+  getSemanticGraph,
+  getSemanticNode,
   postCorrectionCorrect,
   postCorrectionForget,
   postSemanticEdgeInvalidate,
@@ -13,15 +15,19 @@ import type {
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandSummary,
+  SemanticGraphResponse,
+  SemanticMemoryNode,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { Spark } from "../../components/Spark";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
+import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
 import { dateLabel, jsonText, parseJsonPatch, shortId } from "../screen-utils";
+import { SemanticTopology } from "./SemanticTopology";
 
 const BAND_ORDER: MemoryBandId[] = [
   "episodic",
@@ -46,9 +52,11 @@ const BAND_DESCRIPTIONS: Record<MemoryBandId, string> = {
 };
 
 const MEMORY_PAGE_LIMIT = 50;
+const SEMANTIC_TOPOLOGY_LIMIT = 300;
 const SEARCHABLE_BANDS = new Set<MemoryBandId>(["episodic", "semantic", "procedural"]);
 
 type SortMode = "backend" | "updated_desc" | "updated_asc" | "created_desc" | "created_asc";
+type SemanticViewMode = "browser" | "topology";
 
 type MemoryRow = {
   id: string;
@@ -120,6 +128,22 @@ function scoreMeta(score: number | undefined): string {
   return score === undefined ? "" : `score ${score.toFixed(2)} · `;
 }
 
+function semanticNodeRow(node: SemanticMemoryNode, order: number): MemoryRow {
+  return {
+    id: node.id,
+    title: node.label,
+    meta: `${scoreMeta(node.search_score)}${node.kind} · ${node.status} · ${node.source_count} src`,
+    body: node.description,
+    order,
+    rowKind: "node",
+    kind: node.kind,
+    status: node.status,
+    createdAt: node.created_at,
+    updatedAt: node.updated_at,
+    searchScore: node.search_score,
+  };
+}
+
 function detailRows(detail: MemoryBandDetail): MemoryRow[] {
   switch (detail.band) {
     case "episodic":
@@ -139,19 +163,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
       }));
     case "semantic":
       return [
-        ...detail.nodes.map((node, order) => ({
-          id: node.id,
-          title: node.label,
-          meta: `${scoreMeta(node.search_score)}${node.kind} · ${node.status} · ${node.source_count} src`,
-          body: node.description,
-          order,
-          rowKind: "node",
-          kind: node.kind,
-          status: node.status,
-          createdAt: node.created_at,
-          updatedAt: node.updated_at,
-          searchScore: node.search_score,
-        })),
+        ...detail.nodes.map((node, order) => semanticNodeRow(node, order)),
         ...detail.edges.map((edge, index) => ({
           id: edge.id,
           title: `${edge.from_node_id} --${edge.relation}-> ${edge.to_node_id}`,
@@ -411,7 +423,10 @@ function loadedBandCount(detail: MemoryBandDetail | null, rows: readonly MemoryR
   return rows.length;
 }
 
-function mergeMemoryDetail(current: MemoryBandDetail | null, next: MemoryBandDetail): MemoryBandDetail {
+function mergeMemoryDetail(
+  current: MemoryBandDetail | null,
+  next: MemoryBandDetail,
+): MemoryBandDetail {
   if (current === null || current.band !== next.band || current.mode === "search") {
     return next;
   }
@@ -486,10 +501,14 @@ function sortedRows(rows: readonly MemoryRow[], sortMode: SortMode): MemoryRow[]
     return next.sort((left, right) => left.order - right.order);
   }
   if (sortMode === "updated_desc") {
-    return next.sort((left, right) => rowSortTime(right) - rowSortTime(left) || left.order - right.order);
+    return next.sort(
+      (left, right) => rowSortTime(right) - rowSortTime(left) || left.order - right.order,
+    );
   }
   if (sortMode === "updated_asc") {
-    return next.sort((left, right) => rowSortTime(left) - rowSortTime(right) || left.order - right.order);
+    return next.sort(
+      (left, right) => rowSortTime(left) - rowSortTime(right) || left.order - right.order,
+    );
   }
   if (sortMode === "created_desc") {
     return next.sort(
@@ -693,6 +712,40 @@ function MemoryStructuralControls({
   );
 }
 
+function SemanticTopologyPanel({
+  selectedId,
+  onSelectNode,
+}: {
+  selectedId: string | null;
+  onSelectNode: (nodeId: string) => void;
+}) {
+  const live = useLiveEventsContext();
+  const api = useApi<SemanticGraphResponse>(() => getSemanticGraph(SEMANTIC_TOPOLOGY_LIMIT), []);
+  const refetch = api.refetch;
+
+  useEffect(() => {
+    return live.subscribe((frame) => {
+      if (frame.type === "maintenance:tick") {
+        void refetch();
+      }
+    });
+  }, [live, refetch]);
+
+  if (api.loading && api.data === null) {
+    return <div className="notice">loading semantic topology</div>;
+  }
+
+  if (api.error !== null) {
+    return <div className="notice bad">{api.error.message}</div>;
+  }
+
+  if (api.data === null) {
+    return <div className="notice">semantic topology unavailable</div>;
+  }
+
+  return <SemanticTopology graph={api.data} selectedId={selectedId} onSelectNode={onSelectNode} />;
+}
+
 function MemoryDrill({
   band,
   totalCount,
@@ -713,7 +766,11 @@ function MemoryDrill({
   const [detail, setDetail] = useState<MemoryBandDetail | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("backend");
+  const [semanticViewMode, setSemanticViewMode] = useState<SemanticViewMode>("browser");
   const [filters, setFilters] = useState<Record<string, string>>(() => defaultFiltersForBand(band));
+  const [fetchedSemanticNode, setFetchedSemanticNode] = useState<SemanticMemoryNode | null>(null);
+  const [fetchedSemanticNodeLoading, setFetchedSemanticNodeLoading] = useState(false);
+  const [fetchedSemanticNodeError, setFetchedSemanticNodeError] = useState<string | null>(null);
   const api = useApi(
     () =>
       getMemoryBand(band, {
@@ -733,7 +790,19 @@ function MemoryDrill({
   const [action, setAction] = useState<MemoryCorrectionAction | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
-  const selected = filteredRows.find((row) => row.id === selectedId) ?? filteredRows[0] ?? null;
+  const loadedSelected =
+    selectedId === null ? null : (rows.find((row) => row.id === selectedId) ?? null);
+  const shouldFetchSelectedSemanticNode =
+    band === "semantic" &&
+    selectedId !== null &&
+    loadedSelected === null &&
+    correctionActionKind(selectedId) === "semantic_node";
+  const fetchedSelected =
+    shouldFetchSelectedSemanticNode && fetchedSemanticNode !== null
+      ? semanticNodeRow(fetchedSemanticNode, rows.length)
+      : null;
+  const selected =
+    loadedSelected ?? fetchedSelected ?? (selectedId === null ? (filteredRows[0] ?? null) : null);
   const selectedCorrectionKind = selected === null ? null : correctionActionKind(selected.id);
   const searchable = SEARCHABLE_BANDS.has(band);
   const searchActive = searchQuery.length > 0;
@@ -754,9 +823,48 @@ function MemoryDrill({
     setSelectedId(null);
     setFilters(defaultFiltersForBand(band));
     setSortMode("backend");
+    setSemanticViewMode("browser");
     setSearchText("");
     setSearchQuery("");
+    setFetchedSemanticNode(null);
+    setFetchedSemanticNodeError(null);
+    setFetchedSemanticNodeLoading(false);
   }, [band, sessionId]);
+
+  useEffect(() => {
+    if (!shouldFetchSelectedSemanticNode || selectedId === null) {
+      setFetchedSemanticNode(null);
+      setFetchedSemanticNodeError(null);
+      setFetchedSemanticNodeLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setFetchedSemanticNode(null);
+    setFetchedSemanticNodeError(null);
+    setFetchedSemanticNodeLoading(true);
+
+    void getSemanticNode(selectedId)
+      .then((node) => {
+        if (!cancelled) {
+          setFetchedSemanticNode(node);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setFetchedSemanticNodeError(caught instanceof Error ? caught.message : String(caught));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFetchedSemanticNodeLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, shouldFetchSelectedSemanticNode]);
 
   function setFilter(key: string, value: string): void {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -807,7 +915,7 @@ function MemoryDrill({
 
   async function refetchAfterMemoryCorrection(): Promise<void> {
     // Invalidates GET /api/memory/bands and GET /api/memory/bands/:band.
-    // Semantic node/edge changes also affect GET /api/semantic/graph; Graph is not live-wired this sprint.
+    // Semantic topology is refreshed independently from GET /api/semantic/graph.
     await Promise.all([api.refetch(), onMemoryChanged()]);
   }
 
@@ -869,6 +977,22 @@ function MemoryDrill({
         <h1>{band} memory</h1>
         <span className="desc">{BAND_DESCRIPTIONS[band]}</span>
         <span className="spacer"></span>
+        {band === "semantic" ? (
+          <div className="filter-pills" role="tablist" aria-label="semantic memory view">
+            {(["browser", "topology"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={semanticViewMode === mode}
+                className={`pill ${semanticViewMode === mode ? "on" : ""}`}
+                onClick={() => setSemanticViewMode(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <Tag>
           {searchActive
             ? `${rows.length} results`
@@ -905,26 +1029,37 @@ function MemoryDrill({
           {operatorError}
         </div>
       )}
-      <div className="band-detail" style={{ flex: 1 }}>
-        <div className="list">
-          <div
-            style={{
-              padding: "8px 14px",
-              borderBottom: "1px solid var(--line)",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              fontSize: 10.5,
-              color: "var(--text-mute)",
-            }}
-          >
-            <span>
-              {filteredRows.length} visible · {loadedCount} loaded
-            </span>
-            <span style={{ flex: 1 }}></span>
-            <div className="filter-pills">
-              {(["backend", "updated_desc", "updated_asc", "created_desc", "created_asc"] as const).map(
-                (mode) => (
+      <div
+        className={`band-detail ${
+          band === "semantic" && semanticViewMode === "topology" ? "semantic-topology-mode" : ""
+        }`}
+        style={{ flex: 1 }}
+      >
+        {band === "semantic" && semanticViewMode === "topology" ? (
+          <div className="semantic-topology-pane">
+            <SemanticTopologyPanel selectedId={selectedId} onSelectNode={setSelectedId} />
+          </div>
+        ) : (
+          <div className="list">
+            <div
+              style={{
+                padding: "8px 14px",
+                borderBottom: "1px solid var(--line)",
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                fontSize: 10.5,
+                color: "var(--text-mute)",
+              }}
+            >
+              <span>
+                {filteredRows.length} visible · {loadedCount} loaded
+              </span>
+              <span style={{ flex: 1 }}></span>
+              <div className="filter-pills">
+                {(
+                  ["backend", "updated_desc", "updated_asc", "created_desc", "created_asc"] as const
+                ).map((mode) => (
                   <span
                     key={mode}
                     className={`pill ${sortMode === mode ? "on" : ""}`}
@@ -932,61 +1067,67 @@ function MemoryDrill({
                   >
                     {sortLabel(mode)}
                   </span>
-                ),
-              )}
-            </div>
-          </div>
-          <div
-            style={{
-              padding: "8px 14px",
-              borderBottom: "1px solid var(--line)",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <MemoryStructuralControls
-              band={band}
-              rows={rows}
-              filters={filters}
-              onFilter={setFilter}
-            />
-          </div>
-          {api.loading && rows.length === 0 ? <div className="notice">loading {band}</div> : null}
-          {api.error !== null ? <div className="notice bad">{api.error.message}</div> : null}
-          {filteredRows.map((row) => (
-            <div
-              key={row.id}
-              className={`list-row ${row.id === selected?.id ? "selected" : ""}`}
-              onClick={() => setSelectedId(row.id)}
-            >
-              <div className="ttl">{row.title}</div>
-              <div className="meta">
-                <span>[{shortId(row.id)}]</span>
-                <span>·</span>
-                <span>{row.meta}</span>
+                ))}
               </div>
             </div>
-          ))}
-          {filteredRows.length === 0 && !api.loading ? (
-            <div className="notice">no records in current filter</div>
-          ) : null}
-          {nextCursor !== null ? (
-            <div style={{ padding: 12 }}>
-              <button
-                className="btn sm ghost"
-                disabled={loadingMore}
-                onClick={() => void loadMore()}
-              >
-                {loadingMore ? "loading" : "load more"}
-              </button>
+            <div
+              style={{
+                padding: "8px 14px",
+                borderBottom: "1px solid var(--line)",
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <MemoryStructuralControls
+                band={band}
+                rows={rows}
+                filters={filters}
+                onFilter={setFilter}
+              />
             </div>
-          ) : null}
-        </div>
+            {api.loading && rows.length === 0 ? <div className="notice">loading {band}</div> : null}
+            {api.error !== null ? <div className="notice bad">{api.error.message}</div> : null}
+            {filteredRows.map((row) => (
+              <div
+                key={row.id}
+                className={`list-row ${row.id === selected?.id ? "selected" : ""}`}
+                onClick={() => setSelectedId(row.id)}
+              >
+                <div className="ttl">{row.title}</div>
+                <div className="meta">
+                  <span>[{shortId(row.id)}]</span>
+                  <span>·</span>
+                  <span>{row.meta}</span>
+                </div>
+              </div>
+            ))}
+            {filteredRows.length === 0 && !api.loading ? (
+              <div className="notice">no records in current filter</div>
+            ) : null}
+            {nextCursor !== null ? (
+              <div style={{ padding: 12 }}>
+                <button
+                  className="btn sm ghost"
+                  disabled={loadingMore}
+                  onClick={() => void loadMore()}
+                >
+                  {loadingMore ? "loading" : "load more"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
         <div className="detail">
           {selected === null ? (
-            <div className="notice">no records in this band</div>
+            fetchedSemanticNodeLoading ? (
+              <div className="notice">loading selected semantic node</div>
+            ) : fetchedSemanticNodeError !== null ? (
+              <div className="notice bad">{fetchedSemanticNodeError}</div>
+            ) : (
+              <div className="notice">no records in this band</div>
+            )
           ) : (
             <>
               <h2>{selected.title}</h2>
@@ -1032,7 +1173,7 @@ function MemoryDrill({
               </div>
               <div className="row">
                 <span className="k">id</span>
-                <span className="v">{selected?.id ?? "—"}</span>
+                <span className="v">{selected?.id ?? selectedId ?? "—"}</span>
               </div>
               <div className="row">
                 <span className="k">rows</span>

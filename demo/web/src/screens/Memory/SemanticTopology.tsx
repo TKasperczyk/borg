@@ -1,16 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import type { SemanticRelation } from "borg";
 
-import { getSemanticGraph } from "../../api/client";
 import type {
   SemanticGraphEdge,
   SemanticGraphNode,
   SemanticGraphNodeStatus,
   SemanticGraphResponse,
 } from "../../api/types";
-import { useLiveEventsContext } from "../../hooks/live-context";
-import { useApi } from "../../hooks/use-api";
+import { Tag } from "../../components/Tag";
+import { shortId } from "../screen-utils";
 
-const GRAPH_LIMIT = 300;
 const VIEWBOX_WIDTH = 1000;
 const VIEWBOX_HEIGHT = 640;
 const CENTER_X = VIEWBOX_WIDTH / 2;
@@ -21,7 +20,33 @@ const INITIAL_RING_RADIUS = 230;
 const SETTLE_MS = 4_200;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+export const SEMANTIC_TOPOLOGY_EDGE_CLASSES = {
+  is_a: "semantic-topology-edge-is-a",
+  part_of: "semantic-topology-edge-part-of",
+  causes: "semantic-topology-edge-causes semantic-topology-edge-flow",
+  prevents: "semantic-topology-edge-prevents",
+  supports: "semantic-topology-edge-supports semantic-topology-edge-flow",
+  contradicts: "semantic-topology-edge-contradicts",
+  related_to: "semantic-topology-edge-related-to",
+  instance_of: "semantic-topology-edge-instance-of",
+} satisfies Record<SemanticRelation, string>;
+
+export function edgeClass(type: SemanticRelation): string {
+  return SEMANTIC_TOPOLOGY_EDGE_CLASSES[type];
+}
+
+type DuplicateInfo = {
+  count: number;
+  ordinal: number;
+};
+
+type DuplicateCluster = {
+  label: string;
+  count: number;
+};
+
 type SimNode = SemanticGraphNode & {
+  duplicate: DuplicateInfo;
   index: number;
   radius: number;
   x: number;
@@ -43,6 +68,12 @@ type MountedNode = {
 type MountedEdge = {
   edge: SimEdge;
   line: SVGLineElement;
+};
+
+export type SemanticTopologyProps = {
+  graph: SemanticGraphResponse;
+  selectedId: string | null;
+  onSelectNode: (nodeId: string) => void;
 };
 
 function nodeRadius(edgeCount: number): number {
@@ -67,23 +98,6 @@ function statusColor(status: SemanticGraphNodeStatus): string {
   }
 }
 
-function edgeClass(type: string): string {
-  switch (type) {
-    case "supports":
-      return "graph-edge-supports graph-edge-flow";
-    case "contradicts":
-      return "graph-edge-contradicts";
-    case "causes":
-      return "graph-edge-causes graph-edge-flow";
-    case "prevents":
-      return "graph-edge-prevents";
-    case "is_a":
-      return "graph-edge-is-a";
-    default:
-      return "graph-edge-other";
-  }
-}
-
 function compactLabel(label: string): string {
   return label.length > 28 ? `${label.slice(0, 25)}...` : label;
 }
@@ -100,7 +114,42 @@ function clearSvg(svg: SVGSVGElement): void {
   }
 }
 
-function createSimNodes(data: SemanticGraphResponse): SimNode[] {
+function duplicateInfoForNodes(nodes: readonly SemanticGraphNode[]): Map<string, DuplicateInfo> {
+  const counts = new Map<string, number>();
+  const seen = new Map<string, number>();
+  const info = new Map<string, DuplicateInfo>();
+
+  for (const node of nodes) {
+    counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+  }
+
+  for (const node of nodes) {
+    const count = counts.get(node.label) ?? 1;
+    const ordinal = (seen.get(node.label) ?? 0) + 1;
+    seen.set(node.label, ordinal);
+    info.set(node.id, { count, ordinal });
+  }
+
+  return info;
+}
+
+function duplicateClustersForNodes(nodes: readonly SemanticGraphNode[]): DuplicateCluster[] {
+  const counts = new Map<string, number>();
+
+  for (const node of nodes) {
+    counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function createSimNodes(
+  data: SemanticGraphResponse,
+  duplicateInfo: ReadonlyMap<string, DuplicateInfo>,
+): SimNode[] {
   const total = Math.max(1, data.nodes.length);
 
   return data.nodes.map((node, index) => {
@@ -109,6 +158,7 @@ function createSimNodes(data: SemanticGraphResponse): SimNode[] {
 
     return {
       ...node,
+      duplicate: duplicateInfo.get(node.id) ?? { count: 1, ordinal: 1 },
       index,
       radius: nodeRadius(node.edge_count),
       x: CENTER_X + Math.cos(angle) * ring,
@@ -134,14 +184,27 @@ function createSimEdges(data: SemanticGraphResponse, nodes: readonly SimNode[]):
   });
 }
 
+function nodeDisplayLabel(node: SimNode): string {
+  const label = compactLabel(node.label);
+  return node.duplicate.count > 1 ? `${label} #${node.duplicate.ordinal}` : label;
+}
+
+function nodeAccessibleLabel(node: SimNode): string {
+  const duplicate =
+    node.duplicate.count > 1
+      ? ` duplicate ${node.duplicate.ordinal} of ${node.duplicate.count}`
+      : "";
+  return `${node.label}${duplicate}, ${node.kind ?? "node"}, ${node.status}, ${node.edge_count} edges, ${shortId(node.id)}`;
+}
+
 function appendNodeShape(group: SVGGElement, node: SimNode, color: string): void {
-  const bodyClass = "graph-node-body";
+  const bodyClass = "semantic-topology-node-body";
 
   if (node.kind === "proposition") {
     const body = createSvgElement("polygon");
     const r = node.radius;
     body.setAttribute("points", `0,${-r} ${r},0 0,${r} ${-r},0`);
-    body.setAttribute("class", `${bodyClass} graph-node-body-diamond`);
+    body.setAttribute("class", `${bodyClass} semantic-topology-node-body-diamond`);
     body.setAttribute("fill", color);
     body.setAttribute("stroke", color);
     group.appendChild(body);
@@ -156,7 +219,7 @@ function appendNodeShape(group: SVGGElement, node: SimNode, color: string): void
     body.setAttribute("width", String(size));
     body.setAttribute("height", String(size));
     body.setAttribute("rx", "3");
-    body.setAttribute("class", `${bodyClass} graph-node-body-square`);
+    body.setAttribute("class", `${bodyClass} semantic-topology-node-body-square`);
     body.setAttribute("fill", color);
     body.setAttribute("stroke", color);
     group.appendChild(body);
@@ -165,26 +228,47 @@ function appendNodeShape(group: SVGGElement, node: SimNode, color: string): void
 
   const body = createSvgElement("circle");
   body.setAttribute("r", String(node.radius));
-  body.setAttribute("class", `${bodyClass} graph-node-body-circle`);
+  body.setAttribute("class", `${bodyClass} semantic-topology-node-body-circle`);
   body.setAttribute("fill", color);
   body.setAttribute("stroke", color);
   group.appendChild(body);
 }
 
-function appendMountedNode(layer: SVGGElement, node: SimNode): MountedNode {
+function appendMountedNode(
+  layer: SVGGElement,
+  node: SimNode,
+  onSelectNode: (nodeId: string) => void,
+): MountedNode {
   const color = statusColor(node.status);
   const group = createSvgElement("g");
-  group.setAttribute("class", `graph-node graph-node-status-${node.status}`);
+  group.setAttribute(
+    "class",
+    `semantic-topology-node semantic-topology-node-status-${node.status}`,
+  );
   group.setAttribute("data-node-id", node.id);
+  group.setAttribute("tabindex", "0");
+  group.setAttribute("focusable", "true");
+  group.setAttribute("role", "button");
+  group.setAttribute("aria-label", nodeAccessibleLabel(node));
+  group.setAttribute("aria-pressed", "false");
+
+  const activate = () => onSelectNode(node.id);
+  group.addEventListener("click", activate);
+  group.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      activate();
+    }
+  });
 
   const glow = createSvgElement("circle");
-  glow.setAttribute("class", "graph-node-glow");
+  glow.setAttribute("class", "semantic-topology-node-glow");
   glow.setAttribute("r", String(node.radius * 2.15));
   glow.setAttribute("fill", color);
   group.appendChild(glow);
 
   const hoverHalo = createSvgElement("circle");
-  hoverHalo.setAttribute("class", "graph-node-hover-halo");
+  hoverHalo.setAttribute("class", "semantic-topology-node-hover-halo");
   hoverHalo.setAttribute("r", String(node.radius * 2.7));
   hoverHalo.setAttribute("stroke", color);
   group.appendChild(hoverHalo);
@@ -192,21 +276,36 @@ function appendMountedNode(layer: SVGGElement, node: SimNode): MountedNode {
   appendNodeShape(group, node, color);
 
   const inner = createSvgElement("circle");
-  inner.setAttribute("class", "graph-node-inner");
+  inner.setAttribute("class", "semantic-topology-node-inner");
   inner.setAttribute("r", String(Math.max(2, node.radius * 0.38)));
   inner.setAttribute("fill", color);
   group.appendChild(inner);
 
+  if (node.duplicate.count > 1) {
+    const badge = createSvgElement("text");
+    badge.setAttribute("class", "semantic-topology-node-badge");
+    badge.setAttribute("x", "0");
+    badge.setAttribute("y", String(-node.radius - 7));
+    badge.setAttribute("text-anchor", "middle");
+    badge.textContent = `#${node.duplicate.ordinal}`;
+    group.appendChild(badge);
+  }
+
   const label = createSvgElement("text");
-  label.setAttribute("class", node.radius > 7 ? "graph-node-label is-visible" : "graph-node-label");
+  label.setAttribute(
+    "class",
+    node.radius > 7 || node.duplicate.count > 1
+      ? "semantic-topology-node-label is-visible"
+      : "semantic-topology-node-label",
+  );
   label.setAttribute("x", "0");
   label.setAttribute("y", String(node.radius + 13));
   label.setAttribute("text-anchor", "middle");
-  label.textContent = compactLabel(node.label);
+  label.textContent = nodeDisplayLabel(node);
   group.appendChild(label);
 
   const title = createSvgElement("title");
-  title.textContent = `${node.label} · ${node.edge_count} edges`;
+  title.textContent = `${node.label} [${shortId(node.id)}] - ${node.edge_count} edges`;
   group.appendChild(title);
 
   layer.appendChild(group);
@@ -215,7 +314,7 @@ function appendMountedNode(layer: SVGGElement, node: SimNode): MountedNode {
 
 function appendMountedEdge(layer: SVGGElement, edge: SimEdge): MountedEdge {
   const line = createSvgElement("line");
-  line.setAttribute("class", `graph-edge ${edgeClass(edge.type)}`);
+  line.setAttribute("class", `semantic-topology-edge ${edgeClass(edge.type)}`);
   line.setAttribute("stroke-width", edgeWidth(edge.weight).toFixed(2));
   line.setAttribute("data-edge-id", edge.id);
   layer.appendChild(line);
@@ -344,22 +443,37 @@ function integrateNodes(nodes: readonly SimNode[], dt: number): void {
   }
 }
 
-function mountGraph(svg: SVGSVGElement, data: SemanticGraphResponse): () => void {
+function syncSelectedNodes(svg: SVGSVGElement, selectedId: string | null): void {
+  const nodes = svg.querySelectorAll<SVGGElement>(".semantic-topology-node");
+
+  for (const node of nodes) {
+    const active = node.dataset.nodeId === selectedId;
+    node.classList.toggle("selected", active);
+    node.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function mountGraph(
+  svg: SVGSVGElement,
+  data: SemanticGraphResponse,
+  duplicateInfo: ReadonlyMap<string, DuplicateInfo>,
+  onSelectNode: (nodeId: string) => void,
+): () => void {
   clearSvg(svg);
   svg.setAttribute("viewBox", `0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`);
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
   const edgeLayer = createSvgElement("g");
-  edgeLayer.setAttribute("class", "graph-edge-layer");
+  edgeLayer.setAttribute("class", "semantic-topology-edge-layer");
   const nodeLayer = createSvgElement("g");
-  nodeLayer.setAttribute("class", "graph-node-layer");
+  nodeLayer.setAttribute("class", "semantic-topology-node-layer");
   svg.appendChild(edgeLayer);
   svg.appendChild(nodeLayer);
 
-  const nodes = createSimNodes(data);
+  const nodes = createSimNodes(data, duplicateInfo);
   const edges = createSimEdges(data, nodes);
   const mountedEdges = edges.map((edge) => appendMountedEdge(edgeLayer, edge));
-  const mountedNodes = nodes.map((node) => appendMountedNode(nodeLayer, node));
+  const mountedNodes = nodes.map((node) => appendMountedNode(nodeLayer, node, onSelectNode));
   const startedAt = performance.now();
   let alpha = 1;
   let previousTick = startedAt;
@@ -405,46 +519,40 @@ function mountGraph(svg: SVGSVGElement, data: SemanticGraphResponse): () => void
   };
 }
 
-export function GraphScreen() {
+export function SemanticTopology({ graph, selectedId, onSelectNode }: SemanticTopologyProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const live = useLiveEventsContext();
-  const api = useApi(() => getSemanticGraph(GRAPH_LIMIT), []);
-  const refetch = api.refetch;
+  const onSelectRef = useRef(onSelectNode);
+  const duplicateInfo = useMemo(() => duplicateInfoForNodes(graph.nodes), [graph.nodes]);
+  const duplicateClusters = useMemo(() => duplicateClustersForNodes(graph.nodes), [graph.nodes]);
 
   useEffect(() => {
-    return live.subscribe((frame) => {
-      if (frame.type === "maintenance:tick") {
-        void refetch();
-      }
-    });
-  }, [live, refetch]);
+    onSelectRef.current = onSelectNode;
+  }, [onSelectNode]);
 
   useEffect(() => {
-    if (svgRef.current === null || api.data === null || api.data.nodes.length === 0) {
+    if (svgRef.current === null || graph.nodes.length === 0) {
       return undefined;
     }
 
-    return mountGraph(svgRef.current, api.data);
-  }, [api.data]);
+    return mountGraph(svgRef.current, graph, duplicateInfo, (nodeId) =>
+      onSelectRef.current(nodeId),
+    );
+  }, [duplicateInfo, graph]);
 
-  if (api.loading && api.data === null) {
-    return <div className="notice">loading semantic graph</div>;
-  }
+  useEffect(() => {
+    if (svgRef.current !== null) {
+      syncSelectedNodes(svgRef.current, selectedId);
+    }
+  }, [graph, selectedId]);
 
-  if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
-  }
-
-  const graph = api.data;
-
-  if (graph === null || graph.nodes.length === 0) {
+  if (graph.nodes.length === 0) {
     return (
-      <div className="graph-screen">
-        <div className="graph-canvas">
-          <div className="graph-empty">
-            <div className="graph-empty-mark">⊘</div>
-            <div className="graph-empty-title">semantic graph empty</div>
-            <div className="graph-empty-sub">
+      <div className="semantic-topology">
+        <div className="semantic-topology-canvas">
+          <div className="semantic-topology-empty">
+            <div className="semantic-topology-empty-mark">0</div>
+            <div className="semantic-topology-empty-title">semantic graph empty</div>
+            <div className="semantic-topology-empty-sub">
               no entities or relations recorded for this audience yet
             </div>
           </div>
@@ -454,20 +562,36 @@ export function GraphScreen() {
   }
 
   return (
-    <div className="graph-screen">
-      <div className="graph-canvas">
-        <div className="graph-overlay">
-          {graph.rendered.nodes.toLocaleString()} nodes · {graph.rendered.edges.toLocaleString()}{" "}
-          edges · showing {graph.rendered.nodes.toLocaleString()} of{" "}
-          {graph.total_nodes.toLocaleString()}
+    <div className="semantic-topology">
+      <div className="semantic-topology-canvas">
+        <div className="semantic-topology-overlay">
+          <Tag>
+            {graph.rendered.nodes.toLocaleString()} nodes / {graph.rendered.edges.toLocaleString()}{" "}
+            edges
+          </Tag>
+          <Tag kind="info">
+            showing {graph.rendered.nodes.toLocaleString()} of {graph.total_nodes.toLocaleString()}
+          </Tag>
+          {selectedId === null ? null : <Tag kind="acc">selected {shortId(selectedId)}</Tag>}
         </div>
         <svg
           ref={svgRef}
-          className="graph-svg"
-          data-testid="semantic-graph-svg"
-          aria-hidden="true"
+          className="semantic-topology-svg"
+          data-testid="semantic-topology-svg"
+          role="img"
+          aria-label="semantic topology graph"
         />
       </div>
+      {duplicateClusters.length > 0 ? (
+        <div className="semantic-topology-clusters" aria-label="duplicate label clusters">
+          <span className="semantic-topology-clusters-label">duplicate labels</span>
+          {duplicateClusters.map((cluster) => (
+            <Tag key={cluster.label} kind="info">
+              {cluster.label} x{cluster.count}
+            </Tag>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

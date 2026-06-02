@@ -1,9 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { LiveEventsProvider } from "../../hooks/live-context";
+import type { LiveEvents } from "../../hooks/use-live-events";
 import { MemoryScreen } from ".";
 
 const EPISODE_ID = "ep_aaaaaaaaaaaaaaaa";
+const LOADED_SEMANTIC_NODE_ID = "semn_loaded0000000";
+const OFF_PAGE_SEMANTIC_NODE_ID = "semn_offpage000000";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -137,8 +141,34 @@ function episodeItem(
   };
 }
 
+function semanticNode(id: string, label: string, description: string) {
+  return {
+    id,
+    kind: "entity",
+    label,
+    description,
+    domain: null,
+    aliases: [],
+    confidence: 0.8,
+    status: "active",
+    source_episode_ids: ["ep_source000000000"],
+    source_count: 1,
+    created_at: 1,
+    updated_at: 2,
+  };
+}
+
+function testLiveEvents(): LiveEvents {
+  return {
+    wsState: "live",
+    connectionCount: 1,
+    subscribe: vi.fn(() => () => undefined),
+  };
+}
+
 describe("Memory correction actions", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -244,7 +274,9 @@ describe("Memory correction actions", () => {
     expect(await screen.findByText("Episode two")).toBeInTheDocument();
     expect(screen.getByText("loaded 2 of 2")).toBeInTheDocument();
     expect(
-      fetchMock.mock.calls.some(([request]) => requestUrl(request).searchParams.get("cursor") === "cursor-1"),
+      fetchMock.mock.calls.some(
+        ([request]) => requestUrl(request).searchParams.get("cursor") === "cursor-1",
+      ),
     ).toBe(true);
   });
 
@@ -310,9 +342,9 @@ describe("Memory correction actions", () => {
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
     await waitFor(() => {
-      expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
-        "Episode one",
-      ]);
+      expect(
+        [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent),
+      ).toEqual(["Episode one"]);
     });
     const detailCallsBefore = fetchMock.mock.calls.filter(
       ([request]) => requestUrl(request).pathname === "/api/memory/bands/episodic",
@@ -320,9 +352,9 @@ describe("Memory correction actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "search" }));
 
-    expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
-      "Episode one",
-    ]);
+    expect(
+      [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent),
+    ).toEqual(["Episode one"]);
     expect(
       fetchMock.mock.calls.filter(
         ([request]) => requestUrl(request).pathname === "/api/memory/bands/episodic",
@@ -373,18 +405,21 @@ describe("Memory correction actions", () => {
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
     await waitFor(() => {
-      expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
-        "Beta episode",
-        "Alpha episode",
-      ]);
+      expect(
+        [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent),
+      ).toEqual(["Beta episode", "Alpha episode"]);
     });
 
     fireEvent.click(screen.getByText("oldest"));
-    const titles = [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent);
+    const titles = [...container.querySelectorAll(".list-row .ttl")].map(
+      (item) => item.textContent,
+    );
     expect(titles).toEqual(["Alpha episode", "Beta episode"]);
 
     fireEvent.click(screen.getByText("beta"));
-    const filteredTitles = [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent);
+    const filteredTitles = [...container.querySelectorAll(".list-row .ttl")].map(
+      (item) => item.textContent,
+    );
     expect(filteredTitles).toEqual(["Beta episode"]);
     expect(screen.queryByText("Alpha episode")).not.toBeInTheDocument();
   });
@@ -443,7 +478,117 @@ describe("Memory correction actions", () => {
     expect(screen.getByText("1 results")).toBeInTheDocument();
     expect(screen.getAllByText(/score 0.92/).length).toBeGreaterThan(0);
     expect(
-      fetchMock.mock.calls.some(([request]) => requestUrl(request).searchParams.get("query") === "meaning"),
+      fetchMock.mock.calls.some(
+        ([request]) => requestUrl(request).searchParams.get("query") === "meaning",
+      ),
+    ).toBe(true);
+  });
+
+  it("selects and inspects a topology semantic node outside the loaded browser page", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      window.clearTimeout(id);
+    });
+
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[1]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/semantic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "semantic",
+            mode: "browse",
+            nodes: [
+              semanticNode(
+                LOADED_SEMANTIC_NODE_ID,
+                "Loaded semantic node",
+                "Loaded semantic node description",
+              ),
+            ],
+            edges: [],
+            next_cursor: null,
+          }),
+        );
+      }
+      if (url.pathname === "/api/semantic/graph") {
+        return Promise.resolve(
+          jsonResponse({
+            nodes: [
+              {
+                id: LOADED_SEMANTIC_NODE_ID,
+                label: "Loaded semantic node",
+                status: "active",
+                kind: "entity",
+                edge_count: 1,
+              },
+              {
+                id: OFF_PAGE_SEMANTIC_NODE_ID,
+                label: "Off page semantic node",
+                status: "active",
+                kind: "entity",
+                edge_count: 1,
+              },
+            ],
+            edges: [
+              {
+                id: "seme_related00000",
+                source: LOADED_SEMANTIC_NODE_ID,
+                target: OFF_PAGE_SEMANTIC_NODE_ID,
+                type: "related_to",
+                weight: 0.7,
+              },
+            ],
+            total_nodes: 2,
+            total_edges: 1,
+            rendered: { nodes: 2, edges: 1 },
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/nodes/${OFF_PAGE_SEMANTIC_NODE_ID}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: semanticNode(
+              OFF_PAGE_SEMANTIC_NODE_ID,
+              "Off page semantic node",
+              "Off page full semantic description",
+            ),
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={testLiveEvents()}>
+        <MemoryScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+
+    const semanticLabels = await screen.findAllByText("semantic");
+    fireEvent.click(semanticLabels[0]?.closest(".band-card") ?? semanticLabels[0]!);
+    expect((await screen.findAllByText("Loaded semantic node")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: "topology" }));
+    expect(await screen.findByTestId("semantic-topology-svg")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Off page semantic node/ }));
+
+    expect(await screen.findByText("Off page full semantic description")).toBeInTheDocument();
+    expect(screen.queryByText("Loaded semantic node description")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([request]) =>
+          requestUrl(request).pathname === `/api/semantic/nodes/${OFF_PAGE_SEMANTIC_NODE_ID}`,
+      ),
     ).toBe(true);
   });
 

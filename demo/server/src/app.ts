@@ -884,12 +884,11 @@ function jsonError(status: number, message: string): Response {
 
 function mapBorgErrorToHttp(error: unknown): never {
   if (error instanceof BorgError) {
-    const status =
-      error.code.endsWith("_NOT_FOUND")
-        ? 404
-        : error.code === "MAINTENANCE_REVERSER_MISSING" || error.code.endsWith("_STALE")
-          ? 409
-          : 400;
+    const status = error.code.endsWith("_NOT_FOUND")
+      ? 404
+      : error.code === "MAINTENANCE_REVERSER_MISSING" || error.code.endsWith("_STALE")
+        ? 409
+        : 400;
     throw new HTTPException(status, { message: error.message });
   }
 
@@ -1022,10 +1021,7 @@ function decodeCursor(cursor: string): StreamCursor | null {
   }
 }
 
-type TurnHistoryOutcomeClass =
-  | "emitted"
-  | "failed"
-  | SuppressionOutcomeClass;
+type TurnHistoryOutcomeClass = "emitted" | "failed" | SuppressionOutcomeClass;
 
 type TurnHistoryRow = {
   turn_id: string;
@@ -1227,9 +1223,7 @@ function turnHistoryRowFromAnchor(
 
   const terminal = terminalOutcome(anchor.entry);
   const outcome =
-    terminal === null
-      ? { outcome: "failed" as const, suppressionReason: null }
-      : terminal;
+    terminal === null ? { outcome: "failed" as const, suppressionReason: null } : terminal;
   const supportEntries = supportEntriesForAnchor(anchor.entry, turnId, sources);
   const startedAt = supportEntries.reduce(
     (earliest, entry) => Math.min(earliest, entry.timestamp),
@@ -1263,9 +1257,7 @@ function readTurns(input: {
     filter: isTurnHistoryAnchorEntry,
     stop: turnHistoryScanStop({ cursor: input.cursor, limit: input.limit }),
   });
-  const anchorsNewest = scan.entries
-    .map<TurnHistoryAnchor>((entry) => ({ entry }))
-    .reverse();
+  const anchorsNewest = scan.entries.map<TurnHistoryAnchor>((entry) => ({ entry })).reverse();
   const cursorIndex =
     input.cursor === undefined
       ? -1
@@ -1539,7 +1531,10 @@ function mapSemanticMemoryEdge(edge: SemanticEdge) {
   };
 }
 
-function mapSkillMemoryItem(skill: ReturnType<Borg["skills"]["list"]>[number], searchScore?: number) {
+function mapSkillMemoryItem(
+  skill: ReturnType<Borg["skills"]["list"]>[number],
+  searchScore?: number,
+) {
   return {
     id: skill.id,
     applies_when: skill.applies_when,
@@ -1917,7 +1912,10 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       count_is_lower_bound: episodicCountIsLowerBound,
       growth: sparkFrom(episodes.items.length),
       stats: [
-        { k: "items", v: episodicCountIsLowerBound ? `${episodes.items.length}+` : episodes.items.length },
+        {
+          k: "items",
+          v: episodicCountIsLowerBound ? `${episodes.items.length}+` : episodes.items.length,
+        },
       ],
     },
     {
@@ -2447,158 +2445,169 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json(await semanticGraphSnapshot(input.borg, query.limit));
   });
 
+  app.get("/api/semantic/nodes/:id", async (c) => {
+    const id = parseRequest(semanticNodeIdSchema, c.req.param("id"));
+    const node = await input.borg.semantic.nodes.get(id);
+
+    if (node === null) {
+      throw new HTTPException(404, { message: `semantic node ${id} not found` });
+    }
+
+    return c.json({ node: mapSemanticMemoryNode(node) });
+  });
+
   app.get("/api/memory/bands/:id", async (c) => {
     try {
-    const band = parseRequest(memoryBandIdSchema, c.req.param("id"));
-    const query = parseRequest(memoryBandDetailQuerySchema, c.req.query());
+      const band = parseRequest(memoryBandIdSchema, c.req.param("id"));
+      const query = parseRequest(memoryBandDetailQuerySchema, c.req.query());
 
-    if (band === "episodic") {
-      if (query.query !== undefined) {
-        const results = await input.borg.episodic.search(query.query, { limit: query.limit });
+      if (band === "episodic") {
+        if (query.query !== undefined) {
+          const results = await input.borg.episodic.search(query.query, { limit: query.limit });
+          return c.json({
+            band,
+            mode: "search",
+            query: query.query,
+            items: results.map((result) => ({
+              ...mapEpisode(input.borg, result.episode),
+              search_score: result.score,
+            })),
+            next_cursor: null,
+          });
+        }
+
+        const result = await input.borg.episodic.list({
+          limit: query.limit,
+          cursor: query.cursor,
+        });
         return c.json({
           band,
-          mode: "search",
-          query: query.query,
-          items: results.map((result) => ({
-            ...mapEpisode(input.borg, result.episode),
-            search_score: result.score,
+          mode: "browse",
+          items: result.items.map((item) => mapEpisode(input.borg, item)),
+          next_cursor: result.nextCursor ?? null,
+        });
+      }
+
+      if (band === "semantic") {
+        if (query.query !== undefined) {
+          const nodes = await input.borg.semantic.nodes.search(query.query, { limit: query.limit });
+          return c.json({
+            band,
+            mode: "search",
+            query: query.query,
+            nodes: nodes.map((candidate) =>
+              mapSemanticMemoryNode(candidate.node, candidate.similarity),
+            ),
+            edges: [],
+            next_cursor: null,
+          });
+        }
+
+        const nodes = await input.borg.semantic.nodes.listPage({
+          limit: query.limit,
+          cursor: query.cursor,
+        });
+        // Rich topology is served by GET /api/semantic/graph; this band preview keeps edges bounded.
+        const edges = input.borg.semantic.edges.list().slice(0, 50);
+
+        return c.json({
+          band,
+          mode: "browse",
+          nodes: nodes.items.map((node) => mapSemanticMemoryNode(node)),
+          edges: edges.map((edge) => mapSemanticMemoryEdge(edge)),
+          next_cursor: nodes.nextCursor ?? null,
+        });
+      }
+
+      if (band === "procedural") {
+        if (query.query !== undefined) {
+          const results = await input.borg.skills.searchByContext(query.query, query.limit);
+          return c.json({
+            band,
+            mode: "search",
+            query: query.query,
+            items: results.map((result) => mapSkillMemoryItem(result.skill, result.similarity)),
+            next_cursor: null,
+          });
+        }
+
+        return c.json({
+          band,
+          mode: "browse",
+          items: input.borg.skills.list(100).map((skill) => mapSkillMemoryItem(skill)),
+        });
+      }
+
+      if (band === "affective") {
+        return c.json({
+          band,
+          mode: "browse",
+          current: input.borg.mood.current(query.session),
+          history: input.borg.mood.history(query.session, { limit: 100 }),
+        });
+      }
+
+      if (band === "commitments") {
+        return c.json({
+          band,
+          mode: "browse",
+          items: input.borg.commitments
+            .list({ activeOnly: false })
+            .map((record) => mapCommitment(input.borg, record)),
+        });
+      }
+
+      if (band === "self") {
+        return c.json({ band, mode: "browse", ...selfSnapshot(input.borg) });
+      }
+
+      if (band === "social") {
+        return c.json({
+          band,
+          mode: "browse",
+          items: input.borg.social.list(100).map((profile) => ({
+            entity_id: profile.entity_id,
+            name: entityLabel(input.borg, profile.entity_id),
+            trust: profile.trust,
+            attachment: profile.attachment,
+            interaction_count: profile.interaction_count,
+            history_count: profile.interaction_count,
+            commitment_count: profile.commitment_count,
+            last_interaction_at: profile.last_interaction_at,
+            updated_at: profile.updated_at,
           })),
-          next_cursor: null,
         });
       }
 
-      const result = await input.borg.episodic.list({
-        limit: query.limit,
-        cursor: query.cursor,
-      });
+      const relationalQuery = parseRequest(relationalStateQuerySchema, c.req.query());
       return c.json({
         band,
         mode: "browse",
-        items: result.items.map((item) => mapEpisode(input.borg, item)),
-        next_cursor: result.nextCursor ?? null,
+        counts: input.borg.relationalSlots.countByState(),
+        items: input.borg.relationalSlots
+          .list({
+            limit: relationalQuery.limit,
+            states:
+              relationalQuery.state === undefined
+                ? undefined
+                : ([relationalQuery.state] as RelationalSlotState[]),
+          })
+          .map((slot) => ({
+            id: slot.id,
+            slot: `${entityLabel(input.borg, slot.subject_entity_id) ?? slot.subject_entity_id}.${slot.slot_key}`,
+            subject_entity_id: slot.subject_entity_id,
+            subject: entityLabel(input.borg, slot.subject_entity_id),
+            slot_key: slot.slot_key,
+            value: slot.value,
+            state: slot.state,
+            sources_count: slot.evidence_stream_entry_ids.length,
+            contradicted_count: slot.contradicted_by_stream_entry_ids.length,
+            alternate_count: slot.alternate_values.length,
+            name_provenance: slot.name_provenance ?? "unknown",
+            created_at: slot.created_at,
+            updated_at: slot.updated_at,
+          })),
       });
-    }
-
-    if (band === "semantic") {
-      if (query.query !== undefined) {
-        const nodes = await input.borg.semantic.nodes.search(query.query, { limit: query.limit });
-        return c.json({
-          band,
-          mode: "search",
-          query: query.query,
-          nodes: nodes.map((candidate) =>
-            mapSemanticMemoryNode(candidate.node, candidate.similarity),
-          ),
-          edges: [],
-          next_cursor: null,
-        });
-      }
-
-      const nodes = await input.borg.semantic.nodes.listPage({
-        limit: query.limit,
-        cursor: query.cursor,
-      });
-      // Full semantic edge/topology loading is handled in the Graph->Memory merge sprint.
-      const edges = input.borg.semantic.edges.list().slice(0, 50);
-
-      return c.json({
-        band,
-        mode: "browse",
-        nodes: nodes.items.map((node) => mapSemanticMemoryNode(node)),
-        edges: edges.map((edge) => mapSemanticMemoryEdge(edge)),
-        next_cursor: nodes.nextCursor ?? null,
-      });
-    }
-
-    if (band === "procedural") {
-      if (query.query !== undefined) {
-        const results = await input.borg.skills.searchByContext(query.query, query.limit);
-        return c.json({
-          band,
-          mode: "search",
-          query: query.query,
-          items: results.map((result) => mapSkillMemoryItem(result.skill, result.similarity)),
-          next_cursor: null,
-        });
-      }
-
-      return c.json({
-        band,
-        mode: "browse",
-        items: input.borg.skills.list(100).map((skill) => mapSkillMemoryItem(skill)),
-      });
-    }
-
-    if (band === "affective") {
-      return c.json({
-        band,
-        mode: "browse",
-        current: input.borg.mood.current(query.session),
-        history: input.borg.mood.history(query.session, { limit: 100 }),
-      });
-    }
-
-    if (band === "commitments") {
-      return c.json({
-        band,
-        mode: "browse",
-        items: input.borg.commitments
-          .list({ activeOnly: false })
-          .map((record) => mapCommitment(input.borg, record)),
-      });
-    }
-
-    if (band === "self") {
-      return c.json({ band, mode: "browse", ...selfSnapshot(input.borg) });
-    }
-
-    if (band === "social") {
-      return c.json({
-        band,
-        mode: "browse",
-        items: input.borg.social.list(100).map((profile) => ({
-          entity_id: profile.entity_id,
-          name: entityLabel(input.borg, profile.entity_id),
-          trust: profile.trust,
-          attachment: profile.attachment,
-          interaction_count: profile.interaction_count,
-          history_count: profile.interaction_count,
-          commitment_count: profile.commitment_count,
-          last_interaction_at: profile.last_interaction_at,
-          updated_at: profile.updated_at,
-        })),
-      });
-    }
-
-    const relationalQuery = parseRequest(relationalStateQuerySchema, c.req.query());
-    return c.json({
-      band,
-      mode: "browse",
-      counts: input.borg.relationalSlots.countByState(),
-      items: input.borg.relationalSlots
-        .list({
-          limit: relationalQuery.limit,
-          states:
-            relationalQuery.state === undefined
-              ? undefined
-              : ([relationalQuery.state] as RelationalSlotState[]),
-        })
-        .map((slot) => ({
-          id: slot.id,
-          slot: `${entityLabel(input.borg, slot.subject_entity_id) ?? slot.subject_entity_id}.${slot.slot_key}`,
-          subject_entity_id: slot.subject_entity_id,
-          subject: entityLabel(input.borg, slot.subject_entity_id),
-          slot_key: slot.slot_key,
-          value: slot.value,
-          state: slot.state,
-          sources_count: slot.evidence_stream_entry_ids.length,
-          contradicted_count: slot.contradicted_by_stream_entry_ids.length,
-          alternate_count: slot.alternate_values.length,
-          name_provenance: slot.name_provenance ?? "unknown",
-          created_at: slot.created_at,
-          updated_at: slot.updated_at,
-        })),
-    });
     } catch (error) {
       mapBorgErrorToHttp(error);
     }

@@ -49,7 +49,9 @@ import type {
   ReviewRow,
   ReviewsResponse,
   MemoryBandsResponse,
+  SemanticMemoryNode,
   SemanticGraphResponse,
+  SemanticNodeResponse,
   SessionParticipationPolicy,
   SessionRecord,
   SessionsResponse,
@@ -252,11 +254,13 @@ export async function getStream(input: {
   return fetchJson<StreamResponse>("api/stream", undefined, params);
 }
 
-export async function getTurns(input: {
-  session?: string;
-  limit?: number;
-  cursor?: string;
-} = {}): Promise<TurnsResponse> {
+export async function getTurns(
+  input: {
+    session?: string;
+    limit?: number;
+    cursor?: string;
+  } = {},
+): Promise<TurnsResponse> {
   const params = new URLSearchParams();
   addSessionParam(params, input.session);
   if (input.limit !== undefined) {
@@ -314,6 +318,13 @@ export async function getSemanticGraph(limit = 300): Promise<SemanticGraphRespon
     undefined,
     new URLSearchParams({ limit: String(limit) }),
   );
+}
+
+export async function getSemanticNode(id: string): Promise<SemanticMemoryNode> {
+  const response = await fetchJson<SemanticNodeResponse>(
+    `api/semantic/nodes/${encodeURIComponent(id)}`,
+  );
+  return response.node;
 }
 
 export async function getWhy(id: string): Promise<WhyResponse> {

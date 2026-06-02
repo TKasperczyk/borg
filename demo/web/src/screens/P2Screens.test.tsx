@@ -6,7 +6,6 @@ import { LiveEventsProvider } from "../hooks/live-context";
 import type { LiveEventHandler, LiveEvents } from "../hooks/use-live-events";
 import { CommitScreen } from "./Commit";
 import { DreamScreen } from "./Dream";
-import { GraphScreen } from "./Graph";
 import { IdentityScreen } from "./Identity";
 import { MemoryScreen } from "./Memory";
 import { ReviewScreen } from "./Review";
@@ -522,42 +521,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
         }),
       );
     }
-    if (url.pathname === "/api/semantic/graph") {
-      return Promise.resolve(
-        jsonResponse({
-          nodes: [
-            { id: "semn_alice", label: "alice", status: "active", kind: "entity", edge_count: 2 },
-            { id: "semn_borg", label: "borg", status: "contested", kind: "entity", edge_count: 1 },
-            {
-              id: "semn_memory",
-              label: "semantic memory",
-              status: "contradicted",
-              kind: "concept",
-              edge_count: 1,
-            },
-          ],
-          edges: [
-            {
-              id: "seme_support",
-              source: "semn_alice",
-              target: "semn_borg",
-              type: "supports",
-              weight: 0.9,
-            },
-            {
-              id: "seme_contradict",
-              source: "semn_borg",
-              target: "semn_memory",
-              type: "contradicts",
-              weight: 0.4,
-            },
-          ],
-          total_nodes: 3,
-          total_edges: 2,
-          rendered: { nodes: 3, edges: 2 },
-        }),
-      );
-    }
     return Promise.resolve(new Response("{}", { status: 404 }));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -797,9 +760,9 @@ describe("P2 screens", () => {
       expect(
         fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/dream/state"),
       ).toHaveLength(2);
-      expect(
-        fetchMock.mock.calls.some((call) => requestPath(call[0]) === "/api/dream/audit"),
-      ).toBe(true);
+      expect(fetchMock.mock.calls.some((call) => requestPath(call[0]) === "/api/dream/audit")).toBe(
+        true,
+      );
     });
   });
 
@@ -1030,61 +993,6 @@ describe("P2 screens", () => {
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/dream/state"),
-      ).toHaveLength(2);
-    });
-  });
-
-  it("renders semantic graph endpoint data", async () => {
-    installFetch();
-    const live = makeLiveSource();
-    const { container } = render(
-      <LiveEventsProvider value={live.live()}>
-        <GraphScreen />
-      </LiveEventsProvider>,
-    );
-
-    expect(
-      await screen.findByText(
-        (content) => content.includes("3 nodes") && content.includes("showing 3 of 3"),
-      ),
-    ).toBeInTheDocument();
-    await waitFor(() => {
-      expect(container.querySelectorAll(".graph-node")).toHaveLength(3);
-      expect(container.querySelectorAll(".graph-edge")).toHaveLength(2);
-    });
-  });
-
-  it("refetches semantic graph on maintenance ticks", async () => {
-    const live = makeLiveSource();
-    const fetchMock = installFetch();
-    render(
-      <LiveEventsProvider value={live.live()}>
-        <GraphScreen />
-      </LiveEventsProvider>,
-    );
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/semantic/graph"),
-      ).toHaveLength(1);
-    });
-
-    act(() => {
-      live.emit({
-        type: "maintenance:tick",
-        ts: 9,
-        cadence: "heavy",
-        status: "ok",
-        processes: ["curator"],
-        changed: true,
-        changes: 1,
-        errors: 0,
-      });
-    });
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/semantic/graph"),
       ).toHaveLength(2);
     });
   });

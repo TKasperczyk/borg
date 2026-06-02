@@ -124,6 +124,16 @@ describe("App", () => {
 
     render(<App />);
 
+    expect(screen.queryByRole("button", { name: "graph" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "identity" })).toHaveAttribute(
+      "title",
+      "identity (⌘4)",
+    );
+    expect(screen.getByRole("button", { name: "prompts" })).toHaveAttribute(
+      "title",
+      "prompts (⌘10)",
+    );
+
     fireEvent.click(await screen.findByRole("button", { name: "operator chat" }));
 
     expect(await screen.findByText("mark a creator first")).toBeInTheDocument();

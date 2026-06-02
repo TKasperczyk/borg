@@ -10,6 +10,8 @@ export type JsonValue =
 
 // Narrow copies of the public Borg DTOs used by demo/server. Keeping them local
 // avoids pulling Node-oriented Borg runtime imports into the browser bundle.
+import type { SemanticRelation } from "borg";
+
 export type StreamEntryKind =
   | "user_msg"
   | "user_image_attachment"
@@ -125,10 +127,7 @@ export type StreamResponse = {
   next_cursor: string | null;
 };
 
-export type TurnHistoryOutcomeClass =
-  | "emitted"
-  | "failed"
-  | SuppressionOutcomeClass;
+export type TurnHistoryOutcomeClass = "emitted" | "failed" | SuppressionOutcomeClass;
 
 export type TurnHistoryRow = {
   turn_id: string;
@@ -267,7 +266,7 @@ export type SemanticMemoryEdge = {
   id: string;
   from_node_id: string;
   to_node_id: string;
-  relation: string;
+  relation: SemanticRelation;
   confidence: number;
   evidence_episode_ids: string[];
   source_count: number;
@@ -295,7 +294,7 @@ export type SemanticGraphEdge = {
   id: string;
   source: string;
   target: string;
-  type: string;
+  type: SemanticRelation;
   weight?: number;
 };
 
@@ -308,6 +307,10 @@ export type SemanticGraphResponse = {
     nodes: number;
     edges: number;
   };
+};
+
+export type SemanticNodeResponse = {
+  node: SemanticMemoryNode;
 };
 
 export type ProceduralMemoryItem = {
@@ -601,7 +604,7 @@ export type MemoryBandDetail =
       items: ProceduralMemoryItem[];
       next_cursor?: string | null;
     }
-  | ({ band: "affective"; mode?: "browse"; current: MoodSnapshot; history: MoodHistoryEntry[] })
+  | { band: "affective"; mode?: "browse"; current: MoodSnapshot; history: MoodHistoryEntry[] }
   | ({ band: "self"; mode?: "browse" } & IdentityResponse)
   | { band: "commitments"; mode?: "browse"; items: CommitmentItem[] }
   | { band: "social"; mode?: "browse"; items: SocialMemoryItem[] }

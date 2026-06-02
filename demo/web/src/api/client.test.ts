@@ -4,6 +4,7 @@ import {
   ApiError,
   attachmentBytesUrl,
   getSemanticGraph,
+  getSemanticNode,
   getSessions,
   getStream,
   postTurn,
@@ -49,13 +50,10 @@ describe("api client", () => {
 
   it("posts turns with message, external id, audience, and session", async () => {
     const fetchMock = mockFetch(
-      new Response(
-        JSON.stringify({ ok: true, status: "enqueued", stream_entry_id: "strm_123" }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
+      new Response(JSON.stringify({ ok: true, status: "enqueued", stream_entry_id: "strm_123" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     );
 
     await postTurn({
@@ -112,6 +110,39 @@ describe("api client", () => {
     const url = new URL(requested, "http://test.invalid");
     expect(url.pathname).toBe("/api/semantic/graph");
     expect(url.searchParams.get("limit")).toBe("300");
+  });
+
+  it("fetches semantic node detail by id", async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        JSON.stringify({
+          node: {
+            id: "semn_detail0000000",
+            kind: "entity",
+            label: "Detail node",
+            description: "Detail node description",
+            domain: null,
+            aliases: [],
+            confidence: 0.8,
+            status: "active",
+            source_episode_ids: ["ep_source000000000"],
+            source_count: 1,
+            created_at: 1,
+            updated_at: 2,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    await expect(getSemanticNode("semn_detail0000000")).resolves.toMatchObject({
+      id: "semn_detail0000000",
+      label: "Detail node",
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/semantic/nodes/semn_detail0000000");
   });
 
   it("requires audience when constructing attachment byte URLs", () => {

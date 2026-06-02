@@ -2728,6 +2728,9 @@ g.fc-regen-group.active .fc-regen-label-bg {
   display: grid;
   grid-template-columns: 280px 1fr 320px;
 }
+.band-detail.semantic-topology-mode {
+  grid-template-columns: minmax(420px, 1fr) 360px 320px;
+}
 .band-detail > * {
   overflow: hidden;
 }
@@ -2806,39 +2809,60 @@ g.fc-regen-group.active .fc-regen-label-bg {
   word-break: break-word;
 }
 
-/* ─── graph screen ──────────────────────────────────────────────── */
+/* ─── semantic topology ─────────────────────────────────────────── */
 
-.graph-screen {
-  height: 100%;
+.semantic-topology-pane {
+  border-right: 1px solid var(--line);
   background: var(--bg-0);
 }
-.graph-canvas {
+.semantic-topology {
+  height: 100%;
+  background: var(--bg-0);
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+.semantic-topology-canvas {
   background: var(--bg-0);
   position: relative;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
-.graph-svg {
+.semantic-topology-svg {
   display: block;
   width: 100%;
   height: 100%;
 }
-.graph-overlay {
+.semantic-topology-overlay {
   position: absolute;
   top: 14px;
   left: 14px;
   z-index: 2;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 10.5px;
   color: var(--text-mute);
-  background: var(--bg-1);
-  border: 1px solid var(--line);
-  padding: 8px 12px;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
 }
-.graph-empty {
+.semantic-topology-clusters {
+  border-top: 1px solid var(--line);
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  background: var(--bg-1);
+}
+.semantic-topology-clusters-label {
+  color: var(--text-mute);
+  font-size: 10.5px;
+  text-transform: lowercase;
+}
+.semantic-topology-empty {
   position: absolute;
   inset: 0;
   display: flex;
@@ -2849,21 +2873,21 @@ g.fc-regen-group.active .fc-regen-label-bg {
   color: var(--text-mute);
   letter-spacing: 0;
 }
-.graph-empty-mark {
+.semantic-topology-empty-mark {
   font-size: 30px;
   line-height: 1;
   color: var(--line);
   margin-bottom: 4px;
 }
-.graph-empty-title {
+.semantic-topology-empty-title {
   font-size: 12.5px;
   color: var(--text-dim);
 }
-.graph-empty-sub {
+.semantic-topology-empty-sub {
   font-size: 11px;
   color: var(--text-faint);
 }
-.graph-edge {
+.semantic-topology-edge {
   fill: none;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
@@ -2871,70 +2895,94 @@ g.fc-regen-group.active .fc-regen-label-bg {
     opacity 180ms ease,
     stroke-width 180ms ease;
 }
-.graph-edge-supports {
+.semantic-topology-edge-supports {
   stroke: var(--acc);
   opacity: 0.5;
   stroke-dasharray: 6 10;
 }
-.graph-edge-contradicts {
+.semantic-topology-edge-contradicts {
   stroke: var(--bad);
   opacity: 0.72;
   stroke-dasharray: 3 2;
 }
-.graph-edge-causes {
+.semantic-topology-edge-causes {
   stroke: var(--info);
   opacity: 0.5;
   stroke-dasharray: 6 10;
 }
-.graph-edge-prevents {
+.semantic-topology-edge-prevents {
   stroke: var(--purple);
   opacity: 0.58;
   stroke-dasharray: 5 3;
 }
-.graph-edge-is-a {
+.semantic-topology-edge-is-a {
   stroke: var(--text-faint);
   opacity: 0.42;
   stroke-dasharray: 1 4;
 }
-.graph-edge-other {
+.semantic-topology-edge-part-of {
+  stroke: var(--warn);
+  opacity: 0.5;
+  stroke-dasharray: 8 4 2 4;
+}
+.semantic-topology-edge-related-to {
   stroke: var(--text-faint);
-  opacity: 0.3;
+  opacity: 0.36;
 }
-.graph-edge-flow {
-  animation: graph-edge-flow 6s linear infinite;
+.semantic-topology-edge-instance-of {
+  stroke: var(--acc-dim);
+  opacity: 0.5;
+  stroke-dasharray: 2 5;
 }
-@keyframes graph-edge-flow {
+.semantic-topology-edge-flow {
+  animation: semantic-topology-edge-flow 6s linear infinite;
+}
+@keyframes semantic-topology-edge-flow {
   to {
     stroke-dashoffset: -64;
   }
 }
-.graph-node {
-  cursor: default;
+.semantic-topology-node {
+  cursor: pointer;
+  outline: none;
 }
-.graph-node-glow {
+.semantic-topology-node:focus .semantic-topology-node-hover-halo,
+.semantic-topology-node.selected .semantic-topology-node-hover-halo {
+  opacity: 0.95;
+}
+.semantic-topology-node.selected .semantic-topology-node-body {
+  opacity: 1;
+  stroke-width: 2.2;
+}
+.semantic-topology-node.selected .semantic-topology-node-label {
+  fill: var(--text);
+  opacity: 1;
+}
+.semantic-topology-node-glow {
   opacity: 0.14;
   pointer-events: none;
   transition: opacity 180ms ease;
 }
-.graph-node-hover-halo {
+.semantic-topology-node-hover-halo {
   fill: none;
   opacity: 0;
   stroke-width: 1.2;
   pointer-events: none;
   transition: opacity 180ms ease;
 }
-.graph-node-body {
+.semantic-topology-node-body {
   opacity: 0.64;
   stroke-width: 1.1;
   transition:
     opacity 180ms ease,
     stroke-width 180ms ease;
 }
-.graph-node-inner {
+.semantic-topology-node-inner {
   opacity: 0.92;
   pointer-events: none;
 }
-.graph-node-label {
+.semantic-topology-node-label,
+.semantic-topology-node-badge {
   fill: var(--text-mute);
   font-family: var(--mono);
   font-size: 9px;
@@ -2945,27 +2993,32 @@ g.fc-regen-group.active .fc-regen-label-bg {
     opacity 180ms ease,
     fill 180ms ease;
 }
-.graph-node-label.is-visible {
+.semantic-topology-node-badge {
+  fill: var(--text);
+  font-size: 8.5px;
+  opacity: 0.92;
+}
+.semantic-topology-node-label.is-visible {
   opacity: 0.82;
 }
-.graph-node:hover .graph-node-glow {
+.semantic-topology-node:hover .semantic-topology-node-glow {
   opacity: 0.24;
 }
-.graph-node:hover .graph-node-hover-halo {
+.semantic-topology-node:hover .semantic-topology-node-hover-halo {
   opacity: 0.85;
 }
-.graph-node:hover .graph-node-body {
+.semantic-topology-node:hover .semantic-topology-node-body {
   opacity: 0.88;
   stroke-width: 1.6;
 }
-.graph-node:hover .graph-node-label {
+.semantic-topology-node:hover .semantic-topology-node-label {
   fill: var(--text-dim);
   opacity: 1;
 }
-.graph-node-status-quarantined .graph-node-glow {
+.semantic-topology-node-status-quarantined .semantic-topology-node-glow {
   opacity: 0.07;
 }
-.graph-node-status-quarantined .graph-node-body {
+.semantic-topology-node-status-quarantined .semantic-topology-node-body {
   opacity: 0.48;
 }
 
@@ -3181,7 +3234,10 @@ g.fc-regen-group.active .fc-regen-label-bg {
   flex-wrap: wrap;
 }
 .pill {
+  appearance: none;
+  font-family: var(--sans);
   font-size: 10.5px;
+  line-height: 1.2;
   padding: 3px 8px;
   background: var(--bg-2);
   border: 1px solid var(--line);

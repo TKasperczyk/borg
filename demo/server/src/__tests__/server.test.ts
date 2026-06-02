@@ -524,8 +524,7 @@ async function seedCreatorDirectiveMergeAudit(
   const audit = borg.audit
     .list({ process: "creator-directive-reconciler" })
     .find(
-      (row) =>
-        row.action === "creator_directive_merge" && row.targets.survivor_id === survivor.id,
+      (row) => row.action === "creator_directive_merge" && row.targets.survivor_id === survivor.id,
     );
 
   if (audit === undefined) {
@@ -1488,9 +1487,9 @@ describe("demo server", () => {
         score: 0.91,
       } as Awaited<ReturnType<Borg["episodic"]["search"]>>[number],
     ]);
-    const semanticSearch = vi.spyOn(borg.semantic.nodes, "search").mockResolvedValue([
-      { node: semanticNode, similarity: 0.82 },
-    ]);
+    const semanticSearch = vi
+      .spyOn(borg.semantic.nodes, "search")
+      .mockResolvedValue([{ node: semanticNode, similarity: 0.82 }]);
     const proceduralSearch = vi
       .spyOn(borg.skills, "searchByContext")
       .mockResolvedValue([{ skill, similarity: 0.73 }]);
@@ -3259,6 +3258,36 @@ describe("demo server", () => {
       total_nodes: 5,
       rendered: { nodes: 5, edges: 5 },
     });
+  });
+
+  it("serves semantic node detail by id", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-semantic-node-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const sourceEpisodeId = createEpisodeId();
+    const node = await borg.semantic.nodes.add({
+      kind: "entity",
+      label: "Detail node",
+      description: "Detail node description",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request(`/api/semantic/nodes/${node.id}`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      node: {
+        id: node.id,
+        label: "Detail node",
+        description: "Detail node description",
+        source_count: 1,
+      },
+    });
+
+    const missing = await app.request(`/api/semantic/nodes/${createSemanticNodeId()}`);
+    expect(missing.status).toBe(404);
   });
 
   it("surfaces indexed entry_index for legacy stream JSONL rows", async () => {

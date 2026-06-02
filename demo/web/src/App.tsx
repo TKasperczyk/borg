@@ -22,7 +22,6 @@ import { CognitionScreen } from "./screens/Cognition";
 import { CommitScreen } from "./screens/Commit";
 import { DirectivesScreen } from "./screens/Directives";
 import { DreamScreen } from "./screens/Dream";
-import { GraphScreen } from "./screens/Graph";
 import { IdentityScreen } from "./screens/Identity";
 import { MemoryScreen } from "./screens/Memory";
 import { PromptsScreen } from "./screens/Prompts";
@@ -145,7 +144,6 @@ export function App() {
             {route === "shared" ? <SharedScreen sessionId={sessionId} /> : null}
             {route === "review" ? <ReviewScreen /> : null}
             {route === "dream" ? <DreamScreen onOpenReview={() => setRoute("review")} /> : null}
-            {route === "graph" ? <GraphScreen /> : null}
             {route === "prompts" ? <PromptsScreen /> : null}
           </div>
         </div>
