@@ -50,6 +50,74 @@ export type StreamEntry = {
   compressed: boolean;
 };
 
+// Mirrors src/cognition/generation/types.ts. Keep these local so the browser
+// bundle does not import the Node-oriented Borg runtime package.
+export type GenerationSuppressionReason =
+  | "generation_gate"
+  | "active_discourse_stop"
+  | "empty_finalizer"
+  | "finalizer_failed"
+  | "finalizer_no_output"
+  | "invalid_tool_after_regenerate"
+  | "manifest_no_output"
+  | "legacy_manifest_validation_failed_critical"
+  | "manifest_validation_failed_critical"
+  | "no_output_tool"
+  | "s2_planner_no_output"
+  | "closure_pressure_only"
+  | "closure_response_audit_failed_closed"
+  | "commitment_violation"
+  | "commitment_violation_after_regenerate"
+  | "commitment_revision_failed"
+  | "internal_identifier_leak"
+  | "rewrite_unsupported_or_empty";
+
+export type FinalizerNoOutputPrimaryReason =
+  | "closure"
+  | "user_to_user"
+  | "when_borg_addressed"
+  | "low_value_echo"
+  | "other";
+
+export type FinalizerNoOutputSemanticCategory = "user_to_user" | "when_borg_addressed" | "closure";
+
+export type FinalizerNoOutputStructuralCategory = "with_state_delta" | "with_open_question";
+
+export type FinalizerNoOutputStructuralFlag =
+  | "with_state_delta"
+  | "current_turn_state_delta"
+  | "with_open_question"
+  | "open_question_rendered"
+  | "borg_directly_addressed";
+
+export type FinalizerNoOutputCategory =
+  | FinalizerNoOutputSemanticCategory
+  | FinalizerNoOutputStructuralCategory;
+
+export type FinalizerInvalidToolDiagnostic = {
+  tool_name: string;
+  reason: string;
+  attempt: "initial" | "regenerate";
+};
+
+export type AgentSuppressedStreamContent = {
+  reason: GenerationSuppressionReason;
+  user_entry_id?: string;
+  user_entry_ids?: string[];
+  turn_id?: string;
+  no_output_categories?: FinalizerNoOutputCategory[];
+  primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
+  structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+  finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
+};
+
+export type AgentObservedStreamContent = {
+  reason: string;
+  user_entry_id?: string;
+  user_entry_ids?: string[];
+  turn_id?: string;
+};
+
 export type StreamResponse = {
   entries: StreamEntry[];
   next_cursor: string | null;

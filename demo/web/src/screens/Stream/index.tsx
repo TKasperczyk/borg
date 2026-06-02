@@ -11,8 +11,9 @@ import { ImagePlaceholder } from "../../components/ImagePlaceholder";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
+import { streamOutcomeSummary, type StreamOutcomeSummary } from "../../lib/stream-outcomes";
 import { formatTime, mergeEntries, streamContentText } from "../../lib/stream-utils";
-import { contentField, jsonText, shortId } from "../screen-utils";
+import { contentField, displayValue, fieldLabel, jsonText, shortId } from "../screen-utils";
 
 const STREAM_KINDS: StreamEntryKind[] = [
   "user_msg",
@@ -71,6 +72,41 @@ function attachmentStatusInvalidationIds(entries: readonly StreamEntry[]): strin
 
 function mediaType(entry: StreamEntry): string | undefined {
   return contentField(entry.content, "media_type");
+}
+
+function StreamOutcomeTags({ summary }: { summary: StreamOutcomeSummary }) {
+  const invalidTool = summary.finalizerInvalidTool;
+  const reasonLabel =
+    summary.reason === null
+      ? null
+      : summary.outcome.outcomeClass === "observed"
+        ? summary.reason
+        : fieldLabel(summary.reason);
+
+  return (
+    <>
+      <Tag kind={summary.outcome.tagKind} dot>
+        {summary.outcome.label}
+      </Tag>
+      {reasonLabel === null ? null : <Tag kind={summary.outcome.tagKind}>reason {reasonLabel}</Tag>}
+      {summary.primaryNoOutputReason === undefined ? null : (
+        <Tag>primary {fieldLabel(summary.primaryNoOutputReason)}</Tag>
+      )}
+      {summary.noOutputCategories.map((category) => (
+        <Tag key={`category:${category}`}>category {fieldLabel(category)}</Tag>
+      ))}
+      {summary.structuralNoOutputFlags.map((flag) => (
+        <Tag key={`flag:${flag}`}>flag {fieldLabel(flag)}</Tag>
+      ))}
+      {invalidTool === undefined ? null : (
+        <>
+          <Tag kind="bad">tool {displayValue(invalidTool.tool_name)}</Tag>
+          <Tag kind="bad">attempt {fieldLabel(invalidTool.attempt)}</Tag>
+          <Tag kind="bad">invalid {displayValue(invalidTool.reason)}</Tag>
+        </>
+      )}
+    </>
+  );
 }
 
 function summarizeStatus(
@@ -346,6 +382,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
           const attId = attachmentId(entry);
           const attachmentStatus = attId === undefined ? undefined : attachmentStatusById[attId];
           const isAttachment = entry.kind === "user_image_attachment";
+          const outcomeSummary = streamOutcomeSummary(entry);
           return (
             <div
               key={entry.id}
@@ -356,7 +393,15 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
             >
               <span className="t">{formatTime(entry.timestamp)}</span>
               <span className={`k ${kindTag(entry.kind)}`}>{entry.kind}</span>
-              <span className={isAttachment ? "att-inline" : "body"}>
+              <span
+                className={
+                  isAttachment
+                    ? "att-inline"
+                    : outcomeSummary === null
+                      ? "body"
+                      : "body outcome-tags"
+                }
+              >
                 {isAttachment ? (
                   <>
                     <ImagePlaceholder
@@ -373,6 +418,8 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                       <Tag kind="bad">quarantined</Tag>
                     ) : null}
                   </>
+                ) : outcomeSummary !== null ? (
+                  <StreamOutcomeTags summary={outcomeSummary} />
                 ) : (
                   streamContentText(entry.content)
                 )}

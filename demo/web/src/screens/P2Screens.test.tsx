@@ -81,9 +81,20 @@ function installFetch(): ReturnType<typeof vi.fn> {
               id: "strm_obs",
               timestamp: 2,
               kind: "agent_observed",
-              content: { text: "observed action state" },
+              content: { reason: "observed action state" },
             }),
             streamEntry({ id: "strm_user", timestamp: 1, kind: "user_msg", content: "hello" }),
+            streamEntry({
+              id: "strm_suppressed",
+              timestamp: 0.5,
+              kind: "agent_suppressed",
+              content: {
+                reason: "finalizer_no_output",
+                primary_no_output_reason: "low_value_echo",
+                no_output_categories: ["closure"],
+                structural_no_output_flags: ["with_open_question"],
+              },
+            }),
           ],
           next_cursor: null,
         }),
@@ -570,6 +581,11 @@ describe("P2 screens", () => {
     expect(await screen.findByText(/user_image_attachment/)).toBeInTheDocument();
     expect((await screen.findAllByText("quarantined")).length).toBeGreaterThan(0);
     expect(await screen.findByText(/quarantined cascade/)).toBeInTheDocument();
+    expect(await screen.findByText("deliberate silence")).toBeInTheDocument();
+    expect(screen.getByText("reason finalizer no output")).toBeInTheDocument();
+    expect(screen.getByText("primary low value echo")).toBeInTheDocument();
+    expect(screen.getByText("category closure")).toBeInTheDocument();
+    expect(screen.getByText("flag with open question")).toBeInTheDocument();
 
     const attachmentFilter = screen.getAllByText("user_image_attachment")[0]?.closest(".opt");
     expect(attachmentFilter).not.toBeNull();

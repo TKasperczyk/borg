@@ -2427,6 +2427,17 @@ g.fc-regen-group.active .fc-regen-label-bg {
   font-size: 11.5px;
   min-width: 0;
 }
+.stream-row .body.outcome-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.stream-row .body.outcome-tags .tag {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .stream-row .body em {
   color: var(--text-mute);
   font-style: normal;
