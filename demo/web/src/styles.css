@@ -1133,7 +1133,7 @@ body {
 
 .cog {
   display: grid;
-  grid-template-columns: minmax(320px, 32%) 1px 260px 1px minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 38%) 1px minmax(0, 1fr);
   height: 100%;
 }
 .cog-divider {

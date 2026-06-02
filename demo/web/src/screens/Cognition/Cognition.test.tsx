@@ -99,18 +99,15 @@ function sessionRecord(input: Partial<SessionRecord> = {}): SessionRecord {
 function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
-    turnHistoryRows?: unknown[];
     turnResponse?: Response | Promise<Response>;
     turnResponses?: Array<Response | Promise<Response>>;
   } = {},
 ): {
   fetchMock: ReturnType<typeof vi.fn>;
   streamCalls: () => number;
-  turnHistoryCalls: () => number;
 } {
   const streamResponses = input.streamEntries ?? [[]];
   let streamCallCount = 0;
-  let turnHistoryCallCount = 0;
   let turnCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
@@ -118,12 +115,6 @@ function installCognitionFetch(
       const entries = streamResponses[Math.min(streamCallCount, streamResponses.length - 1)];
       streamCallCount += 1;
       return Promise.resolve(jsonResponse({ entries, next_cursor: null }));
-    }
-    if (url.includes("/api/turns") && !url.includes("/ledger")) {
-      turnHistoryCallCount += 1;
-      return Promise.resolve(
-        jsonResponse({ rows: input.turnHistoryRows ?? [], next_cursor: null }),
-      );
     }
     if (url.endsWith("/api/shared-state?audience=alice")) {
       return Promise.resolve(jsonResponse({ audience: "alice", entries: [] }));
@@ -163,7 +154,6 @@ function installCognitionFetch(
   return {
     fetchMock,
     streamCalls: () => streamCallCount,
-    turnHistoryCalls: () => turnHistoryCallCount,
   };
 }
 
@@ -491,39 +481,6 @@ describe("cognition screen", () => {
 
     expect(screen.getByText("turn_batch")).toBeInTheDocument();
     expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
-  });
-
-  it("selects a pre-restart history row with a retained-trace placeholder", async () => {
-    const source = makeLiveSource();
-    installCognitionFetch({
-      turnHistoryRows: [
-        {
-          turn_id: "turn_old",
-          started_at: 1,
-          audience: "alice",
-          outcome: "failed",
-          suppression_reason: null,
-        },
-      ],
-    });
-
-    render(<Harness live={source.live()} />);
-
-    fireEvent.click(await screen.findByText("turn_old"));
-
-    expect(
-      screen.getByText(
-        "trace not retained (pre-restart) - durable replay lands in a later persistence sprint",
-      ),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "live" }));
-
-    expect(
-      screen.queryByText(
-        "trace not retained (pre-restart) - durable replay lands in a later persistence sprint",
-      ),
-    ).not.toBeInTheDocument();
   });
 
   it("releases the active turn after terminal so a later batch from rapid sends is visualized", async () => {
@@ -1191,50 +1148,6 @@ describe("cognition screen", () => {
     });
 
     expect(streamCalls()).toBe(1);
-  });
-
-  it("refetches invocation history only for terminal stream appends", async () => {
-    const source = makeLiveSource();
-    const { turnHistoryCalls } = installCognitionFetch();
-
-    render(<Harness live={source.live()} />);
-
-    await waitFor(() => expect(turnHistoryCalls()).toBe(1));
-
-    act(() => {
-      source.emit({
-        type: "stream:append",
-        ts: Date.now(),
-        entries: [
-          streamEntry({
-            id: "strm_user_no_history_refetch",
-            kind: "user_msg",
-            content: "not terminal",
-          }),
-        ],
-      });
-    });
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(turnHistoryCalls()).toBe(1);
-
-    act(() => {
-      source.emit({
-        type: "stream:append",
-        ts: Date.now(),
-        entries: [
-          streamEntry({
-            id: "strm_agent_history_refetch",
-            kind: "agent_msg",
-            content: "terminal",
-          }),
-        ],
-      });
-    });
-
-    await waitFor(() => expect(turnHistoryCalls()).toBe(2));
   });
 
   it("rebuilds the tail from stream entries on WebSocket reconnect", async () => {
