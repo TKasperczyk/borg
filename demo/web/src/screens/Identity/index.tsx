@@ -10,12 +10,27 @@ import {
   postGrowthMarker,
   postValue,
 } from "../../api/client";
-import type { IdentityGoal, IdentityTrait, IdentityValue, OpenQuestion } from "../../api/types";
+import type {
+  IdentityEvent,
+  IdentityGoal,
+  IdentityTrait,
+  IdentityValue,
+  OpenQuestion,
+} from "../../api/types";
+import { Empty } from "../../components/Empty";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
-import { clamp01, dateLabel, parseJsonPatch } from "../screen-utils";
+import { formatTime } from "../../lib/stream-utils";
+import {
+  clamp01,
+  dateLabel,
+  displayValue,
+  isRecord,
+  parseJsonPatch,
+  shortId,
+} from "../screen-utils";
 
 type QuestionFilter = "all" | OpenQuestion["status"];
 
@@ -28,6 +43,8 @@ type IdentityModal =
   | { kind: "question-abandon"; question: OpenQuestion; text: string }
   | { kind: "forget"; id: string; label: string }
   | { kind: "correct"; id: string; label: string; patch: string; reason: string };
+
+type DirectCreateModal = Extract<IdentityModal, { kind: "value" | "goal" | "growth" }>;
 
 function valuePatch(value: IdentityValue): string {
   return JSON.stringify({ description: value.description }, null, 2);
@@ -53,6 +70,149 @@ function questionTag(status: OpenQuestion["status"]) {
     return "info";
   }
   return "warn";
+}
+
+function eventActionTag(event: IdentityEvent) {
+  if (event.overwrite_without_review) {
+    return "bad";
+  }
+  if (event.reason === "open_question_duplicate_merge") {
+    return "purple";
+  }
+  if (event.action === "create") {
+    return "info";
+  }
+  if (event.action === "resolve") {
+    return "acc";
+  }
+  if (event.action === "update") {
+    return "warn";
+  }
+  return "";
+}
+
+function eventTimestamp(ts: number): string {
+  return `${dateLabel(ts)} ${formatTime(ts)}`;
+}
+
+function provenanceLabel(provenance: IdentityEvent["provenance"]): string {
+  if (!isRecord(provenance)) {
+    return "provenance -";
+  }
+
+  const kind = typeof provenance.kind === "string" ? provenance.kind : "unknown";
+  const process = typeof provenance.process === "string" ? provenance.process : null;
+  return process === null ? `provenance ${kind}` : `provenance ${kind}/${process}`;
+}
+
+function eventRecordSummary(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "none";
+  }
+
+  if (!isRecord(value)) {
+    return displayValue(value);
+  }
+
+  const parts: string[] = [];
+  const status = value.status;
+  const urgency = value.urgency;
+  const question = value.question;
+
+  if (typeof status === "string") {
+    parts.push(status);
+  }
+  if (typeof urgency === "number") {
+    parts.push(`urg ${urgency.toFixed(2)}`);
+  }
+  if (typeof question === "string" && question.length > 0) {
+    parts.push(question);
+  }
+
+  return parts.length === 0 ? displayValue(value) : parts.join(" · ");
+}
+
+function isDirectCreateModal(modal: IdentityModal | null): modal is DirectCreateModal {
+  return modal?.kind === "value" || modal?.kind === "goal" || modal?.kind === "growth";
+}
+
+function modalTitle(modal: IdentityModal | null): string {
+  if (modal === null) {
+    return "identity";
+  }
+  if (isDirectCreateModal(modal)) {
+    return `operator-authored ${modal.kind}`;
+  }
+  return modal.kind.replace("-", " ");
+}
+
+function DirectPatchLabel() {
+  return (
+    <Tag kind="warn" dot>
+      writes live self-band
+    </Tag>
+  );
+}
+
+function DirectPatchNotice() {
+  return (
+    <div className="identity-live-write-note">
+      <DirectPatchLabel />
+      <span>direct patch -- writes Sol's live self-band now</span>
+    </div>
+  );
+}
+
+function DirectWriteNotice({
+  acknowledged,
+  onAcknowledged,
+}: {
+  acknowledged: boolean;
+  onAcknowledged: (acknowledged: boolean) => void;
+}) {
+  return (
+    <div className="identity-live-write-warning">
+      <div>
+        <Tag kind="warn" dot>
+          operator-authored
+        </Tag>
+      </div>
+      <div>
+        This writes Sol's live self-band immediately. It is not self-derived and does not enter the
+        correction review queue.
+      </div>
+      <label className="identity-ack">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          onChange={(event) => onAcknowledged(event.target.checked)}
+        />
+        <span>I acknowledge this direct live self-band write.</span>
+      </label>
+    </div>
+  );
+}
+
+function IdentityEmptyBand({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: string;
+}) {
+  return (
+    <div className="id-card identity-empty-card" style={{ gridColumn: "span 4" }}>
+      <div className="h">
+        <span className="ttl">{title}</span>
+        <span className="n">{count}</span>
+      </div>
+      <div className="identity-empty-band" aria-label={`empty ${title}`}>
+        <Empty>{children}</Empty>
+      </div>
+    </div>
+  );
 }
 
 function IdentityCorrectionButtons({
@@ -93,6 +253,73 @@ function IdentityCorrectionButtons({
   );
 }
 
+function OpenQuestionEventsSection({ events }: { events: readonly IdentityEvent[] }) {
+  const sortedEvents = useMemo(
+    () => [...events].sort((left, right) => right.ts - left.ts || right.id - left.id),
+    [events],
+  );
+
+  return (
+    <div
+      className="id-card"
+      style={{ gridColumn: "span 7" }}
+      aria-label="open question events history"
+    >
+      <div className="h">
+        <span className="ttl">open question events</span>
+        <span className="n">{events.length}</span>
+      </div>
+      <div className="body">
+        <div className="timeline identity-events">
+          {sortedEvents.map((event) => {
+            const isDuplicateMerge = event.reason === "open_question_duplicate_merge";
+            return (
+              <div
+                key={event.id}
+                className={`ev ${event.overwrite_without_review ? "bad" : ""}`}
+                data-testid="identity-event-row"
+              >
+                <div className="identity-event-head">
+                  <Tag kind={eventActionTag(event)} dot>
+                    {event.action}
+                  </Tag>
+                  {isDuplicateMerge ? <Tag kind="purple">duplicate merge</Tag> : null}
+                  {event.overwrite_without_review ? (
+                    <Tag kind="bad">without review gate</Tag>
+                  ) : null}
+                  {event.review_item_id === null ? null : (
+                    <Tag kind="info">review {event.review_item_id}</Tag>
+                  )}
+                  <span className="dim tab-num">{eventTimestamp(event.ts)}</span>
+                </div>
+                <div className="identity-event-record">
+                  <span className="acc" title={event.record_id}>
+                    {shortId(event.record_id)}
+                  </span>
+                  <span className="dim"> · {provenanceLabel(event.provenance)}</span>
+                </div>
+                <div className="identity-event-change">
+                  <span>{eventRecordSummary(event.old_value)}</span>
+                  <span className="dim"> -&gt; </span>
+                  <span>{eventRecordSummary(event.new_value)}</span>
+                </div>
+                <div className="identity-event-reason">
+                  reason <span>{event.reason ?? "-"}</span>
+                </div>
+              </div>
+            );
+          })}
+          {sortedEvents.length === 0 ? (
+            <div className="identity-empty-band">
+              <Empty>no open question events recorded</Empty>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function IdentityScreen() {
   const api = useApi(getIdentity, []);
   const [questionFilter, setQuestionFilter] = useState<QuestionFilter>("all");
@@ -100,6 +327,7 @@ export function IdentityScreen() {
   const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
+  const [directWriteAcknowledged, setDirectWriteAcknowledged] = useState(false);
   const identity = api.data;
   const questions = useMemo(() => {
     const all = identity?.open_questions ?? [];
@@ -118,11 +346,32 @@ export function IdentityScreen() {
       await action();
       await api.refetch();
       setModal(null);
+      setDirectWriteAcknowledged(false);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(null);
     }
+  }
+
+  function openModal(nextModal: IdentityModal): void {
+    setDirectWriteAcknowledged(false);
+    setModal(nextModal);
+  }
+
+  function closeModal(): void {
+    if (busy !== null) {
+      return;
+    }
+    setDirectWriteAcknowledged(false);
+    setModal(null);
+  }
+
+  function canSubmitModal(): boolean {
+    if (modal === null || busy !== null) {
+      return false;
+    }
+    return !isDirectCreateModal(modal) || directWriteAcknowledged;
   }
 
   async function submitModal(): Promise<void> {
@@ -225,9 +474,7 @@ export function IdentityScreen() {
     <div className="identity">
       <div className="id-hero">
         <div>
-          <div className="id-eyebrow">
-            self::current
-          </div>
+          <div className="id-eyebrow">self::current</div>
           <div className="stamp">
             borg <span className="acc">·</span> v89 identity substrate
           </div>
@@ -263,7 +510,7 @@ export function IdentityScreen() {
           <div className="mini-stat">
             <div className="k">open-question events</div>
             <div className="v tab-num">{identity.open_question_events.length}</div>
-            <div className="sub">create · resolve · abandon · bump</div>
+            <div className="sub">create · resolve · update</div>
           </div>
         </div>
       </div>
@@ -274,85 +521,47 @@ export function IdentityScreen() {
         </div>
       )}
 
-      <div className="id-card" style={{ gridColumn: "span 5" }}>
+      <div className="id-card identity-direct-write-zone" style={{ gridColumn: "span 12" }}>
         <div className="h">
-          <span className="ttl">values</span>
-          <span className="n">{identity.values.length}</span>
+          <span className="ttl">operator-authored direct writes</span>
+          <Tag kind="warn" dot>
+            writes Sol's live self-band
+          </Tag>
           <span style={{ flex: 1 }}></span>
-          <span className="dim" style={{ textTransform: "none" }}>
-            preserved across turns
-          </span>
           <button
-            className="btn sm ghost"
+            className="btn sm live-write"
             disabled={busy !== null}
             aria-label="add value"
-            onClick={() => setModal({ kind: "value", name: "", description: "" })}
+            onClick={() => openModal({ kind: "value", name: "", description: "" })}
           >
-            + add
+            + value
+          </button>
+          <button
+            className="btn sm live-write"
+            disabled={busy !== null}
+            aria-label="add goal"
+            onClick={() => openModal({ kind: "goal", description: "", priority: "" })}
+          >
+            + goal
+          </button>
+          <button
+            className="btn sm live-write"
+            disabled={busy !== null}
+            aria-label="add growth marker"
+            onClick={() => openModal({ kind: "growth", description: "", source: "" })}
+          >
+            + growth
           </button>
         </div>
-        <div className="body">
-          {identity.values.map((value) => (
-            <div key={value.id} className="item">
-              <div
-                style={{
-                  color: "var(--text)",
-                  fontFamily: "var(--sans)",
-                  fontSize: 12.5,
-                  lineHeight: 1.45,
-                  marginBottom: 6,
-                }}
-              >
-                {value.description}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div className="bar-meter" style={{ flex: 1 }}>
-                  <div
-                    className="fill"
-                    style={{ width: `${clamp01(value.confidence) * 100}%` }}
-                  ></div>
-                </div>
-                <span
-                  className="dim tab-num"
-                  style={{ fontSize: 10.5, width: 34, textAlign: "right" }}
-                >
-                  {value.confidence.toFixed(2)}
-                </span>
-                <span className="dim" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
-                  {value.support_count} src · {dateLabel(value.created_at)}
-                </span>
-                <IdentityCorrectionButtons
-                  busy={busy !== null}
-                  id={value.id}
-                  label={value.label}
-                  patch={valuePatch(value)}
-                  onWhy={setWhyId}
-                  onModal={setModal}
-                />
-              </div>
-            </div>
-          ))}
-          {identity.values.length === 0 ? (
-            <div className="dim" style={{ padding: "6px 2px", fontSize: 11.5 }}>
-              no values recorded yet
-            </div>
-          ) : null}
+        <div className="identity-direct-write-copy">
+          operator-authored -- writes Sol's live self-band, not self-derived
         </div>
       </div>
 
-      <div className="id-card" style={{ gridColumn: "span 4" }}>
+      <div className="id-card" style={{ gridColumn: "span 5" }}>
         <div className="h">
           <span className="ttl">goals</span>
           <span className="n">{activeGoals} active</span>
-          <span style={{ flex: 1 }}></span>
-          <button
-            className="btn sm ghost"
-            disabled={busy !== null}
-            aria-label="add goal"
-            onClick={() => setModal({ kind: "goal", description: "", priority: "" })}
-          >
-            + add
-          </button>
         </div>
         <div className="body">
           {identity.goals.map((goal) => (
@@ -380,6 +589,7 @@ export function IdentityScreen() {
                 <span style={{ flex: 1 }}></span>
                 {goal.status === "active" ? (
                   <>
+                    <DirectPatchLabel />
                     <button
                       className="btn sm"
                       disabled={busy !== null}
@@ -406,7 +616,7 @@ export function IdentityScreen() {
                       className="btn sm ghost"
                       disabled={busy !== null}
                       onClick={() =>
-                        setModal({ kind: "goal-progress", goal, note: "", progress: "" })
+                        openModal({ kind: "goal-progress", goal, note: "", progress: "" })
                       }
                     >
                       progress
@@ -419,7 +629,7 @@ export function IdentityScreen() {
                   label={goal.description}
                   patch={goalPatch(goal)}
                   onWhy={setWhyId}
-                  onModal={setModal}
+                  onModal={openModal}
                 />
               </div>
             </div>
@@ -432,7 +642,7 @@ export function IdentityScreen() {
         </div>
       </div>
 
-      <div className="id-card" style={{ gridColumn: "span 3" }}>
+      <div className="id-card" style={{ gridColumn: "span 7" }}>
         <div className="h">
           <span className="ttl">open questions</span>
           <span className="n">{questions.length}</span>
@@ -488,17 +698,18 @@ export function IdentityScreen() {
                 <span style={{ flex: 1 }}></span>
                 {question.status === "open" ? (
                   <>
+                    <DirectPatchLabel />
                     <button
                       className="btn sm"
                       disabled={busy !== null}
-                      onClick={() => setModal({ kind: "question-resolve", question, text: "" })}
+                      onClick={() => openModal({ kind: "question-resolve", question, text: "" })}
                     >
                       resolve
                     </button>
                     <button
                       className="btn sm ghost"
                       disabled={busy !== null}
-                      onClick={() => setModal({ kind: "question-abandon", question, text: "" })}
+                      onClick={() => openModal({ kind: "question-abandon", question, text: "" })}
                     >
                       abandon
                     </button>
@@ -521,7 +732,7 @@ export function IdentityScreen() {
                   label={question.question}
                   patch={questionPatch(question)}
                   onWhy={setWhyId}
-                  onModal={setModal}
+                  onModal={openModal}
                 />
               </div>
               {question.status === "open" ? (
@@ -574,7 +785,7 @@ export function IdentityScreen() {
                   label={trait.label}
                   patch={traitPatch(trait)}
                   onWhy={setWhyId}
-                  onModal={setModal}
+                  onModal={openModal}
                 />
               </div>
             </div>
@@ -582,112 +793,186 @@ export function IdentityScreen() {
         </div>
       </div>
 
-      <div className="id-card" style={{ gridColumn: "span 7" }}>
-        <div className="h">
-          <span className="ttl">growth markers</span>
-          <span className="n">{identity.growth_markers.length}</span>
-          <span style={{ flex: 1 }}></span>
-          <button
-            className="btn sm ghost"
-            disabled={busy !== null}
-            aria-label="add growth marker"
-            onClick={() => setModal({ kind: "growth", description: "", source: "" })}
-          >
-            + add
-          </button>
-        </div>
-        <div className="body">
-          <div className="timeline">
-            {identity.growth_markers.map((marker) => (
-              <div key={marker.id} className={`ev ${marker.confidence < 0.6 ? "warn" : ""}`}>
-                <div className="t">
-                  {dateLabel(marker.ts)} · {marker.source_process}
+      <OpenQuestionEventsSection events={identity.open_question_events} />
+
+      {identity.values.length === 0 ? (
+        <IdentityEmptyBand title="values" count={identity.values.length}>
+          no values recorded
+        </IdentityEmptyBand>
+      ) : (
+        <div className="id-card" style={{ gridColumn: "span 5" }}>
+          <div className="h">
+            <span className="ttl">values</span>
+            <span className="n">{identity.values.length}</span>
+            <span style={{ flex: 1 }}></span>
+            <span className="dim" style={{ textTransform: "none" }}>
+              preserved across turns
+            </span>
+          </div>
+          <div className="body">
+            {identity.values.map((value) => (
+              <div key={value.id} className="item">
+                <div
+                  style={{
+                    color: "var(--text)",
+                    fontFamily: "var(--sans)",
+                    fontSize: 12.5,
+                    lineHeight: 1.45,
+                    marginBottom: 6,
+                  }}
+                >
+                  {value.description}
                 </div>
-                <div className="x">{marker.what_changed}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div className="bar-meter" style={{ flex: 1 }}>
+                    <div
+                      className="fill"
+                      style={{ width: `${clamp01(value.confidence) * 100}%` }}
+                    ></div>
+                  </div>
+                  <span
+                    className="dim tab-num"
+                    style={{ fontSize: 10.5, width: 34, textAlign: "right" }}
+                  >
+                    {value.confidence.toFixed(2)}
+                  </span>
+                  <span className="dim" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
+                    {value.support_count} src · {dateLabel(value.created_at)}
+                  </span>
+                  <IdentityCorrectionButtons
+                    busy={busy !== null}
+                    id={value.id}
+                    label={value.label}
+                    patch={valuePatch(value)}
+                    onWhy={setWhyId}
+                    onModal={openModal}
+                  />
+                </div>
               </div>
             ))}
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="id-card" style={{ gridColumn: "span 12" }}>
-        <div className="h">
-          <span className="ttl">autobiographical periods</span>
-          <span className="n">{identity.periods.length}</span>
-        </div>
-        <div className="body" style={{ padding: 0 }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: `repeat(${Math.max(identity.periods.length, 1)}, 1fr)`,
-              borderBottom: "1px solid var(--line)",
-            }}
-          >
-            {identity.periods.map((period, index) => {
-              const current = period.id === currentPeriod?.id;
-              return (
-                <div
-                  key={period.id}
-                  style={{
-                    padding: 14,
-                    borderRight:
-                      index === identity.periods.length - 1 ? "0" : "1px solid var(--line)",
-                    background: current ? "oklch(0.84 0.155 142 / 0.05)" : "transparent",
-                  }}
-                >
-                  <div className={`id-eyebrow${current ? " acc" : ""}`}>
-                    period {index + 1}
-                    {current ? " · current" : ""}
+      {identity.growth_markers.length === 0 ? (
+        <IdentityEmptyBand title="growth markers" count={identity.growth_markers.length}>
+          no growth markers recorded
+        </IdentityEmptyBand>
+      ) : (
+        <div className="id-card" style={{ gridColumn: "span 7" }}>
+          <div className="h">
+            <span className="ttl">growth markers</span>
+            <span className="n">{identity.growth_markers.length}</span>
+          </div>
+          <div className="body">
+            <div className="timeline">
+              {identity.growth_markers.map((marker) => (
+                <div key={marker.id} className={`ev ${marker.confidence < 0.6 ? "warn" : ""}`}>
+                  <div className="t">
+                    {dateLabel(marker.ts)} · {marker.source_process}
                   </div>
-                  <div
-                    style={{ color: "var(--text)", fontSize: 14, fontWeight: 500, marginBottom: 4 }}
-                  >
-                    {period.label}
-                  </div>
-                  <div className="dim" style={{ fontSize: 10.5, marginBottom: 8 }}>
-                    {dateLabel(period.start_ts)} to{" "}
-                    {period.end_ts === null ? "present" : dateLabel(period.end_ts)}
-                  </div>
-                  <div
-                    style={{
-                      color: "var(--text-dim)",
-                      fontFamily: "var(--sans)",
-                      fontSize: 12,
-                      lineHeight: 1.55,
-                    }}
-                  >
-                    {period.narrative}
-                  </div>
+                  <div className="x">{marker.what_changed}</div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {identity.periods.length === 0 ? (
+        <IdentityEmptyBand title="autobiographical periods" count={identity.periods.length}>
+          no autobiographical periods recorded
+        </IdentityEmptyBand>
+      ) : (
+        <div className="id-card" style={{ gridColumn: "span 12" }}>
+          <div className="h">
+            <span className="ttl">autobiographical periods</span>
+            <span className="n">{identity.periods.length}</span>
+          </div>
+          <div className="body" style={{ padding: 0 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${Math.max(identity.periods.length, 1)}, 1fr)`,
+                borderBottom: "1px solid var(--line)",
+              }}
+            >
+              {identity.periods.map((period, index) => {
+                const current = period.id === currentPeriod?.id;
+                return (
+                  <div
+                    key={period.id}
+                    style={{
+                      padding: 14,
+                      borderRight:
+                        index === identity.periods.length - 1 ? "0" : "1px solid var(--line)",
+                      background: current ? "oklch(0.84 0.155 142 / 0.05)" : "transparent",
+                    }}
+                  >
+                    <div className={`id-eyebrow${current ? " acc" : ""}`}>
+                      period {index + 1}
+                      {current ? " · current" : ""}
+                    </div>
+                    <div
+                      style={{
+                        color: "var(--text)",
+                        fontSize: 14,
+                        fontWeight: 500,
+                        marginBottom: 4,
+                      }}
+                    >
+                      {period.label}
+                    </div>
+                    <div className="dim" style={{ fontSize: 10.5, marginBottom: 8 }}>
+                      {dateLabel(period.start_ts)} to{" "}
+                      {period.end_ts === null ? "present" : dateLabel(period.end_ts)}
+                    </div>
+                    <div
+                      style={{
+                        color: "var(--text-dim)",
+                        fontFamily: "var(--sans)",
+                        fontSize: 12,
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {period.narrative}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
       <Modal
         open={modal !== null}
-        title={modal === null ? "identity" : modal.kind.replace("-", " ")}
-        onClose={() => setModal(null)}
+        title={modalTitle(modal)}
+        onClose={closeModal}
         footer={
           <>
-            <button
-              className="btn sm ghost"
-              disabled={busy !== null}
-              onClick={() => setModal(null)}
-            >
+            <span className="dim" style={{ fontSize: 10.5, marginRight: "auto" }}>
+              {isDirectCreateModal(modal)
+                ? "operator-authored live write"
+                : modal?.kind === "correct"
+                  ? "safe path: queues review"
+                  : ""}
+            </span>
+            <button className="btn sm ghost" disabled={busy !== null} onClick={closeModal}>
               cancel
             </button>
             <button
-              className="btn sm primary"
-              disabled={busy !== null || modal === null}
+              className={`btn sm primary${isDirectCreateModal(modal) ? " live-write" : ""}`}
+              disabled={!canSubmitModal()}
               onClick={() => void submitModal()}
             >
               {busy === null
-                ? modal?.kind === "forget"
-                  ? "forget"
-                  : modal?.kind === "correct"
-                    ? "queue"
-                    : "save"
+                ? isDirectCreateModal(modal)
+                  ? "write live self-band"
+                  : modal?.kind === "forget"
+                    ? "forget"
+                    : modal?.kind === "correct"
+                      ? "queue"
+                      : "save"
                 : "saving"}
             </button>
           </>
@@ -695,6 +980,10 @@ export function IdentityScreen() {
       >
         {modal?.kind === "value" ? (
           <div className="modal-form">
+            <DirectWriteNotice
+              acknowledged={directWriteAcknowledged}
+              onAcknowledged={setDirectWriteAcknowledged}
+            />
             <label className="modal-field">
               <span>name</span>
               <input
@@ -713,6 +1002,10 @@ export function IdentityScreen() {
         ) : null}
         {modal?.kind === "goal" ? (
           <div className="modal-form">
+            <DirectWriteNotice
+              acknowledged={directWriteAcknowledged}
+              onAcknowledged={setDirectWriteAcknowledged}
+            />
             <label className="modal-field">
               <span>description</span>
               <textarea
@@ -733,6 +1026,10 @@ export function IdentityScreen() {
         ) : null}
         {modal?.kind === "growth" ? (
           <div className="modal-form">
+            <DirectWriteNotice
+              acknowledged={directWriteAcknowledged}
+              onAcknowledged={setDirectWriteAcknowledged}
+            />
             <label className="modal-field">
               <span>description</span>
               <textarea
@@ -751,6 +1048,7 @@ export function IdentityScreen() {
         ) : null}
         {modal?.kind === "goal-progress" ? (
           <div className="modal-form">
+            <DirectPatchNotice />
             <div className="dim">{modal.goal.description}</div>
             <label className="modal-field">
               <span>note</span>
@@ -773,6 +1071,7 @@ export function IdentityScreen() {
         ) : null}
         {modal?.kind === "question-resolve" ? (
           <div className="modal-form">
+            <DirectPatchNotice />
             <div className="dim">{modal.question.question}</div>
             <label className="modal-field">
               <span>resolution</span>
@@ -785,6 +1084,7 @@ export function IdentityScreen() {
         ) : null}
         {modal?.kind === "question-abandon" ? (
           <div className="modal-form">
+            <DirectPatchNotice />
             <div className="dim">{modal.question.question}</div>
             <label className="modal-field">
               <span>reason</span>

@@ -110,7 +110,7 @@ afterEach(() => {
 });
 
 describe("operator actions", () => {
-  it("adds a value from the identity modal and refetches identity", async () => {
+  it("blocks a direct identity create until risk acknowledgment, then refetches identity", async () => {
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);
       if (path === "/api/identity" && init?.method === undefined) {
@@ -144,7 +144,12 @@ describe("operator actions", () => {
     fireEvent.change(screen.getByLabelText("description"), {
       target: { value: "care about clean operator workflows" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "save" }));
+    const writeButton = screen.getByRole("button", { name: "write live self-band" });
+    expect(writeButton).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText(/acknowledge this direct live self-band write/i));
+    expect(writeButton).not.toBeDisabled();
+    fireEvent.click(writeButton);
 
     await waitFor(() => {
       expect(
@@ -153,6 +158,143 @@ describe("operator actions", () => {
       expect(
         fetchMock.mock.calls.filter((call) => requestPath(call[0]) === "/api/identity"),
       ).toHaveLength(2);
+    });
+  });
+
+  it("renders open question events newest-first and collapses empty identity sections", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      if (path === "/api/identity" && init?.method === undefined) {
+        return Promise.resolve(
+          jsonResponse({
+            ...identityResponse(),
+            open_question_events: [
+              {
+                id: 1,
+                record_type: "open_question",
+                record_id: "oq_old",
+                action: "create",
+                old_value: null,
+                new_value: {
+                  status: "open",
+                  urgency: 0.4,
+                  question: "older question",
+                },
+                reason: null,
+                provenance: { kind: "online", process: "reflector" },
+                review_item_id: null,
+                overwrite_without_review: false,
+                ts: 10,
+              },
+              {
+                id: 2,
+                record_type: "open_question",
+                record_id: "oq_merge",
+                action: "update",
+                old_value: {
+                  status: "open",
+                  urgency: 0.4,
+                  question: "duplicate question",
+                },
+                new_value: {
+                  status: "open",
+                  urgency: 0.7,
+                  question: "duplicate question",
+                },
+                reason: "open_question_duplicate_merge",
+                provenance: { kind: "offline", process: "ruminator" },
+                review_item_id: null,
+                overwrite_without_review: false,
+                ts: 20,
+              },
+              {
+                id: 3,
+                record_type: "open_question",
+                record_id: "oq_new",
+                action: "resolve",
+                old_value: {
+                  status: "open",
+                  urgency: 0.8,
+                  question: "newer question",
+                },
+                new_value: {
+                  status: "resolved",
+                  urgency: 0.8,
+                  question: "newer question",
+                },
+                reason: "operator resolution",
+                provenance: { kind: "manual" },
+                review_item_id: 42,
+                overwrite_without_review: true,
+                ts: 30,
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<IdentityScreen />);
+
+    const eventSection = await screen.findByLabelText("open question events history");
+    const rows = within(eventSection).getAllByTestId("identity-event-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("oq_new");
+    expect(rows[0]).toHaveTextContent("without review gate");
+    expect(rows[0]).toHaveTextContent("review 42");
+    expect(rows[1]).toHaveTextContent("oq_merge");
+    expect(rows[1]).toHaveTextContent("duplicate merge");
+    expect(rows[1]).toHaveTextContent("open_question_duplicate_merge");
+    expect(rows[2]).toHaveTextContent("oq_old");
+
+    expect(screen.getByLabelText("empty values")).toHaveTextContent("no values recorded");
+    expect(screen.getByLabelText("empty growth markers")).toHaveTextContent(
+      "no growth markers recorded",
+    );
+    expect(screen.getByLabelText("empty autobiographical periods")).toHaveTextContent(
+      "no autobiographical periods recorded",
+    );
+  });
+
+  it("keeps the correction path queued without direct-write acknowledgment", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      if (path === "/api/identity" && init?.method === undefined) {
+        return Promise.resolve(jsonResponse(identityResponse()));
+      }
+      if (path === "/api/correction/goal_1111111111111111/correct" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({
+            id: 1,
+            kind: "correction",
+            refs: {},
+            reason: "queued correction",
+            created_at: 1,
+            resolved_at: null,
+            resolution: null,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<IdentityScreen />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "correct" }))[0]!);
+    expect(screen.queryByLabelText(/acknowledge this direct live self-band write/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "queue" }));
+
+    await waitFor(() => {
+      const correctionCall = fetchMock.mock.calls.find(
+        (call) => requestPath(call[0]) === "/api/correction/goal_1111111111111111/correct",
+      );
+      expect(correctionCall).toBeDefined();
+      expect(JSON.parse(String((correctionCall?.[1] as RequestInit | undefined)?.body))).toEqual({
+        patch: { description: "ship the operator surface" },
+      });
     });
   });
 

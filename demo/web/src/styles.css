@@ -928,6 +928,15 @@ body {
   background: oklch(0.84 0.155 142 / 0.18);
   border-color: var(--acc);
 }
+.btn.live-write {
+  color: var(--warn);
+  border-color: var(--warn-dim);
+  background: oklch(0.835 0.135 85 / 0.1);
+}
+.btn.live-write:hover {
+  background: oklch(0.835 0.135 85 / 0.18);
+  border-color: var(--warn);
+}
 .btn.ghost {
   background: transparent;
 }
@@ -3072,6 +3081,37 @@ g.fc-regen-group.active .fc-regen-label-bg {
   border: none;
 }
 
+.identity-direct-write-zone {
+  border-color: var(--warn-dim);
+  background: oklch(0.835 0.135 85 / 0.045);
+}
+
+.identity-direct-write-zone .h {
+  border-bottom-color: var(--warn-dim);
+}
+
+.identity-direct-write-copy {
+  padding: 8px 12px 10px 12px;
+  color: var(--warn);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.identity-empty-card {
+  min-height: 0;
+}
+
+.identity-empty-card .h {
+  min-height: 30px;
+}
+
+.identity-empty-band .notice {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 .id-hero {
   grid-column: span 12;
   background: var(--bg-1);
@@ -3173,6 +3213,9 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .timeline .ev.warn::before {
   border-color: var(--warn);
 }
+.timeline .ev.bad::before {
+  border-color: var(--bad);
+}
 .timeline .ev .t {
   font-size: 10px;
   color: var(--text-mute);
@@ -3181,6 +3224,52 @@ g.fc-regen-group.active .fc-regen-label-bg {
   font-size: 11.5px;
   color: var(--text-dim);
   font-family: var(--sans);
+}
+
+.identity-events {
+  display: grid;
+  gap: 0;
+}
+
+.identity-events .ev {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.identity-events .ev:last-child {
+  border-bottom: 0;
+}
+
+.identity-event-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.identity-event-record,
+.identity-event-change,
+.identity-event-reason {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.identity-event-change {
+  margin-top: 2px;
+  font-family: var(--sans);
+  color: var(--text);
+}
+
+.identity-event-reason {
+  margin-top: 3px;
+  color: var(--text-mute);
+}
+
+.identity-event-reason span {
+  color: var(--text-dim);
 }
 
 /* ─── commitments + shared-state + dream ─────────────────────────── */
@@ -3492,6 +3581,41 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .modal-form {
   display: grid;
   gap: 10px;
+}
+
+.identity-live-write-warning {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--warn-dim);
+  background: oklch(0.835 0.135 85 / 0.08);
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.identity-live-write-note {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.identity-ack {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.identity-ack input {
+  width: auto;
 }
 
 /* Dream "applying..." state — visible spinner while the offline cycle runs. */

@@ -432,6 +432,7 @@ export type IdentityEvent = {
   old_value: unknown | null;
   new_value: unknown | null;
   reason: string | null;
+  provenance: JsonValue | null;
   review_item_id: number | null;
   overwrite_without_review: boolean;
   ts: number;
