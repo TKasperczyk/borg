@@ -564,6 +564,29 @@ function FilterPillGroup({
     return null;
   }
 
+  // Many options (e.g. episodic tags can be 100+) would render as an enormous
+  // pill list and blow the page height -- collapse those into a dropdown.
+  if (options.length > 8) {
+    return (
+      <>
+        <span className="dim" style={{ fontSize: 10.5 }}>
+          {label}
+        </span>
+        <select
+          aria-label={label}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </>
+    );
+  }
+
   return (
     <>
       <span className="dim" style={{ fontSize: 10.5 }}>

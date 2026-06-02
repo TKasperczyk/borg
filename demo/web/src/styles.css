@@ -1285,6 +1285,34 @@ select option {
   color: var(--text);
 }
 
+/* global text-input theming (raw browser inputs look off against the dark UI) */
+input[type="text"],
+input[type="search"],
+input[type="number"],
+input:not([type]) {
+  background-color: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 5px 9px;
+  outline: none;
+}
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="number"]:focus,
+input:not([type]):focus {
+  border-color: var(--acc-dim);
+  box-shadow: 0 0 0 1px var(--acc-dim);
+}
+input[type="text"]::placeholder,
+input[type="search"]::placeholder,
+input:not([type])::placeholder {
+  color: var(--text-faint);
+}
+
 .participation-policy-error {
   margin-top: 8px;
   color: var(--bad);
