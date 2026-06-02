@@ -1048,6 +1048,16 @@ body {
   padding: 3px 8px;
   font-size: 10.5px;
 }
+/* supersession-chain chips can carry long id + family labels in a narrow
+   detail pane -- let them wrap instead of overflowing */
+.btn.superseded-by-chip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  line-height: 1.35;
+  height: auto;
+  max-width: 100%;
+}
 .btn:disabled,
 .btn:disabled:hover {
   color: var(--text-faint);

@@ -18,7 +18,7 @@ export function SupersededByChip({
   return (
     <button
       type="button"
-      className={`btn sm ${active ? "primary" : "ghost"}`}
+      className={`btn sm superseded-by-chip ${active ? "primary" : "ghost"}`}
       title={title ?? `Jump to ${id}`}
       aria-label={ariaLabel ?? `jump to ${id}`}
       aria-current={active ? "true" : undefined}
