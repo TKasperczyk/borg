@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 
 import {
   getCommitments,
@@ -17,13 +17,16 @@ import {
   type CreateCommitmentRequest,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
+import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
 import { dateLabel, parseJsonPatch, shortId } from "../screen-utils";
 
-type StateFilter = CommitmentState | "all";
+type CommitmentDisplayState = CommitmentState | "superseded";
+type StateFilter = CommitmentDisplayState | "all";
 type EnforcementFilter = CommitmentEnforcement | "all";
+type GroupMode = "flat" | "family";
 type CommitModal =
   | {
       kind: "create";
@@ -40,6 +43,12 @@ type CommitModal =
   | { kind: "revoke"; commitment: CommitmentItem; reason: string }
   | { kind: "correct"; commitment: CommitmentItem; patch: string; reason: string };
 
+const STATE_FILTERS: StateFilter[] = ["all", "active", "superseded", "revoked", "expired"];
+const GROUP_MODES: Array<{ value: GroupMode; label: string }> = [
+  { value: "flat", label: "flat" },
+  { value: "family", label: "family groups" },
+];
+
 function commitmentPatch(commitment: CommitmentItem): string {
   return JSON.stringify(
     {
@@ -51,7 +60,11 @@ function commitmentPatch(commitment: CommitmentItem): string {
   );
 }
 
-function stateTag(state: CommitmentState) {
+function commitmentDisplayState(commitment: CommitmentItem): CommitmentDisplayState {
+  return commitment.superseded_by_id === null ? commitment.state : "superseded";
+}
+
+function stateTag(state: CommitmentDisplayState) {
   if (state === "active") {
     return "acc";
   }
@@ -59,6 +72,75 @@ function stateTag(state: CommitmentState) {
     return "bad";
   }
   return "warn";
+}
+
+function commitmentReferenceLabel(
+  id: string,
+  commitmentsById: ReadonlyMap<string, CommitmentItem>,
+): string {
+  const commitment = commitmentsById.get(id);
+  if (commitment === undefined) {
+    return shortId(id);
+  }
+
+  return `${shortId(commitment.id)} · ${commitmentDisplayState(commitment)} · ${commitment.directive_family} · p:${commitment.priority}`;
+}
+
+function supersessionRoot(
+  commitment: CommitmentItem,
+  commitmentsById: ReadonlyMap<string, CommitmentItem>,
+): CommitmentItem {
+  let current = commitment;
+  const visited = new Set<string>([commitment.id]);
+
+  while (current.superseded_by_id !== null && !visited.has(current.superseded_by_id)) {
+    const next = commitmentsById.get(current.superseded_by_id);
+    if (next === undefined) {
+      break;
+    }
+
+    visited.add(next.id);
+    current = next;
+  }
+
+  return current;
+}
+
+function supersessionBranches(
+  root: CommitmentItem,
+  predecessorsBySupersederId: ReadonlyMap<string, readonly CommitmentItem[]>,
+): CommitmentItem[][] {
+  const branches: CommitmentItem[][] = [];
+
+  function collect(
+    node: CommitmentItem,
+    suffix: readonly CommitmentItem[],
+    visited: ReadonlySet<string>,
+  ): void {
+    const predecessors = (predecessorsBySupersederId.get(node.id) ?? []).filter(
+      (predecessor) => !visited.has(predecessor.id),
+    );
+
+    if (predecessors.length === 0) {
+      branches.push([node, ...suffix]);
+      return;
+    }
+
+    for (const predecessor of predecessors) {
+      const nextVisited = new Set(visited);
+      nextVisited.add(node.id);
+      collect(predecessor, [node, ...suffix], nextVisited);
+    }
+  }
+
+  collect(root, [], new Set<string>());
+  return branches.length === 0 ? [[root]] : branches;
+}
+
+function familyGroupSummary(items: readonly CommitmentItem[]): string {
+  const active = items.filter((item) => commitmentDisplayState(item) === "active").length;
+  const superseded = items.filter((item) => commitmentDisplayState(item) === "superseded").length;
+  return `${items.length} commitments | ${active} active | ${superseded} superseded`;
 }
 
 const COMMITMENT_TEXT_MAX_LENGTH = 2_000;
@@ -166,20 +248,53 @@ export function CommitScreen() {
   const [state, setState] = useState<StateFilter>("active");
   const [enforcement, setEnforcement] = useState<EnforcementFilter>("all");
   const [audience, setAudience] = useState("all");
+  const [family, setFamily] = useState("all");
+  const [groupMode, setGroupMode] = useState<GroupMode>("flat");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<CommitModal | null>(null);
   const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const commitments = api.data?.commitments ?? [];
+  const commitmentsById = useMemo(
+    () => new Map(commitments.map((item) => [item.id, item])),
+    [commitments],
+  );
+  const predecessorsBySupersederId = useMemo(() => {
+    const predecessors = new Map<string, CommitmentItem[]>();
+    for (const item of commitments) {
+      if (item.superseded_by_id === null) {
+        continue;
+      }
+
+      const current = predecessors.get(item.superseded_by_id) ?? [];
+      current.push(item);
+      predecessors.set(item.superseded_by_id, current);
+    }
+
+    for (const items of predecessors.values()) {
+      items.sort(
+        (left, right) =>
+          right.priority - left.priority ||
+          left.created_at - right.created_at ||
+          left.id.localeCompare(right.id),
+      );
+    }
+
+    return predecessors;
+  }, [commitments]);
   const audiences = useMemo(
     () => ["all", ...[...new Set(commitments.map((item) => item.audience ?? "global"))].sort()],
+    [commitments],
+  );
+  const families = useMemo(
+    () => ["all", ...[...new Set(commitments.map((item) => item.directive_family))].sort()],
     [commitments],
   );
   const filtered = useMemo(
     () =>
       commitments.filter((item) => {
-        if (state !== "all" && item.state !== state) {
+        if (state !== "all" && commitmentDisplayState(item) !== state) {
           return false;
         }
         if (enforcement !== "all" && item.enforcement_class !== enforcement) {
@@ -188,11 +303,45 @@ export function CommitScreen() {
         if (audience !== "all" && (item.audience ?? "global") !== audience) {
           return false;
         }
+        if (family !== "all" && item.directive_family !== family) {
+          return false;
+        }
         return true;
       }),
-    [audience, commitments, enforcement, state],
+    [audience, commitments, enforcement, family, state],
+  );
+  const groupedFiltered = useMemo(
+    () =>
+      [
+        ...filtered.reduce((groups, item) => {
+          const group = groups.get(item.directive_family) ?? [];
+          group.push(item);
+          groups.set(item.directive_family, group);
+          return groups;
+        }, new Map<string, CommitmentItem[]>()),
+      ]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([groupFamily, items]) => ({ family: groupFamily, items })),
+    [filtered],
   );
   const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0] ?? null;
+
+  function openCommitmentReference(id: string): void {
+    const commitment = commitmentsById.get(id);
+    setState("all");
+    if (commitment !== undefined) {
+      if (enforcement !== "all" && commitment.enforcement_class !== enforcement) {
+        setEnforcement("all");
+      }
+      if (audience !== "all" && (commitment.audience ?? "global") !== audience) {
+        setAudience("all");
+      }
+      if (family !== "all" && commitment.directive_family !== family) {
+        setFamily("all");
+      }
+    }
+    setSelectedId(id);
+  }
 
   async function runAction(label: string, action: () => Promise<void>): Promise<void> {
     setBusy(label);
@@ -238,6 +387,86 @@ export function CommitScreen() {
     });
   }
 
+  function renderCommitmentRow(item: CommitmentItem) {
+    const displayState = commitmentDisplayState(item);
+
+    return (
+      <tr
+        key={item.id}
+        onClick={() => setSelectedId(item.id)}
+        className={item.id === selected?.id ? "selected" : ""}
+        style={{ cursor: "pointer" }}
+      >
+        <td>
+          <span className="acc">{shortId(item.id)}</span>
+        </td>
+        <td
+          className="wrap"
+          style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
+        >
+          {item.text}
+          <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
+            {item.type} · {item.kind}
+            {item.about === null ? "" : ` · about:${item.about}`}
+          </div>
+        </td>
+        <td>
+          <Tag kind="info">{item.directive_family}</Tag>
+        </td>
+        <td>
+          <span
+            className={item.audience === null ? "mute" : "acc"}
+            title={item.audience ?? "global"}
+            style={{
+              display: "block",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.audience === null ? "global" : shortId(item.audience)}
+          </span>
+        </td>
+        <td>
+          <Tag kind={item.enforcement_class === "critical" ? "bad" : ""} dot>
+            {item.enforcement_class}
+          </Tag>
+        </td>
+        <td>
+          <Tag kind={stateTag(displayState)} dot>
+            {displayState}
+          </Tag>
+        </td>
+        <td
+          className="tab-num"
+          style={{
+            textAlign: "right",
+            color: item.priority >= 8 ? "var(--bad)" : "var(--text-dim)",
+          }}
+        >
+          {item.priority}
+        </td>
+        <td className="dim" style={{ fontSize: 11 }}>
+          {dateLabel(item.created_at)}
+        </td>
+        <td>
+          {item.state === "active" ? (
+            <button
+              className="btn sm ghost"
+              disabled={busy !== null}
+              onClick={(event) => {
+                event.stopPropagation();
+                setModal({ kind: "revoke", commitment: item, reason: "" });
+              }}
+            >
+              revoke
+            </button>
+          ) : null}
+        </td>
+      </tr>
+    );
+  }
+
   if (api.loading && api.data === null) {
     return <div className="notice">loading commitments</div>;
   }
@@ -261,7 +490,7 @@ export function CommitScreen() {
           + add
         </button>
         <div className="filter-pills">
-          {(["all", "active", "revoked", "expired"] as const).map((value) => (
+          {STATE_FILTERS.map((value) => (
             <span
               key={value}
               className={`pill ${state === value ? "on" : ""}`}
@@ -295,6 +524,30 @@ export function CommitScreen() {
             </span>
           ))}
         </div>
+        <span className="sep">|</span>
+        <div className="filter-pills">
+          {families.map((value) => (
+            <span
+              key={value}
+              className={`pill ${family === value ? "on" : ""}`}
+              onClick={() => setFamily(value)}
+            >
+              {value}
+            </span>
+          ))}
+        </div>
+        <span className="sep">|</span>
+        <div className="filter-pills">
+          {GROUP_MODES.map((mode) => (
+            <span
+              key={mode.value}
+              className={`pill ${groupMode === mode.value ? "on" : ""}`}
+              onClick={() => setGroupMode(mode.value)}
+            >
+              {mode.label}
+            </span>
+          ))}
+        </div>
       </div>
 
       {operatorError === null ? null : (
@@ -313,6 +566,7 @@ export function CommitScreen() {
               <tr>
                 <th style={{ width: 92 }}>id</th>
                 <th style={{ minWidth: 240 }}>text</th>
+                <th style={{ width: 160 }}>family</th>
                 <th style={{ width: 96 }}>audience</th>
                 <th style={{ width: 96 }}>enforce</th>
                 <th style={{ width: 84 }}>state</th>
@@ -322,78 +576,23 @@ export function CommitScreen() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => (
-                <tr
-                  key={item.id}
-                  onClick={() => setSelectedId(item.id)}
-                  className={item.id === selected?.id ? "selected" : ""}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td>
-                    <span className="acc">{shortId(item.id)}</span>
-                  </td>
-                  <td
-                    className="wrap"
-                    style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
-                  >
-                    {item.text}
-                    <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
-                      {item.type} · {item.kind}
-                      {item.about === null ? "" : ` · about:${item.about}`}
-                    </div>
-                  </td>
-                  <td>
-                    <span
-                      className={item.audience === null ? "mute" : "acc"}
-                      title={item.audience ?? "global"}
-                      style={{
-                        display: "block",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {item.audience === null ? "global" : shortId(item.audience)}
-                    </span>
-                  </td>
-                  <td>
-                    <Tag kind={item.enforcement_class === "critical" ? "bad" : ""} dot>
-                      {item.enforcement_class}
-                    </Tag>
-                  </td>
-                  <td>
-                    <Tag kind={stateTag(item.state)} dot>
-                      {item.state}
-                    </Tag>
-                  </td>
-                  <td
-                    className="tab-num"
-                    style={{
-                      textAlign: "right",
-                      color: item.priority >= 8 ? "var(--bad)" : "var(--text-dim)",
-                    }}
-                  >
-                    {item.priority}
-                  </td>
-                  <td className="dim" style={{ fontSize: 11 }}>
-                    {dateLabel(item.created_at)}
-                  </td>
-                  <td>
-                    {item.state === "active" ? (
-                      <button
-                        className="btn sm ghost"
-                        disabled={busy !== null}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setModal({ kind: "revoke", commitment: item, reason: "" });
-                        }}
-                      >
-                        revoke
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
+              {groupMode === "family"
+                ? groupedFiltered.map((group) => (
+                    <Fragment key={group.family}>
+                      <tr aria-label={`family group ${group.family}`}>
+                        <td colSpan={9} style={{ background: "var(--bg-0)" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <Tag kind="info">{group.family}</Tag>
+                            <span className="dim" style={{ fontSize: 10.5 }}>
+                              {familyGroupSummary(group.items)}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {group.items.map((item) => renderCommitmentRow(item))}
+                    </Fragment>
+                  ))
+                : filtered.map((item) => renderCommitmentRow(item))}
             </tbody>
           </table>
         </div>
@@ -404,7 +603,10 @@ export function CommitScreen() {
           ) : (
             <CommitmentDetail
               commitment={selected}
+              commitmentsById={commitmentsById}
+              predecessorsBySupersederId={predecessorsBySupersederId}
               busy={busy !== null}
+              onOpenCommitment={openCommitmentReference}
               onRevoke={(commitment) => setModal({ kind: "revoke", commitment, reason: "" })}
               onWhy={(commitment) => setWhyId(commitment.id)}
               onCorrect={(commitment) =>
@@ -599,19 +801,89 @@ export function CommitScreen() {
   );
 }
 
+function CommitmentSupersessionChain({
+  commitment,
+  commitmentsById,
+  predecessorsBySupersederId,
+  onOpenCommitment,
+}: {
+  commitment: CommitmentItem;
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+  predecessorsBySupersederId: ReadonlyMap<string, readonly CommitmentItem[]>;
+  onOpenCommitment: (id: string) => void;
+}) {
+  const root = supersessionRoot(commitment, commitmentsById);
+  const branches = supersessionBranches(root, predecessorsBySupersederId);
+
+  return (
+    <>
+      <div className="divider">supersession</div>
+      <div
+        aria-label="supersession chain"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+        }}
+      >
+        {branches.map((branch) => (
+          <div
+            key={branch.map((item) => item.id).join(">")}
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {branch.map((item, index) => (
+              <span
+                key={`${branch[0]?.id ?? item.id}:${item.id}:${index}`}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              >
+                <SupersededByChip
+                  id={item.id}
+                  label={commitmentReferenceLabel(item.id, commitmentsById)}
+                  active={item.id === commitment.id}
+                  title={`Jump to commitment ${item.id}`}
+                  ariaLabel={`jump to commitment ${item.id}`}
+                  onOpen={onOpenCommitment}
+                />
+                {index === branch.length - 1 ? null : (
+                  <span className="dim" aria-hidden="true">
+                    -&gt;
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function CommitmentDetail({
   commitment,
+  commitmentsById,
+  predecessorsBySupersederId,
   busy,
+  onOpenCommitment,
   onRevoke,
   onWhy,
   onCorrect,
 }: {
   commitment: CommitmentItem;
+  commitmentsById: ReadonlyMap<string, CommitmentItem>;
+  predecessorsBySupersederId: ReadonlyMap<string, readonly CommitmentItem[]>;
   busy: boolean;
+  onOpenCommitment: (id: string) => void;
   onRevoke: (commitment: CommitmentItem) => void;
   onWhy: (commitment: CommitmentItem) => void;
   onCorrect: (commitment: CommitmentItem) => void;
 }) {
+  const displayState = commitmentDisplayState(commitment);
+
   return (
     <>
       <div style={{ padding: "16px 16px 10px 16px", borderBottom: "1px solid var(--line)" }}>
@@ -630,11 +902,12 @@ function CommitmentDetail({
           <Tag kind={commitment.enforcement_class === "critical" ? "bad" : ""} dot>
             {commitment.enforcement_class}
           </Tag>
-          <Tag kind={stateTag(commitment.state)} dot>
-            {commitment.state}
+          <Tag kind={stateTag(displayState)} dot>
+            {displayState}
           </Tag>
           <Tag>{commitment.type}</Tag>
           <Tag>{commitment.kind}</Tag>
+          <Tag kind="info">{commitment.directive_family}</Tag>
         </div>
       </div>
       <div style={{ padding: 16 }}>
@@ -642,6 +915,10 @@ function CommitmentDetail({
           <div className="row">
             <span className="k">id</span>
             <span className="v acc">{commitment.id}</span>
+          </div>
+          <div className="row">
+            <span className="k">family</span>
+            <span className="v">{commitment.directive_family}</span>
           </div>
           <div className="row">
             <span className="k">audience</span>
@@ -682,10 +959,25 @@ function CommitmentDetail({
           {commitment.superseded_by_id === null ? null : (
             <div className="row">
               <span className="k">superseded by</span>
-              <span className="v">{commitment.superseded_by_id}</span>
+              <span className="v">
+                <SupersededByChip
+                  id={commitment.superseded_by_id}
+                  label={commitmentReferenceLabel(commitment.superseded_by_id, commitmentsById)}
+                  title={`Jump to commitment ${commitment.superseded_by_id}`}
+                  ariaLabel={`jump to commitment ${commitment.superseded_by_id}`}
+                  onOpen={onOpenCommitment}
+                />
+              </span>
             </div>
           )}
         </div>
+
+        <CommitmentSupersessionChain
+          commitment={commitment}
+          commitmentsById={commitmentsById}
+          predecessorsBySupersederId={predecessorsBySupersederId}
+          onOpenCommitment={onOpenCommitment}
+        />
 
         <div className="divider">enforcement</div>
         <div style={{ fontSize: 11.5, color: "var(--text-dim)", lineHeight: 1.55 }}>

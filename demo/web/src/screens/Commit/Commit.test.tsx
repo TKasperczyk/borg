@@ -19,6 +19,12 @@ function requestMethod(init?: RequestInit): string {
   return init?.method ?? "GET";
 }
 
+function clickPill(label: string): void {
+  const pill = screen.getAllByText(label).find((element) => element.classList.contains("pill"));
+  expect(pill).toBeDefined();
+  fireEvent.click(pill!);
+}
+
 function commitment(input: Partial<CommitmentItem> = {}): CommitmentItem {
   return {
     id: "cmt_1111111111111111",
@@ -53,6 +59,178 @@ afterEach(() => {
 });
 
 describe("CommitScreen operator actions", () => {
+  it("filters superseded commitments separately from explicitly revoked commitments", async () => {
+    const active = commitment({
+      id: "cmt_active111111111",
+      text: "Active commitment.",
+      directive_family: "active_family",
+    });
+    const survivor = commitment({
+      id: "cmt_survivor111111",
+      text: "Replacement commitment.",
+      directive_family: "replacement_family",
+    });
+    const superseded = commitment({
+      id: "cmt_superseded1111",
+      text: "Superseded predecessor.",
+      state: "revoked",
+      directive_family: "replacement_family",
+      superseded_by_id: survivor.id,
+    });
+    const revoked = commitment({
+      id: "cmt_revoked1111111",
+      text: "Explicitly revoked commitment.",
+      state: "revoked",
+      directive_family: "revoked_family",
+      revoked_at: 2,
+      revoked_reason: "operator retired it",
+    });
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(
+          jsonResponse({ commitments: [active, survivor, superseded, revoked] }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CommitScreen />);
+
+    expect((await screen.findAllByText("Active commitment.")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Superseded predecessor.")).not.toBeInTheDocument();
+
+    clickPill("superseded");
+
+    expect((await screen.findAllByText("Superseded predecessor.")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Explicitly revoked commitment.")).not.toBeInTheDocument();
+    expect(screen.getAllByText("superseded").length).toBeGreaterThan(1);
+
+    clickPill("revoked");
+
+    expect((await screen.findAllByText("Explicitly revoked commitment.")).length).toBeGreaterThan(
+      0,
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("Superseded predecessor.")).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByText("revoked").length).toBeGreaterThan(1);
+  });
+
+  it("renders a supersession chain and navigates every chip", async () => {
+    const survivor = commitment({
+      id: "cmt_survivor111111",
+      text: "Surviving @handle commitment.",
+      directive_family: "mandatory_mention_handles",
+      priority: 9,
+      audience: "botarena",
+    });
+    const middle = commitment({
+      id: "cmt_middle11111111",
+      text: "Middle @handle commitment.",
+      state: "revoked",
+      directive_family: "mention_handle_format_botarena",
+      priority: 8,
+      audience: "botarena",
+      superseded_by_id: survivor.id,
+    });
+    const sibling = commitment({
+      id: "cmt_sibling1111111",
+      text: "Sibling @handle commitment.",
+      state: "revoked",
+      directive_family: "mention_handle_format_botarena",
+      priority: 8,
+      audience: "botarena",
+      superseded_by_id: survivor.id,
+    });
+    const oldest = commitment({
+      id: "cmt_oldest11111111",
+      text: "Oldest @handle commitment.",
+      state: "revoked",
+      directive_family: "mention_handle_format",
+      priority: 6,
+      audience: "Tom",
+      superseded_by_id: middle.id,
+    });
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [survivor, middle, sibling, oldest] }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CommitScreen />);
+
+    expect((await screen.findAllByText("Surviving @handle commitment.")).length).toBeGreaterThan(0);
+    const firstChain = await screen.findByLabelText("supersession chain");
+    for (const target of [oldest, middle, sibling, survivor]) {
+      expect(
+        within(firstChain).getAllByRole("button", { name: `jump to commitment ${target.id}` })
+          .length,
+      ).toBeGreaterThan(0);
+    }
+
+    for (const target of [oldest, middle, sibling, survivor]) {
+      const chain = screen.getByLabelText("supersession chain");
+      fireEvent.click(
+        within(chain).getAllByRole("button", { name: `jump to commitment ${target.id}` })[0]!,
+      );
+      expect(await screen.findByText(target.id)).toBeInTheDocument();
+    }
+
+    expect(screen.getAllByText("all").some((element) => element.classList.contains("on"))).toBe(
+      true,
+    );
+  });
+
+  it("filters commitments by directive family and groups visible rows by family", async () => {
+    const alphaFirst = commitment({
+      id: "cmt_alpha11111111",
+      text: "Alpha first.",
+      directive_family: "family_alpha",
+    });
+    const alphaSecond = commitment({
+      id: "cmt_alpha22222222",
+      text: "Alpha second.",
+      directive_family: "family_alpha",
+      priority: 6,
+    });
+    const beta = commitment({
+      id: "cmt_beta111111111",
+      text: "Beta only.",
+      directive_family: "family_beta",
+    });
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [alphaFirst, alphaSecond, beta] }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CommitScreen />);
+
+    expect((await screen.findAllByText("Alpha first.")).length).toBeGreaterThan(0);
+    clickPill("family groups");
+
+    expect(screen.getByRole("row", { name: "family group family_alpha" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "family group family_beta" })).toBeInTheDocument();
+
+    clickPill("family_alpha");
+
+    expect((await screen.findAllByText("Alpha second.")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Beta only.")).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "family group family_alpha" })).toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: "family group family_beta" })).not.toBeInTheDocument();
+  });
+
   it("opens the add commitment modal, submits, and refetches", async () => {
     let commitments: CommitmentItem[] = [];
     const created = commitment({
@@ -166,6 +344,56 @@ describe("CommitScreen operator actions", () => {
     expect(postCall).toBeDefined();
     expect(JSON.parse(String((postCall?.[1] as RequestInit | undefined)?.body))).toEqual({
       reason: "creator changed the instruction",
+    });
+  });
+
+  it("queues corrections with the existing patch and reason body", async () => {
+    const current = commitment();
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [current] }));
+      }
+      if (path === "/api/correction/cmt_1111111111111111/correct" && method === "POST") {
+        return Promise.resolve(jsonResponse({ id: 1 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CommitScreen />);
+
+    expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "correct" }));
+    fireEvent.change(screen.getByLabelText("reason"), {
+      target: { value: "operator correction" },
+    });
+    fireEvent.change(screen.getByLabelText("json patch"), {
+      target: { value: '{ "directive": "Prefer concise answers.", "priority": 4 }' },
+    });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "queue" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          (call) => requestPath(call[0]) === "/api/commitments" && requestMethod(call[1]) === "GET",
+        ),
+      ).toHaveLength(2);
+    });
+
+    const postCall = fetchMock.mock.calls.find(
+      (call) =>
+        requestPath(call[0]) === "/api/correction/cmt_1111111111111111/correct" &&
+        requestMethod(call[1]) === "POST",
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse(String((postCall?.[1] as RequestInit | undefined)?.body))).toEqual({
+      patch: {
+        directive: "Prefer concise answers.",
+        priority: 4,
+      },
+      reason: "operator correction",
     });
   });
 

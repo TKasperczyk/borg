@@ -11,6 +11,7 @@ import type {
   CreatorDirectiveStatusFilter,
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
+import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { useApi } from "../../hooks/use-api";
 import { dateLabel, shortId } from "../screen-utils";
@@ -21,12 +22,7 @@ type DirectiveModal =
   | { kind: "revoke"; directive: CreatorDirectiveItem; reason: string }
   | { kind: "supersede"; directive: CreatorDirectiveItem; replacementId: string };
 
-const STATUS_FILTERS: CreatorDirectiveStatusFilter[] = [
-  "active",
-  "revoked",
-  "superseded",
-  "all",
-];
+const STATUS_FILTERS: CreatorDirectiveStatusFilter[] = ["active", "revoked", "superseded", "all"];
 const SORT_MODES: SortMode[] = ["priority_desc", "priority_asc"];
 
 function statusTag(status: CreatorDirectiveStatus) {
@@ -94,7 +90,7 @@ function supersededLabel(
   return `${shortId(id)} · ${directive.kind} · p:${directive.priority}`;
 }
 
-function SupersededByChip({
+function CreatorDirectiveSupersededByChip({
   id,
   directivesById,
   onOpen,
@@ -104,18 +100,13 @@ function SupersededByChip({
   onOpen: (id: string) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="btn sm ghost"
+    <SupersededByChip
+      id={id}
+      label={supersededLabel(id, directivesById)}
       title={`Jump to directive ${id}`}
-      aria-label={`jump to directive ${id}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen(id);
-      }}
-    >
-      {supersededLabel(id, directivesById)}
-    </button>
+      ariaLabel={`jump to directive ${id}`}
+      onOpen={onOpen}
+    />
   );
 }
 
@@ -134,7 +125,7 @@ function inactiveSummary(
     return (
       <>
         superseded by:{" "}
-        <SupersededByChip
+        <CreatorDirectiveSupersededByChip
           id={directive.superseded_by_id}
           directivesById={directivesById}
           onOpen={onOpenDirective}
@@ -414,9 +405,7 @@ export function DirectivesScreen() {
       <Modal
         open={modal !== null}
         title={
-          modal?.kind === "revoke"
-            ? "revoke creator directive"
-            : "supersede creator directive"
+          modal?.kind === "revoke" ? "revoke creator directive" : "supersede creator directive"
         }
         onClose={() => {
           if (busy === null) {
@@ -440,11 +429,7 @@ export function DirectivesScreen() {
               disabled={busy !== null || !canSubmitModal(modal, directivesById)}
               onClick={() => void submitModal()}
             >
-              {busy === null
-                ? modal?.kind === "revoke"
-                  ? "revoke"
-                  : "supersede"
-                : "saving"}
+              {busy === null ? (modal?.kind === "revoke" ? "revoke" : "supersede") : "saving"}
             </button>
           </>
         }
@@ -584,7 +569,7 @@ function CreatorDirectiveDetail({
             <div className="row">
               <span className="k">superseded by</span>
               <span className="v">
-                <SupersededByChip
+                <CreatorDirectiveSupersededByChip
                   id={directive.superseded_by_id}
                   directivesById={directivesById}
                   onOpen={onOpenDirective}
