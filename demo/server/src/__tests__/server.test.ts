@@ -3603,6 +3603,38 @@ describe("demo server", () => {
     );
   });
 
+  it("GET /api/prompts/assembled returns the library-composed framing prompt", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/prompts/assembled");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { text: string; sections: string[] };
+
+    expect(body.sections).toEqual([
+      "base_identity_preamble",
+      "voice_and_posture",
+      "epistemic_posture",
+      "identity_posture",
+      "participation_posture",
+      "loop_breaking_posture",
+      "trusted_guidance_preamble",
+      "borg_host_capabilities",
+    ]);
+    expect(body.text).toContain("<borg_host_capabilities>");
+    expect(body.text).toContain("</borg_host_capabilities>");
+    expect(body.text).toContain(
+      "Proactive outbound messaging via wired source_type connector(s): demo",
+    );
+    expect(body.text.indexOf("Voice and posture:")).toBeLessThan(
+      body.text.indexOf("<borg_host_capabilities>"),
+    );
+    expect(body.text).not.toContain("The most recent user-role message is the current turn");
+  });
+
   it("PUT /api/prompts/:key sets an override, DELETE clears it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

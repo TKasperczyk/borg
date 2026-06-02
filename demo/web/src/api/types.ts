@@ -1241,3 +1241,8 @@ export type PromptBlockView = {
 export type PromptBlocksResponse = {
   blocks: PromptBlockView[];
 };
+
+export type PromptAssembledResponse = {
+  text: string;
+  sections: string[];
+};

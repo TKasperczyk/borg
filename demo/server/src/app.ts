@@ -3456,6 +3456,8 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/prompts", (c) => c.json({ blocks: input.borg.prompts.list() }));
 
+  app.get("/api/prompts/assembled", (c) => c.json(input.borg.prompts.previewAssembledFraming()));
+
   app.put("/api/prompts/:key", async (c) => {
     const parsed = promptKeyParamSchema.safeParse(c.req.param("key"));
     if (!parsed.success) {

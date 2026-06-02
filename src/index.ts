@@ -34,6 +34,7 @@ export type {
   BorgInboxFacade,
   BorgMaintenanceFacade,
   BorgMoodFacade,
+  BorgAssembledFramingPromptPreview,
   BorgPromptBlockView,
   BorgPromptsFacade,
   BorgRelationalSlotsFacade,

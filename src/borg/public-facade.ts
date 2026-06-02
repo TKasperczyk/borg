@@ -1156,10 +1156,16 @@ export type BorgPromptBlockView = {
   updated_at: number | null;
 };
 
+export type BorgAssembledFramingPromptPreview = {
+  text: string;
+  sections: readonly string[];
+};
+
 export type BorgPromptsFacade = {
   list(): BorgPromptBlockView[];
   set(key: PromptKey, text: string): BorgPromptBlockView;
   clear(key: PromptKey): BorgPromptBlockView;
+  previewAssembledFraming(): BorgAssembledFramingPromptPreview;
 };
 
 export type BorgSessionsFacade = {

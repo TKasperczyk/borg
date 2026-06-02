@@ -41,6 +41,7 @@ import type {
   PatchOpenQuestionRequest,
   PatchReviewRequest,
   PatchReviewItemRequest,
+  PromptAssembledResponse,
   PromptBlockView,
   PromptBlocksResponse,
   PromptKey,
@@ -643,6 +644,10 @@ export async function postTurn(input: TurnRequest): Promise<TurnResponse> {
 
 export async function getPrompts(): Promise<PromptBlocksResponse> {
   return fetchJson<PromptBlocksResponse>("api/prompts");
+}
+
+export async function getAssembledPrompt(): Promise<PromptAssembledResponse> {
+  return fetchJson<PromptAssembledResponse>("api/prompts/assembled");
 }
 
 export async function putPrompt(key: PromptKey, text: string): Promise<PromptBlockView> {

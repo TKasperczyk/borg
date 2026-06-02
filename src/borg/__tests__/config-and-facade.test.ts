@@ -21,6 +21,7 @@ import {
   rmSync,
   tmpdir,
 } from "./test-helpers.js";
+import { DemoMessageConnector } from "../../outbound/index.js";
 
 describe("Borg", () => {
   const tempDirs: string[] = [];
@@ -171,6 +172,58 @@ describe("Borg", () => {
           id: value.id,
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("previews the assembled cacheable framing prompt with runtime host capabilities and overrides", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+      outboundConnectors: [new DemoMessageConnector()],
+    });
+
+    try {
+      const initial = borg.prompts.previewAssembledFraming();
+
+      expect(initial.sections).toEqual([
+        "base_identity_preamble",
+        "voice_and_posture",
+        "epistemic_posture",
+        "identity_posture",
+        "participation_posture",
+        "loop_breaking_posture",
+        "trusted_guidance_preamble",
+        "borg_host_capabilities",
+      ]);
+      expect(initial.text).toContain(
+        "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+      );
+      expect(initial.text).toContain("<borg_host_capabilities>");
+      expect(initial.text).toContain("</borg_host_capabilities>");
+      expect(initial.text).toContain(
+        "Proactive outbound messaging via wired source_type connector(s): demo",
+      );
+      expect(initial.text.indexOf("Voice and posture:")).toBeLessThan(
+        initial.text.indexOf("<borg_host_capabilities>"),
+      );
+
+      borg.prompts.set("voice_and_posture", "OPERATOR VOICE");
+      borg.prompts.set("host_capabilities", "OPERATOR HOST CAPABILITIES");
+      const overridden = borg.prompts.previewAssembledFraming();
+
+      expect(overridden.text).toContain("OPERATOR VOICE");
+      expect(overridden.text).toContain("<borg_host_capabilities>\nOPERATOR HOST CAPABILITIES");
+      expect(overridden.text).not.toContain("Voice and posture:");
+      expect(overridden.text).not.toContain(
+        "Proactive outbound messaging via wired source_type connector(s): demo",
+      );
     } finally {
       await borg.close();
     }

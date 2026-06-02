@@ -20,8 +20,9 @@ import {
 } from "../../../memory/relational-slots/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
-import type { WorkingMemory } from "../../../memory/working/index.js";
+import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
+import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
@@ -78,6 +79,11 @@ export type BuildBaseSystemPromptOptions = {
 
 type ResolvedPromptBlocks = Record<PromptKey, string>;
 
+export type AssembledFramingPromptPreview = {
+  text: string;
+  sections: readonly string[];
+};
+
 function resolvePromptBlocks(options: BuildBaseSystemPromptOptions): ResolvedPromptBlocks {
   const overrides = options.promptBlocks ?? {};
   const result = {} as ResolvedPromptBlocks;
@@ -95,7 +101,13 @@ function resolvePromptBlocks(options: BuildBaseSystemPromptOptions): ResolvedPro
 
 export type CacheableBaseSystemPromptParts = {
   staticPrefix: string;
+  staticPrefixSections: readonly string[];
   dynamicContent: string;
+};
+
+type CacheableStaticPrefixSection = {
+  label: string;
+  content: string | null;
 };
 
 type BaseSystemPromptSections = {
@@ -702,23 +714,55 @@ export function buildCacheableBaseSystemPromptParts(
     UNTRUSTED_DATA_PREAMBLE,
     sections.untrustedSections,
   );
-
-  return {
-    staticPrefix: [
-      sections.resolvedBlocks.base_identity_preamble,
-      sections.resolvedBlocks.voice_and_posture,
-      sections.resolvedBlocks.epistemic_posture,
-      sections.resolvedBlocks.identity_posture,
-      PARTICIPATION_POSTURE_SECTION,
-      LOOP_BREAKING_POSTURE_SECTION,
-      TRUSTED_GUIDANCE_PREAMBLE,
-      renderTaggedPromptSection(
+  const staticPrefixSections: readonly CacheableStaticPrefixSection[] = [
+    {
+      label: "base_identity_preamble",
+      content: sections.resolvedBlocks.base_identity_preamble,
+    },
+    {
+      label: "voice_and_posture",
+      content: sections.resolvedBlocks.voice_and_posture,
+    },
+    {
+      label: "epistemic_posture",
+      content: sections.resolvedBlocks.epistemic_posture,
+    },
+    {
+      label: "identity_posture",
+      content: sections.resolvedBlocks.identity_posture,
+    },
+    {
+      label: "participation_posture",
+      content: PARTICIPATION_POSTURE_SECTION,
+    },
+    {
+      label: "loop_breaking_posture",
+      content: LOOP_BREAKING_POSTURE_SECTION,
+    },
+    {
+      label: "trusted_guidance_preamble",
+      content: TRUSTED_GUIDANCE_PREAMBLE,
+    },
+    {
+      label: "borg_host_capabilities",
+      content: renderTaggedPromptSection(
         sections.hostCapabilitiesSection.tag,
         sections.hostCapabilitiesSection.content,
       ),
-    ]
+    },
+  ];
+
+  return {
+    staticPrefix: staticPrefixSections
+      .map((section) => section.content)
       .filter((section): section is string => section !== null)
       .join("\n\n"),
+    staticPrefixSections: staticPrefixSections
+      .filter(
+        (section): section is CacheableStaticPrefixSection & { content: string } =>
+          section.content !== null,
+      )
+      .map((section) => section.label),
     dynamicContent: [
       trustedDynamicGuidanceBlock,
       untrustedDynamicBlock,
@@ -727,6 +771,44 @@ export function buildCacheableBaseSystemPromptParts(
     ]
       .filter((section): section is string => section !== null)
       .join("\n\n"),
+  };
+}
+
+function createAssembledFramingPreviewContext(nowMs: number): DeliberationContext {
+  return {
+    sessionId: DEFAULT_SESSION_ID,
+    userMessage: "",
+    perception: {
+      entities: [],
+      mode: "problem_solving",
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    },
+    retrievalResult: [],
+    workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, nowMs),
+    selfSnapshot: {
+      values: [],
+      goals: [],
+      traits: [],
+    },
+  };
+}
+
+export function buildAssembledFramingPromptPreview(
+  options: BuildBaseSystemPromptOptions,
+): AssembledFramingPromptPreview {
+  const parts = buildCacheableBaseSystemPromptParts(
+    createAssembledFramingPreviewContext(options.nowMs ?? 0),
+    options,
+  );
+
+  return {
+    text: parts.staticPrefix,
+    sections: [...parts.staticPrefixSections],
   };
 }
 

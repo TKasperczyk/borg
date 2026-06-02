@@ -11,6 +11,7 @@ import {
   getPromptBlockSpec,
   type PromptKey,
 } from "../cognition/prompts/registry.js";
+import { buildAssembledFramingPromptPreview } from "../cognition/deliberation/prompt/system-prompt.js";
 import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
@@ -805,6 +806,17 @@ function createSessionsFacade(deps: BorgDependencies): BorgFacades["sessions"] {
 function createPromptsFacade(deps: BorgDependencies): BorgPromptsFacade {
   const repo = deps.promptOverrideRepository;
 
+  function promptBlockOverrides(): Partial<Record<PromptKey, string>> | undefined {
+    const records = repo.list();
+    if (records.length === 0) {
+      return undefined;
+    }
+
+    return Object.fromEntries(
+      records.map((record) => [record.prompt_key, record.override_text]),
+    ) as Partial<Record<PromptKey, string>>;
+  }
+
   function view(key: PromptKey): BorgPromptBlockView {
     const spec = getPromptBlockSpec(key);
     const override = repo.get(key);
@@ -831,6 +843,16 @@ function createPromptsFacade(deps: BorgDependencies): BorgPromptsFacade {
     clear: (key) => {
       repo.clear(key);
       return view(key);
+    },
+    previewAssembledFraming: () => {
+      const promptBlocks = promptBlockOverrides();
+      return buildAssembledFramingPromptPreview({
+        retrievalContextBudget: 0,
+        semanticContextBudget: 0,
+        hostCapabilities: deps.config.host_capabilities,
+        nowMs: deps.clock.now(),
+        ...(promptBlocks === undefined ? {} : { promptBlocks }),
+      });
     },
   };
 }
