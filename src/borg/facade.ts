@@ -12,7 +12,7 @@ import {
   type PromptKey,
 } from "../cognition/prompts/registry.js";
 import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
-import { revalidateReviewQueue } from "../offline/index.js";
+import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
 import { StreamReader } from "../stream/index.js";
@@ -191,12 +191,16 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     };
   };
 
-  const defaultDreamProcesses = (): OfflineProcessName[] => [
-    ...new Set([
+  // List membership (light ∪ heavy) is the single enablement authority, but
+  // emit the default dream order in canonical OFFLINE_PROCESS_NAMES order so
+  // unifying the gate does not also change manual full-dream process sequencing.
+  const defaultDreamProcesses = (): OfflineProcessName[] => {
+    const selected = new Set<OfflineProcessName>([
       ...deps.config.maintenance.lightProcesses,
       ...deps.config.maintenance.heavyProcesses,
-    ]),
-  ];
+    ]);
+    return OFFLINE_PROCESS_NAMES.filter((name) => selected.has(name));
+  };
 
   const maintenanceConfigSnapshot = () => ({
     enabled: deps.config.maintenance.enabled,
