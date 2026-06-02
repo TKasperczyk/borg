@@ -469,6 +469,7 @@ export async function runPostGenerationPhase(input: {
                 noOutputCategories: actionEmission.no_output_categories,
                 primaryNoOutputReason: actionEmission.primary_no_output_reason,
                 structuralNoOutputFlags: actionEmission.structural_no_output_flags,
+                finalizerInvalidTool: actionEmission.finalizer_invalid_tool,
               }),
             },
     completedSub: (result) => `entry=${result.entry.kind}`,
@@ -1037,6 +1038,9 @@ async function suppressFromActionPhase(input: {
     ...(input.actionEmission.structural_no_output_flags === undefined
       ? {}
       : { structural_no_output_flags: [...input.actionEmission.structural_no_output_flags] }),
+    ...(input.actionEmission.finalizer_invalid_tool === undefined
+      ? {}
+      : { finalizer_invalid_tool: input.actionEmission.finalizer_invalid_tool }),
   };
   let suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: input.actionResult.workingMemory,
@@ -1073,6 +1077,9 @@ async function suppressFromActionPhase(input: {
       ...(input.actionEmission.structural_no_output_flags === undefined
         ? {}
         : { structural_no_output_flags: [...input.actionEmission.structural_no_output_flags] }),
+      ...(input.actionEmission.finalizer_invalid_tool === undefined
+        ? {}
+        : { finalizer_invalid_tool: input.actionEmission.finalizer_invalid_tool }),
     });
   }
 

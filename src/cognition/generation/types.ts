@@ -9,6 +9,7 @@ export type GenerationSuppressionReason =
   | "empty_finalizer"
   | "finalizer_failed"
   | "finalizer_no_output"
+  | "invalid_tool_after_regenerate"
   | "manifest_no_output"
   | "legacy_manifest_validation_failed_critical"
   | "manifest_validation_failed_critical"
@@ -61,6 +62,12 @@ export type FinalizerNoOutputStructuralCategory =
   (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES)[number];
 export type FinalizerNoOutputStructuralFlag = (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_FLAGS)[number];
 export type FinalizerNoOutputCategory = (typeof FINALIZER_NO_OUTPUT_CATEGORIES)[number];
+
+export type FinalizerInvalidToolDiagnostic = {
+  tool_name: string;
+  reason: string;
+  attempt: "initial" | "regenerate";
+};
 
 export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
   "generation_gate",
@@ -157,6 +164,7 @@ export type PendingTurnEmission =
       no_output_categories?: FinalizerNoOutputCategory[];
       primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
       structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+      finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
     };
 
 export type TurnEmission =
@@ -180,6 +188,7 @@ export type TurnEmission =
       no_output_categories?: FinalizerNoOutputCategory[];
       primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
       structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+      finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
     };
 
 export type AgentSuppressedStreamContent = {
@@ -190,6 +199,7 @@ export type AgentSuppressedStreamContent = {
   no_output_categories?: FinalizerNoOutputCategory[];
   primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
   structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+  finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
 };
 
 export type AgentObservedStreamContent = {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import type { LLMConverseOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   CommitmentRepository,
@@ -34,7 +35,7 @@ import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
-import { Deliberator } from "./deliberator.js";
+import { buildInvalidToolFinalizerRetryPromptSection, Deliberator } from "./deliberator.js";
 
 function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
   return {
@@ -550,6 +551,33 @@ function emitFinalizerToolResponse(
   };
 }
 
+function emitFinalizerTextAnswerResponse(
+  text: string,
+  usage: { inputTokens: number; outputTokens: number } = { inputTokens: 10, outputTokens: 4 },
+) {
+  return emitFinalizerToolResponse(
+    {
+      id: "toolu_emit_answer",
+      name: "EmitAnswer",
+      input: { text },
+    },
+    usage,
+  );
+}
+
+function emitMultipleFinalizerToolResponse(
+  tools: readonly { id: string; name: string; input: unknown }[],
+  usage: { inputTokens: number; outputTokens: number } = { inputTokens: 10, outputTokens: 4 },
+) {
+  return {
+    text: "",
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    stop_reason: "tool_use" as const,
+    tool_calls: [...tools],
+  };
+}
+
 class CapturingTracer implements TurnTracer {
   readonly enabled = true;
 
@@ -663,13 +691,10 @@ describe("deliberator", () => {
     const senderEntityId = entityRepository.resolve("Alice");
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Answer after seeing speaker.",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Answer after seeing speaker.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -1334,20 +1359,243 @@ describe("deliberator", () => {
     });
   });
 
-  it("suppresses free text without an emission tool as finalizer_failed", async () => {
+  it("retries free text without an emission tool once and emits the valid retry", async () => {
+    const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
-      responses: ["I forgot to call the emission tool."],
+      responses: [
+        "I forgot to call the emission tool.",
+        emitFinalizerToolResponse({
+          id: "toolu_retry_answer",
+          name: "EmitAnswer",
+          input: { text: "Recovered answer." },
+        }),
+      ],
     });
-    const deliberator = createDeliberator(llm, tempDirs);
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
 
-    const result = await deliberator.run(simpleDeliberationContext());
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-invalid-tool-retry-recovers",
+      }),
+    );
+
+    expect(result.response).toBe("Recovered answer.");
+    expect(result.emitted).toBe(true);
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Recovered answer.",
+    });
+    expect(llm.requests).toHaveLength(2);
+    expect(requestSystemText(llm.requests[1]?.system)).toContain(
+      "You emitted 0 terminal emission tool calls; emit exactly one.",
+    );
+    expect(requestSystemText(llm.requests[1]?.system)).toContain(
+      "Emit exactly one of EmitAnswer / EmitSelfReport / EmitNoOutput / EmitObserve with valid input.",
+    );
+    expect(
+      tracer.events
+        .filter((entry) => entry.event === "finalizer.completed")
+        .map((entry) => ({
+          decision: entry.data.decision,
+          attempt: entry.data.attempt,
+          tool_name: entry.data.tool_name,
+        })),
+    ).toEqual([
+      { decision: "invalid_tool", attempt: "initial", tool_name: "none" },
+      { decision: "answer", attempt: "regenerate", tool_name: undefined },
+    ]);
+  });
+
+  it("suppresses with invalid_tool_after_regenerate when the retry is also malformed", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: ["I forgot the first tool.", "I forgot the retry tool too."],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-invalid-tool-retry-suppresses",
+      }),
+    );
 
     expect(result.response).toBe("");
     expect(result.emitted).toBe(false);
     expect(result.emission).toEqual({
       kind: "suppressed",
-      reason: "finalizer_failed",
+      reason: "invalid_tool_after_regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+        attempt: "regenerate",
+      },
     });
+    expect(llm.requests).toHaveLength(2);
+    expect(
+      tracer.events
+        .filter((entry) => entry.event === "finalizer.completed")
+        .map((entry) => ({
+          decision: entry.data.decision,
+          attempt: entry.data.attempt,
+          tool_name: entry.data.tool_name,
+          reason: entry.data.reason,
+        })),
+    ).toEqual([
+      {
+        decision: "invalid_tool",
+        attempt: "initial",
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+      },
+      {
+        decision: "invalid_tool",
+        attempt: "regenerate",
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      label: "no terminal emission tool",
+      firstResponse: "I forgot to call the emission tool.",
+      expectedPromptFragments: ["You emitted 0 terminal emission tool calls; emit exactly one."],
+    },
+    {
+      label: "multiple terminal emission tools",
+      firstResponse: emitMultipleFinalizerToolResponse([
+        {
+          id: "toolu_multi_answer",
+          name: "EmitAnswer",
+          input: { text: "Answer." },
+        },
+        {
+          id: "toolu_multi_no_output",
+          name: "EmitNoOutput",
+          input: { reason: "natural_close" },
+        },
+      ]),
+      expectedPromptFragments: [
+        "You emitted multiple terminal emission tool calls; expected exactly one emission tool call, got 2.",
+      ],
+    },
+    {
+      label: "schema-invalid terminal emission tool",
+      firstResponse: emitFinalizerToolResponse({
+        id: "toolu_schema_invalid",
+        name: "EmitAnswer",
+        input: { text: 42 },
+      }),
+      expectedPromptFragments: ["EmitAnswer input was invalid:", "text"],
+    },
+  ])(
+    "includes the specific invalid-tool cause for $label",
+    async ({ firstResponse, expectedPromptFragments }) => {
+      const llm = new FakeLLMClient({
+        responses: [
+          firstResponse,
+          (options: LLMConverseOptions) => {
+            const retrySystem = requestSystemText(options.system);
+
+            for (const expectedPromptFragment of expectedPromptFragments) {
+              expect(retrySystem).toContain(expectedPromptFragment);
+            }
+            expect(retrySystem).toContain(
+              "Emit exactly one of EmitAnswer / EmitSelfReport / EmitNoOutput / EmitObserve with valid input.",
+            );
+
+            return emitFinalizerToolResponse({
+              id: "toolu_retry_answer",
+              name: "EmitAnswer",
+              input: { text: "Recovered after structural retry." },
+            });
+          },
+        ],
+      });
+      const deliberator = createDeliberator(llm, tempDirs);
+
+      const result = await deliberator.run(simpleDeliberationContext());
+
+      expect(result.emission).toMatchObject({
+        kind: "message",
+        content: "Recovered after structural retry.",
+      });
+      expect(llm.requests).toHaveLength(2);
+    },
+  );
+
+  it("formats unknown terminal emission tool retry feedback structurally", () => {
+    expect(
+      buildInvalidToolFinalizerRetryPromptSection({
+        kind: "invalid_tool",
+        toolName: "EmitSomethingElse",
+        reason: "unknown terminal emission tool",
+      }),
+    ).toContain("You called an unknown emission tool EmitSomethingElse.");
+  });
+
+  it.each([
+    {
+      label: "answer",
+      response: emitFinalizerToolResponse({
+        id: "toolu_valid_answer",
+        name: "EmitAnswer",
+        input: { text: "Ordinary answer." },
+      }),
+      expectedEmission: { kind: "message", content: "Ordinary answer." },
+    },
+    {
+      label: "observe",
+      response: emitFinalizerToolResponse({
+        id: "toolu_valid_observe",
+        name: "EmitObserve",
+        input: { reason: "participants are talking to each other" },
+      }),
+      expectedEmission: { kind: "observed", reason: "participants are talking to each other" },
+    },
+    {
+      label: "no_output",
+      response: emitFinalizerToolResponse({
+        id: "toolu_valid_no_output",
+        name: "EmitNoOutput",
+        input: { reason: "natural_close", no_output_categories: [] },
+      }),
+      expectedEmission: {
+        kind: "suppressed",
+        reason: "finalizer_no_output",
+        no_output_categories: [],
+        primary_no_output_reason: "other",
+        structural_no_output_flags: [],
+      },
+    },
+    {
+      label: "self_report",
+      response: emitFinalizerToolResponse({
+        id: "toolu_valid_self_report",
+        name: "EmitSelfReport",
+        input: {
+          kind: "self_report",
+          text: "Interior report.",
+          persistence_class: "assistant_self_report",
+        },
+      }),
+      expectedEmission: {
+        kind: "message",
+        content: "Interior report.",
+        persistence_class: "assistant_self_report",
+      },
+    },
+  ])("does not retry valid $label finalizer outcomes", async ({ response, expectedEmission }) => {
+    const llm = new FakeLLMClient({
+      responses: [response],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(simpleDeliberationContext());
+
+    expect(result.emission).toEqual(expectedEmission);
+    expect(llm.requests).toHaveLength(1);
   });
 
   it.each([
@@ -1612,13 +1860,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Final answer that respects earlier turn.",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Final answer that respects earlier turn.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -1735,13 +1980,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Granada is the last base in the locked order; there is no second SS leg after it.",
-          input_tokens: 18,
-          output_tokens: 7,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse(
+          "Granada is the last base in the locked order; there is no second SS leg after it.",
+          { inputTokens: 18, outputTokens: 7 },
+        ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, { tracer });
@@ -2152,13 +2394,7 @@ describe("deliberator", () => {
   it("wires autobiographical period, recent growth, and audience profile into the prompt", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Situated answer",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Situated answer", { inputTokens: 8, outputTokens: 4 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2255,13 +2491,7 @@ describe("deliberator", () => {
   it("wraps retrieved episode narratives in the untrusted-data framing", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Structured answer",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Structured answer", { inputTokens: 8, outputTokens: 4 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2310,13 +2540,7 @@ describe("deliberator", () => {
   it("neutralizes forged borg tags inside retrieved narratives", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Structured answer",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Structured answer", { inputTokens: 8, outputTokens: 4 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2368,13 +2592,10 @@ describe("deliberator", () => {
   it("neutralizes forged borg tags inside held value descriptions", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Answer from stable memory.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Answer from stable memory.", {
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2524,13 +2745,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "I need to stay tentative here.",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("I need to stay tentative here.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2591,13 +2809,7 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Reflective answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Reflective answer", { inputTokens: 12, outputTokens: 6 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2654,13 +2866,10 @@ describe("deliberator", () => {
   it("includes related semantic context in the Sonnet prompt", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Context aware answer",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Context aware answer", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2922,13 +3131,7 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Compressed answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Compressed answer", { inputTokens: 12, outputTokens: 6 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2991,13 +3194,7 @@ describe("deliberator", () => {
   it("includes skill guidance only for problem-solving mode when a candidate exists", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Skill-aware answer",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Skill-aware answer", { inputTokens: 10, outputTokens: 5 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3114,13 +3311,7 @@ describe("deliberator", () => {
   it("omits the skill section when problem-solving mode has no matching skill", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "No-skill answer",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("No-skill answer", { inputTokens: 10, outputTokens: 5 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3188,13 +3379,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Reflective answer with open questions in view.",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Reflective answer with open questions in view.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3289,13 +3477,7 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Final answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Final answer", { inputTokens: 12, outputTokens: 6 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3382,13 +3564,7 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Final answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Final answer", { inputTokens: 12, outputTokens: 6 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3537,13 +3713,7 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Boundaried answer",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Boundaried answer", { inputTokens: 10, outputTokens: 5 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3719,13 +3889,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Answer with clarity.",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Answer with clarity.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3873,13 +4040,7 @@ describe("deliberator", () => {
     });
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Boundaried answer",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Boundaried answer", { inputTokens: 10, outputTokens: 5 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -3963,13 +4124,7 @@ describe("deliberator", () => {
     });
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Acknowledged.",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Acknowledged.", { inputTokens: 10, outputTokens: 5 }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -4026,13 +4181,10 @@ describe("deliberator", () => {
   it("renders pending corrections in an untrusted prompt block", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Correction-aware answer",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Correction-aware answer", {
+          inputTokens: 8,
+          outputTokens: 4,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -4121,13 +4273,10 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "Careful answer. Next step: rerun the deploy.",
-          input_tokens: 20,
-          output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerTextAnswerResponse("Careful answer. Next step: rerun the deploy.", {
+          inputTokens: 20,
+          outputTokens: 10,
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);

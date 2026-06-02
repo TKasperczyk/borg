@@ -301,6 +301,7 @@ export type RunFinalizerOptions = {
   structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
   tracer?: TurnTracer;
   turnId?: string;
+  finalizerAttempt?: "initial" | "regenerate";
 };
 
 export type EmissionDecision =
@@ -515,6 +516,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
     path: options.path,
     mode: "emission_tools",
     decision: decision.kind,
+    attempt: options.finalizerAttempt ?? "initial",
     ...(decision.kind === "answer" || decision.kind === "self_report"
       ? { text_length: decision.text.length }
       : {}),

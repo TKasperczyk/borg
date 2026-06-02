@@ -14,6 +14,7 @@ import {
 } from "./discourse-state.js";
 import {
   type AgentObservedStreamContent,
+  type FinalizerInvalidToolDiagnostic,
   type FinalizerNoOutputCategory,
   type FinalizerNoOutputPrimaryReason,
   type FinalizerNoOutputStructuralFlag,
@@ -72,6 +73,7 @@ export type AppendSuppressionMarkerInput = {
   noOutputCategories?: readonly FinalizerNoOutputCategory[];
   primaryNoOutputReason?: FinalizerNoOutputPrimaryReason;
   structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
+  finalizerInvalidTool?: FinalizerInvalidToolDiagnostic;
 };
 
 export type AppendObservationMarkerInput = {
@@ -301,6 +303,9 @@ export class TurnDiscourseStateService {
         ...(input.structuralNoOutputFlags === undefined
           ? {}
           : { structural_no_output_flags: [...input.structuralNoOutputFlags] }),
+        ...(input.finalizerInvalidTool === undefined
+          ? {}
+          : { finalizer_invalid_tool: input.finalizerInvalidTool }),
       } satisfies AgentSuppressedStreamContent,
       ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
       ...(input.audience === undefined ? {} : { audience: input.audience }),
@@ -376,11 +381,15 @@ export class TurnDiscourseStateService {
       input.reason === "commitment_violation" ||
       input.reason === "commitment_violation_after_regenerate" ||
       input.reason === "commitment_revision_failed" ||
-      input.reason === "rewrite_unsupported_or_empty"
+      input.reason === "rewrite_unsupported_or_empty" ||
+      input.reason === "invalid_tool_after_regenerate"
     ) {
       return this.setStopState({
         workingMemory,
-        provenance: "commitment_guard",
+        provenance:
+          input.reason === "invalid_tool_after_regenerate"
+            ? "finalizer_emission_metadata"
+            : "commitment_guard",
         sourceStreamEntryId: input.sourceStreamEntryId,
         sourceStreamEntryIds: input.sourceStreamEntryIds,
         reason:
@@ -390,7 +399,9 @@ export class TurnDiscourseStateService {
               ? "Commitment guard suppressed this turn because regenerated output still violated an enforceable commitment."
               : input.reason === "commitment_revision_failed"
                 ? "Commitment guard suppressed this turn because revision still violated an active commitment."
-                : "Commitment guard suppressed this turn because rewrite produced no supported output.",
+                : input.reason === "rewrite_unsupported_or_empty"
+                  ? "Commitment guard suppressed this turn because rewrite produced no supported output."
+                  : "Finalizer suppressed this turn because regenerated terminal emission was still structurally invalid.",
         turnId: input.turnId,
         sessionId: input.sessionId,
       });

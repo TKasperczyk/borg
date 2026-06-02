@@ -91,4 +91,55 @@ describe("TurnDiscourseStateService", () => {
       ],
     });
   });
+
+  it("persists invalid finalizer tool diagnostics to suppression markers", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-turn-discourse-state-"));
+    tempDirs.push(tempDir);
+
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(1_000),
+    });
+    const service = new TurnDiscourseStateService({
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit() {},
+      },
+      clock: new FixedClock(1_000),
+    });
+
+    await service.appendSuppressionMarker({
+      streamWriter: writer,
+      reason: "invalid_tool_after_regenerate",
+      userEntryId: createStreamEntryId(),
+      turnId: "turn-invalid-tool-after-regenerate",
+      audience: "service-test",
+      finalizerInvalidTool: {
+        tool_name: "EmitAnswer",
+        reason: "schema payload was invalid",
+        attempt: "regenerate",
+      },
+    });
+
+    writer.close();
+
+    const suppressedEntry = new StreamReader({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    })
+      .tail(10)
+      .find((entry) => entry.kind === "agent_suppressed");
+
+    expect(suppressedEntry?.content).toMatchObject({
+      reason: "invalid_tool_after_regenerate",
+      turn_id: "turn-invalid-tool-after-regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "EmitAnswer",
+        reason: "schema payload was invalid",
+        attempt: "regenerate",
+      },
+    });
+  });
 });

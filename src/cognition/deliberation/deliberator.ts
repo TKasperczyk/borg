@@ -19,9 +19,12 @@ import {
 } from "./dialogue.js";
 import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
 import {
+  EMIT_ANSWER_FINALIZER_TOOL_NAME,
   EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   EMIT_OBSERVE_FINALIZER_TOOL_NAME,
+  EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   runFinalizer,
+  type EmissionDecision,
   type EmissionToolName,
   type FinalizerResult,
   type RunFinalizerOptions,
@@ -44,6 +47,7 @@ import {
   truncateTextForCompactPlannerLedger,
 } from "../evidence-ledger/index.js";
 import type {
+  FinalizerInvalidToolDiagnostic,
   FinalizerNoOutputCategory,
   FinalizerNoOutputSemanticCategory,
   FinalizerNoOutputStructuralCategory,
@@ -159,6 +163,15 @@ type FinalizerEmission = {
   emission: PendingTurnEmission;
 };
 
+type InvalidToolDecision = Extract<EmissionDecision, { kind: "invalid_tool" }>;
+
+const INVALID_TOOL_RETRY_TERMINAL_TOOL_LIST = [
+  EMIT_ANSWER_FINALIZER_TOOL_NAME,
+  EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
+  EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
+  EMIT_OBSERVE_FINALIZER_TOOL_NAME,
+].join(" / ");
+
 function appendFinalizerPromptSections(
   base: readonly (string | null)[] | null,
   extra: readonly (string | null)[],
@@ -193,6 +206,63 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
     case "self_report":
       return null;
   }
+}
+
+function finalizerInvalidToolDiagnostic(
+  decision: InvalidToolDecision,
+  attempt: FinalizerInvalidToolDiagnostic["attempt"],
+): FinalizerInvalidToolDiagnostic {
+  return {
+    tool_name: decision.toolName,
+    reason: decision.reason,
+    attempt,
+  };
+}
+
+function invalidToolRetryCause(decision: InvalidToolDecision): string {
+  if (decision.toolName === "none") {
+    return "You emitted 0 terminal emission tool calls; emit exactly one.";
+  }
+
+  if (decision.toolName === "multiple") {
+    return `You emitted multiple terminal emission tool calls; ${decision.reason}.`;
+  }
+
+  if (decision.reason === "unknown terminal emission tool") {
+    return `You called an unknown emission tool ${decision.toolName}.`;
+  }
+
+  return `${decision.toolName} input was invalid: ${decision.reason}`;
+}
+
+export function buildInvalidToolFinalizerRetryPromptSection(decision: InvalidToolDecision): string {
+  return [
+    "Your previous turn did not emit a valid final response.",
+    invalidToolRetryCause(decision),
+    `Emit exactly one of ${INVALID_TOOL_RETRY_TERMINAL_TOOL_LIST} with valid input.`,
+  ].join(" ");
+}
+
+async function retryInvalidToolFinalizer(input: {
+  initial: FinalizerResult;
+  runRetry: (retryPromptSection: string) => Promise<FinalizerResult>;
+}): Promise<{
+  result: FinalizerResult;
+  invalidToolAfterRegenerate?: FinalizerInvalidToolDiagnostic;
+}> {
+  if (input.initial.decision.kind !== "invalid_tool") {
+    return { result: input.initial };
+  }
+
+  const retryPromptSection = buildInvalidToolFinalizerRetryPromptSection(input.initial.decision);
+  const retry = await input.runRetry(retryPromptSection);
+
+  return retry.decision.kind === "invalid_tool"
+    ? {
+        result: retry,
+        invalidToolAfterRegenerate: finalizerInvalidToolDiagnostic(retry.decision, "regenerate"),
+      }
+    : { result: retry };
 }
 
 function structuralNoOutputFlags(
@@ -247,8 +317,18 @@ function legacyStructuralCategoriesFromFlags(
 function buildFinalizerEmission(
   result: FinalizerResult,
   structuralFlags: readonly FinalizerNoOutputStructuralFlag[] = [],
+  options: {
+    invalidToolSuppressionReason?: Extract<
+      GenerationSuppressionReason,
+      "finalizer_failed" | "invalid_tool_after_regenerate"
+    >;
+    invalidToolDiagnosticAttempt?: FinalizerInvalidToolDiagnostic["attempt"];
+  } = {},
 ): FinalizerEmission {
-  const suppressionReason = finalizerSuppressionReason(result);
+  const suppressionReason =
+    result.decision.kind === "invalid_tool"
+      ? (options.invalidToolSuppressionReason ?? finalizerSuppressionReason(result))
+      : finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
     const noOutputSemanticCategories =
@@ -289,6 +369,14 @@ function buildFinalizerEmission(
         ...(noOutputStructuralFlags === undefined
           ? {}
           : { structural_no_output_flags: noOutputStructuralFlags }),
+        ...(result.decision.kind !== "invalid_tool"
+          ? {}
+          : {
+              finalizer_invalid_tool: finalizerInvalidToolDiagnostic(
+                result.decision,
+                options.invalidToolDiagnosticAttempt ?? "initial",
+              ),
+            }),
       },
     };
   }
@@ -553,8 +641,50 @@ export class Deliberator {
         structuralNoOutputFlags: finalizerStructuralFlags,
         tracer: this.tracer,
         turnId: context.turnId,
+        finalizerAttempt: "initial",
       });
-      const finalized = buildFinalizerEmission(response, finalizerStructuralFlags);
+      const finalizerRetry = await retryInvalidToolFinalizer({
+        initial: response,
+        runRetry: (retryPromptSection) =>
+          this.runFinalizerPhase(context.turnId, {
+            llmClient: this.options.llmClient,
+            dispatcher: this.options.toolDispatcher,
+            sessionId: context.sessionId,
+            audienceEntityId: context.audienceEntityId,
+            model: this.options.cognitionModel,
+            baseSystemPrompt,
+            cacheableSystemPrompt: cacheableBaseSystemPrompt,
+            initialMessages: dialogueBlockMessages,
+            userEntryId: context.userEntryId,
+            maxTokens: systemOneMaxTokens,
+            ...(thinking === undefined ? {} : { thinking }),
+            path: "system_1",
+            ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+            outboundToolAvailable,
+            turnOrigin: effectiveContext.turnOrigin,
+            currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+            sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
+            additionalPromptSections: appendFinalizerPromptSections(
+              finalizerGroundingPromptSections.length === 0
+                ? null
+                : finalizerGroundingPromptSections,
+              [retryPromptSection],
+            ),
+            structuralNoOutputFlags: finalizerStructuralFlags,
+            tracer: this.tracer,
+            turnId: context.turnId,
+            finalizerAttempt: "regenerate",
+          }),
+      });
+      const responseForResult = finalizerRetry.result;
+      const finalized = buildFinalizerEmission(responseForResult, finalizerStructuralFlags, {
+        ...(finalizerRetry.invalidToolAfterRegenerate === undefined
+          ? {}
+          : {
+              invalidToolSuppressionReason: "invalid_tool_after_regenerate",
+              invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
+            }),
+      });
 
       const result: DeliberationResult = {
         path: "system_1",
@@ -564,8 +694,11 @@ export class Deliberator {
         emissionRecommendation: "emit",
         thoughtStreamEntryIds: [],
         thoughts: [],
-        tool_calls: response.toolCallsMade,
-        usage: response.usage,
+        tool_calls: responseForResult.toolCallsMade,
+        usage:
+          responseForResult === response
+            ? response.usage
+            : aggregateUsage(response.usage, responseForResult.usage),
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
         referencedEpisodeIds: null,
@@ -599,10 +732,12 @@ export class Deliberator {
           structuralNoOutputFlags: finalizerStructuralFlags,
           tracer: this.tracer,
           turnId: context.turnId,
+          finalizerAttempt: "regenerate",
         });
         const regeneratedFinalized = buildFinalizerEmission(
           regeneratedResponse,
           finalizerStructuralFlags,
+          { invalidToolDiagnosticAttempt: "regenerate" },
         );
 
         return {
@@ -760,10 +895,52 @@ export class Deliberator {
       structuralNoOutputFlags: finalizerStructuralFlags,
       tracer: this.tracer,
       turnId: context.turnId,
+      finalizerAttempt: "initial",
     });
+    const finalizerRetry = await retryInvalidToolFinalizer({
+      initial: finalResponse,
+      runRetry: (retryPromptSection) =>
+        this.runFinalizerPhase(context.turnId, {
+          llmClient: this.options.llmClient,
+          dispatcher: this.options.toolDispatcher,
+          sessionId: context.sessionId,
+          audienceEntityId: context.audienceEntityId,
+          model: this.options.cognitionModel,
+          baseSystemPrompt,
+          cacheableSystemPrompt: cacheableBaseSystemPrompt,
+          initialMessages: dialogueBlockMessages,
+          userEntryId: context.userEntryId,
+          maxTokens: systemTwoMaxTokens,
+          ...(thinking === undefined ? {} : { thinking }),
+          path: "system_2",
+          ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
+          outboundToolAvailable,
+          turnOrigin: effectiveContext.turnOrigin,
+          currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+          sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
+          additionalPromptSections: appendFinalizerPromptSections(additionalPromptSections, [
+            retryPromptSection,
+          ]),
+          structuralNoOutputFlags: finalizerStructuralFlags,
+          tracer: this.tracer,
+          turnId: context.turnId,
+          finalizerAttempt: "regenerate",
+        }),
+    });
+    const finalResponseForResult = finalizerRetry.result;
     usage = aggregateUsage(usage, finalResponse.usage);
-    finalized = buildFinalizerEmission(finalResponse, finalizerStructuralFlags);
-    finalToolCallsMade = finalResponse.toolCallsMade;
+    if (finalResponseForResult !== finalResponse) {
+      usage = aggregateUsage(usage, finalResponseForResult.usage);
+    }
+    finalized = buildFinalizerEmission(finalResponseForResult, finalizerStructuralFlags, {
+      ...(finalizerRetry.invalidToolAfterRegenerate === undefined
+        ? {}
+        : {
+            invalidToolSuppressionReason: "invalid_tool_after_regenerate",
+            invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
+          }),
+    });
+    finalToolCallsMade = finalResponseForResult.toolCallsMade;
 
     const result: DeliberationResult = {
       path: "system_2",
@@ -811,10 +988,12 @@ export class Deliberator {
         structuralNoOutputFlags: finalizerStructuralFlags,
         tracer: this.tracer,
         turnId: context.turnId,
+        finalizerAttempt: "regenerate",
       });
       const regeneratedFinalized = buildFinalizerEmission(
         regeneratedResponse,
         finalizerStructuralFlags,
+        { invalidToolDiagnosticAttempt: "regenerate" },
       );
 
       return {
