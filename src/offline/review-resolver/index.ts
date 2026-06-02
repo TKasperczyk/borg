@@ -2060,18 +2060,6 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
     ctx: OfflineContext,
     opts: OfflineProcessRunOptions = {},
   ): Promise<ReviewResolverPlan> {
-    if (!ctx.config.offline.reviewResolver.enabled) {
-      return reviewResolverPlanSchema.parse({
-        process: this.name,
-        items: [],
-        max_items: configuredMaxItems(ctx, opts, this.options.maxItemsPerPass),
-        skipped_over_cap: 0,
-        errors: [],
-        tokens_used: 0,
-        budget_exhausted: false,
-      });
-    }
-
     const maxItems = configuredMaxItems(ctx, opts, this.options.maxItemsPerPass);
     const { selected, skippedOverCap } = selectOpenReviewItems(ctx, maxItems);
 

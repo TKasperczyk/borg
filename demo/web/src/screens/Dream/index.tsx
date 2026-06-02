@@ -33,6 +33,7 @@ const PROCESS_NAMES: DreamProcessName[] = [
   "self-narrator",
   "procedural-synthesizer",
   "belief-reviser",
+  "creator-directive-reconciler",
 ];
 
 function statusTag(status: DreamProcessSummary["last_status"]) {

@@ -366,7 +366,6 @@ const configBaseSchema = z.object({
     .object({
       consolidator: z
         .object({
-          enabled: z.boolean().default(true),
           similarityThreshold: z.number().positive().default(0.82),
           minClusterSize: z.number().int().positive().default(2),
           maxClustersPerRun: z.number().int().positive().default(2),
@@ -375,7 +374,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       reflector: z
         .object({
-          enabled: z.boolean().default(true),
           minSupport: z.number().int().positive().default(3),
           goalSimilarityThreshold: z.number().min(0).max(1).default(0.82),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
@@ -385,7 +383,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       semanticExtractor: z
         .object({
-          enabled: z.boolean().default(true),
           maxEpisodesPerRun: z.number().int().positive().default(8),
           maxInputTokensPerRun: z.number().int().positive().default(150_000),
           budget: z.number().int().positive().default(60_000),
@@ -393,7 +390,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       proceduralSynthesizer: z
         .object({
-          enabled: z.boolean().default(true),
           minSupport: z.number().int().positive().default(2),
           maxSkillsPerRun: z.number().int().positive().default(3),
           dedupThreshold: z.number().min(0).max(1).default(0.88),
@@ -407,7 +403,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       curator: z
         .object({
-          enabled: z.boolean().default(true),
           t1Heat: z.number().positive().default(5),
           t2Heat: z.number().positive().default(15),
           t3DemoteHeat: z.number().positive().default(3),
@@ -425,7 +420,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       overseer: z
         .object({
-          enabled: z.boolean().default(true),
           lookbackHours: z.number().positive().default(24),
           maxChecksPerRun: z.number().int().positive().default(8),
           budget: z.number().int().positive().nullable().default(null),
@@ -433,14 +427,12 @@ const configBaseSchema = z.object({
         .prefault({}),
       reviewResolver: z
         .object({
-          enabled: z.boolean().default(true),
           maxItemsPerPass: z.number().int().positive().default(3),
           budget: z.number().int().positive().nullable().default(null),
         })
         .prefault({}),
       ruminator: z
         .object({
-          enabled: z.boolean().default(true),
           maxQuestionsPerRun: z.number().int().positive().default(8),
           // Threshold applies to RetrievalConfidence.overall, a conservative
           // epistemic evidence-quality signal, not the relevance ranking score.
@@ -453,7 +445,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       selfNarrator: z
         .object({
-          enabled: z.boolean().default(true),
           budget: z.number().int().positive().default(80_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),
@@ -462,7 +453,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       beliefReviser: z
         .object({
-          enabled: z.boolean().default(true),
           confidenceDropMultiplier: z.number().min(0).max(1).default(0.5),
           confidenceFloor: z.number().min(0).max(1).default(0.05),
           regradeBatchSize: z.number().int().positive().default(10),
@@ -477,7 +467,6 @@ const configBaseSchema = z.object({
         .prefault({}),
       creatorDirectiveReconciler: z
         .object({
-          enabled: z.boolean().default(true),
           maxFamiliesPerRun: z.number().int().positive().default(8),
           budget: z.number().int().positive().default(60_000),
         })
@@ -493,6 +482,8 @@ const configBaseSchema = z.object({
       enabled: z.boolean().default(true),
       lightIntervalMs: z.number().int().positive().default(14_400_000),
       heavyIntervalMs: z.number().int().positive().default(86_400_000),
+      // These cadence lists are the single authority for offline process
+      // enablement. Remove a process from both lists to disable it.
       lightProcesses: z
         .array(maintenanceProcessSchema)
         .default(["consolidator", "semantic-extractor", "curator"]),
@@ -1057,11 +1048,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["offline", "consolidator", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_CONSOLIDATOR_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "consolidator", "similarityThreshold"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD"),
   );
@@ -1079,11 +1065,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "consolidator", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_BUDGET"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "reflector", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_REFLECTOR_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1112,11 +1093,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["offline", "semanticExtractor", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "semanticExtractor", "maxEpisodesPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_EPISODES_PER_RUN"),
   );
@@ -1129,11 +1105,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "semanticExtractor", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "proceduralSynthesizer", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1188,11 +1159,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["offline", "curator", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_CURATOR_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "curator", "t1Heat"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T1_HEAT"),
   );
@@ -1243,11 +1209,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["offline", "overseer", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_OVERSEER_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "overseer", "lookbackHours"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_OVERSEER_LOOKBACK_HOURS"),
   );
@@ -1260,11 +1221,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "overseer", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_BUDGET"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "ruminator", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_RUMINATOR_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1288,11 +1244,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["offline", "selfNarrator", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_SELF_NARRATOR_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "selfNarrator", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_BUDGET"),
   );
@@ -1310,11 +1261,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "selfNarrator", "cadenceHintDays"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_SELF_NARRATOR_CADENCE_HINT_DAYS"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "beliefReviser", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_BELIEF_REVISER_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1360,11 +1306,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "beliefReviser", "consecutiveParseFailureLimit"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_CONSECUTIVE_PARSE_FAILURE_LIMIT"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "creatorDirectiveReconciler", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_ENABLED"),
   );
   setConfigOverride(
     overrides,

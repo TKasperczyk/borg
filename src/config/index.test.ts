@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { OFFLINE_PROCESS_NAMES } from "../offline/types.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, redactConfig } from "./index.js";
@@ -49,13 +50,11 @@ describe("config", () => {
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(90);
     expect(config.offline.semanticExtractor).toEqual({
-      enabled: true,
       maxEpisodesPerRun: 8,
       maxInputTokensPerRun: 150_000,
       budget: 60_000,
     });
     expect(config.offline.creatorDirectiveReconciler).toEqual({
-      enabled: true,
       maxFamiliesPerRun: 8,
       budget: 60_000,
     });
@@ -65,6 +64,22 @@ describe("config", () => {
       "semantic-extractor",
       "curator",
     ]);
+    expect(config.maintenance.heavyProcesses).toEqual([
+      "reflector",
+      "overseer",
+      "review-resolver",
+      "ruminator",
+      "self-narrator",
+      "procedural-synthesizer",
+      "belief-reviser",
+      "creator-directive-reconciler",
+    ]);
+    expect(
+      [...new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses])],
+    ).toEqual(expect.arrayContaining([...OFFLINE_PROCESS_NAMES]));
+    expect(
+      new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses]).size,
+    ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
@@ -394,7 +409,6 @@ describe("config", () => {
         BORG_EMBEDDING_DIMS: "1024",
         BORG_PERCEPTION_LLM_ENABLED: "false",
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
-        BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_MAX_FAMILIES_PER_RUN: "6",
         BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_BUDGET: "14000",
@@ -467,7 +481,6 @@ describe("config", () => {
     });
     expect(config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns).toBe(18);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
-    expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
     expect(config.offline.creatorDirectiveReconciler.maxFamiliesPerRun).toBe(6);
     expect(config.offline.creatorDirectiveReconciler.budget).toBe(14_000);

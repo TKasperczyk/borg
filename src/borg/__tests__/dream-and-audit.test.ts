@@ -113,21 +113,18 @@ describe("Borg", () => {
         },
         offline: {
           consolidator: {
-            enabled: true,
             similarityThreshold: 0.82,
             minClusterSize: 2,
             maxClustersPerRun: 2,
             budget: 15_000,
           },
           reflector: {
-            enabled: true,
             minSupport: 3,
             ceilingConfidence: 0.5,
             maxInsightsPerRun: 2,
             budget: 30_000,
           },
           curator: {
-            enabled: true,
             t1Heat: 5,
             t2Heat: 15,
             t3DemoteHeat: 3,
@@ -135,7 +132,6 @@ describe("Borg", () => {
             archiveMinHeat: 1,
           },
           overseer: {
-            enabled: true,
             lookbackHours: 24,
             maxChecksPerRun: 8,
             budget: 20_000,

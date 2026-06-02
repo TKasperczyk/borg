@@ -33,18 +33,9 @@ describe("sessions facade", () => {
     return Borg.open({
       config: createTestConfig({
         dataDir: tempDir,
-        offline: {
-          consolidator: { enabled: false },
-          reflector: { enabled: false },
-          curator: { enabled: false },
-          overseer: { enabled: false },
-          reviewResolver: { enabled: false },
-          ruminator: { enabled: false },
-          selfNarrator: { enabled: false },
-          proceduralSynthesizer: { enabled: false },
-          beliefReviser: { enabled: false },
-          creatorDirectiveReconciler: { enabled: false },
-          semanticExtractor: { enabled: false },
+        maintenance: {
+          lightProcesses: [],
+          heavyProcesses: [],
         },
       }),
       embeddingDimensions: 4,

@@ -638,7 +638,8 @@ export type DreamProcessName =
   | "ruminator"
   | "self-narrator"
   | "procedural-synthesizer"
-  | "belief-reviser";
+  | "belief-reviser"
+  | "creator-directive-reconciler";
 
 export type DreamProcessSummary = {
   name: DreamProcessName;

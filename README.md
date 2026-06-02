@@ -108,6 +108,9 @@ and creator-directive reconciliation. Each runs with plan/apply parity and
 budget caps, writes to an append-only audit log, and is reversible wherever a
 reverser is registered.
 
+Scheduled offline enablement is controlled by `maintenance.lightProcesses` and
+`maintenance.heavyProcesses`; remove a process from both lists to disable it.
+
 ## Quickstart
 
 ```bash

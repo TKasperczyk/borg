@@ -1675,10 +1675,7 @@ async function dreamState(borg: Borg) {
       last_status: lastRun.last_status,
       last_audit_id: lastRun.last_audit_id,
       budget: config.processBudgets[name] ?? null,
-      enabled:
-        config.lightProcesses.includes(name) ||
-        config.heavyProcesses.includes(name) ||
-        config.processBudgets[name] !== undefined,
+      enabled: config.lightProcesses.includes(name) || config.heavyProcesses.includes(name),
     };
   });
 

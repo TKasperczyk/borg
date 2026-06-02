@@ -76,25 +76,16 @@ describe("Borg", () => {
     expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
   });
 
-  it("omits a disabled belief reviser from default dream plans", async () => {
+  it("uses maintenance process lists for default dream plans", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
     const borg = await Borg.open({
       config: createTestConfig({
         dataDir: tempDir,
-        offline: {
-          consolidator: { enabled: false },
-          reflector: { enabled: false },
-          curator: { enabled: false },
-          overseer: { enabled: false },
-          reviewResolver: { enabled: false },
-          ruminator: { enabled: false },
-          selfNarrator: { enabled: false },
-          proceduralSynthesizer: { enabled: false },
-          beliefReviser: { enabled: false },
-          creatorDirectiveReconciler: { enabled: false },
-          semanticExtractor: { enabled: false },
+        maintenance: {
+          lightProcesses: [],
+          heavyProcesses: [],
         },
       }),
       embeddingDimensions: 4,

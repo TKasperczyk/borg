@@ -191,22 +191,12 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     };
   };
 
-  const defaultDreamProcesses = (): OfflineProcessName[] =>
-    Object.entries({
-      consolidator: deps.config.offline.consolidator.enabled,
-      reflector: deps.config.offline.reflector.enabled,
-      "semantic-extractor": deps.config.offline.semanticExtractor.enabled,
-      curator: deps.config.offline.curator.enabled,
-      overseer: deps.config.offline.overseer.enabled,
-      "review-resolver": deps.config.offline.reviewResolver.enabled,
-      ruminator: deps.config.offline.ruminator.enabled,
-      "self-narrator": deps.config.offline.selfNarrator.enabled,
-      "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.enabled,
-      "belief-reviser": deps.config.offline.beliefReviser.enabled,
-      "creator-directive-reconciler": deps.config.offline.creatorDirectiveReconciler.enabled,
-    })
-      .filter(([, enabled]) => enabled)
-      .map(([name]) => name as OfflineProcessName);
+  const defaultDreamProcesses = (): OfflineProcessName[] => [
+    ...new Set([
+      ...deps.config.maintenance.lightProcesses,
+      ...deps.config.maintenance.heavyProcesses,
+    ]),
+  ];
 
   const maintenanceConfigSnapshot = () => ({
     enabled: deps.config.maintenance.enabled,

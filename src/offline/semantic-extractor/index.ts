@@ -344,19 +344,6 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
     let runCapped = false;
     const budget = opts.budget ?? ctx.config.offline.semanticExtractor.budget;
 
-    if (!ctx.config.offline.semanticExtractor.enabled) {
-      return semanticExtractorPlanSchema.parse({
-        process: this.name,
-        episode_ids: [],
-        budget,
-        errors,
-        tokens_used: 0,
-        budget_exhausted: false,
-        pending_episode_count: pendingEpisodeCount,
-        run_capped: runCapped,
-      });
-    }
-
     try {
       const selection = await selectEpisodesForExtraction(ctx);
       episodeIds = selection.episodes.map((episode) => episode.id);

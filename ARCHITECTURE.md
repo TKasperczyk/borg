@@ -1475,6 +1475,10 @@ The orchestrator serializes maintenance runs through an internal operation
 queue. Planning, applying, and executing dream processes do not overlap across
 the shared repositories.
 
+Enablement and cadence are selected by `maintenance.lightProcesses` and
+`maintenance.heavyProcesses`. Per-process offline config only tunes that
+process; remove a process from both maintenance lists to disable it.
+
 Budget exhaustion is a process result, not a global dream failure. A process
 that exhausts its budget records that result and report note; other processes
 can continue when their own budgets and dependencies allow.
