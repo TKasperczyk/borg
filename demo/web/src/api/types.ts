@@ -216,6 +216,7 @@ export type MemoryBandSummary = {
   name: string;
   desc?: string;
   count: number;
+  count_is_lower_bound?: boolean;
   growth?: number[];
   stats: Array<{ k: string; v: number | string }>;
 };
@@ -228,6 +229,7 @@ export type EpisodeMemoryItem = {
   id: string;
   title: string;
   narrative: string;
+  search_score?: number;
   participants: string[];
   location: string | null;
   start_time: number;
@@ -250,6 +252,7 @@ export type SemanticMemoryNode = {
   kind: "concept" | "entity" | "proposition";
   label: string;
   description: string;
+  search_score?: number;
   domain: string | null;
   aliases: string[];
   confidence: number;
@@ -311,6 +314,7 @@ export type ProceduralMemoryItem = {
   id: string;
   applies_when: string;
   approach: string;
+  search_score?: number;
   status: "active" | "superseded";
   alpha: number;
   beta: number;
@@ -575,15 +579,35 @@ export type RelationalMemoryItem = {
 };
 
 export type MemoryBandDetail =
-  | { band: "episodic"; items: EpisodeMemoryItem[]; nextCursor: string | null }
-  | { band: "semantic"; nodes: SemanticMemoryNode[]; edges: SemanticMemoryEdge[] }
-  | { band: "procedural"; items: ProceduralMemoryItem[] }
-  | { band: "affective"; current: MoodSnapshot; history: MoodHistoryEntry[] }
-  | ({ band: "self" } & IdentityResponse)
-  | { band: "commitments"; items: CommitmentItem[] }
-  | { band: "social"; items: SocialMemoryItem[] }
+  | {
+      band: "episodic";
+      mode?: "browse" | "search";
+      query?: string;
+      items: EpisodeMemoryItem[];
+      next_cursor: string | null;
+    }
+  | {
+      band: "semantic";
+      mode?: "browse" | "search";
+      query?: string;
+      nodes: SemanticMemoryNode[];
+      edges: SemanticMemoryEdge[];
+      next_cursor: string | null;
+    }
+  | {
+      band: "procedural";
+      mode?: "browse" | "search";
+      query?: string;
+      items: ProceduralMemoryItem[];
+      next_cursor?: string | null;
+    }
+  | ({ band: "affective"; mode?: "browse"; current: MoodSnapshot; history: MoodHistoryEntry[] })
+  | ({ band: "self"; mode?: "browse" } & IdentityResponse)
+  | { band: "commitments"; mode?: "browse"; items: CommitmentItem[] }
+  | { band: "social"; mode?: "browse"; items: SocialMemoryItem[] }
   | {
       band: "relational";
+      mode?: "browse";
       counts: Record<string, number>;
       items: RelationalMemoryItem[];
     };

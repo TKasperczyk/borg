@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { z } from "zod";
 
 import {
@@ -48,6 +50,7 @@ import {
   type SemanticNode,
   type SemanticNodeCorrectionRef,
   type SemanticNodeListOptions,
+  type SemanticNodeListResult,
   type SemanticNodeKind,
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
@@ -90,6 +93,16 @@ type SemanticNodeLifecycleRow = {
   superseded_at: number | null;
 };
 
+type SemanticNodeCursorPayload = {
+  updatedAt: number;
+  id: string;
+};
+
+const semanticNodeCursorPayloadSchema = z.object({
+  updatedAt: z.number().finite(),
+  id: semanticNodeIdSchema,
+});
+
 const SEMANTIC_JSON_ARRAY_CODEC = {
   errorCode: "SEMANTIC_ROW_INVALID",
   errorMessage: (label: string) => `Failed to decode semantic ${label}`,
@@ -114,6 +127,27 @@ function assertPositiveLimit(limit: number | undefined, label: string, fallback:
   }
 
   return resolved;
+}
+
+function encodeSemanticNodeCursor(payload: SemanticNodeCursorPayload): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeSemanticNodeCursor(cursor: string): SemanticNodeCursorPayload {
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const parsed = semanticNodeCursorPayloadSchema.parse(JSON.parse(raw));
+
+    return {
+      updatedAt: parsed.updatedAt,
+      id: parsed.id,
+    };
+  } catch (error) {
+    throw new SemanticError("Invalid semantic node cursor", {
+      cause: error,
+      code: "SEMANTIC_NODE_CURSOR_INVALID",
+    });
+  }
 }
 
 function normalizeAliases(values: readonly string[]): string[] {
@@ -1166,10 +1200,12 @@ export class SemanticNodeRepository {
     return counts;
   }
 
-  async list(options: SemanticNodeListOptions = {}): Promise<SemanticNode[]> {
+  private async listWithResolvedLimit(
+    options: SemanticNodeListOptions,
+    limit: number,
+  ): Promise<SemanticNode[]> {
     const filters: string[] = [];
     const values: unknown[] = [];
-    const limit = assertPositiveLimit(options.limit, "Semantic list limit", 50);
 
     if (options.kind !== undefined) {
       filters.push("kind = ?");
@@ -1178,6 +1214,12 @@ export class SemanticNodeRepository {
 
     if (options.includeArchived !== true) {
       filters.push("archived = 0");
+    }
+
+    if (options.cursor !== undefined) {
+      const cursor = decodeSemanticNodeCursor(options.cursor);
+      filters.push("(updated_at < ? OR (updated_at = ? AND id > ?))");
+      values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     }
 
     const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
@@ -1201,6 +1243,28 @@ export class SemanticNodeRepository {
         },
       )
     ).filter((value): value is SemanticNode => value !== null);
+  }
+
+  async list(options: SemanticNodeListOptions = {}): Promise<SemanticNode[]> {
+    return this.listWithResolvedLimit(
+      options,
+      assertPositiveLimit(options.limit, "Semantic list limit", 50),
+    );
+  }
+
+  async listPage(options: SemanticNodeListOptions = {}): Promise<SemanticNodeListResult> {
+    const limit = assertPositiveLimit(options.limit, "Semantic list limit", 50);
+    const page = await this.listWithResolvedLimit(options, limit + 1);
+    const items = page.slice(0, limit);
+    const lastItem = items.at(-1);
+
+    return {
+      items,
+      nextCursor:
+        page.length > limit && lastItem !== undefined
+          ? encodeSemanticNodeCursor({ updatedAt: lastItem.updated_at, id: lastItem.id })
+          : undefined,
+    };
   }
 
   listDistinctKinds(): SemanticNodeKind[] {

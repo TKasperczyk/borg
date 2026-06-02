@@ -308,6 +308,9 @@ export type BorgSemanticFacade = {
     list: (
       ...args: Parameters<SemanticNodeRepository["list"]>
     ) => ReturnType<SemanticNodeRepository["list"]>;
+    listPage: (
+      ...args: Parameters<SemanticNodeRepository["listPage"]>
+    ) => ReturnType<SemanticNodeRepository["listPage"]>;
     countByStatus: () => ReturnType<SemanticNodeRepository["countByStatus"]>;
     search: (
       query: string,

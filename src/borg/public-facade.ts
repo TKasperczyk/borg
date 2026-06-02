@@ -77,6 +77,7 @@ import type {
   SemanticNode,
   SemanticNodeKind,
   SemanticNodeListOptions,
+  SemanticNodeListResult,
   SemanticNodeSearchCandidate,
   SemanticNodeStatus,
   SemanticRelation,
@@ -678,6 +679,7 @@ export type BorgSemanticFacade = {
     add(input: BorgSemanticNodeAddInput): Promise<SemanticNode>;
     get(id: SemanticNodeId): Promise<SemanticNode | null>;
     list(options?: SemanticNodeListOptions): Promise<SemanticNode[]>;
+    listPage(options?: SemanticNodeListOptions): Promise<SemanticNodeListResult>;
     countByStatus(): Record<SemanticNodeStatus, number>;
     search(query: string, options?: { limit?: number }): Promise<SemanticNodeSearchCandidate[]>;
   };

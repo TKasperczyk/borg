@@ -16,6 +16,10 @@ function requestPath(request: RequestInfo | URL): string {
   return new URL(String(request), "http://test.invalid").pathname;
 }
 
+function requestUrl(request: RequestInfo | URL): URL {
+  return new URL(String(request), "http://test.invalid");
+}
+
 function memoryBandsResponse() {
   return {
     bands: [
@@ -25,6 +29,7 @@ function memoryBandsResponse() {
         name: "episodic",
         desc: "what happened",
         count: 1,
+        count_is_lower_bound: false,
         growth: [1],
         stats: [{ k: "items", v: 1 }],
       },
@@ -98,29 +103,37 @@ function memoryBandsResponse() {
 function episodeBandResponse() {
   return {
     band: "episodic",
-    items: [
-      {
-        id: EPISODE_ID,
-        title: "Episode one",
-        narrative: "remembered narrative",
-        participants: ["operator"],
-        location: null,
-        start_time: 1,
-        end_time: 1,
-        audience: null,
-        significance: 0.5,
-        confidence: 0.8,
-        tags: ["test"],
-        source_stream_ids: ["strm_one"],
-        source_count: 1,
-        lineage: { derived_from: [], supersedes: [] },
-        emotional_arc: null,
-        vector_dims: 4,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ],
-    nextCursor: null,
+    items: [episodeItem(EPISODE_ID, "Episode one")],
+    next_cursor: null,
+  };
+}
+
+function episodeItem(
+  id: string,
+  title: string,
+  input: { audience?: string | null; tags?: string[]; ts?: number; search_score?: number } = {},
+) {
+  const ts = input.ts ?? 1;
+  return {
+    id,
+    title,
+    narrative: `${title} narrative`,
+    participants: ["operator"],
+    location: null,
+    start_time: ts,
+    end_time: ts,
+    audience: input.audience ?? null,
+    significance: 0.5,
+    confidence: 0.8,
+    tags: input.tags ?? ["test"],
+    source_stream_ids: ["strm_one"],
+    source_count: 1,
+    lineage: { derived_from: [], supersedes: [] },
+    emotional_arc: null,
+    vector_dims: 4,
+    created_at: ts,
+    updated_at: ts,
+    ...(input.search_score === undefined ? {} : { search_score: input.search_score }),
   };
 }
 
@@ -183,6 +196,255 @@ describe("Memory correction actions", () => {
         ),
       ).toHaveLength(2);
     });
+  });
+
+  it("loads more episodic memory rows with the returned cursor", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[0]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        if (url.searchParams.get("cursor") === "cursor-1") {
+          return Promise.resolve(
+            jsonResponse({
+              band: "episodic",
+              mode: "browse",
+              items: [episodeItem("ep_bbbbbbbbbbbbbbbb", "Episode two", { ts: 2 })],
+              next_cursor: null,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [episodeItem(EPISODE_ID, "Episode one", { ts: 3 })],
+            next_cursor: "cursor-1",
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MemoryScreen sessionId="default" />);
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    expect(await screen.findByText("loaded 1 of 2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "load more" }));
+
+    expect(await screen.findByText("Episode two")).toBeInTheDocument();
+    expect(screen.getByText("loaded 2 of 2")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([request]) => requestUrl(request).searchParams.get("cursor") === "cursor-1"),
+    ).toBe(true);
+  });
+
+  it("shows capped band totals as a lower bound", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[0]!.count = 500;
+        bands.bands[0]!.count_is_lower_bound = true;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [episodeItem(EPISODE_ID, "Episode one")],
+            next_cursor: "cursor-1",
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MemoryScreen sessionId="default" />);
+
+    expect(await screen.findByText("500+")).toBeInTheDocument();
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+
+    expect(await screen.findByText("loaded 1 of 500+")).toBeInTheDocument();
+  });
+
+  it("keeps browse rows when submitting an empty search from browse mode", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        return Promise.resolve(jsonResponse(memoryBandsResponse()));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [episodeItem(EPISODE_ID, "Episode one")],
+            next_cursor: null,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(<MemoryScreen sessionId="default" />);
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    await waitFor(() => {
+      expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
+        "Episode one",
+      ]);
+    });
+    const detailCallsBefore = fetchMock.mock.calls.filter(
+      ([request]) => requestUrl(request).pathname === "/api/memory/bands/episodic",
+    ).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+
+    expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
+      "Episode one",
+    ]);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([request]) => requestUrl(request).pathname === "/api/memory/bands/episodic",
+      ),
+    ).toHaveLength(detailCallsBefore);
+    expect(
+      fetchMock.mock.calls.some(([request]) => requestUrl(request).searchParams.has("query")),
+    ).toBe(false);
+  });
+
+  it("sorts and filters accumulated rows by structural fields only", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[0]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [
+              episodeItem("ep_bbbbbbbbbbbbbbbb", "Beta episode", {
+                audience: "Alice",
+                tags: ["beta"],
+                ts: 20,
+              }),
+              episodeItem("ep_cccccccccccccccc", "Alpha episode", {
+                audience: "global",
+                tags: ["alpha"],
+                ts: 10,
+              }),
+            ],
+            next_cursor: null,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(<MemoryScreen sessionId="default" />);
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    await waitFor(() => {
+      expect([...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent)).toEqual([
+        "Beta episode",
+        "Alpha episode",
+      ]);
+    });
+
+    fireEvent.click(screen.getByText("oldest"));
+    const titles = [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent);
+    expect(titles).toEqual(["Alpha episode", "Beta episode"]);
+
+    fireEvent.click(screen.getByText("beta"));
+    const filteredTitles = [...container.querySelectorAll(".list-row .ttl")].map((item) => item.textContent);
+    expect(filteredTitles).toEqual(["Beta episode"]);
+    expect(screen.queryByText("Alpha episode")).not.toBeInTheDocument();
+  });
+
+  it("renders server-ranked search results from the band detail query path", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[0]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        if (url.searchParams.get("query") === "meaning") {
+          return Promise.resolve(
+            jsonResponse({
+              band: "episodic",
+              mode: "search",
+              query: "meaning",
+              items: [
+                episodeItem("ep_dddddddddddddddd", "Meaning result", {
+                  ts: 30,
+                  search_score: 0.92,
+                }),
+              ],
+              next_cursor: null,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [episodeItem(EPISODE_ID, "Episode one")],
+            next_cursor: null,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MemoryScreen sessionId="default" />);
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    fireEvent.change(await screen.findByPlaceholderText("search episodic"), {
+      target: { value: "meaning" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+
+    expect((await screen.findAllByText("Meaning result")).length).toBeGreaterThan(0);
+    expect(screen.getByText("1 results")).toBeInTheDocument();
+    expect(screen.getAllByText(/score 0.92/).length).toBeGreaterThan(0);
+    expect(
+      fetchMock.mock.calls.some(([request]) => requestUrl(request).searchParams.get("query") === "meaning"),
+    ).toBe(true);
   });
 
   it("shows correction review count and routes to the unified review screen", async () => {

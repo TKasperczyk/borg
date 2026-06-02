@@ -179,6 +179,12 @@ export type SemanticNodeListOptions = {
   kind?: SemanticNodeKind;
   includeArchived?: boolean;
   limit?: number;
+  cursor?: string;
+};
+
+export type SemanticNodeListResult = {
+  items: SemanticNode[];
+  nextCursor?: string;
 };
 
 export type SemanticEdgeListOptions = {

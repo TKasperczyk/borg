@@ -510,6 +510,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         },
         get: (id) => deps.semanticNodeRepository.get(id),
         list: (...args) => deps.semanticNodeRepository.list(...args),
+        listPage: (...args) => deps.semanticNodeRepository.listPage(...args),
         countByStatus: () => deps.semanticNodeRepository.countByStatus(),
         search: async (query, options = {}) => {
           const vector = await deps.embeddingClient.embed(query);

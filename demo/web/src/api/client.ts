@@ -288,10 +288,19 @@ export async function getMemoryBands(
 
 export async function getMemoryBand(
   id: MemoryBandId,
-  input: { session?: string } = {},
+  input: { session?: string; limit?: number; cursor?: string; query?: string } = {},
 ): Promise<MemoryBandDetail> {
   const params = new URLSearchParams();
   addSessionParam(params, input.session);
+  if (input.limit !== undefined) {
+    params.set("limit", String(input.limit));
+  }
+  if (input.cursor !== undefined) {
+    params.set("cursor", input.cursor);
+  }
+  if (input.query !== undefined && input.query.trim().length > 0) {
+    params.set("query", input.query);
+  }
   return fetchJson<MemoryBandDetail>(
     `api/memory/bands/${encodeURIComponent(id)}`,
     undefined,

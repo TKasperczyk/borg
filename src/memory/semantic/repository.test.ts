@@ -296,6 +296,52 @@ describe("semantic repositories", () => {
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
   });
 
+  it("paginates semantic nodes by updated time descending and id ascending", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const first = await fixture.nodeRepository.insert({
+      ...buildNode("semn_aaaaaaaaaaaaaaaa" as SemanticNodeId, "First"),
+      updated_at: 3_000,
+    });
+    const second = await fixture.nodeRepository.insert({
+      ...buildNode("semn_bbbbbbbbbbbbbbbb" as SemanticNodeId, "Second"),
+      updated_at: 2_000,
+    });
+    const third = await fixture.nodeRepository.insert({
+      ...buildNode("semn_cccccccccccccccc" as SemanticNodeId, "Third"),
+      updated_at: 2_000,
+    });
+    const fourth = await fixture.nodeRepository.insert({
+      ...buildNode("semn_dddddddddddddddd" as SemanticNodeId, "Fourth"),
+      updated_at: 1_000,
+    });
+
+    const firstPage = await fixture.nodeRepository.listPage({ limit: 2 });
+    expect(firstPage.items.map((node) => node.id)).toEqual([first.id, second.id]);
+    const cursor = firstPage.nextCursor;
+    expect(cursor).toBeDefined();
+    if (cursor === undefined) {
+      throw new Error("Expected first semantic node page to return a cursor");
+    }
+
+    const secondPage = await fixture.nodeRepository.listPage({
+      limit: 2,
+      cursor,
+    });
+    expect(secondPage.items.map((node) => node.id)).toEqual([third.id, fourth.id]);
+    expect(secondPage.nextCursor).toBeUndefined();
+
+    await expect(
+      fixture.nodeRepository.list({ limit: 2, cursor }),
+    ).resolves.toEqual(secondPage.items);
+  });
+
   it("preserves observation metadata when unrelated patches omit it", async () => {
     const fixture = await createSemanticFixture();
 

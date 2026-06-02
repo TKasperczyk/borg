@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { File } from "node:buffer";
+import { Buffer, File } from "node:buffer";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1138,6 +1138,10 @@ describe("demo server", () => {
         }),
       ],
     });
+    const limitedRelational = await app.request("/api/memory/bands/relational?limit=1");
+    expect(await limitedRelational.json()).toMatchObject({
+      items: [expect.objectContaining({ state: "established" })],
+    });
 
     const commitments = await app.request("/api/commitments?audience=Alice&state=all");
     expect(commitments.status).toBe(200);
@@ -1349,6 +1353,177 @@ describe("demo server", () => {
       source_external_id: customSessionId,
       last_turn_id: null,
       message_count: 1,
+    });
+  });
+
+  it("pages episodic memory band details with next_cursor", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-episodic-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+
+    const oldest = await seedCorrectionEpisode(borg, clock, { title: "Oldest page episode" });
+    clock.advance(10);
+    const middle = await seedCorrectionEpisode(borg, clock, { title: "Middle page episode" });
+    clock.advance(10);
+    const newest = await seedCorrectionEpisode(borg, clock, { title: "Newest page episode" });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const firstResponse = await app.request("/api/memory/bands/episodic?limit=2");
+    expect(firstResponse.status).toBe(200);
+    const first = (await firstResponse.json()) as {
+      items: Array<{ id: string }>;
+      next_cursor: string | null;
+    };
+    expect(first.items.map((item) => item.id)).toEqual([newest.id, middle.id]);
+    expect(first.next_cursor).not.toBeNull();
+
+    const secondResponse = await app.request(
+      `/api/memory/bands/episodic?limit=2&cursor=${first.next_cursor}`,
+    );
+    expect(secondResponse.status).toBe(200);
+    const second = (await secondResponse.json()) as {
+      items: Array<{ id: string }>;
+      next_cursor: string | null;
+    };
+    expect(second.items.map((item) => item.id)).toEqual([oldest.id]);
+    expect(second.next_cursor).toBeNull();
+  });
+
+  it("pages semantic memory nodes with next_cursor", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-semantic-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const sourceEpisodeId = createEpisodeId();
+
+    const oldest = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "Oldest node",
+      description: "Oldest node description",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
+    clock.advance(10);
+    const middle = await borg.semantic.nodes.add({
+      kind: "entity",
+      label: "Middle node",
+      description: "Middle node description",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
+    clock.advance(10);
+    const newest = await borg.semantic.nodes.add({
+      kind: "proposition",
+      label: "Newest node",
+      description: "Newest node description",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const firstResponse = await app.request("/api/memory/bands/semantic?limit=2");
+    expect(firstResponse.status).toBe(200);
+    const first = (await firstResponse.json()) as {
+      nodes: Array<{ id: string }>;
+      next_cursor: string | null;
+    };
+    expect(first.nodes.map((node) => node.id)).toEqual([newest.id, middle.id]);
+    expect(first.next_cursor).not.toBeNull();
+
+    const secondResponse = await app.request(
+      `/api/memory/bands/semantic?limit=2&cursor=${first.next_cursor}`,
+    );
+    expect(secondResponse.status).toBe(200);
+    const second = (await secondResponse.json()) as {
+      nodes: Array<{ id: string }>;
+      next_cursor: string | null;
+    };
+    expect(second.nodes.map((node) => node.id)).toEqual([oldest.id]);
+    expect(second.next_cursor).toBeNull();
+  });
+
+  it("returns bad request for malformed memory band cursors", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-cursor-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const staleShapeCursor = Buffer.from(
+      JSON.stringify({ ts: 123, entryId: "strm_stale_cursor_shape" }),
+      "utf8",
+    ).toString("base64url");
+
+    for (const band of ["episodic", "semantic"] as const) {
+      for (const cursor of ["not-a-memory-cursor", staleShapeCursor]) {
+        const response = await app.request(
+          `/api/memory/bands/${band}?cursor=${encodeURIComponent(cursor)}`,
+        );
+        const body = (await response.json()) as { error: { status: number; message: string } };
+
+        expect(response.status).toBe(400);
+        expect(response.status).not.toBe(500);
+        expect(body.error.status).toBe(400);
+      }
+    }
+  });
+
+  it("delegates memory band text search to facade search methods", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-search-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const episode = await seedCorrectionEpisode(borg, clock, { title: "Searchable episode" });
+    const semanticNode = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "Searchable node",
+      description: "Searchable node description",
+      sourceEpisodeIds: [episode.id],
+    });
+    const skill = await borg.skills.add({
+      applies_when: "searchable procedural context",
+      approach: "return the delegated skill",
+      sourceEpisodes: [episode.id],
+    });
+    const episodicSearch = vi.spyOn(borg.episodic, "search").mockResolvedValue([
+      {
+        episode,
+        score: 0.91,
+      } as Awaited<ReturnType<Borg["episodic"]["search"]>>[number],
+    ]);
+    const semanticSearch = vi.spyOn(borg.semantic.nodes, "search").mockResolvedValue([
+      { node: semanticNode, similarity: 0.82 },
+    ]);
+    const proceduralSearch = vi
+      .spyOn(borg.skills, "searchByContext")
+      .mockResolvedValue([{ skill, similarity: 0.73 }]);
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const episodicResponse = await app.request("/api/memory/bands/episodic?query=meaning&limit=3");
+    expect(episodicSearch).toHaveBeenCalledWith("meaning", { limit: 3 });
+    expect(await episodicResponse.json()).toMatchObject({
+      mode: "search",
+      query: "meaning",
+      next_cursor: null,
+      items: [expect.objectContaining({ id: episode.id, search_score: 0.91 })],
+    });
+
+    const semanticResponse = await app.request("/api/memory/bands/semantic?query=meaning&limit=4");
+    expect(semanticSearch).toHaveBeenCalledWith("meaning", { limit: 4 });
+    expect(await semanticResponse.json()).toMatchObject({
+      mode: "search",
+      query: "meaning",
+      next_cursor: null,
+      nodes: [expect.objectContaining({ id: semanticNode.id, search_score: 0.82 })],
+      edges: [],
+    });
+
+    const proceduralResponse = await app.request(
+      "/api/memory/bands/procedural?query=meaning&limit=5",
+    );
+    expect(proceduralSearch).toHaveBeenCalledWith("meaning", 5);
+    expect(await proceduralResponse.json()).toMatchObject({
+      mode: "search",
+      query: "meaning",
+      next_cursor: null,
+      items: [expect.objectContaining({ id: skill.id, search_score: 0.73 })],
     });
   });
 

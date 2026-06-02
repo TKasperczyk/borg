@@ -176,6 +176,7 @@ export {
   type SemanticNode,
   type SemanticNodeKind,
   type SemanticNodeListOptions,
+  type SemanticNodeListResult,
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
   type SemanticNodeSearchOptions,
