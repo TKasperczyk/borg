@@ -702,10 +702,19 @@ describe("P2 screens", () => {
     const reversibleRow = {
       id: 7,
       run_id: "run_audit",
-      process: "creator-directive-reconciler",
-      action: "creator_directive_merge",
-      targets: { survivor_id: "cdir_survivor", superseded_ids: ["cdir_loser"] },
-      reversal: { superseded: [{ id: "cdir_loser", expected_record_version: 2 }] },
+      process: "curator",
+      action: "decay",
+      targets: { episode_ids: ["ep_decay1"] },
+      reversal: {
+        decay: [
+          {
+            episode_id: "ep_decay1",
+            old_salience: 0.8,
+            new_salience: 0.4,
+          },
+        ],
+        previous: [{ episode_id: "ep_decay1", tier: "T1" }],
+      },
       applied_at: 4,
       reverted_at: null,
       reverted_by: null,
@@ -713,6 +722,7 @@ describe("P2 screens", () => {
     const nonReversibleRow = {
       ...reversibleRow,
       id: 8,
+      run_id: "run_none",
       action: "noop",
       targets: { id: "no_reverse" },
       reversal: {},
@@ -720,8 +730,21 @@ describe("P2 screens", () => {
     const revertedRow = {
       ...reversibleRow,
       id: 9,
+      process: "creator-directive-reconciler",
+      action: "creator_directive_merge",
       reverted_at: 6,
       reverted_by: "demo_operator",
+    };
+    const dreamReport = {
+      run_id: "run_audit",
+      processes: ["curator"],
+      dry_run: false,
+      planned_at: 3,
+      changes: 2,
+      tokens_used: 99,
+      errors: [{ process: "curator", message: "curator warning" }],
+      budget_exhausted_processes: ["curator"],
+      notes: ["Budget exhausted: curator"],
     };
     let stateCalls = 0;
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
@@ -737,6 +760,7 @@ describe("P2 screens", () => {
               stateCalls === 1
                 ? [reversibleRow, nonReversibleRow, revertedRow]
                 : [{ ...reversibleRow, reverted_at: 7, reverted_by: "demo_operator" }],
+            dream_reports: [dreamReport],
             belief_revision_rows: [],
             scheduler: {
               enabled: true,
@@ -774,10 +798,36 @@ describe("P2 screens", () => {
     expect(enabled).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "revert audit 8" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "revert audit 9" })).toBeDisabled();
-    expect(screen.getByText("auto-resolved")).toBeInTheDocument();
     expect(screen.getAllByText("reverted").length).toBeGreaterThan(0);
+    expect(screen.getByRole("row", { name: /audit run run_audit/i })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /audit run run_none/i })).toBeInTheDocument();
+    expect(screen.getByText("2 changes")).toBeInTheDocument();
+    expect(screen.getByText("99 tok")).toBeInTheDocument();
+    expect(screen.getByText("1 errors")).toBeInTheDocument();
+    expect(screen.getByText("budget curator")).toBeInTheDocument();
+    expect(screen.getByText("Budget exhausted: curator")).toBeInTheDocument();
+    expect(screen.getByText("no matching dream_report in state window")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "show audit 7 payload" }));
+    expect(screen.getByText("applied target")).toBeInTheDocument();
+    expect(screen.getByText("undo/change payload")).toBeInTheDocument();
+    expect(screen.getByText("salience")).toBeInTheDocument();
+    expect(screen.getByText("0.8")).toBeInTheDocument();
+    expect(screen.getByText("0.4")).toBeInTheDocument();
+    expect(screen.getByText("raw reversal JSON")).toBeInTheDocument();
 
     fireEvent.click(enabled);
+    expect(screen.getByRole("dialog")).toHaveTextContent("revert maintenance change?");
+    expect(screen.getByRole("dialog")).toHaveTextContent("curator");
+    expect(screen.getByRole("dialog")).toHaveTextContent("episode ep_decay1");
+    expect(
+      fetchMock.mock.calls.some(
+        ([request, init]) =>
+          requestPath(request) === "/api/dream/audit/7/revert" && init?.method === "POST",
+      ),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "confirm revert" }));
 
     await waitFor(() => {
       expect(

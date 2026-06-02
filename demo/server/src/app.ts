@@ -1833,6 +1833,76 @@ function streamDreamHasProcessError(entry: StreamEntry, process: OfflineProcessN
   });
 }
 
+function streamDreamStringArray(entry: StreamEntry, key: string): string[] {
+  if (!isRecord(entry.content)) {
+    return [];
+  }
+
+  const value = entry.content[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function streamDreamRecordArray(entry: StreamEntry, key: string): Array<Record<string, unknown>> {
+  if (!isRecord(entry.content)) {
+    return [];
+  }
+
+  const value = entry.content[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is Record<string, unknown> => isRecord(item));
+}
+
+function streamDreamNumber(entry: StreamEntry, key: string, fallback: number): number {
+  if (!isRecord(entry.content)) {
+    return fallback;
+  }
+
+  const value = entry.content[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function streamDreamOptionalNumber(entry: StreamEntry, key: string): number | null {
+  if (!isRecord(entry.content)) {
+    return null;
+  }
+
+  const value = entry.content[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function mapDreamReport(entry: StreamEntry) {
+  if (entry.kind !== "dream_report" || !isRecord(entry.content)) {
+    return null;
+  }
+
+  const runId = entry.content.run_id;
+  if (typeof runId !== "string" || runId.length === 0) {
+    return null;
+  }
+
+  return {
+    run_id: runId,
+    processes: streamDreamProcesses(entry),
+    dry_run: entry.content.dry_run === true,
+    planned_at: streamDreamOptionalNumber(entry, "planned_at"),
+    changes: streamDreamNumber(entry, "changes", 0),
+    tokens_used: streamDreamNumber(entry, "tokens_used", 0),
+    errors: streamDreamRecordArray(entry, "errors"),
+    budget_exhausted_processes: streamDreamStringArray(entry, "budget_exhausted_processes").filter(
+      (process): process is OfflineProcessName =>
+        OFFLINE_PROCESS_NAMES.includes(process as OfflineProcessName),
+    ),
+    notes: streamDreamStringArray(entry, "notes"),
+  };
+}
+
 function dreamScheduleFromAudit(
   rows: ReadonlyArray<Pick<MaintenanceAuditRecord, "id" | "applied_at"> & { process: string }>,
 ) {
@@ -2100,6 +2170,9 @@ async function dreamState(borg: Borg) {
     schedule: [...streamSchedule, ...dreamScheduleFromAudit(auditRows)]
       .sort((left, right) => right.scheduled_at - left.scheduled_at)
       .slice(0, 80),
+    dream_reports: dreamReports
+      .map((entry) => mapDreamReport(entry))
+      .filter((report): report is NonNullable<typeof report> => report !== null),
     audit_rows: auditRows.map((row) => mapMaintenanceAuditRow(row)),
     belief_revision_rows: borg.review
       .list({ kind: "belief_revision", openOnly: true })

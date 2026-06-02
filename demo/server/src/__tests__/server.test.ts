@@ -583,11 +583,20 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   );
 
   clock.advance(10);
+  const dreamRunId = createMaintenanceRunId();
+  const dreamPlannedAt = clock.now();
   await borg.stream.append({
     kind: "dream_report",
     content: {
+      run_id: dreamRunId,
       processes: ["belief-reviser"],
+      dry_run: false,
+      planned_at: dreamPlannedAt,
+      changes: 1,
+      tokens_used: 1234,
       errors: [{ process: "belief-reviser", message: "old stream failure" }],
+      budget_exhausted_processes: ["belief-reviser"],
+      notes: ["Budget exhausted: belief-reviser"],
     },
     turn_id: "turn_dream_old",
   });
@@ -610,6 +619,8 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   return {
     attachmentId,
     audit,
+    dreamPlannedAt,
+    dreamRunId,
     review,
     skill,
   };
@@ -1217,6 +1228,19 @@ describe("demo server", () => {
         }),
         expect.objectContaining({ process: "belief-reviser", source: "stream" }),
       ]),
+      dream_reports: [
+        expect.objectContaining({
+          run_id: seeded.dreamRunId,
+          processes: ["belief-reviser"],
+          dry_run: false,
+          planned_at: seeded.dreamPlannedAt,
+          changes: 1,
+          tokens_used: 1234,
+          errors: [expect.objectContaining({ process: "belief-reviser" })],
+          budget_exhausted_processes: ["belief-reviser"],
+          notes: ["Budget exhausted: belief-reviser"],
+        }),
+      ],
       audit_rows: [expect.objectContaining({ id: seeded.audit.id })],
       belief_revision_rows: [
         expect.objectContaining({ id: seeded.review.id, kind: "belief_revision" }),

@@ -788,10 +788,23 @@ export type DreamScheduleItem = {
   stream_entry_id?: string;
 };
 
+export type DreamReport = {
+  run_id: string;
+  processes: DreamProcessName[];
+  dry_run: boolean;
+  planned_at: number | null;
+  changes: number;
+  tokens_used: number;
+  errors: Array<Record<string, unknown>>;
+  budget_exhausted_processes: DreamProcessName[];
+  notes: string[];
+};
+
 export type DreamStateResponse = {
   processes: DreamProcessSummary[];
   pending_extraction_episodes?: number;
   schedule: DreamScheduleItem[];
+  dream_reports: DreamReport[];
   audit_rows: MaintenanceAuditRow[];
   belief_revision_rows: ReviewRow[];
   scheduler: {

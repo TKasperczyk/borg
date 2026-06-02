@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getDreamAudit,
@@ -9,6 +9,7 @@ import {
 } from "../../api/client";
 import type {
   DreamApplyResponse,
+  DreamReport,
   MaintenanceTickFrame,
   MaintenanceAuditRow,
   DreamPlanResponse,
@@ -20,7 +21,14 @@ import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
-import { displayTargetSummary } from "../screen-utils";
+import {
+  displayTargetSummary,
+  displayValue,
+  fieldLabel,
+  isRecord,
+  jsonText,
+  shortId,
+} from "../screen-utils";
 
 const PROCESS_NAMES: DreamProcessName[] = [
   "consolidator",
@@ -118,6 +126,73 @@ function auditStatusTone(row: MaintenanceAuditRow): "" | "acc" | "warn" | "bad" 
   return auditHasReversal(row) ? "acc" : "";
 }
 
+type AuditRunGroup = {
+  runId: string;
+  rows: MaintenanceAuditRow[];
+  latestAppliedAt: number;
+  processes: string[];
+  revertedCount: number;
+};
+
+type OldNewPair = {
+  field: string;
+  oldKey: string;
+  newKey: string;
+  before: unknown;
+  after: unknown;
+};
+
+function auditRunGroups(rows: readonly MaintenanceAuditRow[]): AuditRunGroup[] {
+  return [
+    ...rows.reduce((groups, row) => {
+      const group = groups.get(row.run_id) ?? [];
+      group.push(row);
+      groups.set(row.run_id, group);
+      return groups;
+    }, new Map<string, MaintenanceAuditRow[]>()),
+  ]
+    .map(([runId, runRows]) => ({
+      runId,
+      rows: runRows,
+      latestAppliedAt: Math.max(...runRows.map((row) => row.applied_at)),
+      processes: [...new Set(runRows.map((row) => row.process))],
+      revertedCount: runRows.filter((row) => row.reverted_at !== null).length,
+    }))
+    .sort((left, right) => right.latestAppliedAt - left.latestAppliedAt);
+}
+
+function oldNewPairs(record: Record<string, unknown>): OldNewPair[] {
+  return Object.entries(record).flatMap(([key, before]) => {
+    if (!key.startsWith("old_")) {
+      return [];
+    }
+
+    const field = key.slice("old_".length);
+    const newKey = `new_${field}`;
+    if (!Object.prototype.hasOwnProperty.call(record, newKey)) {
+      return [];
+    }
+
+    return [
+      {
+        field,
+        oldKey: key,
+        newKey,
+        before,
+        after: record[newKey],
+      },
+    ];
+  });
+}
+
+function pairedKeys(pairs: readonly OldNewPair[]): Set<string> {
+  return new Set(pairs.flatMap((pair) => [pair.oldKey, pair.newKey]));
+}
+
+function hasPayload(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
+}
+
 export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
@@ -131,6 +206,8 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const [busy, setBusy] = useState<"plan" | "apply" | "revert" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
+  const [expandedAuditRows, setExpandedAuditRows] = useState<Record<number, boolean>>({});
+  const [revertCandidate, setRevertCandidate] = useState<MaintenanceAuditRow | null>(null);
   // Per-process live status tracked across a dream run. A run does TWO sweeps
   // through every process: plan (dry-run, possibly LLM work) then apply
   // (commit). We surface both so the user sees activity through the full
@@ -217,6 +294,14 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
       },
   );
   const selectedProcess = processes.find((process) => process.name === selected) ?? processes[0];
+  const reportsByRunId = useMemo(
+    () => new Map((state?.dream_reports ?? []).map((report) => [report.run_id, report])),
+    [state?.dream_reports],
+  );
+  const groupedAuditRows = useMemo(
+    () => auditRunGroups(state?.audit_rows ?? []),
+    [state?.audit_rows],
+  );
 
   async function loadPlan(openConfirm: boolean): Promise<void> {
     setBusy("plan");
@@ -270,6 +355,19 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     }
   }
 
+  function toggleAuditRow(rowId: number): void {
+    setExpandedAuditRows((current) => ({ ...current, [rowId]: current[rowId] !== true }));
+  }
+
+  function openRevertConfirm(row: MaintenanceAuditRow): void {
+    if (!auditCanRevert(row)) {
+      return;
+    }
+
+    setOperatorError(null);
+    setRevertCandidate(row);
+  }
+
   async function revertAuditRow(row: MaintenanceAuditRow): Promise<void> {
     if (!auditCanRevert(row)) {
       return;
@@ -280,6 +378,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     try {
       await revertDreamAudit(row.id);
       await Promise.all([refetch(), getDreamAudit()]);
+      setRevertCandidate(null);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -514,53 +613,79 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                 <th>target</th>
                 <th>reverter</th>
                 <th>status</th>
+                <th>detail</th>
                 <th>undo</th>
               </tr>
             </thead>
             <tbody>
-              {(state?.audit_rows ?? []).map((row) => (
-                <tr key={row.id}>
-                  <td className="dim">{formatTime(row.applied_at)}</td>
-                  <td>
-                    <span className="purple">{row.process}</span>
-                  </td>
-                  <td className="dim">{row.action}</td>
-                  <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
-                    {displayTargetSummary(row.targets)}
-                  </td>
-                  <td>
-                    {auditHasReversal(row) ? (
-                      <Tag kind="acc" dot>
-                        reverter
-                      </Tag>
-                    ) : (
-                      <Tag kind="warn">no_reverser</Tag>
-                    )}
-                  </td>
-                  <td>
-                    <Tag kind={auditStatusTone(row)} dot>
-                      {auditStatusLabel(row)}
-                    </Tag>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      className={auditCanRevert(row) ? "btn sm primary" : "btn sm ghost"}
-                      disabled={busy !== null || !auditCanRevert(row)}
-                      title={auditRevertTitle(row)}
-                      aria-label={`revert audit ${row.id}`}
-                      onClick={() => void revertAuditRow(row)}
-                    >
-                      {busy === "revert" && auditCanRevert(row)
-                        ? "reverting"
-                        : auditRevertLabel(row)}
-                    </button>
-                  </td>
-                </tr>
+              {groupedAuditRows.map((group) => (
+                <Fragment key={group.runId}>
+                  <AuditRunHeader group={group} report={reportsByRunId.get(group.runId)} />
+                  {group.rows.map((row) => {
+                    const expanded = expandedAuditRows[row.id] === true;
+                    return (
+                      <Fragment key={row.id}>
+                        <tr>
+                          <td className="dim">{formatTime(row.applied_at)}</td>
+                          <td>
+                            <span className="purple">{row.process}</span>
+                          </td>
+                          <td className="dim">{row.action}</td>
+                          <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
+                            {displayTargetSummary(row.targets)}
+                          </td>
+                          <td>
+                            {auditHasReversal(row) ? (
+                              <Tag kind="acc" dot>
+                                reverter
+                              </Tag>
+                            ) : (
+                              <Tag kind="warn">no_reverser</Tag>
+                            )}
+                          </td>
+                          <td>
+                            <Tag kind={auditStatusTone(row)} dot>
+                              {auditStatusLabel(row)}
+                            </Tag>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn sm ghost"
+                              aria-label={`${expanded ? "hide" : "show"} audit ${row.id} payload`}
+                              onClick={() => toggleAuditRow(row.id)}
+                            >
+                              {expanded ? "hide" : "payload"}
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className={auditCanRevert(row) ? "btn sm primary" : "btn sm ghost"}
+                              disabled={busy !== null || !auditCanRevert(row)}
+                              title={auditRevertTitle(row)}
+                              aria-label={`revert audit ${row.id}`}
+                              onClick={() => openRevertConfirm(row)}
+                            >
+                              {auditRevertLabel(row)}
+                            </button>
+                          </td>
+                        </tr>
+                        {expanded ? (
+                          <tr>
+                            <td colSpan={8}>
+                              <AuditPayloadDetail row={row} />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
               ))}
               {(state?.audit_rows.length ?? 0) === 0 ? (
                 <tr>
-                  <td colSpan={7} className="dim">
+                  <td colSpan={8} className="dim">
                     no audit rows yet
                   </td>
                 </tr>
@@ -681,8 +806,308 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
           </div>
         )}
       </Modal>
+      <Modal
+        open={revertCandidate !== null}
+        title="revert maintenance change?"
+        onClose={busy === "revert" ? () => undefined : () => setRevertCandidate(null)}
+        footer={
+          <>
+            <button
+              className="btn sm ghost"
+              disabled={busy === "revert"}
+              onClick={() => setRevertCandidate(null)}
+            >
+              cancel
+            </button>
+            <button
+              className="btn sm primary"
+              disabled={busy !== null || revertCandidate === null}
+              onClick={() => {
+                if (revertCandidate !== null) {
+                  void revertAuditRow(revertCandidate);
+                }
+              }}
+            >
+              {busy === "revert" ? "reverting" : "confirm revert"}
+            </button>
+          </>
+        }
+      >
+        {revertCandidate === null ? (
+          <div className="dim">no audit row selected</div>
+        ) : (
+          <div className="modal-form">
+            <div className="props">
+              <div className="row">
+                <span className="k">process</span>
+                <span className="v">{revertCandidate.process}</span>
+              </div>
+              <div className="row">
+                <span className="k">action</span>
+                <span className="v">{revertCandidate.action}</span>
+              </div>
+              <div className="row">
+                <span className="k">target</span>
+                <span className="v">{displayTargetSummary(revertCandidate.targets)}</span>
+              </div>
+            </div>
+            <AuditPayloadDetail row={revertCandidate} compact />
+          </div>
+        )}
+      </Modal>
     </div>
   );
+}
+
+function AuditRunHeader({ group, report }: { group: AuditRunGroup; report?: DreamReport }) {
+  return (
+    <tr aria-label={`audit run ${group.runId}`}>
+      <td colSpan={8} style={{ background: "var(--bg-0)" }}>
+        <div style={{ display: "grid", gap: 7 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Tag kind="info">run {shortId(group.runId)}</Tag>
+            <span className="dim" style={{ fontSize: 10.5 }}>
+              {group.rows.length} rows
+            </span>
+            <span className="dim" style={{ fontSize: 10.5 }}>
+              {group.processes.join(", ")}
+            </span>
+            <Tag kind={group.revertedCount > 0 ? "warn" : ""}>
+              {group.revertedCount} reverted
+            </Tag>
+          </div>
+          <DreamReportInlineSummary report={report} />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function DreamReportInlineSummary({ report }: { report?: DreamReport }) {
+  if (report === undefined) {
+    return (
+      <div className="dim" style={{ fontSize: 10.5 }}>
+        no matching dream_report in state window
+      </div>
+    );
+  }
+
+  const errorCount = report.errors.length;
+  const budgetCount = report.budget_exhausted_processes.length;
+
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <Tag kind="purple" dot>
+        dream_report
+      </Tag>
+      <Tag kind={report.changes > 0 ? "acc" : ""}>{report.changes} changes</Tag>
+      <Tag>{report.tokens_used} tok</Tag>
+      <Tag kind={errorCount > 0 ? "bad" : "acc"}>{errorCount} errors</Tag>
+      {report.dry_run ? <Tag kind="warn">dry run</Tag> : null}
+      {budgetCount > 0 ? (
+        <Tag kind="warn">budget {report.budget_exhausted_processes.join(", ")}</Tag>
+      ) : null}
+      {report.notes.map((note, index) => (
+        <span key={`${report.run_id}-note-${index}`} className="dim" style={{ fontSize: 10.5 }}>
+          {note}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AuditPayloadDetail({
+  row,
+  compact = false,
+}: {
+  row: MaintenanceAuditRow;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 10,
+        padding: compact ? 0 : 12,
+        background: compact ? undefined : "var(--bg-0)",
+      }}
+    >
+      <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.45 }}>
+        Reversal payloads are process-specific restore data. Explicit old/new machine fields are
+        highlighted; raw JSON remains available below.
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+          gap: 10,
+        }}
+      >
+        <PayloadPanel title="applied target" value={row.targets} rawLabel="raw target JSON" />
+        <PayloadPanel
+          title="undo/change payload"
+          value={row.reversal}
+          rawLabel="raw reversal JSON"
+          emptyText="no reversal payload recorded"
+        />
+      </div>
+    </div>
+  );
+}
+
+function PayloadPanel({
+  title,
+  value,
+  rawLabel,
+  emptyText,
+}: {
+  title: string;
+  value: Record<string, unknown>;
+  rawLabel: string;
+  emptyText?: string;
+}) {
+  return (
+    <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
+      <div className="upper dim" style={{ marginBottom: 8 }}>
+        {title}
+      </div>
+      {hasPayload(value) ? (
+        <StructuredPayload value={value} />
+      ) : (
+        <div className="dim">{emptyText ?? "empty payload"}</div>
+      )}
+      <RawJsonDisclosure label={rawLabel} value={value} />
+    </div>
+  );
+}
+
+function RawJsonDisclosure({ label, value }: { label: string; value: unknown }) {
+  return (
+    <details style={{ marginTop: 10 }}>
+      <summary className="dim" style={{ cursor: "pointer", fontSize: 10.5 }}>
+        {label}
+      </summary>
+      <pre style={{ marginTop: 8, maxHeight: 260, overflow: "auto" }}>{jsonText(value)}</pre>
+    </details>
+  );
+}
+
+function StructuredPayload({ value }: { value: Record<string, unknown> }) {
+  return <PayloadRecord record={value} />;
+}
+
+function PayloadRecord({ record }: { record: Record<string, unknown> }) {
+  const pairs = oldNewPairs(record);
+  const consumed = pairedKeys(pairs);
+
+  return (
+    <div className="props">
+      {pairs.length === 0 ? null : <OldNewPairs pairs={pairs} />}
+      {Object.entries(record)
+        .filter(([key]) => !consumed.has(key))
+        .map(([key, value]) => (
+          <div className="row" key={key}>
+            <span className="k">{fieldLabel(key)}</span>
+            <div className="v" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {key === "previous_fields" && isRecord(value) ? (
+                <PreviousFields record={value} />
+              ) : (
+                <StructuredValue value={value} />
+              )}
+            </div>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+function OldNewPairs({ pairs }: { pairs: readonly OldNewPair[] }) {
+  return (
+    <>
+      {pairs.map((pair) => (
+        <div className="row" key={pair.field}>
+          <span className="k warn">{fieldLabel(pair.field)}</span>
+          <div
+            className="v warn"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+              gap: 8,
+              alignItems: "center",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            <span>{displayValue(pair.before)}</span>
+            <span className="dim">-&gt;</span>
+            <span>{displayValue(pair.after)}</span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function PreviousFields({ record }: { record: Record<string, unknown> }) {
+  const entries = Object.entries(record);
+
+  if (entries.length === 0) {
+    return <span className="dim">empty restore field set</span>;
+  }
+
+  return (
+    <div className="props">
+      {entries.map(([key, value]) => (
+        <div className="row" key={key}>
+          <span className="k warn">restore {fieldLabel(key)}</span>
+          <span className="v warn" style={{ whiteSpace: "pre-wrap" }}>
+            {displayValue(value)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StructuredValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return <span className="dim">empty array</span>;
+    }
+
+    if (!value.some((item) => isRecord(item))) {
+      return <span>{displayValue(value)}</span>;
+    }
+
+    return (
+      <div style={{ display: "grid", gap: 6 }}>
+        {value.map((item, index) =>
+          isRecord(item) ? (
+            <div
+              key={index}
+              className="item"
+              style={{ padding: 8, border: "1px solid var(--line-soft)" }}
+            >
+              <div className="upper dim" style={{ marginBottom: 6 }}>
+                item {index + 1}
+              </div>
+              <PayloadRecord record={item} />
+            </div>
+          ) : (
+            <div className="row" key={index}>
+              <span className="k">{index + 1}</span>
+              <span className="v">{displayValue(item)}</span>
+            </div>
+          ),
+        )}
+      </div>
+    );
+  }
+
+  if (isRecord(value)) {
+    return <PayloadRecord record={value} />;
+  }
+
+  return <span>{displayValue(value)}</span>;
 }
 
 function DreamCard({
