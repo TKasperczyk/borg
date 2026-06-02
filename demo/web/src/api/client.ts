@@ -58,6 +58,7 @@ import type {
   StreamResponse,
   TurnRequest,
   TurnResponse,
+  TurnsResponse,
   WhyResponse,
 } from "./types";
 
@@ -248,6 +249,23 @@ export async function getStream(input: {
   }
 
   return fetchJson<StreamResponse>("api/stream", undefined, params);
+}
+
+export async function getTurns(input: {
+  session?: string;
+  limit?: number;
+  cursor?: string;
+} = {}): Promise<TurnsResponse> {
+  const params = new URLSearchParams();
+  addSessionParam(params, input.session);
+  if (input.limit !== undefined) {
+    params.set("limit", String(input.limit));
+  }
+  if (input.cursor !== undefined) {
+    params.set("cursor", input.cursor);
+  }
+
+  return fetchJson<TurnsResponse>("api/turns", undefined, params);
 }
 
 export async function getLedger(turnId: string): Promise<LedgerResponse> {

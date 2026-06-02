@@ -99,12 +99,18 @@ function sessionRecord(input: Partial<SessionRecord> = {}): SessionRecord {
 function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
+    turnHistoryRows?: unknown[];
     turnResponse?: Response | Promise<Response>;
     turnResponses?: Array<Response | Promise<Response>>;
   } = {},
-): { fetchMock: ReturnType<typeof vi.fn>; streamCalls: () => number } {
+): {
+  fetchMock: ReturnType<typeof vi.fn>;
+  streamCalls: () => number;
+  turnHistoryCalls: () => number;
+} {
   const streamResponses = input.streamEntries ?? [[]];
   let streamCallCount = 0;
+  let turnHistoryCallCount = 0;
   let turnCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
@@ -112,6 +118,12 @@ function installCognitionFetch(
       const entries = streamResponses[Math.min(streamCallCount, streamResponses.length - 1)];
       streamCallCount += 1;
       return Promise.resolve(jsonResponse({ entries, next_cursor: null }));
+    }
+    if (url.includes("/api/turns") && !url.includes("/ledger")) {
+      turnHistoryCallCount += 1;
+      return Promise.resolve(
+        jsonResponse({ rows: input.turnHistoryRows ?? [], next_cursor: null }),
+      );
     }
     if (url.endsWith("/api/shared-state?audience=alice")) {
       return Promise.resolve(jsonResponse({ audience: "alice", entries: [] }));
@@ -151,6 +163,7 @@ function installCognitionFetch(
   return {
     fetchMock,
     streamCalls: () => streamCallCount,
+    turnHistoryCalls: () => turnHistoryCallCount,
   };
 }
 
@@ -333,6 +346,86 @@ describe("cognition screen", () => {
     expect(screen.getByText("ledger not loaded yet")).toBeInTheDocument();
   });
 
+  it("renders every backend ledger section dynamically", () => {
+    render(
+      <LedgerView
+        turnId="turn_sections"
+        cachedLedger={{
+          ...ledgerWithText("episode kept"),
+          sections: [
+            {
+              id: "current_session_transcript",
+              label: "current session transcript",
+              entries: [
+                {
+                  id: "ledger_transcript",
+                  source_type: "current_session_stream",
+                  session_scope: "current_session",
+                  actor: "user",
+                  trust_rank: 1,
+                  text: "transcript kept",
+                },
+              ],
+            },
+            {
+              id: "action_states",
+              label: "action states",
+              entries: [
+                {
+                  id: "ledger_action",
+                  source_type: "action_record",
+                  session_scope: "current_session",
+                  actor: "memory",
+                  trust_rank: 2,
+                  text: "action kept",
+                },
+              ],
+            },
+            {
+              id: "attribution_matrix",
+              label: "attribution matrix",
+              entries: [
+                {
+                  id: "ledger_attr",
+                  source_type: "system_metadata",
+                  session_scope: "current_session",
+                  actor: "system",
+                  trust_rank: 3,
+                  text: "attribution kept",
+                },
+              ],
+            },
+            {
+              id: "open_questions",
+              label: "open questions",
+              entries: [
+                {
+                  id: "ledger_question",
+                  source_type: "system_metadata",
+                  session_scope: "current_session",
+                  actor: "memory",
+                  trust_rank: 4,
+                  text: "question kept",
+                },
+              ],
+            },
+          ],
+        }}
+        active
+        audience="alice"
+      />,
+    );
+
+    expect(screen.getByText("current session transcript")).toBeInTheDocument();
+    expect(screen.getByText("transcript kept")).toBeInTheDocument();
+    expect(screen.getByText("action states")).toBeInTheDocument();
+    expect(screen.getByText("action kept")).toBeInTheDocument();
+    expect(screen.getByText("attribution matrix")).toBeInTheDocument();
+    expect(screen.getByText("attribution kept")).toBeInTheDocument();
+    expect(screen.getByText("open questions")).toBeInTheDocument();
+    expect(screen.getByText("question kept")).toBeInTheDocument();
+  });
+
   it("shows an optimistic queued user bubble immediately and marks it sent after ack", async () => {
     const source = makeLiveSource();
     const pendingTurn = deferredResponse();
@@ -398,6 +491,39 @@ describe("cognition screen", () => {
 
     expect(screen.getByText("turn_batch")).toBeInTheDocument();
     expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
+  });
+
+  it("selects a pre-restart history row with a retained-trace placeholder", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnHistoryRows: [
+        {
+          turn_id: "turn_old",
+          started_at: 1,
+          audience: "alice",
+          outcome: "failed",
+          suppression_reason: null,
+        },
+      ],
+    });
+
+    render(<Harness live={source.live()} />);
+
+    fireEvent.click(await screen.findByText("turn_old"));
+
+    expect(
+      screen.getByText(
+        "trace not retained (pre-restart) - durable replay lands in a later persistence sprint",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "live" }));
+
+    expect(
+      screen.queryByText(
+        "trace not retained (pre-restart) - durable replay lands in a later persistence sprint",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("releases the active turn after terminal so a later batch from rapid sends is visualized", async () => {
@@ -1065,6 +1191,50 @@ describe("cognition screen", () => {
     });
 
     expect(streamCalls()).toBe(1);
+  });
+
+  it("refetches invocation history only for terminal stream appends", async () => {
+    const source = makeLiveSource();
+    const { turnHistoryCalls } = installCognitionFetch();
+
+    render(<Harness live={source.live()} />);
+
+    await waitFor(() => expect(turnHistoryCalls()).toBe(1));
+
+    act(() => {
+      source.emit({
+        type: "stream:append",
+        ts: Date.now(),
+        entries: [
+          streamEntry({
+            id: "strm_user_no_history_refetch",
+            kind: "user_msg",
+            content: "not terminal",
+          }),
+        ],
+      });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(turnHistoryCalls()).toBe(1);
+
+    act(() => {
+      source.emit({
+        type: "stream:append",
+        ts: Date.now(),
+        entries: [
+          streamEntry({
+            id: "strm_agent_history_refetch",
+            kind: "agent_msg",
+            content: "terminal",
+          }),
+        ],
+      });
+    });
+
+    await waitFor(() => expect(turnHistoryCalls()).toBe(2));
   });
 
   it("rebuilds the tail from stream entries on WebSocket reconnect", async () => {

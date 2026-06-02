@@ -1,3 +1,5 @@
+import type { SuppressionOutcomeClass } from "borg/suppression-outcome";
+
 export type JsonValue =
   | null
   | boolean
@@ -120,6 +122,24 @@ export type AgentObservedStreamContent = {
 
 export type StreamResponse = {
   entries: StreamEntry[];
+  next_cursor: string | null;
+};
+
+export type TurnHistoryOutcomeClass =
+  | "emitted"
+  | "failed"
+  | SuppressionOutcomeClass;
+
+export type TurnHistoryRow = {
+  turn_id: string;
+  started_at: number;
+  audience: string | null;
+  outcome: TurnHistoryOutcomeClass;
+  suppression_reason: string | null;
+};
+
+export type TurnsResponse = {
+  rows: TurnHistoryRow[];
   next_cursor: string | null;
 };
 

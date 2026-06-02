@@ -147,6 +147,10 @@ export {
   type ReplyTarget,
   type TurnEmission,
 } from "./generation/types.js";
+export {
+  classifySuppressionReason,
+  type SuppressionOutcomeClass,
+} from "./generation/suppression-outcome.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";
 export {
   CompositeTracer,

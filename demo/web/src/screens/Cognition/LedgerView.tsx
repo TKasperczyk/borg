@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { getLedger } from "../../api/client";
-import type { EvidenceLedger, EvidenceLedgerEntry } from "../../api/types";
+import { ApiError, getLedger } from "../../api/client";
+import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSection } from "../../api/types";
 import { AttachmentChip } from "../../components/AttachmentChip";
 import { Empty } from "../../components/Empty";
 import { Tag, type TagKind } from "../../components/Tag";
@@ -16,7 +16,6 @@ export type LedgerViewProps = {
 type LedgerGroup = {
   id: string;
   label: string;
-  color: TagKind;
   entries: EvidenceLedgerEntry[];
 };
 
@@ -25,50 +24,12 @@ type LedgerState = {
   ledger: EvidenceLedger;
 };
 
-function sectionEntries(ledger: EvidenceLedger, id: string): EvidenceLedgerEntry[] {
-  return ledger.sections.find((section) => section.id === id)?.entries ?? [];
-}
-
-function groupsForLedger(ledger: EvidenceLedger): LedgerGroup[] {
-  const sharedEntries: EvidenceLedgerEntry[] =
-    ledger.sharedState?.entries.map((entry) => ({
-      id: entry.id,
-      source_type: "system_metadata",
-      session_scope: "current_session",
-      actor: "memory",
-      trust_rank: entry.rank,
-      text: entry.text,
-      state: entry.kind,
-    })) ?? [];
-
-  return [
-    {
-      id: "csa",
-      label: "cross-session activity",
-      color: "solid",
-      entries: sectionEntries(ledger, "cross_session_self_activity"),
-    },
-    { id: "ep", label: "episodes", color: "info", entries: sectionEntries(ledger, "episodes") },
-    {
-      id: "sn",
-      label: "semantic",
-      color: "purple",
-      entries: sectionEntries(ledger, "semantic_graph"),
-    },
-    {
-      id: "cm",
-      label: "active commitments",
-      color: "bad",
-      entries: sectionEntries(ledger, "commitments_and_constraints"),
-    },
-    {
-      id: "rs",
-      label: "relational slots",
-      color: "acc",
-      entries: sectionEntries(ledger, "relational_slots"),
-    },
-    { id: "ss", label: "shared state", color: "warn", entries: sharedEntries },
-  ];
+function groupForSection(section: EvidenceLedgerSection): LedgerGroup {
+  return {
+    id: section.id,
+    label: section.label,
+    entries: section.entries,
+  };
 }
 
 function trustKind(entry: EvidenceLedgerEntry): TagKind {
@@ -122,7 +83,13 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
       .catch((caught: unknown) => {
         if (!cancelled) {
           setLedgerState(null);
-          setError(caught instanceof Error ? caught.message : String(caught));
+          setError(
+            caught instanceof ApiError && caught.status === 404
+              ? "ledger not retained (pre-restart) - durable replay lands in a later persistence sprint"
+              : caught instanceof Error
+                ? caught.message
+                : String(caught),
+          );
         }
       });
 
@@ -141,7 +108,7 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
     return <Empty>{error ?? "ledger not loaded yet"}</Empty>;
   }
 
-  const groups = groupsForLedger(ledger);
+  const groups = ledger.sections.map(groupForSection);
 
   return (
     <div>
@@ -158,7 +125,7 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
       {groups.map((group) => (
         <div key={group.id} className="lgr-section">
           <div className="lgr-section-head">
-            <span className={group.color}>▸</span>
+            <span>▸</span>
             <span>{group.label}</span>
             <span className="count">[{group.entries.length}]</span>
           </div>

@@ -1,3 +1,8 @@
+import {
+  classifySuppressionReason,
+  type SuppressionOutcomeClass,
+} from "borg/suppression-outcome";
+
 import type {
   AgentObservedStreamContent,
   FinalizerInvalidToolDiagnostic,
@@ -6,14 +11,8 @@ import type {
 } from "../api/types";
 import type { TagKind } from "../components/Tag";
 
-export type StreamOutcomeClass =
-  | "deliberate-silence"
-  | "emission-failed"
-  | "guard-blocked"
-  | "observed"
-  | "unknown";
+export type StreamOutcomeClass = SuppressionOutcomeClass;
 
-type SuppressedOutcomeClass = Exclude<StreamOutcomeClass, "observed" | "unknown">;
 type ParsedAgentSuppressedStreamContent = {
   reason?: string;
   turn_id?: string;
@@ -39,27 +38,6 @@ export type StreamOutcomeSummary = {
   structuralNoOutputFlags: string[];
   finalizerInvalidTool?: FinalizerInvalidToolDiagnostic;
 };
-
-export const SUPPRESSION_REASON_OUTCOME_CLASS = {
-  generation_gate: "deliberate-silence",
-  active_discourse_stop: "deliberate-silence",
-  empty_finalizer: "emission-failed",
-  finalizer_failed: "emission-failed",
-  finalizer_no_output: "deliberate-silence",
-  invalid_tool_after_regenerate: "emission-failed",
-  manifest_no_output: "deliberate-silence",
-  legacy_manifest_validation_failed_critical: "guard-blocked",
-  manifest_validation_failed_critical: "guard-blocked",
-  no_output_tool: "deliberate-silence",
-  s2_planner_no_output: "deliberate-silence",
-  closure_pressure_only: "deliberate-silence",
-  closure_response_audit_failed_closed: "guard-blocked",
-  commitment_violation: "guard-blocked",
-  commitment_violation_after_regenerate: "guard-blocked",
-  commitment_revision_failed: "guard-blocked",
-  internal_identifier_leak: "guard-blocked",
-  rewrite_unsupported_or_empty: "guard-blocked",
-} as const satisfies Record<GenerationSuppressionReason, SuppressedOutcomeClass>;
 
 export const STREAM_OUTCOME_DESCRIPTORS = {
   "deliberate-silence": {
@@ -128,15 +106,11 @@ function finalizerInvalidToolDiagnostic(
 export function isGenerationSuppressionReason(
   reason: unknown,
 ): reason is GenerationSuppressionReason {
-  return typeof reason === "string" && Object.hasOwn(SUPPRESSION_REASON_OUTCOME_CLASS, reason);
+  return typeof reason === "string" && classifySuppressionReason(reason) !== "unknown";
 }
 
 export function outcomeForSuppressionReason(reason: unknown): StreamOutcomeDescriptor {
-  if (!isGenerationSuppressionReason(reason)) {
-    return STREAM_OUTCOME_DESCRIPTORS.unknown;
-  }
-
-  return STREAM_OUTCOME_DESCRIPTORS[SUPPRESSION_REASON_OUTCOME_CLASS[reason]];
+  return STREAM_OUTCOME_DESCRIPTORS[classifySuppressionReason(reason)];
 }
 
 export function agentSuppressedContent(

@@ -30,6 +30,15 @@ export type PhaseState = {
   startedAt?: number;
 };
 
+export type TurnFlowSnapshot = {
+  phases: PhaseState[];
+  tokenTextByPhase: Map<string, string>;
+  detailByPhase: Map<string, string[]>;
+  terminalOutcome: TurnTerminalOutcome | null;
+  delibPath: "system_1" | "system_2" | null;
+  finalAttempt: number;
+};
+
 export type TailEvent = {
   id: string;
   ts: string;
@@ -42,6 +51,7 @@ type ActiveTurnDriver = "operator" | "observed";
 
 const TURN_REFLECT_TIMEOUT_MS = 60_000;
 const DETAIL_LINES_PER_PHASE = 10;
+export const TURN_SNAPSHOT_CACHE_LIMIT = 64;
 
 const PHASES: ReadonlyArray<Pick<PhaseState, "id" | "name">> = [
   { id: "ingest", name: "ingest" },
@@ -370,6 +380,87 @@ function appendPhaseDetail(
   return next;
 }
 
+function emptyTurnFlowSnapshot(): TurnFlowSnapshot {
+  return {
+    phases: initialPhases(),
+    tokenTextByPhase: new Map(),
+    detailByPhase: new Map(),
+    terminalOutcome: null,
+    delibPath: null,
+    finalAttempt: 1,
+  };
+}
+
+function withSnapshotCacheLimit(
+  current: Map<string, TurnFlowSnapshot>,
+): Map<string, TurnFlowSnapshot> {
+  const next = new Map(current);
+
+  while (next.size > TURN_SNAPSHOT_CACHE_LIMIT) {
+    const oldestTurnId = next.keys().next().value;
+    if (oldestTurnId === undefined) {
+      break;
+    }
+    next.delete(oldestTurnId);
+  }
+
+  return next;
+}
+
+function updateTurnFlowSnapshot(
+  current: Map<string, TurnFlowSnapshot>,
+  turnId: string,
+  frame: LiveFrame,
+): Map<string, TurnFlowSnapshot> {
+  const existing = current.get(turnId) ?? emptyTurnFlowSnapshot();
+  let updated: TurnFlowSnapshot | null = null;
+
+  if (frame.type === "turn:token" || frame.type === "turn:token:flush") {
+    updated = {
+      ...existing,
+      tokenTextByPhase: appendTokenText(existing.tokenTextByPhase, frame),
+    };
+  } else if (frame.type === "turn:phase:detail") {
+    updated = {
+      ...existing,
+      detailByPhase: appendPhaseDetail(existing.detailByPhase, frame),
+    };
+  } else if (frame.type === "turn:delib_path") {
+    updated = {
+      ...existing,
+      delibPath: frame.path,
+    };
+  } else if (frame.type === "turn:final_attempt") {
+    updated = {
+      ...existing,
+      finalAttempt: frame.attempt,
+    };
+  } else if (frame.type === "turn:terminal") {
+    updated = {
+      ...existing,
+      terminalOutcome: frame.data.outcome,
+    };
+  } else if (
+    frame.type === "turn:phase:started" ||
+    frame.type === "turn:phase:completed" ||
+    frame.type === "turn:phase:failed"
+  ) {
+    updated = {
+      ...existing,
+      phases: updatePhase(existing.phases, frame),
+    };
+  }
+
+  if (updated === null) {
+    return current;
+  }
+
+  const next = new Map(current);
+  next.delete(turnId);
+  next.set(turnId, updated);
+  return withSnapshotCacheLimit(next);
+}
+
 export type TurnStreamState = {
   activeTurnId: string | null;
   running: boolean;
@@ -379,6 +470,7 @@ export type TurnStreamState = {
   terminalOutcome: TurnTerminalOutcome | null;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
+  flowSnapshotByTurn: Map<string, TurnFlowSnapshot>;
   eventTail: TailEvent[];
   ledgerByTurn: Map<string, EvidenceLedger>;
   lastPhase: string;
@@ -399,6 +491,9 @@ export function useTurnStream(
   const [terminalOutcome, setTerminalOutcome] = useState<TurnTerminalOutcome | null>(null);
   const [delibPath, setDelibPath] = useState<"system_1" | "system_2" | null>(null);
   const [finalAttempt, setFinalAttempt] = useState(1);
+  const [flowSnapshotByTurn, setFlowSnapshotByTurn] = useState(
+    () => new Map<string, TurnFlowSnapshot>(),
+  );
   const [eventTail, setEventTail] = useState<TailEvent[]>([]);
   const [ledgerByTurn, setLedgerByTurn] = useState(() => new Map<string, EvidenceLedger>());
   const [lastPhase, setLastPhase] = useState("idle");
@@ -623,6 +718,7 @@ export function useTurnStream(
     setTerminalOutcome(null);
     setDelibPath(null);
     setFinalAttempt(1);
+    setFlowSnapshotByTurn(new Map());
     setEventTail([]);
     setLedgerByTurn(new Map());
     setLastPhase("idle");
@@ -670,6 +766,9 @@ export function useTurnStream(
       }
 
       const frameTurnId = turnIdFromLiveFrame(frame);
+      if (frameTurnId !== null) {
+        setFlowSnapshotByTurn((current) => updateTurnFlowSnapshot(current, frameTurnId, frame));
+      }
 
       if (frameTurnId !== null && !acceptsTurnFrame(frameTurnId, frameSessionId)) {
         return;
@@ -836,6 +935,7 @@ export function useTurnStream(
       terminalOutcome,
       delibPath,
       finalAttempt,
+      flowSnapshotByTurn,
       eventTail,
       ledgerByTurn,
       lastPhase,
@@ -849,6 +949,7 @@ export function useTurnStream(
       detailByPhase,
       eventTail,
       finalAttempt,
+      flowSnapshotByTurn,
       lastPhase,
       ledgerByTurn,
       phases,

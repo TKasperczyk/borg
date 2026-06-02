@@ -9,6 +9,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./suppression-outcome": {
+      "import": "./dist/suppression-outcome.js",
+      "types": "./dist/suppression-outcome.d.ts"
     }
   },
   "bin": {

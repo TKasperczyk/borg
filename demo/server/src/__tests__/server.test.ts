@@ -353,6 +353,19 @@ async function enqueueTextTurn(
   return ack;
 }
 
+function responseToSingleSource(entry: StreamEntry) {
+  return {
+    kind: "stream_backlog" as const,
+    from_cursor_exclusive: null,
+    through_cursor_inclusive: {
+      ts: entry.timestamp,
+      entryId: entry.id,
+    },
+    source_entry_ids: [entry.id],
+    count: 1,
+  };
+}
+
 async function seedCorrectionEpisode(
   borg: Borg,
   clock: ManualClock,
@@ -2855,6 +2868,110 @@ describe("demo server", () => {
     expect(secondPage.status).toBe(200);
     const secondBody = (await secondPage.json()) as { entries: Array<{ id: string }> };
     expect(secondBody.entries[0]?.id).toBe(older.id);
+  });
+
+  it("enumerates turn history from persisted stream entries with cursor pagination", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const emittedSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "emitted source",
+      turn_id: "turn_emitted",
+      audience: "Alice",
+    });
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "agent_msg",
+      content: "emitted response",
+      turn_id: "turn_emitted",
+      audience: "Alice",
+      response_to: responseToSingleSource(emittedSource),
+    });
+
+    clock.advance(10);
+    const suppressedSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "suppressed source",
+      audience: "Bob",
+    });
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "agent_suppressed",
+      content: { reason: "finalizer_no_output" },
+      turn_id: "turn_suppressed",
+      audience: "Bob",
+      response_to: responseToSingleSource(suppressedSource),
+    });
+
+    clock.advance(10);
+    const failedSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "failed source",
+      turn_id: "turn_failed",
+      audience: "Carol",
+    });
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "internal_event",
+      turn_id: "turn_failed",
+      turn_status: "aborted",
+      content: {
+        event: "aborted_turn",
+        turn_id: "turn_failed",
+        reason: "test failure",
+      },
+    });
+
+    const firstPage = await app.request("/api/turns?limit=2");
+    expect(firstPage.status).toBe(200);
+    const firstBody = (await firstPage.json()) as {
+      rows: Array<{
+        turn_id: string;
+        started_at: number;
+        audience: string | null;
+        outcome: string;
+        suppression_reason: string | null;
+      }>;
+      next_cursor: string | null;
+    };
+
+    expect(firstBody.rows).toEqual([
+      {
+        turn_id: "turn_failed",
+        started_at: failedSource.timestamp,
+        audience: "Carol",
+        outcome: "failed",
+        suppression_reason: null,
+      },
+      {
+        turn_id: "turn_suppressed",
+        started_at: suppressedSource.timestamp,
+        audience: "Bob",
+        outcome: "deliberate-silence",
+        suppression_reason: "finalizer_no_output",
+      },
+    ]);
+    expect(firstBody.next_cursor).not.toBeNull();
+
+    const secondPage = await app.request(`/api/turns?limit=2&cursor=${firstBody.next_cursor}`);
+    expect(secondPage.status).toBe(200);
+    const secondBody = (await secondPage.json()) as typeof firstBody;
+    expect(secondBody).toMatchObject({
+      rows: [
+        {
+          turn_id: "turn_emitted",
+          started_at: emittedSource.timestamp,
+          audience: "Alice",
+          outcome: "emitted",
+          suppression_reason: null,
+        },
+      ],
+      next_cursor: null,
+    });
   });
 
   it("serves capped semantic graph visualization data", async () => {

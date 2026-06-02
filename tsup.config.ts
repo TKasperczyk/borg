@@ -2,7 +2,10 @@ import { defineConfig } from "tsup";
 
 export default defineConfig([
   {
-    entry: { index: "src/index.ts" },
+    entry: {
+      index: "src/index.ts",
+      "suppression-outcome": "src/cognition/generation/suppression-outcome.ts",
+    },
     format: ["esm"],
     target: "node22",
     dts: true,

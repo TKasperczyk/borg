@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LiveFrame, TurnPhaseName, WsState } from "../api/types";
 import type { LiveEventHandler, LiveEvents } from "./use-live-events";
-import { useTurnStream } from "./use-turn-stream";
+import { TURN_SNAPSHOT_CACHE_LIMIT, useTurnStream } from "./use-turn-stream";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -135,6 +135,26 @@ function StateProbe({
       <output data-testid="retrieval-status">{phaseStatus("retrieval")}</output>
       <output data-testid="token-text">
         {[...turnStream.tokenTextByPhase.values()].join("")}
+      </output>
+    </>
+  );
+}
+
+function SnapshotProbe({ live }: { live: LiveEvents }) {
+  const turnStream = useTurnStream(live, { sessionId: "default" });
+  const cached = turnStream.flowSnapshotByTurn.get("turn_cached");
+
+  return (
+    <>
+      <output data-testid="snapshot-size">{turnStream.flowSnapshotByTurn.size}</output>
+      <output data-testid="snapshot-text">
+        {cached?.tokenTextByPhase.get("turn_cached:final") ?? ""}
+      </output>
+      <output data-testid="snapshot-has-oldest">
+        {String(turnStream.flowSnapshotByTurn.has("turn_0"))}
+      </output>
+      <output data-testid="snapshot-has-latest">
+        {String(turnStream.flowSnapshotByTurn.has(`turn_${TURN_SNAPSHOT_CACHE_LIMIT}`))}
       </output>
     </>
   );
@@ -284,5 +304,39 @@ describe("useTurnStream", () => {
         "retrieval.completed · episodeCount=2 semanticHits=4 confidence=0.82",
       ),
     );
+  });
+
+  it("retains bounded per-turn flow snapshots from live frames", () => {
+    const source = makeLiveSource();
+
+    render(<SnapshotProbe live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "final", "turn_cached", "default"));
+      source.emit({
+        type: "turn:token",
+        ts: Date.now(),
+        turn_id: "turn_cached",
+        session_id: "default",
+        phase: "final",
+        chunk_text: "cached text",
+        sequence: 1,
+      });
+      source.emit(terminalFrame("turn_cached", "default"));
+    });
+
+    expect(screen.getByTestId("snapshot-text")).toHaveTextContent("cached text");
+
+    act(() => {
+      for (let index = 0; index <= TURN_SNAPSHOT_CACHE_LIMIT; index += 1) {
+        source.emit(terminalFrame(`turn_${index}`, "default"));
+      }
+    });
+
+    expect(screen.getByTestId("snapshot-size")).toHaveTextContent(
+      String(TURN_SNAPSHOT_CACHE_LIMIT),
+    );
+    expect(screen.getByTestId("snapshot-has-oldest")).toHaveTextContent("false");
+    expect(screen.getByTestId("snapshot-has-latest")).toHaveTextContent("true");
   });
 });

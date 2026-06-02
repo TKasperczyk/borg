@@ -26,6 +26,7 @@ vi.mock("./hooks/use-turn-stream", () => ({
     terminalOutcome: null,
     delibPath: null,
     finalAttempt: 1,
+    flowSnapshotByTurn: new Map(),
     eventTail: [],
     ledgerByTurn: new Map(),
     lastPhase: "idle",

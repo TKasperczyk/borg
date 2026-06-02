@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { classifySuppressionReason } from "borg/suppression-outcome";
 
 import type { StreamEntry } from "../api/types";
-import { SUPPRESSION_REASON_OUTCOME_CLASS, streamOutcomeSummary } from "./stream-outcomes";
+import { streamOutcomeSummary } from "./stream-outcomes";
 
 function streamEntry(
   input: Pick<StreamEntry, "kind" | "content">,
@@ -30,7 +31,7 @@ describe("stream outcome classifier", () => {
     ["internal_identifier_leak", "guard-blocked"],
     ["rewrite_unsupported_or_empty", "guard-blocked"],
   ] as const)("maps %s to %s", (reason, outcomeClass) => {
-    expect(SUPPRESSION_REASON_OUTCOME_CLASS[reason]).toBe(outcomeClass);
+    expect(classifySuppressionReason(reason)).toBe(outcomeClass);
     expect(
       streamOutcomeSummary(streamEntry({ kind: "agent_suppressed", content: { reason } }))?.outcome
         .outcomeClass,

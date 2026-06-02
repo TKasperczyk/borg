@@ -15,6 +15,7 @@ import {
   SESSION_PARTICIPATION_POLICIES,
   STREAM_ENTRY_KINDS,
   VERSION,
+  classifySuppressionReason,
   type AttachmentId,
   type Borg,
   type CommitmentEnforcementClass,
@@ -55,6 +56,7 @@ import {
   type BorgReviewResolutionInput,
   type PromptKey,
   type ReviewKind,
+  type SuppressionOutcomeClass,
 } from "borg";
 import { z } from "zod";
 
@@ -126,6 +128,32 @@ const streamQuerySchema = z.object({
 
       if (parsed === null) {
         ctx.addIssue({ code: "custom", message: "before is not a valid stream cursor" });
+        return z.NEVER;
+      }
+
+      return parsed;
+    }),
+});
+
+const turnHistoryQuerySchema = z.object({
+  session: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
+  limit: limitSchema.default(50),
+  cursor: z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      if (value === undefined || value.length === 0) {
+        return undefined;
+      }
+
+      const parsed = decodeCursor(value);
+
+      if (parsed === null) {
+        ctx.addIssue({ code: "custom", message: "cursor is not a valid stream cursor" });
         return z.NEVER;
       }
 
@@ -963,6 +991,286 @@ function decodeCursor(cursor: string): StreamCursor | null {
   } catch {
     return null;
   }
+}
+
+type TurnHistoryOutcomeClass =
+  | "emitted"
+  | "failed"
+  | SuppressionOutcomeClass;
+
+type TurnHistoryRow = {
+  turn_id: string;
+  started_at: number;
+  audience: string | null;
+  outcome: TurnHistoryOutcomeClass;
+  suppression_reason: string | null;
+};
+
+type TurnHistoryRowWithCursor = TurnHistoryRow & {
+  cursorEntry: StreamEntry;
+};
+
+type TurnHistoryAnchor = {
+  entry: StreamEntry;
+};
+
+type TurnHistorySourceLookup = {
+  byId: Map<string, StreamEntry>;
+  byTurnId: Map<string, StreamEntry[]>;
+};
+
+const ABORTED_TURN_EVENT = "aborted_turn";
+// Phase 1 serves a bounded recent persisted history window. Durable deep
+// replay/list indexing is intentionally left for the later persistence sprint.
+const TURN_HISTORY_REVERSE_SCAN_MAX_ENTRIES = 4096;
+const TURN_HISTORY_REVERSE_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function contentString(value: unknown, key: string): string | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const field = value[key];
+  return typeof field === "string" && field.length > 0 ? field : null;
+}
+
+function turnIdFromAbortedMarker(entry: StreamEntry): string | null {
+  if (entry.kind !== "internal_event" || !isRecord(entry.content)) {
+    return null;
+  }
+
+  if (entry.content.event !== ABORTED_TURN_EVENT && entry.turn_status !== "aborted") {
+    return null;
+  }
+
+  const contentTurnId = contentString(entry.content, "turn_id");
+  if (contentTurnId !== null) {
+    return contentTurnId;
+  }
+
+  return typeof entry.turn_id === "string" && entry.turn_id.length > 0 ? entry.turn_id : null;
+}
+
+function turnIdFromHistoryAnchor(entry: StreamEntry): string | null {
+  if (isDemoTerminalEntry(entry)) {
+    return entry.turn_id;
+  }
+
+  return turnIdFromAbortedMarker(entry);
+}
+
+function sourceEntryIds(entry: StreamEntry): string[] {
+  const sourceEntryIds = entry.response_to?.source_entry_ids;
+  if (!Array.isArray(sourceEntryIds)) {
+    return [];
+  }
+
+  return sourceEntryIds.filter((entryId) => typeof entryId === "string");
+}
+
+function terminalOutcome(entry: StreamEntry): {
+  outcome: TurnHistoryOutcomeClass;
+  suppressionReason: string | null;
+} | null {
+  if (entry.kind === "agent_msg") {
+    return { outcome: "emitted", suppressionReason: null };
+  }
+
+  if (entry.kind === "agent_observed") {
+    return { outcome: "observed", suppressionReason: null };
+  }
+
+  if (entry.kind === "agent_suppressed") {
+    const reason = contentString(entry.content, "reason");
+    return {
+      outcome: classifySuppressionReason(reason),
+      suppressionReason: reason,
+    };
+  }
+
+  return null;
+}
+
+function isTurnHistoryAnchorEntry(entry: StreamEntry): boolean {
+  return terminalOutcome(entry) !== null || turnIdFromAbortedMarker(entry) !== null;
+}
+
+function cursorMatchesEntry(cursor: StreamCursor, entry: StreamEntry): boolean {
+  return entry.timestamp === cursor.ts && entry.id === cursor.entryId;
+}
+
+function turnHistoryScanStop(input: { cursor?: StreamCursor; limit: number }) {
+  let cursorSeen = input.cursor === undefined;
+  let acceptedAfterCursor = 0;
+
+  return (entries: StreamEntry[]): boolean => {
+    const entry = entries.at(-1);
+    if (entry === undefined) {
+      return false;
+    }
+
+    if (!cursorSeen) {
+      if (input.cursor !== undefined && cursorMatchesEntry(input.cursor, entry)) {
+        cursorSeen = true;
+      }
+      return false;
+    }
+
+    acceptedAfterCursor += 1;
+    return acceptedAfterCursor >= input.limit + 1;
+  };
+}
+
+function lookupTurnHistorySources(
+  reader: ReturnType<Borg["stream"]["reader"]>,
+  anchors: readonly TurnHistoryAnchor[],
+): TurnHistorySourceLookup {
+  const wantedSourceIds = new Set<string>();
+  const wantedTurnIds = new Set<string>();
+
+  for (const anchor of anchors) {
+    const turnId = turnIdFromHistoryAnchor(anchor.entry);
+    if (turnId !== null) {
+      wantedTurnIds.add(turnId);
+    }
+    for (const sourceEntryId of sourceEntryIds(anchor.entry)) {
+      wantedSourceIds.add(sourceEntryId);
+    }
+  }
+
+  if (wantedSourceIds.size === 0 && wantedTurnIds.size === 0) {
+    return { byId: new Map(), byTurnId: new Map() };
+  }
+
+  const scan = reader.scanReverse({
+    maxEntries: TURN_HISTORY_REVERSE_SCAN_MAX_ENTRIES,
+    maxBytes: TURN_HISTORY_REVERSE_SCAN_MAX_BYTES,
+    filter: (entry) =>
+      wantedSourceIds.has(entry.id) ||
+      (entry.turn_id !== undefined && wantedTurnIds.has(entry.turn_id)),
+  });
+  const byId = new Map<string, StreamEntry>();
+  const byTurnId = new Map<string, StreamEntry[]>();
+
+  for (const entry of scan.entries) {
+    byId.set(entry.id, entry);
+
+    if (entry.turn_id !== undefined && wantedTurnIds.has(entry.turn_id)) {
+      byTurnId.set(entry.turn_id, [...(byTurnId.get(entry.turn_id) ?? []), entry]);
+    }
+  }
+
+  return { byId, byTurnId };
+}
+
+function supportEntriesForAnchor(
+  entry: StreamEntry,
+  turnId: string,
+  sources: TurnHistorySourceLookup,
+): StreamEntry[] {
+  const byId = sourceEntryIds(entry)
+    .map((sourceEntryId) => sources.byId.get(sourceEntryId))
+    .filter((source): source is StreamEntry => source !== undefined);
+  const byTurn = sources.byTurnId.get(turnId) ?? [];
+  const unique = new Map<string, StreamEntry>();
+
+  for (const source of [...byId, ...byTurn]) {
+    if (source.id !== entry.id) {
+      unique.set(source.id, source);
+    }
+  }
+
+  return [...unique.values()].sort((left, right) => left.timestamp - right.timestamp);
+}
+
+function turnHistoryRowFromAnchor(
+  anchor: TurnHistoryAnchor,
+  sources: TurnHistorySourceLookup,
+): TurnHistoryRowWithCursor | null {
+  const turnId = turnIdFromHistoryAnchor(anchor.entry);
+  if (turnId === null) {
+    return null;
+  }
+
+  const terminal = terminalOutcome(anchor.entry);
+  const outcome =
+    terminal === null
+      ? { outcome: "failed" as const, suppressionReason: null }
+      : terminal;
+  const supportEntries = supportEntriesForAnchor(anchor.entry, turnId, sources);
+  const startedAt = supportEntries.reduce(
+    (earliest, entry) => Math.min(earliest, entry.timestamp),
+    anchor.entry.timestamp,
+  );
+  const audience =
+    supportEntries.find((entry) => entry.audience !== undefined)?.audience ??
+    anchor.entry.audience ??
+    null;
+
+  return {
+    turn_id: turnId,
+    started_at: startedAt,
+    audience,
+    outcome: outcome.outcome,
+    suppression_reason: outcome.suppressionReason,
+    cursorEntry: anchor.entry,
+  };
+}
+
+function readTurns(input: {
+  borg: Borg;
+  sessionId: SessionId;
+  limit: number;
+  cursor?: StreamCursor;
+}): { rows: TurnHistoryRow[]; next_cursor: string | null } {
+  const reader = input.borg.stream.reader({ session: input.sessionId });
+  const scan = reader.scanReverse({
+    maxEntries: TURN_HISTORY_REVERSE_SCAN_MAX_ENTRIES,
+    maxBytes: TURN_HISTORY_REVERSE_SCAN_MAX_BYTES,
+    filter: isTurnHistoryAnchorEntry,
+    stop: turnHistoryScanStop({ cursor: input.cursor, limit: input.limit }),
+  });
+  const anchorsNewest = scan.entries
+    .map<TurnHistoryAnchor>((entry) => ({ entry }))
+    .reverse();
+  const cursorIndex =
+    input.cursor === undefined
+      ? -1
+      : anchorsNewest.findIndex((anchor) =>
+          input.cursor === undefined ? false : cursorMatchesEntry(input.cursor, anchor.entry),
+        );
+  const afterCursor =
+    input.cursor === undefined
+      ? anchorsNewest
+      : cursorIndex === -1
+        ? []
+        : anchorsNewest.slice(cursorIndex + 1);
+  const pageAnchors = afterCursor.slice(0, input.limit + 1);
+  const visibleAnchors = pageAnchors.slice(0, input.limit);
+  const sources = lookupTurnHistorySources(reader, visibleAnchors);
+  const rows = visibleAnchors
+    .map((anchor) => turnHistoryRowFromAnchor(anchor, sources))
+    .filter((row): row is TurnHistoryRowWithCursor => row !== null);
+  const lastRow = rows.at(-1);
+  const next_cursor =
+    pageAnchors.length > input.limit && lastRow !== undefined
+      ? encodeCursor(lastRow.cursorEntry)
+      : null;
+
+  return {
+    rows: rows.map((row) => ({
+      turn_id: row.turn_id,
+      started_at: row.started_at,
+      audience: row.audience,
+      outcome: row.outcome,
+      suppression_reason: row.suppression_reason,
+    })),
+    next_cursor,
+  };
 }
 
 function isDemoTerminalEntry(entry: StreamEntry): entry is StreamEntry & { turn_id: string } {
@@ -2007,6 +2315,18 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         audience: query.audience,
         limit: query.limit,
         before: query.before,
+      }),
+    );
+  });
+
+  app.get("/api/turns", async (c) => {
+    const query = parseRequest(turnHistoryQuerySchema, c.req.query());
+    return c.json(
+      await readTurns({
+        borg: input.borg,
+        sessionId: query.session,
+        limit: query.limit,
+        cursor: query.cursor,
       }),
     );
   });
