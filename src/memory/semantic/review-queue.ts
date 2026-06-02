@@ -37,6 +37,7 @@ export const REVIEW_KINDS = [
   "belief_revision",
   "skill_split",
   "creator_directive_reconciliation",
+  "commitment_reconciliation",
 ] as const;
 const LEGACY_REVIEW_KINDS = ["relationship_claim_ungrounded"] as const;
 const STORED_REVIEW_KINDS = [...REVIEW_KINDS, ...LEGACY_REVIEW_KINDS] as const;
@@ -434,6 +435,10 @@ export class ReviewQueueRepository {
 
     if (itemOrInput.kind === "creator_directive_reconciliation") {
       return "creator-directive-reconciler";
+    }
+
+    if (itemOrInput.kind === "commitment_reconciliation") {
+      return "commitment-reconciler";
     }
 
     return "unknown";

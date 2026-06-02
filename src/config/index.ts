@@ -266,6 +266,7 @@ const maintenanceProcessSchema = z.enum([
   "procedural-synthesizer",
   "belief-reviser",
   "creator-directive-reconciler",
+  "commitment-reconciler",
 ]);
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
@@ -471,6 +472,12 @@ const configBaseSchema = z.object({
           budget: z.number().int().positive().default(60_000),
         })
         .prefault({}),
+      commitmentReconciler: z
+        .object({
+          maxGroupsPerRun: z.number().int().positive().default(8),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
     })
     .prefault({}),
   maintenance: z
@@ -498,6 +505,7 @@ const configBaseSchema = z.object({
           "procedural-synthesizer",
           "belief-reviser",
           "creator-directive-reconciler",
+          "commitment-reconciler",
         ]),
     })
     .prefault({}),
@@ -1316,6 +1324,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "creatorDirectiveReconciler", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "commitmentReconciler", "maxGroupsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_COMMITMENT_RECONCILER_MAX_GROUPS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "commitmentReconciler", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_COMMITMENT_RECONCILER_BUDGET"),
   );
   setConfigOverride(
     overrides,

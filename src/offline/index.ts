@@ -29,6 +29,14 @@ export {
   type CreatorDirectiveReconcilerProcessOptions,
   type DirectiveReconciliationToolInput,
 } from "./creator-directive-reconciler/index.js";
+export {
+  CommitmentReconcilerProcess,
+  commitmentReconcilerPlanSchema,
+  COMMITMENT_RECONCILIATION_TOOL,
+  type CommitmentReconcilerPlan,
+  type CommitmentReconcilerProcessOptions,
+  type CommitmentReconciliationToolInput,
+} from "./commitment-reconciler/index.js";
 export { CuratorProcess, type CuratorProcessOptions } from "./curator/index.js";
 export { offlineMigrations } from "./migrations.js";
 export {

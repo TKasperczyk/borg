@@ -46,6 +46,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "procedural-synthesizer",
   "belief-reviser",
   "creator-directive-reconciler",
+  "commitment-reconciler",
 ] as const;
 
 export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];

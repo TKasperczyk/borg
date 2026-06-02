@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { CommitmentError, ProvenanceError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -227,6 +229,53 @@ export type EntityResolveOptions = {
 export type CommitmentRevokeOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
+
+export type CommitmentReconciliationMergedFields = Pick<
+  CommitmentRecord,
+  | "enforcement_class"
+  | "critical_domain"
+  | "priority"
+  | "closure_pressure_relevance"
+  | "source_stream_entry_ids"
+  | "last_reinforced_at"
+>;
+
+export type CommitmentReconciliationSupersedeInput = {
+  survivorId: CommitmentId;
+  expectedSurvivorVersion: number;
+  superseded: readonly {
+    id: CommitmentId;
+    expectedVersion: number;
+  }[];
+  mergedFields: CommitmentReconciliationMergedFields;
+  provenance?: CommitmentRecord["provenance"];
+  timestamp?: number;
+};
+
+export type CommitmentReconciliationSupersedeResult = {
+  survivor: {
+    id: CommitmentId;
+    record_version: number;
+  };
+  survivor_before: CommitmentReconciliationMergedFields;
+  superseded: Array<{
+    id: CommitmentId;
+    record_version: number;
+  }>;
+};
+
+class CommitmentReconciliationSupersedeAbort extends Error {}
+
+const commitmentReconciliationMergedFieldsSchema = commitmentSchema
+  .pick({
+    enforcement_class: true,
+    critical_domain: true,
+    priority: true,
+    closure_pressure_relevance: true,
+    source_stream_entry_ids: true,
+    last_reinforced_at: true,
+  })
+  .strict();
 
 export class EntityRepository {
   private readonly clock: Clock;
@@ -707,6 +756,214 @@ export class CommitmentRepository {
     return next;
   }
 
+  private isActiveCommitment(record: CommitmentRecord, nowMs: number): boolean {
+    return (
+      record.revoked_at === null &&
+      record.superseded_by === null &&
+      record.expired_at === null &&
+      (record.expires_at === null || record.expires_at > nowMs)
+    );
+  }
+
+  private reconciliationFieldSnapshot(
+    record: CommitmentRecord,
+  ): CommitmentReconciliationMergedFields {
+    return {
+      enforcement_class: record.enforcement_class,
+      critical_domain: record.critical_domain,
+      priority: record.priority,
+      closure_pressure_relevance: record.closure_pressure_relevance,
+      ...(record.source_stream_entry_ids === undefined
+        ? {}
+        : { source_stream_entry_ids: [...record.source_stream_entry_ids] }),
+      last_reinforced_at: record.last_reinforced_at,
+    };
+  }
+
+  reconcileSupersedeOntoSurvivor(
+    input: CommitmentReconciliationSupersedeInput,
+  ): CommitmentReconciliationSupersedeResult | null {
+    const survivorId = parseCommitmentId(input.survivorId);
+    const expectedSurvivorVersion = z
+      .number()
+      .int()
+      .positive()
+      .parse(input.expectedSurvivorVersion);
+    const superseded = z
+      .array(
+        z
+          .object({
+            id: commitmentSchema.shape.id,
+            expectedVersion: z.number().int().positive(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .parse(input.superseded);
+    const mergedFields = commitmentReconciliationMergedFieldsSchema.parse(input.mergedFields);
+    const provenance = provenanceSchema.parse(
+      input.provenance ?? { kind: "offline", process: "commitment-reconciler" },
+    );
+    const timestamp = input.timestamp ?? this.clock.now();
+    const supersededIds = new Set<CommitmentId>();
+
+    for (const item of superseded) {
+      if (item.id === survivorId || supersededIds.has(item.id)) {
+        return null;
+      }
+
+      supersededIds.add(item.id);
+    }
+
+    this.materializeExpiredCommitments(timestamp);
+
+    const run = this.db.transaction((): CommitmentReconciliationSupersedeResult | null => {
+      const survivor = this.get(survivorId);
+
+      if (
+        survivor === null ||
+        !this.isActiveCommitment(survivor, timestamp) ||
+        survivor.record_version !== expectedSurvivorVersion
+      ) {
+        return null;
+      }
+
+      const currentSuperseded: CommitmentRecord[] = [];
+
+      for (const item of superseded) {
+        const current = this.get(item.id);
+
+        if (
+          current === null ||
+          !this.isActiveCommitment(current, timestamp) ||
+          current.record_version !== item.expectedVersion
+        ) {
+          return null;
+        }
+
+        currentSuperseded.push(current);
+      }
+
+      const survivorBefore = this.reconciliationFieldSnapshot(survivor);
+      const nextSurvivor = commitmentSchema.parse({
+        ...survivor,
+        ...mergedFields,
+        critical_domain:
+          mergedFields.enforcement_class === "critical" ? mergedFields.critical_domain : null,
+        record_version: nextRecordVersion(expectedSurvivorVersion),
+      });
+
+      const survivorResult = this.db
+        .prepare(
+          `
+            UPDATE commitments
+            SET enforcement_class = ?, critical_domain = ?,
+                priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?,
+                last_reinforced_at = ?, record_version = record_version + 1
+            WHERE id = ?
+              AND revoked_at IS NULL
+              AND superseded_by IS NULL
+              AND expired_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?)
+              AND record_version = ?
+          `,
+        )
+        .run(
+          nextSurvivor.enforcement_class,
+          nextSurvivor.critical_domain,
+          nextSurvivor.priority,
+          nextSurvivor.closure_pressure_relevance,
+          nextSurvivor.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(nextSurvivor.source_stream_entry_ids),
+          nextSurvivor.last_reinforced_at,
+          survivor.id,
+          timestamp,
+          expectedSurvivorVersion,
+        );
+
+      if (survivorResult.changes === 0) {
+        throw new CommitmentReconciliationSupersedeAbort();
+      }
+
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: survivor.id,
+        action: "update",
+        old_value: survivor,
+        new_value: nextSurvivor,
+        reason: "commitment_reconciliation_survivor",
+        provenance,
+        ts: timestamp,
+      });
+
+      const supersededRows: CommitmentReconciliationSupersedeResult["superseded"] = [];
+
+      for (const current of currentSuperseded) {
+        const currentVersion = expectedRecordVersion(current);
+        const result = this.db
+          .prepare(
+            `
+              UPDATE commitments
+              SET superseded_by = ?, record_version = record_version + 1
+              WHERE id = ?
+                AND revoked_at IS NULL
+                AND superseded_by IS NULL
+                AND expired_at IS NULL
+                AND (expires_at IS NULL OR expires_at > ?)
+                AND record_version = ?
+            `,
+          )
+          .run(survivor.id, current.id, timestamp, currentVersion);
+
+        if (result.changes === 0) {
+          throw new CommitmentReconciliationSupersedeAbort();
+        }
+
+        const nextSuperseded = commitmentSchema.parse({
+          ...current,
+          record_version: nextRecordVersion(currentVersion),
+          superseded_by: survivor.id,
+        });
+
+        this.identityEventRepository?.record({
+          record_type: "commitment",
+          record_id: current.id,
+          action: "update",
+          old_value: current,
+          new_value: nextSuperseded,
+          reason: "commitment_reconciliation_duplicate",
+          provenance,
+          ts: timestamp,
+        });
+
+        supersededRows.push({
+          id: current.id,
+          record_version: nextRecordVersion(currentVersion),
+        });
+      }
+
+      return {
+        survivor: {
+          id: survivor.id,
+          record_version: nextRecordVersion(expectedSurvivorVersion),
+        },
+        survivor_before: survivorBefore,
+        superseded: supersededRows,
+      };
+    });
+
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof CommitmentReconciliationSupersedeAbort) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
   add(input: {
     id?: CommitmentId;
     type: CommitmentType;
@@ -1162,6 +1419,150 @@ export class CommitmentRepository {
       });
       return next;
     });
+  }
+
+  restoreReconciledSurvivor(
+    id: CommitmentId,
+    expectedRecordVersion: number,
+    fields: CommitmentReconciliationMergedFields,
+  ): CommitmentRecord | null {
+    const parsedId = parseCommitmentId(id);
+    const parsedRecordVersion = z.number().int().positive().parse(expectedRecordVersion);
+    const restoredFields = commitmentReconciliationMergedFieldsSchema.parse(fields);
+    const current = this.get(parsedId);
+    const timestamp = this.clock.now();
+
+    if (
+      current === null ||
+      !this.isActiveCommitment(current, timestamp) ||
+      current.record_version !== parsedRecordVersion
+    ) {
+      return null;
+    }
+
+    const next = commitmentSchema.parse({
+      ...current,
+      ...restoredFields,
+      critical_domain:
+        restoredFields.enforcement_class === "critical" ? restoredFields.critical_domain : null,
+      record_version: nextRecordVersion(parsedRecordVersion),
+    });
+    const result = this.db
+      .prepare(
+        `
+          UPDATE commitments
+          SET enforcement_class = ?, critical_domain = ?,
+              priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?,
+              last_reinforced_at = ?, record_version = record_version + 1
+          WHERE id = ?
+            AND revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+            AND record_version = ?
+        `,
+      )
+      .run(
+        next.enforcement_class,
+        next.critical_domain,
+        next.priority,
+        next.closure_pressure_relevance,
+        next.source_stream_entry_ids === undefined
+          ? null
+          : serializeJsonValue(next.source_stream_entry_ids),
+        next.last_reinforced_at,
+        parsedId,
+        timestamp,
+        parsedRecordVersion,
+      );
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    this.identityEventRepository?.record({
+      record_type: "commitment",
+      record_id: parsedId,
+      action: "update",
+      old_value: current,
+      new_value: next,
+      reason: "commitment_reconciliation_reversal_survivor",
+      provenance: {
+        kind: "offline",
+        process: "commitment-reconciler",
+      },
+      ts: timestamp,
+    });
+
+    return next;
+  }
+
+  reverseSupersede(
+    id: CommitmentId,
+    expectedSupersededById: CommitmentId,
+    expectedRecordVersion: number,
+  ): CommitmentRecord | null {
+    const parsedId = parseCommitmentId(id);
+    const parsedSupersededById = parseCommitmentId(expectedSupersededById);
+    const parsedRecordVersion = z.number().int().positive().parse(expectedRecordVersion);
+    const current = this.get(parsedId);
+
+    if (
+      current === null ||
+      current.superseded_by !== parsedSupersededById ||
+      current.revoked_at !== null ||
+      current.expired_at !== null ||
+      current.record_version !== parsedRecordVersion
+    ) {
+      return null;
+    }
+
+    const timestamp = this.clock.now();
+
+    if (current.expires_at !== null && current.expires_at <= timestamp) {
+      return null;
+    }
+
+    const result = this.db
+      .prepare(
+        `
+          UPDATE commitments
+          SET superseded_by = NULL, record_version = record_version + 1
+          WHERE id = ?
+            AND superseded_by = ?
+            AND revoked_at IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+            AND record_version = ?
+        `,
+      )
+      .run(parsedId, parsedSupersededById, timestamp, parsedRecordVersion);
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    const next = commitmentSchema.parse({
+      ...current,
+      record_version: nextRecordVersion(parsedRecordVersion),
+      superseded_by: null,
+    });
+
+    this.identityEventRepository?.record({
+      record_type: "commitment",
+      record_id: parsedId,
+      action: "update",
+      old_value: current,
+      new_value: next,
+      reason: "commitment_reconciliation_reversal_duplicate",
+      provenance: {
+        kind: "offline",
+        process: "commitment-reconciler",
+      },
+      ts: timestamp,
+    });
+
+    return next;
   }
 
   findByEvidenceStreamEntryId(entryId: StreamEntryId): boolean {

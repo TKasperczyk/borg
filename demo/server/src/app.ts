@@ -1389,6 +1389,7 @@ function processDescription(name: OfflineProcessName): string {
     "self-narrator": "autobiography and growth markers",
     "procedural-synthesizer": "skill abstractions",
     "belief-reviser": "invalidate, weaken, contradict",
+    "commitment-reconciler": "reconcile redundant or conflicting commitments",
   };
 
   return descriptions[name];

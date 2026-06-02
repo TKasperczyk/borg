@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { beliefReviserPlanSchema } from "./belief-reviser/index.js";
+import { commitmentReconcilerPlanSchema } from "./commitment-reconciler/index.js";
 import { consolidatorPlanSchema } from "./consolidator/index.js";
 import { creatorDirectiveReconcilerPlanSchema } from "./creator-directive-reconciler/index.js";
 import { curatorPlanSchema } from "./curator/index.js";
@@ -24,6 +25,7 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   proceduralSynthesizerPlanSchema,
   beliefReviserPlanSchema,
   creatorDirectiveReconcilerPlanSchema,
+  commitmentReconcilerPlanSchema,
 ]);
 
 export const maintenancePlanSchema = z.object({

@@ -61,6 +61,21 @@ export {
   type CreatorDirectiveScopeEquivalenceSnapshot,
 } from "./review-handlers/creator-directive-reconciliation.js";
 export {
+  COMMITMENT_RECONCILIATION_RESOLUTIONS,
+  COMMITMENT_RECONCILIATION_REVIEW_KIND,
+  COMMITMENT_RECONCILIATION_REVIEW_SUBKINDS,
+  commitmentReconciliationJudgmentSchema,
+  commitmentReconciliationResolutionSchema,
+  commitmentReconciliationReviewRefsSchema,
+  commitmentReconciliationScopeKeySchema,
+  commitmentReconciliationSubkindSchema,
+  createCommitmentReconciliationReviewQueueHandler,
+  type CommitmentReconciliationJudgment,
+  type CommitmentReconciliationReviewRefs,
+  type CommitmentReconciliationScopeKey,
+  type CommitmentReconciliationSubkind,
+} from "./review-handlers/commitment-reconciliation.js";
+export {
   beliefRevisionReviewRefsSchema,
   createBeliefRevisionReviewQueueHandler,
   type BeliefRevisionReviewRefs,

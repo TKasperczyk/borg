@@ -220,6 +220,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.budget,
       "belief-reviser": null,
       "creator-directive-reconciler": deps.config.offline.creatorDirectiveReconciler.budget,
+      "commitment-reconciler": deps.config.offline.commitmentReconciler.budget,
     } satisfies Partial<Record<OfflineProcessName, number | null>>,
   });
 

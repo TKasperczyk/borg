@@ -875,7 +875,8 @@ export type BorgReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "creator_directive_reconciliation";
+  | "creator_directive_reconciliation"
+  | "commitment_reconciliation";
 
 export type BorgStoredReviewKind = BorgReviewKind | "relationship_claim_ungrounded";
 

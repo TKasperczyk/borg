@@ -372,6 +372,10 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.offline.creatorDirectiveReconciler,
         ...overrides.offline?.creatorDirectiveReconciler,
       },
+      commitmentReconciler: {
+        ...DEFAULT_CONFIG.offline.commitmentReconciler,
+        ...overrides.offline?.commitmentReconciler,
+      },
       semanticExtractor: {
         ...DEFAULT_CONFIG.offline.semanticExtractor,
         ...overrides.offline?.semanticExtractor,

@@ -9,6 +9,9 @@ export { commitmentMigrations } from "./migrations.js";
 export {
   CommitmentRepository,
   EntityRepository,
+  type CommitmentReconciliationMergedFields,
+  type CommitmentReconciliationSupersedeInput,
+  type CommitmentReconciliationSupersedeResult,
   type CommitmentRevokeOptions,
   type CommitmentRepositoryOptions,
   type EntityAddInput,

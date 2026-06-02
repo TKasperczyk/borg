@@ -112,6 +112,7 @@ function createProcessRegistry(
     "procedural-synthesizer",
     "belief-reviser",
     "creator-directive-reconciler",
+    "commitment-reconciler",
   ];
 
   return Object.fromEntries(

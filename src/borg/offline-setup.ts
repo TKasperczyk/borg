@@ -33,6 +33,7 @@ import type { WorkingMemoryStore } from "../memory/working/index.js";
 import {
   AuditLog,
   BeliefReviserProcess,
+  CommitmentReconcilerProcess,
   ConsolidatorProcess,
   CreatorDirectiveReconcilerProcess,
   CuratorProcess,
@@ -168,6 +169,10 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     }),
     "creator-directive-reconciler": new CreatorDirectiveReconcilerProcess({
       creatorDirectiveRepository: options.creatorDirectiveRepository,
+      registry: reverserRegistry,
+    }),
+    "commitment-reconciler": new CommitmentReconcilerProcess({
+      commitmentRepository: options.commitmentRepository,
       registry: reverserRegistry,
     }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;

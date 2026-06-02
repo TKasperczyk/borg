@@ -36,7 +36,7 @@ flowchart TD
     Stream[("Append-only stream<br/>audit log + durable inbox")]
     Bands[("Eight memory bands<br/>+ ephemeral working memory")]
     Loop["Cognitive loop<br/>perceive · attend · deliberate · act · reflect"]
-    Dream["Offline dream cycle<br/>eleven maintenance processes"]
+    Dream["Offline dream cycle<br/>twelve maintenance processes"]
 
     Stream -->|derive| Bands
     Bands -->|retrieve| Loop
@@ -101,12 +101,12 @@ catches real violations without misfiring on compliant refusals.
 
 ### The dream cycle
 
-Between turns, eleven offline processes maintain and revise the substrate:
+Between turns, twelve offline processes maintain and revise the substrate:
 consolidation, reflection, semantic extraction, curation, oversight, review
 resolution, rumination, self-narration, procedural synthesis, belief revision,
-and creator-directive reconciliation. Each runs with plan/apply parity and
-budget caps, writes to an append-only audit log, and is reversible wherever a
-reverser is registered.
+creator-directive reconciliation, and commitment reconciliation. Each runs
+with plan/apply parity and budget caps, writes to an append-only audit log, and
+is reversible wherever a reverser is registered.
 
 Scheduled offline enablement is controlled by `maintenance.lightProcesses` and
 `maintenance.heavyProcesses`; remove a process from both lists to disable it.

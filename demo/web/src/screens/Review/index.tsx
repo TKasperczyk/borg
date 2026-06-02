@@ -20,6 +20,7 @@ import { displayValue, fieldLabel, isRecord, shortId } from "../screen-utils";
 
 const REVIEW_KIND_ORDER: ReviewKind[] = [
   "creator_directive_reconciliation",
+  "commitment_reconciliation",
   "correction",
   "belief_revision",
   "contradiction",
@@ -42,6 +43,7 @@ const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   belief_revision: ["dismiss"],
   skill_split: ["accept", "reject"],
   creator_directive_reconciliation: [],
+  commitment_reconciliation: ["accept", "reject", "dismiss", "keep"],
 };
 
 const REVIEW_RESOLVER_REF_PREFIX = "__borg_review_resolver_";
@@ -306,6 +308,18 @@ function creatorDirectiveReconciliationDetailFields(refs: Record<string, unknown
   return fields;
 }
 
+function commitmentReconciliationDetailFields(refs: Record<string, unknown>): DetailField[] {
+  const fields: DetailField[] = [];
+  const judgment = recordValue(refs, "judgment");
+
+  addField(fields, "subkind", recordValue(refs, "subkind"));
+  addArrayCount(fields, "commitment count", recordValue(refs, "commitment_ids"));
+  addField(fields, "reason", recordValue(refs, "reason"));
+  addField(fields, "judgment reason", isRecord(judgment) ? judgment.reason : undefined);
+
+  return fields;
+}
+
 function detailFields(row: ReviewRow): DetailField[] {
   switch (row.kind) {
     case "contradiction":
@@ -324,6 +338,8 @@ function detailFields(row: ReviewRow): DetailField[] {
       return correctionDetailFields(row.refs);
     case "creator_directive_reconciliation":
       return creatorDirectiveReconciliationDetailFields(row.refs);
+    case "commitment_reconciliation":
+      return commitmentReconciliationDetailFields(row.refs);
   }
 
   return [];

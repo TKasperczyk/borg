@@ -58,6 +58,10 @@ describe("config", () => {
       maxFamiliesPerRun: 8,
       budget: 60_000,
     });
+    expect(config.offline.commitmentReconciler).toEqual({
+      maxGroupsPerRun: 8,
+      budget: 60_000,
+    });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
@@ -73,6 +77,7 @@ describe("config", () => {
       "procedural-synthesizer",
       "belief-reviser",
       "creator-directive-reconciler",
+      "commitment-reconciler",
     ]);
     expect(
       [...new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses])],

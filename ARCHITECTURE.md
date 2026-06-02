@@ -1622,6 +1622,26 @@ Applied supersedes and revocations write audit reversers. Human review is
 reserved for true conflicts and disclosure widening; independent directives
 remain active without queueing.
 
+### Commitment Reconciler
+
+The Commitment Reconciler consumes active commitments in the same audience
+scope during maintenance sleep. It is harness memory hygiene for Sol's own
+stored commitments: the live extractor can choose inconsistent
+`directive_family` slugs for the same rule, so exact-key ingest deduplication
+cannot catch every redundant commitment.
+
+It asks an LLM to judge commitment meaning within structurally identical
+scope groups. Redundant commitments are superseded onto the LLM-chosen
+survivor while merging structured enforcement, priority, source, and
+reinforcement fields. Genuine conflicts become manual
+`commitment_reconciliation` review items; independent commitments remain
+active without queueing.
+
+This is distinct from the Creator-Directive Reconciler. Creator directives
+maintain operator authority and disclosure policy; commitment reconciliation
+maintains Sol's own scoped promises and rules, with no disclosure-widening
+dimension.
+
 ## Belief Revision
 
 Borg updates knowledge without erasing history. When evidence changes, the

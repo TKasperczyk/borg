@@ -68,6 +68,7 @@ function createFakeProcessRegistry(): Record<OfflineProcessName, OfflineProcess>
     "procedural-synthesizer",
     "belief-reviser",
     "creator-directive-reconciler",
+    "commitment-reconciler",
   ];
 
   return names.reduce(

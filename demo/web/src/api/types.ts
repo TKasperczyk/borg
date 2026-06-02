@@ -554,7 +554,8 @@ export type ReviewKind =
   | "correction"
   | "belief_revision"
   | "skill_split"
-  | "creator_directive_reconciliation";
+  | "creator_directive_reconciliation"
+  | "commitment_reconciliation";
 
 export type ReviewResolution =
   | "keep_both"
@@ -639,7 +640,8 @@ export type DreamProcessName =
   | "self-narrator"
   | "procedural-synthesizer"
   | "belief-reviser"
-  | "creator-directive-reconciler";
+  | "creator-directive-reconciler"
+  | "commitment-reconciler";
 
 export type DreamProcessSummary = {
   name: DreamProcessName;
