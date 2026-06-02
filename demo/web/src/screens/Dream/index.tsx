@@ -630,7 +630,9 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                           <td>
                             <span className="purple">{row.process}</span>
                           </td>
-                          <td className="dim">{row.action}</td>
+                          <td className="dim wrap" style={{ minWidth: "6.5rem" }}>
+                            {row.action}
+                          </td>
                           <td className="wrap" style={{ fontFamily: "var(--sans)" }}>
                             {displayTargetSummary(row.targets)}
                           </td>

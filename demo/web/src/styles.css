@@ -1075,7 +1075,7 @@ body {
   text-transform: uppercase;
   font-size: 10px;
   letter-spacing: 0.08em;
-  padding: 8px 12px;
+  padding: 8px 9px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-0);
   position: sticky;
@@ -1084,13 +1084,14 @@ body {
   white-space: nowrap;
 }
 .tbl td {
-  padding: 9px 12px;
+  padding: 9px 9px;
   border-bottom: 1px solid var(--line-soft);
-  vertical-align: middle;
+  vertical-align: top;
   white-space: nowrap;
 }
 .tbl td.wrap {
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 .tbl tr:hover td {
   background: var(--bg-2);
