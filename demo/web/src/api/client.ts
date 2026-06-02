@@ -13,6 +13,7 @@ import type {
   CreatorDirectiveItem,
   CreatorDirectiveReconciliationRequest,
   CreatorDirectiveRevokeRequest,
+  CreatorDirectiveStatusFilter,
   CreatorDirectiveSupersedeRequest,
   CreateGoalRequest,
   CreateGrowthMarkerRequest,
@@ -419,8 +420,14 @@ export async function postCommitmentRevoke(
   });
 }
 
-export async function getCreatorDirectives(): Promise<CreatorDirectivesResponse> {
-  return fetchJson<CreatorDirectivesResponse>("api/creator-directives");
+export async function getCreatorDirectives(
+  input: { status?: CreatorDirectiveStatusFilter } = {},
+): Promise<CreatorDirectivesResponse> {
+  const params = new URLSearchParams();
+  if (input.status !== undefined) {
+    params.set("status", input.status);
+  }
+  return fetchJson<CreatorDirectivesResponse>("api/creator-directives", undefined, params);
 }
 
 export async function revokeCreatorDirective(

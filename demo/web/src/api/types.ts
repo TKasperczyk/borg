@@ -487,6 +487,7 @@ export type CreatorDirectiveKind =
   | "routing_instruction";
 
 export type CreatorDirectiveStatus = "active" | "superseded" | "revoked";
+export type CreatorDirectiveStatusFilter = CreatorDirectiveStatus | "all";
 
 export type CreatorDirectiveSubjectKind = "borg_self" | "entity" | "system" | "unknown";
 
@@ -527,7 +528,10 @@ export type CreatorDirectiveItem = {
   subject_entity_id: string | null;
   subject_entity_name: string | null;
   priority: number;
+  superseded_by_id: string | null;
+  revoked_reason: string | null;
   created_at: number;
+  updated_at: number;
 };
 
 export type CreatorDirectivesResponse = {

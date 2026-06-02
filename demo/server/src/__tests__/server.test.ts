@@ -2354,6 +2354,9 @@ describe("demo server", () => {
         mention_policy: string;
         status: string;
         subject_entity_name: string | null;
+        superseded_by_id: string | null;
+        revoked_reason: string | null;
+        updated_at: number;
       }>;
     };
     expect(body.directives.map((directive) => directive.id)).not.toContain(revoked.id);
@@ -2369,8 +2372,73 @@ describe("demo server", () => {
         mention_policy: "only_if_topic_raised",
         status: "active",
         subject_entity_name: "Alice",
+        superseded_by_id: null,
+        revoked_reason: null,
+        updated_at: expect.any(Number),
       }),
     ]);
+  });
+
+  it("GET /api/creator-directives status filter can list inactive creator directives", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const active = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Active creator directive.",
+    });
+    const revoked = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Revoked creator directive.",
+    });
+    const survivor = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Replacement creator directive.",
+    });
+    const superseded = queueCreatorDirectiveFixture(borg, clock, {
+      text: "Superseded creator directive.",
+    });
+
+    borg.creatorDirectives.revoke(revoked.id, "operator retired obsolete directive");
+    borg.creatorDirectives.supersede(superseded.id, survivor.id);
+
+    const allResponse = await app.request("/api/creator-directives?status=all");
+    expect(allResponse.status).toBe(200);
+    const allBody = (await allResponse.json()) as {
+      directives: Array<{
+        id: string;
+        status: string;
+        superseded_by_id: string | null;
+        revoked_reason: string | null;
+        updated_at: number;
+      }>;
+    };
+    expect(allBody.directives.map((directive) => directive.id)).toEqual(
+      expect.arrayContaining([active.id, revoked.id, survivor.id, superseded.id]),
+    );
+    expect(allBody.directives.find((directive) => directive.id === revoked.id)).toMatchObject({
+      status: "revoked",
+      revoked_reason: "operator retired obsolete directive",
+      superseded_by_id: null,
+      updated_at: expect.any(Number),
+    });
+    expect(allBody.directives.find((directive) => directive.id === superseded.id)).toMatchObject({
+      status: "superseded",
+      revoked_reason: null,
+      superseded_by_id: survivor.id,
+      updated_at: expect.any(Number),
+    });
+
+    const revokedResponse = await app.request("/api/creator-directives?status=revoked");
+    expect(revokedResponse.status).toBe(200);
+    const revokedBody = (await revokedResponse.json()) as { directives: Array<{ id: string }> };
+    expect(revokedBody.directives.map((directive) => directive.id)).toEqual([revoked.id]);
+
+    const supersededResponse = await app.request("/api/creator-directives?status=superseded");
+    expect(supersededResponse.status).toBe(200);
+    const supersededBody = (await supersededResponse.json()) as {
+      directives: Array<{ id: string }>;
+    };
+    expect(supersededBody.directives.map((directive) => directive.id)).toEqual([superseded.id]);
   });
 
   it("POST /api/creator-directives revoke and supersede mutate creator directives", async () => {

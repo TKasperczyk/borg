@@ -516,6 +516,12 @@ const creatorDirectiveParamSchema = z.object({
   id: creatorDirectiveIdSchema,
 });
 
+const creatorDirectiveStatusQuerySchema = z
+  .object({
+    status: z.enum(["active", "revoked", "superseded", "all"]).default("active"),
+  })
+  .strict();
+
 const creatorDirectiveRevokeBodySchema = z
   .object({
     reason: textFieldSchema,
@@ -1440,7 +1446,10 @@ function mapCreatorDirective(borg: Borg, record: CreatorDirective) {
     subject_entity_id: record.subject_entity_id,
     subject_entity_name: entityLabel(borg, record.subject_entity_id),
     priority: record.priority,
+    superseded_by_id: record.superseded_by,
+    revoked_reason: record.revoked_reason,
     created_at: record.created_at,
+    updated_at: record.updated_at,
   };
 }
 
@@ -2538,8 +2547,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.get("/api/creator-directives", (c) => {
+    const query = parseRequest(creatorDirectiveStatusQuerySchema, c.req.query());
     const directives = input.borg.creatorDirectives
-      .list({ status: "active" })
+      .list(query.status === "all" ? {} : { status: query.status })
       .map((record) => mapCreatorDirective(input.borg, record));
 
     return c.json({ directives });
