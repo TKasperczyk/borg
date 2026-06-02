@@ -84,7 +84,6 @@ export type ClosurePressureGuardResult = {
 export type ClosurePressureGuardOptions = {
   llmClient: LLMClient;
   auditModel: string;
-  rewriteModel: string;
   mode?: PostGenerationGuardMode;
   tracer?: TurnTracer;
 };

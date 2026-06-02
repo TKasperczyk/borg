@@ -168,7 +168,6 @@ describe("post-generation guard shadow chain", () => {
 
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
-      rewriteModel: "rewrite",
       closurePressureMode: "shadow",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
@@ -253,7 +252,6 @@ describe("post-generation guard shadow chain", () => {
     };
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
-      rewriteModel: "rewrite",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
@@ -306,7 +304,6 @@ describe("post-generation guard shadow chain", () => {
     const emit = vi.fn();
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
-      rewriteModel: "rewrite",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
@@ -379,7 +376,6 @@ describe("post-generation guard shadow chain", () => {
       });
       const postGenerationRunner = new TurnPostGenerationGuardRunner({
         auditModel: "audit",
-        rewriteModel: "rewrite",
         closurePressureMode: "enforce",
         createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId }),
         actionRepository: {
@@ -487,7 +483,6 @@ describe("post-generation guard shadow chain", () => {
       } as unknown as RetrievedEpisode;
       const postGenerationRunner = new TurnPostGenerationGuardRunner({
         auditModel: "audit",
-        rewriteModel: "rewrite",
         closurePressureMode: "enforce",
         createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId }),
         actionRepository: {
@@ -548,7 +543,6 @@ describe("post-generation guard shadow chain", () => {
     };
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
-      rewriteModel: "rewrite",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
@@ -601,7 +595,6 @@ describe("post-generation guard shadow chain", () => {
     };
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
-      rewriteModel: "rewrite",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {

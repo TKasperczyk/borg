@@ -39,7 +39,6 @@ type TurnPostGenerationGuardMessage = Extract<PendingTurnEmission, { kind: "mess
 
 export type TurnPostGenerationGuardRunnerOptions = {
   auditModel: string;
-  rewriteModel: string;
   closurePressureMode: PostGenerationGuardMode;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   actionRepository: Pick<ActionRepository, "list">;
@@ -228,7 +227,6 @@ export class TurnPostGenerationGuardRunner {
     const closureGuard = new ClosurePressureGuard({
       llmClient: input.llmClient,
       auditModel: this.options.auditModel,
-      rewriteModel: this.options.rewriteModel,
       mode: this.options.closurePressureMode,
       tracer: this.options.tracer,
     });

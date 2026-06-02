@@ -950,9 +950,10 @@ commitment being checked. Critical violations can request one narrow
 regeneration before suppression; a second violation suppresses the output.
 
 The Closure-Pressure Guard watches whether a draft response would continue a
-known closure loop or violate a no-closure commitment. It can delete closure
-spans, suppress output, or record shadow observations depending on mode and
-context.
+known closure loop or violate a no-closure commitment. It does not edit the
+response text: depending on mode and context it either passes the original
+output through (recording which spans it would have flagged, as a trace label
+only), suppresses the whole output, or records shadow observations.
 
 In shadow mode, closure-pressure violations are recorded as would-have
 verdicts and the original output passes through. In enforce mode, a named

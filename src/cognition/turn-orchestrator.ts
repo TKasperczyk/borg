@@ -300,7 +300,6 @@ export class TurnOrchestrator {
     });
     const postGenerationGuardRunner = new TurnPostGenerationGuardRunner({
       auditModel: options.config.anthropic.models.background,
-      rewriteModel: options.config.anthropic.models.cognition,
       closurePressureMode: options.config.generation.postGenerationGuards.closurePressure.mode,
       createStreamReader,
       actionRepository: options.actionRepository,

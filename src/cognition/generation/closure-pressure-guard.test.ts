@@ -90,7 +90,6 @@ async function runClosureHistoryGuard(input: {
   const guard = new ClosurePressureGuard({
     llmClient: llm,
     auditModel: "audit",
-    rewriteModel: "rewrite",
   });
 
   return guard.run({
@@ -137,7 +136,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -194,7 +192,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
     });
 
     const result = await guard.run({
@@ -237,7 +234,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       mode: "shadow",
       tracer,
     });
@@ -298,7 +294,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -349,7 +344,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
     });
 
     const result = await guard.run({
@@ -382,7 +376,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
     });
 
     const result = await guard.run({
@@ -424,7 +417,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -530,7 +522,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -576,7 +567,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
     });
 
     const result = await guard.run({
@@ -618,7 +608,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -670,7 +659,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
       tracer,
     });
 
@@ -716,7 +704,6 @@ describe("ClosurePressureGuard", () => {
       const guard = new ClosurePressureGuard({
         llmClient: llm,
         auditModel: "audit",
-        rewriteModel: "rewrite",
       });
 
       const result = await guard.run({
@@ -754,7 +741,6 @@ describe("ClosurePressureGuard", () => {
     const guard = new ClosurePressureGuard({
       llmClient: llm,
       auditModel: "audit",
-      rewriteModel: "rewrite",
     });
 
     const result = await guard.run({
