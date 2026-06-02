@@ -24,6 +24,7 @@ export { composeMigrations, openDatabase, SqliteDatabase } from "../../storage/s
 export { ManualClock } from "../../util/clock.js";
 export {
   createEntityId,
+  createSemanticEdgeId,
   createEpisodeId,
   createSessionId,
   createStreamEntryId,

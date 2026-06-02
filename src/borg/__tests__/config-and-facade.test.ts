@@ -9,6 +9,7 @@ import {
   SqliteDatabase,
   ManualClock,
   createEpisodeId,
+  createSemanticEdgeId,
   createSessionId,
   createTestConfig,
   resolveBorgConfig,
@@ -269,6 +270,50 @@ describe("Borg", () => {
       expect(sortedIds(borg.commitments.list({ activeOnly: false }))).toEqual(
         [...visibleIds, revokedCommitment.id].sort(),
       );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("exposes read-only semantic edge lookup through the facade", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const sourceEpisodeId = createEpisodeId();
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const first = await borg.semantic.nodes.add({
+        kind: "concept",
+        label: "First node",
+        description: "First node description.",
+        sourceEpisodeIds: [sourceEpisodeId],
+      });
+      const second = await borg.semantic.nodes.add({
+        kind: "proposition",
+        label: "Second node",
+        description: "Second node description.",
+        sourceEpisodeIds: [sourceEpisodeId],
+      });
+      const edge = borg.semantic.edges.add({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "contradicts",
+        confidence: 0.7,
+        evidence_episode_ids: [sourceEpisodeId],
+        created_at: clock.now(),
+        last_verified_at: clock.now(),
+      });
+
+      expect(borg.semantic.edges.get(edge.id)).toEqual(edge);
+      expect(borg.semantic.edges.get(createSemanticEdgeId())).toBeNull();
     } finally {
       await borg.close();
     }

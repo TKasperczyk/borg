@@ -4,6 +4,7 @@ import {
   ApiError,
   attachmentBytesUrl,
   getSemanticGraph,
+  getSemanticEdge,
   getSemanticNode,
   getSessions,
   getStream,
@@ -143,6 +144,41 @@ describe("api client", () => {
       label: "Detail node",
     });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/semantic/nodes/semn_detail0000000");
+  });
+
+  it("fetches semantic edge detail by id", async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        JSON.stringify({
+          edge: {
+            id: "seme_detail0000000",
+            from_node_id: "semn_source0000000",
+            to_node_id: "semn_target0000000",
+            relation: "contradicts",
+            confidence: 0.7,
+            evidence_episode_ids: ["ep_source000000000"],
+            source_count: 1,
+            valid_from: 1,
+            valid_to: null,
+            invalidated_at: null,
+            invalidated_by_edge_id: null,
+            invalidated_by_review_id: null,
+            invalidated_by_process: null,
+            invalidated_reason: null,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    await expect(getSemanticEdge("seme_detail0000000")).resolves.toMatchObject({
+      id: "seme_detail0000000",
+      relation: "contradicts",
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/semantic/edges/seme_detail0000000");
   });
 
   it("requires audience when constructing attachment byte URLs", () => {

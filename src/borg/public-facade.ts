@@ -685,6 +685,7 @@ export type BorgSemanticFacade = {
   };
   edges: {
     add(input: BorgSemanticEdgeAddInput): SemanticEdge;
+    get(id: SemanticEdgeId): SemanticEdge | null;
     list(options?: SemanticEdgeListOptions): SemanticEdge[];
   };
   walk(fromId: SemanticNodeId, options?: SemanticWalkOptions): Promise<SemanticWalkStep[]>;

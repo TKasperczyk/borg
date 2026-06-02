@@ -418,6 +418,7 @@ export {
   REVIEW_RESOLUTIONS,
   creatorDirectiveReconciliationReviewRefsSchema,
   SEMANTIC_NODE_STATUSES,
+  semanticEdgeIdSchema,
   semanticNodeIdSchema,
   type ExtractSemanticResult,
   type ReviewKind,

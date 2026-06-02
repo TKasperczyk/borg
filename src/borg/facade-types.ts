@@ -323,6 +323,9 @@ export type BorgSemanticFacade = {
     add: (
       input: Parameters<SemanticEdgeRepository["addEdge"]>[0],
     ) => ReturnType<SemanticEdgeRepository["addEdge"]>;
+    get: (
+      id: Parameters<SemanticEdgeRepository["getEdge"]>[0],
+    ) => ReturnType<SemanticEdgeRepository["getEdge"]>;
     list: (
       ...args: Parameters<BorgDependencies["semanticEdgeRepository"]["listEdges"]>
     ) => ReturnType<BorgDependencies["semanticEdgeRepository"]["listEdges"]>;

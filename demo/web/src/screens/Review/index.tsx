@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getCreatorDirectives,
+  getSemanticEdge,
+  getSemanticNode,
   getReviews,
   patchReview,
   resolveCreatorDirectiveReconciliation,
@@ -11,7 +13,10 @@ import type {
   ReviewKind,
   ReviewResolution,
   ReviewRow,
+  SemanticMemoryEdge,
+  SemanticMemoryNode,
 } from "../../api/types";
+import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
@@ -196,6 +201,23 @@ function nodeIds(row: ReviewRow): string[] {
   return stringArray(recordValue(row.refs, "node_ids"));
 }
 
+function nodeLabels(row: ReviewRow): string[] {
+  return stringArray(recordValue(row.refs, "node_labels"));
+}
+
+function nodeOptionLabel(row: ReviewRow, id: string, index: number): string {
+  const label = nodeLabels(row)[index];
+  return label === undefined ? shortId(id) : `${label} [${shortId(id)}]`;
+}
+
+function reviewEdgeId(row: ReviewRow): string | null {
+  return firstString(recordValue(row.refs, "edge_id"));
+}
+
+function isPairReview(row: ReviewRow): boolean {
+  return row.kind === "contradiction" || row.kind === "duplicate";
+}
+
 function directiveIds(row: ReviewRow): string[] {
   return stringArray(recordValue(row.refs, "directive_ids"));
 }
@@ -253,6 +275,41 @@ function pairDetailFields(refs: Record<string, unknown>): DetailField[] {
   addField(fields, "repair text", recordValue(refs, "reason"));
 
   return fields;
+}
+
+type EpisodeRefGroup = {
+  label: string;
+  ids: string[];
+};
+
+function pairEpisodeRefGroups(refs: Record<string, unknown>): EpisodeRefGroup[] {
+  const groups: EpisodeRefGroup[] = [];
+  const reviewEpisodeIds = stringArray(recordValue(refs, "episode_ids"));
+  if (reviewEpisodeIds.length > 0) {
+    groups.push({ label: "review episodes", ids: reviewEpisodeIds });
+  }
+
+  const sourceOverlap = recordValue(refs, "source_overlap");
+  if (!isRecord(sourceOverlap)) {
+    return groups;
+  }
+
+  groups.push(
+    {
+      label: "candidate episodes",
+      ids: stringArray(recordValue(sourceOverlap, "candidate_source_episode_ids")),
+    },
+    {
+      label: "matched episodes",
+      ids: stringArray(recordValue(sourceOverlap, "matched_source_episode_ids")),
+    },
+    {
+      label: "overlap episodes",
+      ids: stringArray(recordValue(sourceOverlap, "overlapping_source_episode_ids")),
+    },
+  );
+
+  return groups.filter((group) => group.ids.length > 0);
 }
 
 function repairDetailFields(refs: Record<string, unknown>): DetailField[] {
@@ -451,6 +508,258 @@ function ReviewDetail({ row }: { row: ReviewRow }) {
   );
 }
 
+function edgeEndpointLabel(id: string, nodes: readonly SemanticMemoryNode[]): string {
+  return nodes.find((node) => node.id === id)?.label ?? shortId(id);
+}
+
+function SemanticEdgeDetail({
+  edge,
+  nodes,
+}: {
+  edge: SemanticMemoryEdge;
+  nodes: readonly SemanticMemoryNode[];
+}) {
+  return (
+    <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Tag kind={edge.relation === "contradicts" ? "warn" : "info"}>{edge.relation}</Tag>
+        <Tag>confidence {edge.confidence.toFixed(2)}</Tag>
+        <Tag>{edge.invalidated_at === null ? "active" : "invalidated"}</Tag>
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          color: "var(--text)",
+          fontFamily: "var(--sans)",
+          fontSize: 12.5,
+          lineHeight: 1.45,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {edgeEndpointLabel(edge.from_node_id, nodes)}
+        {" -> "}
+        {edgeEndpointLabel(edge.to_node_id, nodes)}
+      </div>
+      <div className="props" style={{ marginTop: 10 }}>
+        <div className="row">
+          <span className="k">edge id</span>
+          <span className="v">{edge.id}</span>
+        </div>
+        <div className="row">
+          <span className="k">from</span>
+          <span className="v">{edge.from_node_id}</span>
+        </div>
+        <div className="row">
+          <span className="k">to</span>
+          <span className="v">{edge.to_node_id}</span>
+        </div>
+        <div className="row">
+          <span className="k">valid from</span>
+          <span className="v">{formatTime(edge.valid_from)}</span>
+        </div>
+        <div className="row">
+          <span className="k">valid to</span>
+          <span className="v">{edge.valid_to === null ? "open" : formatTime(edge.valid_to)}</span>
+        </div>
+        <div className="row">
+          <span className="k">evidence episodes</span>
+          <span className="v">
+            {edge.evidence_episode_ids.length === 0 ? "none" : edge.evidence_episode_ids.join(", ")}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PairEpisodeRefs({ groups }: { groups: readonly EpisodeRefGroup[] }) {
+  if (groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <div>
+      <div className="divider">episode refs</div>
+      <div className="props">
+        {groups.map((group) => (
+          <div className="row" key={group.label}>
+            <span className="k">{group.label}</span>
+            <span className="v">{group.ids.join(", ")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type SemanticNodeDrillResult = {
+  id: string;
+  node: SemanticMemoryNode | null;
+  error: string | null;
+};
+
+type SemanticEdgeDrillResult = {
+  id: string;
+  edge: SemanticMemoryEdge | null;
+  error: string | null;
+};
+
+async function fetchSemanticNodeDrillResult(id: string): Promise<SemanticNodeDrillResult> {
+  try {
+    return { id, node: await getSemanticNode(id), error: null };
+  } catch (caught) {
+    return {
+      id,
+      node: null,
+      error: caught instanceof Error ? caught.message : String(caught),
+    };
+  }
+}
+
+async function fetchSemanticEdgeDrillResult(id: string): Promise<SemanticEdgeDrillResult> {
+  try {
+    return { id, edge: await getSemanticEdge(id), error: null };
+  } catch (caught) {
+    return {
+      id,
+      edge: null,
+      error: caught instanceof Error ? caught.message : String(caught),
+    };
+  }
+}
+
+function SemanticNodeUnavailable({
+  label,
+  result,
+}: {
+  label: string;
+  result?: SemanticNodeDrillResult;
+}) {
+  return (
+    <div className="notice bad">
+      <div>{label} semantic node unavailable</div>
+      <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>
+        {result?.id ?? "missing node id"}
+      </div>
+      {result?.error === null || result?.error === undefined ? null : (
+        <div style={{ marginTop: 4, overflowWrap: "anywhere" }}>{result.error}</div>
+      )}
+    </div>
+  );
+}
+
+function SemanticNodeDrillSlot({
+  result,
+  label,
+}: {
+  result?: SemanticNodeDrillResult;
+  label: string;
+}) {
+  if (result === undefined || result.node === null) {
+    return <SemanticNodeUnavailable label={label} result={result} />;
+  }
+
+  return <SemanticNodeDetail node={result.node} label={label} />;
+}
+
+function SemanticEdgeDrillSlot({
+  result,
+  nodes,
+}: {
+  result: SemanticEdgeDrillResult | null;
+  nodes: readonly SemanticMemoryNode[];
+}) {
+  if (result === null) {
+    return <div className="notice">semantic edge unavailable</div>;
+  }
+
+  if (result.edge === null) {
+    return (
+      <div className="notice bad">
+        <div>semantic edge unavailable</div>
+        <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>{result.id}</div>
+        {result.error === null ? null : (
+          <div style={{ marginTop: 4, overflowWrap: "anywhere" }}>{result.error}</div>
+        )}
+      </div>
+    );
+  }
+
+  return <SemanticEdgeDetail edge={result.edge} nodes={nodes} />;
+}
+
+function ReviewPairDrillthrough({ row, open }: { row: ReviewRow; open: boolean }) {
+  const ids = nodeIds(row);
+  const edgeId = reviewEdgeId(row);
+  const nodeKey = ids.join("|");
+  const [nodeResults, setNodeResults] = useState<SemanticNodeDrillResult[] | null>(null);
+  const [edgeResult, setEdgeResult] = useState<SemanticEdgeDrillResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const episodeGroups = pairEpisodeRefGroups(row.refs);
+  const availableNodes =
+    nodeResults === null
+      ? []
+      : nodeResults.flatMap((result) => (result.node === null ? [] : [result.node]));
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setNodeResults(null);
+    setEdgeResult(null);
+
+    void Promise.all([
+      Promise.all(ids.map((id) => fetchSemanticNodeDrillResult(id))),
+      edgeId === null ? Promise.resolve(null) : fetchSemanticEdgeDrillResult(edgeId),
+    ])
+      .then(([nextNodeResults, nextEdgeResult]) => {
+        if (!cancelled) {
+          setNodeResults(nextNodeResults);
+          setEdgeResult(nextEdgeResult);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [edgeId, nodeKey, open]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+      {loading ? <div className="notice">loading semantic drill-through</div> : null}
+      {nodeResults === null ? null : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              edgeId === null ? "repeat(2, minmax(220px, 1fr))" : "1fr minmax(220px, 300px) 1fr",
+            gap: 10,
+          }}
+        >
+          <SemanticNodeDrillSlot result={nodeResults[0]} label="candidate 1" />
+          {edgeId === null ? null : (
+            <SemanticEdgeDrillSlot result={edgeResult} nodes={availableNodes} />
+          )}
+          <SemanticNodeDrillSlot result={nodeResults[1]} label="candidate 2" />
+        </div>
+      )}
+      <PairEpisodeRefs groups={episodeGroups} />
+    </div>
+  );
+}
+
 function GenericReviewActions({
   row,
   busy,
@@ -482,9 +791,9 @@ function GenericReviewActions({
         <label className="modal-field">
           <span>winner node</span>
           <select value={winner} onChange={(event) => onWinner(event.target.value)}>
-            {ids.map((id) => (
+            {ids.map((id, index) => (
               <option value={id} key={id}>
-                {shortId(id)}
+                {nodeOptionLabel(row, id, index)}
               </option>
             ))}
           </select>
@@ -682,6 +991,7 @@ export function ReviewScreen() {
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [winners, setWinners] = useState<Record<number, string>>({});
   const [survivors, setSurvivors] = useState<Record<number, string>>({});
+  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
 
   const directivesById = useMemo(() => {
     return new Map((api.data?.directives ?? []).map((directive) => [directive.id, directive]));
@@ -733,6 +1043,10 @@ export function ReviewScreen() {
 
   function setSurvivor(id: number, survivor: string): void {
     setSurvivors((current) => ({ ...current, [id]: survivor }));
+  }
+
+  function toggleExpanded(rowId: number): void {
+    setExpandedRows((current) => ({ ...current, [rowId]: current[rowId] !== true }));
   }
 
   async function submitGeneric(row: ReviewRow, action: ReviewResolution): Promise<void> {
@@ -815,6 +1129,8 @@ export function ReviewScreen() {
                     const winner = winners[row.id] ?? ids[0] ?? "";
                     const creatorIds = directiveIds(row);
                     const survivor = survivors[row.id] ?? creatorIds[0] ?? "";
+                    const pairReview = isPairReview(row);
+                    const expanded = expandedRows[row.id] === true;
                     return (
                       <div
                         className="item"
@@ -856,6 +1172,15 @@ export function ReviewScreen() {
                               {row.reason}
                             </div>
                           </div>
+                          {pairReview ? (
+                            <button
+                              className="btn sm ghost"
+                              type="button"
+                              onClick={() => toggleExpanded(row.id)}
+                            >
+                              {expanded ? "hide drill" : "drill"}
+                            </button>
+                          ) : null}
                         </div>
 
                         {row.kind === "creator_directive_reconciliation" ? (
@@ -872,7 +1197,10 @@ export function ReviewScreen() {
                           <div
                             style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 14 }}
                           >
-                            <ReviewDetail row={row} />
+                            <div style={{ display: "grid", gap: 10 }}>
+                              <ReviewPairDrillthrough row={row} open={pairReview && expanded} />
+                              <ReviewDetail row={row} />
+                            </div>
                             <GenericReviewActions
                               row={row}
                               busy={busy}

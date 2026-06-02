@@ -906,7 +906,7 @@ describe("demo server", () => {
   it("serves creator and operator session endpoints", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-creator-"));
     tempDirs.push(tempDir);
-    const { borg, live } = await openHarness({ tempDir });
+    const { borg, clock, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
 
@@ -1442,7 +1442,7 @@ describe("demo server", () => {
   it("returns bad request for malformed memory band cursors", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-cursor-"));
     tempDirs.push(tempDir);
-    const { borg, live } = await openHarness({ tempDir });
+    const { borg, live, clock } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
     const staleShapeCursor = Buffer.from(
@@ -3260,10 +3260,10 @@ describe("demo server", () => {
     });
   });
 
-  it("serves semantic node detail by id", async () => {
+  it("serves semantic node and edge detail by id", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-semantic-node-"));
     tempDirs.push(tempDir);
-    const { borg, live } = await openHarness({ tempDir });
+    const { borg, live, clock } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const sourceEpisodeId = createEpisodeId();
     const node = await borg.semantic.nodes.add({
@@ -3271,6 +3271,21 @@ describe("demo server", () => {
       label: "Detail node",
       description: "Detail node description",
       sourceEpisodeIds: [sourceEpisodeId],
+    });
+    const target = await borg.semantic.nodes.add({
+      kind: "proposition",
+      label: "Target node",
+      description: "Target node description",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
+    const edge = borg.semantic.edges.add({
+      from_node_id: node.id,
+      to_node_id: target.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: [sourceEpisodeId],
+      created_at: clock.now(),
+      last_verified_at: clock.now(),
     });
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
 
@@ -3288,6 +3303,27 @@ describe("demo server", () => {
 
     const missing = await app.request(`/api/semantic/nodes/${createSemanticNodeId()}`);
     expect(missing.status).toBe(404);
+
+    const edgeResponse = await app.request(`/api/semantic/edges/${edge.id}`);
+
+    expect(edgeResponse.status).toBe(200);
+    expect(await edgeResponse.json()).toMatchObject({
+      edge: {
+        id: edge.id,
+        from_node_id: node.id,
+        to_node_id: target.id,
+        relation: "supports",
+        confidence: 0.7,
+        evidence_episode_ids: [sourceEpisodeId],
+        source_count: 1,
+      },
+    });
+
+    const missingEdge = await app.request(`/api/semantic/edges/${createSemanticEdgeId()}`);
+    expect(missingEdge.status).toBe(404);
+
+    const invalidEdge = await app.request("/api/semantic/edges/not-an-edge-id");
+    expect(invalidEdge.status).toBe(400);
   });
 
   it("surfaces indexed entry_index for legacy stream JSONL rows", async () => {

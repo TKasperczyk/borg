@@ -51,6 +51,7 @@ import {
   parseOpenQuestionId,
   parseSessionId,
   PROMPT_KEYS,
+  semanticEdgeIdSchema,
   semanticNodeIdSchema,
   type AuditId,
   type BorgReviewResolutionInput,
@@ -2454,6 +2455,21 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     }
 
     return c.json({ node: mapSemanticMemoryNode(node) });
+  });
+
+  app.get("/api/semantic/edges/:id", (c) => {
+    try {
+      const id = parseRequest(semanticEdgeIdSchema, c.req.param("id"));
+      const edge = input.borg.semantic.edges.get(id);
+
+      if (edge === null) {
+        throw new HTTPException(404, { message: `semantic edge ${id} not found` });
+      }
+
+      return c.json({ edge: mapSemanticMemoryEdge(edge) });
+    } catch (error) {
+      mapBorgErrorToHttp(error);
+    }
   });
 
   app.get("/api/memory/bands/:id", async (c) => {

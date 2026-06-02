@@ -20,6 +20,7 @@ import type {
 } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
+import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Spark } from "../../components/Spark";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
@@ -804,6 +805,14 @@ function MemoryDrill({
   const selected =
     loadedSelected ?? fetchedSelected ?? (selectedId === null ? (filteredRows[0] ?? null) : null);
   const selectedCorrectionKind = selected === null ? null : correctionActionKind(selected.id);
+  const selectedSemanticNode =
+    band === "semantic" && selected?.rowKind === "node"
+      ? fetchedSemanticNode?.id === selected.id
+        ? fetchedSemanticNode
+        : detail?.band === "semantic"
+          ? (detail.nodes.find((node) => node.id === selected.id) ?? null)
+          : null
+      : null;
   const searchable = SEARCHABLE_BANDS.has(band);
   const searchActive = searchQuery.length > 0;
   const nextCursor = searchActive ? null : detailNextCursor(detail);
@@ -1128,7 +1137,7 @@ function MemoryDrill({
             ) : (
               <div className="notice">no records in this band</div>
             )
-          ) : (
+          ) : selectedSemanticNode === null ? (
             <>
               <h2>{selected.title}</h2>
               <div className="meta-line">
@@ -1151,6 +1160,8 @@ function MemoryDrill({
                 <BandSpecificDetail detail={detail} selectedId={selected.id} />
               )}
             </>
+          ) : (
+            <SemanticNodeDetail node={selectedSemanticNode} />
           )}
         </div>
         <div

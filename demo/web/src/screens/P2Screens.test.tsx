@@ -62,6 +62,49 @@ function requestPath(request: RequestInfo | URL): string {
   return new URL(String(request), "http://test.invalid").pathname;
 }
 
+function semanticNodeFixture(id: string, label: string, description: string, episodeId: string) {
+  return {
+    id,
+    kind: "proposition",
+    label,
+    description,
+    domain: "runtime",
+    aliases: [],
+    confidence: 0.8,
+    status: "active",
+    source_episode_ids: [episodeId],
+    source_count: 1,
+    created_at: 1,
+    updated_at: 2,
+  };
+}
+
+function semanticEdgeFixture(id: string, fromNodeId: string, toNodeId: string, episodeId: string) {
+  return {
+    id,
+    from_node_id: fromNodeId,
+    to_node_id: toNodeId,
+    relation: "contradicts",
+    confidence: 0.72,
+    evidence_episode_ids: [episodeId],
+    source_count: 1,
+    valid_from: 3,
+    valid_to: null,
+    invalidated_at: null,
+    invalidated_by_edge_id: null,
+    invalidated_by_review_id: null,
+    invalidated_by_process: null,
+    invalidated_reason: null,
+  };
+}
+
+function jsonErrorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: { status, message } }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function installFetch(): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((request: RequestInfo | URL) => {
     // Client defaults to same-origin (relative) URLs; provide a base so URL parses them.
@@ -837,6 +880,298 @@ describe("P2 screens", () => {
       ).toBe(true);
     });
     expect(await screen.findByText("no open review rows")).toBeInTheDocument();
+  });
+
+  it("drills into contradiction reviews with both semantic nodes and the edge", async () => {
+    const live = makeLiveSource();
+    const leftNodeId = "semn_aaaaaaaaaaaaaaaa";
+    const rightNodeId = "semn_bbbbbbbbbbbbbbbb";
+    const edgeId = "seme_cccccccccccccccc";
+    const episodeId = "ep_dddddddddddddddd";
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(
+          jsonResponse({
+            rows: [
+              {
+                id: 51,
+                kind: "contradiction",
+                refs: {
+                  node_ids: [leftNodeId, rightNodeId],
+                  node_labels: ["Substrate claim", "Runtime claim"],
+                  edge_id: edgeId,
+                  episode_ids: [episodeId],
+                },
+                reason: "semantic contradiction requires operator review",
+                created_at: 4,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === `/api/semantic/nodes/${leftNodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: {
+              id: leftNodeId,
+              kind: "proposition",
+              label: "Substrate claim",
+              description: "The substrate is expected to stay online during the demo.",
+              domain: "runtime",
+              aliases: ["demo substrate"],
+              confidence: 0.82,
+              status: "active",
+              source_episode_ids: [episodeId],
+              source_count: 1,
+              created_at: 1,
+              updated_at: 2,
+            },
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/nodes/${rightNodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: {
+              id: rightNodeId,
+              kind: "proposition",
+              label: "Runtime claim",
+              description: "The runtime should be treated as offline for the demo.",
+              domain: "runtime",
+              aliases: [],
+              confidence: 0.74,
+              status: "active",
+              source_episode_ids: [episodeId],
+              source_count: 1,
+              created_at: 1,
+              updated_at: 2,
+            },
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/edges/${edgeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            edge: {
+              id: edgeId,
+              from_node_id: leftNodeId,
+              to_node_id: rightNodeId,
+              relation: "contradicts",
+              confidence: 0.72,
+              evidence_episode_ids: [episodeId],
+              source_count: 1,
+              valid_from: 3,
+              valid_to: null,
+              invalidated_at: null,
+              invalidated_by_edge_id: null,
+              invalidated_by_review_id: null,
+              invalidated_by_process: null,
+              invalidated_reason: null,
+            },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
+      </LiveEventsProvider>,
+    );
+
+    const winnerSelect = (await screen.findByLabelText("winner node")) as HTMLSelectElement;
+    const optionTexts = Array.from(winnerSelect.options).map((option) => option.textContent ?? "");
+    expect(optionTexts[0]).toMatch(/^Substrate claim \[semn_aaa.*aaaa\]$/);
+    expect(optionTexts[1]).toMatch(/^Runtime claim \[semn_bbb.*bbbb\]$/);
+
+    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
+
+    expect(
+      await screen.findByText("The substrate is expected to stay online during the demo."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The runtime should be treated as offline for the demo."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("contradicts")).toBeInTheDocument();
+    expect(screen.getByText("confidence 0.72")).toBeInTheDocument();
+    expect(screen.getAllByText(episodeId).length).toBeGreaterThan(0);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => requestPath(call[0]) === `/api/semantic/nodes/${leftNodeId}`,
+        ),
+      ).toBe(true);
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => requestPath(call[0]) === `/api/semantic/nodes/${rightNodeId}`,
+        ),
+      ).toBe(true);
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => requestPath(call[0]) === `/api/semantic/edges/${edgeId}`,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("renders the available node and edge when one drill-through node is unavailable", async () => {
+    const live = makeLiveSource();
+    const availableNodeId = "semn_available000000";
+    const missingNodeId = "semn_missing00000000";
+    const edgeId = "seme_partial0000000";
+    const episodeId = "ep_partial000000000";
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(
+          jsonResponse({
+            rows: [
+              {
+                id: 52,
+                kind: "contradiction",
+                refs: {
+                  node_ids: [availableNodeId, missingNodeId],
+                  node_labels: ["Available claim", "Deleted claim"],
+                  edge_id: edgeId,
+                },
+                reason: "semantic contradiction requires operator review",
+                created_at: 4,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === `/api/semantic/nodes/${availableNodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: semanticNodeFixture(
+              availableNodeId,
+              "Available claim",
+              "Available semantic node description.",
+              episodeId,
+            ),
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/nodes/${missingNodeId}`) {
+        return Promise.resolve(jsonErrorResponse(404, "semantic node missing"));
+      }
+      if (url.pathname === `/api/semantic/edges/${edgeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            edge: semanticEdgeFixture(edgeId, availableNodeId, missingNodeId, episodeId),
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
+      </LiveEventsProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
+
+    expect(await screen.findByText("Available semantic node description.")).toBeInTheDocument();
+    expect(screen.getByText("contradicts")).toBeInTheDocument();
+    expect(screen.getByText("candidate 2 semantic node unavailable")).toBeInTheDocument();
+    expect(screen.getAllByText(missingNodeId).length).toBeGreaterThan(0);
+    expect(screen.getByText("semantic node missing")).toBeInTheDocument();
+  });
+
+  it("renders both drill-through nodes when the semantic edge is unavailable", async () => {
+    const live = makeLiveSource();
+    const leftNodeId = "semn_leftedge000000";
+    const rightNodeId = "semn_rightedge00000";
+    const edgeId = "seme_missing0000000";
+    const episodeId = "ep_edge00000000000";
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(
+          jsonResponse({
+            rows: [
+              {
+                id: 53,
+                kind: "contradiction",
+                refs: {
+                  node_ids: [leftNodeId, rightNodeId],
+                  node_labels: ["Left claim", "Right claim"],
+                  edge_id: edgeId,
+                },
+                reason: "semantic contradiction requires operator review",
+                created_at: 4,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === `/api/semantic/nodes/${leftNodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: semanticNodeFixture(
+              leftNodeId,
+              "Left claim",
+              "Left semantic node description.",
+              episodeId,
+            ),
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/nodes/${rightNodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: semanticNodeFixture(
+              rightNodeId,
+              "Right claim",
+              "Right semantic node description.",
+              episodeId,
+            ),
+          }),
+        );
+      }
+      if (url.pathname === `/api/semantic/edges/${edgeId}`) {
+        return Promise.resolve(jsonErrorResponse(404, "semantic edge missing"));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
+      </LiveEventsProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
+
+    expect(await screen.findByText("Left semantic node description.")).toBeInTheDocument();
+    expect(screen.getByText("Right semantic node description.")).toBeInTheDocument();
+    expect(screen.getByText("semantic edge unavailable")).toBeInTheDocument();
+    expect(screen.getByText(edgeId)).toBeInTheDocument();
+    expect(screen.getByText("semantic edge missing")).toBeInTheDocument();
   });
 
   it("renders new insight review details without embeddings or raw internal ids", async () => {

@@ -521,6 +521,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       },
       edges: {
         add: (input) => deps.semanticEdgeRepository.addEdge(input),
+        get: (id) => deps.semanticEdgeRepository.getEdge(id),
         list: (...args) => deps.semanticEdgeRepository.listEdges(...args),
       },
       walk: (fromId, ...args) => deps.semanticGraph.walk(fromId, ...args),

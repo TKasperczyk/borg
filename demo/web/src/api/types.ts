@@ -313,6 +313,10 @@ export type SemanticNodeResponse = {
   node: SemanticMemoryNode;
 };
 
+export type SemanticEdgeResponse = {
+  edge: SemanticMemoryEdge;
+};
+
 export type ProceduralMemoryItem = {
   id: string;
   applies_when: string;

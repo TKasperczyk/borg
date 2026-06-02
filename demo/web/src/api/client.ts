@@ -49,7 +49,9 @@ import type {
   ReviewRow,
   ReviewsResponse,
   MemoryBandsResponse,
+  SemanticEdgeResponse,
   SemanticMemoryNode,
+  SemanticMemoryEdge,
   SemanticGraphResponse,
   SemanticNodeResponse,
   SessionParticipationPolicy,
@@ -325,6 +327,13 @@ export async function getSemanticNode(id: string): Promise<SemanticMemoryNode> {
     `api/semantic/nodes/${encodeURIComponent(id)}`,
   );
   return response.node;
+}
+
+export async function getSemanticEdge(id: string): Promise<SemanticMemoryEdge> {
+  const response = await fetchJson<SemanticEdgeResponse>(
+    `api/semantic/edges/${encodeURIComponent(id)}`,
+  );
+  return response.edge;
 }
 
 export async function getWhy(id: string): Promise<WhyResponse> {
