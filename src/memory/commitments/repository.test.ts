@@ -80,6 +80,33 @@ describe("commitment repository", () => {
     }
   });
 
+  it("keeps the seeded self audience label aligned with getSelf", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const selfId = entities.resolve("self", {
+        kind: "self",
+        provenance: "assistant_seeded",
+      });
+
+      expect(entities.getSelf()?.id).toBe(selfId);
+      expect(
+        entities.resolve("self", {
+          kind: "self",
+          provenance: "assistant_seeded",
+        }),
+      ).toBe(selfId);
+    } finally {
+      db.close();
+    }
+  });
+
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

@@ -2,6 +2,7 @@ import { createNeutralAffectiveSignal, type MoodRepository } from "../../memory/
 import type {
   CommitmentRecord,
   CommitmentRepository,
+  EntityRepository,
   EntityRecord,
 } from "../../memory/commitments/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
@@ -65,6 +66,7 @@ function selectGoalDescriptions(
 
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
+  entityRepository: Pick<EntityRepository, "getSelf">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list">;
   moodRepository: Pick<MoodRepository, "current" | "history">;
   retrievalPipeline: Pick<RetrievalPipeline, "searchWithContext">;
@@ -81,6 +83,7 @@ export type TurnRetrievalCoordinatorInput = {
   cognitionInput: string;
   inputAudience?: string;
   isSelfAudience: boolean;
+  isPrivateSelfCognition: boolean;
   audienceEntityId: EntityId | null;
   audienceEntity: EntityRecord | null;
   audienceProfile: SocialProfile | null;
@@ -153,6 +156,9 @@ export class TurnRetrievalCoordinator {
     });
     const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
+    const selfAudienceEntityId = input.isPrivateSelfCognition
+      ? (this.options.entityRepository.getSelf()?.id ?? null)
+      : undefined;
 
     const attentionWeights = computeWeights(input.perception.mode, {
       currentGoals: input.selfSnapshot.goals,
@@ -164,6 +170,9 @@ export class TurnRetrievalCoordinator {
     const retrievalOptions: RetrievalSearchOptions = {
       limit: computeRetrievalLimit(input.perception.mode),
       audienceEntityId: input.audienceEntityId,
+      ...(selfAudienceEntityId === undefined
+        ? {}
+        : { globalIdentitySelfAudienceEntityId: selfAudienceEntityId }),
       attentionWeights,
       goalDescriptions: goalSelection.goalDescriptions,
       primaryGoalDescription: goalSelection.primaryGoalDescription,

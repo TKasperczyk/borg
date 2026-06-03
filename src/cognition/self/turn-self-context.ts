@@ -1,6 +1,8 @@
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import type { EntityRepository } from "../../memory/commitments/index.js";
+import { resolveViewerCapability } from "../../memory/episodic/access.js";
 import { isEpisodeVisibleToAudience } from "../../memory/episodic/index.js";
 import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import type {
@@ -47,6 +49,7 @@ type GoalTreeNode = GoalRecord & { children?: unknown };
 export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
   episodicRepository: Pick<EpisodicRepository, "getMany">;
+  entityRepository: Pick<EntityRepository, "getSelf">;
   valuesRepository: Pick<ValuesRepository, "list">;
   goalsRepository: Pick<GoalsRepository, "list">;
   traitsRepository: Pick<TraitsRepository, "list">;
@@ -166,6 +169,57 @@ function isSelfRecordVisible(
   return episodeIds.some((episodeId) => visibleEpisodeIds.has(episodeId));
 }
 
+function visibleEpisodeIdsForRecord(
+  episodeIds: readonly EpisodeId[] | readonly string[] | null | undefined,
+  visibleEpisodeIds: ReadonlySet<EpisodeId>,
+): EpisodeId[] {
+  return [...new Set(episodeIds ?? [])].filter(
+    (episodeId): episodeId is EpisodeId =>
+      episodeIdHelpers.is(episodeId) && visibleEpisodeIds.has(episodeId),
+  );
+}
+
+function redactSelfRecordEvidence<T extends ProvenanceScopedSelfRecord>(
+  record: T,
+  visibleEpisodeIds: ReadonlySet<EpisodeId>,
+): T {
+  let next: T = record;
+
+  if (record.evidence_episode_ids !== undefined) {
+    next = {
+      ...next,
+      evidence_episode_ids: visibleEpisodeIdsForRecord(
+        record.evidence_episode_ids,
+        visibleEpisodeIds,
+      ),
+    };
+  }
+
+  if (record.key_episode_ids !== undefined) {
+    next = {
+      ...next,
+      key_episode_ids: visibleEpisodeIdsForRecord(record.key_episode_ids, visibleEpisodeIds),
+    };
+  }
+
+  if (record.provenance?.kind === "episodes") {
+    const visibleProvenanceEpisodeIds = visibleEpisodeIdsForRecord(
+      record.provenance.episode_ids,
+      visibleEpisodeIds,
+    );
+
+    next = {
+      ...next,
+      provenance: {
+        ...record.provenance,
+        episode_ids: visibleProvenanceEpisodeIds,
+      },
+    };
+  }
+
+  return next;
+}
+
 export class TurnSelfContextBuilder {
   constructor(private readonly options: TurnSelfContextOptions) {}
 
@@ -180,25 +234,38 @@ export class TurnSelfContextBuilder {
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
-    const visibleRecords = await this.filterSelfRecordsVisibleToAudience(
-      [
-        ...values,
-        ...goals,
-        ...traits,
-        ...(currentPeriod === null ? [] : [currentPeriod]),
-        ...recentGrowthMarkers,
-      ],
+    const identityRecords = [
+      ...values,
+      ...traits,
+      ...(currentPeriod === null ? [] : [currentPeriod]),
+      ...recentGrowthMarkers,
+    ];
+    const visibleEvidenceEpisodeIds = await this.visibleEvidenceEpisodeIdsForAudience(
+      [...goals, ...identityRecords],
       audienceEntityId,
     );
-    const visibleIds = new Set(visibleRecords.map((record) => record.id));
+    const visibleGoals = this.filterSelfRecordsByVisibleEvidence(goals, visibleEvidenceEpisodeIds);
+    const visibleIdentityRecords = this.resolveIdentityRecordsForSelfContinuity(
+      identityRecords,
+      visibleEvidenceEpisodeIds,
+    );
+    const visibleIdentityById = new Map(visibleIdentityRecords.map((record) => [record.id, record]));
 
     return {
-      values: values.filter((value) => visibleIds.has(value.id)),
-      goals: goals.filter((goal) => visibleIds.has(goal.id)),
-      traits: traits.filter((trait) => visibleIds.has(trait.id)),
+      values: values.map(
+        (value) => (visibleIdentityById.get(value.id) as typeof value | undefined) ?? value,
+      ),
+      goals: visibleGoals,
+      traits: traits.map(
+        (trait) => (visibleIdentityById.get(trait.id) as typeof trait | undefined) ?? trait,
+      ),
       currentPeriod:
-        currentPeriod === null || visibleIds.has(currentPeriod.id) ? currentPeriod : null,
-      recentGrowthMarkers: recentGrowthMarkers.filter((marker) => visibleIds.has(marker.id)),
+        currentPeriod === null
+          ? null
+          : ((visibleIdentityById.get(currentPeriod.id) ?? currentPeriod) as typeof currentPeriod),
+      recentGrowthMarkers: recentGrowthMarkers.map(
+        (marker) => (visibleIdentityById.get(marker.id) as typeof marker | undefined) ?? marker,
+      ),
     };
   }
 
@@ -209,8 +276,43 @@ export class TurnSelfContextBuilder {
         visibleToAudienceEntityId: audienceEntityId,
       }),
     );
+    const visibleEvidenceEpisodeIds = await this.visibleEvidenceEpisodeIdsForAudience(
+      goals,
+      audienceEntityId,
+    );
 
-    return this.filterSelfRecordsVisibleToAudience(goals, audienceEntityId);
+    return this.filterSelfRecordsByVisibleEvidence(goals, visibleEvidenceEpisodeIds);
+  }
+
+  private resolveIdentityRecordsForSelfContinuity<T extends ProvenanceScopedSelfRecord>(
+    records: readonly T[],
+    visibleEvidenceEpisodeIds: ReadonlySet<EpisodeId>,
+  ): T[] {
+    const selfContinuityCapability = resolveViewerCapability({
+      globalIdentitySelfAudienceEntityId: this.options.entityRepository.getSelf()?.id ?? null,
+    });
+
+    if (selfContinuityCapability.kind !== "self_continuity") {
+      return [];
+    }
+
+    return records.map((record) => redactSelfRecordEvidence(record, visibleEvidenceEpisodeIds));
+  }
+
+  private async visibleEvidenceEpisodeIdsForAudience(
+    records: readonly ProvenanceScopedSelfRecord[],
+    audienceEntityId: EntityId | null,
+  ): Promise<Set<EpisodeId>> {
+    const evidenceEpisodeIds = [
+      ...new Set(records.flatMap((record) => getSelfRecordEvidenceEpisodeIds(record))),
+    ];
+    const evidenceEpisodes = await this.options.episodicRepository.getMany(evidenceEpisodeIds);
+
+    return new Set(
+      evidenceEpisodes
+        .filter((episode) => isEpisodeVisibleToAudience(episode, audienceEntityId))
+        .map((episode) => episode.id),
+    );
   }
 
   async build(input: TurnSelfContextInput): Promise<TurnSelfContext> {
@@ -302,20 +404,12 @@ export class TurnSelfContextBuilder {
     };
   }
 
-  private async filterSelfRecordsVisibleToAudience<T extends ProvenanceScopedSelfRecord>(
+  private filterSelfRecordsByVisibleEvidence<T extends ProvenanceScopedSelfRecord>(
     records: readonly T[],
-    audienceEntityId: EntityId | null,
-  ): Promise<T[]> {
-    const evidenceEpisodeIds = [
-      ...new Set(records.flatMap((record) => getSelfRecordEvidenceEpisodeIds(record))),
-    ];
-    const evidenceEpisodes = await this.options.episodicRepository.getMany(evidenceEpisodeIds);
-    const visibleEpisodeIds = new Set(
-      evidenceEpisodes
-        .filter((episode) => isEpisodeVisibleToAudience(episode, audienceEntityId))
-        .map((episode) => episode.id),
-    );
-
-    return records.filter((record) => isSelfRecordVisible(record, visibleEpisodeIds));
+    visibleEpisodeIds: ReadonlySet<EpisodeId>,
+  ): T[] {
+    return records
+      .filter((record) => isSelfRecordVisible(record, visibleEpisodeIds))
+      .map((record) => redactSelfRecordEvidence(record, visibleEpisodeIds));
   }
 }

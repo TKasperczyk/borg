@@ -7,7 +7,10 @@ import type {
   CommitmentRepository,
   EntityRepository,
 } from "../memory/commitments/index.js";
-import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
+import {
+  isEpisodeVisibleToCapability,
+  resolveViewerCapability,
+} from "../memory/episodic/access.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
   Episode,
@@ -587,11 +590,7 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (
-      !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
-        crossAudience: options.crossAudience,
-      })
-    ) {
+    if (!isEpisodeVisibleToRetrievalCapability(episode, episodeVisibilityOptions(options))) {
       return null;
     }
 
@@ -623,9 +622,7 @@ export class RetrievalPipeline {
 
       if (
         parent === null ||
-        !isEpisodeVisibleToAudience(parent, options.audienceEntityId, {
-          crossAudience: options.crossAudience,
-        })
+        !isEpisodeVisibleToRetrievalCapability(parent, episodeVisibilityOptions(options))
       ) {
         return null;
       }
@@ -768,7 +765,9 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (options.crossAudience === true) {
+    const viewer = resolveViewerCapability(episodeVisibilityOptions(options));
+
+    if (viewer.kind === "unrestricted") {
       return {
         visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
         partial: false,
@@ -780,7 +779,7 @@ export class RetrievalPipeline {
     );
     const visibleEpisodeIds = new Set(
       evidenceEpisodes
-        .filter((episode) => isEpisodeVisibleToAudience(episode, options.audienceEntityId))
+        .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
         .map((episode) => episode.id),
     );
     const visibleEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
@@ -1532,11 +1531,7 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (
-      !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
-        crossAudience: options.crossAudience,
-      })
-    ) {
+    if (!isEpisodeVisibleToRetrievalCapability(episode, options)) {
       return null;
     }
 
@@ -1895,7 +1890,15 @@ function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearc
     audienceEntityId: options.audienceEntityId,
     crossAudience: options.crossAudience,
     globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
+    operatorIntrospectionSelfAudienceEntityId: options.operatorIntrospectionSelfAudienceEntityId,
   };
+}
+
+function isEpisodeVisibleToRetrievalCapability(
+  episode: Episode,
+  options: EpisodeSearchOptions,
+): boolean {
+  return isEpisodeVisibleToCapability(episode, resolveViewerCapability(options));
 }
 
 function episodeSearchOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {

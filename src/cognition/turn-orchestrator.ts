@@ -234,6 +234,7 @@ export class TurnOrchestrator {
     });
     const turnRetrievalCoordinator = new TurnRetrievalCoordinator({
       commitmentRepository: options.commitmentRepository,
+      entityRepository: options.entityRepository,
       reviewQueueRepository: options.reviewQueueRepository,
       moodRepository: options.moodRepository,
       retrievalPipeline: options.retrievalPipeline,
@@ -255,6 +256,7 @@ export class TurnOrchestrator {
     this.selfContextBuilder = new TurnSelfContextBuilder({
       embeddingClient: options.embeddingClient,
       episodicRepository: options.episodicRepository,
+      entityRepository: options.entityRepository,
       valuesRepository: options.valuesRepository,
       goalsRepository: options.goalsRepository,
       traitsRepository: options.traitsRepository,

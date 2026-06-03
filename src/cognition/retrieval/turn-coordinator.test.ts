@@ -25,6 +25,7 @@ import { TurnRetrievalCoordinator } from "./turn-coordinator.js";
 const audienceEntityId = "entity_alice" as EntityId;
 const atlasEntityId = "entity_atlas" as EntityId;
 const bobEntityId = "entity_bob" as EntityId;
+const selfEntityId = "entity_self" as EntityId;
 const PROCEDURAL_CONTEXT_TOOL_NAME = "EmitProceduralContext";
 
 function makeCommitment(id: string, priority: number, createdAt: number): CommitmentRecord {
@@ -64,6 +65,17 @@ function makeReviewItem(id: number, refs: Record<string, unknown>): ReviewQueueI
     created_at: id,
     resolved_at: null,
     resolution: null,
+  };
+}
+
+function makeSelfEntity(): EntityRecord {
+  return {
+    id: selfEntityId,
+    canonical_name: "Sol",
+    aliases: [],
+    kind: "self",
+    borg_role: null,
+    created_at: 100,
   };
 }
 
@@ -285,6 +297,9 @@ describe("TurnRetrievalCoordinator", () => {
       commitmentRepository: {
         getApplicable,
       },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
+      },
       reviewQueueRepository: {
         list: vi.fn(() => pendingCorrections),
       },
@@ -335,6 +350,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "Solve Atlas",
       inputAudience: "alice",
       isSelfAudience: false,
+      isPrivateSelfCognition: false,
       audienceEntityId,
       audienceEntity,
       audienceProfile: makeAudienceProfile(),
@@ -414,6 +430,9 @@ describe("TurnRetrievalCoordinator", () => {
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
       },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
+      },
       reviewQueueRepository: {
         list: vi.fn(() => []),
       },
@@ -448,6 +467,7 @@ describe("TurnRetrievalCoordinator", () => {
       recentMessages,
       cognitionInput: "yeah, same error",
       isSelfAudience: true,
+      isPrivateSelfCognition: false,
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -469,6 +489,9 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+      },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
       },
       reviewQueueRepository: {
         list: vi.fn(() => []),
@@ -500,6 +523,7 @@ describe("TurnRetrievalCoordinator", () => {
       recentMessages: [],
       cognitionInput: "Think about this",
       isSelfAudience: true,
+      isPrivateSelfCognition: false,
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -527,6 +551,9 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+      },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
       },
       reviewQueueRepository: {
         list: vi.fn(() => []),
@@ -591,6 +618,7 @@ describe("TurnRetrievalCoordinator", () => {
       recentMessages: [],
       cognitionInput: "Solve Atlas",
       isSelfAudience: true,
+      isPrivateSelfCognition: false,
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -612,5 +640,145 @@ describe("TurnRetrievalCoordinator", () => {
         primaryGoalDescription: "Resolve Atlas incident",
       }),
     );
+  });
+
+  it("invokes self_continuity retrieval on private self cognition turns", async () => {
+    const getSelf = vi.fn(() => makeSelfEntity());
+    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable: vi.fn(() => []),
+      },
+      entityRepository: {
+        getSelf,
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => []),
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        searchWithContext,
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+
+    const result = await coordinator.coordinate({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-self",
+      userMessage: "Reflect privately",
+      recentMessages: [],
+      cognitionInput: "Reflect privately",
+      isSelfAudience: true,
+      isPrivateSelfCognition: true,
+      audienceEntityId: null,
+      audienceEntity: null,
+      audienceProfile: null,
+      perception: makePerception("reflective"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: makeSelfSnapshot(),
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+      findEntityByName: () => null,
+    });
+
+    expect(getSelf).toHaveBeenCalledTimes(1);
+    expect(searchWithContext).toHaveBeenCalledWith(
+      "Reflect privately",
+      expect.objectContaining({
+        audienceEntityId: null,
+        audienceTerms: [],
+        globalIdentitySelfAudienceEntityId: selfEntityId,
+      }),
+    );
+
+    await result.reRetrieve("Reflect again");
+
+    expect(searchWithContext).toHaveBeenNthCalledWith(
+      2,
+      "Reflect again",
+      expect.objectContaining({
+        globalIdentitySelfAudienceEntityId: selfEntityId,
+      }),
+    );
+  });
+
+  it("leaves self_continuity inert on normal audience turns", async () => {
+    const getSelf = vi.fn(() => makeSelfEntity());
+    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable: vi.fn(() => []),
+      },
+      entityRepository: {
+        getSelf,
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => []),
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        searchWithContext,
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+
+    await coordinator.coordinate({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-audience",
+      userMessage: "Hello Bob",
+      recentMessages: [],
+      cognitionInput: "Hello Bob",
+      isSelfAudience: false,
+      isPrivateSelfCognition: false,
+      audienceEntityId: bobEntityId,
+      audienceEntity: {
+        id: bobEntityId,
+        canonical_name: "Bob",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        created_at: 100,
+      },
+      audienceProfile: null,
+      perception: makePerception("reflective"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: makeSelfSnapshot(),
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+      findEntityByName: () => null,
+    });
+
+    const retrievalOptions = (searchWithContext.mock.calls[0] as unknown[])[1] as Record<
+      string,
+      unknown
+    >;
+
+    expect(getSelf).not.toHaveBeenCalled();
+    expect(retrievalOptions).toHaveProperty("audienceEntityId", bobEntityId);
+    expect(retrievalOptions).not.toHaveProperty("globalIdentitySelfAudienceEntityId");
   });
 });

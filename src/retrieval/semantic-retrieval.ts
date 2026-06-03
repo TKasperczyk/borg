@@ -1,6 +1,9 @@
 /* Semantic-band retrieval for label/vector lookup and graph walks. */
 import type { EmbeddingClient } from "../embeddings/index.js";
-import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
+import {
+  isEpisodeVisibleToCapability,
+  resolveViewerCapability,
+} from "../memory/episodic/access.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type { Episode } from "../memory/episodic/types.js";
 import type { SemanticGraph } from "../memory/semantic/graph.js";
@@ -76,6 +79,8 @@ export type RetrievedSemantic = SemanticContext & {
 export type SemanticRetrievalOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
+  globalIdentitySelfAudienceEntityId?: EntityId | null;
+  operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
   graphWalkDepth?: number;
   maxGraphNodes?: number;
   asOf?: number;
@@ -85,6 +90,14 @@ export type SemanticRetrievalOptions = {
   queryVector?: Float32Array;
   exactTerms?: readonly string[];
 };
+
+type SemanticVisibilityOptions = Pick<
+  SemanticRetrievalOptions,
+  | "audienceEntityId"
+  | "crossAudience"
+  | "globalIdentitySelfAudienceEntityId"
+  | "operatorIntrospectionSelfAudienceEntityId"
+>;
 
 export type SemanticRetrievalDependencies = {
   embeddingClient: EmbeddingClient;
@@ -141,9 +154,11 @@ function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
 async function resolveVisibleEpisodeIds(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
-  visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  visibility: SemanticVisibilityOptions,
 ): Promise<Set<string> | null> {
-  if (visibility.crossAudience === true) {
+  const viewer = resolveViewerCapability(visibility);
+
+  if (viewer.kind === "unrestricted") {
     return null;
   }
 
@@ -157,11 +172,7 @@ async function resolveVisibleEpisodeIds(
 
   return new Set(
     episodes
-      .filter((episode) =>
-        isEpisodeVisibleToAudience(episode, visibility.audienceEntityId, {
-          crossAudience: visibility.crossAudience,
-        }),
-      )
+      .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
       .map((episode) => episode.id),
   );
 }
@@ -295,7 +306,7 @@ function withVisibleSemanticWalkStepEdges(
 
 export async function isSemanticNodeVisibleToAudience(
   node: SemanticNode,
-  visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  visibility: SemanticVisibilityOptions,
   dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
 ): Promise<boolean> {
   const visibleEpisodeIds = await resolveVisibleEpisodeIds(
@@ -319,7 +330,7 @@ function isSemanticWalkStepVisible(
 
 export async function filterSemanticWalkStepsByAudience(
   steps: readonly SemanticWalkStep[],
-  visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  visibility: SemanticVisibilityOptions,
   dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
 ): Promise<Array<SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] }>> {
   const visibleEpisodeIds = await resolveVisibleEpisodeIds(
@@ -498,7 +509,7 @@ function annotateSemanticNode(
 async function collectUnderReviewStatuses(
   nodes: readonly SemanticNode[],
   dependencies: SemanticRetrievalDependencies,
-  options: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  options: SemanticVisibilityOptions,
 ): Promise<Map<string, OpenBeliefRevisionStatus>> {
   if (dependencies.reviewQueueRepository === undefined || nodes.length === 0) {
     return new Map();

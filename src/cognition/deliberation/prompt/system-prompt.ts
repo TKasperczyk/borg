@@ -74,6 +74,8 @@ const CREATOR_DIRECTIVE_PRIVATE_OPERATION_AUDIENCE_DISCLOSURE =
 const CREATOR_DIRECTIVE_PRIVATE_KNOWLEDGE_AUDIENCE_DISCLOSURE =
   "Borg privately holds this creator-provided fact as orientation for the current session; use it to recognize the situation and act on it. Do not proactively disclose its specifics to the current audience, but do not deny or feign ignorance of the held context either. Follow mention_policy for how much to engage if the audience raises or asks about it.";
 
+const AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE = "(from audience-scoped evidence)";
+
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
   semanticContextBudget: number;
@@ -1213,7 +1215,7 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .filter((value) => value.state !== "established")
     .map(
       (value) =>
-        `${value.label} (${value.state}, conf ${getPreferenceConfidence(value).toFixed(2)})${renderOptionalProvenance(value.provenance)}`,
+        `${value.label} (${value.state}, conf ${getPreferenceConfidence(value).toFixed(2)}) ${summarizePreferenceEvidence(value)}`,
     );
   const goals = selfSnapshot.goals.map(
     (goal) => `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}`,
@@ -1222,7 +1224,7 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .filter((trait) => trait.state !== "established")
     .map(
       (trait) =>
-        `${trait.label}:${trait.strength.toFixed(2)} (${trait.state}, conf ${getPreferenceConfidence(trait).toFixed(2)})${renderOptionalProvenance(trait.provenance)}`,
+        `${trait.label}:${trait.strength.toFixed(2)} (${trait.state}, conf ${getPreferenceConfidence(trait).toFixed(2)}) ${summarizePreferenceEvidence(trait)}`,
     );
 
   if (values.length === 0 && goals.length === 0 && traits.length === 0) {
@@ -1314,6 +1316,10 @@ function summarizePreferenceEvidence(
         ? T
         : never,
     });
+  }
+
+  if (record.provenance.kind === "episodes") {
+    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
   }
 
   return summarizeProvenanceForPrompt(record.provenance);
@@ -1638,7 +1644,7 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
   const narrative = period.narrative.trim();
   const themes = period.themes.filter((theme) => theme.trim().length > 0);
   const parts: string[] = [
-    `Current period: ${period.label}${renderOptionalProvenance(period.provenance)}`,
+    `Current period: ${period.label} ${summarizeAutobiographicalPeriodEvidence(period)}`,
   ];
 
   if (narrative.length > 0) {
@@ -1651,6 +1657,26 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
   }
 
   return parts.length === 1 ? null : parts.join("\n");
+}
+
+function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod): string {
+  if (period.key_episode_ids.length > 0) {
+    return summarizeProvenanceForPrompt({
+      kind: "episodes",
+      episode_ids: [...period.key_episode_ids] as Provenance extends {
+        kind: "episodes";
+        episode_ids: infer T;
+      }
+        ? T
+        : never,
+    });
+  }
+
+  if (period.provenance.kind === "episodes") {
+    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
+  }
+
+  return summarizeProvenanceForPrompt(period.provenance);
 }
 
 function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): string | null {

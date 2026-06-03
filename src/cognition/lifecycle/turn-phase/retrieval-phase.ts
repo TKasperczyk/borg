@@ -657,6 +657,16 @@ export async function runRetrievalPhase(input: {
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   closureLoopAssessment: ClosureLoopAssessment | null;
 }): Promise<TurnRetrievalPhaseResult> {
+  const creatorDirectiveParticipantEntityIds = participantEntityIds({
+    audienceEntityId: input.audienceEntityId,
+    audienceEntityKind: input.audienceEntity?.kind ?? null,
+    activeParticipants: input.activeParticipants,
+  });
+  const isPrivateSelfCognition =
+    input.isSelfAudience &&
+    !input.isUserTurn &&
+    input.audienceEntityId === null &&
+    creatorDirectiveParticipantEntityIds.length === 0;
   const selfContext =
     input.actionLinkSelfContext !== null &&
     input.persistedPromotions.goalIds.length === 0 &&
@@ -686,6 +696,7 @@ export async function runRetrievalPhase(input: {
     cognitionInput: input.cognitionInput,
     inputAudience: input.turnInput.audience,
     isSelfAudience: input.isSelfAudience,
+    isPrivateSelfCognition,
     audienceEntityId: input.audienceEntityId,
     audienceEntity: input.audienceEntity,
     audienceProfile: input.audienceProfile,
@@ -715,16 +726,6 @@ export async function runRetrievalPhase(input: {
     input.options.relationalSlotRepository,
     input.activeParticipants,
   );
-  const creatorDirectiveParticipantEntityIds = participantEntityIds({
-    audienceEntityId: input.audienceEntityId,
-    audienceEntityKind: input.audienceEntity?.kind ?? null,
-    activeParticipants: input.activeParticipants,
-  });
-  const isPrivateSelfCognition =
-    input.isSelfAudience &&
-    !input.isUserTurn &&
-    input.audienceEntityId === null &&
-    creatorDirectiveParticipantEntityIds.length === 0;
   const creatorDirectiveApplicableRaw =
     input.options.creatorDirectiveRepository === undefined
       ? []

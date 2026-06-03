@@ -778,8 +778,11 @@ export class EpisodicExtractor {
       return null;
     }
 
+    const audience = audiences[0] ?? "";
+
     return {
-      audience_entity_id: this.options.entityRepository.resolve(audiences[0] ?? "", {
+      audience_entity_id: this.options.entityRepository.resolve(audience, {
+        ...(audience === "self" ? { kind: "self" as const } : {}),
         provenance: "transport_audience_label",
       }),
       shared: false,

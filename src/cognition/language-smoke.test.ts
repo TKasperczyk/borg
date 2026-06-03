@@ -160,6 +160,7 @@ describe("cross-language cognition smoke", () => {
       });
       const coordinator = new TurnRetrievalCoordinator({
         commitmentRepository: harness.commitmentRepository,
+        entityRepository: harness.entityRepository,
         reviewQueueRepository: harness.reviewQueueRepository,
         moodRepository: harness.moodRepository,
         retrievalPipeline: harness.retrievalPipeline,
@@ -176,6 +177,7 @@ describe("cross-language cognition smoke", () => {
         recentMessages: [],
         cognitionInput: chineseTurn,
         isSelfAudience: true,
+        isPrivateSelfCognition: false,
         audienceEntityId: null,
         audienceEntity: null,
         audienceProfile: null,

@@ -1033,7 +1033,17 @@ describe("episodic extractor", () => {
     const llm = new FakeLLMClient({
       responses: [
         createEpisodeToolResponse(
-          [],
+          [
+            {
+              title: "Self-audience note",
+              narrative: "The self-audience entry preserved a private note.",
+              source_stream_ids: [user.id],
+              participants: ["user"],
+              tags: ["self"],
+              confidence: 0.8,
+              significance: 0.6,
+            },
+          ],
           [
             {
               subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
@@ -1060,8 +1070,18 @@ describe("episodic extractor", () => {
     await extractor.extractFromStream();
 
     const defaultUser = harness.entityRepository.resolve("user");
-    const selfAudience = harness.entityRepository.resolve("self");
+    const selfAudience = harness.entityRepository.getSelf()?.id;
+    const episodes = await harness.repo.listAll();
 
+    expect(selfAudience).toBeDefined();
+    expect(
+      harness.entityRepository.resolve("self", {
+        kind: "self",
+        provenance: "assistant_seeded",
+      }),
+    ).toBe(selfAudience);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.audience_entity_id).toBe(selfAudience);
     expect(
       harness.relationalSlotRepository.findBySubjectAndKey(defaultUser, "dog.name"),
     ).toMatchObject({
@@ -1071,7 +1091,7 @@ describe("episodic extractor", () => {
       evidence_stream_entry_ids: [user.id],
     });
     expect(
-      harness.relationalSlotRepository.findBySubjectAndKey(selfAudience, "dog.name"),
+      harness.relationalSlotRepository.findBySubjectAndKey(selfAudience!, "dog.name"),
     ).toBeNull();
   });
 

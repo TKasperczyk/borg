@@ -46,6 +46,86 @@ describe("resolveSemanticContext temporal validity", () => {
     harness = undefined;
   });
 
+  it("uses self_continuity to retrieve self-scoped semantic memory without admitting other private sources", async () => {
+    harness = await createOfflineTestHarness();
+    const selfEntityId = harness.entityRepository.add({
+      canonicalName: "Sol",
+      kind: "self",
+    }).id;
+    const otherEntityId = harness.entityRepository.resolve("Other");
+    const audienceEntityId = harness.entityRepository.resolve("Audience");
+    const selfScopedEpisode = createEpisodeFixture({
+      title: "Self-scoped semantic source",
+      audience_entity_id: selfEntityId,
+      shared: false,
+    });
+    const otherPrivateEpisode = createEpisodeFixture({
+      title: "Other-private semantic source",
+      audience_entity_id: otherEntityId,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(selfScopedEpisode);
+    await harness.episodicRepository.insert(otherPrivateEpisode);
+    const selfNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Self continuity node",
+          source_episode_ids: [selfScopedEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const otherNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Other private node",
+          source_episode_ids: [otherPrivateEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const selfContinuity = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "continuity",
+        {
+          globalIdentitySelfAudienceEntityId: selfEntityId,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+        },
+      ),
+    );
+    const normalAudience = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "continuity",
+        {
+          audienceEntityId,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+        },
+      ),
+    );
+
+    expect(selfContinuity.matched_node_ids).toContain(selfNode.id);
+    expect(selfContinuity.matched_node_ids).not.toContain(otherNode.id);
+    expect(normalAudience.matched_node_ids).not.toContain(selfNode.id);
+    expect(normalAudience.matched_node_ids).not.toContain(otherNode.id);
+  });
+
   it("windows contradiction walks at the requested semantic as-of", async () => {
     const clock = new ManualClock(1_000_000);
     harness = await createOfflineTestHarness({ clock });

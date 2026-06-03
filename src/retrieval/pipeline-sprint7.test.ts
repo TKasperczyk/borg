@@ -328,6 +328,50 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(results.map((result) => result.episode.id)).toContain(publicEpisode.id);
   });
 
+  it("uses self_continuity to retrieve self-scoped episodes without admitting other private episodes", async () => {
+    harness = await createOfflineTestHarness();
+    const selfEntityId = harness.entityRepository.add({
+      canonicalName: "Sol",
+      kind: "self",
+    }).id;
+    const otherEntityId = harness.entityRepository.resolve("Other");
+    const audienceEntityId = harness.entityRepository.resolve("Audience");
+    const selfScopedEpisode = createEpisodeFixture({
+      title: "Self-scoped architecture memory",
+      tags: ["architecture"],
+      audience_entity_id: selfEntityId,
+      shared: false,
+    });
+    const otherPrivateEpisode = createEpisodeFixture({
+      title: "Other-private architecture memory",
+      tags: ["architecture"],
+      audience_entity_id: otherEntityId,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(selfScopedEpisode);
+    await harness.episodicRepository.insert(otherPrivateEpisode);
+
+    const selfContinuity = await harness.retrievalPipeline.search("architecture", {
+      limit: 5,
+      globalIdentitySelfAudienceEntityId: selfEntityId,
+      entityTerms: ["architecture"],
+    });
+    const normalAudience = await harness.retrievalPipeline.search("architecture", {
+      limit: 5,
+      audienceEntityId: audienceEntityId,
+      entityTerms: ["architecture"],
+    });
+
+    expect(selfContinuity.map((result) => result.episode.id)).toContain(selfScopedEpisode.id);
+    expect(selfContinuity.map((result) => result.episode.id)).not.toContain(
+      otherPrivateEpisode.id,
+    );
+    expect(normalAudience.map((result) => result.episode.id)).not.toContain(selfScopedEpisode.id);
+    expect(normalAudience.map((result) => result.episode.id)).not.toContain(
+      otherPrivateEpisode.id,
+    );
+  });
+
   it("keeps semantic nodes whose source episodes include visible evidence", async () => {
     harness = await createOfflineTestHarness();
     const sam = harness.entityRepository.resolve("Sam");
