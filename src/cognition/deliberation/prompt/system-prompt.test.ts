@@ -1144,6 +1144,7 @@ describe("buildBaseSystemPrompt", () => {
             taint: "none",
           },
         ],
+        selfDecisionIntrospectionEntries: [],
       },
       transcriptIncluded: true,
       transcriptCompacted: false,
@@ -1209,6 +1210,76 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_commitment_records>");
     expect(prompt).not.toContain("<borg_relational_slot_constraints>");
     expect(prompt).not.toContain("<borg_session_status_snapshot");
+  });
+
+  it("renders self-decision introspection only for creator-in-operator context", () => {
+    const decisionSummary = "Decidí revisar objetivos pendientes sin contactar a nadie.";
+    const evidenceLedger = {
+      sections: [],
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: [],
+        crossSessionActivityEntries: [],
+        selfDecisionIntrospectionEntries: [
+          {
+            id: "self_decision_introspection:1",
+            source_type: "system_metadata",
+            session_scope: "current_session",
+            actor: "system",
+            trust_rank: 84,
+            text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+            value: "goal_followup_due",
+            state: "active",
+            state_metadata: {
+              trigger_name: "goal_followup_due",
+              trigger_type: "trigger",
+              occurred_at: NOW_MS - 2 * 60 * 60_000,
+              relative_age: "2h ago",
+              disclosure_class: "self_private",
+            },
+            taint: "none",
+          },
+        ],
+      },
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    } satisfies EvidenceLedger;
+
+    const operatorPrompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorContext: {
+          currentSenderEntityId: createEntityId(),
+          currentSenderDisplayName: "Tom",
+          currentSenderBorgRole: "creator",
+          sessionAudienceRole: "operator",
+        },
+        evidenceLedger,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const participantPrompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorContext: {
+          currentSenderEntityId: createEntityId(),
+          currentSenderDisplayName: "Tom",
+          currentSenderBorgRole: "creator",
+          sessionAudienceRole: "participant",
+        },
+        evidenceLedger,
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(decisionSummary);
+    expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(
+      "<self_decision_introspection_entries>",
+    );
+    expect(participantPrompt).not.toContain(decisionSummary);
+    expect(participantPrompt).not.toContain("self_private");
   });
 
   it("renders self-audience standing without an external addressee", () => {

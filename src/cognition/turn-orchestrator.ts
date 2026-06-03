@@ -21,6 +21,7 @@ import { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
 import { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -128,6 +129,7 @@ export type TurnOrchestratorOptions = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository?: ActivityRepository;
+  selfDecisionRepository?: SelfDecisionRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
   openQuestionsRepository: OpenQuestionsRepository;
@@ -339,6 +341,7 @@ export class TurnOrchestrator {
       creatorDirectiveRepository: options.creatorDirectiveRepository,
       sharedStateRepository: options.sharedStateRepository,
       activityRepository: options.activityRepository,
+      selfDecisionRepository: options.selfDecisionRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,

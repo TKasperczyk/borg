@@ -464,6 +464,12 @@ export class EpisodicRepository {
           : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
               capability.selfAudienceEntityId,
             )})`;
+      case "operator_introspection":
+        return capability.selfAudienceEntityId === null
+          ? "audience_entity_id IS NULL"
+          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+              capability.selfAudienceEntityId,
+            )})`;
       case "audience":
         return capability.audienceEntityId === null
           ? "(audience_entity_id IS NULL OR shared = true)"
@@ -492,6 +498,16 @@ export class EpisodicRepository {
       case "unrestricted":
         return { sql: "1 = 1", params: [] };
       case "self_continuity":
+        return capability.selfAudienceEntityId === null
+          ? {
+              sql: `${alias}.audience_entity_id IS NULL`,
+              params: [],
+            }
+          : {
+              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ?)`,
+              params: [capability.selfAudienceEntityId],
+            };
+      case "operator_introspection":
         return capability.selfAudienceEntityId === null
           ? {
               sql: `${alias}.audience_entity_id IS NULL`,
@@ -539,6 +555,26 @@ export class EpisodicRepository {
           },
         ];
       case "self_continuity": {
+        const publicBranch = {
+          where: "archived = 0 AND audience_entity_id IS NULL",
+          params: [],
+          indexName: audienceIndexName,
+        };
+
+        if (capability.selfAudienceEntityId === null) {
+          return [publicBranch];
+        }
+
+        return [
+          publicBranch,
+          {
+            where: "archived = 0 AND audience_entity_id = ?",
+            params: [capability.selfAudienceEntityId],
+            indexName: audienceIndexName,
+          },
+        ];
+      }
+      case "operator_introspection": {
         const publicBranch = {
           where: "archived = 0 AND audience_entity_id IS NULL",
           params: [],

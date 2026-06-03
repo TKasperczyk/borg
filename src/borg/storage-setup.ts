@@ -22,6 +22,7 @@ import { identityMigrations } from "../memory/identity/index.js";
 import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedural/index.js";
 import { relationalSlotMigrations } from "../memory/relational-slots/index.js";
 import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/index.js";
+import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
@@ -234,6 +235,7 @@ export function createMigrations(): Migration[] {
     sessionMigrations,
     creatorDirectiveMigrations,
     activityMigrations,
+    selfDecisionMigrations,
   );
 }
 

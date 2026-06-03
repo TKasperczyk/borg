@@ -40,6 +40,7 @@ import type { CreatorDirectiveRepository } from "../../../memory/creator-directi
 import type { SharedStateRepository } from "../../../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../../../memory/episodic/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../../../memory/self-decisions/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../../../memory/self/index.js";
 import type { SemanticNodeRepository } from "../../../memory/semantic/index.js";
 import type { SocialRepository } from "../../../memory/social/index.js";
@@ -117,6 +118,7 @@ export type TurnPhaseCoordinatorOptions = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
+  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentForSession">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,

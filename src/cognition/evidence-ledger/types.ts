@@ -127,6 +127,7 @@ export type EvidenceLedgerSection = {
 
 export type EvidenceLedgerAudienceStanding = {
   crossSessionActivityEntries: EvidenceLedgerEntry[];
+  selfDecisionIntrospectionEntries: EvidenceLedgerEntry[];
   commitmentEntries: EvidenceLedgerEntry[];
   relationalEntries: EvidenceLedgerEntry[];
 };

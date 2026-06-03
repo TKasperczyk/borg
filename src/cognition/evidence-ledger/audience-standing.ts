@@ -75,6 +75,32 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
   }));
 }
 
+function buildSelfDecisionIntrospectionEntries(
+  context: BuilderSectionContext,
+): EvidenceLedgerEntry[] {
+  // Visibility is gated upstream by selectSelfDecisionIntrospection and downstream by the prompt's operator-context render guard.
+  const rows = context.input.selfDecisionIntrospection ?? [];
+
+  return rows.map((row, index) => ({
+    id: `self_decision_introspection:${index + 1}`,
+    source_type: "system_metadata",
+    session_scope: "current_session",
+    actor: "system",
+    trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
+    text: row.text,
+    value: row.triggerName,
+    state: "active",
+    state_metadata: {
+      trigger_name: row.triggerName,
+      trigger_type: row.triggerType,
+      occurred_at: row.occurredAt,
+      relative_age: row.relativeAge,
+      disclosure_class: "self_private",
+    },
+    taint: "none",
+  }));
+}
+
 function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
   return context.input.applicableCommitments.map((commitment) =>
     cappedTrustRank({
@@ -248,6 +274,7 @@ export function buildAudienceStandingLedgerContext(
 ): EvidenceLedgerAudienceStanding {
   return {
     crossSessionActivityEntries: buildCrossSessionActivityEntries(context),
+    selfDecisionIntrospectionEntries: buildSelfDecisionIntrospectionEntries(context),
     commitmentEntries: buildCommitmentEntries(context),
     relationalEntries: buildRelationalEntries(context),
   };

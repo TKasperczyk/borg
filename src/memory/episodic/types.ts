@@ -132,6 +132,7 @@ export type EpisodeSearchOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
   globalIdentitySelfAudienceEntityId?: EntityId | null;
+  operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
   timeRange?: {
     start: number;
     end: number;
@@ -140,7 +141,10 @@ export type EpisodeSearchOptions = {
 
 export type EpisodeVisibilityOptions = Pick<
   EpisodeSearchOptions,
-  "audienceEntityId" | "crossAudience" | "globalIdentitySelfAudienceEntityId"
+  | "audienceEntityId"
+  | "crossAudience"
+  | "globalIdentitySelfAudienceEntityId"
+  | "operatorIntrospectionSelfAudienceEntityId"
 >;
 
 export type EpisodeSearchCandidate = {

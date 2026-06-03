@@ -29,6 +29,7 @@ export type ActionId = BrandedId<"ActionId">;
 export type RelationalSlotId = BrandedId<"RelationalSlotId">;
 export type SharedStateEntryId = BrandedId<"SharedStateEntryId">;
 export type ActivityEventId = BrandedId<"ActivityEventId">;
+export type SelfDecisionEventId = BrandedId<"SelfDecisionEventId">;
 export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
@@ -94,6 +95,7 @@ export const actionIdHelpers = createIdHelpers<"ActionId">("act");
 export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
 export const sharedStateEntryIdHelpers = createIdHelpers<"SharedStateEntryId">("dart");
 export const activityEventIdHelpers = createIdHelpers<"ActivityEventId">("actevt");
+export const selfDecisionEventIdHelpers = createIdHelpers<"SelfDecisionEventId">("selfdec");
 export const scheduledWakeIdHelpers = createIdHelpers<"ScheduledWakeId">("swake");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
@@ -149,6 +151,8 @@ export const createRelationalSlotId = (): RelationalSlotId => relationalSlotIdHe
 export const createSharedStateEntryId = (): SharedStateEntryId =>
   sharedStateEntryIdHelpers.create();
 export const createActivityEventId = (): ActivityEventId => activityEventIdHelpers.create();
+export const createSelfDecisionEventId = (): SelfDecisionEventId =>
+  selfDecisionEventIdHelpers.create();
 export const createScheduledWakeId = (): ScheduledWakeId => scheduledWakeIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
@@ -245,6 +249,10 @@ export function parseSharedStateEntryId(value: string): SharedStateEntryId {
 
 export function parseActivityEventId(value: string): ActivityEventId {
   return activityEventIdHelpers.parse(value);
+}
+
+export function parseSelfDecisionEventId(value: string): SelfDecisionEventId {
+  return selfDecisionEventIdHelpers.parse(value);
 }
 
 export function parseSkillId(value: string): SkillId {

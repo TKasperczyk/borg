@@ -660,6 +660,65 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).not.toContain("strm_");
   });
 
+  it("renders self-decision introspection as audience standing only", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const decisionSummary = "Decidí revisar objetivos pendientes sin contactar a nadie.";
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-self-decision-introspection",
+      audienceEntityId: null,
+      currentUserMessage: "What did you decide while I was away?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      selfDecisionIntrospection: [
+        {
+          occurredAt: NOW_MS - 2 * 60 * 60_000,
+          relativeAge: "2h ago",
+          triggerName: "goal_followup_due",
+          triggerType: "trigger",
+          decisionSummary,
+          text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+        },
+      ],
+    });
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+
+    expect(ledger.audienceStanding?.selfDecisionIntrospectionEntries).toEqual([
+      expect.objectContaining({
+        id: "self_decision_introspection:1",
+        source_type: "system_metadata",
+        session_scope: "current_session",
+        actor: "system",
+        text: expect.stringContaining(decisionSummary),
+        value: "goal_followup_due",
+        state_metadata: expect.objectContaining({
+          disclosure_class: "self_private",
+        }),
+      }),
+    ]);
+    expect(rendered).not.toContain("Self Decision Introspection");
+    expect(rendered).not.toContain(decisionSummary);
+    expect(rendered).not.toContain("self_private");
+  });
+
   it("collects current-session ledger context with a bounded reverse stream scan", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

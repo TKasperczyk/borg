@@ -62,6 +62,7 @@ import {
   type AutobiographicalPeriod,
   type GoalRecord,
 } from "../memory/self/index.js";
+import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
@@ -540,6 +541,7 @@ export async function createOfflineTestHarness(
       autonomyMigrations,
       streamWatermarkMigrations,
       streamEntryIndexMigrations,
+      selfDecisionMigrations,
     ),
   });
   const episodesTable = await lance.openTable({

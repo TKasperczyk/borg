@@ -808,6 +808,13 @@ function renderRelationalIdentityLines(context: DeliberationContext, indent: str
 
 function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: string): string[] {
   const standing = context.evidenceLedger?.audienceStanding;
+  const selfDecisionIntrospectionVisible =
+    context.creatorContext !== null &&
+    context.creatorContext !== undefined &&
+    isCreatorInOperatorContext({
+      currentSenderBorgRole: context.creatorContext.currentSenderBorgRole,
+      sessionAudienceRole: context.creatorContext.sessionAudienceRole,
+    });
 
   return [
     `${indent}<cross_session_awareness>`,
@@ -818,6 +825,14 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
       entries: standing?.crossSessionActivityEntries,
       indent: `${indent}  `,
     }),
+    ...(selfDecisionIntrospectionVisible
+      ? renderStandingEntryGroupLines({
+          tag: "self_decision_introspection_entries",
+          entryTag: "self_decision_entry",
+          entries: standing?.selfDecisionIntrospectionEntries,
+          indent: `${indent}  `,
+        })
+      : []),
     `${indent}</cross_session_awareness>`,
   ];
 }

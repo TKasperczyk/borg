@@ -51,6 +51,11 @@ import {
   DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
   selectCrossSessionSelfActivity,
 } from "../../../memory/activity/index.js";
+import {
+  DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
+  DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
+  selectSelfDecisionIntrospection,
+} from "../../../memory/self-decisions/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
@@ -783,6 +788,18 @@ export async function runRetrievalPhase(input: {
           recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
           cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
         });
+  const selfDecisionIntrospection =
+    input.options.selfDecisionRepository === undefined
+      ? []
+      : selectSelfDecisionIntrospection({
+          repository: input.options.selfDecisionRepository,
+          sessionId: input.sessionId,
+          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
+          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          nowMs: input.options.clock.now(),
+          recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
+          cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
+        });
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({
     options: input.options,
     input: {
@@ -803,6 +820,7 @@ export async function runRetrievalPhase(input: {
       frameAnomaly: input.currentTurnFrameAnomaly,
       activeParticipants: input.activeParticipants,
       crossSessionSelfActivity,
+      selfDecisionIntrospection,
       participantRoster: input.participantRoster,
       isUserTurn: input.isUserTurn,
       perception: input.perception,

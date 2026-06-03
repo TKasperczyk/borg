@@ -30,6 +30,7 @@ import type {
   SkillSelector,
 } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -63,6 +64,7 @@ export type BuildTurnOrchestratorOptions = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository: ActivityRepository;
+  selfDecisionRepository: SelfDecisionRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;
@@ -112,6 +114,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     creatorDirectiveRepository: options.creatorDirectiveRepository,
     sharedStateRepository: options.sharedStateRepository,
     activityRepository: options.activityRepository,
+    selfDecisionRepository: options.selfDecisionRepository,
     identityService: options.identityService,
     reviewQueueRepository: options.reviewQueueRepository,
     valuesRepository: options.valuesRepository,

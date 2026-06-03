@@ -53,16 +53,19 @@ export function isEpisodeInGlobalIdentityScope(
 // visibility site. There are exactly three ways to read:
 //   - audience: the normal firewall path (exact-audience match + public/shared)
 //   - self_continuity: public episodes plus the self/identity entity's episodes
+//   - operator_introspection: public plus self-scope episodes for operator introspection
 //   - unrestricted: see everything (admin/correction read paths ONLY)
 export type ViewerCapability =
   | { readonly kind: "audience"; readonly audienceEntityId: EntityId | null }
   | { readonly kind: "self_continuity"; readonly selfAudienceEntityId: EntityId | null }
+  | { readonly kind: "operator_introspection"; readonly selfAudienceEntityId: EntityId | null }
   | { readonly kind: "unrestricted" };
 
 export type ViewerCapabilityOptions = {
   readonly audienceEntityId?: EntityId | null;
   readonly crossAudience?: boolean;
   readonly globalIdentitySelfAudienceEntityId?: EntityId | null;
+  readonly operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
 };
 
 // Collapse the legacy option triple into ONE capability, applying the visibility precedence
@@ -75,6 +78,13 @@ export function resolveViewerCapability(options: ViewerCapabilityOptions): Viewe
     return {
       kind: "self_continuity",
       selfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
+    };
+  }
+
+  if (options.operatorIntrospectionSelfAudienceEntityId !== undefined) {
+    return {
+      kind: "operator_introspection",
+      selfAudienceEntityId: options.operatorIntrospectionSelfAudienceEntityId,
     };
   }
 
@@ -95,6 +105,8 @@ export function isEpisodeVisibleToCapability(
     case "unrestricted":
       return true;
     case "self_continuity":
+      return isEpisodeInGlobalIdentityScope(input, capability.selfAudienceEntityId);
+    case "operator_introspection":
       return isEpisodeInGlobalIdentityScope(input, capability.selfAudienceEntityId);
     case "audience":
       return isEpisodeAccessVisible(input, capability.audienceEntityId);

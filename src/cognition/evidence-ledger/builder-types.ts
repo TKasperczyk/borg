@@ -14,6 +14,7 @@ import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../re
 import type { StreamEntry, StreamReader } from "../../stream/index.js";
 import type { AttachmentRepository } from "../../attachments/index.js";
 import type { CrossSessionSelfActivityRow } from "../../memory/activity/index.js";
+import type { SelfDecisionIntrospectionRow } from "../../memory/self-decisions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -60,4 +61,5 @@ export type EvidenceLedgerBuildInput = {
   frameAnomaly?: ActualFrameAnomalyClassification | null;
   activeParticipants?: readonly ActiveParticipant[];
   crossSessionSelfActivity?: readonly CrossSessionSelfActivityRow[];
+  selfDecisionIntrospection?: readonly SelfDecisionIntrospectionRow[];
 };

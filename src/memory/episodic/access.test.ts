@@ -41,6 +41,17 @@ describe("resolveViewerCapability", () => {
     expect(resolveViewerCapability({ crossAudience: true })).toEqual({ kind: "unrestricted" });
   });
 
+  it("maps operator introspection to a narrow self-introspection capability", () => {
+    expect(resolveViewerCapability({ operatorIntrospectionSelfAudienceEntityId: SELF })).toEqual({
+      kind: "operator_introspection",
+      selfAudienceEntityId: SELF,
+    });
+    expect(resolveViewerCapability({ operatorIntrospectionSelfAudienceEntityId: null })).toEqual({
+      kind: "operator_introspection",
+      selfAudienceEntityId: null,
+    });
+  });
+
   it("maps a defined globalIdentity self-audience to self_continuity", () => {
     expect(resolveViewerCapability({ globalIdentitySelfAudienceEntityId: SELF })).toEqual({
       kind: "self_continuity",
@@ -65,6 +76,14 @@ describe("resolveViewerCapability", () => {
     expect(resolveViewerCapability({ crossAudience: true, audienceEntityId: OTHER })).toEqual({
       kind: "unrestricted",
     });
+    // operator introspection is not widened by crossAudience.
+    expect(
+      resolveViewerCapability({
+        operatorIntrospectionSelfAudienceEntityId: SELF,
+        crossAudience: true,
+        audienceEntityId: OTHER,
+      }),
+    ).toEqual({ kind: "operator_introspection", selfAudienceEntityId: SELF });
   });
 });
 
@@ -103,6 +122,14 @@ describe("isEpisodeVisibleToCapability", () => {
     const cap: ViewerCapability = { kind: "self_continuity", selfAudienceEntityId: null };
     expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(false);
+    expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
+  });
+
+  it("operator_introspection arm: fail-closed and not equivalent to unrestricted", () => {
+    const cap: ViewerCapability = { kind: "operator_introspection", selfAudienceEntityId: SELF };
+    expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(SHARED_OTHER, cap)).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
   });
 

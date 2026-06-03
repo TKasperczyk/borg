@@ -4,6 +4,7 @@ import { SessionBusyError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 
 import type {
   AutonomyConditionName,
@@ -43,6 +44,7 @@ export type AutonomySchedulerOptions = {
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   watermarkRepository: StreamWatermarkRepository;
   wakeRepository: AutonomyWakesRepository;
+  selfDecisionRepository?: Pick<SelfDecisionRepository, "record">;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   toolDispatcher: ToolDispatcher;
   sources: readonly AutonomyWakeSource[];
@@ -186,7 +188,7 @@ export class AutonomyScheduler {
             continue;
           }
 
-          await writer.append({
+          const autonomousWakeEntry = await writer.append({
             kind: "internal_event",
             content: {
               kind: "autonomous_wake",
@@ -246,7 +248,7 @@ export class AutonomyScheduler {
             });
             const outcomeSummary = summarizeOutcome(turnResult.response);
 
-            await writer.append({
+            const autonomousActionEntry = await writer.append({
               kind: "internal_event",
               content: {
                 kind: "autonomous_action",
@@ -261,6 +263,17 @@ export class AutonomyScheduler {
               this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
                 lastTs: dueEvent.sortTs,
                 lastEntryId: dueEvent.id,
+              });
+              this.options.selfDecisionRepository?.record({
+                occurredAt: autonomousActionEntry.timestamp,
+                sessionId: this.sessionId,
+                triggerName: dueEvent.sourceName,
+                triggerType: dueEvent.sourceType,
+                sourceEventId: dueEvent.id,
+                fireEventId: autonomousActionEntry.id,
+                decisionSummary: outcomeSummary,
+                turnResultId: turnResult.agentMessageId ?? null,
+                sourceStreamEntryIds: [autonomousWakeEntry.id, autonomousActionEntry.id],
               });
               try {
                 await preparedEvent.source.onFired?.(preparedEvent.event);

@@ -40,6 +40,7 @@ import type {
   SkillSelector,
 } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -116,6 +117,7 @@ export type BorgDependencies = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository: ActivityRepository;
+  selfDecisionRepository: SelfDecisionRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;
   proceduralContextStatsRepository: ProceduralContextStatsRepository;
