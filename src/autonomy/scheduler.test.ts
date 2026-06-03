@@ -311,8 +311,7 @@ describe("AutonomyScheduler", () => {
     expect(firstResult.firedEvents).toBe(1);
     expect(secondResult.firedEvents).toBe(1);
     expect(
-      selfDecisionRepository.listRecentForSession({
-        sessionId: DEFAULT_SESSION_ID,
+      selfDecisionRepository.listRecentAutonomousSelfPrivate({
         sinceMs: 0,
         limit: 10,
       }),
@@ -362,8 +361,7 @@ describe("AutonomyScheduler", () => {
     const result = await scheduler.tick();
     expect(result.firedEvents).toBe(1);
 
-    const rows = selfDecisionRepository.listRecentForSession({
-      sessionId: DEFAULT_SESSION_ID,
+    const rows = selfDecisionRepository.listRecentAutonomousSelfPrivate({
       sinceMs: 0,
       limit: 10,
     });
@@ -438,8 +436,7 @@ describe("AutonomyScheduler", () => {
       errorCount: 1,
     });
     expect(
-      selfDecisionRepository.listRecentForSession({
-        sessionId: DEFAULT_SESSION_ID,
+      selfDecisionRepository.listRecentAutonomousSelfPrivate({
         sinceMs: 0,
         limit: 10,
       }),

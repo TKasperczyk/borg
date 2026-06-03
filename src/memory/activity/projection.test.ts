@@ -83,6 +83,7 @@ describe("selectCrossSessionSelfActivity", () => {
       currentAudienceEntityId: operatorEntityId,
       sessionAudienceRole: "operator",
       currentSenderBorgRole: "creator",
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -93,6 +94,7 @@ describe("selectCrossSessionSelfActivity", () => {
       currentAudienceEntityId: aliceEntityId,
       sessionAudienceRole: "participant",
       currentSenderBorgRole: null,
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -107,6 +109,153 @@ describe("selectCrossSessionSelfActivity", () => {
       },
     ]);
     expect(hidden).toEqual([]);
+
+    db.close();
+  });
+
+  it("shows other active-session activity during private self-cognition", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-private-self-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const activity = new ActivityRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const aliceEntityId = createEntityId();
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Autonomous wake",
+      audience_label: "self",
+      audience_entity_id: null,
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS,
+    });
+    sessions.ensure({
+      session_id: otherSessionId,
+      source_type: "demo",
+      label: "Alice demo",
+      audience_label: "Alice",
+      audience_entity_id: aliceEntityId,
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS - 30_000,
+    });
+    activity.record({
+      kind: "turn_completed",
+      occurredAt: NOW_MS - 30_000,
+      sessionId: otherSessionId,
+      turnId: "alice-turn",
+      speakerEntityId: aliceEntityId,
+      actorEntityId: aliceEntityId,
+      audienceEntityId: aliceEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    const visible = selectCrossSessionSelfActivity({
+      repository: activity,
+      currentSessionId,
+      currentAudienceEntityId: null,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
+      nowMs: NOW_MS,
+      recencyWindowMs: 60_000,
+      cap: 5,
+    });
+
+    expect(visible).toEqual([
+      {
+        kind: "turn_completed",
+        occurredAt: NOW_MS - 30_000,
+        relativeAge: "~30s ago",
+        text: "Borg completed a turn with Alice ~30s ago in another active session.",
+      },
+    ]);
+
+    db.close();
+  });
+
+  it("does not return cross-session activity on ordinary non-operator participant turns", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-no-leak-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const activity = new ActivityRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentSessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const participantEntityId = createEntityId();
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Participant room",
+      audience_label: "Sam",
+      audience_entity_id: participantEntityId,
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS,
+    });
+    sessions.ensure({
+      session_id: otherSessionId,
+      source_type: "demo",
+      label: "Other private room",
+      audience_label: "Alice",
+      audience_entity_id: createEntityId(),
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: NOW_MS - 120_000,
+      last_activity_at: NOW_MS - 30_000,
+    });
+    activity.record({
+      kind: "user_contact",
+      occurredAt: NOW_MS - 30_000,
+      sessionId: otherSessionId,
+      turnId: "other-turn",
+      speakerEntityId: createEntityId(),
+      actorEntityId: createEntityId(),
+      audienceEntityId: createEntityId(),
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      selectCrossSessionSelfActivity({
+        repository: activity,
+        currentSessionId,
+        currentAudienceEntityId: participantEntityId,
+        sessionAudienceRole: "participant",
+        currentSenderBorgRole: null,
+        isPrivateSelfCognition: false,
+        nowMs: NOW_MS,
+        recencyWindowMs: 60_000,
+        cap: 5,
+      }),
+    ).toEqual([]);
 
     db.close();
   });
@@ -168,6 +317,7 @@ describe("selectCrossSessionSelfActivity", () => {
       currentAudienceEntityId: operatorEntityId,
       sessionAudienceRole: "operator",
       currentSenderBorgRole: "creator",
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,

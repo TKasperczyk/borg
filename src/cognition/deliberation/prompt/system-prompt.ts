@@ -829,7 +829,7 @@ function renderRelationalIdentityLines(context: DeliberationContext, indent: str
 
 function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: string): string[] {
   const standing = context.evidenceLedger?.audienceStanding;
-  const selfDecisionIntrospectionVisible =
+  const selfPrivateObservedIntrospectionVisible =
     context.creatorContext !== null &&
     context.creatorContext !== undefined &&
     isCreatorInOperatorContext({
@@ -841,7 +841,7 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
     (entry) => observedEventDisclosureClass(entry) === "social_observed",
   );
   const selfPrivateObservedEntries =
-    selfDecisionIntrospectionVisible === true
+    selfPrivateObservedIntrospectionVisible === true
       ? observedEventEntries?.filter(
           (entry) => observedEventDisclosureClass(entry) === "self_private",
         )
@@ -860,14 +860,12 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
       entries: standing?.crossSessionActivityEntries,
       indent: `${indent}  `,
     }),
-    ...(selfDecisionIntrospectionVisible
-      ? renderStandingEntryGroupLines({
-          tag: "self_decision_introspection_entries",
-          entryTag: "self_decision_entry",
-          entries: standing?.selfDecisionIntrospectionEntries,
-          indent: `${indent}  `,
-        })
-      : []),
+    ...renderStandingEntryGroupLines({
+      tag: "self_decision_introspection_entries",
+      entryTag: "self_decision_entry",
+      entries: standing?.selfDecisionIntrospectionEntries,
+      indent: `${indent}  `,
+    }),
     ...renderSocialMemoryEntryGroupLines({
       entries: visibleSocialMemoryEntries,
       indent: `${indent}  `,

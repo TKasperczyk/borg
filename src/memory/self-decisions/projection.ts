@@ -1,8 +1,7 @@
 import type { BorgRole } from "../commitments/index.js";
-import { isCreatorInOperatorContext } from "../../cognition/authority.js";
+import { isSelfIntrospectionAuthorized } from "../../cognition/authority.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
-import type { SessionId } from "../../util/ids.js";
 import type { SelfDecisionProjectionSourceEvent, SelfDecisionRepository } from "./repository.js";
 import type { SelfDecisionTriggerType } from "./types.js";
 
@@ -19,10 +18,10 @@ export type SelfDecisionIntrospectionRow = {
 };
 
 export type SelfDecisionIntrospectionProjectionInput = {
-  repository: Pick<SelfDecisionRepository, "listRecentForSession">;
-  sessionId: SessionId;
+  repository: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
   sessionAudienceRole: SessionAudienceRole;
   currentSenderBorgRole: BorgRole | null;
+  isPrivateSelfCognition: boolean;
   nowMs: number;
   recencyWindowMs?: number;
   cap?: number;
@@ -42,9 +41,10 @@ export function selectSelfDecisionIntrospection(
   input: SelfDecisionIntrospectionProjectionInput,
 ): SelfDecisionIntrospectionRow[] {
   if (
-    !isCreatorInOperatorContext({
+    !isSelfIntrospectionAuthorized({
       currentSenderBorgRole: input.currentSenderBorgRole,
       sessionAudienceRole: input.sessionAudienceRole,
+      isPrivateSelfCognition: input.isPrivateSelfCognition,
     })
   ) {
     return [];
@@ -55,8 +55,7 @@ export function selectSelfDecisionIntrospection(
     0,
     input.recencyWindowMs ?? DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
   );
-  const events = input.repository.listRecentForSession({
-    sessionId: input.sessionId,
+  const events = input.repository.listRecentAutonomousSelfPrivate({
     sinceMs: input.nowMs - recencyWindowMs,
     limit: cap,
   });

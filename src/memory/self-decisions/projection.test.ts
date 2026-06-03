@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSessionId, createStreamEntryId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createSessionId, createStreamEntryId } from "../../util/ids.js";
 import { selfDecisionMigrations } from "./migrations.js";
 import {
   DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe("selectSelfDecisionIntrospection", () => {
-  it("returns rows only for creator-in-operator context and preserves multilingual summaries", () => {
+  it("returns rows for operator context or private self-cognition and preserves multilingual summaries", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-projection-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "self-decisions.db"), {
@@ -49,23 +49,30 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const visible = selectSelfDecisionIntrospection({
       repository,
-      sessionId,
       sessionAudienceRole: "operator",
       currentSenderBorgRole: "creator",
+      isPrivateSelfCognition: false,
+      nowMs: NOW_MS,
+    });
+    const privateSelfVisible = selectSelfDecisionIntrospection({
+      repository,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
     });
     const participantHidden = selectSelfDecisionIntrospection({
       repository,
-      sessionId,
       sessionAudienceRole: "participant",
       currentSenderBorgRole: "creator",
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
     const nonCreatorHidden = selectSelfDecisionIntrospection({
       repository,
-      sessionId,
       sessionAudienceRole: "operator",
       currentSenderBorgRole: null,
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
 
@@ -78,8 +85,79 @@ describe("selectSelfDecisionIntrospection", () => {
       }),
     ]);
     expect(visible[0]?.text).toContain(decisionSummary);
+    expect(privateSelfVisible.map((row) => row.decisionSummary)).toEqual([decisionSummary]);
     expect(participantHidden).toEqual([]);
     expect(nonCreatorHidden).toEqual([]);
+
+    db.close();
+  });
+
+  it("recalls default-session autonomous decisions during private self-cognition", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-private-self-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({ db, clock: new FixedClock(NOW_MS) });
+    const currentSessionId = createSessionId();
+
+    repository.record({
+      occurredAt: NOW_MS - 60_000,
+      sessionId: DEFAULT_SESSION_ID,
+      triggerName: "scheduled_reflection",
+      triggerType: "trigger",
+      sourceEventId: "scheduled-reflection:private-self",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "Sol reviewed a pending autonomous choice.",
+      turnResultId: "strm_agent_private_self",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    const rows = selectSelfDecisionIntrospection({
+      repository,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
+      nowMs: NOW_MS,
+    });
+
+    expect(currentSessionId).not.toBe(DEFAULT_SESSION_ID);
+    expect(rows.map((row) => row.decisionSummary)).toEqual([
+      "Sol reviewed a pending autonomous choice.",
+    ]);
+
+    db.close();
+  });
+
+  it("does not return self-decision rows on ordinary non-operator participant turns", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-no-leak-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({ db, clock: new FixedClock(NOW_MS) });
+
+    repository.record({
+      occurredAt: NOW_MS - 60_000,
+      sessionId: DEFAULT_SESSION_ID,
+      triggerName: "scheduled_reflection",
+      triggerType: "trigger",
+      sourceEventId: "scheduled-reflection:no-leak",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "This self-private decision must not reach a participant turn.",
+      turnResultId: "strm_agent_no_leak",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      selectSelfDecisionIntrospection({
+        repository,
+        sessionAudienceRole: "participant",
+        currentSenderBorgRole: null,
+        isPrivateSelfCognition: false,
+        nowMs: NOW_MS,
+      }),
+    ).toEqual([]);
 
     db.close();
   });
@@ -121,9 +199,9 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const rows = selectSelfDecisionIntrospection({
       repository,
-      sessionId,
       sessionAudienceRole: "operator",
       currentSenderBorgRole: "creator",
+      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
 

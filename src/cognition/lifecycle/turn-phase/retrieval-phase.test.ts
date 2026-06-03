@@ -1489,6 +1489,223 @@ describe("creator directive retrieval briefing", () => {
       db.close();
     }
   });
+
+  it("threads private self-cognition into self-introspection selectors without opening participant turns", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const listRecentOtherActiveSessionEvents = vi.fn(() => []);
+    const listRecentAutonomousSelfPrivate = vi.fn(() => []);
+    const participantEntityId = createEntityId();
+    const creatorEntityId = createEntityId();
+
+    options.activityRepository = {
+      record: vi.fn(),
+      listRecentOtherActiveSessionEvents,
+    };
+    options.selfDecisionRepository = {
+      listRecentAutonomousSelfPrivate,
+    };
+
+    try {
+      await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-private-self-introspection",
+        turnInput: {
+          userMessage: "",
+          audience: "self",
+          origin: "autonomous",
+          autonomyTrigger: {
+            source_name: "scheduled_reflection",
+            source_type: "trigger",
+            event_id: "scheduled-reflection:1000",
+            sort_ts: 1_000,
+            payload: {
+              interval_ms: 1_000,
+            },
+          },
+        },
+        isSelfAudience: true,
+        isUserTurn: false,
+        cognitionInput: "Autonomous wake context: scheduled_reflection",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        currentSenderBorgRole: null,
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(listRecentOtherActiveSessionEvents).toHaveBeenCalledTimes(1);
+      expect(listRecentAutonomousSelfPrivate).toHaveBeenCalledTimes(1);
+
+      listRecentOtherActiveSessionEvents.mockClear();
+      listRecentAutonomousSelfPrivate.mockClear();
+
+      await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-participant-introspection-closed",
+        turnInput: {
+          userMessage: "Hi",
+          audience: "participant",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Hi",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: participantEntityId,
+        audienceEntity: {
+          id: participantEntityId,
+          canonical_name: "Participant",
+          aliases: [],
+          kind: "person",
+          borg_role: null,
+          name_provenance: "user_declared",
+          created_at: 1_000,
+        },
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        currentSenderBorgRole: null,
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [
+          {
+            entityId: participantEntityId,
+            displayName: "Participant",
+            role: "audience",
+          },
+        ],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(listRecentOtherActiveSessionEvents).not.toHaveBeenCalled();
+      expect(listRecentAutonomousSelfPrivate).not.toHaveBeenCalled();
+
+      listRecentOtherActiveSessionEvents.mockClear();
+      listRecentAutonomousSelfPrivate.mockClear();
+
+      await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-operator-introspection",
+        turnInput: {
+          userMessage: "Status",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Status",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: creatorEntityId,
+        audienceEntity: {
+          id: creatorEntityId,
+          canonical_name: "Creator",
+          aliases: [],
+          kind: "person",
+          borg_role: "creator",
+          name_provenance: "user_declared",
+          created_at: 1_000,
+        },
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        currentSenderBorgRole: "creator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [
+          {
+            entityId: creatorEntityId,
+            displayName: "Creator",
+            role: "audience",
+          },
+        ],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(listRecentOtherActiveSessionEvents).toHaveBeenCalledTimes(1);
+      expect(listRecentAutonomousSelfPrivate).toHaveBeenCalledTimes(1);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("compileSharedStateArtifactForEvidenceLedger", () => {

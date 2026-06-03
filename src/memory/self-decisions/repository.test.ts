@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSessionId, createStreamEntryId, type SelfDecisionEventId } from "../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createSessionId,
+  createStreamEntryId,
+  type SelfDecisionEventId,
+} from "../../util/ids.js";
 import { selfDecisionMigrations } from "./migrations.js";
 import { SelfDecisionRepository } from "./repository.js";
 
@@ -125,13 +130,50 @@ describe("SelfDecisionRepository", () => {
     });
     expect(
       repository
-        .listRecentForSession({
-          sessionId,
+        .listRecentAutonomousSelfPrivate({
           sinceMs: 0,
           limit: 10,
         })
         .map((row) => row.decisionSummary),
     ).toEqual(["Second committed fire.", "First committed fire."]);
+
+    db.close();
+  });
+
+  it("lists autonomous self-private decisions without a current-session firewall", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-cross-session-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+
+    repository.record({
+      occurredAt: 1_000,
+      sessionId: DEFAULT_SESSION_ID,
+      triggerName: "scheduled_reflection",
+      triggerType: "trigger",
+      sourceEventId: "scheduled-reflection:1000",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "Default-session autonomous decision.",
+      turnResultId: "strm_agent_default",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      repository.listRecentAutonomousSelfPrivate({
+        sinceMs: 0,
+        limit: 10,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        decisionSummary: "Default-session autonomous decision.",
+        triggerName: "scheduled_reflection",
+      }),
+    ]);
 
     db.close();
   });

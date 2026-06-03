@@ -783,6 +783,7 @@ export async function runRetrievalPhase(input: {
           currentAudienceEntityId: input.audienceEntityId,
           sessionAudienceRole: input.sessionAudienceRole ?? "participant",
           currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          isPrivateSelfCognition,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
           cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
@@ -792,9 +793,9 @@ export async function runRetrievalPhase(input: {
       ? []
       : selectSelfDecisionIntrospection({
           repository: input.options.selfDecisionRepository,
-          sessionId: input.sessionId,
           sessionAudienceRole: input.sessionAudienceRole ?? "participant",
           currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          isPrivateSelfCognition,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,

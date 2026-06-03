@@ -1,5 +1,5 @@
 import type { BorgRole } from "../commitments/index.js";
-import { isCreatorInOperatorContext } from "../../cognition/authority.js";
+import { isSelfIntrospectionAuthorized } from "../../cognition/authority.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -22,6 +22,7 @@ export type CrossSessionSelfActivityProjectionInput = {
   currentAudienceEntityId: EntityId | null;
   sessionAudienceRole: SessionAudienceRole;
   currentSenderBorgRole: BorgRole | null;
+  isPrivateSelfCognition: boolean;
   nowMs: number;
   recencyWindowMs?: number;
   cap?: number;
@@ -56,9 +57,10 @@ export function selectCrossSessionSelfActivity(
   void input.currentAudienceEntityId;
 
   if (
-    !isCreatorInOperatorContext({
+    !isSelfIntrospectionAuthorized({
       currentSenderBorgRole: input.currentSenderBorgRole,
       sessionAudienceRole: input.sessionAudienceRole,
+      isPrivateSelfCognition: input.isPrivateSelfCognition,
     })
   ) {
     return [];

@@ -81,13 +81,13 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
 function buildSelfDecisionIntrospectionEntries(
   context: BuilderSectionContext,
 ): EvidenceLedgerEntry[] {
-  // Visibility is gated upstream by selectSelfDecisionIntrospection and downstream by the prompt's operator-context render guard.
+  // Visibility is resolved upstream by selectSelfDecisionIntrospection.
   const rows = context.input.selfDecisionIntrospection ?? [];
 
   return rows.map((row, index) => ({
     id: `self_decision_introspection:${index + 1}`,
     source_type: "system_metadata",
-    session_scope: "current_session",
+    session_scope: "global",
     actor: "system",
     trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
     text: row.text,

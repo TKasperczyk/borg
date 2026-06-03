@@ -119,7 +119,7 @@ export type TurnPhaseCoordinatorOptions = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
-  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentForSession">;
+  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
   observedEventRepository?: Pick<ObservedEventRepository, "record" | "listRecentBySpeakers">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<

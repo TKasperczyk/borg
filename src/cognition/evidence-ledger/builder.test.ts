@@ -705,7 +705,7 @@ describe("EvidenceLedgerBuilder", () => {
       expect.objectContaining({
         id: "self_decision_introspection:1",
         source_type: "system_metadata",
-        session_scope: "current_session",
+        session_scope: "global",
         actor: "system",
         text: expect.stringContaining(decisionSummary),
         value: "goal_followup_due",

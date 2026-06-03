@@ -1219,7 +1219,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_session_status_snapshot");
   });
 
-  it("renders self-decision introspection only for creator-in-operator context", () => {
+  it("renders self-decision introspection entries returned by projection", () => {
     const decisionSummary = "Decidí revisar objetivos pendientes sin contactar a nadie.";
     const evidenceLedger = {
       sections: [],
@@ -1269,14 +1269,10 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const participantPrompt = buildBaseSystemPrompt(
+    const selfPrompt = buildBaseSystemPrompt(
       makeContext({
-        creatorContext: {
-          currentSenderEntityId: createEntityId(),
-          currentSenderDisplayName: "Tom",
-          currentSenderBorgRole: "creator",
-          sessionAudienceRole: "participant",
-        },
+        isSelfAudience: true,
+        audienceEntityId: null,
         evidenceLedger,
       }),
       PROMPT_OPTIONS,
@@ -1286,8 +1282,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(
       "<self_decision_introspection_entries>",
     );
-    expect(participantPrompt).not.toContain(decisionSummary);
-    expect(participantPrompt).not.toContain("self_private");
+    expect(extractBlock(selfPrompt, "borg_standing_with_audience")).toContain(decisionSummary);
+    expect(extractBlock(selfPrompt, "borg_standing_with_audience")).toContain(
+      "<self_decision_introspection_entries>",
+    );
   });
 
   it("renders social observed memories unconditionally and self-private social memories only for operators", () => {

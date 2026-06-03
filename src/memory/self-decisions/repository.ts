@@ -191,8 +191,7 @@ export class SelfDecisionRepository {
     return row === undefined ? null : mapSelfDecisionRow(row);
   }
 
-  listRecentForSession(input: {
-    sessionId: SessionId;
+  listRecentAutonomousSelfPrivate(input: {
     sinceMs: number;
     limit: number;
   }): SelfDecisionProjectionSourceEvent[] {
@@ -202,15 +201,14 @@ export class SelfDecisionRepository {
           SELECT occurred_at, trigger_name, trigger_type, decision_summary
           FROM self_decision_events
           WHERE
-            session_id = ?
-            AND origin = 'autonomous'
+            origin = 'autonomous'
             AND disclosure_class = 'self_private'
             AND occurred_at >= ?
           ORDER BY occurred_at DESC, id DESC
           LIMIT ?
         `,
       )
-      .all(input.sessionId, input.sinceMs, input.limit) as Record<string, unknown>[];
+      .all(input.sinceMs, input.limit) as Record<string, unknown>[];
 
     return rows.map(mapProjectionRow);
   }
