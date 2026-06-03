@@ -129,6 +129,42 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+type AutonomousWakeInfo = {
+  sourceName: string;
+  triggerType?: string;
+  intervalMs?: number;
+};
+
+// An autonomy wake (scheduled reflection, scheduled wake, condition trigger, etc.) is recorded as
+// an internal_event whose content.kind is "autonomous_wake". Surface it distinctly so reflection
+// phases are recognizable in the stream instead of reading as a generic internal event.
+function autonomousWakeInfo(entry: StreamEntry): AutonomousWakeInfo | null {
+  if (entry.kind !== "internal_event") {
+    return null;
+  }
+  const content = isRecord(entry.content) ? entry.content : null;
+  if (content === null || content.kind !== "autonomous_wake") {
+    return null;
+  }
+  const payload = isRecord(content.payload) ? content.payload : null;
+  return {
+    sourceName: optionalString(content.source_name) ?? "autonomous wake",
+    triggerType: optionalString(content.trigger_type),
+    intervalMs: payload === null ? undefined : optionalNumber(payload.interval_ms),
+  };
+}
+
+function formatWakeInterval(ms: number): string {
+  if (ms >= 3_600_000) {
+    const hours = ms / 3_600_000;
+    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+  }
+  if (ms >= 60_000) {
+    return `${Math.round(ms / 60_000)}m`;
+  }
+  return `${Math.round(ms / 1000)}s`;
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -276,6 +312,21 @@ function DreamReportSummary({ entry }: { entry: StreamEntry }) {
 }
 
 function InternalEventSummary({ entry }: { entry: StreamEntry }) {
+  const wake = autonomousWakeInfo(entry);
+  if (wake !== null) {
+    return (
+      <>
+        <Tag kind="purple" dot>
+          {fieldLabel(wake.sourceName)}
+        </Tag>
+        {wake.triggerType === undefined ? null : <Tag>{fieldLabel(wake.triggerType)}</Tag>}
+        {wake.intervalMs === undefined ? null : (
+          <Tag>every {formatWakeInterval(wake.intervalMs)}</Tag>
+        )}
+      </>
+    );
+  }
+
   const content = isRecord(entry.content) ? entry.content : null;
 
   if (content === null) {
@@ -707,6 +758,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
           const attachmentStatus = attId === undefined ? undefined : attachmentStatusById[attId];
           const isAttachment = entry.kind === "user_image_attachment";
           const outcomeSummary = streamOutcomeSummary(entry);
+          const wake = autonomousWakeInfo(entry);
           return (
             <div
               key={entry.id}
@@ -716,7 +768,9 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
               onClick={() => setSelectedId(entry.id)}
             >
               <span className="t">{formatTime(entry.timestamp)}</span>
-              <span className={`k ${kindTag(entry.kind)}`}>{entry.kind}</span>
+              <span className={`k ${wake !== null ? "purple" : kindTag(entry.kind)}`}>
+                {wake !== null ? "wake" : entry.kind}
+              </span>
               <span
                 className={
                   isAttachment
