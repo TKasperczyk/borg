@@ -12,6 +12,8 @@ export type DecayResult = {
   effectiveHalfLifeHours: number;
 };
 
+// DELIBERATE: episodic 'heat' is a persisted column that gates DB-level candidate PRE-selection (listHottest in src/retrieval/pipeline.ts), not just a ranking weight -- it changes which episodes are even considered. It is one of several distinct aging timers (heat, shared-state salience/lifecycle-aging, warm-recall TTL, working-memory suppression TTL) that look like duplicated decay but are NOT consolidatable: they age different stores for different consumers on two incompatible time bases -- wall-clock exponential half-life vs integer turn-count TTL. The shared half-life arithmetic is already centralized in util/math.halfLifeDecay; the timers themselves are deliberately separate (Tier-3 review).
+
 function getTierHalfLifeHours(stats: EpisodeStats, options: DecayOptions): number {
   const tierHalfLife = options.halfLifeByTier?.[stats.tier];
   return tierHalfLife ?? options.baseHalfLifeHours;

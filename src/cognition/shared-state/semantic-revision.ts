@@ -514,6 +514,7 @@ export async function reconcileSemanticBeliefRevision(
     | "semantic_nodes_skipped"
   >
 > {
+  // DELIBERATE: this online per-turn semantic revision is NOT a duplicate of the offline Belief Reviser. Online handles a single fact-vs-stale-node correction (vector similarity + one LLM judge) for low latency; the offline reviser runs a topology cascade over invalidated edges in the dream cycle. They share only the low-level supersede/contradict write primitive. Both are kept (Tier-3 review). NOTE: this does NOT protect the same turn -- the retrieved set is snapshotted before the mark, so a correction's demotion takes effect turn N+1.
   const result = emptySemanticBeliefRevisionResult();
 
   if (input.dependencies === undefined) {

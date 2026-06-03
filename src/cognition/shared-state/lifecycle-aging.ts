@@ -20,6 +20,7 @@ import {
   sharedStateEntryWasRecentlyRetrieved,
 } from "./selection.js";
 
+// DELIBERATE: shared-state lifecycle aging is a separate integer-turn clock; see the episodic heat note in src/memory/episodic/decay.ts (Tier-3 review).
 export const DEFAULT_SHARED_STATE_DORMANT_TURN_THRESHOLD = 15;
 
 export type SharedStateLifecycleTransitionKind = "demoted" | "reactivated";

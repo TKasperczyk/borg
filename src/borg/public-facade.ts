@@ -476,7 +476,6 @@ export type BorgSkillAddInput = {
 
 export type BorgSkillSelectOptions = {
   k?: number;
-  exploreFraction?: number;
   minSimilarity?: number;
   proceduralContext?: ProceduralContext | null;
 };

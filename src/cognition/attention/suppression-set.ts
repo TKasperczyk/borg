@@ -4,6 +4,7 @@ export type SuppressionEntry = {
   until_turn: number;
 };
 
+// DELIBERATE: working-memory suppression expires on an integer turn TTL; it is separate from wall-clock episodic heat and shared-state lifecycle aging (Tier-3 review).
 export class SuppressionSet {
   static fromEntries(entries: readonly SuppressionEntry[], currentTurn: number): SuppressionSet {
     return new SuppressionSet(currentTurn, entries);

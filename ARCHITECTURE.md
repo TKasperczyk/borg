@@ -1668,7 +1668,9 @@ trail.
 
 Online revision from locked Shared State is intentionally narrow and fail-open.
 It can supersede or contradict candidate semantic records when the evidence is
-clear, but failures trace degradation and continue the turn.
+clear, but failures trace degradation and continue the turn. It does not protect
+the same turn: retrieval snapshots the semantic set before the online mark, so a
+correction's demotion takes effect on turn N+1.
 
 ## Corrections
 

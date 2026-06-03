@@ -57,13 +57,11 @@ export class SkillSelector {
     text: string,
     options: {
       k?: number;
-      exploreFraction?: number;
       minSimilarity?: number;
       proceduralContext?: ProceduralContext | null;
     } = {},
   ): Promise<SkillSelectionResult | null> {
     const limit = Math.max(1, options.k ?? 10);
-    const exploreFraction = Math.max(0, Math.min(1, options.exploreFraction ?? 0));
     const minSimilarity = Math.max(
       0,
       Math.min(1, options.minSimilarity ?? this.options.minSimilarity ?? 0.5),
@@ -105,15 +103,13 @@ export class SkillSelector {
           contextStats,
           sampledAlpha: sampledPosterior.alpha,
           sampledBeta: sampledPosterior.beta,
+          // DELIBERATE: skill selection is stochastic -- Thompson sampling over each skill's per-context Beta posterior, not a deterministic best-first sort. The posterior-variance draw makes Sol occasionally pick a less-proven skill so success estimates keep learning instead of locking onto an early winner. A mean/best-first sort would remove this exploration; it is kept on purpose (Tier-3 review). The separate exploreFraction runner-up-swap branch was dead and was removed.
           sampledValue: this.sampler(sampledPosterior.alpha, sampledPosterior.beta, this.rng),
         } satisfies SkillSelectionCandidate;
       })
       .sort(compareCandidates);
 
-    const selected =
-      evaluatedCandidates.length > 1 && exploreFraction > 0 && this.rng() < exploreFraction
-        ? evaluatedCandidates[1]!
-        : evaluatedCandidates[0]!;
+    const selected = evaluatedCandidates[0]!;
 
     return {
       skill: selected.skill,

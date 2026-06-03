@@ -22,6 +22,7 @@ import { serializeJsonValue } from "../util/json-value.js";
 
 import type { EvidenceItem, RecallEvidenceHandle } from "./recall-types.js";
 
+// DELIBERATE: warm-recall retention and suppression are turn-count TTLs, not wall-clock heat decay; see src/memory/episodic/decay.ts (Tier-3 review).
 export const DEFAULT_RECALL_STATE_TTL_TURNS = 6;
 export const DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS = 2;
 export const DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES = 24;
