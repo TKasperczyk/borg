@@ -35,4 +35,15 @@ export const observedEventMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "observed_events_fire_dedup_key",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE observed_events ADD COLUMN fire_dedup_key TEXT NULL;
+        CREATE UNIQUE INDEX idx_observed_events_fire_dedup
+        ON observed_events(fire_dedup_key) WHERE fire_dedup_key IS NOT NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

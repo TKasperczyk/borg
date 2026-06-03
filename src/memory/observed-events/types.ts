@@ -72,6 +72,7 @@ export const observedEventSchema = z
     disclosure_class: observedEventDisclosureClassSchema,
     interaction_text: z.string().min(1),
     recurrence_key: z.string().min(1),
+    fire_dedup_key: z.string().min(1).nullable(),
     recurrence_count: z.number().int().positive(),
     last_seen_at: z.number().int().finite(),
     speaker_entity_id: observedEventEntityIdSchema.nullable(),

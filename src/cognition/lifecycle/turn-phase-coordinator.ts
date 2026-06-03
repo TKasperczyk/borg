@@ -20,6 +20,7 @@ import type {
   StreamResponseTo,
   StreamWriter,
 } from "../../stream/index.js";
+import { buildObservedEventEmission } from "../../memory/observed-events/index.js";
 import { CognitionError } from "../../util/errors.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { isCreatorInOperatorContext } from "../authority.js";
@@ -1222,6 +1223,32 @@ export class TurnPhaseCoordinator {
       completedSub: summarizeFrameClassification,
     });
     const currentTurnFrameAnomaly = frameAnomalyPhase.actionableFrameAnomaly;
+    if (
+      frameAnomalyPhase.disposition === "quarantine" &&
+      frameAnomalyPhase.actionableFrameAnomaly !== null
+    ) {
+      const observedEventEmission = buildObservedEventEmission({
+        occurredAt: this.options.clock.now(),
+        sessionId,
+        disposition: frameAnomalyPhase.disposition,
+        actionableFrameAnomaly: frameAnomalyPhase.actionableFrameAnomaly,
+        speakerEntityId: currentSenderEntityId,
+        audienceEntityId,
+        sourceUserEntryIds,
+      });
+
+      if (observedEventEmission !== null) {
+        try {
+          this.options.observedEventRepository?.record(observedEventEmission);
+        } catch (error) {
+          await appendHookFailure(streamWriter, "observed_event_emission", error, {
+            turnId,
+            kind: frameAnomalyPhase.actionableFrameAnomaly.kind,
+            sourceStreamEntryIds: [...sourceUserEntryIds],
+          });
+        }
+      }
+    }
 
     const extraction = await traceTurnPhase({
       tracer: this.options.tracer,

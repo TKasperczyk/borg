@@ -318,6 +318,7 @@ export async function openBorgDependencies(
       sharedStateRepository: repositories.sharedStateRepository,
       activityRepository: repositories.activityRepository,
       selfDecisionRepository: repositories.selfDecisionRepository,
+      observedEventRepository: repositories.observedEventRepository,
       reviewQueueRepository: repositories.reviewQueueRepository,
       identityService: repositories.identityService,
       valuesRepository: repositories.valuesRepository,

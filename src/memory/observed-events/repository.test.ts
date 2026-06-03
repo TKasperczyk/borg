@@ -77,6 +77,126 @@ function recordInput(
 }
 
 describe("ObservedEventRepository", () => {
+  it("treats a repeated fire dedup key as a replay no-op", () => {
+    const { db, repository } = openHarness("borg-observed-events-fire-dedup-");
+    const sessionId = createSessionId();
+    const sourceEntryId = createStreamEntryId();
+    const recurrenceKey = `${sessionId}:peer:frame_assignment_claim`;
+    const fireDedupKey = `${sessionId}|frame_assignment_claim|${sourceEntryId}`;
+
+    const created = repository.record(
+      recordInput(sessionId, {
+        recurrenceKey,
+        fireDedupKey,
+        sourceStreamEntryIds: [sourceEntryId],
+      }),
+    );
+    const replay = repository.record(
+      recordInput(sessionId, {
+        id: createObservedEventId(),
+        occurredAt: 5_000,
+        recurrenceKey,
+        fireDedupKey,
+        interactionText: "Replay text must not overwrite the first rationale.",
+        sourceStreamEntryIds: [sourceEntryId],
+        now: 6_000,
+      }),
+    );
+
+    expect(replay).toEqual(created);
+    expect(replay.recurrence_count).toBe(1);
+    expect(repository.getByFireDedupKey(fireDedupKey)).toEqual(created);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM observed_events").get()).toEqual({
+      count: 1,
+    });
+
+    db.close();
+  });
+
+  it("collapses recurring pushes with different fire dedup keys and preserves first-seen fields", () => {
+    const { db, repository } = openHarness("borg-observed-events-fire-recurrence-");
+    const sessionId = createSessionId();
+    const firstSourceEntryId = createStreamEntryId();
+    const secondSourceEntryId = createStreamEntryId();
+    const recurrenceKey = `${sessionId}:peer:frame_assignment_claim`;
+    const firstFireDedupKey = `${sessionId}|frame_assignment_claim|${firstSourceEntryId}`;
+    const secondFireDedupKey = `${sessionId}|frame_assignment_claim|${secondSourceEntryId}`;
+
+    const created = repository.record(
+      recordInput(sessionId, {
+        occurredAt: 1_000,
+        recurrenceKey,
+        fireDedupKey: firstFireDedupKey,
+        interactionText: "Sol rejected the pushed social frame.",
+        sourceStreamEntryIds: [firstSourceEntryId],
+        now: 2_000,
+      }),
+    );
+    const recurring = repository.record(
+      recordInput(sessionId, {
+        id: createObservedEventId(),
+        occurredAt: 5_000,
+        recurrenceKey,
+        fireDedupKey: secondFireDedupKey,
+        stance: "accepted_frame",
+        taint: "none",
+        beliefEffect: "updated",
+        interactionText: "New push text must not overwrite the first rationale.",
+        sourceStreamEntryIds: [secondSourceEntryId],
+        now: 6_000,
+      }),
+    );
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM observed_events").get()).toEqual({
+      count: 1,
+    });
+    expect(recurring).toMatchObject({
+      id: created.id,
+      occurred_at: 1_000,
+      recurrence_key: recurrenceKey,
+      fire_dedup_key: secondFireDedupKey,
+      recurrence_count: 2,
+      last_seen_at: 5_000,
+      stance: "rejected_frame",
+      taint: "quarantined",
+      belief_effect: "unchanged",
+      interaction_text: "Sol rejected the pushed social frame.",
+      source_stream_entry_ids: [firstSourceEntryId],
+      updated_at: 6_000,
+    });
+    expect(repository.getByFireDedupKey(secondFireDedupKey)).toEqual(recurring);
+
+    db.close();
+  });
+
+  it("preserves legacy recurrence behavior when fire dedup keys are omitted", () => {
+    const { db, repository } = openHarness("borg-observed-events-legacy-recurrence-");
+    const sessionId = createSessionId();
+    const recurrenceKey = `${sessionId}:peer:frame_assignment_claim`;
+
+    repository.record(
+      recordInput(sessionId, {
+        occurredAt: 1_000,
+        recurrenceKey,
+      }),
+    );
+    const recurring = repository.record(
+      recordInput(sessionId, {
+        occurredAt: 5_000,
+        recurrenceKey,
+        now: 6_000,
+      }),
+    );
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM observed_events").get()).toEqual({
+      count: 1,
+    });
+    expect(recurring.recurrence_count).toBe(2);
+    expect(recurring.fire_dedup_key).toBeNull();
+
+    db.close();
+  });
+
   it("round-trips observed events and keeps recurrence upserts first-seen stable", () => {
     const { db, repository } = openHarness("borg-observed-events-");
     const sessionId = createSessionId();
@@ -277,6 +397,21 @@ describe("ObservedEventRepository", () => {
     expect(observedEventSchema.keyof().options).not.toContain("assertedClaim");
     expect(observedEventSchema.keyof().options).not.toContain("raw_claim");
     expect(observedEventSchema.keyof().options).not.toContain("asserted_claim");
+
+    db.close();
+  });
+
+  it("still requires at least one source stream entry id", () => {
+    const { db, repository } = openHarness("borg-observed-events-source-required-");
+
+    expect(() =>
+      repository.record(
+        recordInput(createSessionId(), {
+          sourceStreamEntryIds: [],
+          fireDedupKey: "fire-empty-source",
+        }),
+      ),
+    ).toThrow(/requires at least one source stream entry id/i);
 
     db.close();
   });

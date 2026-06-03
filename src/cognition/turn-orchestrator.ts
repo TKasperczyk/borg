@@ -19,6 +19,7 @@ import type { CreatorDirectiveRepository } from "../memory/creator-directives/in
 import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
+import type { ObservedEventRepository } from "../memory/observed-events/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
 import { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
@@ -130,6 +131,7 @@ export type TurnOrchestratorOptions = {
   sharedStateRepository: SharedStateRepository;
   activityRepository?: ActivityRepository;
   selfDecisionRepository?: SelfDecisionRepository;
+  observedEventRepository?: ObservedEventRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
   openQuestionsRepository: OpenQuestionsRepository;
@@ -342,6 +344,7 @@ export class TurnOrchestrator {
       sharedStateRepository: options.sharedStateRepository,
       activityRepository: options.activityRepository,
       selfDecisionRepository: options.selfDecisionRepository,
+      observedEventRepository: options.observedEventRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,

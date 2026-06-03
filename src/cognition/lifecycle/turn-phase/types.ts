@@ -39,6 +39,7 @@ import type { CommitmentRepository, EntityRepository } from "../../../memory/com
 import type { CreatorDirectiveRepository } from "../../../memory/creator-directives/index.js";
 import type { SharedStateRepository } from "../../../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../../../memory/episodic/index.js";
+import type { ObservedEventRepository } from "../../../memory/observed-events/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../../../memory/self-decisions/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../../../memory/self/index.js";
@@ -119,6 +120,7 @@ export type TurnPhaseCoordinatorOptions = {
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentForSession">;
+  observedEventRepository?: Pick<ObservedEventRepository, "record">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,

@@ -34,6 +34,7 @@ export type ObservedEventRecordInput = {
   disclosureClass: ObservedEventDisclosureClass;
   interactionText: string;
   recurrenceKey: string;
+  fireDedupKey?: string;
   speakerEntityId?: EntityId | null;
   audienceEntityId?: EntityId | null;
   sourceEntityId?: EntityId | null;
@@ -81,6 +82,7 @@ function mapObservedEventRow(row: Record<string, unknown>): ObservedEvent {
     disclosure_class: row.disclosure_class,
     interaction_text: row.interaction_text,
     recurrence_key: row.recurrence_key,
+    fire_dedup_key: nullableRowValue(row.fire_dedup_key),
     recurrence_count: Number(row.recurrence_count),
     last_seen_at: Number(row.last_seen_at),
     speaker_entity_id: nullableRowValue(row.speaker_entity_id),
@@ -129,6 +131,14 @@ export class ObservedEventRepository {
   }
 
   record(input: ObservedEventRecordInput): ObservedEvent {
+    if (input.fireDedupKey !== undefined) {
+      const duplicate = this.getByFireDedupKey(input.fireDedupKey);
+
+      if (duplicate !== null) {
+        return duplicate;
+      }
+    }
+
     const sourceStreamEntryIds = uniqueStreamEntryIds(input.sourceStreamEntryIds);
 
     if (sourceStreamEntryIds.length === 0) {
@@ -145,12 +155,13 @@ export class ObservedEventRepository {
         `
           INSERT INTO observed_events (
             id, occurred_at, session_id, stance, taint, belief_effect, classification_kind,
-            disclosure_class, interaction_text, recurrence_key, recurrence_count, last_seen_at,
-            speaker_entity_id, audience_entity_id, source_entity_id, source_stream_entry_ids,
-            created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            disclosure_class, interaction_text, recurrence_key, fire_dedup_key, recurrence_count,
+            last_seen_at, speaker_entity_id, audience_entity_id, source_entity_id,
+            source_stream_entry_ids, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(recurrence_key) DO UPDATE SET
             recurrence_count = observed_events.recurrence_count + 1,
+            fire_dedup_key = COALESCE(excluded.fire_dedup_key, observed_events.fire_dedup_key),
             last_seen_at = excluded.last_seen_at,
             updated_at = excluded.updated_at
         `,
@@ -166,6 +177,7 @@ export class ObservedEventRepository {
         input.disclosureClass,
         input.interactionText,
         input.recurrenceKey,
+        input.fireDedupKey ?? null,
         input.occurredAt,
         input.speakerEntityId ?? null,
         input.audienceEntityId ?? null,
@@ -192,9 +204,9 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, session_id, stance, taint, belief_effect, classification_kind,
-            disclosure_class, interaction_text, recurrence_key, recurrence_count, last_seen_at,
-            speaker_entity_id, audience_entity_id, source_entity_id, source_stream_entry_ids,
-            created_at, updated_at
+            disclosure_class, interaction_text, recurrence_key, fire_dedup_key, recurrence_count,
+            last_seen_at, speaker_entity_id, audience_entity_id, source_entity_id,
+            source_stream_entry_ids, created_at, updated_at
           FROM observed_events
           WHERE id = ?
         `,
@@ -210,14 +222,32 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, session_id, stance, taint, belief_effect, classification_kind,
-            disclosure_class, interaction_text, recurrence_key, recurrence_count, last_seen_at,
-            speaker_entity_id, audience_entity_id, source_entity_id, source_stream_entry_ids,
-            created_at, updated_at
+            disclosure_class, interaction_text, recurrence_key, fire_dedup_key, recurrence_count,
+            last_seen_at, speaker_entity_id, audience_entity_id, source_entity_id,
+            source_stream_entry_ids, created_at, updated_at
           FROM observed_events
           WHERE recurrence_key = ?
         `,
       )
       .get(recurrenceKey) as Record<string, unknown> | undefined;
+
+    return row === undefined ? null : mapObservedEventRow(row);
+  }
+
+  getByFireDedupKey(fireDedupKey: string): ObservedEvent | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id, occurred_at, session_id, stance, taint, belief_effect, classification_kind,
+            disclosure_class, interaction_text, recurrence_key, fire_dedup_key, recurrence_count,
+            last_seen_at, speaker_entity_id, audience_entity_id, source_entity_id,
+            source_stream_entry_ids, created_at, updated_at
+          FROM observed_events
+          WHERE fire_dedup_key = ?
+        `,
+      )
+      .get(fireDedupKey) as Record<string, unknown> | undefined;
 
     return row === undefined ? null : mapObservedEventRow(row);
   }

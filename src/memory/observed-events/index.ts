@@ -1,4 +1,11 @@
 export {
+  OBSERVED_EVENT_UNKNOWN_SPEAKER_SENTINEL,
+} from "./constants.js";
+export {
+  buildObservedEventEmission,
+  type BuildObservedEventEmissionInput,
+} from "./emission.js";
+export {
   deriveObservedEventDimensions,
   type ObservedEventDerivationInput,
   type ObservedEventDerivedDimensions,
