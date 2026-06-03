@@ -26,6 +26,9 @@ import {
   slotScope,
 } from "./scope-resolver.js";
 import type { EvidenceLedgerAudienceStanding, EvidenceLedgerEntry } from "./types.js";
+import { resolveSpeakerDisplayName } from "../speaker-tags.js";
+import type { EntityKind } from "../../memory/commitments/index.js";
+import type { EntityId } from "../../util/ids.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
@@ -99,6 +102,83 @@ function buildSelfDecisionIntrospectionEntries(
     },
     taint: "none",
   }));
+}
+
+function originAudienceKind(
+  context: BuilderSectionContext,
+  audienceEntityId: EntityId | null,
+): EntityKind | null {
+  if (audienceEntityId === null) {
+    return null;
+  }
+
+  return context.repos.entities?.get(audienceEntityId)?.kind ?? null;
+}
+
+function originDescriptor(kind: EntityKind | null): string | null {
+  if (kind === null) {
+    return null;
+  }
+
+  return kind === "group" ? "group" : "one-to-one";
+}
+
+function observedEventText(input: {
+  rowText: string;
+  speakerDisplayName: string | null;
+  originDescriptor: string | null;
+}): string {
+  const speakerSegment = input.speakerDisplayName;
+  const originSegment = input.originDescriptor === null ? null : `in a ${input.originDescriptor}`;
+  const provenance = [speakerSegment, originSegment]
+    .filter((segment): segment is string => segment !== null)
+    .join(" ");
+
+  return provenance.length === 0 ? input.rowText : `${provenance}: ${input.rowText}`;
+}
+
+function buildObservedEventIntrospectionEntries(
+  context: BuilderSectionContext,
+): EvidenceLedgerEntry[] {
+  const rows = context.input.observedEventIntrospection ?? [];
+
+  return rows.map((row, index) => {
+    const speakerDisplayName = resolveSpeakerDisplayName(
+      context.repos.entities,
+      row.speakerEntityId,
+    );
+    const audienceKind = originAudienceKind(context, row.audienceEntityId);
+    const descriptor = originDescriptor(audienceKind);
+
+    return {
+      id: `observed_event_introspection:${index + 1}`,
+      source_type: "system_metadata",
+      session_scope: "prior_session",
+      actor: "system",
+      trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
+      text: observedEventText({
+        rowText: row.text,
+        speakerDisplayName,
+        originDescriptor: descriptor,
+      }),
+      value: row.stance,
+      state: "active",
+      state_metadata: {
+        disclosure_class: row.disclosureClass,
+        stance: row.stance,
+        taint: row.taint,
+        belief_effect: row.beliefEffect,
+        recurrence_count: row.recurrenceCount,
+        occurred_at: row.occurredAt,
+        relative_age: row.relativeAge,
+        speaker_entity_id: row.speakerEntityId,
+        speaker_display_name: speakerDisplayName,
+        audience_entity_id: row.audienceEntityId,
+        origin_audience_kind: audienceKind,
+      },
+      taint: "none",
+    };
+  });
 }
 
 function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
@@ -275,6 +355,7 @@ export function buildAudienceStandingLedgerContext(
   return {
     crossSessionActivityEntries: buildCrossSessionActivityEntries(context),
     selfDecisionIntrospectionEntries: buildSelfDecisionIntrospectionEntries(context),
+    observedEventIntrospectionEntries: buildObservedEventIntrospectionEntries(context),
     commitmentEntries: buildCommitmentEntries(context),
     relationalEntries: buildRelationalEntries(context),
   };

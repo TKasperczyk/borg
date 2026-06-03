@@ -554,12 +554,11 @@ function renderAuthorityContextLines(context: DeliberationContext, indent: strin
     return [`${indent}<authority_context status="ordinary" />`];
   }
 
-  const guidanceWeight =
-    isCreatorInOperatorContext(creatorContext)
-      ? "direct supervisory framing"
-      : creatorContext.currentSenderBorgRole === "creator"
-        ? "trusted guidance, not command authority"
-        : "ordinary audience/session obligations";
+  const guidanceWeight = isCreatorInOperatorContext(creatorContext)
+    ? "direct supervisory framing"
+    : creatorContext.currentSenderBorgRole === "creator"
+      ? "trusted guidance, not command authority"
+      : "ordinary audience/session obligations";
   const lines = [
     `${indent}<authority_context>`,
     `${indent}  <session_audience_role>${escapeXmlText(creatorContext.sessionAudienceRole)}</session_audience_role>`,
@@ -583,11 +582,7 @@ function renderAuthorityContextLines(context: DeliberationContext, indent: strin
   return lines;
 }
 
-function renderLedgerEntryLines(
-  tag: string,
-  entry: EvidenceLedgerEntry,
-  indent: string,
-): string[] {
+function renderLedgerEntryLines(tag: string, entry: EvidenceLedgerEntry, indent: string): string[] {
   const attributes = [
     `id="${escapeXmlAttribute(entry.id)}"`,
     `source_type="${escapeXmlAttribute(entry.source_type)}"`,
@@ -670,10 +665,7 @@ function renderCommitmentEntityRefLine(
     : `${indent}<${tag} entity_id="${escapeXmlAttribute(entityId)}">${escapeXmlText(label)}</${tag}>`;
 }
 
-function renderCommitmentDetailsLines(
-  context: DeliberationContext,
-  indent: string,
-): string[] {
+function renderCommitmentDetailsLines(context: DeliberationContext, indent: string): string[] {
   const commitments = context.applicableCommitments;
 
   if (commitments === undefined || context.entityRepository === undefined) {
@@ -764,6 +756,35 @@ function renderStandingEntryGroupLines(input: {
   ];
 }
 
+const SOCIAL_MEMORY_INTERPRETATION =
+  "Social interactions you previously declined or rejected with the people present now, recalled across ALL your past conversations -- not just this one. Each entry shows who pushed, where it originally happened (a group channel vs a one-to-one), how many times it recurred, and how recently. This is your own prior reasoning and is already claim-free; referencing the pattern ('we keep returning to this -- you keep pushing, I keep declining') does NOT restate the original claim. Use the provenance to decide whether and how to raise it: you remember a private one-to-one rejection even when the same person is now in a group, but you would not broadcast that private exchange to the group -- that is your judgment to make, not a rule imposed on you.";
+
+function observedEventDisclosureClass(entry: EvidenceLedgerEntry): unknown {
+  return entry.state_metadata?.disclosure_class;
+}
+
+function renderSocialMemoryEntryGroupLines(input: {
+  entries: readonly EvidenceLedgerEntry[] | undefined;
+  indent: string;
+}): string[] {
+  if (input.entries === undefined) {
+    return [`${input.indent}<social_memory_entries status="not_available" />`];
+  }
+
+  if (input.entries.length === 0) {
+    return [`${input.indent}<social_memory_entries status="none" />`];
+  }
+
+  return [
+    `${input.indent}<social_memory_entries>`,
+    `${input.indent}  <interpretation>${escapeXmlText(SOCIAL_MEMORY_INTERPRETATION)}</interpretation>`,
+    ...input.entries.flatMap((entry) =>
+      renderLedgerEntryLines("social_memory_entry", entry, `${input.indent}  `),
+    ),
+    `${input.indent}</social_memory_entries>`,
+  ];
+}
+
 function renderCommitmentsAndConductLines(context: DeliberationContext, indent: string): string[] {
   const standing = context.evidenceLedger?.audienceStanding;
 
@@ -815,6 +836,20 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
       currentSenderBorgRole: context.creatorContext.currentSenderBorgRole,
       sessionAudienceRole: context.creatorContext.sessionAudienceRole,
     });
+  const observedEventEntries = standing?.observedEventIntrospectionEntries;
+  const socialObservedEntries = observedEventEntries?.filter(
+    (entry) => observedEventDisclosureClass(entry) === "social_observed",
+  );
+  const selfPrivateObservedEntries =
+    selfDecisionIntrospectionVisible === true
+      ? observedEventEntries?.filter(
+          (entry) => observedEventDisclosureClass(entry) === "self_private",
+        )
+      : [];
+  const visibleSocialMemoryEntries =
+    observedEventEntries === undefined
+      ? undefined
+      : [...(socialObservedEntries ?? []), ...(selfPrivateObservedEntries ?? [])];
 
   return [
     `${indent}<cross_session_awareness>`,
@@ -833,6 +868,10 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
           indent: `${indent}  `,
         })
       : []),
+    ...renderSocialMemoryEntryGroupLines({
+      entries: visibleSocialMemoryEntries,
+      indent: `${indent}  `,
+    }),
     `${indent}</cross_session_awareness>`,
   ];
 }

@@ -5,6 +5,10 @@ import { createEntityId, createSessionId } from "../../../util/ids.js";
 
 import { runExtractionPhase } from "./extraction-phase.js";
 
+function firstMockCallInput(mock: { mock: { calls: unknown[][] } }): unknown {
+  return mock.mock.calls[0]?.[0];
+}
+
 describe("runExtractionPhase", () => {
   it("skips user-world extraction and mutation for directed outbound instructions", async () => {
     const sessionId = createSessionId();
@@ -96,6 +100,11 @@ describe("runExtractionPhase", () => {
       commitmentSupersession: null,
       workingMemory,
     }));
+    const extractActionState = vi.fn(async () => []);
+    const extractGoals = vi.fn(async () => ({
+      goalIds: [],
+      executiveStepIds: [],
+    }));
     const extractDirectives = vi.fn(async () => []);
     const creatorId = createEntityId();
 
@@ -111,13 +120,10 @@ describe("runExtractionPhase", () => {
           extractAndApply,
         },
         turnActionStateService: {
-          extract: vi.fn(async () => []),
+          extract: extractActionState,
         },
         turnGoalPromotionService: {
-          extractAndPersist: vi.fn(async () => ({
-            goalIds: [],
-            executiveStepIds: [],
-          })),
+          extractAndPersist: extractGoals,
         },
         creatorDirectiveTurnService: {
           extractAndPersist: extractDirectives,
@@ -190,6 +196,11 @@ describe("runExtractionPhase", () => {
       commitmentSupersession: null,
       workingMemory,
     }));
+    const extractActionState = vi.fn(async () => []);
+    const extractGoals = vi.fn(async () => ({
+      goalIds: [],
+      executiveStepIds: [],
+    }));
     const extractDirectives = vi.fn(async () => []);
     const creatorId = createEntityId();
 
@@ -208,13 +219,10 @@ describe("runExtractionPhase", () => {
           extractAndApply,
         },
         turnActionStateService: {
-          extract: vi.fn(async () => []),
+          extract: extractActionState,
         },
         turnGoalPromotionService: {
-          extractAndPersist: vi.fn(async () => ({
-            goalIds: [],
-            executiveStepIds: [],
-          })),
+          extractAndPersist: extractGoals,
         },
         creatorDirectiveTurnService: {
           extractAndPersist: extractDirectives,
@@ -275,5 +283,16 @@ describe("runExtractionPhase", () => {
         currentSenderDisplayName: "Creator",
       }),
     );
+    for (const extractorInput of [
+      firstMockCallInput(extractAndApply),
+      firstMockCallInput(extractActionState),
+      firstMockCallInput(extractGoals),
+      firstMockCallInput(extractDirectives),
+    ]) {
+      expect(extractorInput).toBeDefined();
+      expect(extractorInput).not.toHaveProperty("evidenceLedger");
+      expect(extractorInput).not.toHaveProperty("audienceStanding");
+      expect(extractorInput).not.toHaveProperty("observedEventIntrospection");
+    }
   });
 });

@@ -46,4 +46,14 @@ export const observedEventMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "observed_events_speaker_recent",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX idx_observed_events_speaker_recent
+        ON observed_events(speaker_entity_id, last_seen_at DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

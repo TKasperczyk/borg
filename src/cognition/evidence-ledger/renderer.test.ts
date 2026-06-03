@@ -509,6 +509,49 @@ describe("buildSharedStateArtifactPromptSummary", () => {
 });
 
 describe("compactEvidenceLedger", () => {
+  it("preserves observed-event introspection entries while cloning the ledger", () => {
+    const ledger = makeLedger();
+
+    ledger.audienceStanding = {
+      crossSessionActivityEntries: [],
+      selfDecisionIntrospectionEntries: [],
+      observedEventIntrospectionEntries: [
+        {
+          id: "observed_event_introspection:1",
+          source_type: "system_metadata",
+          session_scope: "prior_session",
+          actor: "system",
+          trust_rank: 84,
+          text: "Paula in a group: Observed rejected_frame 1m ago: rationale",
+          value: "rejected_frame",
+          state: "active",
+          state_metadata: {
+            disclosure_class: "social_observed",
+            speaker_display_name: "Paula",
+          },
+          taint: "none",
+        },
+      ],
+      commitmentEntries: [],
+      relationalEntries: [],
+    };
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(compacted.ledger.audienceStanding?.observedEventIntrospectionEntries).toEqual(
+      ledger.audienceStanding.observedEventIntrospectionEntries,
+    );
+    expect(compacted.ledger.audienceStanding?.observedEventIntrospectionEntries).not.toBe(
+      ledger.audienceStanding.observedEventIntrospectionEntries,
+    );
+    expect(
+      compacted.ledger.audienceStanding?.observedEventIntrospectionEntries[0]?.state_metadata,
+    ).not.toBe(ledger.audienceStanding.observedEventIntrospectionEntries[0]?.state_metadata);
+  });
+
   it("dedupes overlapping provenance into the highest-trust section with citations", () => {
     const ledger = makeLedger();
 

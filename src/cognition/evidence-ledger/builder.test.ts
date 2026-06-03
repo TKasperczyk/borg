@@ -719,6 +719,147 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).not.toContain("self_private");
   });
 
+  it("builds observed-event introspection entries with speaker and origin provenance", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const speakerEntityId = createEntityId();
+    const groupAudienceEntityId = createEntityId();
+    const privateAudienceEntityId = createEntityId();
+    const entities = new Map<EntityId, EntityRecord>([
+      [
+        speakerEntityId,
+        {
+          id: speakerEntityId,
+          canonical_name: "Paula",
+          aliases: [],
+          kind: "person",
+          borg_role: null,
+          name_provenance: "user_declared",
+          created_at: NOW_MS,
+        },
+      ],
+      [
+        groupAudienceEntityId,
+        {
+          id: groupAudienceEntityId,
+          canonical_name: "Lab",
+          aliases: [],
+          kind: "group",
+          borg_role: null,
+          name_provenance: "user_declared",
+          created_at: NOW_MS,
+        },
+      ],
+      [
+        privateAudienceEntityId,
+        {
+          id: privateAudienceEntityId,
+          canonical_name: "Paula",
+          aliases: [],
+          kind: "person",
+          borg_role: null,
+          name_provenance: "user_declared",
+          created_at: NOW_MS,
+        },
+      ],
+    ]);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      entityRepository: {
+        get: (id) => entities.get(id) ?? null,
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-observed-event-introspection",
+      audienceEntityId: groupAudienceEntityId,
+      currentUserMessage: "What keeps happening?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      observedEventIntrospection: [
+        {
+          occurredAt: NOW_MS - 3 * 60 * 60_000,
+          lastSeenAt: NOW_MS - 60_000,
+          relativeAge: "1m ago",
+          stance: "rejected_frame",
+          taint: "quarantined",
+          beliefEffect: "unchanged",
+          disclosureClass: "social_observed",
+          interactionText: "Sol rejected the pushed frame.",
+          recurrenceCount: 3,
+          speakerEntityId,
+          audienceEntityId: groupAudienceEntityId,
+          text: "Observed 3 times rejected_frame 1m ago: Sol rejected the pushed frame.",
+        },
+        {
+          occurredAt: NOW_MS - 2 * 60 * 60_000,
+          lastSeenAt: NOW_MS - 30_000,
+          relativeAge: "30s ago",
+          stance: "rejected_frame",
+          taint: "quarantined",
+          beliefEffect: "unchanged",
+          disclosureClass: "social_observed",
+          interactionText: "Sol rejected the private-origin push.",
+          recurrenceCount: 1,
+          speakerEntityId,
+          audienceEntityId: privateAudienceEntityId,
+          text: "Observed rejected_frame 30s ago: Sol rejected the private-origin push.",
+        },
+      ],
+    });
+
+    const entries = ledger.audienceStanding?.observedEventIntrospectionEntries ?? [];
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      id: "observed_event_introspection:1",
+      source_type: "system_metadata",
+      session_scope: "prior_session",
+      actor: "system",
+      value: "rejected_frame",
+      state: "active",
+      taint: "none",
+      state_metadata: expect.objectContaining({
+        disclosure_class: "social_observed",
+        stance: "rejected_frame",
+        taint: "quarantined",
+        belief_effect: "unchanged",
+        recurrence_count: 3,
+        occurred_at: NOW_MS - 3 * 60 * 60_000,
+        relative_age: "1m ago",
+        speaker_entity_id: speakerEntityId,
+        speaker_display_name: "Paula",
+        audience_entity_id: groupAudienceEntityId,
+        origin_audience_kind: "group",
+      }),
+    });
+    expect(entries[0]?.text).toContain("Paula");
+    expect(entries[0]?.text).toContain("in a group");
+    expect(entries[1]?.state_metadata).toEqual(
+      expect.objectContaining({
+        audience_entity_id: privateAudienceEntityId,
+        origin_audience_kind: "person",
+        recurrence_count: 1,
+      }),
+    );
+    expect(entries[1]?.text).toContain("in a one-to-one");
+    expect(renderEvidenceLedger(ledger) ?? "").not.toContain("observed_event_introspection");
+  });
+
   it("collects current-session ledger context with a bounded reverse stream scan", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

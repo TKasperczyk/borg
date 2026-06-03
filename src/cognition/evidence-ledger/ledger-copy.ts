@@ -11,8 +11,7 @@ function cloneEntry(entry: EvidenceLedgerEntry): EvidenceLedgerEntry {
   return {
     ...entry,
     citations: entry.citations === undefined ? undefined : [...entry.citations],
-    state_metadata:
-      entry.state_metadata === undefined ? undefined : { ...entry.state_metadata },
+    state_metadata: entry.state_metadata === undefined ? undefined : { ...entry.state_metadata },
   };
 }
 
@@ -26,6 +25,7 @@ function cloneAudienceStanding(
   return {
     crossSessionActivityEntries: standing.crossSessionActivityEntries.map(cloneEntry),
     selfDecisionIntrospectionEntries: standing.selfDecisionIntrospectionEntries.map(cloneEntry),
+    observedEventIntrospectionEntries: standing.observedEventIntrospectionEntries.map(cloneEntry),
     commitmentEntries: standing.commitmentEntries.map(cloneEntry),
     relationalEntries: standing.relationalEntries.map(cloneEntry),
   };

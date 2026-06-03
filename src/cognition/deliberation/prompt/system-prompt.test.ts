@@ -301,7 +301,9 @@ describe("buildBaseSystemPrompt", () => {
       "scope_boundary: This block authorizes only the creator's name and creator relationship.",
     );
     expect(standingBlock).toContain("<session_audience_role>operator</session_audience_role>");
-    expect(standingBlock).toContain("<guidance_weight>direct supervisory framing</guidance_weight>");
+    expect(standingBlock).toContain(
+      "<guidance_weight>direct supervisory framing</guidance_weight>",
+    );
     expect(standingBlock).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
     expect(standingBlock).not.toContain("creator_display_name");
     expect(standingBlock).not.toContain("relationship_visibility");
@@ -442,7 +444,9 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_standing_with_audience");
 
     expect(block).toContain("<session_audience_role>participant</session_audience_role>");
-    expect(block).toContain("<guidance_weight>trusted guidance, not command authority</guidance_weight>");
+    expect(block).toContain(
+      "<guidance_weight>trusted guidance, not command authority</guidance_weight>",
+    );
     expect(block).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
     expect(block).not.toContain("creator_display_name");
     expect(block).not.toContain("relationship_visibility");
@@ -767,7 +771,9 @@ describe("buildBaseSystemPrompt", () => {
     });
 
     expect(section).toContain('id_alias="cd_1" kind="subject_fact"');
-    expect(section).toContain('id_alias="cd_2" kind="routing_instruction" mode="private_operation"');
+    expect(section).toContain(
+      'id_alias="cd_2" kind="routing_instruction" mode="private_operation"',
+    );
     expect(section).toContain('id_alias="cd_3" kind="response_policy" mode="private_operation"');
     expect(section).toContain('id_alias="cd_4" kind="disclosure_boundary" mode="boundary"');
     expect(section).toContain(
@@ -886,9 +892,7 @@ describe("buildBaseSystemPrompt", () => {
     });
 
     expect(section).toContain("<directive_disclosure>");
-    expect(section).toContain(
-      'id_alias="cd_1" kind="disclosure_boundary" mode="boundary"',
-    );
+    expect(section).toContain('id_alias="cd_1" kind="disclosure_boundary" mode="boundary"');
     expect(section).toContain(
       `<boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
     );
@@ -1145,6 +1149,7 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
         selfDecisionIntrospectionEntries: [],
+        observedEventIntrospectionEntries: [],
       },
       transcriptIncluded: true,
       transcriptCompacted: false,
@@ -1197,7 +1202,9 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain(`audience_entity_id="${audienceId}"`);
     expect(block).toContain("<directive_disclosure>");
-    expect(block).toContain("<canonical_fact>Sam may be told the launch codename.</canonical_fact>");
+    expect(block).toContain(
+      "<canonical_fact>Sam may be told the launch codename.</canonical_fact>",
+    );
     expect(block).toContain("<commitments_and_conduct>");
     expect(block).toContain("Do not discuss Atlas with Sam.");
     expect(block).toContain(`id="commitment:${commitmentId}"`);
@@ -1220,6 +1227,7 @@ describe("buildBaseSystemPrompt", () => {
         commitmentEntries: [],
         relationalEntries: [],
         crossSessionActivityEntries: [],
+        observedEventIntrospectionEntries: [],
         selfDecisionIntrospectionEntries: [
           {
             id: "self_decision_introspection:1",
@@ -1280,6 +1288,95 @@ describe("buildBaseSystemPrompt", () => {
     );
     expect(participantPrompt).not.toContain(decisionSummary);
     expect(participantPrompt).not.toContain("self_private");
+  });
+
+  it("renders social observed memories unconditionally and self-private social memories only for operators", () => {
+    const socialText =
+      "Paula in a one-to-one: Observed 2 times rejected_frame 4d ago: Sol declined the pushed frame.";
+    const privateText =
+      "Paula in a one-to-one: Observed rejected_frame 1h ago: private operator-only rationale.";
+    const evidenceLedger = {
+      sections: [],
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: [],
+        crossSessionActivityEntries: [],
+        selfDecisionIntrospectionEntries: [],
+        observedEventIntrospectionEntries: [
+          {
+            id: "observed_event_introspection:1",
+            source_type: "system_metadata",
+            session_scope: "prior_session",
+            actor: "system",
+            trust_rank: 84,
+            text: socialText,
+            value: "rejected_frame",
+            state: "active",
+            state_metadata: {
+              disclosure_class: "social_observed",
+              speaker_display_name: "Paula",
+              origin_audience_kind: "person",
+              recurrence_count: 2,
+            },
+            taint: "none",
+          },
+          {
+            id: "observed_event_introspection:2",
+            source_type: "system_metadata",
+            session_scope: "prior_session",
+            actor: "system",
+            trust_rank: 84,
+            text: privateText,
+            value: "rejected_frame",
+            state: "active",
+            state_metadata: {
+              disclosure_class: "self_private",
+              speaker_display_name: "Paula",
+              origin_audience_kind: "person",
+              recurrence_count: 1,
+            },
+            taint: "none",
+          },
+        ],
+      },
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    } satisfies EvidenceLedger;
+
+    const participantPrompt = buildBaseSystemPrompt(
+      makeContext({
+        evidenceLedger,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const operatorPrompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorContext: {
+          currentSenderEntityId: createEntityId(),
+          currentSenderDisplayName: "Tom",
+          currentSenderBorgRole: "creator",
+          sessionAudienceRole: "operator",
+        },
+        evidenceLedger,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const participantBlock = extractBlock(participantPrompt, "borg_standing_with_audience");
+    const operatorBlock = extractBlock(operatorPrompt, "borg_standing_with_audience");
+
+    expect(participantBlock).toContain("<social_memory_entries>");
+    expect(participantBlock).toContain("<social_memory_entry");
+    expect(participantBlock).toContain(socialText);
+    expect(participantBlock).toContain("your judgment to make, not a rule imposed on you");
+    expect(participantBlock).not.toContain(privateText);
+    expect(participantBlock).not.toContain("self_private");
+    expect(operatorBlock).toContain(socialText);
+    expect(operatorBlock).toContain(privateText);
+    expect(operatorBlock).toContain("self_private");
   });
 
   it("renders self-audience standing without an external addressee", () => {

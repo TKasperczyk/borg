@@ -517,6 +517,100 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
+  it("selects observed-event recall by the existing present participant entity set", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const groupAudienceEntityId = createEntityId();
+    const speakerEntityId = createEntityId();
+    const listRecentBySpeakers = vi.fn(() => []);
+
+    options.observedEventRepository = {
+      record: vi.fn(),
+      listRecentBySpeakers,
+    };
+
+    try {
+      await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-observed-event-present-participants",
+        turnInput: {
+          userMessage: "Hi",
+          audience: "group",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Hi",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: groupAudienceEntityId,
+        audienceEntity: {
+          id: groupAudienceEntityId,
+          canonical_name: "Group",
+          aliases: [],
+          kind: "group",
+          borg_role: null,
+          name_provenance: "user_declared",
+          created_at: 1_000,
+        },
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [
+          {
+            entityId: groupAudienceEntityId,
+            displayName: "Group",
+            role: "audience",
+          },
+          {
+            entityId: speakerEntityId,
+            displayName: "Paula",
+            role: "speaker",
+          },
+        ],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(listRecentBySpeakers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          speakerEntityIds: [speakerEntityId],
+          disclosureClass: "social_observed",
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("briefs canonical facts and operational directives by creator-directive kind", () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,

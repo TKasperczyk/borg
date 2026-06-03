@@ -266,12 +266,16 @@ describe("ObservedEventRepository", () => {
   it("keeps distinct recurrence keys separate and lists newest last-seen rows first", () => {
     const { db, repository } = openHarness("borg-observed-events-distinct-");
     const sessionId = createSessionId();
+    const speakerEntityId = createEntityId();
+    const audienceEntityId = createEntityId();
 
     repository.record(
       recordInput(sessionId, {
         occurredAt: 1_000,
         interactionText: "First distinct frame.",
         recurrenceKey: "session:peer:first-frame",
+        speakerEntityId,
+        audienceEntityId,
       }),
     );
     repository.record(
@@ -295,8 +299,141 @@ describe("ObservedEventRepository", () => {
         })
         .map((row) => row.interactionText),
     ).toEqual(["Second distinct frame.", "First distinct frame."]);
+    expect(
+      repository.listRecentForSession({
+        sessionId,
+        disclosureClass: "social_observed",
+        sinceMs: 0,
+        limit: 10,
+      })[1],
+    ).toMatchObject({
+      speakerEntityId,
+      audienceEntityId,
+    });
 
     db.close();
+  });
+
+  it("lists recent rows by speaker across sessions and returns [] for an empty speaker set", () => {
+    const { db, repository } = openHarness("borg-observed-events-speaker-recent-");
+    const firstSessionId = createSessionId();
+    const secondSessionId = createSessionId();
+    const speakerEntityId = createEntityId();
+    const otherSpeakerEntityId = createEntityId();
+    const originAudienceEntityId = createEntityId();
+
+    repository.record(
+      recordInput(firstSessionId, {
+        occurredAt: 1_000,
+        interactionText: "first-session rejection",
+        recurrenceKey: "session-one:speaker:frame",
+        speakerEntityId,
+        audienceEntityId: originAudienceEntityId,
+      }),
+    );
+    repository.record(
+      recordInput(secondSessionId, {
+        occurredAt: 5_000,
+        interactionText: "second-session rejection",
+        recurrenceKey: "session-two:speaker:frame",
+        speakerEntityId,
+        audienceEntityId: createEntityId(),
+      }),
+    );
+    repository.record(
+      recordInput(secondSessionId, {
+        occurredAt: 6_000,
+        interactionText: "other speaker rejection",
+        recurrenceKey: "session-two:other-speaker:frame",
+        speakerEntityId: otherSpeakerEntityId,
+      }),
+    );
+
+    expect(
+      repository.listRecentBySpeakers({
+        speakerEntityIds: [],
+        disclosureClass: "social_observed",
+        sinceMs: 0,
+        limit: 10,
+      }),
+    ).toEqual([]);
+    expect(
+      repository
+        .listRecentBySpeakers({
+          speakerEntityIds: [speakerEntityId],
+          disclosureClass: "social_observed",
+          sinceMs: 0,
+          limit: 10,
+        })
+        .map((row) => ({
+          text: row.interactionText,
+          speakerEntityId: row.speakerEntityId,
+          audienceEntityId: row.audienceEntityId,
+        })),
+    ).toEqual([
+      {
+        text: "second-session rejection",
+        speakerEntityId,
+        audienceEntityId: expect.any(String),
+      },
+      {
+        text: "first-session rejection",
+        speakerEntityId,
+        audienceEntityId: originAudienceEntityId,
+      },
+    ]);
+
+    db.close();
+  });
+
+  it("appends the speaker-recent migration without changing earlier observed-event migrations", () => {
+    expect(observedEventMigrations.map((migration) => [migration.id, migration.name])).toEqual([
+      [1, "observed_events_baseline"],
+      [2, "observed_events_fire_dedup_key"],
+      [3, "observed_events_speaker_recent"],
+    ]);
+
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-events-migration-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "observed-events.db");
+    const initialDb = openDatabase(dbPath, {
+      migrations: observedEventMigrations.slice(0, 2),
+    });
+    const sessionId = createSessionId();
+    const speakerEntityId = createEntityId();
+
+    try {
+      const repository = new ObservedEventRepository({
+        db: initialDb,
+        clock: new FixedClock(2_000),
+      });
+      repository.record(
+        recordInput(sessionId, {
+          recurrenceKey: "session:speaker:migration",
+          speakerEntityId,
+        }),
+      );
+    } finally {
+      initialDb.close();
+    }
+
+    const migratedDb = openDatabase(dbPath, {
+      migrations: observedEventMigrations,
+    });
+
+    try {
+      const indexes = migratedDb.prepare("PRAGMA index_list('observed_events')").all() as Record<
+        string,
+        unknown
+      >[];
+
+      expect(indexes.map((row) => row.name)).toContain("idx_observed_events_speaker_recent");
+      expect(migratedDb.prepare("SELECT COUNT(*) AS count FROM observed_events").get()).toEqual({
+        count: 1,
+      });
+    } finally {
+      migratedDb.close();
+    }
   });
 
   it("validates observed event rows at the read boundary", () => {

@@ -120,7 +120,7 @@ export type TurnPhaseCoordinatorOptions = {
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentForSession">;
-  observedEventRepository?: Pick<ObservedEventRepository, "record">;
+  observedEventRepository?: Pick<ObservedEventRepository, "record" | "listRecentBySpeakers">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,

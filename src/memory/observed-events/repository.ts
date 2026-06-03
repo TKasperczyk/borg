@@ -51,6 +51,8 @@ export type ObservedEventProjectionSourceEvent = {
   disclosureClass: ObservedEventDisclosureClass;
   interactionText: string;
   recurrenceCount: number;
+  speakerEntityId: EntityId | null;
+  audienceEntityId: EntityId | null;
 };
 
 export type ObservedEventRepositoryOptions = {
@@ -116,6 +118,8 @@ function mapProjectionRow(row: Record<string, unknown>): ObservedEventProjection
     disclosureClass: row.disclosure_class as ObservedEventDisclosureClass,
     interactionText: String(row.interaction_text ?? ""),
     recurrenceCount: Number(row.recurrence_count),
+    speakerEntityId: nullableRowValue(row.speaker_entity_id) as EntityId | null,
+    audienceEntityId: nullableRowValue(row.audience_entity_id) as EntityId | null,
   };
 }
 
@@ -263,7 +267,7 @@ export class ObservedEventRepository {
         `
           SELECT
             occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
           FROM observed_events
           WHERE
             session_id = ?
@@ -274,6 +278,40 @@ export class ObservedEventRepository {
         `,
       )
       .all(input.sessionId, input.disclosureClass, input.sinceMs, input.limit) as Record<
+      string,
+      unknown
+    >[];
+
+    return rows.map(mapProjectionRow);
+  }
+
+  listRecentBySpeakers(input: {
+    speakerEntityIds: readonly EntityId[];
+    disclosureClass: ObservedEventDisclosureClass;
+    sinceMs: number;
+    limit: number;
+  }): ObservedEventProjectionSourceEvent[] {
+    if (input.speakerEntityIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = input.speakerEntityIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
+          FROM observed_events
+          WHERE
+            speaker_entity_id IN (${placeholders})
+            AND disclosure_class = ?
+            AND last_seen_at >= ?
+          ORDER BY last_seen_at DESC, id DESC
+          LIMIT ?
+        `,
+      )
+      .all(...input.speakerEntityIds, input.disclosureClass, input.sinceMs, input.limit) as Record<
       string,
       unknown
     >[];

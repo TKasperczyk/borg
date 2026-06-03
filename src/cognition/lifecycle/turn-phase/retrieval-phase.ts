@@ -56,6 +56,11 @@ import {
   DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
   selectSelfDecisionIntrospection,
 } from "../../../memory/self-decisions/index.js";
+import {
+  DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
+  DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
+  selectObservedEventIntrospection,
+} from "../../../memory/observed-events/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
@@ -298,9 +303,7 @@ type CreatorDirectiveContentBearingKind = Extract<
 function isContentBearingCreatorDirectiveKind(
   kind: CreatorDirectiveKind,
 ): kind is CreatorDirectiveContentBearingKind {
-  return (
-    kind === "self_identity" || kind === "subject_fact" || kind === "disclosure_boundary"
-  );
+  return kind === "self_identity" || kind === "subject_fact" || kind === "disclosure_boundary";
 }
 
 function canRenderCreatorDirectivePrivateOperation(
@@ -472,11 +475,7 @@ export function buildCreatorDirectiveBriefing(input: {
       createdAt: item.directive.created_at,
     }))
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
-  const directives = [
-    ...contentDirectives,
-    ...privateDirectives,
-    ...boundaryDirectives,
-  ];
+  const directives = [...contentDirectives, ...privateDirectives, ...boundaryDirectives];
 
   return directives.length === 0 ? null : { directives };
 }
@@ -800,6 +799,18 @@ export async function runRetrievalPhase(input: {
           recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
         });
+  const observedEventIntrospection =
+    input.options.observedEventRepository === undefined
+      ? []
+      : selectObservedEventIntrospection({
+          repository: input.options.observedEventRepository,
+          speakerEntityIds: creatorDirectiveParticipantEntityIds,
+          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
+          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
+          nowMs: input.options.clock.now(),
+          recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
+          cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
+        });
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({
     options: input.options,
     input: {
@@ -821,6 +832,7 @@ export async function runRetrievalPhase(input: {
       activeParticipants: input.activeParticipants,
       crossSessionSelfActivity,
       selfDecisionIntrospection,
+      observedEventIntrospection,
       participantRoster: input.participantRoster,
       isUserTurn: input.isUserTurn,
       perception: input.perception,
