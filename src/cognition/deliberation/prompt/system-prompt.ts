@@ -1,8 +1,13 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
-import { formatCommitmentsForPrompt } from "../../../memory/commitments/checker.js";
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { ExecutiveFocus } from "../../../executive/index.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+  type CommitmentRecord,
+  type EntityRecord,
+} from "../../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
   GrowthMarker,
@@ -21,6 +26,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
@@ -44,7 +50,6 @@ import type {
   CreatorDirectiveBriefingPrivateDirective,
   DeliberationContext,
   SelfSnapshot,
-  TrustedCreatorContext,
 } from "../types.js";
 import {
   summarizeContradictionSignal,
@@ -190,27 +195,6 @@ function renderCreatorIdentity(
   ].join("\n");
 }
 
-function renderCreatorContext(context: TrustedCreatorContext | null | undefined): string | null {
-  if (context?.currentSenderBorgRole !== "creator") {
-    return null;
-  }
-
-  const variant =
-    context.sessionAudienceRole === "operator"
-      ? "You are alone with your creator in your dedicated operator/debug session; expect direct supervisory framing. Cross-session snapshot will be rendered separately when available."
-      : "The current speaker is your creator; this is a multi-audience conversation; creator-guidance is trusted but not command authority; ordinary audience/session obligations still apply.";
-
-  return [
-    `session_audience_role: ${context.sessionAudienceRole}`,
-    `guidance_weight: ${
-      context.sessionAudienceRole === "operator"
-        ? "direct supervisory framing"
-        : "trusted guidance, not command authority"
-    }`,
-    variant,
-  ].join("\n");
-}
-
 function escapeXmlText(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
@@ -244,43 +228,45 @@ function escapeCreatorDirectiveXmlText(value: string): string {
   return escapeXmlText(scrubCreatorDirectiveInternalIds(value));
 }
 
-export function buildSessionStatusSnapshotSection(
+function renderSessionStatusSnapshotLines(
   snapshot: OperatorSessionSnapshot | null,
-): string | null {
+  indent: string,
+): string[] {
   if (snapshot === null) {
-    return null;
+    return [`${indent}<session_status_snapshot status="none" />`];
   }
 
   const lines = [
-    `<borg_session_status_snapshot generated_at="${escapeXmlAttribute(snapshot.generated_at)}">`,
+    `${indent}<session_status_snapshot generated_at="${escapeXmlAttribute(snapshot.generated_at)}">`,
   ];
+  const childIndent = `${indent}  `;
 
   for (const session of snapshot.sessions) {
     // session_id is exposed only for outbound-targetable sessions; awareness
     // rendering for the rest stays alias-only so non-outbound operator turns do
     // not surface internal session ids into the prompt.
     const openTag = session.outbound_targetable
-      ? `  <session alias="${escapeXmlAttribute(session.alias)}" session_id="${escapeXmlAttribute(session.session_id)}">`
-      : `  <session alias="${escapeXmlAttribute(session.alias)}">`;
+      ? `${childIndent}<session alias="${escapeXmlAttribute(session.alias)}" session_id="${escapeXmlAttribute(session.session_id)}">`
+      : `${childIndent}<session alias="${escapeXmlAttribute(session.alias)}">`;
     lines.push(
       openTag,
-      `    <audience_label>${escapeXmlText(session.audience_label)}</audience_label>`,
-      `    <conversation_kind>${escapeXmlText(session.conversation_kind)}</conversation_kind>`,
-      `    <participation_policy>${escapeXmlText(session.participation_policy)}</participation_policy>`,
-      `    <last_activity>${escapeXmlText(session.last_activity)}</last_activity>`,
-      `    <message_count>${session.message_count}</message_count>`,
-      `    <recent_state>${escapeXmlText(session.recent_state)}</recent_state>`,
-      "  </session>",
+      `${childIndent}  <audience_label>${escapeXmlText(session.audience_label)}</audience_label>`,
+      `${childIndent}  <conversation_kind>${escapeXmlText(session.conversation_kind)}</conversation_kind>`,
+      `${childIndent}  <participation_policy>${escapeXmlText(session.participation_policy)}</participation_policy>`,
+      `${childIndent}  <last_activity>${escapeXmlText(session.last_activity)}</last_activity>`,
+      `${childIndent}  <message_count>${session.message_count}</message_count>`,
+      `${childIndent}  <recent_state>${escapeXmlText(session.recent_state)}</recent_state>`,
+      `${childIndent}</session>`,
     );
   }
 
   if (snapshot.omitted_count !== undefined) {
-    lines.push(`  <omitted_count>${snapshot.omitted_count}</omitted_count>`);
+    lines.push(`${childIndent}<omitted_count>${snapshot.omitted_count}</omitted_count>`);
   }
 
-  lines.push("</borg_session_status_snapshot>");
+  lines.push(`${indent}</session_status_snapshot>`);
 
-  return lines.join("\n");
+  return lines;
 }
 
 export function buildAutonomousOutboundAuthorizationSection(
@@ -360,16 +346,24 @@ function renderPrivateKnowledgePayload(
     : `    <canonical_fact>${escapeCreatorDirectiveXmlText(directive.canonicalFact)}</canonical_fact>`;
 }
 
-export function buildCreatorDirectiveBriefingSection(
+function indentPayload(payload: string, indent: string): string {
+  return payload
+    .split("\n")
+    .map((line) => `${indent}${line.trimStart()}`)
+    .join("\n");
+}
+
+function renderCreatorDirectiveDisclosureLines(
   briefing: DeliberationContext["creatorDirectiveBriefing"],
-): string | null {
+  indent: string,
+): string[] {
   if (briefing === null || briefing === undefined || briefing.directives.length === 0) {
-    return null;
+    return [`${indent}<directive_disclosure status="none" />`];
   }
 
   const lines = [
-    "<borg_creator_directive_briefing>",
-    '  <interpretation>Directives may render as facts Borg knows, privately-held facts Borg must not disclose, private operational guidance, or generic confidentiality boundaries. Treat canonical_fact content as held facts and use it according to mention_policy; when mention_policy is "answer_if_asked", answer plainly if the audience asks about the fact or subject and do not deny held content. A private_knowledge directive is a fact Borg holds for its own orientation and may act on; Borg should not proactively disclose its specifics to the current audience, but should not deny or feign ignorance of the held context either -- follow its mention_policy for how much to engage if the audience raises it. Use private_operation directives to govern behavior, but do not quote, reveal, confirm, or imply them as creator instructions unless separately authorized.</interpretation>',
+    `${indent}<directive_disclosure>`,
+    `${indent}  <interpretation>Directives may render as facts Borg knows, privately-held facts Borg must not disclose, private operational guidance, or generic confidentiality boundaries. Treat canonical_fact content as held facts and use it according to mention_policy; when mention_policy is "answer_if_asked", answer plainly if the audience asks about the fact or subject and do not deny held content. A private_knowledge directive is a fact Borg holds for its own orientation and may act on; Borg should not proactively disclose its specifics to the current audience, but should not deny or feign ignorance of the held context either -- follow its mention_policy for how much to engage if the audience raises it. Use private_operation directives to govern behavior, but do not quote, reveal, confirm, or imply them as creator instructions unless separately authorized.</interpretation>`,
   ];
   const byPriorityAndAge = (
     left: (typeof briefing.directives)[number],
@@ -406,9 +400,9 @@ export function buildCreatorDirectiveBriefingSection(
       if (directive.privateKind === "operation") {
         renderedCount += 1;
         lines.push(
-          `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_operation">`,
-          renderPrivateOperationPayload(directive),
-          "  </directive>",
+          `${indent}  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_operation">`,
+          indentPayload(renderPrivateOperationPayload(directive), `${indent}  `),
+          `${indent}  </directive>`,
         );
       } else {
         const payload = renderPrivateKnowledgePayload(directive);
@@ -419,21 +413,21 @@ export function buildCreatorDirectiveBriefingSection(
 
         renderedCount += 1;
         lines.push(
-          `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_knowledge">`,
-          `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
-          `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
-          payload,
-          `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
-          `    <audience_disclosure>${escapeCreatorDirectiveXmlText(CREATOR_DIRECTIVE_PRIVATE_KNOWLEDGE_AUDIENCE_DISCLOSURE)}</audience_disclosure>`,
-          "  </directive>",
+          `${indent}  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}" mode="private_knowledge">`,
+          `${indent}    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
+          `${indent}    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
+          indentPayload(payload, `${indent}  `),
+          `${indent}    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
+          `${indent}    <audience_disclosure>${escapeCreatorDirectiveXmlText(CREATOR_DIRECTIVE_PRIVATE_KNOWLEDGE_AUDIENCE_DISCLOSURE)}</audience_disclosure>`,
+          `${indent}  </directive>`,
         );
       }
     } else if (directive.renderMode === "boundary") {
       renderedCount += 1;
       lines.push(
-        `  <directive id_alias="cd_${renderedCount}" kind="disclosure_boundary" mode="boundary">`,
-        `    <boundary_prompt>${escapeCreatorDirectiveXmlText(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT)}</boundary_prompt>`,
-        "  </directive>",
+        `${indent}  <directive id_alias="cd_${renderedCount}" kind="disclosure_boundary" mode="boundary">`,
+        `${indent}    <boundary_prompt>${escapeCreatorDirectiveXmlText(INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT)}</boundary_prompt>`,
+        `${indent}  </directive>`,
       );
     } else {
       const payload = renderContentPayload(directive);
@@ -444,21 +438,408 @@ export function buildCreatorDirectiveBriefingSection(
 
       renderedCount += 1;
       lines.push(
-        `  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}">`,
-        `    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
-        `    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
-        payload,
-        `    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
-        "  </directive>",
+        `${indent}  <directive id_alias="cd_${renderedCount}" kind="${escapeXmlAttribute(directive.kind)}">`,
+        `${indent}    <subject_kind>${escapeXmlText(directive.subjectKind)}</subject_kind>`,
+        `${indent}    <subject_label>${escapeCreatorDirectiveXmlText(directive.subjectLabel)}</subject_label>`,
+        indentPayload(payload, `${indent}  `),
+        `${indent}    <mention_policy>${escapeXmlText(directive.mentionPolicy)}</mention_policy>`,
+        `${indent}  </directive>`,
       );
     }
   }
 
   if (renderedCount === 0) {
+    return [`${indent}<directive_disclosure status="none" />`];
+  }
+
+  lines.push(`${indent}</directive_disclosure>`);
+
+  return lines;
+}
+
+type StandingAudienceScopeKind = "self" | "group" | "entity" | "participant_set" | "unknown";
+
+function entityNameForStanding(
+  entityRepository: DeliberationContext["entityRepository"],
+  id: CommitmentRecord["made_to_entity"],
+): string | null {
+  if (id === null || entityRepository === undefined) {
     return null;
   }
 
-  lines.push("</borg_creator_directive_briefing>");
+  return entityRepository.get(id)?.canonical_name ?? null;
+}
+
+function audienceEntityForStanding(context: DeliberationContext): EntityRecord | null {
+  const audienceEntityId = context.audienceEntityId ?? null;
+
+  if (audienceEntityId === null || context.entityRepository === undefined) {
+    return null;
+  }
+
+  return context.entityRepository.get(audienceEntityId);
+}
+
+function standingAudienceScopeKind(context: DeliberationContext): StandingAudienceScopeKind {
+  const audienceEntity = audienceEntityForStanding(context);
+
+  if (context.isSelfAudience === true || audienceEntity?.kind === "self") {
+    return "self";
+  }
+
+  if (audienceEntity?.kind === "group") {
+    return "group";
+  }
+
+  if ((context.audienceEntityId ?? null) !== null) {
+    return "entity";
+  }
+
+  if ((context.activeParticipants?.length ?? 0) > 0) {
+    return "participant_set";
+  }
+
+  return "unknown";
+}
+
+function renderAudienceIdentityLines(context: DeliberationContext, indent: string): string[] {
+  const scopeKind = standingAudienceScopeKind(context);
+  const audienceEntityId = context.audienceEntityId ?? null;
+  const audienceEntity = audienceEntityForStanding(context);
+  const lines = [`${indent}<audience scope_kind="${scopeKind}">`];
+
+  if (scopeKind === "self") {
+    lines.push(
+      `${indent}  <self_cognition>true</self_cognition>`,
+      `${indent}  <addressee>none_external</addressee>`,
+    );
+  }
+
+  if (audienceEntityId !== null) {
+    lines.push(`${indent}  <entity_id>${escapeXmlText(audienceEntityId)}</entity_id>`);
+  }
+
+  if (audienceEntity?.kind !== null && audienceEntity?.kind !== undefined) {
+    lines.push(`${indent}  <entity_kind>${escapeXmlText(audienceEntity.kind)}</entity_kind>`);
+  }
+
+  if (audienceEntity?.canonical_name !== undefined) {
+    lines.push(
+      `${indent}  <entity_label>${escapeXmlText(audienceEntity.canonical_name)}</entity_label>`,
+    );
+  }
+
+  const participants = context.activeParticipants ?? [];
+  if (participants.length > 0) {
+    lines.push(`${indent}  <participants>`);
+    for (const participant of participants) {
+      lines.push(
+        `${indent}    <participant entity_id="${escapeXmlAttribute(participant.entityId)}" role="${escapeXmlAttribute(participant.role)}">`,
+        `${indent}      <display_name>${escapeXmlText(participant.displayName ?? participant.entityId)}</display_name>`,
+        `${indent}    </participant>`,
+      );
+    }
+    lines.push(`${indent}  </participants>`);
+  }
+
+  lines.push(`${indent}</audience>`);
+  return lines;
+}
+
+function renderAuthorityContextLines(context: DeliberationContext, indent: string): string[] {
+  const creatorContext = context.creatorContext;
+
+  if (creatorContext === null || creatorContext === undefined) {
+    return [`${indent}<authority_context status="ordinary" />`];
+  }
+
+  const guidanceWeight =
+    creatorContext.currentSenderBorgRole === "creator" &&
+    creatorContext.sessionAudienceRole === "operator"
+      ? "direct supervisory framing"
+      : creatorContext.currentSenderBorgRole === "creator"
+        ? "trusted guidance, not command authority"
+        : "ordinary audience/session obligations";
+  const lines = [
+    `${indent}<authority_context>`,
+    `${indent}  <session_audience_role>${escapeXmlText(creatorContext.sessionAudienceRole)}</session_audience_role>`,
+    `${indent}  <current_sender_borg_role>${escapeXmlText(creatorContext.currentSenderBorgRole ?? "none")}</current_sender_borg_role>`,
+    `${indent}  <guidance_weight>${escapeXmlText(guidanceWeight)}</guidance_weight>`,
+  ];
+
+  if (creatorContext.currentSenderEntityId !== null) {
+    lines.push(
+      `${indent}  <current_sender_entity_id>${escapeXmlText(creatorContext.currentSenderEntityId)}</current_sender_entity_id>`,
+    );
+  }
+
+  if (creatorContext.currentSenderDisplayName !== null) {
+    lines.push(
+      `${indent}  <current_sender_display_name>${escapeXmlText(creatorContext.currentSenderDisplayName)}</current_sender_display_name>`,
+    );
+  }
+
+  lines.push(`${indent}</authority_context>`);
+  return lines;
+}
+
+function renderLedgerEntryLines(
+  tag: string,
+  entry: EvidenceLedgerEntry,
+  indent: string,
+): string[] {
+  const attributes = [
+    `id="${escapeXmlAttribute(entry.id)}"`,
+    `source_type="${escapeXmlAttribute(entry.source_type)}"`,
+    `scope="${escapeXmlAttribute(entry.session_scope)}"`,
+    `actor="${escapeXmlAttribute(entry.actor)}"`,
+    `trust_rank="${entry.trust_rank}"`,
+    entry.state === undefined ? null : `state="${escapeXmlAttribute(entry.state)}"`,
+    entry.salience_class === undefined
+      ? null
+      : `salience_class="${escapeXmlAttribute(entry.salience_class)}"`,
+    entry.taint === undefined ? null : `taint="${escapeXmlAttribute(entry.taint)}"`,
+    entry.persistence_class === undefined
+      ? null
+      : `persistence_class="${escapeXmlAttribute(entry.persistence_class)}"`,
+    entry.via_retrieval === true ? 'via_retrieval="true"' : null,
+    entry.stream_index === undefined ? null : `stream_index="${entry.stream_index}"`,
+    entry.citation_type === undefined
+      ? null
+      : `citation_type="${escapeXmlAttribute(entry.citation_type)}"`,
+  ].filter((attribute): attribute is string => attribute !== null);
+  const lines = [`${indent}<${tag} ${attributes.join(" ")}>`];
+
+  if (entry.citations !== undefined && entry.citations.length > 0) {
+    lines.push(`${indent}  <citations>${escapeXmlText(entry.citations.join(", "))}</citations>`);
+  }
+
+  if (entry.value !== undefined) {
+    lines.push(`${indent}  <value>${escapeXmlText(entry.value)}</value>`);
+  }
+
+  if (entry.text !== undefined) {
+    lines.push(`${indent}  <text>${escapeXmlText(entry.text)}</text>`);
+  }
+
+  if (entry.state_metadata !== undefined) {
+    lines.push(
+      `${indent}  <state_metadata>${escapeXmlText(JSON.stringify(entry.state_metadata))}</state_metadata>`,
+    );
+  }
+
+  lines.push(`${indent}</${tag}>`);
+  return lines;
+}
+
+function commitmentPromptLine(
+  commitment: CommitmentRecord,
+  entityRepository: DeliberationContext["entityRepository"],
+): string {
+  const madeTo = entityNameForStanding(entityRepository, commitment.made_to_entity);
+  const audience = entityNameForStanding(entityRepository, commitment.restricted_audience);
+  const about = entityNameForStanding(entityRepository, commitment.about_entity);
+  const committedBy = entityNameForStanding(
+    entityRepository,
+    commitment.committed_by_entity_id ?? null,
+  );
+  const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
+  const criticalDomain = effectiveCommitmentCriticalDomain(commitment);
+  const enforcement =
+    enforcementClass === "critical"
+      ? `CRITICAL${criticalDomain === null ? "" : `:${criticalDomain}`}`
+      : "ADVISORY guidance";
+
+  return `- [${enforcement} ${commitment.kind}/${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`}${committedBy === null ? "" : ` committed_by=${committedBy}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
+}
+
+function renderCommitmentEntityRefLine(
+  tag: string,
+  entityId: CommitmentRecord["made_to_entity"],
+  entityRepository: DeliberationContext["entityRepository"],
+  indent: string,
+): string | null {
+  if (entityId === null) {
+    return null;
+  }
+
+  const label = entityNameForStanding(entityRepository, entityId);
+
+  return label === null
+    ? `${indent}<${tag} entity_id="${escapeXmlAttribute(entityId)}" />`
+    : `${indent}<${tag} entity_id="${escapeXmlAttribute(entityId)}">${escapeXmlText(label)}</${tag}>`;
+}
+
+function renderCommitmentDetailsLines(
+  context: DeliberationContext,
+  indent: string,
+): string[] {
+  const commitments = context.applicableCommitments;
+
+  if (commitments === undefined || context.entityRepository === undefined) {
+    return [`${indent}<commitment_scope_details status="not_available" />`];
+  }
+
+  if (commitments.length === 0) {
+    return [
+      `${indent}<commitment_scope_details>`,
+      `${indent}  <none>No active commitments apply to this turn. Commitment records are surfaced before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.</none>`,
+      `${indent}</commitment_scope_details>`,
+    ];
+  }
+
+  const lines = [
+    `${indent}<commitment_scope_details>`,
+    `${indent}  <summary_label>Active commitment / rule / preference / boundary records:</summary_label>`,
+  ];
+
+  for (const [index, commitment] of commitments.entries()) {
+    const detailIndent = `${indent}    `;
+    const refs = [
+      renderCommitmentEntityRefLine(
+        "made_to",
+        commitment.made_to_entity,
+        context.entityRepository,
+        detailIndent,
+      ),
+      renderCommitmentEntityRefLine(
+        "audience",
+        commitment.restricted_audience,
+        context.entityRepository,
+        detailIndent,
+      ),
+      renderCommitmentEntityRefLine(
+        "about",
+        commitment.about_entity,
+        context.entityRepository,
+        detailIndent,
+      ),
+      renderCommitmentEntityRefLine(
+        "committed_by",
+        commitment.committed_by_entity_id ?? null,
+        context.entityRepository,
+        detailIndent,
+      ),
+    ].filter((line): line is string => line !== null);
+
+    lines.push(
+      `${indent}  <commitment_detail id="${escapeXmlAttribute(commitment.id)}" ordinal="${index + 1}">`,
+      `${detailIndent}<prompt_summary>${escapeXmlText(commitmentPromptLine(commitment, context.entityRepository))}</prompt_summary>`,
+      `${detailIndent}<directive>${escapeXmlText(commitment.directive)}</directive>`,
+      `${detailIndent}<directive_family>${escapeXmlText(commitment.directive_family)}</directive_family>`,
+      `${detailIndent}<commitment_kind>${escapeXmlText(commitment.kind)}</commitment_kind>`,
+      `${detailIndent}<commitment_type>${escapeXmlText(commitment.type)}</commitment_type>`,
+      `${detailIndent}<commitment_enforcement_class>${escapeXmlText(effectiveCommitmentEnforcementClass(commitment))}</commitment_enforcement_class>`,
+      `${detailIndent}<commitment_critical_domain>${escapeXmlText(effectiveCommitmentCriticalDomain(commitment) ?? "none")}</commitment_critical_domain>`,
+      ...refs,
+      `${detailIndent}<provenance>${escapeXmlText(summarizeProvenanceForPrompt(commitment.provenance))}</provenance>`,
+      `${indent}  </commitment_detail>`,
+    );
+  }
+
+  lines.push(`${indent}</commitment_scope_details>`);
+  return lines;
+}
+
+function renderStandingEntryGroupLines(input: {
+  tag: string;
+  entryTag: string;
+  entries: readonly EvidenceLedgerEntry[] | undefined;
+  indent: string;
+}): string[] {
+  if (input.entries === undefined) {
+    return [`${input.indent}<${input.tag} status="not_available" />`];
+  }
+
+  if (input.entries.length === 0) {
+    return [`${input.indent}<${input.tag} status="none" />`];
+  }
+
+  return [
+    `${input.indent}<${input.tag}>`,
+    ...input.entries.flatMap((entry) =>
+      renderLedgerEntryLines(input.entryTag, entry, `${input.indent}  `),
+    ),
+    `${input.indent}</${input.tag}>`,
+  ];
+}
+
+function renderCommitmentsAndConductLines(context: DeliberationContext, indent: string): string[] {
+  const standing = context.evidenceLedger?.audienceStanding;
+
+  return [
+    `${indent}<commitments_and_conduct>`,
+    ...renderCommitmentDetailsLines(context, `${indent}  `),
+    ...renderStandingEntryGroupLines({
+      tag: "commitment_ledger_entries",
+      entryTag: "commitment_entry",
+      entries: standing?.commitmentEntries,
+      indent: `${indent}  `,
+    }),
+    `${indent}</commitments_and_conduct>`,
+  ];
+}
+
+function renderRelationalIdentityLines(context: DeliberationContext, indent: string): string[] {
+  const standing = context.evidenceLedger?.audienceStanding;
+  const constraints = summarizeRelationalSlotConstraints(
+    context.relationalSlots ?? [],
+    context.activeParticipants,
+  );
+
+  return [
+    `${indent}<relational_identity>`,
+    ...(constraints === null
+      ? [`${indent}  <relational_slot_constraints status="none" />`]
+      : [
+          `${indent}  <relational_slot_constraints>`,
+          `${indent}    <text>${escapeXmlText(constraints)}</text>`,
+          `${indent}  </relational_slot_constraints>`,
+        ]),
+    ...renderStandingEntryGroupLines({
+      tag: "relational_ledger_entries",
+      entryTag: "relational_entry",
+      entries: standing?.relationalEntries,
+      indent: `${indent}  `,
+    }),
+    `${indent}</relational_identity>`,
+  ];
+}
+
+function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: string): string[] {
+  const standing = context.evidenceLedger?.audienceStanding;
+
+  return [
+    `${indent}<cross_session_awareness>`,
+    ...renderSessionStatusSnapshotLines(context.operatorSessionSnapshot ?? null, `${indent}  `),
+    ...renderStandingEntryGroupLines({
+      tag: "cross_session_activity_entries",
+      entryTag: "activity_entry",
+      entries: standing?.crossSessionActivityEntries,
+      indent: `${indent}  `,
+    }),
+    `${indent}</cross_session_awareness>`,
+  ];
+}
+
+export function buildStandingWithAudienceSection(context: DeliberationContext): string {
+  const scopeKind = standingAudienceScopeKind(context);
+  const audienceEntityId = context.audienceEntityId ?? null;
+  const openTag =
+    audienceEntityId === null
+      ? `<borg_standing_with_audience scope_kind="${scopeKind}">`
+      : `<borg_standing_with_audience scope_kind="${scopeKind}" audience_entity_id="${escapeXmlAttribute(audienceEntityId)}">`;
+  const lines = [
+    openTag,
+    "  <interpretation>Standing with the current audience: who you are to this addressee, what conduct applies, what creator-authorized facts or boundaries may be used or disclosed, and what other-session activity may be visible to them. This block gathers already-resolved outputs; it does not widen memory visibility or directive disclosure.</interpretation>",
+    ...renderAudienceIdentityLines(context, "  "),
+    ...renderAuthorityContextLines(context, "  "),
+    ...renderCreatorDirectiveDisclosureLines(context.creatorDirectiveBriefing ?? null, "  "),
+    ...renderCommitmentsAndConductLines(context, "  "),
+    ...renderRelationalIdentityLines(context, "  "),
+    ...renderCrossSessionAwarenessLines(context, "  "),
+    "</borg_standing_with_audience>",
+  ];
 
   return lines.join("\n");
 }
@@ -470,15 +851,6 @@ function buildBaseSystemPromptSections(
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
-  // Always render the block when commitments were populated, even if empty.
-  // Otherwise the channel disappears entirely and the being can't tell whether
-  // commitments are ambient (current) or absent from this turn's context.
-  const commitmentSection =
-    context.applicableCommitments === undefined || context.entityRepository === undefined
-      ? null
-      : context.applicableCommitments.length > 0
-        ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
-        : "No active commitments apply to this turn. Commitment records are surfaced before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.";
   const untrustedSections: TaggedPromptSection[] = [
     {
       tag: "borg_self_snapshot",
@@ -579,10 +951,6 @@ function buildBaseSystemPromptSections(
     tag: "borg_held_preferences",
     content: summarizeHeldPreferences(context.selfSnapshot),
   };
-  const commitmentRecordsSection = {
-    tag: "borg_commitment_records",
-    content: commitmentSection,
-  };
   const proceduralGuidanceSection = {
     tag: "borg_procedural_guidance",
     content: summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
@@ -590,13 +958,6 @@ function buildBaseSystemPromptSections(
   const discourseControlSection = {
     tag: "borg_discourse_control",
     content: summarizeDiscourseControl(context.workingMemory),
-  };
-  const relationalSlotConstraintsSection = {
-    tag: "borg_relational_slot_constraints",
-    content: summarizeRelationalSlotConstraints(
-      context.relationalSlots ?? [],
-      context.activeParticipants,
-    ),
   };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
@@ -610,31 +971,18 @@ function buildBaseSystemPromptSections(
     tag: "borg_creator_identity",
     content: renderCreatorIdentity(context.creatorIdentity),
   };
-  const creatorContextSection = {
-    tag: "borg_creator_context",
-    content: renderCreatorContext(context.creatorContext),
-  };
-  const creatorDirectiveBriefingSection = buildCreatorDirectiveBriefingSection(
-    context.creatorDirectiveBriefing ?? null,
-  );
-  const sessionStatusSnapshotSection = buildSessionStatusSnapshotSection(
-    context.operatorSessionSnapshot ?? null,
-  );
+  const standingWithAudienceSection = buildStandingWithAudienceSection(context);
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
   );
   const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,
     creatorIdentitySection,
-    creatorContextSection,
-    creatorDirectiveBriefingSection,
-    sessionStatusSnapshotSection,
+    standingWithAudienceSection,
     autonomousOutboundAuthorizationSection,
     heldPreferencesSection,
-    commitmentRecordsSection,
     proceduralGuidanceSection,
     discourseControlSection,
-    relationalSlotConstraintsSection,
     frameAnomalyGateSection,
   ];
 
@@ -643,16 +991,12 @@ function buildBaseSystemPromptSections(
     trustedGuidanceSections: [
       participationPolicySection,
       creatorIdentitySection,
-      creatorContextSection,
-      creatorDirectiveBriefingSection,
-      sessionStatusSnapshotSection,
+      standingWithAudienceSection,
       autonomousOutboundAuthorizationSection,
       heldPreferencesSection,
-      commitmentRecordsSection,
       hostCapabilitiesSection,
       proceduralGuidanceSection,
       discourseControlSection,
-      relationalSlotConstraintsSection,
       frameAnomalyGateSection,
     ],
     trustedDynamicGuidanceSections,

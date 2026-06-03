@@ -49,6 +49,7 @@ export async function runDeliberationPhase(input: {
   turnId: string;
   turnInput: TurnPhaseInput;
   streamWriter: StreamWriter;
+  isSelfAudience?: boolean;
   audienceEntityId: EntityId | null;
   participationPolicy: SessionParticipationPolicy;
   creatorIdentity: CreatorIdentityContext | null;
@@ -94,6 +95,7 @@ export async function runDeliberationPhase(input: {
       turnId: input.turnId,
       turnOrigin: input.turnInput.origin,
       audience: input.turnInput.audience,
+      isSelfAudience: input.isSelfAudience ?? false,
       audienceEntityId: input.audienceEntityId,
       senderEntityId: input.turnInput.senderEntityId,
       userMessage: input.turnInput.userMessage,

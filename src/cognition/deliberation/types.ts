@@ -183,6 +183,7 @@ export type DeliberationContext = {
   turnId?: string;
   turnOrigin?: TurnOrigin;
   audience?: string;
+  isSelfAudience?: boolean;
   audienceEntityId?: EntityId | null;
   senderEntityId?: EntityId;
   userMessage: string;

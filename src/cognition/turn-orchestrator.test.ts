@@ -2562,16 +2562,16 @@ describe("TurnOrchestrator operator session snapshot", () => {
       });
 
       const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
-      const snapshotStart = finalizerSystem.indexOf("<borg_session_status_snapshot");
-      const snapshotEnd = finalizerSystem.indexOf("</borg_session_status_snapshot>");
+      const snapshotStart = finalizerSystem.indexOf("<session_status_snapshot");
+      const snapshotEnd = finalizerSystem.indexOf("</session_status_snapshot>");
       const snapshotBlock = finalizerSystem.slice(
         snapshotStart,
-        snapshotEnd + "</borg_session_status_snapshot>".length,
+        snapshotEnd + "</session_status_snapshot>".length,
       );
 
       expect(snapshotStart).toBeGreaterThanOrEqual(0);
       expect(snapshotBlock).toContain(
-        `  <session alias="session_1" session_id="${otherSessionId}">`,
+        `<session alias="session_1" session_id="${otherSessionId}">`,
       );
       expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
       expect(snapshotBlock).toContain("<conversation_kind>dm</conversation_kind>");
@@ -2629,16 +2629,16 @@ describe("TurnOrchestrator operator session snapshot", () => {
       });
 
       const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
-      const snapshotStart = finalizerSystem.indexOf("<borg_session_status_snapshot");
-      const snapshotEnd = finalizerSystem.indexOf("</borg_session_status_snapshot>");
+      const snapshotStart = finalizerSystem.indexOf("<session_status_snapshot");
+      const snapshotEnd = finalizerSystem.indexOf("</session_status_snapshot>");
       const snapshotBlock = finalizerSystem.slice(
         snapshotStart,
-        snapshotEnd + "</borg_session_status_snapshot>".length,
+        snapshotEnd + "</session_status_snapshot>".length,
       );
 
       // Awareness renders for any operator session...
       expect(snapshotStart).toBeGreaterThanOrEqual(0);
-      expect(snapshotBlock).toContain('  <session alias="session_1">');
+      expect(snapshotBlock).toContain('<session alias="session_1">');
       expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
       // ...but no session_ids leak when outbound is not available.
       expect(snapshotBlock).not.toContain(otherSessionId);
@@ -2738,7 +2738,7 @@ describe("TurnOrchestrator creator identity prompt", () => {
 
 describe("TurnOrchestrator creator directive briefing prompt", () => {
   const tempDirs: string[] = [];
-  const briefingCloseTag = "</borg_creator_directive_briefing>";
+  const directiveDisclosureCloseTag = "</directive_disclosure>";
 
   afterEach(async () => {
     while (tempDirs.length > 0) {
@@ -2746,18 +2746,18 @@ describe("TurnOrchestrator creator directive briefing prompt", () => {
     }
   });
 
-  function creatorDirectiveBriefingBlock(system: string): string | null {
-    const start = system.indexOf("<borg_creator_directive_briefing>");
+  function creatorDirectiveDisclosureBlock(system: string): string | null {
+    const start = system.indexOf("<directive_disclosure>");
 
     if (start < 0) {
       return null;
     }
 
-    const end = system.indexOf(briefingCloseTag, start);
+    const end = system.indexOf(directiveDisclosureCloseTag, start);
 
     expect(end).toBeGreaterThan(start);
 
-    return system.slice(start, end + briefingCloseTag.length);
+    return system.slice(start, end + directiveDisclosureCloseTag.length);
   }
 
   function countOccurrences(text: string, needle: string): number {
@@ -2915,9 +2915,9 @@ describe("TurnOrchestrator creator directive briefing prompt", () => {
       });
 
       const requests = finalizerRequests(llm.requests);
-      const aliceBriefing = creatorDirectiveBriefingBlock(systemText(requests[0]));
+      const aliceBriefing = creatorDirectiveDisclosureBlock(systemText(requests[0]));
       const bobSystem = systemText(requests[1]);
-      const bobBriefing = creatorDirectiveBriefingBlock(bobSystem);
+      const bobBriefing = creatorDirectiveDisclosureBlock(bobSystem);
 
       expect(aliceBriefing).not.toBeNull();
       expect(countOccurrences(aliceBriefing ?? "", 'mode="private_operation"')).toBe(2);

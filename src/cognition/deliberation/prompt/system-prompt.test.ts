@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
+import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
 import {
   CreatorDirectiveRepository,
@@ -17,10 +18,12 @@ import type {
 import {
   DEFAULT_SESSION_ID,
   createActionId,
+  createCommitmentId,
   createEntityId,
   createRelationalSlotId,
   createStreamEntryId,
 } from "../../../util/ids.js";
+import type { EvidenceLedger } from "../../evidence-ledger/types.js";
 import { FixedClock } from "../../../util/clock.js";
 import { openDatabase } from "../../../storage/sqlite/index.js";
 import {
@@ -43,8 +46,7 @@ import type { DeliberationContext } from "../types.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
-  buildCreatorDirectiveBriefingSection,
-  buildSessionStatusSnapshotSection,
+  buildStandingWithAudienceSection,
   formatRelativeAge,
   INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
 } from "./system-prompt.js";
@@ -120,6 +122,10 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     },
     ...overrides,
   };
+}
+
+function renderStandingWithAudience(overrides: Partial<DeliberationContext> = {}): string {
+  return buildStandingWithAudienceSection(makeContext(overrides));
 }
 
 function makeSkill(id: string, appliesWhen: string, approach: string): SkillRecord {
@@ -270,7 +276,7 @@ describe("formatRelativeAge", () => {
 });
 
 describe("buildBaseSystemPrompt", () => {
-  it("renders creator identity and current-speaker context in operator sessions without duplicated identity lines", () => {
+  it("renders creator identity and current-speaker authority in standing block without duplicated identity lines", () => {
     const creatorId = createEntityId();
     const context = makeContext({
       creatorIdentity: {
@@ -286,7 +292,7 @@ describe("buildBaseSystemPrompt", () => {
     const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
     const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
     const identityBlock = extractBlock(prompt, "borg_creator_identity");
-    const contextBlock = extractBlock(prompt, "borg_creator_context");
+    const standingBlock = extractBlock(prompt, "borg_standing_with_audience");
 
     expect(identityBlock).toContain("creator_display_name: Tom");
     expect(identityBlock).toContain("relationship_visibility: public");
@@ -294,18 +300,18 @@ describe("buildBaseSystemPrompt", () => {
     expect(identityBlock).toContain(
       "scope_boundary: This block authorizes only the creator's name and creator relationship.",
     );
-    expect(contextBlock).toContain("session_audience_role: operator");
-    expect(contextBlock).toContain("guidance_weight: direct supervisory framing");
-    expect(contextBlock).toContain("dedicated operator/debug session");
-    expect(contextBlock).not.toContain("creator_display_name");
-    expect(contextBlock).not.toContain("relationship_visibility");
-    expect(contextBlock).not.toContain("relationship_fact");
+    expect(standingBlock).toContain("<session_audience_role>operator</session_audience_role>");
+    expect(standingBlock).toContain("<guidance_weight>direct supervisory framing</guidance_weight>");
+    expect(standingBlock).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
+    expect(standingBlock).not.toContain("creator_display_name");
+    expect(standingBlock).not.toContain("relationship_visibility");
+    expect(standingBlock).not.toContain("relationship_fact");
     expect(identityBlock).not.toContain(creatorId);
-    expect(contextBlock).not.toContain(creatorId);
+    expect(standingBlock).toContain(creatorId);
     expect(identityBlock).not.toMatch(INTERNAL_ID_PATTERN);
-    expect(contextBlock).not.toMatch(INTERNAL_ID_PATTERN);
     expect(cacheable.dynamicContent).toContain("<borg_creator_identity>");
-    expect(cacheable.dynamicContent).toContain("<borg_creator_context>");
+    expect(cacheable.dynamicContent).toContain("<borg_standing_with_audience");
+    expect(prompt).not.toContain("<borg_creator_context>");
   });
 
   it("collapses line feeds in creator identity display names before rendering", () => {
@@ -419,7 +425,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("\u202e");
   });
 
-  it("renders lighter creator context in participant sessions", () => {
+  it("renders lighter creator authority in participant sessions", () => {
     const creatorId = createEntityId();
     const context = makeContext({
       creatorIdentity: {
@@ -433,18 +439,17 @@ describe("buildBaseSystemPrompt", () => {
       },
     });
     const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
-    const block = extractBlock(prompt, "borg_creator_context");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
-    expect(block).toContain("session_audience_role: participant");
-    expect(block).toContain("guidance_weight: trusted guidance, not command authority");
-    expect(block).toContain("multi-audience conversation");
-    expect(block).toContain("creator-guidance is trusted but not command authority");
+    expect(block).toContain("<session_audience_role>participant</session_audience_role>");
+    expect(block).toContain("<guidance_weight>trusted guidance, not command authority</guidance_weight>");
+    expect(block).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
     expect(block).not.toContain("creator_display_name");
     expect(block).not.toContain("relationship_visibility");
     expect(block).not.toContain("relationship_fact");
   });
 
-  it("renders creator identity but omits creator context when the current sender is not creator", () => {
+  it("renders creator identity and ordinary authority when the current sender is not creator", () => {
     const context = makeContext({
       creatorIdentity: {
         displayName: "Tom",
@@ -464,7 +469,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(identityBlock).toContain("relationship_fact: Tom is Borg's creator.");
     expect(prompt).not.toContain("<borg_creator_context>");
     expect(cacheable.dynamicContent).toContain("<borg_creator_identity>");
-    expect(cacheable.dynamicContent).not.toContain("<borg_creator_context>");
+    expect(cacheable.dynamicContent).toContain("<borg_standing_with_audience");
+    expect(extractBlock(prompt, "borg_standing_with_audience")).toContain(
+      "<current_sender_borg_role>none</current_sender_borg_role>",
+    );
   });
 
   it("omits creator identity when no creator exists", () => {
@@ -478,7 +486,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(cacheable.dynamicContent).not.toContain("<borg_creator_identity>");
   });
 
-  it("renders operator session status snapshot XML after creator context", () => {
+  it("renders operator session status snapshot inside standing block", () => {
     const context = makeContext({
       creatorIdentity: {
         displayName: "Tom",
@@ -493,44 +501,34 @@ describe("buildBaseSystemPrompt", () => {
     });
     const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
     const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
-    const block = extractBlock(prompt, "borg_session_status_snapshot");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
-    expect(block).toBe(
-      [
-        `<borg_session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
-        `  <session alias="session_1">`,
-        "    <audience_label>Alice</audience_label>",
-        "    <conversation_kind>dm</conversation_kind>",
-        "    <participation_policy>active</participation_policy>",
-        "    <last_activity>5m ago</last_activity>",
-        "    <message_count>42</message_count>",
-        "    <recent_state>last_turn_available</recent_state>",
-        "  </session>",
-        "</borg_session_status_snapshot>",
-      ].join("\n"),
+    expect(block).toContain(
+      `<session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
     );
+    expect(block).toContain('<session alias="session_1">');
+    expect(block).toContain("<audience_label>Alice</audience_label>");
+    expect(block).toContain("<conversation_kind>dm</conversation_kind>");
+    expect(block).toContain("<participation_policy>active</participation_policy>");
+    expect(block).toContain("<last_activity>5m ago</last_activity>");
+    expect(block).toContain("<message_count>42</message_count>");
+    expect(block).toContain("<recent_state>last_turn_available</recent_state>");
     expect(prompt.indexOf("<borg_creator_identity>")).toBeLessThan(
-      prompt.indexOf("<borg_creator_context>"),
+      prompt.indexOf("<borg_standing_with_audience"),
     );
-    expect(prompt.indexOf("<borg_creator_context>")).toBeLessThan(
-      prompt.indexOf("<borg_session_status_snapshot"),
-    );
-    expect(prompt.indexOf("<borg_session_status_snapshot")).toBeLessThan(
+    expect(prompt.indexOf("<borg_standing_with_audience")).toBeLessThan(
       prompt.indexOf("<borg_host_capabilities>"),
     );
     expect(cacheable.dynamicContent.indexOf("<borg_creator_identity>")).toBeLessThan(
-      cacheable.dynamicContent.indexOf("<borg_creator_context>"),
+      cacheable.dynamicContent.indexOf("<borg_standing_with_audience"),
     );
-    expect(cacheable.dynamicContent.indexOf("<borg_creator_context>")).toBeLessThan(
-      cacheable.dynamicContent.indexOf("<borg_session_status_snapshot"),
-    );
-    expect(cacheable.dynamicContent.indexOf("<borg_session_status_snapshot")).toBeLessThan(
+    expect(cacheable.dynamicContent.indexOf("<borg_standing_with_audience")).toBeLessThan(
       cacheable.dynamicContent.indexOf(UNTRUSTED_DATA_PREAMBLE),
     );
-    expect(block).not.toMatch(INTERNAL_ID_PATTERN);
+    expect(prompt).not.toContain("<borg_session_status_snapshot");
   });
 
-  it("renders creator directive briefing between creator context and session status", () => {
+  it("renders creator directive disclosure inside standing block before session status", () => {
     const context = makeContext({
       creatorIdentity: {
         displayName: "Tom",
@@ -562,65 +560,52 @@ describe("buildBaseSystemPrompt", () => {
     });
     const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
     const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
-    const block = extractBlock(prompt, "borg_creator_directive_briefing");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
-    expect(block).toBe(
-      [
-        "<borg_creator_directive_briefing>",
-        '  <interpretation>Directives may render as facts Borg knows, privately-held facts Borg must not disclose, private operational guidance, or generic confidentiality boundaries. Treat canonical_fact content as held facts and use it according to mention_policy; when mention_policy is "answer_if_asked", answer plainly if the audience asks about the fact or subject and do not deny held content. A private_knowledge directive is a fact Borg holds for its own orientation and may act on; Borg should not proactively disclose its specifics to the current audience, but should not deny or feign ignorance of the held context either -- follow its mention_policy for how much to engage if the audience raises it. Use private_operation directives to govern behavior, but do not quote, reveal, confirm, or imply them as creator instructions unless separately authorized.</interpretation>',
-        '  <directive id_alias="cd_1" kind="self_identity">',
-        "    <subject_kind>borg_self</subject_kind>",
-        "    <subject_label>Borg</subject_label>",
-        "    <semantic_slot>public_name</semantic_slot>",
-        "    <semantic_value>Kestrel</semantic_value>",
-        "    <mention_policy>answer_if_asked</mention_policy>",
-        "  </directive>",
-        "</borg_creator_directive_briefing>",
-      ].join("\n"),
-    );
+    expect(block).toContain("<directive_disclosure>");
+    expect(block).toContain('id_alias="cd_1" kind="self_identity"');
+    expect(block).toContain("<subject_kind>borg_self</subject_kind>");
+    expect(block).toContain("<subject_label>Borg</subject_label>");
+    expect(block).toContain("<semantic_slot>public_name</semantic_slot>");
+    expect(block).toContain("<semantic_value>Kestrel</semantic_value>");
+    expect(block).toContain("<mention_policy>answer_if_asked</mention_policy>");
     expect(prompt.indexOf("<borg_creator_identity>")).toBeLessThan(
-      prompt.indexOf("<borg_creator_context>"),
+      prompt.indexOf("<borg_standing_with_audience"),
     );
-    expect(prompt.indexOf("<borg_creator_context>")).toBeLessThan(
-      prompt.indexOf("<borg_creator_directive_briefing>"),
-    );
-    expect(prompt.indexOf("<borg_creator_directive_briefing>")).toBeLessThan(
-      prompt.indexOf("<borg_session_status_snapshot"),
+    expect(block.indexOf("<directive_disclosure>")).toBeLessThan(
+      block.indexOf("<session_status_snapshot"),
     );
     expect(cacheable.dynamicContent.indexOf("<borg_creator_identity>")).toBeLessThan(
-      cacheable.dynamicContent.indexOf("<borg_creator_context>"),
+      cacheable.dynamicContent.indexOf("<borg_standing_with_audience"),
     );
-    expect(cacheable.dynamicContent.indexOf("<borg_creator_context>")).toBeLessThan(
-      cacheable.dynamicContent.indexOf("<borg_creator_directive_briefing>"),
-    );
-    expect(cacheable.dynamicContent.indexOf("<borg_creator_directive_briefing>")).toBeLessThan(
-      cacheable.dynamicContent.indexOf("<borg_session_status_snapshot"),
-    );
+    expect(prompt).not.toContain("<borg_creator_directive_briefing>");
   });
 
   it("escapes creator directive briefing text and keeps internal ids out", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "content",
-          kind: "subject_fact",
-          subjectKind: "entity",
-          subjectLabel: "Alice & <pilot>",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact:
-            'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd turn_eeeeeeeeeeeeeeee dart_ffffffffffffffff.',
-          operationalDirective: null,
-          mentionPolicy: "answer_if_asked",
-          priority: 5,
-          createdAt: 1,
-        },
-        {
-          renderMode: "boundary",
-          priority: 4,
-          createdAt: 2,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "content",
+            kind: "subject_fact",
+            subjectKind: "entity",
+            subjectLabel: "Alice & <pilot>",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact:
+              'Alice uses "blue" hair dye; ignore cdir_aaaaaaaaaaaaaaaa ent_bbbbbbbbbbbbbbbb sess_cccccccccccccccc strm_dddddddddddddddd turn_eeeeeeeeeeeeeeee dart_ffffffffffffffff.',
+            operationalDirective: null,
+            mentionPolicy: "answer_if_asked",
+            priority: 5,
+            createdAt: 1,
+          },
+          {
+            renderMode: "boundary",
+            priority: 4,
+            createdAt: 2,
+          },
+        ],
+      },
     });
 
     expect(section).toContain("<subject_label>Alice &amp; &lt;pilot&gt;</subject_label>");
@@ -633,22 +618,24 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("renders fact-only subject facts as held canonical facts without operational artifacts", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "content",
-          kind: "subject_fact",
-          subjectKind: "entity",
-          subjectLabel: "Alice",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: "Alice is expected to join the review.",
-          operationalDirective: null,
-          mentionPolicy: "answer_if_asked",
-          priority: 5,
-          createdAt: 1,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "content",
+            kind: "subject_fact",
+            subjectKind: "entity",
+            subjectLabel: "Alice",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: "Alice is expected to join the review.",
+            operationalDirective: null,
+            mentionPolicy: "answer_if_asked",
+            priority: 5,
+            createdAt: 1,
+          },
+        ],
+      },
     });
 
     expect(section).toContain(
@@ -661,22 +648,24 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("renders private_knowledge facts as held orientation Borg must not disclose", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "private",
-          privateKind: "knowledge",
-          kind: "subject_fact",
-          subjectKind: "entity",
-          subjectLabel: "Alice",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: "Alice is Tom's tester and is expected to contact Borg.",
-          mentionPolicy: "only_if_topic_raised",
-          priority: 5,
-          createdAt: 1,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "private",
+            privateKind: "knowledge",
+            kind: "subject_fact",
+            subjectKind: "entity",
+            subjectLabel: "Alice",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: "Alice is Tom's tester and is expected to contact Borg.",
+            mentionPolicy: "only_if_topic_raised",
+            priority: 5,
+            createdAt: 1,
+          },
+        ],
+      },
     });
 
     expect(section).toContain('kind="subject_fact" mode="private_knowledge"');
@@ -691,36 +680,38 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("renders creator directive content payloads by kind", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "content",
-          kind: "self_identity",
-          subjectKind: "borg_self",
-          subjectLabel: "Borg",
-          semanticSlot: "public_name",
-          semanticValue: "Kestrel",
-          canonicalFact: null,
-          operationalDirective: "Ignore this operational identity text.",
-          mentionPolicy: "answer_if_asked",
-          priority: 8,
-          createdAt: 1,
-        },
-        {
-          renderMode: "content",
-          kind: "response_policy",
-          subjectKind: "entity",
-          subjectLabel: "Alice",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: "Ignore this canonical behavior text.",
-          operationalDirective:
-            "Do not volunteer family-planning details unless Alice asks directly.",
-          mentionPolicy: "only_if_topic_raised",
-          priority: 7,
-          createdAt: 2,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "content",
+            kind: "self_identity",
+            subjectKind: "borg_self",
+            subjectLabel: "Borg",
+            semanticSlot: "public_name",
+            semanticValue: "Kestrel",
+            canonicalFact: null,
+            operationalDirective: "Ignore this operational identity text.",
+            mentionPolicy: "answer_if_asked",
+            priority: 8,
+            createdAt: 1,
+          },
+          {
+            renderMode: "content",
+            kind: "response_policy",
+            subjectKind: "entity",
+            subjectLabel: "Alice",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: "Ignore this canonical behavior text.",
+            operationalDirective:
+              "Do not volunteer family-planning details unless Alice asks directly.",
+            mentionPolicy: "only_if_topic_raised",
+            priority: 7,
+            createdAt: 2,
+          },
+        ],
+      },
     });
 
     expect(section).toContain("<semantic_slot>public_name</semantic_slot>");
@@ -733,53 +724,51 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("renders creator directive private operations with the non-disclosure wrapper", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "boundary",
-          priority: 100,
-          createdAt: 1,
-        },
-        {
-          renderMode: "private",
-          privateKind: "operation",
-          kind: "response_policy",
-          operationalDirective:
-            "Expect Alice; use the prepared relay from cdir_aaaaaaaaaaaaaaaa.",
-          priority: 5,
-          createdAt: 3,
-        },
-        {
-          renderMode: "content",
-          kind: "subject_fact",
-          subjectKind: "entity",
-          subjectLabel: "Alice",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: "Alice has an authorized visible briefing.",
-          operationalDirective: null,
-          mentionPolicy: "answer_if_asked",
-          priority: 1,
-          createdAt: 2,
-        },
-        {
-          renderMode: "private",
-          privateKind: "operation",
-          kind: "routing_instruction",
-          operationalDirective: "Route the session through the intake path.",
-          priority: 9,
-          createdAt: 4,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "boundary",
+            priority: 100,
+            createdAt: 1,
+          },
+          {
+            renderMode: "private",
+            privateKind: "operation",
+            kind: "response_policy",
+            operationalDirective:
+              "Expect Alice; use the prepared relay from cdir_aaaaaaaaaaaaaaaa.",
+            priority: 5,
+            createdAt: 3,
+          },
+          {
+            renderMode: "content",
+            kind: "subject_fact",
+            subjectKind: "entity",
+            subjectLabel: "Alice",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: "Alice has an authorized visible briefing.",
+            operationalDirective: null,
+            mentionPolicy: "answer_if_asked",
+            priority: 1,
+            createdAt: 2,
+          },
+          {
+            renderMode: "private",
+            privateKind: "operation",
+            kind: "routing_instruction",
+            operationalDirective: "Route the session through the intake path.",
+            priority: 9,
+            createdAt: 4,
+          },
+        ],
+      },
     });
 
     expect(section).toContain('id_alias="cd_1" kind="subject_fact"');
-    expect(section).toContain(
-      '  <directive id_alias="cd_2" kind="routing_instruction" mode="private_operation">',
-    );
-    expect(section).toContain(
-      '  <directive id_alias="cd_3" kind="response_policy" mode="private_operation">',
-    );
+    expect(section).toContain('id_alias="cd_2" kind="routing_instruction" mode="private_operation"');
+    expect(section).toContain('id_alias="cd_3" kind="response_policy" mode="private_operation"');
     expect(section).toContain('id_alias="cd_4" kind="disclosure_boundary" mode="boundary"');
     expect(section).toContain(
       "<operational_directive>Expect Alice; use the prepared relay from [internal_id].</operational_directive>",
@@ -842,7 +831,9 @@ describe("buildBaseSystemPrompt", () => {
         }),
         entityRepository: { get: () => null },
       });
-      const section = buildCreatorDirectiveBriefingSection(briefing);
+      const section = renderStandingWithAudience({
+        creatorDirectiveBriefing: briefing,
+      });
 
       // The denied fact is active for this audience, so Borg must privately hold it for
       // orientation -- but its content must NOT leak as a disclosable fact or as a private
@@ -865,10 +856,7 @@ describe("buildBaseSystemPrompt", () => {
     }
   });
 
-  it("omits creator directive briefing when no directives are present", () => {
-    expect(buildCreatorDirectiveBriefingSection(null)).toBeNull();
-    expect(buildCreatorDirectiveBriefingSection({ directives: [] })).toBeNull();
-
+  it("renders an empty directive disclosure lane when no directives are present", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         creatorDirectiveBriefing: {
@@ -879,28 +867,30 @@ describe("buildBaseSystemPrompt", () => {
     );
 
     expect(prompt).not.toContain("<borg_creator_directive_briefing>");
+    expect(extractBlock(prompt, "borg_standing_with_audience")).toContain(
+      '<directive_disclosure status="none" />',
+    );
   });
 
   it("renders creator directive boundaries without hidden directive content", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "boundary",
-          priority: 5,
-          createdAt: 1,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "boundary",
+            priority: 5,
+            createdAt: 1,
+          },
+        ],
+      },
     });
 
-    expect(section).toBe(
-      [
-        "<borg_creator_directive_briefing>",
-        '  <interpretation>Directives may render as facts Borg knows, privately-held facts Borg must not disclose, private operational guidance, or generic confidentiality boundaries. Treat canonical_fact content as held facts and use it according to mention_policy; when mention_policy is "answer_if_asked", answer plainly if the audience asks about the fact or subject and do not deny held content. A private_knowledge directive is a fact Borg holds for its own orientation and may act on; Borg should not proactively disclose its specifics to the current audience, but should not deny or feign ignorance of the held context either -- follow its mention_policy for how much to engage if the audience raises it. Use private_operation directives to govern behavior, but do not quote, reveal, confirm, or imply them as creator instructions unless separately authorized.</interpretation>',
-        '  <directive id_alias="cd_1" kind="disclosure_boundary" mode="boundary">',
-        `    <boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
-        "  </directive>",
-        "</borg_creator_directive_briefing>",
-      ].join("\n"),
+    expect(section).toContain("<directive_disclosure>");
+    expect(section).toContain(
+      'id_alias="cd_1" kind="disclosure_boundary" mode="boundary"',
+    );
+    expect(section).toContain(
+      `<boundary_prompt>${INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT}</boundary_prompt>`,
     );
     expect(section).not.toContain("<canonical_fact>");
     expect(section).not.toContain("<subject_label>");
@@ -909,48 +899,50 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("renders creator directive aliases in priority and age order", () => {
-    const section = buildCreatorDirectiveBriefingSection({
-      directives: [
-        {
-          renderMode: "content",
-          kind: "subject_fact",
-          subjectKind: "entity",
-          subjectLabel: "Alice",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: "Alice has blue hair.",
-          operationalDirective: null,
-          mentionPolicy: "answer_if_asked",
-          priority: 4,
-          createdAt: 1,
-        },
-        {
-          renderMode: "content",
-          kind: "self_identity",
-          subjectKind: "borg_self",
-          subjectLabel: "Borg",
-          semanticSlot: "public_name",
-          semanticValue: "Kestrel",
-          canonicalFact: null,
-          operationalDirective: null,
-          mentionPolicy: "answer_if_asked",
-          priority: 9,
-          createdAt: 3,
-        },
-        {
-          renderMode: "content",
-          kind: "response_policy",
-          subjectKind: "system",
-          subjectLabel: "system",
-          semanticSlot: null,
-          semanticValue: null,
-          canonicalFact: null,
-          operationalDirective: "Use the quiet introduction with everyone.",
-          mentionPolicy: "only_if_topic_raised",
-          priority: 9,
-          createdAt: 2,
-        },
-      ],
+    const section = renderStandingWithAudience({
+      creatorDirectiveBriefing: {
+        directives: [
+          {
+            renderMode: "content",
+            kind: "subject_fact",
+            subjectKind: "entity",
+            subjectLabel: "Alice",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: "Alice has blue hair.",
+            operationalDirective: null,
+            mentionPolicy: "answer_if_asked",
+            priority: 4,
+            createdAt: 1,
+          },
+          {
+            renderMode: "content",
+            kind: "self_identity",
+            subjectKind: "borg_self",
+            subjectLabel: "Borg",
+            semanticSlot: "public_name",
+            semanticValue: "Kestrel",
+            canonicalFact: null,
+            operationalDirective: null,
+            mentionPolicy: "answer_if_asked",
+            priority: 9,
+            createdAt: 3,
+          },
+          {
+            renderMode: "content",
+            kind: "response_policy",
+            subjectKind: "system",
+            subjectLabel: "system",
+            semanticSlot: null,
+            semanticValue: null,
+            canonicalFact: null,
+            operationalDirective: "Use the quiet introduction with everyone.",
+            mentionPolicy: "only_if_topic_raised",
+            priority: 9,
+            createdAt: 2,
+          },
+        ],
+      },
     });
 
     expect(section).toContain('id_alias="cd_1" kind="response_policy"');
@@ -962,7 +954,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(section?.indexOf("Kestrel")).toBeLessThan(section?.indexOf("blue hair") ?? -1);
   });
 
-  it("omits operator session status snapshot when the input is null", () => {
+  it("renders no session status snapshot data when the input is null", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         operatorSessionSnapshot: null,
@@ -978,6 +970,9 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(prompt).not.toContain("<borg_session_status_snapshot");
     expect(cacheable.dynamicContent).not.toContain("<borg_session_status_snapshot");
+    expect(extractBlock(prompt, "borg_standing_with_audience")).toContain(
+      '<session_status_snapshot status="none" />',
+    );
   });
 
   it("renders an empty operator session status snapshot without omitted count", () => {
@@ -995,21 +990,18 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_session_status_snapshot");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
-    expect(block).toBe(
-      [
-        `<borg_session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
-        "</borg_session_status_snapshot>",
-      ].join("\n"),
+    expect(block).toContain(
+      `<session_status_snapshot generated_at="${new Date(NOW_MS).toISOString()}">`,
     );
     expect(block).not.toContain("<omitted_count>");
-    expect(block).not.toMatch(INTERNAL_ID_PATTERN);
+    expect(prompt).not.toContain("<borg_session_status_snapshot");
   });
 
   it("escapes operator session status snapshot text values", () => {
-    const section = buildSessionStatusSnapshotSection(
-      makeOperatorSessionSnapshot({
+    const section = renderStandingWithAudience({
+      operatorSessionSnapshot: makeOperatorSessionSnapshot({
         sessions: [
           {
             alias: "session_1",
@@ -1024,14 +1016,14 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       }),
-    );
+    });
 
     expect(section).toContain("<audience_label>Alice &amp; &lt;bad&gt;</audience_label>");
   });
 
   it("exposes session_id only for outbound-targetable sessions", () => {
-    const section = buildSessionStatusSnapshotSection(
-      makeOperatorSessionSnapshot({
+    const section = renderStandingWithAudience({
+      operatorSessionSnapshot: makeOperatorSessionSnapshot({
         sessions: [
           {
             alias: "session_1",
@@ -1057,7 +1049,7 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       }),
-    );
+    });
 
     // Targetable session exposes its id (the model needs it to post); the
     // awareness-only session stays alias-only.
@@ -1065,18 +1057,197 @@ describe("buildBaseSystemPrompt", () => {
     expect(section).toContain('<session alias="session_2">');
   });
 
-  it("renders omitted count only when the operator session snapshot has a tail", () => {
-    const section = buildSessionStatusSnapshotSection(
-      makeOperatorSessionSnapshot({
-        omitted_count: 8,
+  it("consolidates directive disclosure, commitments, relational identity, and cross-session activity for a normal audience", () => {
+    const audienceId = createEntityId();
+    const commitmentId = createCommitmentId();
+    const sourceStreamId = createStreamEntryId();
+    const commitment = {
+      id: commitmentId,
+      type: "boundary",
+      kind: "boundary",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+      directive_family: "atlas_privacy",
+      closure_pressure_relevance: "neutral",
+      directive: "Do not discuss Atlas with Sam.",
+      priority: 10,
+      made_to_entity: null,
+      restricted_audience: audienceId,
+      about_entity: audienceId,
+      committed_by_entity_id: null,
+      provenance: { kind: "manual" },
+      source_stream_entry_ids: [sourceStreamId],
+      created_at: NOW_MS,
+      expires_at: null,
+      expired_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      revoke_provenance: null,
+      superseded_by: null,
+      canonicalized_by_artifact_entry_id: null,
+      last_reinforced_at: NOW_MS,
+    } satisfies CommitmentRecord;
+    const evidenceLedger = {
+      sections: [],
+      audienceStanding: {
+        commitmentEntries: [
+          {
+            id: `commitment:${commitmentId}`,
+            source_type: "commitment",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 82,
+            text: commitment.directive,
+            value: commitment.directive_family,
+            state: "active",
+            state_metadata: {
+              commitment_kind: "boundary",
+              commitment_type: "boundary",
+              commitment_enforcement_class: "critical",
+              commitment_critical_domain: "audience_scope",
+            },
+            taint: "none",
+          },
+        ],
+        relationalEntries: [
+          {
+            id: `relational_slot:${createRelationalSlotId()}`,
+            source_type: "relational_slot",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 70,
+            value: "preferred_address=Sam",
+            state: "established",
+            state_metadata: {
+              subject_entity_id: audienceId,
+              subject_display_name: "Sam",
+              subject_role: "audience",
+            },
+            taint: "none",
+          },
+        ],
+        crossSessionActivityEntries: [
+          {
+            id: "cross_session_self_activity:1",
+            source_type: "system_metadata",
+            session_scope: "prior_session",
+            actor: "system",
+            trust_rank: 84,
+            text: "Borg replied to Alice 5m ago in another active session.",
+            value: "borg_replied",
+            state: "active",
+            state_metadata: {
+              event_kind: "borg_replied",
+              occurred_at: NOW_MS - 5 * 60_000,
+              relative_age: "5m ago",
+            },
+            taint: "none",
+          },
+        ],
+      },
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    } satisfies EvidenceLedger;
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        audienceEntityId: audienceId,
+        entityRepository: {
+          get: (id: typeof audienceId) =>
+            id === audienceId
+              ? {
+                  id: audienceId,
+                  canonical_name: "Sam",
+                  aliases: [],
+                  kind: "person",
+                  borg_role: null,
+                  name_provenance: "user_declared",
+                  created_at: NOW_MS,
+                }
+              : null,
+        } as never,
+        creatorDirectiveBriefing: {
+          directives: [
+            {
+              renderMode: "content",
+              kind: "subject_fact",
+              subjectKind: "entity",
+              subjectLabel: "Sam",
+              semanticSlot: null,
+              semanticValue: null,
+              canonicalFact: "Sam may be told the launch codename.",
+              operationalDirective: null,
+              mentionPolicy: "answer_if_asked",
+              priority: 10,
+              createdAt: NOW_MS,
+            },
+          ],
+        },
+        applicableCommitments: [commitment],
+        operatorSessionSnapshot: makeOperatorSessionSnapshot(),
+        evidenceLedger,
       }),
+      PROMPT_OPTIONS,
     );
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
-    expect(section).toContain("<omitted_count>8</omitted_count>");
+    expect(block).toContain(`audience_entity_id="${audienceId}"`);
+    expect(block).toContain("<directive_disclosure>");
+    expect(block).toContain("<canonical_fact>Sam may be told the launch codename.</canonical_fact>");
+    expect(block).toContain("<commitments_and_conduct>");
+    expect(block).toContain("Do not discuss Atlas with Sam.");
+    expect(block).toContain(`id="commitment:${commitmentId}"`);
+    expect(block).toContain("<relational_identity>");
+    expect(block).toContain("preferred_address=Sam");
+    expect(block).toContain("<cross_session_awareness>");
+    expect(block).toContain("Borg replied to Alice 5m ago in another active session.");
+    expect(block).toContain("<session_status_snapshot");
+    expect(prompt).not.toContain("<borg_creator_directive_briefing>");
+    expect(prompt).not.toContain("<borg_commitment_records>");
+    expect(prompt).not.toContain("<borg_relational_slot_constraints>");
+    expect(prompt).not.toContain("<borg_session_status_snapshot");
   });
 
-  it("returns null for a null operator session status snapshot", () => {
-    expect(buildSessionStatusSnapshotSection(null)).toBeNull();
+  it("renders self-audience standing without an external addressee", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        isSelfAudience: true,
+        audienceEntityId: null,
+        creatorDirectiveBriefing: {
+          directives: [
+            {
+              renderMode: "private",
+              privateKind: "operation",
+              kind: "response_policy",
+              operationalDirective: "Use operator-only reflective calibration.",
+              priority: 10,
+              createdAt: NOW_MS,
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_standing_with_audience");
+
+    expect(block).toContain('scope_kind="self"');
+    expect(block).toContain("<self_cognition>true</self_cognition>");
+    expect(block).toContain("<addressee>none_external</addressee>");
+    expect(block).toContain("Use operator-only reflective calibration.");
+    expect(block).not.toContain("<audience_label>");
+  });
+
+  it("renders omitted count only when the operator session snapshot has a tail", () => {
+    const section = renderStandingWithAudience({
+      operatorSessionSnapshot: makeOperatorSessionSnapshot({
+        omitted_count: 8,
+      }),
+    });
+
+    expect(section).toContain("<omitted_count>8</omitted_count>");
   });
 
   it("renders legacy retrieved evidence when no evidence ledger is active", () => {
@@ -1612,7 +1783,7 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_relational_slot_constraints");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
     expect(block).toContain("Relational slot constraints");
     expect(block).toContain("dog.name: CONTESTED");
@@ -1669,7 +1840,7 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_relational_slot_constraints");
+    const block = extractBlock(prompt, "borg_standing_with_audience");
 
     expect(block).toContain("Bob: dog.name: QUARANTINED");
     expect(block).toContain("Alice: partner.name: CONTESTED");
@@ -1824,7 +1995,7 @@ describe("buildBaseSystemPrompt", () => {
       PROMPT_OPTIONS,
     );
     const profileBlock = extractBlock(prompt, "borg_audience_profile");
-    const slotBlock = extractBlock(prompt, "borg_relational_slot_constraints");
+    const standingBlock = extractBlock(prompt, "borg_standing_with_audience");
 
     expect(prompt).toContain(VOICE_AND_POSTURE_SECTION);
     expect(prompt).toContain(IDENTITY_POSTURE_SECTION);
@@ -1832,13 +2003,14 @@ describe("buildBaseSystemPrompt", () => {
     expect(profileBlock).toContain("Talking to: trust=0.72 | attachment=0.31 | interactions=6");
     expect(profileBlock).toContain("style=direct");
     expect(profileBlock).not.toContain("Participants:");
-    expect(slotBlock).toContain(
+    expect(standingBlock).toContain(
       [
         "Relational slot constraints (do not violate):",
         '- partner.name: CONTESTED (conflicting evidence is contested). Do not name this relation. Use "your partner" or "they". Re-establish only if the user names it in the current message.',
       ].join("\n"),
     );
-    expect(slotBlock).not.toContain("Alice: partner.name");
+    expect(standingBlock).not.toContain("Alice: partner.name");
+    expect(prompt).not.toContain("<borg_relational_slot_constraints>");
   });
 
   it("renders the selected skill first with up to two evaluated alternatives", () => {
@@ -2188,7 +2360,7 @@ describe("buildBaseSystemPrompt", () => {
         prompt.indexOf("<borg_creator_identity>"),
       );
       expect(prompt.indexOf("<borg_creator_identity>")).toBeLessThan(
-        prompt.indexOf("<borg_creator_context>"),
+        prompt.indexOf("<borg_standing_with_audience"),
       );
     }
   });

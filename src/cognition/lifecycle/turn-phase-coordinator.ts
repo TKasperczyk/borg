@@ -1451,6 +1451,7 @@ export class TurnPhaseCoordinator {
           turnId,
           turnInput,
           streamWriter,
+          isSelfAudience,
           audienceEntityId,
           participationPolicy,
           creatorIdentity,

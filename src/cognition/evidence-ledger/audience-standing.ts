@@ -1,5 +1,5 @@
-import type { RelationalSlot } from "../../../memory/relational-slots/index.js";
-import type { ActiveParticipant } from "../../participants.js";
+import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import type { ActiveParticipant } from "../participants.js";
 import {
   dedupeCommitments,
   dedupeGoals,
@@ -8,23 +8,28 @@ import {
   scopedCommitmentsForEntity,
   scopedGoalsForEntity,
   visibleAudienceEntityIds,
-} from "../audience-visibility.js";
-import type { BuilderSectionContext } from "../builder-context.js";
-import { optionalStateMetadata, slotTaint } from "../entry-metadata.js";
+} from "./audience-visibility.js";
+import type { BuilderSectionContext } from "./builder-context.js";
+import { optionalStateMetadata, slotTaint } from "./entry-metadata.js";
 import {
   COMMITMENT_TRUST_RANK,
+  CROSS_SESSION_ACTIVITY_TRUST_RANK,
   OPEN_QUESTION_TRUST_RANK,
   RELATIONAL_SLOT_LEDGER_LIMIT,
   SLOT_TRUST_RANK,
-  addEntry,
   cappedTrustRank,
-} from "../section-buckets.js";
+} from "./section-buckets.js";
 import {
   commitmentScope,
   persistenceClassFromProvenance,
   scopeFromStreamIds,
   slotScope,
-} from "../scope-resolver.js";
+} from "./scope-resolver.js";
+import type { EvidenceLedgerAudienceStanding, EvidenceLedgerEntry } from "./types.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+} from "../../memory/commitments/index.js";
 
 function participantForSlot(
   slot: RelationalSlot,
@@ -49,7 +54,59 @@ function slotSubjectStateMetadata(
   };
 }
 
-export function addRelationalSlotsSection(context: BuilderSectionContext): void {
+function buildCrossSessionActivityEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
+  const rows = context.input.crossSessionSelfActivity ?? [];
+
+  return rows.map((row, index) => ({
+    id: `cross_session_self_activity:${index + 1}`,
+    source_type: "system_metadata",
+    session_scope: "prior_session",
+    actor: "system",
+    trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
+    text: row.text,
+    value: row.kind,
+    state: "active",
+    state_metadata: {
+      event_kind: row.kind,
+      occurred_at: row.occurredAt,
+      relative_age: row.relativeAge,
+    },
+    taint: "none",
+  }));
+}
+
+function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
+  return context.input.applicableCommitments.map((commitment) =>
+    cappedTrustRank({
+      id: `commitment:${commitment.id}`,
+      source_type: "commitment",
+      session_scope: commitmentScope(commitment, context.resolver),
+      actor: "memory",
+      trust_rank: COMMITMENT_TRUST_RANK,
+      text: commitment.directive,
+      value: commitment.directive_family,
+      state:
+        commitment.revoked_at !== null
+          ? "revoked"
+          : commitment.expired_at !== null
+            ? "expired"
+            : "active",
+      state_metadata: {
+        commitment_kind: commitment.kind,
+        commitment_type: commitment.type,
+        commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+        commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+      },
+      taint: "none",
+      ...persistenceClassFromProvenance(
+        { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
+        context.resolver,
+      ),
+    }),
+  );
+}
+
+function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
   const audienceEntityId = context.input.audienceEntityId;
   const activeParticipants = context.input.activeParticipants;
   const activeParticipantIds = visibleAudienceEntityIds(audienceEntityId, activeParticipants);
@@ -66,13 +123,11 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
             limit: RELATIONAL_SLOT_LEDGER_LIMIT,
           }),
         );
-  const cappedSlots = slots.slice(0, RELATIONAL_SLOT_LEDGER_LIMIT);
+  const entries: EvidenceLedgerEntry[] = [];
 
-  for (const slot of cappedSlots) {
+  for (const slot of slots.slice(0, RELATIONAL_SLOT_LEDGER_LIMIT)) {
     const participant = participantForSlot(slot, activeParticipants);
-    addEntry(
-      context.buckets,
-      "relational_slots",
+    entries.push(
       cappedTrustRank({
         id: `relational_slot:${slot.id}`,
         source_type: "relational_slot",
@@ -124,9 +179,7 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
           );
 
     for (const commitment of participantCommitments) {
-      addEntry(
-        context.buckets,
-        "relational_slots",
+      entries.push(
         cappedTrustRank({
           id: `participant_commitment:${participant.entityId}:${commitment.id}`,
           source_type: "commitment",
@@ -169,7 +222,7 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
           ).filter((goal) => isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds));
 
     for (const goal of participantGoals) {
-      addEntry(context.buckets, "relational_slots", {
+      entries.push({
         id: `participant_goal:${participant.entityId}:${goal.id}`,
         source_type: "system_metadata",
         session_scope: scopeFromStreamIds(goal.source_stream_entry_ids ?? [], context.resolver),
@@ -186,4 +239,16 @@ export function addRelationalSlotsSection(context: BuilderSectionContext): void 
       });
     }
   }
+
+  return entries;
+}
+
+export function buildAudienceStandingLedgerContext(
+  context: BuilderSectionContext,
+): EvidenceLedgerAudienceStanding {
+  return {
+    crossSessionActivityEntries: buildCrossSessionActivityEntries(context),
+    commitmentEntries: buildCommitmentEntries(context),
+    relationalEntries: buildRelationalEntries(context),
+  };
 }

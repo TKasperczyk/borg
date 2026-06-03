@@ -108,7 +108,7 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
     });
 
     if (item.source === "commitment") {
-      addEntry(context.buckets, "commitments_and_constraints", {
+      addEntry(context.buckets, "retrieved_memory_evidence", {
         ...entry,
         trust_rank: COMMITMENT_TRUST_RANK,
       });

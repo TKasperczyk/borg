@@ -66,11 +66,6 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     label: "2. Current-Session Transcript",
   },
   {
-    id: "cross_session_self_activity",
-    label: "3. Cross-Session Self Activity",
-    optional: true,
-  },
-  {
     id: "current_session_attribution_sidebar",
     label: "Current Session Attribution Sidebar",
     optional: true,
@@ -81,52 +76,44 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     optional: true,
   },
   {
-    id: "commitments_and_constraints",
-    label: "4. Active Commitments And Discourse Constraints",
-  },
-  {
     id: "closure_discourse_state",
-    label: "5. Current Closure And Discourse State",
+    label: "3. Current Closure And Discourse State",
   },
   {
     id: "contradictions_quarantines",
-    label: "6. Current-Session Contradictions And Quarantines",
+    label: "4. Current-Session Contradictions And Quarantines",
   },
   {
     id: "action_states",
-    label: "7. Action States",
+    label: "5. Action States",
   },
   {
     id: "group_channel_memory",
-    label: "8. Group/Channel Memory",
-  },
-  {
-    id: "relational_slots",
-    label: "9. Active Participant Memory",
+    label: "6. Group/Channel Memory",
   },
   {
     id: "retrieved_raw_stream_evidence",
-    label: "10. Retrieved Raw Stream Evidence",
+    label: "7. Retrieved Raw Stream Evidence",
   },
   {
     id: "retrieved_memory_evidence",
-    label: "11. Retrieved Memory Evidence",
+    label: "8. Retrieved Memory Evidence",
   },
   {
     id: "episodes",
-    label: "12. Episodes",
+    label: "9. Episodes",
   },
   {
     id: "semantic_graph",
-    label: "13. Semantic Graph",
+    label: "10. Semantic Graph",
   },
   {
     id: "open_questions",
-    label: "14. Open Questions",
+    label: "11. Open Questions",
   },
   {
     id: "prior_session_memory",
-    label: "15. Prior-Session Memory",
+    label: "12. Prior-Session Memory",
   },
 ] as const satisfies readonly EvidenceLedgerSectionDefinition[];
 
@@ -138,10 +125,17 @@ export type EvidenceLedgerSection = {
   entries: EvidenceLedgerEntry[];
 };
 
+export type EvidenceLedgerAudienceStanding = {
+  crossSessionActivityEntries: EvidenceLedgerEntry[];
+  commitmentEntries: EvidenceLedgerEntry[];
+  relationalEntries: EvidenceLedgerEntry[];
+};
+
 export type EvidenceLedgerTranscriptOmittedReason = "over_budget";
 
 export type EvidenceLedger = {
   sections: EvidenceLedgerSection[];
+  audienceStanding?: EvidenceLedgerAudienceStanding;
   sharedState?: SharedStateArtifact | null;
   transcriptIncluded: boolean;
   transcriptCompacted: boolean;

@@ -26,7 +26,6 @@ export const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
 const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>([
   "prior_session_memory",
-  "cross_session_self_activity",
 ]);
 
 export type SectionBucket = {

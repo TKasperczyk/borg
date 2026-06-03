@@ -647,17 +647,15 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
 
-    expect(
-      ledger.sections.find((section) => section.id === "cross_session_self_activity")?.entries,
-    ).toEqual([
+    expect(ledger.audienceStanding?.crossSessionActivityEntries).toEqual([
       expect.objectContaining({
         source_type: "system_metadata",
         session_scope: "prior_session",
         text: "Alice contacted Borg ~41s ago in another active session.",
       }),
     ]);
-    expect(rendered).toContain("## 3. Cross-Session Self Activity");
-    expect(rendered).toContain("Alice contacted Borg ~41s ago in another active session.");
+    expect(rendered).not.toContain("Cross-Session Self Activity");
+    expect(rendered).not.toContain("Alice contacted Borg ~41s ago in another active session.");
     expect(rendered).not.toContain("sess_");
     expect(rendered).not.toContain("strm_");
   });
@@ -1635,12 +1633,10 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.sections.map((section) => section.id)).toEqual([
       "current_user_message",
       "current_session_transcript",
-      "commitments_and_constraints",
       "closure_discourse_state",
       "contradictions_quarantines",
       "action_states",
       "group_channel_memory",
-      "relational_slots",
       "retrieved_raw_stream_evidence",
       "retrieved_memory_evidence",
       "episodes",
@@ -1685,9 +1681,7 @@ describe("EvidenceLedgerBuilder", () => {
       session_scope: "current_session",
       state: "scheduled",
     });
-    expect(
-      ledger.sections.find((section) => section.id === "relational_slots")?.entries[0],
-    ).toMatchObject({
+    expect(ledger.audienceStanding?.relationalEntries[0]).toMatchObject({
       session_scope: "current_session",
       value: "tutor.name=Marta",
       state: "established",
@@ -1803,8 +1797,7 @@ describe("EvidenceLedgerBuilder", () => {
         },
       ],
     });
-    const relationalEntries =
-      ledger.sections.find((section) => section.id === "relational_slots")?.entries ?? [];
+    const relationalEntries = ledger.audienceStanding?.relationalEntries ?? [];
 
     expect(relationalEntries.map((entry) => entry.value)).toEqual([
       "dog.name=Niko",
@@ -2050,13 +2043,12 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
     const groupSection = ledger.sections.find((section) => section.id === "group_channel_memory");
-    const participantSection = ledger.sections.find((section) => section.id === "relational_slots");
     const actionSection = ledger.sections.find((section) => section.id === "action_states");
     const groupText = JSON.stringify(groupSection?.entries ?? []);
-    const participantText = JSON.stringify(participantSection?.entries ?? []);
+    const participantText = JSON.stringify(ledger.audienceStanding?.relationalEntries ?? []);
     const actionText = JSON.stringify(actionSection?.entries ?? []);
 
-    expect(rendered).toContain("## 8. Group/Channel Memory");
+    expect(rendered).toContain("## 6. Group/Channel Memory");
     expect(rendered).toContain("trip.destination=Spain");
     expect(rendered).toContain("spain_channel_scope");
     expect(rendered).toContain("Coordinate the Spain trip channel.");
@@ -2066,8 +2058,8 @@ describe("EvidenceLedgerBuilder", () => {
     expect(groupText).not.toContain("book Alhambra");
     expect(groupText).not.toContain("alice_alhambra_booking");
     expect(groupText).not.toContain("Alice will book the Alhambra visit.");
-    expect(rendered).toContain("## 9. Active Participant Memory");
-    expect(rendered).toContain("task.booking=Alhambra");
+    expect(rendered).not.toContain("Active Participant Memory");
+    expect(rendered).not.toContain("task.booking=Alhambra");
     expect(participantText).not.toContain("trip.destination=Spain");
     expect(participantText).not.toContain("spain_channel_scope");
     expect(participantText).toContain("alice_alhambra_booking");
@@ -2164,8 +2156,7 @@ describe("EvidenceLedgerBuilder", () => {
       frameAnomaly: null,
       activeParticipants: [],
     });
-    const relationalEntries =
-      ledger.sections.find((section) => section.id === "relational_slots")?.entries ?? [];
+    const relationalEntries = ledger.audienceStanding?.relationalEntries ?? [];
 
     expect(relationalEntries.map((entry) => entry.value)).toEqual([
       "tutor.name=Marta",
@@ -2697,7 +2688,7 @@ describe("EvidenceLedgerBuilder", () => {
     });
     expect(
       ledger.sections
-        .find((section) => section.id === "commitments_and_constraints")
+        .find((section) => section.id === "retrieved_memory_evidence")
         ?.entries.find((entry) => entry.id === "retrieved_evidence:commitment-boundary"),
     ).toMatchObject({
       source_type: "commitment",
@@ -3311,7 +3302,7 @@ describe("EvidenceLedgerBuilder", () => {
     const rendered = renderEvidenceLedger(ledger) ?? "";
     const compactPlannerLedger = renderCompactPlannerLedger(ledger) ?? "";
     const transcriptHeader = "## 2. Current-Session Transcript";
-    const semanticHeader = "## 13. Semantic Graph";
+    const semanticHeader = "## 10. Semantic Graph";
     const transcriptStart = rendered.indexOf(transcriptHeader);
     const semanticStart = rendered.indexOf(semanticHeader);
     expect(transcriptStart).toBeGreaterThanOrEqual(0);

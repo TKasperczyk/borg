@@ -759,16 +759,12 @@ describe("renderCompactPlannerLedger", () => {
   it("renders only the planner-relevant ledger sections", () => {
     const ledger = makeLedger();
     const currentMessage = ledger.sections.find((section) => section.id === "current_user_message");
-    const commitments = ledger.sections.find(
-      (section) => section.id === "commitments_and_constraints",
-    );
     const closure = ledger.sections.find((section) => section.id === "closure_discourse_state");
     const contradictions = ledger.sections.find(
       (section) => section.id === "contradictions_quarantines",
     );
     const actions = ledger.sections.find((section) => section.id === "action_states");
     const group = ledger.sections.find((section) => section.id === "group_channel_memory");
-    const participants = ledger.sections.find((section) => section.id === "relational_slots");
     const transcript = ledger.sections.find(
       (section) => section.id === "current_session_transcript",
     );
@@ -785,16 +781,6 @@ describe("renderCompactPlannerLedger", () => {
         sender_entity_id: "ent_ben",
         sender_display_name: "Ben",
       },
-    });
-    commitments?.entries.push({
-      id: "commitment:route-order",
-      source_type: "commitment",
-      session_scope: "current_session",
-      actor: "memory",
-      trust_rank: 82,
-      value: "locked_spain_route_order",
-      state: "active",
-      text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3 / home.",
     });
     closure?.entries.push({
       id: "discourse_state:working_memory",
@@ -833,19 +819,6 @@ describe("renderCompactPlannerLedger", () => {
       state: "established",
       value: "trip.route_order=Madrid 3 / SS 3 / Seville 4 / Granada 3 / home",
     });
-    participants?.entries.push({
-      id: "relational_slot:ben-role",
-      source_type: "relational_slot",
-      session_scope: "current_session",
-      actor: "memory",
-      trust_rank: 70,
-      state: "established",
-      value: "participant.name=Ben",
-      state_metadata: {
-        subject_display_name: "Ben",
-        subject_role: "speaker",
-      },
-    });
     transcript?.entries.push({
       id: "current_session_stream:strm_old",
       source_type: "current_session_stream",
@@ -868,18 +841,16 @@ describe("renderCompactPlannerLedger", () => {
     expect(rendered).toContain("<borg_compact_planner_ledger>");
     expect(rendered).toContain("## 1. Current User Message");
     expect(rendered).toContain("sender_display_name");
-    expect(rendered).toContain("## 3. Cross-Session Self Activity");
-    expect(rendered).toContain("No entries.");
-    expect(rendered).toContain("## 4. Active Commitments And Discourse Constraints");
-    expect(rendered).toContain("Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3");
-    expect(rendered).toContain("## 5. Current Closure And Discourse State");
-    expect(rendered).toContain("## 6. Current-Session Contradictions And Quarantines");
-    expect(rendered).toContain("## 7. Action States");
-    expect(rendered).toContain("## 8. Group/Channel Memory");
-    expect(rendered).toContain("## 9. Active Participant Memory");
+    expect(rendered).toContain("## 3. Current Closure And Discourse State");
+    expect(rendered).toContain("## 4. Current-Session Contradictions And Quarantines");
+    expect(rendered).toContain("## 5. Action States");
+    expect(rendered).toContain("## 6. Group/Channel Memory");
+    expect(rendered).not.toContain("Cross-Session Self Activity");
+    expect(rendered).not.toContain("Active Commitments And Discourse Constraints");
+    expect(rendered).not.toContain("Active Participant Memory");
     expect(rendered).not.toContain("## 2. Current-Session Transcript");
     expect(rendered).not.toContain("Transcript detail should not be in compact planner ledger.");
-    expect(rendered).not.toContain("## 12. Episodes");
+    expect(rendered).not.toContain("## 9. Episodes");
     expect(rendered).not.toContain("Episode detail should not be in compact planner ledger.");
   });
 
@@ -889,20 +860,17 @@ describe("renderCompactPlannerLedger", () => {
     for (const section of ledger.sections) {
       if (
         section.id === "current_user_message" ||
-        section.id === "cross_session_self_activity" ||
-        section.id === "commitments_and_constraints" ||
         section.id === "closure_discourse_state" ||
         section.id === "contradictions_quarantines" ||
         section.id === "action_states" ||
-        section.id === "group_channel_memory" ||
-        section.id === "relational_slots"
+        section.id === "group_channel_memory"
       ) {
         section.entries = Array.from({ length: 80 }, (_, index) => ({
           id: `${section.id}:entry-${index}`,
           source_type:
             section.id === "action_states"
               ? "action_record"
-              : section.id === "relational_slots" || section.id === "group_channel_memory"
+              : section.id === "group_channel_memory"
                 ? "relational_slot"
                 : "system_metadata",
           session_scope: "current_session",

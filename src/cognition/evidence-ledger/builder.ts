@@ -7,18 +7,17 @@ import {
 import type { BuilderSectionContext } from "./builder-context.js";
 import type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
 import { createSectionBuckets, finalSections } from "./section-buckets.js";
+import { buildAudienceStandingLedgerContext } from "./audience-standing.js";
 import {
   buildEpisodeScopeMap,
   buildEpisodeSourceStreamIdMap,
   type ScopeResolver,
 } from "./scope-resolver.js";
 import { addActionStatesSection } from "./sections/action-states.js";
-import { addCommitmentsAndConstraintsSection } from "./sections/constraints.js";
 import {
   addCurrentSessionTranscriptSection,
   addCurrentUserMessageSection,
 } from "./sections/current-session.js";
-import { addCrossSessionSelfActivitySection } from "./sections/cross-session-activity.js";
 import {
   addAttributionMatrixSection,
   addCurrentSessionAttributionSidebarSection,
@@ -28,7 +27,6 @@ import { addEpisodesSection } from "./sections/episodes.js";
 import { addGroupChannelMemorySection } from "./sections/group-channel-memory.js";
 import { addOpenQuestionsSection } from "./sections/open-questions.js";
 import { addContradictionsAndQuarantinesSection } from "./sections/quarantines.js";
-import { addRelationalSlotsSection } from "./sections/relational-slots.js";
 import {
   addRetrievedRawStreamEvidenceSection,
   addRetrievedStructuredEvidenceSection,
@@ -163,15 +161,14 @@ export class EvidenceLedgerBuilder {
 
     addCurrentUserMessageSection(context);
     addCurrentSessionTranscriptSection(context);
-    addCrossSessionSelfActivitySection(context);
+    const audienceStanding = buildAudienceStandingLedgerContext(context);
+
     addCurrentSessionAttributionSidebarSection(context);
     addAttributionMatrixSection(context);
-    addCommitmentsAndConstraintsSection(context);
     addDiscourseStateSection(context);
     addContradictionsAndQuarantinesSection(context);
     await addActionStatesSection(context);
     addGroupChannelMemorySection(context);
-    addRelationalSlotsSection(context);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
     // The same underlying entry's text was duplicated across both sections
@@ -187,6 +184,7 @@ export class EvidenceLedgerBuilder {
 
     return {
       sections: orderedSections,
+      audienceStanding,
       transcriptIncluded: true,
       transcriptCompacted: transcript.compacted,
       originalTranscriptTokenEstimate: transcript.originalTokenEstimate,

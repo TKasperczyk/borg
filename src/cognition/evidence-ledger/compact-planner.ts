@@ -19,13 +19,10 @@ import type {
 
 const COMPACT_PLANNER_LEDGER_SECTION_IDS = [
   "current_user_message",
-  "cross_session_self_activity",
-  "commitments_and_constraints",
   "closure_discourse_state",
   "contradictions_quarantines",
   "action_states",
   "group_channel_memory",
-  "relational_slots",
 ] as const satisfies readonly EvidenceLedgerSectionId[];
 
 const DEFAULT_COMPACT_PLANNER_TARGET_TOKENS = 8_000;
@@ -36,14 +33,6 @@ const DEFAULT_COMPACT_SECTION_OPTIONS = {
   current_user_message: {
     maxEntries: 1,
     maxTokens: 1_200,
-  },
-  cross_session_self_activity: {
-    maxEntries: 8,
-    maxTokens: 800,
-  },
-  commitments_and_constraints: {
-    maxEntries: 32,
-    maxTokens: 2_400,
   },
   closure_discourse_state: {
     maxEntries: 8,
@@ -58,10 +47,6 @@ const DEFAULT_COMPACT_SECTION_OPTIONS = {
     maxTokens: 1_800,
   },
   group_channel_memory: {
-    maxEntries: 24,
-    maxTokens: 1_600,
-  },
-  relational_slots: {
     maxEntries: 24,
     maxTokens: 1_600,
   },

@@ -55,10 +55,6 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxEntries: 96,
     maxTokens: 8_000,
   },
-  cross_session_self_activity: {
-    maxEntries: 12,
-    maxTokens: 1_200,
-  },
   current_session_attribution_sidebar: {
     maxEntries: 16,
     maxTokens: 600,
@@ -66,10 +62,6 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
   attribution_matrix: {
     maxEntries: 24,
     maxTokens: 900,
-  },
-  commitments_and_constraints: {
-    maxEntries: 80,
-    maxTokens: 5_000,
   },
   closure_discourse_state: {
     maxEntries: 16,
@@ -84,10 +76,6 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxTokens: 5_000,
   },
   group_channel_memory: {
-    maxEntries: 48,
-    maxTokens: 3_000,
-  },
-  relational_slots: {
     maxEntries: 48,
     maxTokens: 3_000,
   },
@@ -127,17 +115,14 @@ const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
   retrieved_memory_evidence: 3,
   open_questions: 4,
   current_session_attribution_sidebar: 5,
-  relational_slots: 6,
-  group_channel_memory: 7,
-  attribution_matrix: 8,
-  action_states: 9,
-  contradictions_quarantines: 10,
-  closure_discourse_state: 11,
-  commitments_and_constraints: 12,
-  retrieved_raw_stream_evidence: 13,
-  cross_session_self_activity: 14,
-  current_session_transcript: 15,
-  current_user_message: 16,
+  group_channel_memory: 6,
+  attribution_matrix: 7,
+  action_states: 8,
+  contradictions_quarantines: 9,
+  closure_discourse_state: 10,
+  retrieved_raw_stream_evidence: 11,
+  current_session_transcript: 12,
+  current_user_message: 13,
 } as const satisfies Record<EvidenceLedgerSectionId, number>;
 
 const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSectionIds()].sort(

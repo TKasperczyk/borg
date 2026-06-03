@@ -33,4 +33,20 @@ export function addDiscourseStateSection(context: BuilderSectionContext): void {
       ),
     });
   }
+
+  const stopState = discourseState?.stop_until_substantive_content;
+
+  if (stopState !== undefined && stopState !== null) {
+    addEntry(context.buckets, "closure_discourse_state", {
+      id: "discourse_constraint:stop_until_substantive_content",
+      source_type: "system_metadata",
+      session_scope: "current_session",
+      actor: "system",
+      trust_rank: DISCOURSE_TRUST_RANK,
+      text: stopState.reason,
+      value: stopState.provenance,
+      state: "active",
+      taint: "none",
+    });
+  }
 }
