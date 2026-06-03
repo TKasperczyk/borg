@@ -463,6 +463,7 @@ export async function openBorgDependencies(
       autonomyWakesRepository: repositories.autonomyWakesRepository,
       scheduledWakesRepository: repositories.scheduledWakesRepository,
       selfDecisionRepository: repositories.selfDecisionRepository,
+      observedEventRepository: repositories.observedEventRepository,
       turnOrchestrator,
       autonomyScheduler,
       maintenanceScheduler,

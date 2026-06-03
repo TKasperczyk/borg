@@ -15,6 +15,7 @@ import type { EntityRepository } from "../commitments/index.js";
 import {
   StreamReader,
   filterActiveStreamEntries,
+  isEpisodicSourceEntry,
   isNarrativeStreamEntry,
   type StreamCursor,
   type StreamEntry,
@@ -173,10 +174,6 @@ function chunkEntries(entries: readonly StreamEntry[], maxTokens: number): Strea
 
 function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_stream_ids"] {
   return [...new Set(entries.map((entry) => entry.id))];
-}
-
-function isEpisodicSourceEntry(entry: StreamEntry): boolean {
-  return isNarrativeStreamEntry(entry);
 }
 
 function suppressedUserEntryIdsFromMarker(entry: StreamEntry): string[] {

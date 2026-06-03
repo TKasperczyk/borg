@@ -3,6 +3,7 @@ export {
   NARRATIVE_STREAM_ENTRY_KINDS,
   STREAM_ENTRY_KINDS,
   STREAM_ENTRY_PERSISTENCE_CLASSES,
+  isEpisodicSourceEntry,
   isNarrativeStreamEntry,
   streamCursorSchema,
   streamEntryInputSchema,

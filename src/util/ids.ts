@@ -30,6 +30,7 @@ export type RelationalSlotId = BrandedId<"RelationalSlotId">;
 export type SharedStateEntryId = BrandedId<"SharedStateEntryId">;
 export type ActivityEventId = BrandedId<"ActivityEventId">;
 export type SelfDecisionEventId = BrandedId<"SelfDecisionEventId">;
+export type ObservedEventId = BrandedId<"ObservedEventId">;
 export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
@@ -96,6 +97,7 @@ export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslo
 export const sharedStateEntryIdHelpers = createIdHelpers<"SharedStateEntryId">("dart");
 export const activityEventIdHelpers = createIdHelpers<"ActivityEventId">("actevt");
 export const selfDecisionEventIdHelpers = createIdHelpers<"SelfDecisionEventId">("selfdec");
+export const observedEventIdHelpers = createIdHelpers<"ObservedEventId">("obsevt");
 export const scheduledWakeIdHelpers = createIdHelpers<"ScheduledWakeId">("swake");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
@@ -153,6 +155,7 @@ export const createSharedStateEntryId = (): SharedStateEntryId =>
 export const createActivityEventId = (): ActivityEventId => activityEventIdHelpers.create();
 export const createSelfDecisionEventId = (): SelfDecisionEventId =>
   selfDecisionEventIdHelpers.create();
+export const createObservedEventId = (): ObservedEventId => observedEventIdHelpers.create();
 export const createScheduledWakeId = (): ScheduledWakeId => scheduledWakeIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
@@ -253,6 +256,10 @@ export function parseActivityEventId(value: string): ActivityEventId {
 
 export function parseSelfDecisionEventId(value: string): SelfDecisionEventId {
   return selfDecisionEventIdHelpers.parse(value);
+}
+
+export function parseObservedEventId(value: string): ObservedEventId {
+  return observedEventIdHelpers.parse(value);
 }
 
 export function parseSkillId(value: string): SkillId {

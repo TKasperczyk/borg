@@ -19,6 +19,7 @@ import { CreatorDirectiveRepository } from "../memory/creator-directives/index.j
 import { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
+import { ObservedEventRepository } from "../memory/observed-events/index.js";
 import { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import {
   ProceduralContextStatsRepository,
@@ -101,6 +102,7 @@ export type BorgRepositorySetup = Pick<
   | "sharedStateRepository"
   | "activityRepository"
   | "selfDecisionRepository"
+  | "observedEventRepository"
   | "correctionService"
   | "skillRepository"
   | "proceduralContextStatsRepository"
@@ -328,6 +330,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const observedEventRepository = new ObservedEventRepository({
+    db: sqlite,
+    clock,
+  });
   const identityService = new IdentityService({
     valuesRepository,
     goalsRepository,
@@ -516,6 +522,7 @@ export async function buildBorgRepositories(
     sharedStateRepository,
     activityRepository,
     selfDecisionRepository,
+    observedEventRepository,
     correctionService,
     skillRepository,
     proceduralContextStatsRepository,

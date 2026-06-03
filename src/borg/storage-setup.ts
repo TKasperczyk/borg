@@ -23,6 +23,7 @@ import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedu
 import { relationalSlotMigrations } from "../memory/relational-slots/index.js";
 import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/index.js";
 import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
+import { observedEventMigrations } from "../memory/observed-events/index.js";
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
@@ -236,6 +237,7 @@ export function createMigrations(): Migration[] {
     creatorDirectiveMigrations,
     activityMigrations,
     selfDecisionMigrations,
+    observedEventMigrations,
   );
 }
 

@@ -133,3 +133,7 @@ export function isNarrativeStreamEntry(
 ): entry is StreamEntry & { kind: NarrativeStreamEntryKind } {
   return (NARRATIVE_STREAM_ENTRY_KINDS as readonly StreamEntryKind[]).includes(entry.kind);
 }
+
+export function isEpisodicSourceEntry(entry: StreamEntry): boolean {
+  return isNarrativeStreamEntry(entry);
+}

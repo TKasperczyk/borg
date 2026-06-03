@@ -33,6 +33,7 @@ import type { CreatorDirectiveRepository } from "../memory/creator-directives/in
 import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
+import type { ObservedEventRepository } from "../memory/observed-events/index.js";
 import type {
   ProceduralContextStatsRepository,
   ProceduralEvidenceRepository,
@@ -118,6 +119,7 @@ export type BorgDependencies = {
   sharedStateRepository: SharedStateRepository;
   activityRepository: ActivityRepository;
   selfDecisionRepository: SelfDecisionRepository;
+  observedEventRepository: ObservedEventRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;
   proceduralContextStatsRepository: ProceduralContextStatsRepository;
