@@ -1516,6 +1516,8 @@ export class TurnPhaseCoordinator {
       suppressionSet,
       isUserTurn,
       currentTurnFrameAnomaly,
+      closureLoopAssessment,
+      activeParticipants,
       knownInternalIdentifiers,
     });
   }

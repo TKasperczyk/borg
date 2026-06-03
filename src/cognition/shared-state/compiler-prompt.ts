@@ -1,7 +1,10 @@
 import type { LLMMessage, LLMToolDefinition } from "../../llm/index.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
+import {
+  SHARED_STATE_SYSTEM_PROMPT,
+  type SharedStateCompilePass,
+} from "../prompts/shared-state.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
 import type {
@@ -39,6 +42,9 @@ export function buildSharedStateArtifactMessages(input: {
   participantRoster?: ParticipantRoster | null;
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
+  currentUserTurn?: { streamEntryId: StreamEntryId; text: string } | null;
+  compilePass?: SharedStateCompilePass;
+  assistantResponse?: { streamEntryId: StreamEntryId; text: string } | null;
   promptVisibleLedger: string;
   existingStateKeyRegistry: readonly ExistingStateKeyRegistryEntry[];
   previousArtifactSummary: SharedStatePromptSummary | null;
@@ -51,6 +57,13 @@ export function buildSharedStateArtifactMessages(input: {
   const canonicalizationCandidates = buildCanonicalizationCandidatePromptPayload(
     input.canonicalizationCandidates,
   );
+  const currentUserTurn =
+    input.currentUserTurn === undefined
+      ? {
+          streamEntryId: input.currentUserStreamEntryId,
+          text: input.currentUserMessage,
+        }
+      : input.currentUserTurn;
   const currentAudienceParticipant = input.participants.find(
     (participant) => participant.entityId === input.audienceEntityId,
   );
@@ -59,6 +72,7 @@ export function buildSharedStateArtifactMessages(input: {
     {
       role: "user",
       content: JSON.stringify({
+        compile_pass: input.compilePass ?? "pre_answer",
         audience_entity_id: input.audienceEntityId,
         current_audience: {
           entity_id: input.audienceEntityId,
@@ -73,10 +87,20 @@ export function buildSharedStateArtifactMessages(input: {
           display_name: participant.displayName ?? null,
         })),
         participant_roster: renderParticipantRoster(input.participantRoster),
-        current_user_turn: {
-          stream_entry_id: input.currentUserStreamEntryId,
-          text: input.currentUserMessage,
-        },
+        current_user_turn:
+          currentUserTurn === null
+            ? null
+            : {
+                stream_entry_id: currentUserTurn.streamEntryId,
+                text: currentUserTurn.text,
+              },
+        assistant_response:
+          input.assistantResponse === undefined || input.assistantResponse === null
+            ? null
+            : {
+                stream_entry_id: input.assistantResponse.streamEntryId,
+                text: input.assistantResponse.text,
+              },
         source_trust: {
           citation_eligible_source_stream_entry_id_count:
             input.allowedSourceStreamEntryIds?.length ?? null,
@@ -114,15 +138,17 @@ export type SharedStateArtifactPromptBudget = {
 };
 
 export function estimateSharedStateArtifactPromptBudget(input: {
+  systemPrompt?: string;
   messages: readonly LLMMessage[];
   tools: readonly LLMToolDefinition[];
   previousArtifactSummary: SharedStatePromptSummary | null;
   existingStateKeyRegistry: readonly ExistingStateKeyRegistryEntry[];
   promptVisibleLedger: string;
   currentUserMessage: string;
+  assistantResponse?: { streamEntryId: StreamEntryId; text: string } | null;
   canonicalizationCandidates: SharedStateCanonicalizationCandidates;
 }): SharedStateArtifactPromptBudget {
-  const system = estimatePromptTokens(SHARED_STATE_SYSTEM_PROMPT);
+  const system = estimatePromptTokens(input.systemPrompt ?? SHARED_STATE_SYSTEM_PROMPT);
   const toolSchema = estimatePromptTokens(JSON.stringify(input.tools));
   const previousArtifactSummary = estimatePromptTokens(
     JSON.stringify(input.previousArtifactSummary),
@@ -132,6 +158,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
   );
   const promptVisibleLedger = estimatePromptTokens(input.promptVisibleLedger);
   const currentUserTurn = estimatePromptTokens(input.currentUserMessage);
+  const assistantResponse = estimatePromptTokens(JSON.stringify(input.assistantResponse ?? null));
   const canonicalizationCandidates = estimatePromptTokens(
     JSON.stringify(buildCanonicalizationCandidatePromptPayload(input.canonicalizationCandidates)),
   );
@@ -146,6 +173,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
     existingStateKeyRegistry +
     promptVisibleLedger +
     currentUserTurn +
+    assistantResponse +
     canonicalizationCandidates;
 
   return {
@@ -157,6 +185,7 @@ export function estimateSharedStateArtifactPromptBudget(input: {
       existing_state_key_registry: existingStateKeyRegistry,
       prompt_visible_ledger: promptVisibleLedger,
       current_user_turn: currentUserTurn,
+      assistant_response: assistantResponse,
       canonicalization_candidates: canonicalizationCandidates,
       prompt_envelope: Math.max(0, inputTokenEstimate - accounted),
     },

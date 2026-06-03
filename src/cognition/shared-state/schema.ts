@@ -7,6 +7,7 @@ import {
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
+import type { SharedStateCompilePass } from "../prompts/shared-state.js";
 import type { SharedStateRenderOptions } from "./render.js";
 import type { SharedStatePromptSummaryOptions } from "./summary.js";
 import type {
@@ -94,6 +95,12 @@ export type CompileSharedStateArtifactInput = {
   participantRoster?: ParticipantRoster | null;
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
+  currentUserTurn?: { streamEntryId: StreamEntryId; text: string } | null;
+  currentUserSourceStreamEntryIds?: readonly StreamEntryId[];
+  compilePass?: SharedStateCompilePass;
+  assistantResponse?: { streamEntryId: StreamEntryId; text: string } | null;
+  compileAnchorStreamEntryId?: StreamEntryId;
+  createEmptyArtifactOnNoOp?: boolean;
   promptVisibleLedger: string;
   previousArtifact?: SharedStateArtifact | null;
   relationalSlotsContext?: readonly SharedStateRelationalSlotContext[];

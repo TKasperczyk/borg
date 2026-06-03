@@ -10,7 +10,10 @@ import type {
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
-import { SHARED_STATE_SYSTEM_PROMPT } from "../prompts/shared-state.js";
+import {
+  SHARED_STATE_SYSTEM_PROMPT,
+  buildSharedStateSystemPrompt,
+} from "../prompts/shared-state.js";
 import {
   mergeSemanticBeliefRevisionResult,
   reconcileSharedStateCanonicalizations,
@@ -608,6 +611,13 @@ export async function compileSharedStateArtifact(
       : input.previousArtifact;
   const previousEntryCount = previousArtifact?.entries.length ?? 0;
   const speakerEntityId = input.speakerEntityId ?? null;
+  const compilePass = input.compilePass ?? "pre_answer";
+  const systemPrompt = buildSharedStateSystemPrompt(compilePass);
+  const compileAnchorStreamEntryId =
+    input.compileAnchorStreamEntryId ?? input.currentUserStreamEntryId;
+  const currentUserSourceStreamEntryIds = input.currentUserSourceStreamEntryIds ?? [
+    input.currentUserStreamEntryId,
+  ];
   const previousArtifactSummary = buildSharedStateArtifactPromptSummary(
     previousArtifact,
     input.previousArtifactSummaryOptions,
@@ -621,7 +631,10 @@ export async function compileSharedStateArtifact(
       : uniqueStreamEntryIds([
           ...input.allowedSourceStreamEntryIds,
           ...trustedSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
-        ]).filter((streamEntryId) => streamEntryId !== input.currentUserStreamEntryId);
+        ]).filter(
+          (streamEntryId) =>
+            !currentUserSourceStreamEntryIds.some((sourceId) => sourceId === streamEntryId),
+        );
   const offLimitsSourceStreamEntryIdsForPrompt = uniqueStreamEntryIds([
     ...(input.offLimitsSourceStreamEntryIds ?? []),
     ...offLimitsSourceStreamEntryIds(relationalSlotSourceStreamEntryIds, input),
@@ -635,6 +648,9 @@ export async function compileSharedStateArtifact(
     participantRoster: input.participantRoster,
     currentUserMessage: input.currentUserMessage,
     currentUserStreamEntryId: input.currentUserStreamEntryId,
+    currentUserTurn: input.currentUserTurn,
+    compilePass,
+    assistantResponse: input.assistantResponse,
     promptVisibleLedger: input.promptVisibleLedger,
     existingStateKeyRegistry,
     previousArtifactSummary,
@@ -647,12 +663,14 @@ export async function compileSharedStateArtifact(
   const tools = SHARED_STATE_TOOLS;
   const ledgerMode = input.ledgerMode ?? "full_fallback";
   const promptBudget = estimateSharedStateArtifactPromptBudget({
+    systemPrompt,
     messages,
     tools,
     previousArtifactSummary,
     existingStateKeyRegistry,
     promptVisibleLedger: input.promptVisibleLedger,
     currentUserMessage: input.currentUserMessage,
+    assistantResponse: input.assistantResponse,
     canonicalizationCandidates,
   });
 
@@ -694,7 +712,7 @@ export async function compileSharedStateArtifact(
     sessionId: input.sessionId,
     label: "decision_artifact_compiler",
     model: input.model,
-    systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
+    systemPrompt,
     messages,
     tools,
   });
@@ -704,7 +722,7 @@ export async function compileSharedStateArtifact(
   try {
     response = await input.llmClient.complete({
       model: input.model,
-      system: SHARED_STATE_SYSTEM_PROMPT,
+      system: systemPrompt,
       messages,
       tools,
       tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
@@ -783,7 +801,7 @@ export async function compileSharedStateArtifact(
         sessionId: input.sessionId,
         label: "decision_artifact_compiler",
         model: input.model,
-        systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
+        systemPrompt,
         messages: repairMessages,
         tools,
       });
@@ -793,7 +811,7 @@ export async function compileSharedStateArtifact(
       try {
         repairResponse = await input.llmClient.complete({
           model: input.model,
-          system: SHARED_STATE_SYSTEM_PROMPT,
+          system: systemPrompt,
           messages: repairMessages,
           tools,
           tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
@@ -976,7 +994,7 @@ export async function compileSharedStateArtifact(
       sessionId: input.sessionId,
       label: "decision_artifact_compiler",
       model: input.model,
-      systemPrompt: SHARED_STATE_SYSTEM_PROMPT,
+      systemPrompt,
       messages: repairMessages,
       tools,
     });
@@ -986,7 +1004,7 @@ export async function compileSharedStateArtifact(
     try {
       repairResponse = await input.llmClient.complete({
         model: input.model,
-        system: SHARED_STATE_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: repairMessages,
         tools,
         tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
@@ -1219,6 +1237,25 @@ export async function compileSharedStateArtifact(
   ).length;
 
   if (operations.length === 0) {
+    if (previousArtifact === null && input.createEmptyArtifactOnNoOp === false) {
+      traceCompileCompleted({
+        ...compileCompletedTraceWithLifecycle,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn,
+        supersededEntryCountThisTurn,
+        operationCountsByKind: operationCounts,
+        operationCountsByStateKey: operationCountsByStateKeyForTrace,
+        newStateKeys: newStateKeysForTrace,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
+        lifecycleTransitions: aging.transitions,
+      });
+
+      return emptyPatch();
+    }
+
     let markedArtifact = previousArtifact;
 
     try {
@@ -1226,7 +1263,7 @@ export async function compileSharedStateArtifact(
         expectedVersion: previousArtifact?.record_version,
         now: nowMs,
         lastCompiledAt: nowMs,
-        lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+        lastCompiledStreamEntryId: compileAnchorStreamEntryId,
         sourceTrustValidator: input.sourceTrustValidator,
       });
     } catch (error) {
@@ -1311,7 +1348,7 @@ export async function compileSharedStateArtifact(
       expectedVersion: previousArtifact?.record_version,
       now: nowMs,
       lastCompiledAt: nowMs,
-      lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+      lastCompiledStreamEntryId: compileAnchorStreamEntryId,
       sourceTrustValidator: input.sourceTrustValidator,
       lastUpdatedTurnGlobal: input.turnCounter ?? null,
     });

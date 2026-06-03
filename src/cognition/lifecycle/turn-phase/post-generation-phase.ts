@@ -10,6 +10,8 @@ import {
   type TurnEmission,
 } from "../../generation/types.js";
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
+import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
+import type { ActiveParticipant } from "../../participants.js";
 import { isDirectedOutboundTurnOrigin, type PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type {
@@ -37,7 +39,11 @@ import type { TurnPhaseCoordinatorOptions, TurnPhaseInput, TurnPhaseResult } fro
 import type { CurrentTurnUserInputSenderAttribution } from "../../turn-input.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { TurnDeliberationPhaseResult } from "./deliberation-phase.js";
-import type { TurnRetrievalPhaseResult } from "./retrieval-phase.js";
+import {
+  buildCompactedEvidenceLedgerWithoutSharedState,
+  compileSharedStateArtifactForEvidenceLedgerResult,
+  type TurnRetrievalPhaseResult,
+} from "./retrieval-phase.js";
 import { traceTurnPhase } from "./phase-trace.js";
 import {
   ACTIVE_TURN_STATUS,
@@ -258,6 +264,93 @@ function incrementSkippedReason(skippedByReason: Record<string, number>, reason:
   skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
 }
 
+async function compilePostResponseSharedState(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  turnId: string;
+  turnInput: TurnPhaseInput;
+  persistedAgentEntry: StreamEntry;
+  agentResponse: string;
+  persistedUserEntry?: StreamEntry;
+  sourceUserEntries?: readonly StreamEntry[];
+  workingMemory: WorkingMemory;
+  perception: PerceptionResult;
+  retrievalPhase: TurnRetrievalPhaseResult;
+  audienceEntityId: EntityId | null;
+  isUserTurn: boolean;
+  currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  closureLoopAssessment?: ClosureLoopAssessment | null;
+  activeParticipants?: readonly ActiveParticipant[];
+}): Promise<void> {
+  if (
+    input.audienceEntityId === null ||
+    !input.options.config.generation.evidenceLedger.enabled
+  ) {
+    return;
+  }
+
+  const currentUserEntries =
+    input.sourceUserEntries === undefined || input.sourceUserEntries.length === 0
+      ? undefined
+      : input.sourceUserEntries;
+  const currentUserEntry = input.persistedUserEntry ?? currentUserEntries?.[0];
+  const ledgerInput = {
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    audienceEntityId: input.audienceEntityId,
+    currentUserMessage: input.turnInput.userMessage,
+    ...(currentUserEntry === undefined ? {} : { currentUserEntry }),
+    ...(currentUserEntries === undefined ? {} : { currentUserEntries }),
+    ...(input.turnInput.globalTurnCounter === undefined
+      ? {}
+      : { globalTurnCounter: input.turnInput.globalTurnCounter }),
+    workingMemory: input.workingMemory,
+    applicableCommitments: input.retrievalPhase.applicableCommitments ?? [],
+    retrievedEvidence: input.retrievalPhase.retrieval.evidence ?? [],
+    retrievedEpisodes: input.retrievalPhase.retrievedEpisodes ?? [],
+    retrievedSemantic: input.retrievalPhase.retrievedSemantic ?? null,
+    openQuestions: input.retrievalPhase.retrieval.open_questions ?? [],
+    pendingCorrections: input.retrievalPhase.pendingCorrections ?? [],
+    frameAnomaly: input.currentTurnFrameAnomaly,
+    activeParticipants: input.activeParticipants ?? [],
+    participantRoster: input.retrievalPhase.participantRoster ?? null,
+    isUserTurn: input.isUserTurn,
+    perception: input.perception,
+    closureLoopAssessment: input.closureLoopAssessment ?? null,
+  };
+  const compacted = await traceTurnPhase({
+    tracer: input.options.tracer,
+    clock: input.options.clock,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+    phase: "ledger",
+    sub: "post_response_shared_state",
+    run: () =>
+      buildCompactedEvidenceLedgerWithoutSharedState({
+        options: input.options,
+        input: ledgerInput,
+      }),
+    completedSub: (result) =>
+      `post_response_shared_state entries=${result.ledger.sections.reduce(
+        (sum, section) => sum + section.entries.length,
+        0,
+      )}`,
+  });
+
+  await compileSharedStateArtifactForEvidenceLedgerResult({
+    options: input.options,
+    input: ledgerInput,
+    ledger: compacted.ledger,
+    promptVisibleLedger: compacted.rendered ?? "",
+    compilePass: "post_response",
+    assistantResponse: {
+      streamEntryId: input.persistedAgentEntry.id,
+      text: input.agentResponse,
+    },
+    compileAnchorStreamEntryId: input.persistedAgentEntry.id,
+  });
+}
+
 function archiveInactiveParticipantActions(input: {
   options: TurnPhaseCoordinatorOptions;
   turnId: string;
@@ -395,6 +488,8 @@ export async function runPostGenerationPhase(input: {
   >[0]["suppressionSet"];
   isUserTurn: boolean;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  closureLoopAssessment?: ClosureLoopAssessment | null;
+  activeParticipants?: readonly ActiveParticipant[];
   knownInternalIdentifiers?: readonly string[];
 }): Promise<TurnPhaseResult> {
   const workingMemory = {
@@ -610,6 +705,40 @@ export async function runPostGenerationPhase(input: {
         sessionId: input.sessionId,
       });
     }
+  }
+
+  if (actionEmission.kind === "message" && shouldRecordActivity) {
+    // Bug #35: the pre-answer shared-state compile cannot cite Borg's future
+    // response, and the shared-state prompt explicitly tells that pass not to
+    // record facts whose truth depends on the not-yet-existing reply. Without
+    // this post-generation pass, a durable decision Borg asserted in its own
+    // persisted agent_msg is not compiled into the artifact until a later turn.
+    // The post_response prompt pass makes the assistant stream entry visible as
+    // citable evidence while preserving the same compiler and same prompt-pass
+    // boundary: the fresh artifact never feeds back into this turn's deliberation.
+    // This intentionally honors shouldSkipSharedStateCompile inside the shared
+    // wrapper. Closure-shaped/no-delta and idle turns still do cheap anchor
+    // advancement instead of a full compile, so a decision stated in a reply to
+    // a closure-shaped user turn can be skipped; that accepted profile avoids
+    // adding any response-text gate or deterministic semantic catch-up path.
+    await compilePostResponseSharedState({
+      options: input.options,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      turnInput: input.turnInput,
+      persistedAgentEntry,
+      agentResponse: actionResult.response,
+      persistedUserEntry: input.persistedUserEntry,
+      sourceUserEntries: input.sourceUserEntries,
+      workingMemory: postActionWorkingMemory,
+      perception: input.perception,
+      retrievalPhase: input.retrievalPhase,
+      audienceEntityId: input.audienceEntityId,
+      isUserTurn: input.isUserTurn,
+      currentTurnFrameAnomaly: input.currentTurnFrameAnomaly,
+      closureLoopAssessment: input.closureLoopAssessment ?? null,
+      activeParticipants: input.activeParticipants ?? [],
+    });
   }
 
   await traceTurnPhase({
