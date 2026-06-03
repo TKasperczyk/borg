@@ -1,7 +1,11 @@
 import { SuppressionSet } from "../attention/index.js";
 import { formatAutonomyTriggerContext } from "../autonomy-trigger.js";
 import { ContradictionRoutingCooldown } from "../deliberation/contradiction-routing-cooldown.js";
-import { GenerationGate } from "../generation/generation-gate.js";
+import {
+  GenerationGate,
+  type GenerationGateResult,
+  type GenerationGateStructuralSignals,
+} from "../generation/generation-gate.js";
 import { orderedPendingResponseUserRecords } from "../ingestion/backlog-prefix.js";
 import { buildParticipantRosterFromRepositories } from "../perception/index.js";
 import {
@@ -77,6 +81,16 @@ export type {
   TurnPhaseInput,
   TurnPhaseResult,
 } from "./turn-phase/types.js";
+
+const ZEROED_SIGNALS: GenerationGateStructuralSignals = {
+  minimalUserInput: false,
+  activeDiscourseStop: false,
+  recentMinimalUserRun: 0,
+  repeatedMinimalSimilarity: null,
+  repeatedMinimalExchange: false,
+  hardCapDue: false,
+  hardCapActiveTurns: 0,
+};
 
 function previewItems(items: readonly string[], limit = 4): string {
   const head = items.slice(0, limit).join(",");
@@ -1340,21 +1354,29 @@ export class TurnPhaseCoordinator {
           reason,
         }),
     });
-    const gateResult = await traceTurnPhase({
-      tracer: this.options.tracer,
-      clock: this.options.clock,
-      turnId,
-      sessionId,
-      phase: "generation_gate",
-      run: () =>
-        generationGate.evaluate({
-          userMessage: turnInput.userMessage,
-          workingMemory,
-          recencyMessages: recencyWindow.messages,
-        }),
-      completedSub: (result) =>
-        result.action === "suppress" ? `suppress: ${result.explanation ?? ""}` : "allow",
-    });
+    const gateResult: GenerationGateResult = isUserTurn
+      ? await traceTurnPhase({
+          tracer: this.options.tracer,
+          clock: this.options.clock,
+          turnId,
+          sessionId,
+          phase: "generation_gate",
+          run: () =>
+            generationGate.evaluate({
+              userMessage: turnInput.userMessage,
+              workingMemory,
+              recencyMessages: recencyWindow.messages,
+            }),
+          completedSub: (result) =>
+            result.action === "suppress" ? `suppress: ${result.explanation ?? ""}` : "allow",
+        })
+      : {
+          action: "proceed",
+          explanation: "non-user turn: generation gate not applicable",
+          clearDiscourseStop: false,
+          classified: false,
+          signals: ZEROED_SIGNALS,
+        };
 
     if (gateResult.signals.hardCapDue) {
       await this.options.discourseStateService.appendHardCapEvent({

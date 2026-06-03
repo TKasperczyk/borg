@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
+import { createWorkingMemory } from "../../memory/working/index.js";
 import { TurnDiscourseStateService } from "./turn-discourse-state.js";
 
 describe("TurnDiscourseStateService", () => {
@@ -141,5 +142,84 @@ describe("TurnDiscourseStateService", () => {
         attempt: "regenerate",
       },
     });
+  });
+
+  it("does not arm stop-until-substantive-content for autonomous no-output suppressions", () => {
+    const service = new TurnDiscourseStateService({
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit() {},
+      },
+      clock: new FixedClock(1_000),
+    });
+    const reasons = ["finalizer_no_output", "manifest_no_output", "no_output_tool"] as const;
+
+    for (const reason of reasons) {
+      const sourceStreamEntryId = createStreamEntryId();
+      const workingMemory = service.applySuppressedEmissionState({
+        workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+        reason,
+        origin: "autonomous",
+        sourceStreamEntryId,
+        turnId: `turn-${reason}`,
+      });
+
+      expect(workingMemory.discourse_state?.stop_until_substantive_content).toBeNull();
+      expect(workingMemory.discourse_state?.recent_suppressions).toEqual([
+        {
+          turn_id: `turn-${reason}`,
+          reason,
+          source_stream_entry_id: sourceStreamEntryId,
+          ts: 1_000,
+        },
+      ]);
+    }
+  });
+
+  it("preserves user-turn no-output stop arming for undefined and explicit user origins", () => {
+    const service = new TurnDiscourseStateService({
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit() {},
+      },
+      clock: new FixedClock(1_000),
+    });
+    const cases = [
+      {
+        reason: "finalizer_no_output",
+        expectedReason: "Finalizer called no_output for this turn.",
+      },
+      {
+        reason: "manifest_no_output",
+        expectedReason: "Legacy finalizer emitted no_output for this turn.",
+      },
+      {
+        reason: "no_output_tool",
+        expectedReason: "Finalizer called no_output for this turn.",
+      },
+    ] as const;
+    const origins = [undefined, "user"] as const;
+
+    for (const origin of origins) {
+      for (const testCase of cases) {
+        const sourceStreamEntryId = createStreamEntryId();
+        const workingMemory = service.applySuppressedEmissionState({
+          workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+          reason: testCase.reason,
+          origin,
+          sourceStreamEntryId,
+          turnId: `turn-${origin ?? "undefined"}-${testCase.reason}`,
+        });
+
+        expect(workingMemory.discourse_state?.stop_until_substantive_content).toEqual({
+          provenance: "finalizer_no_output",
+          source_stream_entry_id: sourceStreamEntryId,
+          reason: testCase.expectedReason,
+          since_turn: 0,
+        });
+      }
+    }
   });
 });

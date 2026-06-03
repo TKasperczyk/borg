@@ -936,6 +936,7 @@ export async function suppressFromClosureLoopPhase(input: {
   const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: suppressionActionResult.workingMemory,
     reason: "finalizer_no_output",
+    origin: input.turnInput.origin,
     sourceStreamEntryId: suppressionMarker.id,
     sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,
@@ -1075,6 +1076,7 @@ export async function suppressFromGenerationGatePhase(input: {
   const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: suppressionActionResult.workingMemory,
     reason: suppressionReason,
+    origin: input.turnInput.origin,
     sourceStreamEntryId: suppressionMarker.id,
     sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,
@@ -1174,6 +1176,7 @@ async function suppressFromActionPhase(input: {
   let suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
     workingMemory: input.actionResult.workingMemory,
     reason: input.actionEmission.reason,
+    origin: input.turnInput.origin,
     sourceStreamEntryId: input.persistedAgentEntry.id,
     sourceStreamEntryIds: input.sourceUserEntryIds,
     turnId: input.turnId,

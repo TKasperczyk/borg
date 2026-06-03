@@ -138,6 +138,47 @@ describe("GenerationGate", () => {
     expect(result.classified).toBe(true);
   });
 
+  it("clears active stop for substantive non-English user content through the classifier", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        gateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "The user brought substantive scheduler content in Japanese.",
+        }),
+      ],
+    });
+    const gate = new GenerationGate({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(),
+      model: "test-background",
+      hardCapTurns: 50,
+    });
+    const workingMemory = setStopUntilSubstantiveContent(
+      createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      {
+        provenance: "finalizer_emission_metadata",
+        sourceStreamEntryId: createStreamEntryId(),
+        reason: "The assistant promised to stop.",
+        sinceTurn: 1,
+      },
+    );
+
+    const result = await gate.evaluate({
+      userMessage: "戻ります。スケジューラの件を続けます。",
+      workingMemory: {
+        ...workingMemory,
+        turn_counter: 2,
+      },
+      recencyMessages: [],
+    });
+
+    expect(result.action).toBe("proceed");
+    expect(result.clearDiscourseStop).toBe(true);
+    expect(result.classified).toBe(true);
+    expect(llm.requests).toHaveLength(1);
+  });
+
   it("forces suppression when active stop classifier says proceed but not substantive", async () => {
     const llm = new FakeLLMClient({
       responses: [

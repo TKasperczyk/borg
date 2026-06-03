@@ -31,7 +31,10 @@ import {
   type ClosureLoopClassifiedMessage,
 } from "./generation/closure-loop.js";
 import { CLOSURE_RESPONSE_AUDIT_TOOL_NAME } from "./generation/closure-pressure-guard.js";
-import { setClosureLoopDetected } from "./generation/discourse-state.js";
+import {
+  setClosureLoopDetected,
+  setStopUntilSubstantiveContent,
+} from "./generation/discourse-state.js";
 import type { TurnOrchestratorInput } from "./turn-input.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import {
@@ -7225,6 +7228,77 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           .filter((event) => event.event === "turn.terminal")
           .map((event) => event.outcome),
       ).toEqual(["reflected", "suppressed_generation_gate"]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not apply the generation gate to autonomous self wakes under stale stop state", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_201_000);
+    const staleStopSourceId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createEmitAnswerResponse("Autonomous wake reached cognition."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      const workingMemory = internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
+      internal.deps.workingMemoryStore.save(
+        setStopUntilSubstantiveContent(workingMemory, {
+          provenance: "finalizer_no_output",
+          sourceStreamEntryId: staleStopSourceId,
+          reason: "Stale finalizer no-output stop.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const result = await borg.turn({
+        userMessage: "",
+        audience: "self",
+        origin: "autonomous",
+        stakes: "low",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Autonomous wake reached cognition.");
+      expect(result.emission).toMatchObject({
+        kind: "message",
+        content: "Autonomous wake reached cognition.",
+      });
+      expect(llm.requests.some((request) => request.budget === "generation-gate")).toBe(false);
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toEqual({
+        provenance: "finalizer_no_output",
+        source_stream_entry_id: staleStopSourceId,
+        reason: "Stale finalizer no-output stop.",
+        since_turn: 0,
+      });
+      expect(
+        traceEvents.some(
+          (event) =>
+            event.event === "discourse_state.transitioned" &&
+            event.turnId === result.turn_id &&
+            event.state === "stop_until_substantive_content" &&
+            event.transition === "clear",
+        ),
+      ).toBe(false);
+      expect(
+        traceEvents
+          .filter((event) => event.event === "turn.terminal")
+          .map((event) => event.outcome),
+      ).toEqual(["reflected"]);
     } finally {
       await borg.close();
     }
