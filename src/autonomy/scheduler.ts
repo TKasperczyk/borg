@@ -3,7 +3,8 @@ import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
-import type { TurnOrchestrator } from "../cognition/index.js";
+import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
+import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 
 import type {
@@ -55,6 +56,30 @@ export type AutonomySchedulerOptions = {
 function summarizeOutcome(text: string): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length <= 240 ? collapsed : `${collapsed.slice(0, 239)}…`;
+}
+
+// Phase 1.1 (B): when an autonomous wake produces no user-facing output, the
+// decision WAS to stay silent. Record the structural suppression reason (a
+// finalizer/suppression enum -- never user-content words, so multilingual-safe)
+// so the operator-introspection lane isn't empty for no-output reflections.
+// We store structure only; the model phrases it naturally at read time.
+function summarizeAutonomousDecision(turnResult: TurnResult): string {
+  const emitted = summarizeOutcome(turnResult.response);
+
+  if (emitted.length > 0) {
+    return emitted;
+  }
+
+  if (turnResult.emission.kind === "suppressed") {
+    const outcomeClass = classifySuppressionReason(turnResult.emission.reason).replaceAll("-", " ");
+    const detail = (
+      turnResult.emission.primary_no_output_reason ?? turnResult.emission.reason
+    ).replaceAll("_", " ");
+
+    return summarizeOutcome(`Stayed silent (${outcomeClass}): ${detail}`);
+  }
+
+  return "";
 }
 
 function formatError(error: unknown): string {
@@ -247,6 +272,7 @@ export class AutonomyScheduler {
               origin: "autonomous",
             });
             const outcomeSummary = summarizeOutcome(turnResult.response);
+            const decisionSummary = summarizeAutonomousDecision(turnResult);
 
             const autonomousActionEntry = await writer.append({
               kind: "internal_event",
@@ -271,7 +297,7 @@ export class AutonomyScheduler {
                 triggerType: dueEvent.sourceType,
                 sourceEventId: dueEvent.id,
                 fireEventId: autonomousActionEntry.id,
-                decisionSummary: outcomeSummary,
+                decisionSummary,
                 turnResultId: turnResult.agentMessageId ?? null,
                 sourceStreamEntryIds: [autonomousWakeEntry.id, autonomousActionEntry.id],
               });

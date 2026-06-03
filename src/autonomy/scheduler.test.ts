@@ -319,6 +319,59 @@ describe("AutonomyScheduler", () => {
     ).toHaveLength(2);
   });
 
+  it("records the structural suppression reason as the decision summary for a no-output autonomous wake", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const selfDecisionRepository = new SelfDecisionRepository({ db: harness.db, clock });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue({
+        mode: "idle",
+        path: "suppressed",
+        response: "",
+        emitted: false,
+        emission: { kind: "suppressed", reason: "active_discourse_stop" },
+        thoughts: [],
+        usage: { input_tokens: 1, output_tokens: 1, stop_reason: "end_turn" },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        agentMessageId: "strm_agent_suppressed",
+      }),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      selfDecisionRepository,
+      sources: [createTestDueSource("suppressed-source-event")],
+    });
+
+    const result = await scheduler.tick();
+    expect(result.firedEvents).toBe(1);
+
+    const rows = selfDecisionRepository.listRecentForSession({
+      sessionId: DEFAULT_SESSION_ID,
+      sinceMs: 0,
+      limit: 10,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.decisionSummary).toContain("Stayed silent");
+    expect(rows[0]?.decisionSummary).toContain("active discourse stop");
+  });
+
   it("does not record a self decision when the watermark commit fails", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
