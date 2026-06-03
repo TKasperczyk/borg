@@ -24,6 +24,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import { checkRelationshipClaimGrounding } from "../memory-write-relationship-gate.js";
 import type { RelationshipClaim } from "../relationship-claims.js";
@@ -396,8 +397,10 @@ export class CorrectivePreferenceTurnService {
   }): boolean {
     return (
       input.isUserTurn &&
-      input.sessionAudienceRole === "operator" &&
-      input.currentSenderBorgRole === "creator" &&
+      isCreatorInOperatorContext({
+        currentSenderBorgRole: input.currentSenderBorgRole,
+        sessionAudienceRole: input.sessionAudienceRole,
+      }) &&
       input.currentSenderEntityId !== null &&
       input.candidate.applies_to_audience_entity_id !== null
     );

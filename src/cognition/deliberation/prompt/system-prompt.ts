@@ -27,6 +27,7 @@ import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
+import { isCreatorInOperatorContext } from "../../authority.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
@@ -554,8 +555,7 @@ function renderAuthorityContextLines(context: DeliberationContext, indent: strin
   }
 
   const guidanceWeight =
-    creatorContext.currentSenderBorgRole === "creator" &&
-    creatorContext.sessionAudienceRole === "operator"
+    isCreatorInOperatorContext(creatorContext)
       ? "direct supervisory framing"
       : creatorContext.currentSenderBorgRole === "creator"
         ? "trusted guidance, not command authority"

@@ -5,6 +5,7 @@ import {
   type FrameAnomalyClassification,
   type FrameAnomalyConversationContext,
 } from "../../frame-anomaly/index.js";
+import { isCreatorInOperatorContext } from "../../authority.js";
 import {
   ClosureLoopClassifier,
   assessClosureLoopClassification,
@@ -109,8 +110,10 @@ export async function classifyFrameAnomalyPhase(input: {
   const actualFrameAnomaly = isFrameAnomaly(classification) ? classification : null;
   const trustedOperatorControl =
     actualFrameAnomaly !== null &&
-    input.sessionAudienceRole === "operator" &&
-    input.currentSenderBorgRole === "creator";
+    isCreatorInOperatorContext({
+      currentSenderBorgRole: input.currentSenderBorgRole,
+      sessionAudienceRole: input.sessionAudienceRole,
+    });
   const disposition: FrameAnomalyDisposition =
     actualFrameAnomaly === null
       ? "none"

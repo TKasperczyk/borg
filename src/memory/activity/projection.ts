@@ -1,4 +1,5 @@
 import type { BorgRole } from "../commitments/index.js";
+import { isCreatorInOperatorContext } from "../../cognition/authority.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -54,7 +55,12 @@ export function selectCrossSessionSelfActivity(
 ): CrossSessionSelfActivityRow[] {
   void input.currentAudienceEntityId;
 
-  if (input.sessionAudienceRole !== "operator" || input.currentSenderBorgRole !== "creator") {
+  if (
+    !isCreatorInOperatorContext({
+      currentSenderBorgRole: input.currentSenderBorgRole,
+      sessionAudienceRole: input.sessionAudienceRole,
+    })
+  ) {
     return [];
   }
 

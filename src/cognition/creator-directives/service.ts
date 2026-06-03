@@ -12,6 +12,7 @@ import { dedupePreservingOrder } from "../../util/collections.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
+import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -400,8 +401,10 @@ export class CreatorDirectiveTurnService {
   ): Promise<CreatorDirective[]> {
     if (
       !input.isUserTurn ||
-      input.sessionAudienceRole !== "operator" ||
-      input.currentSenderBorgRole !== "creator" ||
+      !isCreatorInOperatorContext({
+        currentSenderBorgRole: input.currentSenderBorgRole,
+        sessionAudienceRole: input.sessionAudienceRole,
+      }) ||
       input.currentSenderEntityId === null
     ) {
       return [];
