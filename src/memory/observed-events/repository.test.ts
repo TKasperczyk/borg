@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase, type SqliteDatabase } from "../../storage/sqlite/index.js";
 import {
   collectInactiveStreamEntryRefs,
@@ -27,10 +29,26 @@ import {
   type SessionId,
 } from "../../util/ids.js";
 import { observedEventMigrations } from "./migrations.js";
-import { ObservedEventRepository, type ObservedEventRecordInput } from "./repository.js";
+import {
+  createObservedEventsTableSchema,
+  ObservedEventRepository,
+  type ObservedEventRecordInput,
+} from "./repository.js";
 import { observedEventSchema } from "./types.js";
 
 const tempDirs: string[] = [];
+
+class MapEmbeddingClient implements EmbeddingClient {
+  constructor(private readonly vectors: Map<string, readonly number[]>) {}
+
+  async embed(text: string): Promise<Float32Array> {
+    return Float32Array.from(this.vectors.get(text) ?? [0, 0, 1, 0]);
+  }
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    return Promise.all(texts.map((text) => this.embed(text)));
+  }
+}
 
 afterEach(() => {
   for (const tempDir of tempDirs.splice(0)) {
@@ -386,11 +404,118 @@ describe("ObservedEventRepository", () => {
     db.close();
   });
 
+  it("embeds observed-event stance rationale and searches by vector globally", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-events-vector-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "observed-events.db"), {
+      migrations: observedEventMigrations,
+    });
+    const query = "hidden cousin pressure topic";
+    const matchingRationale = "Sol rejected a quarantined hidden cousin pressure frame.";
+    const otherRationale = "Sol rejected an unrelated scheduling pressure frame.";
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        [query, [1, 0, 0, 0]],
+        [matchingRationale, [1, 0, 0, 0]],
+        [otherRationale, [0, 1, 0, 0]],
+      ]),
+    );
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const table = await store.openTable({
+      name: "observed_events",
+      schema: createObservedEventsTableSchema(4),
+    });
+    const repository = new ObservedEventRepository({
+      db,
+      table,
+      embeddingClient,
+      clock: new FixedClock(2_000),
+    });
+    const sessionId = createSessionId();
+    const speakerEntityId = createEntityId();
+
+    const matching = repository.record(
+      recordInput(sessionId, {
+        interactionText: matchingRationale,
+        recurrenceKey: "session:speaker:hidden-cousin-pressure",
+        speakerEntityId,
+      }),
+    );
+    repository.record(
+      recordInput(sessionId, {
+        interactionText: otherRationale,
+        recurrenceKey: "session:speaker:scheduling-pressure",
+        speakerEntityId: createEntityId(),
+      }),
+    );
+    await repository.waitForPendingEmbeddings();
+
+    const results = await repository.searchByVector(await embeddingClient.embed(query), {
+      minSimilarity: 0.8,
+      limit: 5,
+    });
+
+    expect(results.map((result) => result.event.id)).toEqual([matching.id]);
+    expect(results[0]?.event.interactionText).toBe(matchingRationale);
+    expect(results[0]?.event.speakerEntityId).toBe(speakerEntityId);
+
+    db.close();
+  });
+
+  it("backfills missing observed-event embeddings", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-events-backfill-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "observed-events.db"), {
+      migrations: observedEventMigrations,
+    });
+    const rationale = "Sol rejected a quarantined launch-pressure frame.";
+    const embeddingClient = new MapEmbeddingClient(new Map([[rationale, [1, 0, 0, 0]]]));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const table = await store.openTable({
+      name: "observed_events",
+      schema: createObservedEventsTableSchema(4),
+    });
+    const sqliteOnlyRepository = new ObservedEventRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const event = sqliteOnlyRepository.record(
+      recordInput(createSessionId(), {
+        interactionText: rationale,
+        recurrenceKey: "session:speaker:backfill",
+      }),
+    );
+    const vectorRepository = new ObservedEventRepository({
+      db,
+      table,
+      embeddingClient,
+      clock: new FixedClock(2_000),
+    });
+
+    const report = await vectorRepository.backfillMissingEmbeddings();
+    const embeddedIds = await vectorRepository.getEmbeddedEventIds([event.id]);
+
+    expect(report).toEqual({
+      scanned: 1,
+      embedded: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(embeddedIds).toEqual(new Set([event.id]));
+
+    db.close();
+  });
+
   it("appends the speaker-recent migration without changing earlier observed-event migrations", () => {
     expect(observedEventMigrations.map((migration) => [migration.id, migration.name])).toEqual([
       [1, "observed_events_baseline"],
       [2, "observed_events_fire_dedup_key"],
       [3, "observed_events_speaker_recent"],
+      [4, "observed_events_global_relevance"],
     ]);
 
     const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-events-migration-"));

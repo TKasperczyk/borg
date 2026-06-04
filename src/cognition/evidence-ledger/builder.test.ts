@@ -798,9 +798,12 @@ describe("EvidenceLedgerBuilder", () => {
       frameAnomaly: null,
       observedEventIntrospection: [
         {
+          id: "obsevt_aaaaaaaaaaaaaaaa",
           occurredAt: NOW_MS - 3 * 60 * 60_000,
           lastSeenAt: NOW_MS - 60_000,
           relativeAge: "1m ago",
+          recallScore: 0.9,
+          recallReasons: ["recent", "person"],
           stance: "rejected_frame",
           taint: "quarantined",
           beliefEffect: "unchanged",
@@ -812,9 +815,12 @@ describe("EvidenceLedgerBuilder", () => {
           text: "Observed 3 times rejected_frame 1m ago: Sol rejected the pushed frame.",
         },
         {
+          id: "obsevt_bbbbbbbbbbbbbbbb",
           occurredAt: NOW_MS - 2 * 60 * 60_000,
           lastSeenAt: NOW_MS - 30_000,
           relativeAge: "30s ago",
+          recallScore: 0.82,
+          recallReasons: ["topic"],
           stance: "rejected_frame",
           taint: "quarantined",
           beliefEffect: "unchanged",
@@ -867,6 +873,69 @@ describe("EvidenceLedgerBuilder", () => {
     );
     expect(entries[1]?.text).toContain("in a one-to-one");
     expect(renderEvidenceLedger(ledger) ?? "").not.toContain("observed_event_introspection");
+  });
+
+  it("fails closed when observed event introspection has unknown social origin", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-observed-event-unknown-origin",
+      audienceEntityId: null,
+      currentUserMessage: "What pattern should I remember?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      observedEventIntrospection: [
+        {
+          id: "obsevt_unknownorigin000",
+          occurredAt: NOW_MS - 60_000,
+          lastSeenAt: NOW_MS - 30_000,
+          relativeAge: "30s ago",
+          recallScore: 0.8,
+          recallReasons: ["recent"],
+          stance: "rejected_frame",
+          taint: "quarantined",
+          beliefEffect: "unchanged",
+          disclosureClass: "social_observed",
+          interactionText: "Sol rejected an unknown-origin push.",
+          recurrenceCount: 1,
+          speakerEntityId: null,
+          audienceEntityId: null,
+          text: "Observed 30s ago: Sol rejected an unknown-origin push. stance=rejected_frame; taint=quarantined; belief_effect=unchanged; not accepted as true",
+        },
+      ],
+    });
+
+    const entry = ledger.audienceStanding?.observedEventIntrospectionEntries[0];
+
+    expect(entry?.state).toContain("disclosure_class=unknown");
+    expect(entry?.state).toContain("private-to=unknown");
+    expect(entry?.state_metadata).toEqual(
+      expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "unknown",
+          private_to_entity_ids: [],
+        }),
+        disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+      }),
+    );
   });
 
   it("collects current-session ledger context with a bounded reverse stream scan", async () => {

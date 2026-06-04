@@ -131,6 +131,7 @@ export type BuildBorgRepositoriesOptions = {
   skillsTable: LanceDbTable;
   actionRecordsTable: LanceDbTable;
   imagePerceptionsTable: LanceDbTable;
+  observedEventsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
   clock: Clock;
@@ -332,8 +333,57 @@ export async function buildBorgRepositories(
   });
   const observedEventRepository = new ObservedEventRepository({
     db: sqlite,
+    table: options.observedEventsTable,
+    embeddingClient,
     clock,
+    onEmbeddingFailure: (error, details) => {
+      const writer = createDefaultStreamWriter();
+      void appendInternalFailureEvent(writer, "observed_event_embedding", error, {
+        operation: details.operation,
+        eventId: details.eventId,
+      }).finally(() => {
+        writer.close();
+      });
+    },
   });
+  if (options.tracer?.enabled === true) {
+    options.tracer.emit("observed_event_embedding_backfill.started", {
+      turnId: "startup",
+      mode: "background",
+      recall_consistency: "topic_recall_eventual_until_complete",
+    });
+  }
+  void observedEventRepository
+    .backfillMissingEmbeddings()
+    .then((report) => {
+      if (options.tracer?.enabled === true) {
+        options.tracer.emit("observed_event_embedding_backfill.completed", {
+          turnId: "startup",
+          mode: "background",
+          scanned: report.scanned,
+          embedded: report.embedded,
+          skipped: report.skipped,
+          failed: report.failed,
+        });
+      }
+    })
+    .catch((error) => {
+      if (options.tracer?.enabled === true) {
+        options.tracer.emit("observed_event_embedding_backfill.failed", {
+          turnId: "startup",
+          mode: "background",
+          ...(options.tracer.includePayloads
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      }
+      const writer = createDefaultStreamWriter();
+      void appendInternalFailureEvent(writer, "observed_event_embedding_backfill", error).finally(
+        () => {
+          writer.close();
+        },
+      );
+    });
   const identityService = new IdentityService({
     valuesRepository,
     goalsRepository,

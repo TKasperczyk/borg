@@ -23,7 +23,10 @@ import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedu
 import { relationalSlotMigrations } from "../memory/relational-slots/index.js";
 import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/index.js";
 import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
-import { observedEventMigrations } from "../memory/observed-events/index.js";
+import {
+  createObservedEventsTableSchema,
+  observedEventMigrations,
+} from "../memory/observed-events/index.js";
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
@@ -50,6 +53,7 @@ export type BorgLanceTables = {
   skillsTable: LanceDbTable;
   actionRecordsTable: LanceDbTable;
   imagePerceptionsTable: LanceDbTable;
+  observedEventsTable: LanceDbTable;
 };
 
 export function resolveBorgConfig(options: {
@@ -280,6 +284,10 @@ export async function openBorgLanceTables(options: {
     name: "image_perception_embeddings",
     schema: createImagePerceptionTableSchema(options.embeddingDimensions),
   });
+  const observedEventsTable = await options.lance.openTable({
+    name: "observed_events",
+    schema: createObservedEventsTableSchema(options.embeddingDimensions),
+  });
 
   return {
     episodesTable,
@@ -288,5 +296,6 @@ export async function openBorgLanceTables(options: {
     skillsTable,
     actionRecordsTable,
     imagePerceptionsTable,
+    observedEventsTable,
   };
 }

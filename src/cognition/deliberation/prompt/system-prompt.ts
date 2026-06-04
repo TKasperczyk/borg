@@ -778,7 +778,7 @@ function renderStandingEntryGroupLines(input: {
 }
 
 const SOCIAL_MEMORY_INTERPRETATION =
-  "Social interactions you previously declined or rejected with the people present now, recalled across ALL your past conversations -- not just this one. Each entry shows who pushed, where it originally happened (a group channel vs a one-to-one), how many times it recurred, and how recently. This is your own prior reasoning and is already claim-free; referencing the pattern ('we keep returning to this -- you keep pushing, I keep declining') does NOT restate the original claim. Use the provenance to decide whether and how to raise it: you remember a private one-to-one rejection even when the same person is now in a group, but you would not broadcast that private exchange to the group -- that is your judgment to make, not a rule imposed on you.";
+  "Social memories are recalled by global relevance across ALL your past conversations -- topic similarity, recency, recurrence, and person relevance. A present participant is a ranking boost, not a requirement; an entry may involve someone absent from the current turn. Use recall_reasons, recurrence, age, speaker/origin provenance, stance, taint, and disclosure labels to understand why it appeared and how cautiously to reason with it. These entries summarize your own prior stance toward a social frame; rejected or quarantined entries are not accepted as true. Use the disclosure label and provenance to decide whether and how to mention the pattern to the current audience.";
 
 function renderSocialMemoryEntryGroupLines(input: {
   entries: readonly EvidenceLedgerEntry[] | undefined;

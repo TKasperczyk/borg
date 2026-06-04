@@ -189,6 +189,8 @@ function buildObservedEventIntrospectionEntries(
           stance: row.stance,
           taint: row.taint,
           belief_effect: row.beliefEffect,
+          recall_score: row.recallScore,
+          recall_reasons: row.recallReasons,
           recurrence_count: row.recurrenceCount,
           occurred_at: row.occurredAt,
           relative_age: row.relativeAge,
@@ -212,6 +214,15 @@ function observedEventDisclosureLabel(row: {
   const originEntityIds = [row.audienceEntityId, row.speakerEntityId].filter(
     (entityId): entityId is EntityId => entityId !== null,
   );
+
+  if (row.disclosureClass === "social_observed" && originEntityIds.length === 0) {
+    return {
+      disclosureClass: "unknown",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    };
+  }
 
   return row.disclosureClass === "self_private"
     ? selfPrivateMemoryDisclosureLabel(originEntityIds)

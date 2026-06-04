@@ -1,10 +1,5 @@
-export {
-  OBSERVED_EVENT_UNKNOWN_SPEAKER_SENTINEL,
-} from "./constants.js";
-export {
-  buildObservedEventEmission,
-  type BuildObservedEventEmissionInput,
-} from "./emission.js";
+export { OBSERVED_EVENT_UNKNOWN_SPEAKER_SENTINEL } from "./constants.js";
+export { buildObservedEventEmission, type BuildObservedEventEmissionInput } from "./emission.js";
 export {
   deriveObservedEventDimensions,
   type ObservedEventDerivationInput,
@@ -19,10 +14,14 @@ export {
   type ObservedEventIntrospectionRow,
 } from "./projection.js";
 export {
+  createObservedEventsTableSchema,
   ObservedEventRepository,
+  type ObservedEventEmbeddingBackfillReport,
+  type ObservedEventEmbeddingFailureDetails,
   type ObservedEventProjectionSourceEvent,
   type ObservedEventRecordInput,
   type ObservedEventRepositoryOptions,
+  type ObservedEventSearchCandidate,
 } from "./repository.js";
 export {
   OBSERVED_EVENT_BELIEF_EFFECTS,

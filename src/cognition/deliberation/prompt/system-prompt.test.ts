@@ -1370,7 +1370,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(participantBlock).toContain("<social_memory_entry");
     expect(participantBlock).toContain(socialText);
     expect(participantBlock).toContain(privateText);
-    expect(participantBlock).toContain("your judgment to make, not a rule imposed on you");
+    expect(participantBlock).toContain("global relevance across ALL your past conversations");
+    expect(participantBlock).toContain("recall_reasons");
+    expect(participantBlock).toContain("present participant is a ranking boost");
+    expect(participantBlock).not.toContain("with the people present now");
     expect(participantBlock).toContain("self_private");
     expect(operatorBlock).toContain(socialText);
     expect(operatorBlock).toContain(privateText);

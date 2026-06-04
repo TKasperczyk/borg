@@ -56,4 +56,16 @@ export const observedEventMigrations = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "observed_events_global_relevance",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX idx_observed_events_global_recent
+        ON observed_events(disclosure_class, last_seen_at DESC, id DESC);
+        CREATE INDEX idx_observed_events_global_recurring
+        ON observed_events(disclosure_class, recurrence_count DESC, last_seen_at DESC, id DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

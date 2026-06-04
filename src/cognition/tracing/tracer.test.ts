@@ -492,9 +492,17 @@ describe("TurnTracer", () => {
     }
 
     const events = readTraceEvents(tracePath);
+    const turnEvents = events.filter((event) => event.turnId !== "startup");
 
-    expect(new Set(events.map((event) => event.turnId)).size).toBe(1);
-    expect(events.map((event) => event.event)).toEqual([
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: "observed_event_embedding_backfill.started",
+        turnId: "startup",
+        recall_consistency: "topic_recall_eventual_until_complete",
+      }),
+    );
+    expect(new Set(turnEvents.map((event) => event.turnId)).size).toBe(1);
+    expect(turnEvents.map((event) => event.event)).toEqual([
       "turn_phase.started",
       "turn_phase.completed",
       "turn_phase.started",
@@ -571,7 +579,9 @@ describe("TurnTracer", () => {
       "turn.terminal",
     ]);
     expect(
-      events.filter((event) => event.event === "turn_phase.completed").map((event) => event.phase),
+      turnEvents
+        .filter((event) => event.event === "turn_phase.completed")
+        .map((event) => event.phase),
     ).toEqual(
       expect.arrayContaining([
         "ingest",
@@ -583,37 +593,39 @@ describe("TurnTracer", () => {
         "persist",
       ]),
     );
-    expect(events.find((event) => event.event === "turn.terminal")).toMatchObject({
+    expect(turnEvents.find((event) => event.event === "turn.terminal")).toMatchObject({
       session_id: sessionId,
       outcome: "reflected",
       turn_id: expect.any(String),
       duration_ms: expect.any(Number),
     });
-    expect(events.find((event) => event.event === "turn_phase.started")).toMatchObject({
+    expect(turnEvents.find((event) => event.event === "turn_phase.started")).toMatchObject({
       session_id: sessionId,
       phase: "ingest",
     });
-    expect(events.find((event) => event.event === "turn.token")).toMatchObject({
+    expect(turnEvents.find((event) => event.event === "turn.token")).toMatchObject({
       session_id: sessionId,
       phase: "final",
     });
     expect(
-      events.some((event) => event.event === "llm_call.started" && event.session_id === sessionId),
+      turnEvents.some(
+        (event) => event.event === "llm_call.started" && event.session_id === sessionId,
+      ),
     ).toBe(true);
-    expect(events.find((event) => event.event === "commitment_check.completed")).toMatchObject({
+    expect(turnEvents.find((event) => event.event === "commitment_check.completed")).toMatchObject({
       session_id: sessionId,
     });
     expect(
-      events.find((event) => event.event === "deliberation.plan_persistence.completed"),
+      turnEvents.find((event) => event.event === "deliberation.plan_persistence.completed"),
     ).toMatchObject({
       streamEntryId: expect.stringMatching(/^strm_/),
     });
     expect(
-      events
+      turnEvents
         .filter((event) => event.event === "perception.classifier.degraded")
         .map((event) => event.classifier),
     ).toEqual(["affective_signal"]);
-    expect(events.find((event) => event.event === "finalizer.completed")).toMatchObject({
+    expect(turnEvents.find((event) => event.event === "finalizer.completed")).toMatchObject({
       path: "system_2",
       decision: "answer",
     });

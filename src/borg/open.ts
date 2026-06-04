@@ -142,6 +142,7 @@ export async function openBorgDependencies(
       skillsTable: tables.skillsTable,
       actionRecordsTable: tables.actionRecordsTable,
       imagePerceptionsTable: tables.imagePerceptionsTable,
+      observedEventsTable: tables.observedEventsTable,
       embeddingClient,
       llmClient: lazyLlmClient,
       clock,

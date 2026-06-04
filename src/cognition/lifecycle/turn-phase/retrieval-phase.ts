@@ -813,12 +813,33 @@ export async function runRetrievalPhase(input: {
           recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
         });
+  const observedEventQueryText = input.cognitionInput.trim();
+  let observedEventQueryVector: Float32Array | null = null;
+
+  if (input.options.observedEventRepository !== undefined && observedEventQueryText.length > 0) {
+    try {
+      observedEventQueryVector = await input.options.embeddingClient.embed(observedEventQueryText);
+    } catch (error) {
+      if (input.options.tracer.enabled) {
+        input.options.tracer.emit("observed_event_recall.degraded", {
+          turnId: input.turnId,
+          turn_id: input.turnId,
+          reason: "query_embedding_failed",
+          ...(input.options.tracer.includePayloads
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      }
+    }
+  }
+
   const observedEventIntrospection =
     input.options.observedEventRepository === undefined
       ? []
-      : selectObservedEventIntrospection({
+      : await selectObservedEventIntrospection({
           repository: input.options.observedEventRepository,
           speakerEntityIds: creatorDirectiveParticipantEntityIds,
+          queryVector: observedEventQueryVector,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,

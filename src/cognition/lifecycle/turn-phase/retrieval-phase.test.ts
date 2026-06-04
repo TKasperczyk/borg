@@ -22,6 +22,7 @@ import {
   createCommitmentId,
   createEntityId,
   createGoalId,
+  createObservedEventId,
   createOpenQuestionId,
   createSessionId,
   createStreamEntryId,
@@ -95,6 +96,12 @@ function minimalRetrievalPhaseOptions(
           enabled: false,
         },
       },
+    },
+    embeddingClient: {
+      embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+      embedBatch: vi.fn(async (texts: readonly string[]) =>
+        texts.map(() => Float32Array.from([1, 0, 0, 0])),
+      ),
     },
     creatorDirectiveRepository,
     sharedStateRepository: {
@@ -517,7 +524,7 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
-  it("selects observed-event recall by the existing present participant entity set", async () => {
+  it("selects observed-event recall by topic and global salience with present participants as a boost", async () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
     });
@@ -528,10 +535,16 @@ describe("creator directive retrieval briefing", () => {
     const options = minimalRetrievalPhaseOptions(repository);
     const groupAudienceEntityId = createEntityId();
     const speakerEntityId = createEntityId();
+    const searchByVector = vi.fn(async () => []);
+    const listRecentGlobal = vi.fn(() => []);
+    const listRecurringGlobal = vi.fn(() => []);
     const listRecentBySpeakers = vi.fn(() => []);
 
     options.observedEventRepository = {
       record: vi.fn(),
+      searchByVector,
+      listRecentGlobal,
+      listRecurringGlobal,
       listRecentBySpeakers,
     };
 
@@ -600,6 +613,22 @@ describe("creator directive retrieval briefing", () => {
         closureLoopAssessment: null,
       });
 
+      expect(searchByVector).toHaveBeenCalledWith(
+        expect.any(Float32Array),
+        expect.objectContaining({
+          minSimilarity: expect.any(Number),
+        }),
+      );
+      expect(listRecentGlobal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disclosureClass: "social_observed",
+        }),
+      );
+      expect(listRecurringGlobal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disclosureClass: "social_observed",
+        }),
+      );
       expect(listRecentBySpeakers).toHaveBeenCalledWith(
         expect.objectContaining({
           speakerEntityIds: [speakerEntityId],
@@ -608,6 +637,145 @@ describe("creator directive retrieval briefing", () => {
       );
     } finally {
       db.close();
+    }
+  });
+
+  it("keeps non-topic observed-event recall when topic embedding fails", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-event-degraded-"));
+    const speakerEntityId = createEntityId();
+    const observedEvent = {
+      id: createObservedEventId(),
+      occurredAt: 1_000,
+      lastSeenAt: 2_500,
+      stance: "rejected_frame",
+      taint: "quarantined",
+      beliefEffect: "unchanged",
+      disclosureClass: "social_observed" as const,
+      interactionText: "Sol rejected a recent non-topic social frame.",
+      recurrenceCount: 1,
+      speakerEntityId,
+      audienceEntityId: null,
+    };
+    const listRecentGlobal = vi.fn((input: { disclosureClass: string }) =>
+      input.disclosureClass === "social_observed" ? [observedEvent] : [],
+    );
+    const listRecurringGlobal = vi.fn(() => []);
+    const listRecentBySpeakers = vi.fn(() => []);
+    const searchByVector = vi.fn(async () => []);
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit: vi.fn(),
+    };
+
+    options.config = {
+      ...options.config,
+      generation: {
+        ...options.config.generation,
+        evidenceLedger: {
+          ...options.config.generation.evidenceLedger,
+          enabled: true,
+        },
+      },
+    };
+    options.embeddingClient = {
+      embed: vi.fn(async () => {
+        throw new Error("embedding offline");
+      }),
+      embedBatch: vi.fn(async () => []),
+    };
+    options.openQuestionsRepository = {
+      ...options.openQuestionsRepository,
+      findByHandles: () => [],
+      get: () => null,
+      resolve: vi.fn(),
+    };
+    options.tracer = tracer;
+    options.createStreamReader = (sessionId: SessionId) =>
+      new StreamReader({ dataDir: tempDir, sessionId });
+    options.observedEventRepository = {
+      record: vi.fn(),
+      searchByVector,
+      listRecentGlobal,
+      listRecurringGlobal,
+      listRecentBySpeakers,
+    };
+
+    try {
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-observed-event-embedding-degraded",
+        turnInput: {
+          userMessage: "What social pattern matters?",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "What social pattern matters?",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(searchByVector).not.toHaveBeenCalled();
+      expect(listRecentGlobal).toHaveBeenCalled();
+      expect(
+        result.evidenceLedgerContext.ledger?.audienceStanding?.observedEventIntrospectionEntries,
+      ).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining("Sol rejected a recent non-topic social frame."),
+          state: expect.stringContaining("disclosure_class=relationship_private"),
+        }),
+      ]);
+      expect(tracer.emit).toHaveBeenCalledWith(
+        "observed_event_recall.degraded",
+        expect.objectContaining({
+          turn_id: "turn-observed-event-embedding-degraded",
+          reason: "query_embedding_failed",
+          error: "embedding offline",
+        }),
+      );
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
