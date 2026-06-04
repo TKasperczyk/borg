@@ -1,6 +1,3 @@
-import type { BorgRole } from "../commitments/index.js";
-import { isCreatorInOperatorContext } from "../../cognition/authority.js";
-import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EntityId } from "../../util/ids.js";
 import type { ObservedEventProjectionSourceEvent, ObservedEventRepository } from "./repository.js";
@@ -27,32 +24,10 @@ export type ObservedEventIntrospectionRow = {
 export type ObservedEventIntrospectionProjectionInput = {
   repository: Pick<ObservedEventRepository, "listRecentBySpeakers">;
   speakerEntityIds: readonly EntityId[];
-  sessionAudienceRole: SessionAudienceRole;
-  currentSenderBorgRole: BorgRole | null;
   nowMs: number;
   recencyWindowMs?: number;
   cap?: number;
 };
-
-function disclosureClassesForAudience(
-  input: Pick<
-    ObservedEventIntrospectionProjectionInput,
-    "currentSenderBorgRole" | "sessionAudienceRole"
-  >,
-): ObservedEventDisclosureClass[] {
-  const disclosureClasses: ObservedEventDisclosureClass[] = ["social_observed"];
-
-  if (
-    isCreatorInOperatorContext({
-      currentSenderBorgRole: input.currentSenderBorgRole,
-      sessionAudienceRole: input.sessionAudienceRole,
-    })
-  ) {
-    disclosureClasses.push("self_private");
-  }
-
-  return disclosureClasses;
-}
 
 function rowText(event: ObservedEventProjectionSourceEvent, relativeAge: string): string {
   const recurrencePrefix =
@@ -74,7 +49,7 @@ export function selectObservedEventIntrospection(
     input.recencyWindowMs ?? DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
   );
   const sinceMs = input.nowMs - recencyWindowMs;
-  const events = disclosureClassesForAudience(input)
+  const events = (["social_observed", "self_private"] satisfies ObservedEventDisclosureClass[])
     .flatMap((disclosureClass) =>
       input.repository.listRecentBySpeakers({
         speakerEntityIds: input.speakerEntityIds,

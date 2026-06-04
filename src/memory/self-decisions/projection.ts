@@ -1,6 +1,3 @@
-import type { BorgRole } from "../commitments/index.js";
-import { isSelfIntrospectionAuthorized } from "../../cognition/authority.js";
-import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { SelfDecisionProjectionSourceEvent, SelfDecisionRepository } from "./repository.js";
 import type { SelfDecisionTriggerType } from "./types.js";
@@ -20,9 +17,6 @@ export type SelfDecisionIntrospectionRow = {
 
 export type SelfDecisionIntrospectionProjectionInput = {
   repository: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
-  sessionAudienceRole: SessionAudienceRole;
-  currentSenderBorgRole: BorgRole | null;
-  isPrivateSelfCognition: boolean;
   nowMs: number;
   recencyWindowMs?: number;
   cap?: number;
@@ -46,16 +40,6 @@ function rowText(event: SelfDecisionProjectionSourceEvent, relativeAge: string):
 export function selectSelfDecisionIntrospection(
   input: SelfDecisionIntrospectionProjectionInput,
 ): SelfDecisionIntrospectionRow[] {
-  if (
-    !isSelfIntrospectionAuthorized({
-      currentSenderBorgRole: input.currentSenderBorgRole,
-      sessionAudienceRole: input.sessionAudienceRole,
-      isPrivateSelfCognition: input.isPrivateSelfCognition,
-    })
-  ) {
-    return [];
-  }
-
   const cap = Math.max(1, Math.floor(input.cap ?? DEFAULT_SELF_DECISION_INTROSPECTION_CAP));
   const recencyWindowMs = Math.max(
     0,

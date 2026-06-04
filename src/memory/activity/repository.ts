@@ -43,6 +43,7 @@ export type ActivityProjectionSourceEvent = {
   kind: ActivityEventKind;
   occurredAt: number;
   participantLabel: string;
+  sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
 export type ActivityRepositoryOptions = {
@@ -115,6 +116,10 @@ function mapProjectionRow(row: Record<string, unknown>): ActivityProjectionSourc
     kind: row.kind as ActivityEventKind,
     occurredAt: Number(row.occurred_at),
     participantLabel: String(row.participant_label ?? "A participant"),
+    sourceStreamEntryIds: parseStreamEntryIds(
+      String(row.source_stream_entry_ids ?? "[]"),
+      "source_stream_entry_ids",
+    ),
   };
 }
 
@@ -246,6 +251,7 @@ export class ActivityRepository {
           SELECT
             e.kind,
             e.occurred_at,
+            e.source_stream_entry_ids,
             COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
               AS participant_label
           FROM activity_events e

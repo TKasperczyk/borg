@@ -72,8 +72,6 @@ describe("selectObservedEventIntrospection", () => {
     const rows = selectObservedEventIntrospection({
       repository,
       speakerEntityIds: [speakerEntityId],
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
       nowMs: NOW_MS,
     });
 
@@ -112,8 +110,6 @@ describe("selectObservedEventIntrospection", () => {
     const rows = selectObservedEventIntrospection({
       repository,
       speakerEntityIds: [speakerEntityId],
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
       nowMs: NOW_MS,
     });
 
@@ -124,7 +120,7 @@ describe("selectObservedEventIntrospection", () => {
     db.close();
   });
 
-  it("gates only self_private while preserving multilingual social_observed text", () => {
+  it("recalls self_private and social_observed rows globally while preserving multilingual text", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-observed-events-projection-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "observed-events.db"), {
@@ -157,37 +153,18 @@ describe("selectObservedEventIntrospection", () => {
     const participantRows = selectObservedEventIntrospection({
       repository,
       speakerEntityIds: [speakerEntityId],
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      nowMs: NOW_MS,
-    });
-    const creatorOperatorRows = selectObservedEventIntrospection({
-      repository,
-      speakerEntityIds: [speakerEntityId],
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
-      nowMs: NOW_MS,
-    });
-    const nonCreatorOperatorRows = selectObservedEventIntrospection({
-      repository,
-      speakerEntityIds: [speakerEntityId],
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: null,
       nowMs: NOW_MS,
     });
 
-    expect(participantRows.map((row) => row.interactionText)).toEqual([socialRationale]);
-    expect(participantRows.map((row) => row.disclosureClass)).toEqual(["social_observed"]);
-    expect(participantRows[0]?.text).toBe(`Observed rejected_frame 2h ago: ${socialRationale}`);
-    expect(creatorOperatorRows.map((row) => row.interactionText)).toEqual([
+    expect(participantRows.map((row) => row.interactionText)).toEqual([
       privateRationale,
       socialRationale,
     ]);
-    expect(creatorOperatorRows.map((row) => row.disclosureClass)).toEqual([
+    expect(participantRows.map((row) => row.disclosureClass)).toEqual([
       "self_private",
       "social_observed",
     ]);
-    expect(nonCreatorOperatorRows.map((row) => row.interactionText)).toEqual([socialRationale]);
+    expect(participantRows[1]?.text).toBe(`Observed rejected_frame 2h ago: ${socialRationale}`);
     expect(
       repository
         .listRecentBySpeakers({
@@ -262,8 +239,6 @@ describe("selectObservedEventIntrospection", () => {
     const rows = selectObservedEventIntrospection({
       repository,
       speakerEntityIds: [speakerA, speakerB],
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
       nowMs: NOW_MS,
       cap: 4,
     });
@@ -296,8 +271,6 @@ describe("selectObservedEventIntrospection", () => {
     const rows = selectObservedEventIntrospection({
       repository,
       speakerEntityIds: [],
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
       nowMs: NOW_MS,
     });
 

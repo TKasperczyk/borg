@@ -168,7 +168,7 @@ describe("retrieveOpenQuestionsForQuery", () => {
     expect(results[0]?.question).toBe(related);
   });
 
-  it("applies audience visibility while searching vectors", async () => {
+  it("recalls audience-scoped questions globally while searching vectors", async () => {
     const query = "audience probe";
     const publicQuestion = "Which public deployment question remains?";
     const aliceQuestion = "Which Alice-only deployment question remains?";
@@ -207,19 +207,18 @@ describe("retrieveOpenQuestionsForQuery", () => {
     });
     await repository.waitForPendingEmbeddings();
 
-    const bobResults = await retrieveOpenQuestionsForQuery(repository, embeddingClient, query, {
-      audienceEntityId: bob,
+    const results = await retrieveOpenQuestionsForQuery(repository, embeddingClient, query, {
       limit: 5,
     });
-    const publicResults = await retrieveOpenQuestionsForQuery(repository, embeddingClient, query, {
-      audienceEntityId: null,
-      limit: 5,
-    });
+    const resultIds = results.map((question) => question.id);
 
-    expect(bobResults.map((question) => question.id)).toContain(publicRecord.id);
-    expect(bobResults.map((question) => question.id)).toContain(bobRecord.id);
-    expect(bobResults.map((question) => question.id)).not.toContain(aliceRecord.id);
-    expect(publicResults.map((question) => question.id)).toEqual([publicRecord.id]);
+    expect(resultIds).toContain(publicRecord.id);
+    expect(resultIds).toContain(aliceRecord.id);
+    expect(resultIds).toContain(bobRecord.id);
+    expect(results.find((question) => question.id === aliceRecord.id)?.audience_entity_id).toBe(
+      alice,
+    );
+    expect(results.find((question) => question.id === bobRecord.id)?.audience_entity_id).toBe(bob);
   });
 
   it("keeps urgency as a score tilt after similarity", async () => {

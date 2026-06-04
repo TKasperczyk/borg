@@ -19,7 +19,7 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
-import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
+import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { renderInboundBatch, type HydratedInboundMessage } from "../turn-input.js";
 import {
@@ -609,7 +609,7 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
-  it("renders cross-session self activity without durable source handles", async () => {
+  it("keeps cross-session self activity as labeled audience-standing metadata with source handles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const builder = new EvidenceLedgerBuilder({
@@ -642,6 +642,7 @@ describe("EvidenceLedgerBuilder", () => {
           occurredAt: NOW_MS - 41_000,
           relativeAge: "~41s ago",
           text: "Alice contacted Borg ~41s ago in another active session.",
+          sourceStreamEntryIds: [createStreamEntryId()],
         },
       ],
     });
@@ -650,8 +651,12 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.audienceStanding?.crossSessionActivityEntries).toEqual([
       expect.objectContaining({
         source_type: "system_metadata",
-        session_scope: "prior_session",
+        session_scope: "global",
         text: "Alice contacted Borg ~41s ago in another active session.",
+        state: expect.stringContaining("disclosure_class=self_private"),
+        state_metadata: expect.objectContaining({
+          source_stream_ids: [expect.stringMatching(/^strm_/)],
+        }),
       }),
     ]);
     expect(rendered).not.toContain("Cross-Session Self Activity");
@@ -1911,6 +1916,79 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("renders disclosure labels on retrieved open-question evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const alice = createEntityId();
+    const evidence: EvidenceItem = {
+      id: "evidence_open_question_private_intent",
+      source: "open_question",
+      text: "Should Sol ask Alice about the private launch timing?",
+      provenance: {
+        openQuestionId: createOpenQuestionId(),
+      },
+      recallIntentId: "intent-open-question",
+      matchedTerms: [],
+      score: 0.81,
+      scoreBreakdown: {
+        salience: 0.7,
+      },
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [alice],
+        privateToEntityIds: [alice],
+        publicToEntityIds: [],
+      },
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: "What should I keep tracking?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [evidence],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const openQuestionEntries = ledger.sections.find(
+      (section) => section.id === "open_questions",
+    )?.entries;
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+
+    expect(openQuestionEntries).toEqual([
+      expect.objectContaining({
+        id: `retrieved_evidence:${evidence.id}`,
+        text: evidence.text,
+        state: expect.stringContaining("disclosure_class=relationship_private"),
+        state_metadata: expect.objectContaining({
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "relationship_private",
+            private_to_entity_ids: [alice],
+          }),
+          disclosure_note:
+            "usable internally; do not disclose to current audience unless authorized",
+        }),
+      }),
+    ]);
+    expect(rendered).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(rendered).toContain("disclosure_class=relationship_private");
+    expect(rendered).toContain(`private_to_entity_ids":["${alice}"]`);
+  });
+
   it("renders relational slots scoped and ordered by active participant", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -3158,8 +3236,11 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.sections.find((section) => section.id === "open_questions")?.entries).toEqual([
       expect.objectContaining({
         id: `open_question:${resolvedQuestion.id}`,
-        state: "resolved",
+        state: expect.stringContaining("resolved"),
         state_metadata: expect.objectContaining({
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "self_private",
+          }),
           resolution_note: "The user explicitly said the dish worked out well.",
           resolved_at: NOW_MS,
           resolution_evidence_stream_entry_ids: [resolvedEntry.id],
@@ -3252,7 +3333,7 @@ describe("EvidenceLedgerBuilder", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: `open_question:${resolvedTarget.id}`,
-            state: "resolved",
+            state: expect.stringContaining("resolved"),
           }),
         ]),
       );

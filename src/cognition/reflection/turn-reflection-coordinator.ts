@@ -140,7 +140,6 @@ export class TurnReflectionCoordinator {
     const reflector = this.options.createReflector(input.llmClient);
     const activeOpenQuestions = this.options.openQuestionsRepository.list({
       status: "open",
-      visibleToAudienceEntityId: input.audienceEntityId,
       limit: OPEN_QUESTIONS_REFLECTION_LIMIT,
     });
     const reflection = await reflector.reflect(

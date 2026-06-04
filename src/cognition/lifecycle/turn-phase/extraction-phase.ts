@@ -112,9 +112,7 @@ export async function runExtractionPhase(input: {
       : null;
   const actionLinkGoalId = actionLinkSelfContext?.executiveFocus.selected_goal?.id ?? null;
   const activeGoalsForPromotion = input.isUserTurn
-    ? await input.options.selfContextBuilder.listActiveGoalsVisibleToAudience(
-        input.audienceEntityId,
-      )
+    ? await input.options.selfContextBuilder.listActiveGoalsForCognition(input.audienceEntityId)
     : [];
   // Cross-audience scope is offered only when the current sender is a creator
   // in an operator context (same authority gate as manual outbound). Other

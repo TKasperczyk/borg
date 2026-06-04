@@ -255,8 +255,6 @@ export class TurnOrchestrator {
     const pendingProceduralAttemptTracker = new PendingProceduralAttemptTracker();
     this.selfContextBuilder = new TurnSelfContextBuilder({
       embeddingClient: options.embeddingClient,
-      episodicRepository: options.episodicRepository,
-      entityRepository: options.entityRepository,
       valuesRepository: options.valuesRepository,
       goalsRepository: options.goalsRepository,
       traitsRepository: options.traitsRepository,

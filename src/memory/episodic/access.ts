@@ -52,10 +52,10 @@ export function isEpisodeInGlobalIdentityScope(
   );
 }
 
-// The single, total description of how a reader is allowed to see episodes. Replaces the
-// implicit precedence between the audienceEntityId / crossAudience /
-// globalIdentitySelfAudienceEntityId option triple that was previously re-derived at every
-// visibility site. There are exactly three ways to read:
+// Disclosure/admin-only viewer capabilities for audience-filtered episodic reads. Cognition
+// recall is global and must not route through this resolver; use EpisodeCognitionRecallOptions
+// / CognitionRecallSearchOptions for cognition paths. For explicit visibility paths there are
+// exactly four ways to read:
 //   - audience: the normal firewall path (exact-audience match + public/shared)
 //   - self_continuity: public episodes plus the self/identity entity's episodes
 //   - operator_introspection: public plus self-scope episodes for operator introspection
@@ -67,6 +67,7 @@ export type ViewerCapability =
   | { readonly kind: "unrestricted" };
 
 export type ViewerCapabilityOptions = {
+  // Legacy disclosure/admin option shape. These are intentionally not part of cognition recall.
   readonly audienceEntityId?: EntityId | null;
   readonly crossAudience?: boolean;
   readonly globalIdentitySelfAudienceEntityId?: EntityId | null;

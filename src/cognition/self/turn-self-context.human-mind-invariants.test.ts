@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { ValueRecord } from "../../memory/self/index.js";
+import { createWorkingMemory } from "../../memory/working/index.js";
 import { createEpisodeFixture } from "../../offline/test-support.js";
 import { ManualClock } from "../../util/clock.js";
-import { createEntityId, createValueId } from "../../util/ids.js";
+import { createEntityId, createValueId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { buildBaseSystemPrompt } from "../deliberation/prompt/system-prompt.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
 import { TurnSelfContextBuilder } from "./turn-self-context.js";
 
@@ -18,11 +20,9 @@ const embeddingClient: EmbeddingClient = {
 };
 
 describe("turn self-context human-mind invariants", () => {
-  it.fails("surfaces Sol self-memory evidence regardless of current audience", async () => {
-    // Expected to flip in Sprint 2 when self-context stops audience-filtering cognition memory.
+  it("surfaces Sol self-memory evidence regardless of current audience with disclosure labels", async () => {
     const aliceId = createEntityId();
     const bobId = createEntityId();
-    const selfId = createEntityId();
     const episode = createEpisodeFixture({
       audience_entity_id: aliceId,
       shared: false,
@@ -49,19 +49,6 @@ describe("turn self-context human-mind invariants", () => {
     };
     const builder = new TurnSelfContextBuilder({
       embeddingClient,
-      episodicRepository: {
-        getMany: async () => [episode],
-      },
-      entityRepository: {
-        getSelf: () => ({
-          id: selfId,
-          canonical_name: "Sol",
-          aliases: [],
-          kind: "self",
-          borg_role: null,
-          created_at: 1_000,
-        }),
-      },
       valuesRepository: {
         list: () => [value],
       },
@@ -88,5 +75,31 @@ describe("turn self-context human-mind invariants", () => {
       kind: "episodes",
       episode_ids: [episode.id],
     });
+
+    const prompt = buildBaseSystemPrompt(
+      {
+        sessionId: DEFAULT_SESSION_ID,
+        userMessage: "What do you remember about yourself?",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        retrievalResult: [],
+        workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+        selfSnapshot: snapshot,
+      },
+      {
+        retrievalContextBudget: 1_000,
+        semanticContextBudget: 1_000,
+      },
+    );
+
+    expect(prompt).toContain("continuity");
+    expect(prompt).toContain("disclosure_class=self_private");
+    expect(prompt).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
   });
 });

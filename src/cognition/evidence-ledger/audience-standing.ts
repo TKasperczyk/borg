@@ -37,13 +37,12 @@ import {
 import type { EvidenceLedgerAudienceStanding, EvidenceLedgerEntry } from "./types.js";
 import { resolveSpeakerDisplayName } from "../speaker-tags.js";
 import type { CommitmentRecord, EntityKind } from "../../memory/commitments/index.js";
-import type { GoalRecord } from "../../memory/self/index.js";
 import type { EntityId } from "../../util/ids.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
 } from "../../memory/commitments/index.js";
-import { commitmentDisclosureEntityIds } from "../disclosure-labels.js";
+import { commitmentDisclosureEntityIds, goalMemoryDisclosureLabel } from "../disclosure-labels.js";
 
 function participantForSlot(
   slot: RelationalSlot,
@@ -75,7 +74,7 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
   return rows.map((row, index) => ({
     id: `cross_session_self_activity:${index + 1}`,
     source_type: "system_metadata",
-    session_scope: "prior_session",
+    session_scope: scopeFromStreamIds(row.sourceStreamEntryIds, context.resolver),
     actor: "system",
     trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
     text: row.text,
@@ -86,6 +85,7 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
         event_kind: row.kind,
         occurred_at: row.occurredAt,
         relative_age: row.relativeAge,
+        source_stream_ids: [...row.sourceStreamEntryIds],
       },
       disclosureLabel,
     }),
@@ -96,7 +96,6 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
 function buildSelfDecisionIntrospectionEntries(
   context: BuilderSectionContext,
 ): EvidenceLedgerEntry[] {
-  // Visibility is resolved upstream by selectSelfDecisionIntrospection.
   const rows = context.input.selfDecisionIntrospection ?? [];
   const disclosureLabel = selfPrivateMemoryDisclosureLabel();
 
@@ -225,14 +224,6 @@ function commitmentDisclosureLabel(commitment: CommitmentRecord): MemoryDisclosu
 
 function relationalSlotDisclosureLabel(slot: RelationalSlot): MemoryDisclosureLabel {
   return relationshipPrivateMemoryDisclosureLabel([slot.subject_entity_id]);
-}
-
-function goalDisclosureLabel(goal: GoalRecord): MemoryDisclosureLabel {
-  return relationshipPrivateMemoryDisclosureLabel(
-    [goal.audience_entity_id, goal.owner_entity_id ?? null].filter(
-      (entityId): entityId is EntityId => entityId !== null,
-    ),
-  );
 }
 
 function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
@@ -400,7 +391,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
           ).filter((goal) => isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds));
 
     for (const goal of participantGoals) {
-      const disclosureLabel = goalDisclosureLabel(goal);
+      const disclosureLabel = goalMemoryDisclosureLabel(goal);
       entries.push({
         id: `participant_goal:${participant.entityId}:${goal.id}`,
         source_type: "system_metadata",

@@ -23,7 +23,7 @@ describe("runExtractionPhase", () => {
       options: {
         selfContextBuilder: {
           build: buildSelfContext,
-          listActiveGoalsVisibleToAudience: vi.fn(),
+          listActiveGoalsForCognition: vi.fn(),
         },
         correctivePreferenceTurnService: {
           extractAndApply,
@@ -114,7 +114,7 @@ describe("runExtractionPhase", () => {
           build: vi.fn(async () => ({
             executiveFocus: { selected_goal: null },
           })),
-          listActiveGoalsVisibleToAudience: vi.fn(async () => []),
+          listActiveGoalsForCognition: vi.fn(async () => []),
         },
         correctivePreferenceTurnService: {
           extractAndApply,
@@ -213,7 +213,7 @@ describe("runExtractionPhase", () => {
           build: vi.fn(async () => ({
             executiveFocus: { selected_goal: null },
           })),
-          listActiveGoalsVisibleToAudience: vi.fn(async () => []),
+          listActiveGoalsForCognition: vi.fn(async () => []),
         },
         correctivePreferenceTurnService: {
           extractAndApply,

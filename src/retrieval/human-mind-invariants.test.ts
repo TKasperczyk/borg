@@ -155,7 +155,7 @@ describe("human-mind memory invariants", () => {
     });
   });
 
-  it("recalls cross-audience prior activity for an operator with no participant present", async () => {
+  it("recalls cross-audience prior activity with no participant present for operator and ordinary cognition", async () => {
     harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
     const aliceId = harness.entityRepository.resolve("Alice");
     const operatorId = harness.entityRepository.resolve("Operator");
@@ -200,6 +200,41 @@ describe("human-mind memory invariants", () => {
 
     expect(recalled).toBeDefined();
     expect(recalled?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [aliceId],
+      privateToEntityIds: [aliceId],
+      publicToEntityIds: [],
+    });
+
+    const ordinaryResult = await harness.retrievalPipeline.recallEpisodesForCognition(
+      OPERATOR_RECALL_QUERY,
+      {
+        limit: 3,
+        recallContext: {
+          reader: "sol",
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: null,
+          currentParticipantEntityIds: [],
+        },
+        disclosureContext: {
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: null,
+          audienceRole: "participant",
+          senderEntityId: null,
+          senderRole: null,
+          participantEntityIds: [],
+          isPrivateSelfCognition: false,
+        },
+        rankingAudienceEntityId: null,
+        recordRetrieval: false,
+      },
+    );
+    const ordinarilyRecalled = ordinaryResult.episodes.find(
+      (item) => item.episode.id === episode.id,
+    );
+
+    expect(ordinarilyRecalled).toBeDefined();
+    expect(ordinarilyRecalled?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",
       originAudienceEntityIds: [aliceId],
       privateToEntityIds: [aliceId],

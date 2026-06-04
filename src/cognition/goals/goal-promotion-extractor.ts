@@ -14,6 +14,7 @@ import type { EntityId, SessionId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
+import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import {
   traceLlmCallError,
   traceLlmCallResponse,
@@ -507,7 +508,9 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           description: goal.description,
           priority: goal.priority,
           target_at: goal.target_at,
+          audience_entity_id: "audience_entity_id" in goal ? goal.audience_entity_id : null,
           owner_entity_id: goal.owner_entity_id ?? null,
+          ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         })),
       }),
     },

@@ -1288,7 +1288,7 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
-  it("renders social observed memories unconditionally and self-private social memories only for operators", () => {
+  it("renders social observed and self-private observed memories with labels for all cognition", () => {
     const socialText =
       "Paula in a one-to-one: Observed 2 times rejected_frame 4d ago: Sol declined the pushed frame.";
     const privateText =
@@ -1369,9 +1369,9 @@ describe("buildBaseSystemPrompt", () => {
     expect(participantBlock).toContain("<social_memory_entries>");
     expect(participantBlock).toContain("<social_memory_entry");
     expect(participantBlock).toContain(socialText);
+    expect(participantBlock).toContain(privateText);
     expect(participantBlock).toContain("your judgment to make, not a rule imposed on you");
-    expect(participantBlock).not.toContain(privateText);
-    expect(participantBlock).not.toContain("self_private");
+    expect(participantBlock).toContain("self_private");
     expect(operatorBlock).toContain(socialText);
     expect(operatorBlock).toContain(privateText);
     expect(operatorBlock).toContain("self_private");
@@ -1502,6 +1502,7 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("labels self-memory prompt blocks for executive focus, current period, and recent growth", () => {
+    const goalAudienceId = createEntityId();
     const goal = {
       id: "goal_aaaaaaaaaaaaaaaa" as never,
       description: "Understand the continuity model",
@@ -1512,7 +1513,7 @@ describe("buildBaseSystemPrompt", () => {
       last_progress_ts: null,
       created_at: NOW_MS,
       target_at: null,
-      audience_entity_id: null,
+      audience_entity_id: goalAudienceId,
       owner_entity_id: null,
       source_stream_entry_ids: [createStreamEntryId()],
       provenance: { kind: "manual" },
@@ -1551,7 +1552,7 @@ describe("buildBaseSystemPrompt", () => {
         },
         selfSnapshot: {
           values: [],
-          goals: [],
+          goals: [goal],
           traits: [],
           currentPeriod: {
             id: "abp_aaaaaaaaaaaaaaaa" as never,
@@ -1593,6 +1594,11 @@ describe("buildBaseSystemPrompt", () => {
         "private-to=unknown; usable internally; do not disclose to current audience unless authorized",
       );
     }
+
+    const selfSnapshotBlock = extractBlock(prompt, "borg_self_snapshot");
+
+    expect(selfSnapshotBlock).toContain("Understand the continuity model");
+    expect(selfSnapshotBlock).toContain(`private-to=${goalAudienceId}`);
   });
 
   it("omits legacy retrieved evidence when the evidence ledger is active", () => {

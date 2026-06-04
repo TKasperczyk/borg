@@ -86,8 +86,6 @@ export type RetrievedSemantic = SemanticContext & {
 export type SemanticRetrievalOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
-  globalIdentitySelfAudienceEntityId?: EntityId | null;
-  operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
   sourceVisibilityMode?: "cognition" | "disclosure";
   graphWalkDepth?: number;
   maxGraphNodes?: number;
@@ -101,10 +99,7 @@ export type SemanticRetrievalOptions = {
 
 type SemanticVisibilityOptions = Pick<
   SemanticRetrievalOptions,
-  | "audienceEntityId"
-  | "crossAudience"
-  | "globalIdentitySelfAudienceEntityId"
-  | "operatorIntrospectionSelfAudienceEntityId"
+  "audienceEntityId" | "crossAudience"
 >;
 
 export type SemanticRetrievalDependencies = {

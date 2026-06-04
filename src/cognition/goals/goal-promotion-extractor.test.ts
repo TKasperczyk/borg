@@ -439,9 +439,22 @@ describe("GoalPromotionExtractor", () => {
         duplicate_of_goal_id: existingGoalId,
       }),
     ]);
-    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
-      `"owner_entity_id":"${owner}"`,
-    );
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      active_goals?: Array<{
+        owner_entity_id?: string | null;
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+    };
+    const activeGoal = payload.active_goals?.[0];
+
+    expect(activeGoal?.owner_entity_id).toBe(owner);
+    expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
+    expect(activeGoal?.disclosure).toContain(`private-to=${owner}`);
+    expect(activeGoal?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [owner],
+    });
   });
 
   it("caps single-mode durable promotions to the highest-confidence candidate", async () => {

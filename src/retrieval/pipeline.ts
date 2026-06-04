@@ -1,4 +1,5 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
+import { openQuestionMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -196,6 +197,8 @@ type RetrievalAudienceFilterOptionKey =
   | "globalIdentitySelfAudienceEntityId"
   | "operatorIntrospectionSelfAudienceEntityId";
 
+// Cognition recall is audience-global. The omitted keys remain available only on the generic
+// disclosure/admin search options and must not be reintroduced as cognition filters.
 export type CognitionRecallSearchOptions = Omit<
   RetrievalSearchOptions,
   RetrievalAudienceFilterOptionKey | "recallContext"
@@ -292,8 +295,6 @@ export class RetrievalPipeline {
     query: string,
     options: {
       relatedSemanticNodeIds?: readonly SemanticNode["id"][];
-      audienceEntityId?: EntityId | null;
-      globalIdentitySelfAudienceEntityId?: EntityId | null;
       limit?: number;
       queryVector?: Float32Array;
       traceTurnId?: string;
@@ -595,7 +596,7 @@ export class RetrievalPipeline {
       return this.rehydrateImagePerceptionHandle(handle, stateHandle, options);
     }
 
-    return this.rehydrateOpenQuestionHandle(handle, stateHandle, options);
+    return this.rehydrateOpenQuestionHandle(handle, stateHandle);
   }
 
   private rehydrateImagePerceptionHandle(
@@ -986,15 +987,10 @@ export class RetrievalPipeline {
   private rehydrateOpenQuestionHandle(
     handle: Extract<RecallEvidenceHandle, { source: "open_question" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
   ): EvidenceItem | null {
     const question = this.options.openQuestionsRepository?.get(handle.openQuestionId);
 
     if (question === undefined || question === null || question.status !== "open") {
-      return null;
-    }
-
-    if (!isOpenQuestionVisibleToAudience(question, options)) {
       return null;
     }
 
@@ -1518,20 +1514,16 @@ export class RetrievalPipeline {
         try {
           const questions = await this.retrieveOpenQuestionsForQuery(intent.query, {
             relatedSemanticNodeIds: semantic.matchedNodeIds,
-            audienceEntityId: options.audienceEntityId ?? null,
-            globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
             limit: options.openQuestionsLimit,
             traceTurnId: options.traceTurnId,
             sessionId: options.sessionId,
           });
 
-          return questions
-            .filter((question) => isOpenQuestionVisibleToAudience(question, options))
-            .map((question) => ({
-              intent,
-              question,
-              score: question.urgency + intent.priority / 100,
-            }));
+          return questions.map((question) => ({
+            intent,
+            question,
+            score: question.urgency + intent.priority / 100,
+          }));
         } catch (error) {
           this.emitRetrievalDegraded(options, "open_questions", error);
           return [];
@@ -2063,27 +2055,6 @@ function warmRecallScore(stateHandle: RecallStateHandle): number {
   return clamp(0.12 + Math.min(0.18, stateHandle.reinforcementCount * 0.03), 0, 0.3);
 }
 
-function isOpenQuestionVisibleToAudience(
-  question: OpenQuestion,
-  options: Pick<RetrievalSearchOptions, "audienceEntityId" | "globalIdentitySelfAudienceEntityId">,
-): boolean {
-  if (options.globalIdentitySelfAudienceEntityId !== undefined) {
-    return true;
-  }
-
-  // Phase B intentionally does NOT expand audience scoping to individual participants.
-  // Group audience turns currently see only memories scoped to the group entity OR
-  // to public/self/shared. Participant-private memories remain invisible from a group turn.
-  // This is Phase C territory (ACL-style DM+group coexistence).
-  const audienceEntityId = options.audienceEntityId;
-
-  if (audienceEntityId === null || audienceEntityId === undefined) {
-    return question.audience_entity_id === null;
-  }
-
-  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
-}
-
 function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {
   return {
     audienceEntityId: options.audienceEntityId,
@@ -2451,6 +2422,7 @@ function openQuestionToEvidence(
     scoreBreakdown: {
       salience: question.urgency,
     },
+    disclosureLabel: openQuestionMemoryDisclosureLabel(question),
   };
 }
 

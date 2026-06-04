@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("selectCrossSessionSelfActivity", () => {
-  it("shows other active-session contact only to operator sessions from the creator", () => {
+  it("recalls other active-session contact globally with source provenance", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-projection-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "activity.db"), {
@@ -41,6 +41,7 @@ describe("selectCrossSessionSelfActivity", () => {
     const otherSessionId = createSessionId();
     const operatorEntityId = createEntityId();
     const aliceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
 
     sessions.ensure({
       session_id: currentSessionId,
@@ -74,16 +75,12 @@ describe("selectCrossSessionSelfActivity", () => {
       speakerEntityId: aliceEntityId,
       actorEntityId: aliceEntityId,
       audienceEntityId: aliceEntityId,
-      sourceStreamEntryIds: [createStreamEntryId()],
+      sourceStreamEntryIds: [sourceStreamEntryId],
     });
 
     const visible = selectCrossSessionSelfActivity({
       repository: activity,
       currentSessionId,
-      currentAudienceEntityId: operatorEntityId,
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -91,10 +88,6 @@ describe("selectCrossSessionSelfActivity", () => {
     const hidden = selectCrossSessionSelfActivity({
       repository: activity,
       currentSessionId,
-      currentAudienceEntityId: aliceEntityId,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -106,9 +99,10 @@ describe("selectCrossSessionSelfActivity", () => {
         occurredAt: NOW_MS - 41_000,
         relativeAge: "~41s ago",
         text: "Alice contacted Borg ~41s ago in another active session.",
+        sourceStreamEntryIds: [sourceStreamEntryId],
       },
     ]);
-    expect(hidden).toEqual([]);
+    expect(hidden).toEqual(visible);
 
     db.close();
   });
@@ -130,6 +124,7 @@ describe("selectCrossSessionSelfActivity", () => {
     const currentSessionId = createSessionId();
     const otherSessionId = createSessionId();
     const aliceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
 
     sessions.ensure({
       session_id: currentSessionId,
@@ -163,16 +158,12 @@ describe("selectCrossSessionSelfActivity", () => {
       speakerEntityId: aliceEntityId,
       actorEntityId: aliceEntityId,
       audienceEntityId: aliceEntityId,
-      sourceStreamEntryIds: [createStreamEntryId()],
+      sourceStreamEntryIds: [sourceStreamEntryId],
     });
 
     const visible = selectCrossSessionSelfActivity({
       repository: activity,
       currentSessionId,
-      currentAudienceEntityId: null,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -184,13 +175,14 @@ describe("selectCrossSessionSelfActivity", () => {
         occurredAt: NOW_MS - 30_000,
         relativeAge: "~30s ago",
         text: "Borg completed a turn with Alice ~30s ago in another active session.",
+        sourceStreamEntryIds: [sourceStreamEntryId],
       },
     ]);
 
     db.close();
   });
 
-  it("does not return cross-session activity on ordinary non-operator participant turns", () => {
+  it("recalls cross-session activity on ordinary non-operator participant turns", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-no-leak-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "activity.db"), {
@@ -207,6 +199,7 @@ describe("selectCrossSessionSelfActivity", () => {
     const currentSessionId = createSessionId();
     const otherSessionId = createSessionId();
     const participantEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
 
     sessions.ensure({
       session_id: currentSessionId,
@@ -240,22 +233,26 @@ describe("selectCrossSessionSelfActivity", () => {
       speakerEntityId: createEntityId(),
       actorEntityId: createEntityId(),
       audienceEntityId: createEntityId(),
-      sourceStreamEntryIds: [createStreamEntryId()],
+      sourceStreamEntryIds: [sourceStreamEntryId],
     });
 
     expect(
       selectCrossSessionSelfActivity({
         repository: activity,
         currentSessionId,
-        currentAudienceEntityId: participantEntityId,
-        sessionAudienceRole: "participant",
-        currentSenderBorgRole: null,
-        isPrivateSelfCognition: false,
         nowMs: NOW_MS,
         recencyWindowMs: 60_000,
         cap: 5,
       }),
-    ).toEqual([]);
+    ).toEqual([
+      {
+        kind: "user_contact",
+        occurredAt: NOW_MS - 30_000,
+        relativeAge: "~30s ago",
+        text: "Alice contacted Borg ~30s ago in another active session.",
+        sourceStreamEntryIds: [sourceStreamEntryId],
+      },
+    ]);
 
     db.close();
   });
@@ -275,6 +272,7 @@ describe("selectCrossSessionSelfActivity", () => {
     const operatorEntityId = createEntityId();
     const groupEntityId = entities.resolve("Planning Room", { kind: "group" });
     const bobEntityId = entities.resolve("Bob", { kind: "person" });
+    const sourceStreamEntryId = createStreamEntryId();
 
     sessions.ensure({
       session_id: currentSessionId,
@@ -308,16 +306,12 @@ describe("selectCrossSessionSelfActivity", () => {
       speakerEntityId: bobEntityId,
       actorEntityId: bobEntityId,
       audienceEntityId: groupEntityId,
-      sourceStreamEntryIds: [createStreamEntryId()],
+      sourceStreamEntryIds: [sourceStreamEntryId],
     });
 
     const visible = selectCrossSessionSelfActivity({
       repository: activity,
       currentSessionId,
-      currentAudienceEntityId: operatorEntityId,
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
       recencyWindowMs: 60_000,
       cap: 5,
@@ -329,6 +323,7 @@ describe("selectCrossSessionSelfActivity", () => {
         occurredAt: NOW_MS - 30_000,
         relativeAge: "~30s ago",
         text: "Bob contacted Borg ~30s ago in another active session.",
+        sourceStreamEntryIds: [sourceStreamEntryId],
       },
     ]);
 

@@ -1,5 +1,6 @@
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
+import { openQuestionMemoryDisclosureLabel } from "../../disclosure-labels.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
@@ -12,6 +13,7 @@ import {
   type RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
+import type { EntityId } from "../../../util/ids.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 
@@ -21,7 +23,12 @@ export type RetrievedEvidenceSummaryInput = {
   evidence?: readonly EvidenceItem[];
   episodes?: readonly RetrievedEpisode[];
   semantic?: RetrievedSemantic | null | undefined;
-  openQuestions?: readonly { id: string; question: string; urgency: number }[];
+  openQuestions?: readonly {
+    id: string;
+    question: string;
+    urgency: number;
+    audience_entity_id?: EntityId | null;
+  }[];
 };
 
 export function summarizeRetrievalConfidence(
@@ -278,7 +285,12 @@ function summarizeEvidenceProvenance(item: EvidenceItem): string {
 }
 
 function summarizeOpenQuestionEvidence(
-  openQuestions: readonly { id: string; question: string; urgency: number }[],
+  openQuestions: readonly {
+    id: string;
+    question: string;
+    urgency: number;
+    audience_entity_id?: EntityId | null;
+  }[],
 ): string | null {
   if (openQuestions.length === 0) {
     return null;
@@ -290,7 +302,7 @@ function summarizeOpenQuestionEvidence(
       .slice(0, 4)
       .map(
         (question) =>
-          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)}]`,
+          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(openQuestionMemoryDisclosureLabel({ audience_entity_id: question.audience_entity_id ?? null }))}]`,
       ),
   ].join("\n");
 }

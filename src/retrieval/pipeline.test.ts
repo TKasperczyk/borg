@@ -305,9 +305,7 @@ describe("retrieval pipeline", () => {
     expect(repo.getStats("ep_bbbbbbbbbbbbbbbb" as Episode["id"])?.retrieval_count).toBe(0);
     expect(readEpisodeIndexRows()).toEqual(initialEpisodeIndexRows);
     expect(
-      (
-        db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }
-      ).count,
+      (db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }).count,
     ).toBe(0);
     expect(recallStateRepository.load(DEFAULT_SESSION_ID)).toBeNull();
 
@@ -336,9 +334,7 @@ describe("retrieval pipeline", () => {
     );
     expect(readEpisodeIndexRows()).not.toEqual(initialEpisodeIndexRows);
     expect(
-      (
-        db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }
-      ).count,
+      (db.prepare("SELECT COUNT(*) AS count FROM retrieval_log").get() as { count: number }).count,
     ).toBe(2);
     expect(recallStateRepository.load(DEFAULT_SESSION_ID)).not.toBeNull();
   });
@@ -1739,15 +1735,19 @@ describe("retrieval pipeline", () => {
       limit: 1,
     });
 
-    expect(reflective.open_questions).toEqual([
-      expect.objectContaining({
-        question: "Why does Atlas deployment keep failing?",
-      }),
-    ]);
+    expect(reflective.open_questions.map((question) => question.question)).toEqual(
+      expect.arrayContaining([
+        "Why does Atlas deployment keep failing?",
+        "Why does Atlas deployment keep failing for Alice?",
+      ]),
+    );
+    expect(reflective.open_questions.map((question) => question.question)).not.toContain(
+      "What snacks should we order?",
+    );
     expect(defaultResult.open_questions).toEqual([]);
   });
 
-  it("widens open-question visibility only for private self-cognition", async () => {
+  it("recalls audience-scoped open questions globally for cognition", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1777,7 +1777,6 @@ describe("retrieval pipeline", () => {
     });
     const group = createEntityId();
     const alice = createEntityId();
-    const self = createEntityId();
 
     cleanup.push(async () => {
       db.close();
@@ -1825,28 +1824,23 @@ describe("retrieval pipeline", () => {
       audienceEntityId: group,
       openQuestionsLimit: 10,
     });
-    const selfReflection = await pipeline.searchWithContext("Atlas deployment", {
-      limit: 1,
-      includeOpenQuestions: true,
-      globalIdentitySelfAudienceEntityId: self,
-      openQuestionsLimit: 10,
-    });
     const questions = result.open_questions.map((question) => question.question);
-    const selfReflectionQuestions = selfReflection.open_questions.map((question) => question.question);
+    const aliceEvidence = result.evidence.find(
+      (item) => item.source === "open_question" && item.text.includes("Alicia en privado"),
+    );
 
     expect(questions).toEqual(
-      expect.arrayContaining([
-        "Why does Atlas deployment keep failing for everyone?",
-        "Why does Atlas deployment keep failing in the group?",
-      ]),
-    );
-    expect(questions).not.toContain("Por que falla Atlas deployment para Alicia en privado?");
-    expect(selfReflectionQuestions).toEqual(
       expect.arrayContaining([
         "Why does Atlas deployment keep failing for everyone?",
         "Why does Atlas deployment keep failing in the group?",
         "Por que falla Atlas deployment para Alicia en privado?",
       ]),
     );
+    expect(aliceEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice],
+      privateToEntityIds: [alice],
+      publicToEntityIds: [],
+    });
   });
 });

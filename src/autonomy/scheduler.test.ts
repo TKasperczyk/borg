@@ -379,9 +379,6 @@ describe("AutonomyScheduler", () => {
 
     const recallRows = selectSelfDecisionIntrospection({
       repository: selfDecisionRepository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: clock.now(),
     });
     expect(recallRows).toHaveLength(1);

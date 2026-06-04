@@ -177,6 +177,66 @@ describe("retrieval confidence prompt rendering", () => {
     );
   });
 
+  it("renders disclosure labels on open-question evidence items", () => {
+    const evidence: EvidenceItem = {
+      id: "evidence_open_question_oq_aaaaaaaaaaaaaaaa_intent",
+      source: "open_question",
+      text: "Should Sol ask Alice about the private launch timing?",
+      provenance: {
+        openQuestionId: "oq_aaaaaaaaaaaaaaaa" as never,
+      },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 0.8,
+      scoreBreakdown: {},
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: ["entity_alice" as never],
+        privateToEntityIds: ["entity_alice" as never],
+        publicToEntityIds: [],
+      },
+    };
+
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      { evidence: [evidence] },
+      1_000,
+    );
+
+    expect(summary).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=entity_alice");
+    expect(summary).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
+  });
+
+  it("renders disclosure labels on open-question fallback rows", () => {
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      {
+        episodes: [],
+        semantic: null,
+        openQuestions: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa",
+            question: "Should Sol ask Alice about the private launch timing?",
+            urgency: 0.72,
+            audience_entity_id: "entity_alice" as never,
+          },
+        ],
+      },
+      1_000,
+    );
+
+    expect(summary).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=entity_alice");
+    expect(summary).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
+  });
+
   it("renders partial-source metadata on semantic evidence items", () => {
     const evidence: EvidenceItem = {
       id: "evidence_semantic_node_semn_aaaaaaaaaaaaaaaa_intent",

@@ -800,10 +800,6 @@ export async function runRetrievalPhase(input: {
       : selectCrossSessionSelfActivity({
           repository: input.options.activityRepository,
           currentSessionId: input.sessionId,
-          currentAudienceEntityId: input.audienceEntityId,
-          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
-          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
-          isPrivateSelfCognition,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
           cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
@@ -813,9 +809,6 @@ export async function runRetrievalPhase(input: {
       ? []
       : selectSelfDecisionIntrospection({
           repository: input.options.selfDecisionRepository,
-          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
-          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
-          isPrivateSelfCognition,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
@@ -826,8 +819,6 @@ export async function runRetrievalPhase(input: {
       : selectObservedEventIntrospection({
           repository: input.options.observedEventRepository,
           speakerEntityIds: creatorDirectiveParticipantEntityIds,
-          sessionAudienceRole: input.sessionAudienceRole ?? "participant",
-          currentSenderBorgRole: input.currentSenderBorgRole ?? null,
           nowMs: input.options.clock.now(),
           recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,

@@ -10,6 +10,7 @@ import {
 } from "../../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
+  GoalRecord,
   GrowthMarker,
   OpenQuestion,
 } from "../../../memory/self/index.js";
@@ -37,6 +38,7 @@ import { isCreatorInOperatorContext } from "../../authority.js";
 import {
   commitmentDisclosureEntityIds,
   correctionDisclosureEntityIds,
+  uniqueDisclosureEntityIds,
 } from "../../disclosure-labels.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
@@ -778,15 +780,6 @@ function renderStandingEntryGroupLines(input: {
 const SOCIAL_MEMORY_INTERPRETATION =
   "Social interactions you previously declined or rejected with the people present now, recalled across ALL your past conversations -- not just this one. Each entry shows who pushed, where it originally happened (a group channel vs a one-to-one), how many times it recurred, and how recently. This is your own prior reasoning and is already claim-free; referencing the pattern ('we keep returning to this -- you keep pushing, I keep declining') does NOT restate the original claim. Use the provenance to decide whether and how to raise it: you remember a private one-to-one rejection even when the same person is now in a group, but you would not broadcast that private exchange to the group -- that is your judgment to make, not a rule imposed on you.";
 
-function observedEventDisclosureClass(entry: EvidenceLedgerEntry): unknown {
-  return (
-    entry.state_metadata?.observed_event_disclosure_class ??
-    entry.state_metadata?.disclosure_class ??
-    (entry.state_metadata?.disclosure_label as { disclosure_class?: unknown } | undefined)
-      ?.disclosure_class
-  );
-}
-
 function renderSocialMemoryEntryGroupLines(input: {
   entries: readonly EvidenceLedgerEntry[] | undefined;
   indent: string;
@@ -853,27 +846,6 @@ function renderRelationalIdentityLines(context: DeliberationContext, indent: str
 
 function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: string): string[] {
   const standing = context.evidenceLedger?.audienceStanding;
-  const selfPrivateObservedIntrospectionVisible =
-    context.creatorContext !== null &&
-    context.creatorContext !== undefined &&
-    isCreatorInOperatorContext({
-      currentSenderBorgRole: context.creatorContext.currentSenderBorgRole,
-      sessionAudienceRole: context.creatorContext.sessionAudienceRole,
-    });
-  const observedEventEntries = standing?.observedEventIntrospectionEntries;
-  const socialObservedEntries = observedEventEntries?.filter(
-    (entry) => observedEventDisclosureClass(entry) === "social_observed",
-  );
-  const selfPrivateObservedEntries =
-    selfPrivateObservedIntrospectionVisible === true
-      ? observedEventEntries?.filter(
-          (entry) => observedEventDisclosureClass(entry) === "self_private",
-        )
-      : [];
-  const visibleSocialMemoryEntries =
-    observedEventEntries === undefined
-      ? undefined
-      : [...(socialObservedEntries ?? []), ...(selfPrivateObservedEntries ?? [])];
 
   return [
     `${indent}<cross_session_awareness>`,
@@ -891,7 +863,7 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
       indent: `${indent}  `,
     }),
     ...renderSocialMemoryEntryGroupLines({
-      entries: visibleSocialMemoryEntries,
+      entries: standing?.observedEventIntrospectionEntries,
       indent: `${indent}  `,
     }),
     `${indent}</cross_session_awareness>`,
@@ -1245,9 +1217,7 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
       (value) =>
         `${value.label} (${value.state}, conf ${getPreferenceConfidence(value).toFixed(2)}) ${summarizePreferenceEvidence(value)}`,
     );
-  const goals = selfSnapshot.goals.map(
-    (goal) => `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}`,
-  );
+  const goals = selfSnapshot.goals.map(summarizeSelfSnapshotGoal);
   const traits = selfSnapshot.traits
     .filter((trait) => trait.state !== "established")
     .map(
@@ -1282,6 +1252,18 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .replace(/^/, "Self snapshot: ");
 
   return [summary, SELF_IDENTITY_DISCLOSURE_LINE].join("\n");
+}
+
+function summarizeSelfSnapshotGoal(goal: GoalRecord): string {
+  const disclosureIds = uniqueDisclosureEntityIds([goal.audience_entity_id, goal.owner_entity_id]);
+  const disclosure =
+    disclosureIds.length === 0
+      ? ""
+      : ` ${renderMemoryDisclosureLabelForModel(
+          relationshipPrivateMemoryDisclosureLabel(disclosureIds),
+        )}`;
+
+  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {

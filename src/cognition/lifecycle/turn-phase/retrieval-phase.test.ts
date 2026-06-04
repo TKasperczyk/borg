@@ -1490,7 +1490,7 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
-  it("threads private self-cognition into self-introspection selectors without opening participant turns", async () => {
+  it("recalls self-introspection selectors globally for cognition", async () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
     });
@@ -1634,8 +1634,8 @@ describe("creator directive retrieval briefing", () => {
         closureLoopAssessment: null,
       });
 
-      expect(listRecentOtherActiveSessionEvents).not.toHaveBeenCalled();
-      expect(listRecentAutonomousSelfPrivate).not.toHaveBeenCalled();
+      expect(listRecentOtherActiveSessionEvents).toHaveBeenCalledTimes(1);
+      expect(listRecentAutonomousSelfPrivate).toHaveBeenCalledTimes(1);
 
       listRecentOtherActiveSessionEvents.mockClear();
       listRecentAutonomousSelfPrivate.mockClear();

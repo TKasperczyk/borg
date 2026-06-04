@@ -2339,7 +2339,9 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
       expect(finalizerSystem).not.toContain("operator-only diagnostic directive");
       expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
       expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
-      expect(finalizerSystem).not.toContain("contacted Borg");
+      expect(finalizerSystem).toContain("contacted Borg");
+      expect(finalizerSystem).toContain("disclosure_class=self_private");
+      expect(finalizerSystem).toContain("source_stream_ids");
       expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
     } finally {
       await borg.close();
@@ -2488,7 +2490,9 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
       expect(finalizerSystem).not.toContain("<operational_directive>");
       expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
       expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
-      expect(finalizerSystem).not.toContain("contacted Borg");
+      expect(finalizerSystem).toContain("contacted Borg");
+      expect(finalizerSystem).toContain("disclosure_class=self_private");
+      expect(finalizerSystem).toContain("source_stream_ids");
       expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
     } finally {
       await borg.close();
@@ -4265,8 +4269,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             "manual-unscoped-value",
           ]),
         );
-        expect(snapshot.goals.map((goal) => goal.description)).toContain("public-goal");
-        expect(snapshot.goals.map((goal) => goal.description)).not.toContain("alice-private-goal");
+        expect(snapshot.goals.map((goal) => goal.description)).toEqual(
+          expect.arrayContaining(["alice-private-goal", "public-goal"]),
+        );
         expect(snapshot.traits.map((trait) => trait.label)).toEqual(
           expect.arrayContaining(["alice-private-trait", "public-trait", "mixed-visible-trait"]),
         );
@@ -4277,53 +4282,53 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         expect(
           snapshot.values.find((value) => value.label === "alice-private-value")
             ?.evidence_episode_ids,
-        ).toEqual([]);
+        ).toEqual([alicePrivateEpisodeId]);
         expect(
           provenanceEpisodeIds(
             snapshot.values.find((value) => value.label === "alice-private-value"),
           ),
-        ).not.toContain(alicePrivateEpisodeId);
+        ).toEqual([alicePrivateEpisodeId]);
         expect(
           snapshot.values.find((value) => value.label === "mixed-visible-value")
             ?.evidence_episode_ids,
-        ).toEqual([publicEpisodeId]);
+        ).toEqual([alicePrivateEpisodeId, publicEpisodeId]);
         expect(
           provenanceEpisodeIds(
             snapshot.values.find((value) => value.label === "mixed-visible-value"),
           ),
-        ).toEqual([publicEpisodeId]);
+        ).toEqual([alicePrivateEpisodeId, publicEpisodeId]);
         expect(
           snapshot.traits.find((trait) => trait.label === "alice-private-trait")
             ?.evidence_episode_ids,
-        ).toEqual([]);
+        ).toEqual([alicePrivateEpisodeId]);
         expect(
           provenanceEpisodeIds(
             snapshot.traits.find((trait) => trait.label === "alice-private-trait"),
           ),
-        ).not.toContain(alicePrivateEpisodeId);
+        ).toEqual([alicePrivateEpisodeId]);
         expect(
           snapshot.traits.find((trait) => trait.label === "mixed-visible-trait")
             ?.evidence_episode_ids,
-        ).toEqual([publicEpisodeId]);
+        ).toContain(alicePrivateEpisodeId);
         expect(
           provenanceEpisodeIds(
             snapshot.traits.find((trait) => trait.label === "mixed-visible-trait"),
           ),
-        ).not.toContain(alicePrivateEpisodeId);
+        ).toContain(alicePrivateEpisodeId);
         expect(
           snapshot.recentGrowthMarkers?.find(
             (marker) => marker.what_changed === "alice-private-growth",
           )?.evidence_episode_ids,
-        ).toEqual([]);
+        ).toEqual([alicePrivateEpisodeId]);
         expect(
           provenanceEpisodeIds(
             snapshot.recentGrowthMarkers?.find(
               (marker) => marker.what_changed === "alice-private-growth",
             ),
           ),
-        ).not.toContain(alicePrivateEpisodeId);
-        expect(snapshot.currentPeriod?.key_episode_ids).toEqual([]);
-        expect(provenanceEpisodeIds(snapshot.currentPeriod)).not.toContain(alicePrivateEpisodeId);
+        ).toEqual([alicePrivateEpisodeId]);
+        expect(snapshot.currentPeriod?.key_episode_ids).toEqual([alicePrivateEpisodeId]);
+        expect(provenanceEpisodeIds(snapshot.currentPeriod)).toEqual([alicePrivateEpisodeId]);
       }
 
       expect(
@@ -4372,7 +4377,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(finalizerSystem).toContain("mixed-visible-value");
       expect(finalizerSystem).toContain("manual-unscoped-value");
       expect(finalizerSystem).toContain("public-goal");
-      expect(finalizerSystem).not.toContain("alice-private-goal");
+      expect(finalizerSystem).toContain("alice-private-goal");
       expect(finalizerSystem).toContain("alice-private-value");
       expect(finalizerSystem).toContain("alice-private-trait");
       expect(finalizerSystem).toContain("public-trait");
@@ -4381,7 +4386,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(finalizerSystem).toContain("public-growth");
       expect(finalizerSystem).toContain("alice-private-period");
       expect(finalizerSystem).toContain("Alice-private period narrative");
-      expect(finalizerSystem).toContain("from audience-scoped evidence");
+      expect(finalizerSystem).toContain(`from ${alicePrivateEpisodeId}`);
       expect(allRequestText).toContain(alicePrivateEpisodeId);
       expect(allRequestText).toContain("Alice private identity evidence narrative.");
       expect(allRequestText).toContain("disclosure_class=relationship_private");
@@ -4393,7 +4398,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("filters gathered self snapshot records in a single visibility pass", async () => {
+  it("builds self snapshot records without an audience-visibility evidence pass", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(2_000_000);
@@ -4440,8 +4445,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(snapshot.values.map((value) => value.label)).toContain(singlePassValueLabel);
       expect(snapshot.goals.map((goal) => goal.description)).toContain(singlePassGoalDescription);
-      expect(getManySpy).toHaveBeenCalledTimes(1);
-      expect(getManySpy.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([publicEpisodeId]));
+      expect(getManySpy).not.toHaveBeenCalled();
     } finally {
       await borg.close();
     }

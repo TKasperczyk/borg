@@ -68,6 +68,11 @@ import {
   type TurnOrigin,
 } from "../types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import {
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
 export type ReflectionContext = {
   turnId?: string;
   sessionId?: SessionId;
@@ -423,6 +428,9 @@ function isOpenQuestionVisibleToReflectionAudience(
   return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
 }
 
+// This is an action-link authorization boundary: reflection can see globally recalled questions
+// in its payload, but a new current-turn ActionRecord should only auto-link to an open question
+// that belongs to the current audience scope.
 function focusedReflectionOpenQuestionId(
   context: ReflectionContext,
   selectedGoalId: GoalId | null,
@@ -1369,6 +1377,8 @@ export class Reflector {
         continue;
       }
 
+      // Resolution is a mutation authorization boundary, not recall filtering: reflection sees
+      // global questions in its payload, but may only resolve a current-audience-scope question.
       if (!isOpenQuestionVisibleToReflectionAudience(activeQuestion, context.audienceEntityId)) {
         this.emitOpenQuestionResolutionDegraded(context, {
           reason: "audience_mismatch",
@@ -1426,6 +1436,7 @@ export class Reflector {
         continue;
       }
 
+      // Re-check the live record under the same mutation authorization rule.
       if (!isOpenQuestionVisibleToReflectionAudience(current, context.audienceEntityId)) {
         this.emitOpenQuestionResolutionDegraded(context, {
           reason: "audience_mismatch",
@@ -1608,6 +1619,9 @@ export class Reflector {
               goal_id: goal.id,
               description: goal.description,
               progress_notes: goal.progress_notes,
+              audience_entity_id: goal.audience_entity_id,
+              owner_entity_id: goal.owner_entity_id ?? null,
+              ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
             })),
             executive_focus: executiveFocusForReflection,
             origin: context.origin ?? "user",
@@ -1620,6 +1634,7 @@ export class Reflector {
               related_episode_ids: question.related_episode_ids,
               related_semantic_node_ids: question.related_semantic_node_ids,
               audience_entity_id: question.audience_entity_id,
+              ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
             })),
             current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
             available_evidence_episodes: context.retrievedEpisodes.map((result) => ({

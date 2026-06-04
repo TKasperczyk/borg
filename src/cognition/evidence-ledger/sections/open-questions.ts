@@ -14,7 +14,7 @@ import {
 } from "../open-question-handles.js";
 import { OPEN_QUESTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
-import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import { openQuestionMemoryDisclosureLabel } from "../../disclosure-labels.js";
 
 export function addOpenQuestionsSection(context: BuilderSectionContext): void {
   const questionsById = new Map(
@@ -29,16 +29,13 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
       streamEntryIds: [...streamIds],
       episodeIds: [...episodeIds],
       statuses: LIFECYCLE_OPEN_QUESTION_STATUSES,
-      visibleToAudienceEntityId: context.input.audienceEntityId,
     })) {
       questionsById.set(question.id, question);
     }
   }
 
   for (const question of questionsById.values()) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      question.audience_entity_id === null ? [] : [question.audience_entity_id],
-    );
+    const disclosureLabel = openQuestionMemoryDisclosureLabel(question);
     addEntry(
       context.buckets,
       "open_questions",

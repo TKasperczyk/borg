@@ -1,8 +1,5 @@
-import type { BorgRole } from "../commitments/index.js";
-import { isSelfIntrospectionAuthorized } from "../../cognition/authority.js";
-import type { SessionAudienceRole } from "../../sessions/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
-import type { EntityId, SessionId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ActivityEventKind } from "./types.js";
 import type { ActivityRepository, ActivityProjectionSourceEvent } from "./repository.js";
 
@@ -14,15 +11,12 @@ export type CrossSessionSelfActivityRow = {
   occurredAt: number;
   relativeAge: string;
   text: string;
+  sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
 export type CrossSessionSelfActivityProjectionInput = {
   repository: Pick<ActivityRepository, "listRecentOtherActiveSessionEvents">;
   currentSessionId: SessionId;
-  currentAudienceEntityId: EntityId | null;
-  sessionAudienceRole: SessionAudienceRole;
-  currentSenderBorgRole: BorgRole | null;
-  isPrivateSelfCognition: boolean;
   nowMs: number;
   recencyWindowMs?: number;
   cap?: number;
@@ -54,18 +48,6 @@ function rowText(event: ActivityProjectionSourceEvent, relativeAge: string): str
 export function selectCrossSessionSelfActivity(
   input: CrossSessionSelfActivityProjectionInput,
 ): CrossSessionSelfActivityRow[] {
-  void input.currentAudienceEntityId;
-
-  if (
-    !isSelfIntrospectionAuthorized({
-      currentSenderBorgRole: input.currentSenderBorgRole,
-      sessionAudienceRole: input.sessionAudienceRole,
-      isPrivateSelfCognition: input.isPrivateSelfCognition,
-    })
-  ) {
-    return [];
-  }
-
   const cap = Math.max(1, Math.floor(input.cap ?? DEFAULT_CROSS_SESSION_ACTIVITY_CAP));
   const recencyWindowMs = Math.max(
     0,
@@ -85,6 +67,7 @@ export function selectCrossSessionSelfActivity(
       occurredAt: event.occurredAt,
       relativeAge,
       text: rowText(event, relativeAge),
+      sourceStreamEntryIds: event.sourceStreamEntryIds,
     };
   });
 }

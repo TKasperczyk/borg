@@ -2228,6 +2228,75 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain("not predictions about long-arc behavior");
   });
 
+  it("passes disclosure labels for active goals and open questions into reflection payloads", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const alice = createEntityId();
+    const goal = harness.goalsRepository.add({
+      description: "Track Alice's private launch follow-up",
+      priority: 8,
+      ownerEntityId: alice,
+      provenance: { kind: "manual" },
+    });
+    const question = harness.openQuestionsRepository.add({
+      question: "What should Sol ask Alice about the private launch?",
+      urgency: 0.7,
+      audience_entity_id: alice,
+      provenance: { kind: "manual" },
+      source: "reflection",
+    });
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [goal],
+          traits: [],
+        },
+        activeOpenQuestions: [question],
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      active_goals?: Array<{
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+      active_open_questions?: Array<{
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+    };
+
+    expect(payload.active_goals?.[0]?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(payload.active_goals?.[0]?.disclosure).toContain(`private-to=${alice}`);
+    expect(payload.active_goals?.[0]?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [alice],
+    });
+    expect(payload.active_open_questions?.[0]?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(payload.active_open_questions?.[0]?.disclosure).toContain(`private-to=${alice}`);
+    expect(payload.active_open_questions?.[0]?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [alice],
+    });
+  });
+
   it("logs and skips LLM-emitted open questions when identity service is unavailable", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({

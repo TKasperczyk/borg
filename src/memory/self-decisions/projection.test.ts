@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("selectSelfDecisionIntrospection", () => {
-  it("returns rows for operator context or private self-cognition and preserves multilingual summaries", () => {
+  it("returns rows globally for cognition and preserves multilingual summaries", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-projection-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "self-decisions.db"), {
@@ -54,30 +54,18 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const visible = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
     const privateSelfVisible = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
     });
-    const participantHidden = selectSelfDecisionIntrospection({
+    const participantVisible = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: "creator",
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
-    const nonCreatorHidden = selectSelfDecisionIntrospection({
+    const nonCreatorOperatorVisible = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
 
@@ -91,8 +79,8 @@ describe("selectSelfDecisionIntrospection", () => {
     ]);
     expect(visible[0]?.text).toContain(decisionSummary);
     expect(privateSelfVisible.map((row) => row.decisionSummary)).toEqual([decisionSummary]);
-    expect(participantHidden).toEqual([]);
-    expect(nonCreatorHidden).toEqual([]);
+    expect(participantVisible.map((row) => row.decisionSummary)).toEqual([decisionSummary]);
+    expect(nonCreatorOperatorVisible.map((row) => row.decisionSummary)).toEqual([decisionSummary]);
 
     db.close();
   });
@@ -122,9 +110,6 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const rows = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
     });
 
@@ -204,9 +189,6 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const rows = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
     });
 
@@ -244,9 +226,6 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const rows = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "participant",
-      currentSenderBorgRole: null,
-      isPrivateSelfCognition: true,
       nowMs: NOW_MS,
     });
 
@@ -258,7 +237,7 @@ describe("selectSelfDecisionIntrospection", () => {
     db.close();
   });
 
-  it("does not return self-decision rows on ordinary non-operator participant turns", () => {
+  it("recalls self-decision rows on ordinary non-operator participant turns", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-no-leak-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "self-decisions.db"), {
@@ -273,7 +252,7 @@ describe("selectSelfDecisionIntrospection", () => {
       triggerType: "trigger",
       sourceEventId: "scheduled-reflection:no-leak",
       fireEventId: createStreamEntryId(),
-      decisionSummary: "This self-private decision must not reach a participant turn.",
+      decisionSummary: "This self-private decision is recalled with a disclosure label downstream.",
       turnResultId: "strm_agent_no_leak",
       sourceStreamEntryIds: [createStreamEntryId()],
     });
@@ -281,12 +260,14 @@ describe("selectSelfDecisionIntrospection", () => {
     expect(
       selectSelfDecisionIntrospection({
         repository,
-        sessionAudienceRole: "participant",
-        currentSenderBorgRole: null,
-        isPrivateSelfCognition: false,
         nowMs: NOW_MS,
       }),
-    ).toEqual([]);
+    ).toEqual([
+      expect.objectContaining({
+        decisionSummary:
+          "This self-private decision is recalled with a disclosure label downstream.",
+      }),
+    ]);
 
     db.close();
   });
@@ -328,9 +309,6 @@ describe("selectSelfDecisionIntrospection", () => {
 
     const rows = selectSelfDecisionIntrospection({
       repository,
-      sessionAudienceRole: "operator",
-      currentSenderBorgRole: "creator",
-      isPrivateSelfCognition: false,
       nowMs: NOW_MS,
     });
 
