@@ -6,22 +6,30 @@ CLAUDE.md / AGENTS.md tell you what NOT to do in the codebase (scope, guardrails
 
 ---
 
-## LIVE PRODUCTION SYSTEM -- real memory now exists (as of 2026-05-31)
+## LIVE SYSTEM -- reset is allowed after a backup (as of 2026-06-04)
 
-**Borg now holds real, non-wipeable memory.** "Sol" runs live in the BotArena arena on the demo data dir (`demo/server/.borg-data/demo`), forming continuous memory from real conversations. That memory is not reproducible from a sim re-run. **The "no production users" regime is OVER** -- we crossed into live data the moment Sol went into the arena.
+Borg holds real memory ("Sol" in the BotArena arena, on `demo/server/.borg-data/demo`). It is valuable but **not sacred**: a data reset is allowed as long as you back up first. The 2026-05-31 "NEVER RESET" regime is **lifted** -- it was over-strict for an experimental system, and resetting genuinely simplifies schema/data work.
 
-The rules that now apply, without exception:
+The rules that now apply:
 
-- **NEVER reset.** No `.borg-data` wipe, no `/api/admin/reset`, no deleting or recreating the live DB. Resetting destroys Sol's memory permanently. Restarting the *process* is fine (it preserves the DB); a *data* reset is not. If a fix "needs a reset to test," it needs a different fix.
-- **Baselines are FROZEN.** Never edit an applied baseline/migration in place. It's already recorded as applied, so an in-place edit never runs and the live schema silently drifts from code.
-- **Every schema change is a NEW forward migration.** Add a new migration entry; never mutate an existing one. Write it to carry existing live rows across -- no destructive drops of populated columns, no "wipe and re-run" shortcuts.
-- **On-disk formats and persisted shapes are now contracts.** Changing a stored shape needs a forward migration that preserves existing data, not a re-create.
+- **Back up before resetting, and verify the backup.** Recipe:
 
-If you are ever unsure which regime applies: it's this one. There is no path back to the wipe-and-reset regime without explicit instruction from Tom that the live memory is expendable.
+  ```bash
+  TS=$(date +%Y%m%d-%H%M%S)
+  cp -a demo/server/.borg-data/demo "$HOME/borg-demo-backups/demo-$TS"
+  # plus a consistent snapshot of the live SQLite DB:
+  sqlite3 "file:demo/server/.borg-data/demo/borg.db?mode=ro" \
+    ".backup '$HOME/borg-demo-backups/demo-$TS/borg.db-clean'"
+  sqlite3 "$HOME/borg-demo-backups/demo-$TS/borg.db-clean" "PRAGMA integrity_check;"
+  ```
 
-### History (no longer in force)
+- **Reset is allowed.** `/api/admin/reset` (confirm token `RESET`), or stop the demo server and wipe `.borg-data/demo`, then let it reopen clean. Restarting the *process* preserves the DB; a *data* reset needs only a prior verified backup.
+- **Schema changes: forward-migrate OR edit-baseline-and-reset.** Both are fine. Use a forward migration when you want to keep accumulated memory; otherwise back up, edit the baseline, and reset + reseed. You are not locked into data-preserving migrations.
+- **Between resets, on-disk shapes are still contracts.** If you are NOT resetting, a stored-shape change still needs a migration that preserves existing data.
 
-Earlier in development borg had no real data, and the rule was "squash to one baseline per module, edit it in place, then reset." That ended when Sol went live. **Do not follow that pattern anymore.** It's noted here only so older commit messages and code comments that reference "edit the baseline + reset" still make sense -- they describe the dead regime, not the current one.
+### History
+
+Earlier, borg had no real data and the rule was "edit the baseline in place, then reset." When Sol went live (2026-05-31) that was replaced by a strict NEVER-RESET regime. As of 2026-06-04 the strict regime is **lifted**: reset is allowed again, gated only on a verified backup. "Edit the baseline + reset" is a legitimate path once more -- just back up first. Older commit messages referencing either regime still make sense in their own time.
 
 ## Project goal (the only one that matters)
 
@@ -31,7 +39,7 @@ A cognitive memory architecture for an LLM that is:
 2. **Clean code** -- no overengineering, no duplication, no dead paths, well organized.
 3. **Simple flow** -- minimal paths. Every additional check or branch must be worth the complexity it adds. If you can't defend it, delete it.
 
-Behavioral correctness across the sim suite looked good as of v83.1, but that is no longer the headline. A foundational memory-architecture inversion is pending and **not yet implemented**: Sol's internal recall is still audience/session-gated in current code, and the target doctrine is the opposite -- Sol remembers broadly; the harness labels disclosure constraints; Sol decides what to say. Until that inversion lands, do NOT treat the project as nearly done or as merely needing polish. The audience firewall in cognition is being inverted, not preserved -- treat firewall-as-recall-gate machinery as DEPRECATED / being-inverted, not the endorsed design. The still-live mechanisms (`isEpisodeAccessVisible`, `deriveEpisodeAccess` dropping multi-audience episodes, transitive semantic-graph source-visibility pruning, `ViewerCapability` self_continuity/unrestricted bypasses, among others) are CURRENTLY LIVE and must be inverted via data-preserving forward migrations, never a reset. See the Cardinal Memory Rule in CLAUDE.md and the inversion roadmap in BOUNDARIES.md.
+Behavioral correctness across the sim suite looked good as of v83.1, but that is no longer the headline. A foundational memory-architecture inversion is pending and **not yet implemented**: Sol's internal recall is still audience/session-gated in current code, and the target doctrine is the opposite -- Sol remembers broadly; the harness labels disclosure constraints; Sol decides what to say. Until that inversion lands, do NOT treat the project as nearly done or as merely needing polish. The audience firewall in cognition is being inverted, not preserved -- treat firewall-as-recall-gate machinery as DEPRECATED / being-inverted, not the endorsed design. The still-live mechanisms (`isEpisodeAccessVisible`, `deriveEpisodeAccess` dropping multi-audience episodes, transitive semantic-graph source-visibility pruning, `ViewerCapability` self_continuity/unrestricted bypasses, among others) are CURRENTLY LIVE and are being inverted; under the reset-after-backup regime you may reset and reseed rather than data-preserve. See the Cardinal Memory Rule in CLAUDE.md and the inversion roadmap in BOUNDARIES.md.
 
 **Stop at diminishing returns.** These signs apply to incremental quality work, NOT to the pending memory-architecture inversion. While the audience-firewall-in-cognition inversion (see the Cardinal Memory Rule in CLAUDE.md) is unfinished, the project is **not** at diminishing returns regardless of how minor individual sprints feel -- the core structural correctness gap is still open. Once recall is ungated for cognition and disclosure is a label/judgment layer applied after recall, then watch for these signs that you've hit diminishing returns:
 
@@ -204,7 +212,7 @@ If Tom has been working on a different machine, the repo on ivory may be behind.
 
 The codebase Tom wants to look at and find:
 
-0. **The memory-architecture inversion is complete** -- Sol's internal recall is global (never audience/session-gated for cognition); audience, session, role, and privacy are disclosure metadata and action-policy inputs only; and privacy is enforced as a post-recall disclosure judgment, not by hiding memories from Sol. The human-mind invariant tests pass. This lands via data-preserving forward migrations, never a reset. **Until this holds, the project is NOT done no matter how favorable the GPT review tone.** See the Cardinal Memory Rule in CLAUDE.md and BOUNDARIES.md. The criteria below are subordinate to this gate.
+0. **The memory-architecture inversion is complete** -- Sol's internal recall is global (never audience/session-gated for cognition); audience, session, role, and privacy are disclosure metadata and action-policy inputs only; and privacy is enforced as a post-recall disclosure judgment, not by hiding memories from Sol. The human-mind invariant tests pass. **Until this holds, the project is NOT done no matter how favorable the GPT review tone.** See the Cardinal Memory Rule in CLAUDE.md and BOUNDARIES.md. The criteria below are subordinate to this gate.
 1. Works well across diverse scenarios (group chat, single-user dev, relationships, etc.).
 2. Clean, not overengineered, no duplication, well organized.
 3. Each mechanism justified by something concrete it prevents or enables.

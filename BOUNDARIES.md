@@ -92,8 +92,8 @@ episodes **regardless of current audience**, each carrying its origin and a disc
 ("private-to-X -- usable internally, do not disclose to current audience unless authorized").
 The exact-audience-match predicate moves to the **public/export/disclosure-render paths only**
 (`searchEpisodesForDisclosure` / public-export search), where audience filtering is legitimate
-*because* it is isolated from cognition. The inversion lands via a **data-preserving forward
-migration**, never a reset (see "Inversion must respect NEVER-RESET" below).
+*because* it is isolated from cognition. (How this schema change lands -- reset + reseed after a
+backup, or a forward migration -- is covered under "Inversion: back up, then reset + reseed" below.)
 
 ### 1b. Dropping multi-audience episodes at extraction -- a correctness defect being inverted
 
@@ -111,10 +111,10 @@ still drops these today.** This is a correctness defect, not correct behavior.
 **Target of the inversion:** an episode records **ALL** its origin audiences -- an
 `originAudienceEntityIds[]` array, or an `episode_audience_refs` join table with relations like
 `origin` / `mentioned` / `private_to` / `public_to`. Multi-audience content is stored **once**,
-recallable by Sol, and disclosure-labeled **per audience**. The forward migration must surface
-and repair dropped multi-audience episodes where the source material still exists, **without a
-reset** -- and where it cannot be reconstructed, record the loss honestly rather than pretend it
-was captured.
+recallable by Sol, and disclosure-labeled **per audience**. With reset allowed (post-backup), the
+simplest path is to change the schema and reseed; if instead you keep the live data via a forward
+migration, surface and repair previously-dropped multi-audience episodes where the source still
+exists, and record any loss honestly.
 
 ### 1c. Transitive semantic-graph visibility pruning -- DEPRECATED / being-inverted
 
@@ -238,18 +238,19 @@ to recall.
   *disclosure* mechanism (what Sol may *say*), not a way to "widen an episode's visibility" for
   recall.
 
-## Inversion must respect NEVER-RESET (forward migrations only)
+## Inversion: back up, then reset + reseed (or forward-migrate)
 
-The inversion is a **schema and data change on a LIVE system with real, non-wipeable memory.**
-It must honor the NEVER-RESET / frozen-baselines / forward-migration rules in `CLAUDE.md` and
-`WORKFLOW.md` -- those are correct and are **not** weakened to enable the inversion:
+The inversion is a **schema and data change**. As of 2026-06-04 a data reset is **allowed**, gated
+only on a verified backup (see the LIVE SYSTEM regime in `CLAUDE.md` / `WORKFLOW.md`):
 
-- Every step lands as a **new forward migration** that carries existing live rows across. No
-  destructive drops of populated columns without a data-preserving path. No baseline edits.
-- Recording all origin audiences (`originAudienceEntityIds[]` / `episode_audience_refs`) and
-  repairing previously-dropped multi-audience episodes are **data-preserving forward
-  migrations** that surface/repair where source material still exists -- **never a reset.** Where
-  a dropped episode cannot be reconstructed, the migration records the gap honestly.
+- **Back up `demo/server/.borg-data/demo` first.** Then take the simplest path: change the schema
+  (carry episodes' origin audiences; drop the multi-audience-drop behavior) and **reset + reseed**,
+  rather than writing data-preserving backfills.
+- A forward migration that preserves live rows is still fine if you want to keep the accumulated
+  memory -- but you are no longer required to. "Edit the baseline + reset" is a legitimate path
+  again, post-backup.
+- This removes most of the old Sprint-12 backfill burden: with a reset you start from a clean
+  schema instead of repairing previously-dropped multi-audience episodes in place.
 
 ## The known, accepted note (disclosure-layer engineering)
 

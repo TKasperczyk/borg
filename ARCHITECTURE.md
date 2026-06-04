@@ -35,8 +35,9 @@ below still hard-gate recall by audience in the current code -- the episodic
 audience filter, dropping multi-audience episodes at extraction, semantic
 source-visibility pruning, and operator-introspection self-context gating.
 Those are marked throughout as DEPRECATED / being-inverted, not the endorsed
-design. Per the LIVE SYSTEM / NEVER-RESET rules, the inversion lands via
-data-preserving forward migrations, never a reset.
+design. Per the LIVE SYSTEM regime in CLAUDE.md, a data reset is allowed after a
+verified backup, so the inversion can change the schema and reseed rather than
+carry every change through a data-preserving migration.
 
 The scope test is the Opus 5.0 test: if a failure would still occur with a
 model ten times stronger than the current one, the failure probably belongs in
@@ -245,9 +246,9 @@ being-inverted, not the endorsed design: the current code path still filters
 episode retrieval by audience before cognition -- `isEpisodeAccessVisible` in
 `src/memory/episodic/audience-filter.ts` -- and `deriveEpisodeAccess` in
 `src/memory/episodic/extractor.ts` still drops multi-audience episodes at
-extraction. Both are currently live. The inversion lands via data-preserving
-forward migrations -- recording all origin audiences, repairing dropped
-multi-audience episodes where possible -- never a reset.)
+extraction. Both are currently live. The inversion records all origin audiences
+as labels rather than gating recall; under the reset-after-backup regime
+(CLAUDE.md) it can land as a schema change + reseed.)
 
 ### Semantic Memory
 
@@ -420,8 +421,8 @@ present-speaker-keyed observed-events projection
 (`src/memory/observed-events/projection.ts`), which surfaces social events only
 for participants in the room, is the still-live firewall-shaped path here: it is
 DEPRECATED / being-inverted, not the endorsed design, and the inversion makes
-that recall topic/salience/person-driven via a data-preserving forward
-migration, never a reset. See the Cardinal Memory Rule in CLAUDE.md.
+that recall topic/salience/person-driven. See the Cardinal Memory Rule in
+CLAUDE.md.
 
 Writes come from Reflection and offline curation. Reads feed retrieval,
 audience profile rendering, participant context, and group conversation
@@ -770,8 +771,7 @@ being-inverted, not the endorsed design: current code still prunes semantic
 nodes and edges whose source episodes are not audience-visible before they
 reach cognition -- the transitive source-visibility filter in
 `src/retrieval/semantic-retrieval.ts`, currently live. The inversion replaces
-that pruning with a private-source disclosure label, via forward migration, not
-a reset.)
+that pruning with a private-source disclosure label.)
 
 Retrieval also tracks per-session suppression. Evidence that has been recently
 used or suppressed can be cooled so Borg does not repeat the same memory
@@ -1135,7 +1135,7 @@ hidden from cognition. (DEPRECATED / being-inverted, not the endorsed design:
 the current pipeline still enforces audience visibility before evidence becomes
 prompt-visible and exposes broad recall only through an explicit cross-audience
 administrative path. That gate is the audience firewall being inverted into a
-disclosure-labeling layer via forward migration, not a reset; it is described
+disclosure-labeling layer; it is described
 here as live legacy behavior, not the target.)
 
 The result of retrieval is not dumped directly into the model. It is assembled
@@ -1343,8 +1343,7 @@ audience a record concerns is its target/disclosure scope, used for ranking and
 disclosure, not a predicate on whether Sol may recall it. The `audience_entity_id`
 on a self record means target_audience, not visible_only_when_present.
 (DEPRECATED / being-inverted: current self-context construction still passes the
-current audience as a visibility filter; this is being inverted via forward
-migration, not a reset.)
+current audience as a visibility filter; this is being inverted.)
 
 ## Cross-Session Activity
 
@@ -1376,7 +1375,7 @@ disclosure gate is purely structural -- roles, recency, count -- never a
 judgment about content. (DEPRECATED / being-inverted: current code gates the
 recall itself on the operator/creator two-key, so non-operator turns make Sol
 unaware of its own activity; that recall-bypass framing is being inverted into a
-disclosure gate via forward migration -- never a reset -- while the two-key
+disclosure gate, while the two-key
 remains the correct disclosure authorization.)
 
 Each surfaced row is labeled by the speaker, not by the session it happened in.
@@ -1428,8 +1427,8 @@ model is told to convey it without exposing tool names, hidden prompts, or
 dispatch machinery. (DEPRECATED / being-inverted: the current directed-outbound
 turn runs under the target session's audience scope and is grounded only in what
 that audience may see -- no leak by construction via recall-blinding. This is
-being inverted to full-awareness composition with disclosure-constrained output,
-via forward migration, not a reset. The id-scrubbing, connector-keyed delivery,
+being inverted to full-awareness composition with disclosure-constrained output.
+The id-scrubbing, connector-keyed delivery,
 and Stream-append-before-transport mechanics below are transport-level and
 unchanged.)
 
@@ -1462,7 +1461,7 @@ sourced, so Sol may reason with it but not disclose source details to the
 current audience unless permitted. (DEPRECATED / being-inverted: current
 rendering still withholds such evidence from the prompt entirely based on source
 audience; that suppression is being replaced by a private-source disclosure
-label, via forward migration, not a reset.)
+label.)
 
 Third, it supports revision without erasure. When a source is invalidated,
 quarantined, contradicted, or superseded, Borg can find dependent memories and
