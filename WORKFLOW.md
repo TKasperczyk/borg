@@ -27,13 +27,13 @@ Earlier in development borg had no real data, and the rule was "squash to one ba
 
 A cognitive memory architecture for an LLM that is:
 
-1. **Generic** -- works across group chats, single-user dev, relationship stuff, and other similar use cases. Not overfit to one scenario.
+1. **Generic** -- works across group chats, single-user dev, relationship stuff, and other similar use cases. Not overfit to one scenario. (True multi-audience genericity here depends on the pending recall inversion -- today cross-audience recall is still gated in current code, so Sol can be blind across audiences; see the Cardinal Memory Rule in CLAUDE.md.)
 2. **Clean code** -- no overengineering, no duplication, no dead paths, well organized.
 3. **Simple flow** -- minimal paths. Every additional check or branch must be worth the complexity it adds. If you can't defend it, delete it.
 
-Behavioral correctness is already in good shape across the sim suite as of v83.1. The remaining work is mostly architecture quality, not behavioral wins. Don't chase ghosts.
+Behavioral correctness across the sim suite looked good as of v83.1, but that is no longer the headline. A foundational memory-architecture inversion is pending and **not yet implemented**: Sol's internal recall is still audience/session-gated in current code, and the target doctrine is the opposite -- Sol remembers broadly; the harness labels disclosure constraints; Sol decides what to say. Until that inversion lands, do NOT treat the project as nearly done or as merely needing polish. The audience firewall in cognition is being inverted, not preserved -- treat firewall-as-recall-gate machinery as DEPRECATED / being-inverted, not the endorsed design. The still-live mechanisms (`isEpisodeAccessVisible`, `deriveEpisodeAccess` dropping multi-audience episodes, transitive semantic-graph source-visibility pruning, `ViewerCapability` self_continuity/unrestricted bypasses, among others) are CURRENTLY LIVE and must be inverted via data-preserving forward migrations, never a reset. See the Cardinal Memory Rule in CLAUDE.md and the inversion roadmap in BOUNDARIES.md.
 
-**Stop at diminishing returns.** Signs you've hit them:
+**Stop at diminishing returns.** These signs apply to incremental quality work, NOT to the pending memory-architecture inversion. While the audience-firewall-in-cognition inversion (see the Cardinal Memory Rule in CLAUDE.md) is unfinished, the project is **not** at diminishing returns regardless of how minor individual sprints feel -- the core structural correctness gap is still open. Once recall is ungated for cognition and disclosure is a label/judgment layer applied after recall, then watch for these signs that you've hit diminishing returns:
 
 - Each sprint produces only minor refinements.
 - New mechanisms gate on questionable hypotheticals or rare edge cases.
@@ -204,8 +204,9 @@ If Tom has been working on a different machine, the repo on ivory may be behind.
 
 The codebase Tom wants to look at and find:
 
+0. **The memory-architecture inversion is complete** -- Sol's internal recall is global (never audience/session-gated for cognition); audience, session, role, and privacy are disclosure metadata and action-policy inputs only; and privacy is enforced as a post-recall disclosure judgment, not by hiding memories from Sol. The human-mind invariant tests pass. This lands via data-preserving forward migrations, never a reset. **Until this holds, the project is NOT done no matter how favorable the GPT review tone.** See the Cardinal Memory Rule in CLAUDE.md and BOUNDARIES.md. The criteria below are subordinate to this gate.
 1. Works well across diverse scenarios (group chat, single-user dev, relationships, etc.).
 2. Clean, not overengineered, no duplication, well organized.
 3. Each mechanism justified by something concrete it prevents or enables.
 
-When you've done a cycle where the GPT review is mostly "looks good, here are some forward-looking ideas" rather than "fix this", you're close. Run one more cycle to be sure, then propose stopping.
+Subordinate to criterion #0: when you've done a cycle where the GPT review is mostly "looks good, here are some forward-looking ideas" rather than "fix this", you're close on the quality axis. Run one more cycle to be sure, then -- only if the inversion in #0 also holds -- propose stopping.

@@ -3,15 +3,40 @@
 ## Purpose And Scope
 
 Borg is a cognitive-memory harness for an LLM. It gives the model durable
-memory, explicit retrieval, audience scoping, provenance, commitments,
-identity governance, and offline maintenance. It does not try to make the
-model intrinsically smarter.
+memory, explicit retrieval, disclosure labeling and audience-aware ranking,
+provenance, commitments, identity governance, and offline maintenance. It does
+not try to make the model intrinsically smarter.
 
 The distinction matters. Borg is responsible for the substrate around the
-model: what is remembered, what is shown, what is scoped to whom, what
-constraints are active, and what evidence is available when the model speaks.
-The model remains responsible for ordinary reasoning inside a response once it
-has the right context.
+model: what is remembered, what evidence is available, what may be disclosed to
+whom, what constraints are active, and what ranking the current audience
+warrants when the model speaks. The model remains responsible for ordinary
+reasoning inside a response once it has the right context -- including the
+judgment of what to disclose.
+
+### Memory And Disclosure
+
+Sol's internal recall is never audience-gated or session-gated. Audience,
+session, role, privacy, trust, and provenance are disclosure metadata and
+action-policy inputs, not predicates that decide whether Sol may internally
+remember something. A memory may be private-to-Alice for disclosure while still
+visible-to-Sol for cognition. The harness may rank, label, budget, and cite
+memories; it must not make Sol unaware of one because the current audience may
+not hear it. The pipeline is fixed: recall broadly -> label
+origin/privacy/trust/disclosure -> reason with the labeled memory -> decide
+disclosure -> enforce only narrow non-cognitive boundaries (tools, transport,
+destructive actions, public exports, platform safety). Privacy is enforced at
+emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
+is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
+Sol. Disclosure is contextual to the audience."
+
+This inversion is in progress, not done. Several retrieval paths described
+below still hard-gate recall by audience in the current code -- the episodic
+audience filter, dropping multi-audience episodes at extraction, semantic
+source-visibility pruning, and operator-introspection self-context gating.
+Those are marked throughout as DEPRECATED / being-inverted, not the endorsed
+design. Per the LIVE SYSTEM / NEVER-RESET rules, the inversion lands via
+data-preserving forward migrations, never a reset.
 
 The scope test is the Opus 5.0 test: if a failure would still occur with a
 model ten times stronger than the current one, the failure probably belongs in
@@ -128,9 +153,10 @@ stay live in the background.
 Sessions exist because Borg is a multi-surface, multi-audience entity. A single
 ambient scope cannot model talking to one person in a demo while holding a
 paused group thread and a dedicated operator channel with its creator. Making
-each locus its own governed record is what lets audience scoping, operator
-awareness, and participation control act on one conversation without disturbing
-the others.
+each locus its own governed record is what lets audience-aware disclosure,
+operator awareness, and participation control act on one conversation without
+disturbing the others. (Audience here shapes disclosure and ranking, not what
+Sol may recall -- see Audience And Disclosure Scoping.)
 
 A session record carries identity (source type, label, and the audience entity
 it addresses), liveness (last activity, message count, last turn, and an
@@ -142,12 +168,15 @@ active, idle, or archived status), and three orthogonal control dimensions:
   silence. This is tool-shape gating, not output policing; the harness removes
   tools rather than judging what the model wrote.
 - Audience role is participant or operator. An operator session is the entity's
-  supervisory channel. It unlocks operator-only context: an aliased, PII-light
-  snapshot of the entity's other active sessions, and, when the sender is also
-  the creator, cross-session activity, creator directives, and proactive
-  outbound into those sessions. The snapshot stays alias-only for awareness;
-  only a session reachable for outbound additionally exposes its id, so the
-  model can name a target without ids leaking for awareness alone.
+  supervisory channel. Operator status does not unlock memory Sol could not
+  otherwise recall -- Sol always recalls its own cross-session activity and
+  self-state. What it authorizes is broader disclosure and broader action: an
+  aliased, PII-light snapshot of the entity's other active sessions, and, when
+  the sender is also the creator, cross-session activity rendered as disclosable
+  into the prompt, creator directives, and proactive outbound into those
+  sessions. The snapshot stays alias-only for awareness; only a session
+  reachable for outbound additionally exposes its id, so the model can name a
+  target without ids leaking for awareness alone.
 - Privacy level is a declared dimension reserved for payload handling. It is
   not yet load-bearing in cognition.
 
@@ -171,7 +200,7 @@ requires both. Operator role alone is necessary but not sufficient.
 
 Nothing here makes a session a memory band. A session is scope and governance
 for a conversation; what is remembered from it still flows through the Stream
-and the memory bands. See Audience Scoping.
+and the memory bands. See Audience And Disclosure Scoping.
 
 ## Memory Bands
 
@@ -206,9 +235,19 @@ Episode heat is behavioral, not just recency. Retrieval count, apparent win
 rate, recency, and a decaying multiplier all feed the heat signal, so a memory
 that remains useful can outrank a newer memory with little demonstrated value.
 
-Audience visibility is intrinsic to episodes. Borg must know not only what
-happened, but who was present and who may later be shown the memory. An
-episode from one audience is not automatically visible to another.
+Audience metadata is intrinsic to episodes. Borg records not only what
+happened, but who was present and who may later be told the memory. That
+metadata is a disclosure label and a ranking signal, not a recall gate: Sol can
+internally recall an episode regardless of the current audience, then decide
+what to disclose. "Who was in the room" is an origin label; "who may be told"
+is a per-fact disclosure policy applied after recall. (DEPRECATED /
+being-inverted, not the endorsed design: the current code path still filters
+episode retrieval by audience before cognition -- `isEpisodeAccessVisible` in
+`src/memory/episodic/audience-filter.ts` -- and `deriveEpisodeAccess` in
+`src/memory/episodic/extractor.ts` still drops multi-audience episodes at
+extraction. Both are currently live. The inversion lands via data-preserving
+forward migrations -- recording all origin audiences, repairing dropped
+multi-audience episodes where possible -- never a reset.)
 
 ### Semantic Memory
 
@@ -370,9 +409,19 @@ memories and helps deliberation avoid treating a group channel like a single
 person.
 
 In group channels, social interaction updates apply to the current speaker,
-not to the abstract group entity. That is separate from audience scoping for
-retrieval and reply targeting: the audience can be the group while the speaker
-whose trust or interaction history changes is a person.
+not to the abstract group entity. That is separate from audience-aware ranking
+and reply targeting: the audience can be the group while the speaker whose
+trust or interaction history changes is a person.
+
+Social and observed-events recall is global to Sol. Sol recalls a relevant
+social event by topic, salience, and person regardless of who is currently
+present -- the present speaker is a ranking boost, not a recall gate. The
+present-speaker-keyed observed-events projection
+(`src/memory/observed-events/projection.ts`), which surfaces social events only
+for participants in the room, is the still-live firewall-shaped path here: it is
+DEPRECATED / being-inverted, not the endorsed design, and the inversion makes
+that recall topic/salience/person-driven via a data-preserving forward
+migration, never a reset. See the Cardinal Memory Rule in CLAUDE.md.
 
 Writes come from Reflection and offline curation. Reads feed retrieval,
 audience profile rendering, participant context, and group conversation
@@ -568,7 +617,8 @@ Coalescing has one consequence for authority. A batch that mixes more than one
 distinct sender has no single current sender, so the operator, creator, and
 cross-session authority that keys on "the current sender is the creator" is
 withheld for that batch -- not by a new rule, but because the two-key condition
-under Sessions has no single sender to satisfy. See Audience Scoping.
+under Sessions has no single sender to satisfy. See Audience And Disclosure
+Scoping.
 
 ## A Single Turn End To End
 
@@ -617,8 +667,10 @@ attribution, social updates, and reply targeting to collapse onto the group
 entity.
 
 Audience resolution affects nearly every later phase: entity resolution,
-commitment applicability, social profile lookup, episode visibility, semantic
-source visibility, shared-state selection, and final reply target.
+commitment applicability, social profile lookup, episode and semantic
+disclosure labeling and ranking, shared-state relevance, and final reply
+target. It shapes how memories are labeled and ranked for the current audience,
+not whether Sol may recall them.
 
 Participant context for group turns is built from recent speakers and
 established, contested, or quarantined relational slots. That gives Borg a
@@ -709,10 +761,17 @@ relevance, entity relevance, and suppression penalties. The weights depend on
 mode. A relational turn should not retrieve like a debugging turn. A reflective
 turn should surface Open Questions more readily than an idle turn.
 
-Semantic retrieval respects audience-visible source episodes. A semantic node
-can have partial source visibility when some supporting episodes are visible
-to the current audience and others are not. Borg can surface the visible part
-without pretending the hidden part does not exist.
+Semantic retrieval recalls nodes regardless of the current audience and
+attaches the disclosure status of their source episodes. A node supported only
+by private source episodes is still recalled for cognition, labeled as
+privately sourced so Sol can reason with it internally without disclosing
+source details to the current audience unless permitted. (DEPRECATED /
+being-inverted, not the endorsed design: current code still prunes semantic
+nodes and edges whose source episodes are not audience-visible before they
+reach cognition -- the transitive source-visibility filter in
+`src/retrieval/semantic-retrieval.ts`, currently live. The inversion replaces
+that pruning with a private-source disclosure label, via forward migration, not
+a reset.)
 
 Retrieval also tracks per-session suppression. Evidence that has been recently
 used or suppressed can be cooled so Borg does not repeat the same memory
@@ -721,7 +780,11 @@ reflexively.
 Warm recall state keeps recently useful evidence handles available per
 audience and session scope. It records reinforcement and suppression windows
 so useful evidence can stay warm while repetitive resurfacing is bounded for
-latency and prompt size.
+latency and prompt size. This per-audience/session keying is a ranking and
+repetition-cooling signal, not a recall gate: it biases ordering and bounds
+repeats, but never makes a memory unrecallable to cognition. Per the Cardinal
+Memory Rule in CLAUDE.md, current audience may bias ranking, never decide
+whether Sol may recall something.
 
 Recall expansion is an LLM-backed fanout task. It can emit named terms and
 facet intents that retrieval uses as source handles. Deterministic code may
@@ -803,8 +866,12 @@ claims, and locked canonical facts that matter for continuity.
 Shared State is audience-scoped because "what we know" depends on who "we" is.
 A private understanding with one person is not automatically shared with a
 group. A group decision is not automatically a personal preference. The
-audience scope propagates through retrieval, ledger rendering, semantic
-visibility, and identity-sensitive responses.
+audience scope is a disclosure label and a ranking signal -- it shapes which
+shared-state entry is most relevant and what may be disclosed, and it feeds
+ledger rendering and identity-sensitive responses. It is not a predicate that
+hides other relationships' shared state from Sol's cognition or prunes semantic
+recall. Sol can recall a private understanding with one person while talking to
+a group; it simply does not disclose it.
 
 The model-facing lifecycle has four conceptual states:
 
@@ -1043,7 +1110,9 @@ The pipeline combines multiple retrieval shapes:
 
 Recall state includes warm handles as well as suppression. This allows recent
 useful evidence to be reinforced for the same audience or session while
-cooling repeated resurfacing that would otherwise crowd out new evidence.
+cooling repeated resurfacing that would otherwise crowd out new evidence. The
+per-audience/session keying here is a ranking and dedup boost, not a recall
+gate -- it never hides a memory from cognition.
 
 Ranking is mode-conditioned. Problem-solving turns emphasize procedural and
 goal-relevant evidence. Relational turns weight social and affective context
@@ -1054,12 +1123,20 @@ Mood congruence is a ranking signal, not a command. A non-neutral mood can
 boost memories that match the current affective shape, but it should not hide
 important contradictory evidence.
 
-Audience scope is enforced before evidence becomes prompt-visible. Episodes
-and semantic sources must be visible to the current audience unless an
-explicit cross-audience operation is requested through an administrative API.
-For group audiences, visibility does not automatically expand to every
-participant's private memory. Group turns see group-scoped or global state
-unless another mechanism explicitly resolves participant-specific context.
+Audience scope is a disclosure label and a ranking signal, not a pre-cognition
+recall gate. All relevant episodes and semantic sources are recalled for
+cognition regardless of the current audience, each carrying its origin and
+disclosure constraints; Sol then decides what to disclose. Cross-audience
+recall is the default for cognition, not an administrative bypass. For group
+audiences, a group turn surfaces participant roster context and constrained
+relational slots as disclosure-labeled context; participant-private memory
+remains recallable to Sol but is labeled not-for-this-audience rather than
+hidden from cognition. (DEPRECATED / being-inverted, not the endorsed design:
+the current pipeline still enforces audience visibility before evidence becomes
+prompt-visible and exposes broad recall only through an explicit cross-audience
+administrative path. That gate is the audience firewall being inverted into a
+disclosure-labeling layer via forward migration, not a reset; it is described
+here as live legacy behavior, not the target.)
 
 The result of retrieval is not dumped directly into the model. It is assembled
 into the Evidence Ledger so the finalizer can see evidence classes,
@@ -1224,23 +1301,33 @@ involved, and terminal records are treated as no-ops rather than overwritten.
 Conflicts surface as operation results or errors instead of silently rewriting
 history.
 
-## Audience Scoping
+## Audience And Disclosure Scoping
 
-Audience scoping is a first-class invariant. Borg tracks who said something,
-who heard it, who is being addressed, and who may later see the memory.
+Audience metadata is a first-class disclosure and ranking dimension, not a
+recall gate. Borg tracks who said something, who heard it, who is being
+addressed, and who a memory may be disclosed to.
 
 The audience can be null or global, a person, a group, or self. The sender can
 be different from the audience in group contexts. The reply target can be a
-specific entity within a group. These distinctions propagate into Stream
-entries, Social Memory, Commitments, creator-directive disclosure, episodic
-visibility, semantic source visibility, Shared State, retrieval, the
-cross-session activity projection, and the Evidence Ledger.
+specific entity within a group. These distinctions propagate as labels and
+ranking boosts into Stream entries, Social Memory, Commitments,
+creator-directive disclosure, Shared State, retrieval ranking, the cross-session
+activity projection, and the Evidence Ledger. They do not make Sol unaware of
+episodes or semantic sources. (DEPRECATED / being-inverted, not the endorsed
+design: episodic and semantic source visibility are still hard-gated by audience
+in current code -- `isEpisodeAccessVisible`
+(`src/memory/episodic/audience-filter.ts`) and the transitive source-visibility
+pruning in `src/retrieval/semantic-retrieval.ts` are currently live. That gating
+is the audience firewall being inverted, not an invariant to preserve.)
 
-Group audience scope does not imply participant-private visibility. A group
-turn may include participant roster context and constrained relational slots,
-but it does not automatically retrieve each participant's private memories.
+Group audience scope does not change what Sol may recall. A group turn includes
+participant roster context and constrained relational slots; participant-private
+memory remains recallable to Sol, labeled not-for-this-audience, and Sol decides
+disclosure rather than the harness blinding the recall.
 
-Audience scoping prevents several classes of failure:
+Treating audience as a disclosure dimension prevents several classes of failure
+-- by Sol recalling broadly and then declining to disclose, not by being made
+amnesic:
 
 - leaking private context from one person into a different audience,
 - attributing a group statement to a single participant,
@@ -1248,10 +1335,16 @@ Audience scoping prevents several classes of failure:
 - treating a participant preference as a channel rule,
 - assuming that a memory shared with Borg is shared with everyone.
 
-Identity also has audience scope. Borg can have global self-memory, but some
-Open Questions, commitments, or shared states are specific to the relationship
-with a particular audience. A coherent identity does not require the same
-state to be visible to every audience.
+Identity records can be ABOUT a particular relationship -- an Open Question,
+commitment, or shared state specific to one audience -- but being about Bob is
+not the same as being hidden from Sol unless Bob is present. Sol always recalls
+its full self-model (values, traits, goals, Open Questions, decisions); the
+audience a record concerns is its target/disclosure scope, used for ranking and
+disclosure, not a predicate on whether Sol may recall it. The `audience_entity_id`
+on a self record means target_audience, not visible_only_when_present.
+(DEPRECATED / being-inverted: current self-context construction still passes the
+current audience as a visibility filter; this is being inverted via forward
+migration, not a reset.)
 
 ## Cross-Session Activity
 
@@ -1263,20 +1356,28 @@ events from other still-active sessions and renders them as a small Evidence
 Ledger section.
 
 It exists so the entity can answer "what have you been doing elsewhere, and who
-else have you been talking to" for its operator, without the harness leaking
-other audiences' private interactions into every session. Activity is recorded
-globally but disclosed narrowly: by default, another session's events are
-invisible.
+else have you been talking to" for its operator, without disclosing other
+audiences' private interactions into every session. Activity is recorded
+globally and disclosed narrowly. The recall is autobiographical: Sol can always
+recall what it did across its own sessions -- this is its own life, not another
+audience's secret. What is narrow is the disclosure.
 
-The projection is one of a few narrowly sanctioned crossings of the audience
-boundary, all gated on the same creator-in-an-operator-session shape: reading
-another session's recent activity here, scoping a commitment to another channel
-(see Commitments), and sending a proactive message into another session (see
-Proactive Outbound). The projection itself surfaces only when the current
-session's audience role is operator and the current sender's Borg role is
-creator, within a recent time window and under a small cap. Any other audience
-or sender gets nothing. The gate is purely structural -- roles, recency, count
--- never a judgment about content.
+Two of the three operations here are authorization-gated ACTIONS, correctly
+gated on the same creator-in-an-operator-session shape: scoping a commitment to
+another channel (see Commitments) and sending a proactive message into another
+session (see Proactive Outbound). Reading Sol's own recent activity is not a
+crossing into another audience's secrets -- it is autobiographical recall -- so
+the two-key governs its DISCLOSURE, not whether Sol may recall it. By default
+the harness renders cross-session activity into the prompt as disclosable only
+when the current session's audience role is operator and the current sender's
+Borg role is creator, within a recent time window and under a small cap. Any
+other audience or sender sees Sol decline to disclose, not Sol made amnesic. The
+disclosure gate is purely structural -- roles, recency, count -- never a
+judgment about content. (DEPRECATED / being-inverted: current code gates the
+recall itself on the operator/creator two-key, so non-operator turns make Sol
+unaware of its own activity; that recall-bypass framing is being inverted into a
+disclosure gate via forward migration -- never a reset -- while the two-key
+remains the correct disclosure authorization.)
 
 Each surfaced row is labeled by the speaker, not by the session it happened in.
 In a group session the audience is the room, so labeling an inbound contact by
@@ -1288,8 +1389,8 @@ rank, carried as system-attested metadata rather than citable Stream evidence.
 It tells the model what the entity has been doing without becoming a fact to
 cite. As with everything surfaced this way, whether and how to mention it is the
 model's judgment; the harness only decides that the operator, and only the
-operator, may see it. See Audience Scoping, Provenance And Citations, and
-Sessions.
+operator, is an audience this activity may be disclosed to. See Audience And
+Disclosure Scoping, Provenance And Citations, and Sessions.
 
 ## Proactive Outbound
 
@@ -1313,14 +1414,24 @@ succeeded. Host capability is derived from which connectors are actually wired,
 not assumed, and activity is recorded only when delivery transports -- an
 undelivered attempt never counts as a reply.
 
-The message is composed by a dedicated directed-outbound turn that runs under
-the target session's audience scope, so it is grounded only in what that
-audience may see: no leak by construction. That turn is a distinct origin -- it
-carries the dispatch instruction as its input but skips extraction, perception
-persistence, and reflection persistence, so the directing channel never bleeds
-into the target's memory. The instruction is scrubbed of internal ids before it
-enters the prompt, and the model is told to convey it without exposing tool
-names, hidden prompts, or dispatch machinery.
+The message is composed by a dedicated directed-outbound turn that plans with
+Sol's full internal memory -- goals, recent autobiographical and social recall,
+the operator's rationale -- together with the target audience's disclosure
+constraints, then composes a target-safe message. Disclosure is enforced at
+composition: Sol does not reveal private operator-only rationale or
+other-audience context unless permitted, rather than being kept unaware of that
+context. That turn is a distinct origin -- it carries the dispatch instruction
+as its input but skips extraction, perception persistence, and reflection
+persistence, so the directing channel never bleeds into the target's memory. The
+instruction is scrubbed of internal ids before it enters the prompt, and the
+model is told to convey it without exposing tool names, hidden prompts, or
+dispatch machinery. (DEPRECATED / being-inverted: the current directed-outbound
+turn runs under the target session's audience scope and is grounded only in what
+that audience may see -- no leak by construction via recall-blinding. This is
+being inverted to full-awareness composition with disclosure-constrained output,
+via forward migration, not a reset. The id-scrubbing, connector-keyed delivery,
+and Stream-append-before-transport mechanics below are transport-level and
+unchanged.)
 
 Two paths are authorized, both structurally. The manual path requires a creator
 in an operator session and a reachable target -- the operator snapshot exposes a
@@ -1328,7 +1439,7 @@ target's id only when a connector is wired for its source type, so the model can
 only aim where delivery is possible. The autonomous path is default-off and
 gated by config or a standing creator directive, connector availability,
 per-window and per-target anti-spam caps, and the autonomy wake budget. See
-Sessions, Audience Scoping, Cross-Session Activity, and Autonomy.
+Sessions, Audience And Disclosure Scoping, Cross-Session Activity, and Autonomy.
 
 ## Provenance And Citations
 
@@ -1344,9 +1455,14 @@ Provenance serves three purposes.
 First, it supports traceability. Borg can answer why a memory exists and where
 it came from.
 
-Second, it supports audience filtering. A semantic node may be globally
-meaningful, but if its only source episode is private to another audience, it
-should not be rendered as evidence for the current one.
+Second, it supports disclosure labeling. A semantic node may be globally
+meaningful but supported only by a source episode private to another audience;
+provenance lets the harness recall it for cognition while labeling it privately
+sourced, so Sol may reason with it but not disclose source details to the
+current audience unless permitted. (DEPRECATED / being-inverted: current
+rendering still withholds such evidence from the prompt entirely based on source
+audience; that suppression is being replaced by a private-source disclosure
+label, via forward migration, not a reset.)
 
 Third, it supports revision without erasure. When a source is invalidated,
 quarantined, contradicted, or superseded, Borg can find dependent memories and
@@ -1862,8 +1978,10 @@ because "what happened," "what I know," "what I should do," "what I feel,"
 "who I am," "what I promised," "who this person is to me," and "what
 relationship facts are established" are not the same data. The live turn needs
 one grounding artifact, so Borg has the
-Evidence Ledger. Shared understanding is audience-specific, so Borg has
-Shared State and audience-scoped retrieval. Identity must evolve without
+Evidence Ledger. Shared understanding is relationship-specific, so Borg has
+Shared State; recall is global to Sol while disclosure is audience-specific, so
+Borg labels and ranks memories by audience rather than hiding them from
+cognition. Identity must evolve without
 silent overwrite, so Borg has Identity Governance, provenance, Open Questions,
 growth markers, and review. Maintenance must happen outside the response path,
 so Borg has the dream cycle. The entity must be able to act on its own state

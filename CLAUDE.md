@@ -12,6 +12,22 @@ Borg is a cognitive-memory harness for an **LLM-based entity**, not a Chinese Ro
 
 If a proposed fix adds a rule, branch, regex, or word-list to handle a case, stop -- you are almost certainly building the wrong thing. The instinct to reach for that is the single most expensive recurring error here.
 
+# CARDINAL MEMORY RULE -- recall is global, disclosure is contextual
+
+Borg is a cognitive-memory harness for an LLM-based entity ("Sol") meant to be akin to a human mind. A human mind does not forget what it knows because the wrong person walked into the room -- it remembers, and chooses what to say. Sol works the same way. This rule governs every memory, retrieval, and visibility decision in the codebase, and overrides any older "the harness decides what Sol gets to see" framing wherever the two conflict.
+
+1. **Sol's internal memory and recall are NEVER audience-gated or session-gated.** No path that builds what Sol thinks with -- episodic retrieval, semantic-graph recall, self/identity context, social/observed-events recall, cross-session activity, proactive-outbound grounding -- may make Sol unaware of a memory because of the current audience, session, role, or speaker. Recall is global to Sol.
+
+2. **Audience, session, role, privacy, trust, operator status, and source provenance are DISCLOSURE metadata and action-policy inputs -- never recall predicates.** A memory may be private-to-Alice for DISCLOSURE while still visible-to-Sol for COGNITION. "Who was in the room" is an origin/provenance LABEL; "who may be told" is a per-fact disclosure/authorization policy applied AFTER recall, at render/emission. Neither decides whether Sol may internally remember.
+
+3. **The harness MAY rank, label, budget, cite, and structure memories. It MUST NOT make Sol unaware of one merely because the current audience may not hear it.** Current audience may be a ranking BOOST, never a hard gate. NEVER implement privacy by hiding memories from Sol's cognition.
+
+4. **The pipeline is fixed:** (1) Recall broadly. (2) Label origin, privacy, trust, and disclosure constraints. (3) Let Sol reason with the labeled memory. (4) Let Sol decide what to disclose. (5) Enforce only narrow NON-cognitive host boundaries -- tool permissions, transport permissions, destructive actions, public exports, and hard platform-safety constraints. Privacy is enforced at emission (Sol recalls but does not disclose), not by amnesia.
+
+5. **Honesty about current code.** This inversion is IN PROGRESS, not done. Several live paths still hard-gate recall by audience: `isEpisodeAccessVisible` (`src/memory/episodic/audience-filter.ts`), `deriveEpisodeAccess` dropping multi-audience episodes at extraction (`src/memory/episodic/extractor.ts`), transitive semantic-graph source-visibility pruning (`src/retrieval/semantic-retrieval.ts`), and `ViewerCapability` / `resolveViewerCapability` / `isEpisodeVisibleToCapability` (`src/memory/episodic/access.ts`) treating Sol's own recall as needing a `self_continuity` / `unrestricted` bypass. Other recall-gating paths -- self/identity context, the cross-session-activity projection, the present-speaker observed-events projection, and directed-outbound grounding -- are catalogued per-section in `ARCHITECTURE.md`; this list is representative, not exhaustive. That firewall-as-cognition machinery is DEPRECATED / being-inverted, NOT the endorsed design. Do not add new audience/session recall gates, do not widen existing ones, and -- given the LIVE SYSTEM / NEVER-RESET rules below -- invert via data-preserving forward migrations, never a reset. See BOUNDARIES.md for the inversion roadmap.
+
+Slogan: **"Memory is global to Sol. Disclosure is contextual to the audience."**
+
 # LIVE SYSTEM -- real memory now exists. NEVER RESET. (as of 2026-05-31)
 
 Borg now holds **real, non-wipeable memory.** "Sol" runs live in the BotArena arena on the demo data dir (`demo/server/.borg-data/demo`), forming continuous memory from real conversations that cannot be reproduced from a sim re-run. The old "no production users / edit the baseline + reset" development regime is **OVER.** Absolutes:
@@ -33,12 +49,12 @@ Frozen taxonomy as of Sprint 7. ai_phenomenology was removed in Sprint 7; expres
 
 Borg is a cognitive-memory harness for an LLM, not a wrapper that tries to make the LLM smarter. Before treating any observed failure as a sprint candidate, apply the **Opus 5.0 test**: would this same failure still manifest if Anthropic shipped a model 10× more intelligent than the current one?
 
-- **If yes** (the failure stems from how Borg manages/presents information, audience scoping, memory integrity, retrieval surfacing, continuity, commitments, identity, discourse hygiene at the behavioral level, or a bad system prompt): in scope. Fix it in the harness or the prompt.
+- **If yes** (the failure stems from how Borg manages/presents information, disclosure labeling and audience-aware presentation (NOT recall gating), memory integrity, retrieval surfacing, continuity, commitments, identity, discourse hygiene at the behavioral level, or a bad system prompt): in scope. Fix it in the harness or the prompt.
 - **If no** (the failure is the model exercising poor judgment despite having everything it needs -- forced metaphors, structural-rhyme overreach, over-elaboration under conversational momentum, weak reasoning within a single response, taste-level prose decisions): out of scope. The fix is a stronger model, not more harness machinery.
 
 Concrete examples:
-- v36 user-facing Tom-leaks → **in scope** (Borg's audience-scoping wasn't surfacing the right grounding to the model)
-- v43 misattribution of audience-name in semantic graph → **in scope** (overseer needed audience metadata as a recognized evidence source)
+- v36 user-facing Tom-leaks → **in scope** (Borg wasn't surfacing the memory's disclosure labels, so the model couldn't tell what was safe to say -- a labeling/presentation gap, not a recall-gating gap)
+- v43 misattribution of audience-name in semantic graph → **in scope** (overseer needed audience metadata as a recognized provenance/evidence label, not as a recall gate)
 - v43 turn-84 "fence-membrane" structural rhyme overreach → **out of scope** (Borg gave the model the right context; the model chose to force a parallel between two concepts that share only a word)
 
 Rationale: we previously deleted ManifestValidator (8d.8/8d.9) for exactly this reason -- it tried to enforce claim-coverage from outside the model when the model handles claim-coverage better natively when prompted well. Adding external auditors that second-guess the model's within-response taste just adds latency, complexity, and another LLM call with the same blind spots as the first.

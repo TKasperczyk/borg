@@ -29,7 +29,9 @@ one is waiting.
 
 One principle runs through all of it: **the model handles language and
 judgment; the harness manages information and validates structure.** Borg never
-polices what the model says -- it decides what the model gets to see.
+polices what the model says, and never hides a memory from it to enforce privacy
+-- it recalls broadly, labels what is private, and lets the model decide what to
+disclose.
 
 ```mermaid
 flowchart TD
