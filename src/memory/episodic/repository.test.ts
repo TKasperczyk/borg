@@ -10,7 +10,7 @@ import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
-import { createEpisodeId } from "../../util/ids.js";
+import { createEpisodeId, createStreamEntryId } from "../../util/ids.js";
 import { episodicMigrations } from "./migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 import type { Episode } from "./types.js";
@@ -70,6 +70,7 @@ function toRawEpisodeRow(episode: Episode): Record<string, unknown> {
     lineage_supersedes: JSON.stringify(episode.lineage.supersedes),
     source_fingerprint: [...new Set(episode.source_stream_ids)].sort().join("\n"),
     audience_entity_id: audienceEntityId,
+    origin_audience_entity_ids: JSON.stringify(episode.origin_audience_entity_ids ?? []),
     shared: episode.shared ?? audienceEntityId === null,
     emotional_arc: episode.emotional_arc === null ? null : JSON.stringify(episode.emotional_arc),
     embedding: Array.from(episode.embedding),
@@ -229,6 +230,36 @@ describe("episodic repository", () => {
     expect(crossAudienceSearch).toHaveLength(2);
     expect(crossAudienceSearch.map((item) => item.episode.id)).toEqual(
       expect.arrayContaining([publicEpisode.id, scopedEpisode.id]),
+    );
+  });
+
+  it("does not classify multi-origin private vector rows as public in Lance visibility filters", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const sam = "ent_bbbbbbbbbbbbbbbb" as NonNullable<Episode["audience_entity_id"]>;
+    const alex = "ent_cccccccccccccccc" as NonNullable<Episode["audience_entity_id"]>;
+    const publicEpisode = createEpisode("ep_publicorigin0001", harness.clock.now(), {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const multiOrigin = createEpisode("ep_privateorigin001", harness.clock.now() + 1_000, {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [sam, alex],
+      shared: false,
+    });
+
+    await harness.repo.insert(publicEpisode);
+    await harness.repo.insert(multiOrigin);
+
+    const searchSpy = vi.spyOn(harness.table, "search");
+    const defaultSearch = await harness.repo.searchByVector(Float32Array.from([1, 0, 0, 0]), {
+      limit: 5,
+    });
+
+    expect(defaultSearch.map((item) => item.episode.id)).toEqual([publicEpisode.id]);
+    expect(searchSpy.mock.calls[0]?.[1]?.where).toBe(
+      "(((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL) OR shared = true)",
     );
   });
 
@@ -581,6 +612,56 @@ describe("episodic repository", () => {
     expect(visibleSpy).not.toHaveBeenCalled();
   });
 
+  it("keeps multi-origin private episodes visible only to origin audiences in indexed disclosure lanes", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const sam = "ent_bbbbbbbbbbbbbbbb" as NonNullable<Episode["audience_entity_id"]>;
+    const alex = "ent_cccccccccccccccc" as NonNullable<Episode["audience_entity_id"]>;
+    const jordan = "ent_dddddddddddddddd" as NonNullable<Episode["audience_entity_id"]>;
+    const multiOrigin = createEpisode("ep_indexmulti000001", harness.clock.now(), {
+      source_stream_ids: ["strm_indexmulti000001" as Episode["source_stream_ids"][number]],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [sam, alex],
+      shared: false,
+      participants: ["Atlas"],
+      tags: ["multi-origin"],
+    });
+
+    await harness.repo.insert(multiOrigin);
+
+    const samRecent = await harness.repo.listRecentForDisclosure({
+      audienceEntityId: sam,
+      limit: 5,
+    });
+    const alexParticipant = await harness.repo.searchByParticipantsOrTagsForDisclosure(["Atlas"], {
+      audienceEntityId: alex,
+      limit: 5,
+    });
+    const jordanRecent = await harness.repo.listRecentForDisclosure({
+      audienceEntityId: jordan,
+      limit: 5,
+    });
+    const publicRecent = await harness.repo.listRecentForDisclosure({
+      audienceEntityId: null,
+      limit: 5,
+    });
+    const scopedToSam = await harness.repo.listByAudience(sam, {
+      limit: 5,
+      orderBy: "recent",
+    });
+    const scopedToAlex = await harness.repo.listByAudience(alex, {
+      limit: 5,
+      orderBy: "recent",
+    });
+
+    expect(samRecent.map((item) => item.episode.id)).toContain(multiOrigin.id);
+    expect(alexParticipant.map((item) => item.episode.id)).toContain(multiOrigin.id);
+    expect(jordanRecent.map((item) => item.episode.id)).not.toContain(multiOrigin.id);
+    expect(publicRecent.map((item) => item.episode.id)).not.toContain(multiOrigin.id);
+    expect(scopedToSam.map((item) => item.episode.id)).toContain(multiOrigin.id);
+    expect(scopedToAlex.map((item) => item.episode.id)).toContain(multiOrigin.id);
+  });
+
   it("backfills normalized episode indexes from existing Lance rows", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
@@ -681,6 +762,7 @@ describe("episodic repository", () => {
               lineage_supersedes: JSON.stringify([]),
               source_fingerprint: episode.source_stream_ids.join("\n"),
               audience_entity_id: null,
+              origin_audience_entity_ids: JSON.stringify([]),
               shared: true,
               emotional_arc: null,
               embedding: Array.from(episode.embedding),

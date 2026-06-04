@@ -15,6 +15,7 @@ import { FixedClock } from "../../util/clock.js";
 import {
   createActionId,
   createCommitmentId,
+  createEntityId,
   createEpisodeId,
   createRelationalSlotId,
   createSessionId,
@@ -341,6 +342,80 @@ describe("post-generation guard shadow chain", () => {
       session_id: DEFAULT_SESSION_ID,
       verdict: "suppressed",
       leaked_identifiers: [targetSessionId],
+    });
+  });
+
+  it("suppresses entity ids carried only by retrieved episode origins and disclosure labels", async () => {
+    const originEntityId = createEntityId();
+    const privateToEntityId = createEntityId();
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-disclosure-label-id-leak",
+      response: `The private origin handles are ${originEntityId} and ${privateToEntityId}.`,
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [
+        {
+          episode: {
+            id: createEpisodeId(),
+            audience_entity_id: null,
+            origin_audience_entity_ids: [originEntityId],
+            source_stream_ids: [],
+            lineage: {
+              derived_from: [],
+              supersedes: [],
+            },
+          },
+          disclosureLabel: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [originEntityId],
+            privateToEntityIds: [privateToEntityId],
+            publicToEntityIds: [],
+          },
+          citationChain: [],
+        } as unknown as RetrievedEpisode,
+      ],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-disclosure-label-id-leak",
+      session_id: DEFAULT_SESSION_ID,
+      verdict: "suppressed",
+      leaked_identifiers: [originEntityId, privateToEntityId].sort(),
     });
   });
 

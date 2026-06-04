@@ -64,6 +64,7 @@ type EpisodeRow = {
   lineage_supersedes: string;
   source_fingerprint: string | null;
   audience_entity_id: string | null;
+  origin_audience_entity_ids: string | null;
   shared: boolean | number | null;
   emotional_arc: string | null;
   embedding: number[];
@@ -123,6 +124,16 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
   return [...new Set(sourceStreamIds)].sort().join("\n");
+}
+
+function lancePublicOriginSql(): string {
+  return "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL)";
+}
+
+function lanceOriginContainsSql(audienceEntityId: EntityId): string {
+  return `(origin_audience_entity_ids LIKE ${quoteSqlString(
+    `%"${audienceEntityId}"%`,
+  )} OR audience_entity_id = ${quoteSqlString(audienceEntityId)})`;
 }
 
 function encodeCursor(payload: CursorPayload): string {
@@ -199,6 +210,18 @@ function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
 
+function indexedOriginColumn(alias: string): string {
+  return `${alias}.origin_audience_entity_ids`;
+}
+
+function indexedPublicOriginSql(alias: string): string {
+  return `(json_array_length(${indexedOriginColumn(alias)}) = 0 AND ${alias}.audience_entity_id IS NULL)`;
+}
+
+function indexedOriginContainsSql(alias: string): string {
+  return `(EXISTS (SELECT 1 FROM json_each(${indexedOriginColumn(alias)}) WHERE value = ?) OR ${alias}.audience_entity_id = ?)`;
+}
+
 function toEpisodeRow(episode: Episode): EpisodeRow {
   const normalized = normalizeEpisodeAccess(episode);
 
@@ -218,6 +241,7 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
     lineage_supersedes: serializeJsonValue(normalized.lineage.supersedes),
     source_fingerprint: buildSourceFingerprint(normalized.source_stream_ids),
     audience_entity_id: normalized.audience_entity_id,
+    origin_audience_entity_ids: serializeJsonValue(normalized.origin_audience_entity_ids),
     shared: normalized.shared,
     emotional_arc:
       normalized.emotional_arc === null ? null : serializeJsonValue(normalized.emotional_arc),
@@ -227,7 +251,35 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
   };
 }
 
+function originAudienceEntityIdsFromRow(row: Record<string, unknown>): EntityId[] {
+  const legacyAudienceEntityId =
+    row.audience_entity_id === null || row.audience_entity_id === undefined
+      ? null
+      : parseEntityId(String(row.audience_entity_id));
+
+  if (
+    row.origin_audience_entity_ids === null ||
+    row.origin_audience_entity_ids === undefined ||
+    row.origin_audience_entity_ids === ""
+  ) {
+    return legacyAudienceEntityId === null ? [] : [legacyAudienceEntityId];
+  }
+
+  const parsed = parseJsonArray<string>(
+    String(row.origin_audience_entity_ids),
+    "origin_audience_entity_ids",
+    EPISODE_JSON_ARRAY_CODEC,
+  ).map((value) => parseEntityId(String(value)));
+
+  if (parsed.length === 0 && legacyAudienceEntityId !== null) {
+    return [legacyAudienceEntityId];
+  }
+
+  return [...new Set(parsed)];
+}
+
 function fromEpisodeRow(row: Record<string, unknown>): Episode {
+  const originAudienceEntityIds = originAudienceEntityIdsFromRow(row);
   const emotionalArc = (() => {
     if (row.emotional_arc === null || row.emotional_arc === undefined || row.emotional_arc === "") {
       return null;
@@ -279,9 +331,10 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
       row.audience_entity_id === null || row.audience_entity_id === undefined
         ? null
         : parseEntityId(String(row.audience_entity_id)),
+    origin_audience_entity_ids: originAudienceEntityIds,
     shared:
       row.shared === null || row.shared === undefined
-        ? row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? originAudienceEntityIds.length === 0
         : row.shared === true || Number(row.shared) === 1,
     embedding: toFloat32Array(row.embedding, EPISODE_VECTOR_CODEC),
     created_at: Number(row.created_at),
@@ -387,6 +440,7 @@ export function createEpisodesTableSchema(dimensions: number) {
     utf8Field("lineage_supersedes"),
     utf8Field("source_fingerprint", true),
     utf8Field("audience_entity_id", true),
+    utf8Field("origin_audience_entity_ids", true),
     booleanField("shared", true),
     utf8Field("emotional_arc", true),
     vectorField("embedding", dimensions),
@@ -462,20 +516,20 @@ export class EpisodicRepository {
         return undefined;
       case "self_continuity":
         return capability.selfAudienceEntityId === null
-          ? "audience_entity_id IS NULL"
-          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+          ? lancePublicOriginSql()
+          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
               capability.selfAudienceEntityId,
             )})`;
       case "operator_introspection":
         return capability.selfAudienceEntityId === null
-          ? "audience_entity_id IS NULL"
-          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+          ? lancePublicOriginSql()
+          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
               capability.selfAudienceEntityId,
             )})`;
       case "audience":
         return capability.audienceEntityId === null
-          ? "(audience_entity_id IS NULL OR shared = true)"
-          : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+          ? `(${lancePublicOriginSql()} OR shared = true)`
+          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
               capability.audienceEntityId,
             )} OR shared = true)`;
       default: {
@@ -502,32 +556,32 @@ export class EpisodicRepository {
       case "self_continuity":
         return capability.selfAudienceEntityId === null
           ? {
-              sql: `${alias}.audience_entity_id IS NULL`,
+              sql: indexedPublicOriginSql(alias),
               params: [],
             }
           : {
-              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ?)`,
-              params: [capability.selfAudienceEntityId],
+              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
+              params: [capability.selfAudienceEntityId, capability.selfAudienceEntityId],
             };
       case "operator_introspection":
         return capability.selfAudienceEntityId === null
           ? {
-              sql: `${alias}.audience_entity_id IS NULL`,
+              sql: indexedPublicOriginSql(alias),
               params: [],
             }
           : {
-              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ?)`,
-              params: [capability.selfAudienceEntityId],
+              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
+              params: [capability.selfAudienceEntityId, capability.selfAudienceEntityId],
             };
       case "audience":
         return capability.audienceEntityId === null
           ? {
-              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.shared = 1)`,
+              sql: `(${indexedPublicOriginSql(alias)} OR ${alias}.shared = 1)`,
               params: [],
             }
           : {
-              sql: `(${alias}.audience_entity_id IS NULL OR ${alias}.audience_entity_id = ? OR ${alias}.shared = 1)`,
-              params: [capability.audienceEntityId],
+              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)} OR ${alias}.shared = 1)`,
+              params: [capability.audienceEntityId, capability.audienceEntityId],
             };
       default: {
         const exhaustive: never = capability;
@@ -542,89 +596,15 @@ export class EpisodicRepository {
   ): IndexedVisibilityBranch[] {
     const globalIndexName =
       order === "heat" ? "idx_episode_index_heat" : "idx_episode_index_recent";
-    const audienceIndexName =
-      order === "heat" ? "idx_episode_index_audience_heat" : "idx_episode_index_audience_recent";
-    const sharedIndexName =
-      order === "heat" ? "idx_episode_index_shared_heat" : "idx_episode_index_shared_recent";
+    const visibility = this.buildIndexedVisibilityWhereClause(capability, "episode_index");
 
-    switch (capability.kind) {
-      case "unrestricted":
-        return [
-          {
-            where: "archived = 0",
-            params: [],
-            indexName: globalIndexName,
-          },
-        ];
-      case "self_continuity": {
-        const publicBranch = {
-          where: "archived = 0 AND audience_entity_id IS NULL",
-          params: [],
-          indexName: audienceIndexName,
-        };
-
-        if (capability.selfAudienceEntityId === null) {
-          return [publicBranch];
-        }
-
-        return [
-          publicBranch,
-          {
-            where: "archived = 0 AND audience_entity_id = ?",
-            params: [capability.selfAudienceEntityId],
-            indexName: audienceIndexName,
-          },
-        ];
-      }
-      case "operator_introspection": {
-        const publicBranch = {
-          where: "archived = 0 AND audience_entity_id IS NULL",
-          params: [],
-          indexName: audienceIndexName,
-        };
-
-        if (capability.selfAudienceEntityId === null) {
-          return [publicBranch];
-        }
-
-        return [
-          publicBranch,
-          {
-            where: "archived = 0 AND audience_entity_id = ?",
-            params: [capability.selfAudienceEntityId],
-            indexName: audienceIndexName,
-          },
-        ];
-      }
-      case "audience": {
-        const branches: IndexedVisibilityBranch[] = [
-          {
-            where: "archived = 0 AND audience_entity_id IS NULL",
-            params: [],
-            indexName: audienceIndexName,
-          },
-          {
-            where: "archived = 0 AND shared = 1",
-            params: [],
-            indexName: sharedIndexName,
-          },
-        ];
-
-        if (capability.audienceEntityId !== null) {
-          branches.push({
-            where: "archived = 0 AND audience_entity_id = ?",
-            params: [capability.audienceEntityId],
-            indexName: audienceIndexName,
-          });
-        }
-
-        return branches;
-      }
-      default: {
-        const exhaustive: never = capability;
-        throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
-      }
-    }
+    return [
+      {
+        where: `archived = 0 AND ${visibility.sql}`,
+        params: visibility.params,
+        indexName: globalIndexName,
+      },
+    ];
   }
 
   private async listEpisodesWhere(where: string | undefined): Promise<Episode[]> {
@@ -636,9 +616,12 @@ export class EpisodicRepository {
     options: EpisodeVisibilityOptions = {},
     extraWhere?: string,
   ): Promise<Episode[]> {
-    return this.listEpisodesWhere(
+    const viewer = resolveViewerCapability(options);
+    const episodes = await this.listEpisodesWhere(
       combineWhereClauses(this.buildOptionsVisibilityWhereClause(options), extraWhere),
     );
+
+    return episodes.filter((episode) => isEpisodeVisibleToCapability(episode, viewer));
   }
 
   private computeEpisodeIndexHeatScore(updatedAt: number, stats: EpisodeStats): number {
@@ -689,11 +672,13 @@ export class EpisodicRepository {
       .prepare(
         `
           INSERT INTO episode_index (
-            episode_id, audience_entity_id, shared, start_time, end_time, created_at, updated_at,
-            retrieval_count, win_rate, last_retrieved, tier, archived, heat_multiplier, heat_score
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            episode_id, audience_entity_id, origin_audience_entity_ids, shared, start_time,
+            end_time, created_at, updated_at, retrieval_count, win_rate, last_retrieved, tier,
+            archived, heat_multiplier, heat_score
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             audience_entity_id = excluded.audience_entity_id,
+            origin_audience_entity_ids = excluded.origin_audience_entity_ids,
             shared = excluded.shared,
             start_time = excluded.start_time,
             end_time = excluded.end_time,
@@ -711,6 +696,7 @@ export class EpisodicRepository {
       .run(
         normalized.id,
         normalized.audience_entity_id,
+        serializeJsonValue(normalized.origin_audience_entity_ids),
         normalized.shared ? 1 : 0,
         normalized.start_time,
         normalized.end_time,
@@ -1517,20 +1503,18 @@ export class EpisodicRepository {
         ? "heat_score DESC, updated_at DESC, episode_id DESC"
         : "updated_at DESC, episode_id DESC";
     const indexName =
-      options.orderBy === "heat"
-        ? "idx_episode_index_audience_heat"
-        : "idx_episode_index_audience_recent";
+      options.orderBy === "heat" ? "idx_episode_index_heat" : "idx_episode_index_recent";
     const rows = this.db
       .prepare(
         `
           SELECT episode_id
           FROM episode_index INDEXED BY ${indexName}
-          WHERE archived = 0 AND audience_entity_id = ?
+          WHERE archived = 0 AND ${indexedOriginContainsSql("episode_index")}
           ORDER BY ${orderBy}
           LIMIT ?
         `,
       )
-      .all(audienceEntityId, limit) as IndexedEpisodeIdRow[];
+      .all(audienceEntityId, audienceEntityId, limit) as IndexedEpisodeIdRow[];
 
     return this.hydrateCandidatesByIds(rows.map((row) => parseEpisodeId(row.episode_id)));
   }

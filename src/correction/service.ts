@@ -11,7 +11,11 @@ import {
   provenanceSchema,
   type Provenance,
 } from "../memory/common/provenance.js";
-import { type EpisodePatch, type EpisodicRepository } from "../memory/episodic/index.js";
+import {
+  normalizeEpisodeAccess,
+  type EpisodePatch,
+  type EpisodicRepository,
+} from "../memory/episodic/index.js";
 import { type IdentityEventRepository, type IdentityService } from "../memory/identity/index.js";
 import type {
   CommitmentRecord,
@@ -242,6 +246,7 @@ export class CorrectionService {
   private async resolveTargetMetadata(target: ParsedCorrectionTarget): Promise<{
     targetLabel: string;
     audienceEntityId: EntityId | null;
+    originAudienceEntityIds?: EntityId[];
   }> {
     switch (target.type) {
       case "episode": {
@@ -253,9 +258,12 @@ export class CorrectionService {
           });
         }
 
+        const access = normalizeEpisodeAccess(episode);
+
         return {
           targetLabel: episode.title,
-          audienceEntityId: episode.audience_entity_id ?? null,
+          audienceEntityId: access.audience_entity_id,
+          originAudienceEntityIds: access.origin_audience_entity_ids,
         };
       }
       case "semantic_node": {
@@ -843,6 +851,9 @@ export class CorrectionService {
         patch,
         proposed_provenance: provenanceSchema.parse(provenance),
         audience_entity_id: metadata.audienceEntityId,
+        ...(metadata.originAudienceEntityIds === undefined
+          ? {}
+          : { origin_audience_entity_ids: metadata.originAudienceEntityIds }),
         prompt_summary: reviewPromptSummary(target.type, metadata.targetLabel, patch),
         ...(operatorReason === undefined ? {} : { operator_reason: operatorReason }),
       },

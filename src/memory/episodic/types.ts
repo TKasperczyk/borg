@@ -59,6 +59,7 @@ const episodeShape = z.object({
   lineage: episodeLineageSchema,
   emotional_arc: emotionalArcSchema.nullable().default(null),
   audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
+  origin_audience_entity_ids: z.array(episodeAudienceEntityIdSchema).optional(),
   shared: z.boolean().optional(),
   embedding: float32ArraySchema,
   created_at: z.number().finite(),

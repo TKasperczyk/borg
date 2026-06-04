@@ -4,7 +4,11 @@ import type { Clock } from "../util/clock.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import { legacyCommitmentSchema } from "../memory/commitments/index.js";
-import { isEpisodeVisibleToAudience, type EpisodicRepository } from "../memory/episodic/index.js";
+import {
+  isEpisodeAccessVisible,
+  type EpisodeAccessLike,
+  type EpisodicRepository,
+} from "../memory/episodic/index.js";
 import type { IdentityEvent } from "../memory/identity/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
@@ -75,7 +79,12 @@ function eventValueHasKey(value: unknown, key: string): value is Record<string, 
 function isIdentityEventValueVisible(
   value: unknown,
   audienceEntityId: EntityId | null | undefined,
+  recordType: IdentityEvent["record_type"],
 ): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+
   if (eventValueHasKey(value, "restricted_audience")) {
     const parsed = legacyCommitmentSchema.safeParse(value);
 
@@ -84,20 +93,90 @@ function isIdentityEventValueVisible(
       : false;
   }
 
-  if (eventValueHasKey(value, "audience_entity_id")) {
-    return isEpisodeVisibleToAudience(
-      {
-        audience_entity_id:
-          typeof value.audience_entity_id === "string"
-            ? (value.audience_entity_id as EntityId)
-            : null,
-        shared: typeof value.shared === "boolean" ? value.shared : undefined,
-      },
-      audienceEntityId,
-    );
+  const episodeAccess = identityEventEpisodeAccess(value, {
+    allowNestedEpisode: recordType === "episode",
+  });
+
+  if (episodeAccess !== undefined) {
+    return episodeAccess === null ? false : isEpisodeAccessVisible(episodeAccess, audienceEntityId);
+  }
+
+  if (recordType === "episode") {
+    return false;
   }
 
   return true;
+}
+
+function identityEventEpisodeAccess(
+  value: unknown,
+  options: {
+    allowNestedEpisode: boolean;
+  },
+): EpisodeAccessLike | null | undefined {
+  if (
+    !eventValueHasKey(value, "audience_entity_id") &&
+    !eventValueHasKey(value, "origin_audience_entity_ids")
+  ) {
+    if (options.allowNestedEpisode && eventValueHasKey(value, "episode")) {
+      return (
+        identityEventEpisodeAccess(value.episode, {
+          allowNestedEpisode: false,
+        }) ?? null
+      );
+    }
+
+    return undefined;
+  }
+
+  const audienceEntityId =
+    !eventValueHasKey(value, "audience_entity_id") ||
+    value.audience_entity_id === null ||
+    value.audience_entity_id === undefined
+      ? null
+      : typeof value.audience_entity_id === "string"
+        ? (value.audience_entity_id as EntityId)
+        : undefined;
+
+  if (audienceEntityId === undefined) {
+    return null;
+  }
+
+  const originAudienceEntityIds =
+    !eventValueHasKey(value, "origin_audience_entity_ids") ||
+    value.origin_audience_entity_ids === undefined
+      ? undefined
+      : Array.isArray(value.origin_audience_entity_ids) &&
+          value.origin_audience_entity_ids.every((item) => typeof item === "string")
+        ? (value.origin_audience_entity_ids as EntityId[])
+        : null;
+
+  if (originAudienceEntityIds === null) {
+    return null;
+  }
+
+  const shared =
+    !eventValueHasKey(value, "shared") || value.shared === undefined
+      ? undefined
+      : typeof value.shared === "boolean"
+        ? value.shared
+        : null;
+
+  if (shared === null) {
+    return null;
+  }
+
+  if (originAudienceEntityIds === undefined && audienceEntityId === null && shared === false) {
+    return null;
+  }
+
+  return {
+    audience_entity_id: audienceEntityId,
+    ...(originAudienceEntityIds === undefined
+      ? {}
+      : { origin_audience_entity_ids: originAudienceEntityIds }),
+    ...(shared === undefined ? {} : { shared }),
+  };
 }
 
 function isIdentityEventVisible(
@@ -105,8 +184,8 @@ function isIdentityEventVisible(
   audienceEntityId: EntityId | null | undefined,
 ): boolean {
   return (
-    isIdentityEventValueVisible(event.old_value, audienceEntityId) &&
-    isIdentityEventValueVisible(event.new_value, audienceEntityId)
+    isIdentityEventValueVisible(event.old_value, audienceEntityId, event.record_type) &&
+    isIdentityEventValueVisible(event.new_value, audienceEntityId, event.record_type)
   );
 }
 

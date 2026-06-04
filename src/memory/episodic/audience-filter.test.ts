@@ -24,10 +24,14 @@ function episode(
   id: EpisodeId,
   audienceEntityId: EntityId | null,
   shared?: boolean,
+  originAudienceEntityIds?: readonly EntityId[],
 ): AudienceEpisodeAccess {
   return {
     id,
     audience_entity_id: audienceEntityId,
+    ...(originAudienceEntityIds === undefined
+      ? {}
+      : { origin_audience_entity_ids: originAudienceEntityIds }),
     ...(shared === undefined ? {} : { shared }),
   };
 }
@@ -74,6 +78,21 @@ describe("filterEpisodesByAudience", () => {
       ).toEqual({
         visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_A_EPISODE],
         hiddenEpisodeIds: [PRIVATE_B_EPISODE],
+        hasPrivateMix: true,
+      });
+    });
+
+    it("keeps multi-origin private episodes visible to every origin audience only", () => {
+      const multiOrigin = episode(PRIVATE_GROUP_EPISODE, null, false, [AUDIENCE_A, AUDIENCE_B]);
+
+      expect(filterEpisodesByAudience([multiOrigin], AUDIENCE_A, "filter")).toEqual({
+        visibleEpisodeIds: [PRIVATE_GROUP_EPISODE],
+        hiddenEpisodeIds: [],
+        hasPrivateMix: false,
+      });
+      expect(filterEpisodesByAudience([multiOrigin], GROUP_AUDIENCE, "filter")).toEqual({
+        visibleEpisodeIds: [],
+        hiddenEpisodeIds: [PRIVATE_GROUP_EPISODE],
         hasPrivateMix: true,
       });
     });
@@ -229,6 +248,14 @@ describe("inferSinglePrivateAudience", () => {
       inferSinglePrivateAudience([
         episode(PRIVATE_A_EPISODE, AUDIENCE_A),
         episode(PRIVATE_B_EPISODE, AUDIENCE_B),
+      ]),
+    ).toBe("multiple");
+  });
+
+  it("returns multiple for a single multi-origin private episode", () => {
+    expect(
+      inferSinglePrivateAudience([
+        episode(PRIVATE_GROUP_EPISODE, null, false, [AUDIENCE_A, AUDIENCE_B]),
       ]),
     ).toBe("multiple");
   });

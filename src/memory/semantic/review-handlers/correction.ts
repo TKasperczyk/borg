@@ -23,6 +23,7 @@ const correctionBaseShape = {
   patch: correctionPatchSchema,
   proposed_provenance: provenanceSchema.optional(),
   audience_entity_id: entityIdSchema.nullable().optional(),
+  origin_audience_entity_ids: z.array(entityIdSchema).optional(),
   prompt_summary: z.string().min(1).optional(),
   operator_reason: z.string().min(1).optional(),
 };

@@ -2,15 +2,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   TestEmbeddingClient,
-  createEpisodeFixture,
   createOfflineTestHarness,
+  createEpisodeFixture,
   createSemanticNodeFixture,
 } from "../offline/test-support.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import { EpisodicExtractor } from "../memory/episodic/extractor.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import type { CognitionRecallContext, DisclosureContext } from "./recall-context.js";
 
 const BOB_RECALL_QUERY = "human mind invariant bob recall";
 const OPERATOR_RECALL_QUERY = "human mind invariant operator recall";
+const MULTI_AUDIENCE_RECALL_QUERY = "human mind invariant multi audience recall";
+const MULTI_AUDIENCE_EMBED_TEXT =
+  "Alice and Bob shared source invariant\nA multi-audience source must be stored as one private episode with both origins.\nhuman-mind-invariant";
 const MATCH_VECTOR = [1, 0, 0, 0];
 
 function embeddingClient() {
@@ -18,8 +23,29 @@ function embeddingClient() {
     new Map([
       [BOB_RECALL_QUERY, MATCH_VECTOR],
       [OPERATOR_RECALL_QUERY, MATCH_VECTOR],
+      [MULTI_AUDIENCE_RECALL_QUERY, MATCH_VECTOR],
+      [MULTI_AUDIENCE_EMBED_TEXT, MATCH_VECTOR],
     ]),
   );
+}
+
+function episodeToolResponse(episodes: unknown[]) {
+  return {
+    text: "",
+    input_tokens: 10,
+    output_tokens: 20,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: "EmitEpisodeCandidates",
+        input: {
+          episodes,
+          relational_slot_updates: [],
+        },
+      },
+    ],
+  };
 }
 
 describe("human-mind memory invariants", () => {
@@ -266,6 +292,92 @@ describe("human-mind memory invariants", () => {
       disclosureClass: "relationship_private",
       originAudienceEntityIds: [aliceId],
       privateToEntityIds: [aliceId],
+      publicToEntityIds: [],
+    });
+  });
+
+  it("stores and recalls one correctly labeled episode from a multi-audience source", async () => {
+    harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
+    const aliceId = harness.entityRepository.resolve("Alice");
+    const bobId = harness.entityRepository.resolve("Bob");
+    const aliceEntry = await harness.streamWriter.append({
+      kind: "user_msg",
+      audience: "Alice",
+      content: "Alice described the shared migration concern.",
+    });
+    const bobEntry = await harness.streamWriter.append({
+      kind: "user_msg",
+      audience: "Bob",
+      content: "Bob added the rollout constraint to the same source episode.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        episodeToolResponse([
+          {
+            title: "Alice and Bob shared source invariant",
+            narrative:
+              "A multi-audience source must be stored as one private episode with both origins.",
+            source_stream_ids: [aliceEntry.id, bobEntry.id],
+            participants: ["Alice", "Bob"],
+            location: null,
+            tags: ["human-mind-invariant"],
+            emotional_arc: null,
+            confidence: 0.9,
+            significance: 0.8,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "test-episodic",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    const extraction = await extractor.extractFromStream();
+    const episodes = await harness.episodicRepository.listAll();
+
+    expect(extraction).toEqual({ inserted: 1, updated: 0, skipped: 0 });
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.origin_audience_entity_ids).toEqual([aliceId, bobId]);
+    expect(episodes[0]?.audience_entity_id).toBeNull();
+    expect(episodes[0]?.shared).toBe(false);
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(
+      MULTI_AUDIENCE_RECALL_QUERY,
+      {
+        limit: 3,
+        recallContext: {
+          reader: "sol",
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: bobId,
+          currentParticipantEntityIds: [bobId],
+        },
+        disclosureContext: {
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: bobId,
+          audienceRole: "participant",
+          senderEntityId: bobId,
+          senderRole: null,
+          participantEntityIds: [bobId],
+          isPrivateSelfCognition: false,
+        },
+        rankingAudienceEntityId: bobId,
+        recordRetrieval: false,
+      },
+    );
+    const recalled = result.episodes.find((item) => item.episode.id === episodes[0]?.id);
+
+    expect(recalled).toBeDefined();
+    expect(recalled?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [aliceId, bobId],
+      privateToEntityIds: [aliceId, bobId],
       publicToEntityIds: [],
     });
   });

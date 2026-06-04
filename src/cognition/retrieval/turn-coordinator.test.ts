@@ -263,6 +263,14 @@ describe("TurnRetrievalCoordinator", () => {
       makeReviewItem(1, {}),
       makeReviewItem(2, { audience_entity_id: audienceEntityId }),
       makeReviewItem(3, { audience_entity_id: bobEntityId }),
+      makeReviewItem(4, {
+        audience_entity_id: null,
+        origin_audience_entity_ids: [bobEntityId, atlasEntityId],
+      }),
+      makeReviewItem(5, {
+        audience_entity_id: null,
+        origin_audience_entity_ids: [audienceEntityId, bobEntityId],
+      }),
     ];
     const currentMood = {
       session_id: DEFAULT_SESSION_ID,
@@ -417,7 +425,7 @@ describe("TurnRetrievalCoordinator", () => {
       audience: audienceEntityId,
       nowMs: 2_000,
     });
-    expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2]);
+    expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2, 5]);
     expect(result.affectiveTrajectory).toBe(affectiveTrajectory);
     expect(result.retrieval).toBe(retrieval);
     expect(result.selectedSkill).toBe(selectedSkill);

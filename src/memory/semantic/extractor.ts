@@ -26,7 +26,11 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId, type StreamEntryId } from "../../util/ids.js";
 import { episodeAccessScopeKey } from "../episodic/access.js";
-import type { Episode, EpisodicRepository } from "../episodic/index.js";
+import {
+  normalizeEpisodeAccess,
+  type Episode,
+  type EpisodicRepository,
+} from "../episodic/index.js";
 import type {
   RelationshipEvidenceStreamEntryTrustResult,
   RelationshipEvidenceStreamEntryTrustValidator,
@@ -181,18 +185,21 @@ function buildPrompt(input: {
     roster === null ? "Thread roster: none supplied." : roster,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
-    ...input.episodes.map((episode) =>
-      JSON.stringify({
+    ...input.episodes.map((episode) => {
+      const access = normalizeEpisodeAccess(episode);
+
+      return JSON.stringify({
         id: episode.id,
         title: episode.title,
         narrative: episode.narrative,
         participants: episode.participants,
-        audience_entity_id: episode.audience_entity_id ?? null,
-        shared: episode.shared ?? (episode.audience_entity_id ?? null) === null,
+        audience_entity_id: access.audience_entity_id,
+        origin_audience_entity_ids: access.origin_audience_entity_ids,
+        shared: access.shared,
         location: episode.location,
         tags: episode.tags,
-      }),
-    ),
+      });
+    }),
   ].join("\n");
 }
 

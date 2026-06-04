@@ -9,7 +9,12 @@ export { normalizeEpisodeAccess, type EpisodeAccessLike } from "./audience-filte
 
 export function episodeAccessScopeKey(input: EpisodeAccessLike): string {
   const normalized = normalizeEpisodeAccess(input);
-  return `${normalized.audience_entity_id ?? "public"}:${normalized.shared ? "shared" : "private"}`;
+  const origins =
+    normalized.origin_audience_entity_ids.length === 0
+      ? "public"
+      : [...normalized.origin_audience_entity_ids].sort().join("+");
+
+  return `${origins}:${normalized.shared ? "shared" : "private"}`;
 }
 
 export function hasSameEpisodeAccessScope(
@@ -40,10 +45,10 @@ export function isEpisodeInGlobalIdentityScope(
   const normalized = normalizeEpisodeAccess(input);
 
   return (
-    normalized.audience_entity_id === null ||
+    normalized.origin_audience_entity_ids.length === 0 ||
     (selfAudienceEntityId !== null &&
       selfAudienceEntityId !== undefined &&
-      normalized.audience_entity_id === selfAudienceEntityId)
+      normalized.origin_audience_entity_ids.includes(selfAudienceEntityId))
   );
 }
 

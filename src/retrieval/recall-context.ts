@@ -1,4 +1,5 @@
 import type { BorgRole } from "../memory/commitments/index.js";
+import { normalizeEpisodeAccess, type EpisodeAccessLike } from "../memory/episodic/index.js";
 import type { SessionAudienceRole } from "../sessions/index.js";
 import type { EntityId, SessionId } from "../util/ids.js";
 
@@ -150,16 +151,13 @@ export type DisclosureContext = {
   readonly isPrivateSelfCognition: boolean;
 };
 
-export function memoryDisclosureLabelFromEpisodeAccess(input: {
-  readonly audience_entity_id?: EntityId | null;
-  readonly shared?: boolean;
-}): MemoryDisclosureLabel {
-  const originAudienceEntityIds =
-    input.audience_entity_id === null || input.audience_entity_id === undefined
-      ? []
-      : [input.audience_entity_id];
+export function memoryDisclosureLabelFromEpisodeAccess(
+  input: EpisodeAccessLike,
+): MemoryDisclosureLabel {
+  const normalized = normalizeEpisodeAccess(input);
+  const originAudienceEntityIds = normalized.origin_audience_entity_ids;
 
-  if (input.audience_entity_id === null || input.audience_entity_id === undefined || input.shared) {
+  if (originAudienceEntityIds.length === 0 || normalized.shared) {
     return {
       disclosureClass: "public",
       originAudienceEntityIds,
@@ -171,7 +169,7 @@ export function memoryDisclosureLabelFromEpisodeAccess(input: {
   return {
     disclosureClass: "relationship_private",
     originAudienceEntityIds,
-    privateToEntityIds: [input.audience_entity_id],
+    privateToEntityIds: originAudienceEntityIds,
     publicToEntityIds: [],
   };
 }

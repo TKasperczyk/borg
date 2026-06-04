@@ -29,7 +29,7 @@ import {
   createSkillsListTool,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+import { createEntityId, createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
   problem_kind: "code_debugging",
@@ -814,6 +814,117 @@ describe("internal tools", () => {
       expect(recordIds).toContain(publicCommitment.id);
       expect(recordIds).toContain(samCommitment.id);
       expect(recordIds).not.toContain(alexCommitment.id);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not expose multi-origin private episode identity-event values to non-origin audiences", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const alice = createEntityId();
+      const bob = createEntityId();
+      const carol = createEntityId();
+      const episode = createEpisodeFixture({
+        title: "Alice Bob private correction target",
+        audience_entity_id: null,
+        origin_audience_entity_ids: [alice, bob],
+        shared: false,
+      });
+      const nestedEpisode = createEpisodeFixture({
+        title: "Nested Alice Bob private correction target",
+        audience_entity_id: null,
+        origin_audience_entity_ids: [alice, bob],
+        shared: false,
+      });
+
+      harness.identityEventRepository.record({
+        record_type: "episode",
+        record_id: episode.id,
+        action: "correction_apply",
+        old_value: null,
+        new_value: {
+          id: episode.id,
+          title: episode.title,
+          audience_entity_id: episode.audience_entity_id ?? null,
+          origin_audience_entity_ids: episode.origin_audience_entity_ids ?? [],
+          shared: episode.shared ?? false,
+        },
+        reason: "test correction",
+        provenance: { kind: "manual" },
+      });
+      harness.identityEventRepository.record({
+        record_type: "episode",
+        record_id: nestedEpisode.id,
+        action: "forget",
+        old_value: {
+          episode: {
+            id: nestedEpisode.id,
+            title: nestedEpisode.title,
+            audience_entity_id: nestedEpisode.audience_entity_id ?? null,
+            origin_audience_entity_ids: nestedEpisode.origin_audience_entity_ids ?? [],
+            shared: nestedEpisode.shared ?? false,
+          },
+          stats: {
+            archived: false,
+          },
+        },
+        new_value: {
+          episode: {
+            id: nestedEpisode.id,
+            title: nestedEpisode.title,
+            audience_entity_id: nestedEpisode.audience_entity_id ?? null,
+            origin_audience_entity_ids: nestedEpisode.origin_audience_entity_ids ?? [],
+            shared: nestedEpisode.shared ?? false,
+          },
+          stats: {
+            archived: true,
+          },
+        },
+        reason: "test nested correction",
+        provenance: { kind: "manual" },
+      });
+
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const carolResult = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.list",
+        input: {
+          recordType: "episode",
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: carol,
+      });
+      const aliceResult = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.list",
+        input: {
+          recordType: "episode",
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alice,
+      });
+
+      expect(carolResult.ok).toBe(true);
+      expect(aliceResult.ok).toBe(true);
+      if (!carolResult.ok || !aliceResult.ok) {
+        throw new Error("expected identity event tool calls to succeed");
+      }
+
+      const carolRecordIds = (
+        carolResult.output as { events: Array<{ record_id: string }> }
+      ).events.map((event) => event.record_id);
+      const aliceRecordIds = (
+        aliceResult.output as { events: Array<{ record_id: string }> }
+      ).events.map((event) => event.record_id);
+
+      expect(carolRecordIds).not.toContain(episode.id);
+      expect(carolRecordIds).not.toContain(nestedEpisode.id);
+      expect(aliceRecordIds).toContain(episode.id);
+      expect(aliceRecordIds).toContain(nestedEpisode.id);
     } finally {
       await harness.cleanup();
     }

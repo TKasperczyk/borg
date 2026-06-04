@@ -629,7 +629,7 @@ describe("overseer process", () => {
     expect(prompt).toContain("Audience entity metadata below is legitimate grounding");
     expect(prompt).toContain("Include quoted_span as the exact target text span being challenged");
     expect(prompt).toContain(
-      `EPISODE episode_id=${episode.id} audience_entity_id=${audienceEntityId} shared=false`,
+      `EPISODE episode_id=${episode.id} audience_entity_id=${audienceEntityId} origin_audience_entity_ids=${audienceEntityId} shared=false`,
     );
     expect(prompt).toContain(
       `AUDIENCE entity_id=${audienceEntityId} display_name="Tom" source_episode_ids=${episode.id}`,

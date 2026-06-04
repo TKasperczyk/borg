@@ -714,7 +714,7 @@ function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
   contextEntries: readonly StreamEntry[],
-  access: Pick<Episode, "audience_entity_id" | "shared">,
+  access: Pick<Episode, "audience_entity_id" | "origin_audience_entity_ids" | "shared">,
   embedding: Float32Array,
   nowMs: number,
 ): Episode {
@@ -738,6 +738,7 @@ function buildEpisodeFromCandidate(
     },
     emotional_arc: candidate.emotional_arc ?? buildEmotionalArc(sourceEntries, contextEntries),
     audience_entity_id: access.audience_entity_id,
+    origin_audience_entity_ids: access.origin_audience_entity_ids,
     shared: access.shared,
     embedding,
     created_at: nowMs,
@@ -760,7 +761,7 @@ export class EpisodicExtractor {
 
   private deriveEpisodeAccess(
     sourceEntries: readonly StreamEntry[],
-  ): Pick<Episode, "audience_entity_id" | "shared"> | null {
+  ): Pick<Episode, "audience_entity_id" | "origin_audience_entity_ids" | "shared"> {
     const audiences = uniqueStrings(
       sourceEntries.flatMap((entry) =>
         entry.audience === undefined || entry.audience.trim().length === 0 ? [] : [entry.audience],
@@ -770,21 +771,22 @@ export class EpisodicExtractor {
     if (audiences.length === 0) {
       return {
         audience_entity_id: null,
+        origin_audience_entity_ids: [],
         shared: true,
       };
     }
 
-    if (audiences.length > 1) {
-      return null;
-    }
-
-    const audience = audiences[0] ?? "";
-
-    return {
-      audience_entity_id: this.options.entityRepository.resolve(audience, {
+    const originAudienceEntityIds = audiences.map((audience) =>
+      this.options.entityRepository.resolve(audience, {
         ...(audience === "self" ? { kind: "self" as const } : {}),
         provenance: "transport_audience_label",
       }),
+    );
+
+    return {
+      audience_entity_id:
+        originAudienceEntityIds.length === 1 ? (originAudienceEntityIds[0] ?? null) : null,
+      origin_audience_entity_ids: originAudienceEntityIds,
       shared: false,
     };
   }
@@ -848,10 +850,6 @@ export class EpisodicExtractor {
   ): Promise<CandidateOutcome> {
     const sourceEntries = sourceEntriesFromCandidate(candidate, chunkById);
     const access = this.deriveEpisodeAccess(sourceEntries);
-
-    if (access === null) {
-      return "skipped";
-    }
 
     const existing = await this.options.episodicRepository.findBySourceStreamIds(
       uniqueStreamEntryIds(sourceEntries),

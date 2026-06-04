@@ -118,6 +118,12 @@ function collectInternalIdentifiers(input: {
   for (const result of input.retrievedEpisodes) {
     addInternalIdentifier(identifiers, result.episode.id);
     addInternalIdentifier(identifiers, result.episode.audience_entity_id ?? null);
+    addInternalIdentifiers(identifiers, result.episode.origin_audience_entity_ids ?? []);
+    if (result.disclosureLabel !== undefined) {
+      addInternalIdentifiers(identifiers, result.disclosureLabel.originAudienceEntityIds);
+      addInternalIdentifiers(identifiers, result.disclosureLabel.privateToEntityIds);
+      addInternalIdentifiers(identifiers, result.disclosureLabel.publicToEntityIds);
+    }
     addInternalIdentifiers(identifiers, result.episode.source_stream_ids);
     addInternalIdentifiers(identifiers, result.episode.lineage.derived_from);
     addInternalIdentifiers(identifiers, result.episode.lineage.supersedes);

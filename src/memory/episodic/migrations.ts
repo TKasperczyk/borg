@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const episodicMigrations = [
   {
@@ -25,6 +26,7 @@ export const episodicMigrations = [
         CREATE TABLE episode_index (
           episode_id TEXT PRIMARY KEY,
           audience_entity_id TEXT,
+          origin_audience_entity_ids TEXT NOT NULL DEFAULT '[]',
           shared INTEGER NOT NULL DEFAULT 1 CHECK (shared IN (0, 1)),
           start_time INTEGER NOT NULL,
           end_time INTEGER NOT NULL,
@@ -89,6 +91,18 @@ export const episodicMigrations = [
           value TEXT NOT NULL
         );
       `);
+    },
+  },
+  {
+    id: 2,
+    name: "episode_origin_audiences",
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_index", "origin_audience_entity_ids")) {
+        db.exec(`
+          ALTER TABLE episode_index
+          ADD COLUMN origin_audience_entity_ids TEXT NOT NULL DEFAULT '[]';
+        `);
+      }
     },
   },
 ] as const satisfies readonly Migration[];

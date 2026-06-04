@@ -2,6 +2,7 @@ import type { EntityId, EpisodeId } from "../../util/ids.js";
 
 export type EpisodeAccessLike = {
   audience_entity_id?: EntityId | null;
+  origin_audience_entity_ids?: readonly EntityId[];
   shared?: boolean;
 };
 
@@ -21,14 +22,28 @@ export function normalizeEpisodeAccess<T extends EpisodeAccessLike>(
   input: T,
 ): T & {
   audience_entity_id: EntityId | null;
+  origin_audience_entity_ids: EntityId[];
   shared: boolean;
 } {
-  const audienceEntityId = input.audience_entity_id ?? null;
+  const legacyAudienceEntityId = input.audience_entity_id ?? null;
+  const explicitOriginAudienceEntityIds =
+    input.origin_audience_entity_ids === undefined
+      ? legacyAudienceEntityId === null
+        ? []
+        : [legacyAudienceEntityId]
+      : [...new Set(input.origin_audience_entity_ids)];
+  const originAudienceEntityIds =
+    explicitOriginAudienceEntityIds.length === 0 && legacyAudienceEntityId !== null
+      ? [legacyAudienceEntityId]
+      : explicitOriginAudienceEntityIds;
+  const audienceEntityId =
+    originAudienceEntityIds.length === 1 ? (originAudienceEntityIds[0] ?? null) : null;
 
   return {
     ...input,
     audience_entity_id: audienceEntityId,
-    shared: input.shared ?? audienceEntityId === null,
+    origin_audience_entity_ids: originAudienceEntityIds,
+    shared: input.shared ?? originAudienceEntityIds.length === 0,
   };
 }
 
@@ -38,7 +53,7 @@ export function isEpisodeAccessVisible(
 ): boolean {
   const normalized = normalizeEpisodeAccess(input);
 
-  if (normalized.audience_entity_id === null || normalized.shared) {
+  if (normalized.shared || normalized.origin_audience_entity_ids.length === 0) {
     return true;
   }
 
@@ -46,7 +61,7 @@ export function isEpisodeAccessVisible(
     return false;
   }
 
-  return normalized.audience_entity_id === audienceEntityId;
+  return normalized.origin_audience_entity_ids.includes(audienceEntityId);
 }
 
 function isPrivateToDifferentAudience(
@@ -57,16 +72,16 @@ function isPrivateToDifferentAudience(
 
   return (
     normalized.shared !== true &&
-    normalized.audience_entity_id !== null &&
+    normalized.origin_audience_entity_ids.length > 0 &&
     audienceEntityId !== null &&
     audienceEntityId !== undefined &&
-    normalized.audience_entity_id !== audienceEntityId
+    !normalized.origin_audience_entity_ids.includes(audienceEntityId)
   );
 }
 
 function hasAnyPrivateEpisode(input: EpisodeAccessLike): boolean {
   const normalized = normalizeEpisodeAccess(input);
-  return normalized.shared !== true && normalized.audience_entity_id !== null;
+  return normalized.shared !== true && normalized.origin_audience_entity_ids.length > 0;
 }
 
 export function inferSinglePrivateAudience(
@@ -77,11 +92,13 @@ export function inferSinglePrivateAudience(
   for (const episode of episodes) {
     const normalized = normalizeEpisodeAccess(episode);
 
-    if (normalized.shared || normalized.audience_entity_id === null) {
+    if (normalized.shared || normalized.origin_audience_entity_ids.length === 0) {
       continue;
     }
 
-    privateAudiences.add(normalized.audience_entity_id);
+    for (const audienceEntityId of normalized.origin_audience_entity_ids) {
+      privateAudiences.add(audienceEntityId);
+    }
   }
 
   if (privateAudiences.size > 1) {

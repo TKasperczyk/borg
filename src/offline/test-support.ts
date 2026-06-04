@@ -920,6 +920,7 @@ export function createEpisodeFixture(
     },
     emotional_arc: overrides.emotional_arc ?? null,
     audience_entity_id: overrides.audience_entity_id,
+    origin_audience_entity_ids: overrides.origin_audience_entity_ids,
     shared: overrides.shared,
     embedding: overrides.embedding ?? Float32Array.from(vector),
     created_at: nowMs,

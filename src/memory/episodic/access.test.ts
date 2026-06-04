@@ -16,6 +16,10 @@ const PUBLIC: EpisodeAccessLike = { audience_entity_id: null, shared: true };
 const PRIVATE_SELF: EpisodeAccessLike = { audience_entity_id: SELF, shared: false };
 const PRIVATE_OTHER: EpisodeAccessLike = { audience_entity_id: OTHER, shared: false };
 const SHARED_OTHER: EpisodeAccessLike = { audience_entity_id: OTHER, shared: true };
+const PRIVATE_SELF_AND_OTHER: EpisodeAccessLike = {
+  origin_audience_entity_ids: [SELF, OTHER],
+  shared: false,
+};
 
 describe("resolveViewerCapability", () => {
   it("resolves an absent/under-specified viewer to the restrictive audience scope, never unrestricted", () => {
@@ -97,6 +101,8 @@ describe("isEpisodeVisibleToCapability", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, audience(SELF))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, audience(SELF))).toBe(true);
     expect(isEpisodeVisibleToCapability(SHARED_OTHER, audience(SELF))).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(SELF))).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(OTHER))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, audience(SELF))).toBe(false);
   });
 
@@ -105,16 +111,17 @@ describe("isEpisodeVisibleToCapability", () => {
     expect(isEpisodeVisibleToCapability(SHARED_OTHER, audience(null))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, audience(null))).toBe(false);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(null))).toBe(false);
   });
 
   it("self_continuity arm: public (null-audience) plus the self entity's episodes only", () => {
     const cap: ViewerCapability = { kind: "self_continuity", selfAudienceEntityId: SELF };
     expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
-    // self_continuity keys on audience_entity_id (null or self) and deliberately IGNORES
-    // `shared` -- both the SQL builder and isEpisodeInGlobalIdentityScope agree -- so a
-    // shared episode owned by ANOTHER audience is NOT in the self-continuity scope.
+    // self_continuity keys on the origin audience set (empty or self) and deliberately
+    // IGNORES `shared`, so a shared episode owned by ANOTHER audience is NOT in scope.
     expect(isEpisodeVisibleToCapability(SHARED_OTHER, cap)).toBe(false);
   });
 
@@ -123,12 +130,14 @@ describe("isEpisodeVisibleToCapability", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(false);
   });
 
   it("operator_introspection arm: fail-closed and not equivalent to unrestricted", () => {
     const cap: ViewerCapability = { kind: "operator_introspection", selfAudienceEntityId: SELF };
     expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(SHARED_OTHER, cap)).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
   });
@@ -138,6 +147,7 @@ describe("isEpisodeVisibleToCapability", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(true);
   });
 
   it("throws (fail-closed) on an unknown capability kind rather than admitting the episode", () => {

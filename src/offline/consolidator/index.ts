@@ -60,6 +60,7 @@ const serializableEpisodeSchema = z.object({
   lineage: episodeLineageSchema,
   emotional_arc: emotionalArcSchema.nullable(),
   audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
+  origin_audience_entity_ids: z.array(episodeAudienceEntityIdSchema).optional(),
   shared: z.boolean().optional(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
@@ -319,7 +320,16 @@ async function buildMergedEpisode(
   const embedding = await ctx.embeddingClient.embed(
     `${merged.title}\n${merged.narrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
   );
-  const access = normalizeEpisodeAccess(cluster.episodes[0] ?? {});
+  const sourceAccesses = cluster.episodes.map((episode) => normalizeEpisodeAccess(episode));
+  const originAudienceEntityIds = [
+    ...new Set(sourceAccesses.flatMap((access) => access.origin_audience_entity_ids)),
+  ];
+  const access = normalizeEpisodeAccess({
+    origin_audience_entity_ids: originAudienceEntityIds,
+    shared:
+      originAudienceEntityIds.length === 0 ||
+      sourceAccesses.every((sourceAccess) => sourceAccess.shared),
+  });
 
   return {
     episode: normalizeEpisodeAccess({
@@ -341,6 +351,7 @@ async function buildMergedEpisode(
       emotional_arc:
         cluster.episodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
       audience_entity_id: access.audience_entity_id,
+      origin_audience_entity_ids: access.origin_audience_entity_ids,
       shared: access.shared,
       embedding,
       created_at: nowMs,

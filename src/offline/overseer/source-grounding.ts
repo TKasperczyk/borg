@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 import { entityIdSchema } from "../../memory/commitments/index.js";
-import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import {
+  episodeIdSchema,
+  normalizeEpisodeAccess,
+  type Episode,
+} from "../../memory/episodic/index.js";
 import {
   reviewKindSchema,
   semanticEdgeIdSchema,
@@ -124,6 +128,7 @@ export type OverseerResolvedSourceEntry = {
 export type OverseerSourceEpisode = {
   id: EpisodeId;
   audience_entity_id: EntityId | null;
+  origin_audience_entity_ids: EntityId[];
   shared: boolean;
 };
 
@@ -247,11 +252,16 @@ function appendStreamSources(
 }
 
 function sourceEpisodeMetadata(episodes: readonly Episode[]): OverseerSourceEpisode[] {
-  return episodes.map((episode) => ({
-    id: episode.id,
-    audience_entity_id: episode.audience_entity_id ?? null,
-    shared: episode.shared ?? (episode.audience_entity_id ?? null) === null,
-  }));
+  return episodes.map((episode) => {
+    const access = normalizeEpisodeAccess(episode);
+
+    return {
+      id: episode.id,
+      audience_entity_id: access.audience_entity_id,
+      origin_audience_entity_ids: access.origin_audience_entity_ids,
+      shared: access.shared,
+    };
+  });
 }
 
 function audienceMetadataForEpisodes(
@@ -261,31 +271,27 @@ function audienceMetadataForEpisodes(
   const byEntityId = new Map<string, OverseerAudienceMetadata>();
 
   for (const episode of episodes) {
-    const audienceEntityId = episode.audience_entity_id ?? null;
+    for (const audienceEntityId of normalizeEpisodeAccess(episode).origin_audience_entity_ids) {
+      const entity = ctx.entityRepository.get(audienceEntityId);
+      const displayName = entity?.canonical_name.trim() ?? "";
 
-    if (audienceEntityId === null) {
-      continue;
+      if (displayName.length === 0) {
+        continue;
+      }
+
+      const existing = byEntityId.get(audienceEntityId);
+
+      if (existing === undefined) {
+        byEntityId.set(audienceEntityId, {
+          entity_id: audienceEntityId,
+          display_name: displayName,
+          source_episode_ids: [episode.id],
+        });
+        continue;
+      }
+
+      existing.source_episode_ids.push(episode.id);
     }
-
-    const entity = ctx.entityRepository.get(audienceEntityId);
-    const displayName = entity?.canonical_name.trim() ?? "";
-
-    if (displayName.length === 0) {
-      continue;
-    }
-
-    const existing = byEntityId.get(audienceEntityId);
-
-    if (existing === undefined) {
-      byEntityId.set(audienceEntityId, {
-        entity_id: audienceEntityId,
-        display_name: displayName,
-        source_episode_ids: [episode.id],
-      });
-      continue;
-    }
-
-    existing.source_episode_ids.push(episode.id);
   }
 
   return [...byEntityId.values()].map((metadata) => ({
@@ -395,7 +401,7 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
 
     for (const episode of bundle.source_episodes) {
       lines.push(
-        `EPISODE episode_id=${episode.id} audience_entity_id=${episode.audience_entity_id ?? "none"} shared=${String(episode.shared)}`,
+        `EPISODE episode_id=${episode.id} audience_entity_id=${episode.audience_entity_id ?? "none"} origin_audience_entity_ids=${formatIdList(episode.origin_audience_entity_ids)} shared=${String(episode.shared)}`,
       );
     }
   }
