@@ -37,8 +37,7 @@ function createHarnessToolDispatcher(
 }
 
 describe("v101.1 identity-events cognition-tool invariants", () => {
-  // v101.1 Sprint D expected flip: internal model tools return global evidence with labels.
-  it.fails("returns a private identity event to Sol cognition with a disclosure label", async () => {
+  it("returns a private identity event to Sol cognition with a disclosure label", async () => {
     const harness = await createOfflineTestHarness();
     const alice = "ent_aaaaaaaaaaaaaaaa" as never;
     const carol = "ent_cccccccccccccccc" as never;
@@ -69,7 +68,7 @@ describe("v101.1 identity-events cognition-tool invariants", () => {
 
       const dispatcher = createHarnessToolDispatcher(harness);
       const result = await dispatcher.dispatch({
-        toolName: "tool.identityEvents.list",
+        toolName: "tool.identityEvents.listForCognition",
         input: {
           recordType: "episode",
           limit: 10,

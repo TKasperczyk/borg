@@ -2,6 +2,7 @@ import { StorageError } from "../../util/errors.js";
 import {
   type AutobiographicalPeriodId,
   type CommitmentId,
+  type EntityId,
   type GrowthMarkerId,
   type OpenQuestionId,
 } from "../../util/ids.js";
@@ -42,6 +43,7 @@ import {
 
 import { IdentityEventRepository } from "./repository.js";
 import { IdentityGuard, type IdentityGuardState } from "./guard.js";
+import { isIdentityEventVisible } from "./disclosure.js";
 
 export type IdentityUpdateOptions = {
   throughReview?: boolean;
@@ -171,6 +173,15 @@ export class IdentityService {
     ...args: Parameters<IdentityEventRepository["list"]>
   ): ReturnType<IdentityEventRepository["list"]> {
     return this.options.identityEventRepository.list(...args);
+  }
+
+  listEventsForDisclosure(
+    options: Parameters<IdentityEventRepository["list"]>[0] = {},
+    audienceEntityId: EntityId | null | undefined,
+  ): ReturnType<IdentityEventRepository["list"]> {
+    return this.options.identityEventRepository
+      .list(options)
+      .filter((event) => isIdentityEventVisible(event, audienceEntityId ?? null));
   }
 
   addValue(input: Parameters<ValuesRepository["add"]>[0]): ValueRecord {

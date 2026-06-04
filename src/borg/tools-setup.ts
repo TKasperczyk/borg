@@ -2,14 +2,9 @@
 
 import type { Clock } from "../util/clock.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
+import { identityEventMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
-import { legacyCommitmentSchema } from "../memory/commitments/index.js";
-import {
-  isEpisodeAccessVisible,
-  type EpisodeAccessLike,
-  type EpisodicRepository,
-} from "../memory/episodic/index.js";
-import type { IdentityEvent } from "../memory/identity/index.js";
+import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
 import {
@@ -24,12 +19,11 @@ import type {
   SemanticNodeRepository,
   SemanticWalkStep,
 } from "../memory/semantic/index.js";
-import type { EntityId } from "../util/ids.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
   createEpisodicSearchTool,
-  createIdentityEventsListTool,
+  createIdentityEventsListForCognitionTool,
   createOpenQuestionsCreateTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
@@ -51,143 +45,6 @@ export type BuildToolDispatcherOptions = {
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
 };
-
-function visibleCommitmentAudience(
-  restrictedAudience: EntityId | null,
-  audienceEntityId: EntityId | null | undefined,
-): boolean {
-  if (restrictedAudience === null) {
-    return true;
-  }
-
-  return (
-    audienceEntityId !== null &&
-    audienceEntityId !== undefined &&
-    restrictedAudience === audienceEntityId
-  );
-}
-
-function eventValueHasKey(value: unknown, key: string): value is Record<string, unknown> {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.prototype.hasOwnProperty.call(value, key)
-  );
-}
-
-function isIdentityEventValueVisible(
-  value: unknown,
-  audienceEntityId: EntityId | null | undefined,
-  recordType: IdentityEvent["record_type"],
-): boolean {
-  if (value === null || value === undefined) {
-    return true;
-  }
-
-  if (eventValueHasKey(value, "restricted_audience")) {
-    const parsed = legacyCommitmentSchema.safeParse(value);
-
-    return parsed.success
-      ? visibleCommitmentAudience(parsed.data.restricted_audience, audienceEntityId)
-      : false;
-  }
-
-  const episodeAccess = identityEventEpisodeAccess(value, {
-    allowNestedEpisode: recordType === "episode",
-  });
-
-  if (episodeAccess !== undefined) {
-    return episodeAccess === null ? false : isEpisodeAccessVisible(episodeAccess, audienceEntityId);
-  }
-
-  if (recordType === "episode") {
-    return false;
-  }
-
-  return true;
-}
-
-function identityEventEpisodeAccess(
-  value: unknown,
-  options: {
-    allowNestedEpisode: boolean;
-  },
-): EpisodeAccessLike | null | undefined {
-  if (
-    !eventValueHasKey(value, "audience_entity_id") &&
-    !eventValueHasKey(value, "origin_audience_entity_ids")
-  ) {
-    if (options.allowNestedEpisode && eventValueHasKey(value, "episode")) {
-      return (
-        identityEventEpisodeAccess(value.episode, {
-          allowNestedEpisode: false,
-        }) ?? null
-      );
-    }
-
-    return undefined;
-  }
-
-  const audienceEntityId =
-    !eventValueHasKey(value, "audience_entity_id") ||
-    value.audience_entity_id === null ||
-    value.audience_entity_id === undefined
-      ? null
-      : typeof value.audience_entity_id === "string"
-        ? (value.audience_entity_id as EntityId)
-        : undefined;
-
-  if (audienceEntityId === undefined) {
-    return null;
-  }
-
-  const originAudienceEntityIds =
-    !eventValueHasKey(value, "origin_audience_entity_ids") ||
-    value.origin_audience_entity_ids === undefined
-      ? undefined
-      : Array.isArray(value.origin_audience_entity_ids) &&
-          value.origin_audience_entity_ids.every((item) => typeof item === "string")
-        ? (value.origin_audience_entity_ids as EntityId[])
-        : null;
-
-  if (originAudienceEntityIds === null) {
-    return null;
-  }
-
-  const shared =
-    !eventValueHasKey(value, "shared") || value.shared === undefined
-      ? undefined
-      : typeof value.shared === "boolean"
-        ? value.shared
-        : null;
-
-  if (shared === null) {
-    return null;
-  }
-
-  if (originAudienceEntityIds === undefined && audienceEntityId === null && shared === false) {
-    return null;
-  }
-
-  return {
-    audience_entity_id: audienceEntityId,
-    ...(originAudienceEntityIds === undefined
-      ? {}
-      : { origin_audience_entity_ids: originAudienceEntityIds }),
-    ...(shared === undefined ? {} : { shared }),
-  };
-}
-
-function isIdentityEventVisible(
-  event: IdentityEvent,
-  audienceEntityId: EntityId | null | undefined,
-): boolean {
-  return (
-    isIdentityEventValueVisible(event.old_value, audienceEntityId, event.record_type) &&
-    isIdentityEventValueVisible(event.new_value, audienceEntityId, event.record_type)
-  );
-}
 
 async function annotateSemanticWalkStep(
   step: SemanticWalkStep,
@@ -295,11 +152,12 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
       }),
     )
     .register(
-      createIdentityEventsListTool({
-        listEvents: (listOptions, context) =>
-          options.identityService
-            .listEvents(listOptions)
-            .filter((event) => isIdentityEventVisible(event, context.audienceEntityId ?? null)),
+      createIdentityEventsListForCognitionTool({
+        listEvents: (listOptions) => options.identityService.listEvents(listOptions),
+        disclosureLabelForEvent: (event) =>
+          identityEventMemoryDisclosureLabel(event, {
+            episodicRepository: options.episodicRepository,
+          }),
       }),
     )
     .register(

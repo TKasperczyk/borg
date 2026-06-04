@@ -139,7 +139,10 @@ export type RetrievalPipelineOptions = {
   semanticNodeRepository?: SemanticNodeRepository;
   semanticEdgeRepository?: Pick<SemanticEdgeRepository, "getEdge">;
   semanticGraph?: SemanticGraph;
-  reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
+  reviewQueueRepository?: Pick<
+    ReviewQueueRepository,
+    "listOpenBeliefRevisionsByTarget" | "listOpenBeliefRevisionsByTargetForCognition"
+  >;
   openQuestionsRepository?: OpenQuestionsRepository;
   imagePerceptionRepository?: ImagePerceptionRepository;
   entityRepository?: Pick<EntityRepository, "findByName">;
@@ -2276,6 +2279,19 @@ function semanticRetrievalToEvidence(
   ].map((hit): EvidenceItem => {
     const edge = hit.edgePath.at(-1);
     const edgeId = edge?.id;
+    const hasPartialSourceVisibility =
+      hit.node.partial_source_visibility === true ||
+      hit.edgePath.some((pathEdge) => pathEdge.partial_source_visibility === true);
+    const sourceVisibilityFractions = [
+      hit.node.partial_source_visibility === true ? hit.node.source_visibility_fraction : undefined,
+      ...hit.edgePath.map((pathEdge) =>
+        pathEdge.partial_source_visibility === true
+          ? pathEdge.source_visibility_fraction
+          : undefined,
+      ),
+    ].filter((fraction): fraction is number => typeof fraction === "number");
+    const sourceVisibilityFraction =
+      sourceVisibilityFractions.length === 0 ? undefined : Math.min(...sourceVisibilityFractions);
     const semanticEdgeSourceEpisodeIds = [
       ...new Set([
         ...hit.node.source_episode_ids,
@@ -2311,10 +2327,12 @@ function semanticRetrievalToEvidence(
         semanticEdgeSourceEpisodeIds.length === 0
           ? [...hit.node.source_episode_ids]
           : semanticEdgeSourceEpisodeIds,
-      ...(edge?.partial_source_visibility === true
+      ...(hasPartialSourceVisibility
         ? {
             partial_source_visibility: true,
-            source_visibility_fraction: edge.source_visibility_fraction,
+            ...(sourceVisibilityFraction === undefined
+              ? {}
+              : { source_visibility_fraction: sourceVisibilityFraction }),
           }
         : {}),
       disclosureLabel: semanticEdgeDisclosureLabel,

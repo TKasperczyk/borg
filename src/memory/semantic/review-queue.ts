@@ -11,6 +11,13 @@ import {
   isEpisodeVisibleToAudience,
   type Episode,
 } from "../episodic/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  relationshipPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/recall-context.js";
 import { type IdentityEventRepository, type IdentityService } from "../identity/index.js";
 import type { AutobiographicalRepository } from "../self/autobiographical.js";
 import type { GoalsRepository } from "../self/goals-repository.js";
@@ -258,6 +265,8 @@ export type OpenBeliefRevisionStatus = BeliefRevisionTarget & {
   created_at: number;
   invalidated_edge_id: SemanticEdge["id"];
   evidence_episode_ids: Episode["id"][];
+  audience_entity_id: EntityId | null;
+  disclosureLabel: MemoryDisclosureLabel;
 };
 export type BeliefRevisionVisibilityOptions = {
   audienceEntityId?: EntityId | null;
@@ -426,10 +435,7 @@ export class ReviewQueueRepository {
       return "overseer";
     }
 
-    if (
-      itemOrInput.kind === "contradiction" ||
-      itemOrInput.kind === "duplicate"
-    ) {
+    if (itemOrInput.kind === "contradiction" || itemOrInput.kind === "duplicate") {
       return "semantic-extractor";
     }
 
@@ -577,6 +583,47 @@ export class ReviewQueueRepository {
     ]);
   }
 
+  private async beliefRevisionDisclosureLabel(
+    refs: BeliefRevisionRefs,
+    evidenceEpisodeIds: readonly Episode["id"][],
+    options: Pick<BeliefRevisionVisibilityOptions, "episodicRepository">,
+  ): Promise<MemoryDisclosureLabel> {
+    const labels: MemoryDisclosureLabel[] = [];
+
+    if (refs.audience_entity_id !== undefined && refs.audience_entity_id !== null) {
+      labels.push(relationshipPrivateMemoryDisclosureLabel([refs.audience_entity_id]));
+    }
+
+    if (evidenceEpisodeIds.length === 0) {
+      return combineMemoryDisclosureLabels(labels);
+    }
+
+    const episodicRepository = options.episodicRepository ?? this.options.episodicRepository;
+
+    if (episodicRepository === undefined) {
+      return combineMemoryDisclosureLabels([...labels, unknownMemoryDisclosureLabel()]);
+    }
+
+    const episodes = await episodicRepository.getMany(evidenceEpisodeIds);
+    const episodesById = new Map(
+      episodes
+        .filter((episode): episode is Episode => episode !== null)
+        .map((episode) => [episode.id, episode]),
+    );
+
+    labels.push(
+      ...evidenceEpisodeIds.map((episodeId) => {
+        const episode = episodesById.get(episodeId);
+
+        return episode === undefined
+          ? unknownMemoryDisclosureLabel()
+          : memoryDisclosureLabelFromEpisodeAccess(episode);
+      }),
+    );
+
+    return combineMemoryDisclosureLabels(labels);
+  }
+
   private async isBeliefRevisionVisible(
     refs: BeliefRevisionRefs,
     status: Pick<OpenBeliefRevisionStatus, "evidence_episode_ids">,
@@ -614,9 +661,10 @@ export class ReviewQueueRepository {
     );
   }
 
-  async listOpenBeliefRevisionsByTarget(
+  private async listOpenBeliefRevisionsByTargetWithMode(
     targets: readonly BeliefRevisionTarget[],
     options: BeliefRevisionVisibilityOptions = {},
+    mode: "cognition" | "disclosure",
   ): Promise<Map<string, OpenBeliefRevisionStatus>> {
     if (targets.length === 0) {
       return new Map();
@@ -664,6 +712,7 @@ export class ReviewQueueRepository {
         continue;
       }
 
+      const evidenceEpisodeIds = this.beliefRevisionEvidenceEpisodeIds(refs);
       const status: OpenBeliefRevisionStatus = {
         ...target,
         review_id: item.id,
@@ -671,15 +720,42 @@ export class ReviewQueueRepository {
         reason_code: beliefRevisionReasonCode(refs),
         created_at: item.created_at,
         invalidated_edge_id: refs.invalidated_edge_id,
-        evidence_episode_ids: this.beliefRevisionEvidenceEpisodeIds(refs),
+        evidence_episode_ids: evidenceEpisodeIds,
+        audience_entity_id: refs.audience_entity_id ?? null,
+        disclosureLabel: await this.beliefRevisionDisclosureLabel(
+          refs,
+          evidenceEpisodeIds,
+          options,
+        ),
       };
 
-      if (await this.isBeliefRevisionVisible(refs, status, options)) {
+      if (mode === "cognition" || (await this.isBeliefRevisionVisible(refs, status, options))) {
         results.set(key, status);
       }
     }
 
     return results;
+  }
+
+  async listOpenBeliefRevisionsByTargetForCognition(
+    targets: readonly BeliefRevisionTarget[],
+    options: Pick<BeliefRevisionVisibilityOptions, "episodicRepository"> = {},
+  ): Promise<Map<string, OpenBeliefRevisionStatus>> {
+    return this.listOpenBeliefRevisionsByTargetWithMode(targets, options, "cognition");
+  }
+
+  async listOpenBeliefRevisionsByTargetForDisclosure(
+    targets: readonly BeliefRevisionTarget[],
+    options: BeliefRevisionVisibilityOptions = {},
+  ): Promise<Map<string, OpenBeliefRevisionStatus>> {
+    return this.listOpenBeliefRevisionsByTargetWithMode(targets, options, "disclosure");
+  }
+
+  async listOpenBeliefRevisionsByTarget(
+    targets: readonly BeliefRevisionTarget[],
+    options: BeliefRevisionVisibilityOptions = {},
+  ): Promise<Map<string, OpenBeliefRevisionStatus>> {
+    return this.listOpenBeliefRevisionsByTargetForDisclosure(targets, options);
   }
 
   async getOpenBeliefRevisionForTarget(

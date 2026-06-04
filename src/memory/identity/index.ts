@@ -8,6 +8,13 @@
 // that lives in the bands.
 
 export { IdentityGuard, type IdentityGuardDecision, type IdentityGuardState } from "./guard.js";
+export {
+  isIdentityEventVisible,
+  parseIdentityEventDisclosureSources,
+  parseIdentityEventValueDisclosureSources,
+  type IdentityEventDisclosureSources,
+  type IdentityEventValueDisclosureSources,
+} from "./disclosure.js";
 export { identityMigrations } from "./migrations.js";
 export {
   IdentityService,

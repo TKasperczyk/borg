@@ -23,7 +23,7 @@ import {
   ToolDispatcher,
   createCommitmentsListTool,
   createEpisodicSearchTool,
-  createIdentityEventsListTool,
+  createIdentityEventsListForCognitionTool,
   createOpenQuestionsCreateTool,
   createSemanticWalkTool,
   createSkillsListTool,
@@ -727,7 +727,7 @@ describe("internal tools", () => {
     }
   });
 
-  it("lists identity events", async () => {
+  it("lists identity events for cognition with disclosure labels", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const borg = await openTestBorg(tempDir);
@@ -742,7 +742,7 @@ describe("internal tools", () => {
         },
       });
 
-      const tool = createIdentityEventsListTool({
+      const tool = createIdentityEventsListForCognitionTool({
         listEvents: (options) => borg.identity.listEvents(options),
       });
       const result = await tool.invoke(
@@ -755,13 +755,164 @@ describe("internal tools", () => {
         },
       );
 
-      expect(result.events.some((event) => event.record_type === "value")).toBe(true);
+      const valueEvent = result.events.find((event) => event.record_type === "value");
+
+      expect(valueEvent).toBeDefined();
+      expect(valueEvent?.disclosure_label).toMatchObject({
+        disclosure_class: "unknown",
+      });
     } finally {
       await borg.close();
     }
   });
 
-  it("scopes commitment identity events to the invocation audience", async () => {
+  it("lists private commitment identity events for cognition with disclosure labels", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const samCommitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directiveFamily: "sam_identity_event",
+        directive: "Sam identity event",
+        priority: 8,
+        restrictedAudience: sam,
+        provenance: { kind: "manual" },
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+
+      const result = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.listForCognition",
+        input: {
+          recordType: "commitment",
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alex,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      const returnedEvent = (
+        result.output as {
+          events: Array<{
+            record_id: string;
+            disclosure_label?: {
+              disclosure_class?: string;
+              origin_audience_entity_ids?: string[];
+              private_to_entity_ids?: string[];
+            };
+          }>;
+        }
+      ).events.find((event) => event.record_id === samCommitment.id);
+
+      expect(returnedEvent).toBeDefined();
+      expect(returnedEvent?.disclosure_label).toMatchObject({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [sam],
+        private_to_entity_ids: [sam],
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("labels source-backed value and trait identity events for cognition without failing open", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const privateEpisode = createEpisodeFixture({
+        title: "Sam private identity event evidence",
+        audience_entity_id: sam,
+        origin_audience_entity_ids: [sam],
+        shared: false,
+      });
+      await harness.episodicRepository.insert(privateEpisode);
+      const missingEpisodeId = createEpisodeId();
+
+      harness.identityEventRepository.record({
+        record_type: "value",
+        record_id: "val_private_evidence",
+        action: "create",
+        old_value: null,
+        new_value: {
+          id: "val_private_evidence",
+          label: "protected value",
+          evidence_episode_ids: [privateEpisode.id],
+        },
+        reason: "private source label fixture",
+        provenance: { kind: "manual" },
+      });
+      harness.identityEventRepository.record({
+        record_type: "trait",
+        record_id: "trait_unresolved_evidence",
+        action: "create",
+        old_value: null,
+        new_value: {
+          id: "trait_unresolved_evidence",
+          label: "unresolved source trait",
+          evidence_episode_ids: [missingEpisodeId],
+        },
+        reason: "unresolved source label fixture",
+        provenance: { kind: "manual" },
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+
+      const result = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.listForCognition",
+        input: {
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alex,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      const eventsByRecordId = new Map(
+        (
+          result.output as {
+            events: Array<{
+              record_id: string;
+              disclosure_label?: {
+                disclosure_class?: string;
+                origin_audience_entity_ids?: string[];
+                private_to_entity_ids?: string[];
+              };
+            }>;
+          }
+        ).events.map((event) => [event.record_id, event]),
+      );
+      const valueEvent = eventsByRecordId.get("val_private_evidence");
+      const traitEvent = eventsByRecordId.get("trait_unresolved_evidence");
+
+      expect(valueEvent?.disclosure_label).toMatchObject({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [sam],
+        private_to_entity_ids: [sam],
+      });
+      expect(valueEvent?.disclosure_label?.disclosure_class).not.toBe("public");
+      expect(traitEvent?.disclosure_label).toMatchObject({
+        disclosure_class: "unknown",
+      });
+      expect(traitEvent?.disclosure_label?.disclosure_class).not.toBe("public");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("scopes commitment identity events on the disclosure path", async () => {
     const harness = await createOfflineTestHarness();
 
     try {
@@ -790,27 +941,15 @@ describe("internal tools", () => {
         restrictedAudience: alex,
         provenance: { kind: "manual" },
       });
-      const dispatcher = createHarnessToolDispatcher(harness);
-
-      const result = await dispatcher.dispatch({
-        toolName: "tool.identityEvents.list",
-        input: {
+      const events = harness.identityService.listEventsForDisclosure(
+        {
           recordType: "commitment",
           limit: 10,
         },
-        origin: "deliberator",
-        sessionId: DEFAULT_SESSION_ID,
-        audienceEntityId: sam,
-      });
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-
-      const recordIds = (result.output as { events: Array<{ record_id: string }> }).events.map(
-        (event) => event.record_id,
+        sam,
       );
+
+      const recordIds = events.map((event) => event.record_id);
       expect(recordIds).toContain(publicCommitment.id);
       expect(recordIds).toContain(samCommitment.id);
       expect(recordIds).not.toContain(alexCommitment.id);
@@ -819,7 +958,7 @@ describe("internal tools", () => {
     }
   });
 
-  it("does not expose multi-origin private episode identity-event values to non-origin audiences", async () => {
+  it("does not expose multi-origin private episode identity-event values on the disclosure path", async () => {
     const harness = await createOfflineTestHarness();
 
     try {
@@ -886,40 +1025,23 @@ describe("internal tools", () => {
         provenance: { kind: "manual" },
       });
 
-      const dispatcher = createHarnessToolDispatcher(harness);
-      const carolResult = await dispatcher.dispatch({
-        toolName: "tool.identityEvents.list",
-        input: {
+      const carolEvents = harness.identityService.listEventsForDisclosure(
+        {
           recordType: "episode",
           limit: 10,
         },
-        origin: "deliberator",
-        sessionId: DEFAULT_SESSION_ID,
-        audienceEntityId: carol,
-      });
-      const aliceResult = await dispatcher.dispatch({
-        toolName: "tool.identityEvents.list",
-        input: {
+        carol,
+      );
+      const aliceEvents = harness.identityService.listEventsForDisclosure(
+        {
           recordType: "episode",
           limit: 10,
         },
-        origin: "deliberator",
-        sessionId: DEFAULT_SESSION_ID,
-        audienceEntityId: alice,
-      });
+        alice,
+      );
 
-      expect(carolResult.ok).toBe(true);
-      expect(aliceResult.ok).toBe(true);
-      if (!carolResult.ok || !aliceResult.ok) {
-        throw new Error("expected identity event tool calls to succeed");
-      }
-
-      const carolRecordIds = (
-        carolResult.output as { events: Array<{ record_id: string }> }
-      ).events.map((event) => event.record_id);
-      const aliceRecordIds = (
-        aliceResult.output as { events: Array<{ record_id: string }> }
-      ).events.map((event) => event.record_id);
+      const carolRecordIds = carolEvents.map((event) => event.record_id);
+      const aliceRecordIds = aliceEvents.map((event) => event.record_id);
 
       expect(carolRecordIds).not.toContain(episode.id);
       expect(carolRecordIds).not.toContain(nestedEpisode.id);

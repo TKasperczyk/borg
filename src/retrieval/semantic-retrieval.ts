@@ -49,6 +49,7 @@ export type RetrievedSemanticUnderReview = {
   reason: string;
   reason_code: OpenBeliefRevisionStatus["reason_code"];
   invalidated_edge_id: string;
+  disclosureLabel: MemoryDisclosureLabel;
 };
 
 export type RetrievedSemanticNode = SemanticNode & {
@@ -117,7 +118,10 @@ export type SemanticRetrievalDependencies = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticGraph?: SemanticGraph;
-  reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
+  reviewQueueRepository?: Pick<
+    ReviewQueueRepository,
+    "listOpenBeliefRevisionsByTarget" | "listOpenBeliefRevisionsByTargetForCognition"
+  >;
 };
 
 export type ResolvedSemanticRetrieval = {
@@ -240,7 +244,7 @@ function adaptSemanticSourceEpisodes(input: {
           sourceVisibilityFraction: visibleEpisodeIds.length / input.sourceEpisodeIds.length,
         }
       : {}),
-    disclosureLabel: disclosureLabelForEpisodeIds(visibleEpisodeIds, input.labelsByEpisodeId),
+    disclosureLabel: disclosureLabelForEpisodeIds(input.sourceEpisodeIds, input.labelsByEpisodeId),
   };
 }
 
@@ -263,9 +267,7 @@ export async function resolveSemanticSourceAdapter(input: {
     visibleEpisodeIds,
     labelsByEpisodeId: await resolveEpisodeDisclosureLabels(
       input.episodicRepository,
-      visibleEpisodeIds === null
-        ? input.sourceEpisodeIds
-        : input.sourceEpisodeIds.filter((episodeId) => visibleEpisodeIds.has(episodeId)),
+      input.sourceEpisodeIds,
     ),
   });
 
@@ -602,6 +604,7 @@ function buildUnderReviewStatus(
     reason: status.reason,
     reason_code: status.reason_code,
     invalidated_edge_id: status.invalidated_edge_id,
+    disclosureLabel: status.disclosureLabel,
   };
 }
 
@@ -693,6 +696,7 @@ async function collectUnderReviewStatuses(
   nodes: readonly SemanticNode[],
   dependencies: SemanticRetrievalDependencies,
   options: SemanticVisibilityOptions,
+  sourceMode: SemanticSourceMode,
 ): Promise<Map<string, OpenBeliefRevisionStatus>> {
   if (dependencies.reviewQueueRepository === undefined || nodes.length === 0) {
     return new Map();
@@ -705,11 +709,15 @@ async function collectUnderReviewStatuses(
     }),
   );
 
-  return dependencies.reviewQueueRepository.listOpenBeliefRevisionsByTarget(targets, {
-    audienceEntityId: options.audienceEntityId,
-    crossAudience: options.crossAudience,
-    episodicRepository: dependencies.episodicRepository,
-  });
+  return sourceMode === "cognition"
+    ? dependencies.reviewQueueRepository.listOpenBeliefRevisionsByTargetForCognition(targets, {
+        episodicRepository: dependencies.episodicRepository,
+      })
+    : dependencies.reviewQueueRepository.listOpenBeliefRevisionsByTarget(targets, {
+        audienceEntityId: options.audienceEntityId,
+        crossAudience: options.crossAudience,
+        episodicRepository: dependencies.episodicRepository,
+      });
 }
 
 async function isHistoricalPropositionMatch(
@@ -814,6 +822,7 @@ async function resolveSemanticContextWithSourceMode(
     [...uniqueNodes.values()].map(({ node }) => node),
     dependencies,
     options,
+    sourceMode,
   );
   const selectedNodeCandidates = [...uniqueNodes.values()]
     .sort((left, right) =>
@@ -913,13 +922,9 @@ async function resolveSemanticContextWithSourceMode(
     sourceMode === "disclosure"
       ? await resolveVisibleEpisodeIds(episodicRepository, semanticSourceEpisodeIds, options)
       : null;
-  const semanticDisclosureEpisodeIds =
-    semanticVisibility === null
-      ? semanticSourceEpisodeIds
-      : semanticSourceEpisodeIds.filter((episodeId) => semanticVisibility.has(episodeId));
   const disclosureLabelsByEpisodeId = await resolveEpisodeDisclosureLabels(
     episodicRepository,
-    semanticDisclosureEpisodeIds,
+    semanticSourceEpisodeIds,
   );
 
   const visibleSupportNeighbors = supportNeighbors
@@ -972,6 +977,7 @@ async function resolveSemanticContextWithSourceMode(
     ],
     dependencies,
     options,
+    sourceMode,
   );
   const visibleMatchedNodes = await Promise.all(
     selectedNodeCandidates

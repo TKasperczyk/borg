@@ -556,7 +556,7 @@ export class AutonomyScheduler {
 
       case "scheduled_reflection": {
         const result = await this.options.toolDispatcher.dispatch({
-          toolName: "tool.identityEvents.list",
+          toolName: "tool.identityEvents.listForCognition",
           input: {
             limit: 10,
           },

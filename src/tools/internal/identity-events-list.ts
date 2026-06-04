@@ -6,6 +6,12 @@ import {
   type IdentityEvent,
   type IdentityRecordType,
 } from "../../memory/identity/index.js";
+import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
+import {
+  identityEventMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
+import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const identityEventsListInputSchema = z.object({
@@ -14,11 +20,16 @@ const identityEventsListInputSchema = z.object({
   limit: z.number().int().positive().max(25).optional(),
 });
 
-const identityEventsListOutputSchema = z.object({
-  events: z.array(identityEventSchema),
+const identityEventForCognitionSchema = identityEventSchema.extend({
+  disclosure: z.string().min(1),
+  disclosure_label: memoryDisclosureLabelMetadataSchema,
 });
 
-export type IdentityEventsListToolOptions = {
+const identityEventsListForCognitionOutputSchema = z.object({
+  events: z.array(identityEventForCognitionSchema),
+});
+
+export type IdentityEventsListForCognitionToolOptions = {
   listEvents: (
     options: {
       recordType?: IdentityRecordType;
@@ -27,31 +38,44 @@ export type IdentityEventsListToolOptions = {
     },
     context: ToolInvocationContext,
   ) => IdentityEvent[] | Promise<IdentityEvent[]>;
+  disclosureLabelForEvent?: (
+    event: IdentityEvent,
+    context: ToolInvocationContext,
+  ) => MemoryDisclosureLabel | Promise<MemoryDisclosureLabel>;
 };
 
-export function createIdentityEventsListTool(
-  options: IdentityEventsListToolOptions,
+export function createIdentityEventsListForCognitionTool(
+  options: IdentityEventsListForCognitionToolOptions,
 ): ToolDefinition<
   z.infer<typeof identityEventsListInputSchema>,
-  z.infer<typeof identityEventsListOutputSchema>
+  z.infer<typeof identityEventsListForCognitionOutputSchema>
 > {
   return {
-    name: "tool.identityEvents.list",
-    description:
-      "List recent identity events visible to the current audience. Event types without audience metadata are treated as global.",
+    name: "tool.identityEvents.listForCognition",
+    description: "List recent identity events from Sol's global memory with disclosure labels.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: identityEventsListInputSchema,
-    outputSchema: identityEventsListOutputSchema,
+    outputSchema: identityEventsListForCognitionOutputSchema,
     async invoke(input, context) {
+      const events = await options.listEvents(
+        {
+          recordType: input.recordType,
+          recordId: input.recordId,
+          limit: input.limit ?? 10,
+        },
+        context,
+      );
+
       return {
-        events: await options.listEvents(
-          {
-            recordType: input.recordType,
-            recordId: input.recordId,
-            limit: input.limit ?? 10,
-          },
-          context,
+        events: await Promise.all(
+          events.map(async (event) => ({
+            ...event,
+            ...memoryDisclosurePayloadFields(
+              await (options.disclosureLabelForEvent?.(event, context) ??
+                identityEventMemoryDisclosureLabel(event)),
+            ),
+          })),
         ),
       };
     },

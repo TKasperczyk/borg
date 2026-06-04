@@ -11,6 +11,7 @@ import type {
   RetrievedEpisode,
   RetrievedSemantic,
 } from "../../../retrieval/index.js";
+import { publicMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
 import {
   summarizeRetrievalConfidence,
@@ -549,6 +550,7 @@ describe("semantic retrieval prompt rendering", () => {
         reason: "Supporting semantic edge was invalidated; target needs re-evaluation",
         reason_code: "support_chain_collapsed",
         invalidated_edge_id: "seme_aaaaaaaaaaaaaaaa",
+        disclosureLabel: publicMemoryDisclosureLabel(),
       },
     } satisfies RetrievedSemantic["matched_nodes"][number];
     const summary = summarizeSemanticContext(
@@ -632,6 +634,7 @@ describe("semantic retrieval prompt rendering", () => {
         reason: "First support was invalidated",
         reason_code: "evidence_invalidated",
         invalidated_edge_id: "seme_bbbbbbbbbbbbbbbb",
+        disclosureLabel: publicMemoryDisclosureLabel(),
       },
     } satisfies RetrievedSemantic["matched_nodes"][number];
     const second = {
@@ -644,6 +647,7 @@ describe("semantic retrieval prompt rendering", () => {
         reason: "Second support was invalidated",
         reason_code: "support_chain_collapsed",
         invalidated_edge_id: "seme_cccccccccccccccc",
+        disclosureLabel: publicMemoryDisclosureLabel(),
       },
     } satisfies RetrievedSemantic["matched_nodes"][number];
     const summary = summarizeSemanticContext(

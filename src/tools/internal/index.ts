@@ -1,6 +1,6 @@
 export { createCommitmentsListTool } from "./commitments-list.js";
 export { createEpisodicSearchTool } from "./episodic-search.js";
-export { createIdentityEventsListTool } from "./identity-events-list.js";
+export { createIdentityEventsListForCognitionTool } from "./identity-events-list.js";
 export { createOpenQuestionsCreateTool } from "./open-questions-create.js";
 export { createOutboundPostTool, OUTBOUND_POST_TOOL_NAME } from "./outbound-post.js";
 export { createScheduledWakesCancelTool } from "./scheduled-wakes-cancel.js";

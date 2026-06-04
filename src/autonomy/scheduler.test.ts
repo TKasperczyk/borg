@@ -6,7 +6,7 @@ import { StreamReader, StreamWatermarkRepository, StreamWriter } from "../stream
 import {
   ToolDispatcher,
   createCommitmentsListTool,
-  createIdentityEventsListTool,
+  createIdentityEventsListForCognitionTool,
 } from "../tools/index.js";
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
@@ -102,7 +102,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1028,7 +1028,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1095,7 +1095,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1167,7 +1167,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1283,7 +1283,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1417,7 +1417,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );
@@ -1541,7 +1541,7 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     dispatcher.register(
-      createIdentityEventsListTool({
+      createIdentityEventsListForCognitionTool({
         listEvents: (options) => harness.identityService.listEvents(options),
       }),
     );

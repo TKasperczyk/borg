@@ -1,5 +1,10 @@
 import type { ImagePerceptionRecord } from "../attachments/index.js";
 import type { CommitmentRecord } from "../memory/commitments/index.js";
+import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
+import {
+  parseIdentityEventDisclosureSources,
+  type IdentityEvent,
+} from "../memory/identity/index.js";
 import type { SharedStateEntry } from "../memory/decision-artifacts/index.js";
 import type { RelationalSlot } from "../memory/relational-slots/index.js";
 import type { SemanticEdge, SemanticNode } from "../memory/semantic/index.js";
@@ -8,6 +13,7 @@ import type { GoalRecord, OpenQuestion } from "../memory/self/index.js";
 import {
   MEMORY_DISCLOSURE_CLASSES,
   combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelMetadata,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
@@ -103,6 +109,59 @@ export function imagePerceptionMemoryDisclosureLabel(
   record: Pick<ImagePerceptionRecord, "audience_entity_id">,
 ): MemoryDisclosureLabel {
   return relationshipPrivateMemoryDisclosureLabel([record.audience_entity_id]);
+}
+
+async function resolveEpisodeSourceDisclosureLabel(
+  episodeIds: readonly Episode["id"][],
+  options: { episodicRepository?: Pick<EpisodicRepository, "getMany"> },
+): Promise<MemoryDisclosureLabel | null> {
+  if (episodeIds.length === 0) {
+    return null;
+  }
+  if (options.episodicRepository === undefined) {
+    return unknownMemoryDisclosureLabel();
+  }
+
+  const episodes = await options.episodicRepository.getMany(episodeIds);
+  const labelsByEpisodeId = new Map(
+    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  );
+  return combineMemoryDisclosureLabels(
+    episodeIds.map(
+      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+    ),
+  );
+}
+
+export async function identityEventMemoryDisclosureLabel(
+  event: IdentityEvent,
+  options: { episodicRepository?: Pick<EpisodicRepository, "getMany"> } = {},
+): Promise<MemoryDisclosureLabel> {
+  const sources = parseIdentityEventDisclosureSources(event);
+  const labels: MemoryDisclosureLabel[] = [
+    ...sources.disclosureLabels,
+    ...sources.episodeAccesses.map((access) => memoryDisclosureLabelFromEpisodeAccess(access)),
+    ...sources.commitmentAccesses.map((commitment) => commitmentMemoryDisclosureLabel(commitment)),
+  ];
+
+  if (sources.audienceEntityIds.length > 0) {
+    labels.push(relationshipPrivateMemoryDisclosureLabel(sources.audienceEntityIds));
+  }
+  if (sources.malformed) {
+    labels.push(unknownMemoryDisclosureLabel());
+  }
+
+  const sourceEpisodeLabel = await resolveEpisodeSourceDisclosureLabel(
+    sources.sourceEpisodeIds,
+    options,
+  );
+  if (sourceEpisodeLabel !== null) {
+    labels.push(sourceEpisodeLabel);
+  }
+
+  return labels.length === 0
+    ? unknownMemoryDisclosureLabel()
+    : combineMemoryDisclosureLabels(labels);
 }
 
 export function semanticSourceMemoryDisclosureLabel(

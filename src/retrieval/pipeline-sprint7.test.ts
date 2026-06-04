@@ -573,6 +573,12 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
         partial_source_visibility: true,
         source_visibility_fraction: 0.5,
         source_episode_ids: [publicEpisode.id],
+        disclosureLabel: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [sam],
+          privateToEntityIds: [sam],
+          publicToEntityIds: [],
+        },
       }),
     ]);
     expect(result.semantic.supports).toEqual([]);
@@ -581,5 +587,93 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(result.semantic.support_hits).toEqual([]);
     expect(result.semantic.contradiction_hits).toEqual([]);
     expect(result.semantic.category_hits).toEqual([]);
+  });
+
+  it("marks semantic-edge evidence partial when the target node sources were pruned", async () => {
+    const query = "atlas public root mixed support";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(new Map([[query, [1, 0, 0, 0]]])),
+    });
+    const alice = harness.entityRepository.resolve("Alice");
+    const bob = harness.entityRepository.resolve("Bob");
+    const rootEpisode = createEpisodeFixture({
+      title: "Atlas public root source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const visibleSupportEpisode = createEpisodeFixture({
+      title: "Atlas public support source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const hiddenSupportEpisode = createEpisodeFixture({
+      title: "Atlas Alice-private support source",
+      tags: ["atlas"],
+      audience_entity_id: alice,
+      shared: false,
+    });
+    const edgeEpisode = createEpisodeFixture({
+      title: "Atlas public edge source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    await harness.episodicRepository.insert(rootEpisode);
+    await harness.episodicRepository.insert(visibleSupportEpisode);
+    await harness.episodicRepository.insert(hiddenSupportEpisode);
+    await harness.episodicRepository.insert(edgeEpisode);
+    const root = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "entity",
+          label: "Atlas Public Root",
+          description: "Atlas root backed by public evidence.",
+          source_episode_ids: [rootEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const mixedSupport = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "proposition",
+          label: "Atlas Mixed Support",
+          description: "Mixed support should keep the edge evidence partial flag.",
+          source_episode_ids: [visibleSupportEpisode.id, hiddenSupportEpisode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: root.id,
+      to_node_id: mixedSupport.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [edgeEpisode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext(query, {
+      limit: 5,
+      audienceEntityId: bob,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const edgeEvidence = result.evidence.find(
+      (item) => item.source === "semantic_edge" && item.provenance?.edgeId === edge.id,
+    );
+
+    expect(edgeEvidence?.source_episode_ids).toEqual([visibleSupportEpisode.id, edgeEpisode.id]);
+    expect(edgeEvidence?.partial_source_visibility).toBe(true);
+    expect(edgeEvidence?.source_visibility_fraction).toBe(0.5);
+    expect(edgeEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice],
+      privateToEntityIds: [alice],
+      publicToEntityIds: [],
+    });
   });
 });

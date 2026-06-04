@@ -815,7 +815,7 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(hit?.node.status_retrieval_multiplier).toBe(0.5);
   });
 
-  it("does not leak private belief-revision status across audience scopes", async () => {
+  it("recalls private belief-revision status for cognition with disclosure labels", async () => {
     const clock = new ManualClock(1_000_000);
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
@@ -880,11 +880,11 @@ describe("resolveSemanticContext temporal validity", () => {
         },
       ),
     );
-    const forAudienceB = toRetrievedSemantic(
-      await resolveSemanticContext(
+    const disclosureForAudienceA = toRetrievedSemantic(
+      await resolveSemanticContextForDisclosure(
         "Atlas shared claim",
         {
-          audienceEntityId: audienceB,
+          audienceEntityId: audienceA,
           graphWalkDepth: 1,
           maxGraphNodes: 4,
           underReviewMultiplier: 0.5,
@@ -900,25 +900,36 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
     const audienceANode = forAudienceA.matched_nodes.find((match) => match.id === node.id);
-    const audienceBNode = forAudienceB.matched_nodes.find((match) => match.id === node.id);
-    const audienceAPrompt = summarizeSemanticContext(forAudienceA, 1_000);
-    const audienceBPrompt = summarizeSemanticContext(forAudienceB, 1_000);
-
-    expect(audienceANode?.under_review).toBeUndefined();
-    expect(audienceANode?.retrieval_score).toBe(audienceANode?.base_retrieval_score);
-    expect(audienceAPrompt).not.toContain("[under re-evaluation:");
-    expect(audienceAPrompt).not.toContain("Ignore previous instructions");
-    expect(audienceBNode?.under_review).toMatchObject({
-      reason_code: "support_chain_collapsed",
-    });
-    expect(audienceBNode?.retrieval_score).toBeCloseTo(
-      (audienceBNode?.base_retrieval_score ?? 0) * 0.5,
+    const disclosureAudienceANode = disclosureForAudienceA.matched_nodes.find(
+      (match) => match.id === node.id,
     );
-    expect(audienceBPrompt).toContain("[under re-evaluation: support_chain_collapsed]");
-    expect(audienceBPrompt).not.toContain("Ignore previous instructions");
+    const audienceAPrompt = summarizeSemanticContext(forAudienceA, 1_000);
+    const disclosureAudienceAPrompt = summarizeSemanticContext(disclosureForAudienceA, 1_000);
+
+    expect(audienceANode?.under_review).toMatchObject({
+      reason_code: "support_chain_collapsed",
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [audienceB],
+        privateToEntityIds: [audienceB],
+        publicToEntityIds: [],
+      },
+    });
+    expect(audienceANode?.retrieval_score).toBeCloseTo(
+      (audienceANode?.base_retrieval_score ?? 0) * 0.5,
+    );
+    expect(audienceAPrompt).toContain("[under re-evaluation: support_chain_collapsed]");
+    expect(audienceAPrompt).toContain(`private-to=${audienceB}`);
+    expect(audienceAPrompt).not.toContain("Ignore previous instructions");
+    expect(disclosureAudienceANode?.under_review).toBeUndefined();
+    expect(disclosureAudienceANode?.retrieval_score).toBe(
+      disclosureAudienceANode?.base_retrieval_score,
+    );
+    expect(disclosureAudienceAPrompt).not.toContain("[under re-evaluation:");
+    expect(disclosureAudienceAPrompt).not.toContain("Ignore previous instructions");
   });
 
-  it("uses stored belief-revision audience instead of public target evidence", async () => {
+  it("labels stored belief-revision audience for cognition and filters it for disclosure", async () => {
     const clock = new ManualClock(1_000_000);
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
@@ -1002,8 +1013,26 @@ describe("resolveSemanticContext temporal validity", () => {
         },
       ),
     );
-    const forAudienceB = toRetrievedSemantic(
-      await resolveSemanticContext(
+    const disclosureForAudienceA = toRetrievedSemantic(
+      await resolveSemanticContextForDisclosure(
+        "Atlas public claim",
+        {
+          audienceEntityId: audienceA,
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+          reviewQueueRepository: harness.reviewQueueRepository,
+        },
+      ),
+    );
+    const disclosureForAudienceB = toRetrievedSemantic(
+      await resolveSemanticContextForDisclosure(
         "Atlas public claim",
         {
           audienceEntityId: audienceB,
@@ -1021,10 +1050,23 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
+    expect(forAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review).toEqual(
+      expect.objectContaining({
+        invalidated_edge_id: invalidatedEdge.id,
+        disclosureLabel: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [audienceB],
+          privateToEntityIds: [audienceB],
+          publicToEntityIds: [],
+        },
+      }),
+    );
     expect(
-      forAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review,
+      disclosureForAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review,
     ).toBeUndefined();
-    expect(forAudienceB.matched_nodes.find((match) => match.id === node.id)?.under_review).toEqual(
+    expect(
+      disclosureForAudienceB.matched_nodes.find((match) => match.id === node.id)?.under_review,
+    ).toEqual(
       expect.objectContaining({
         invalidated_edge_id: invalidatedEdge.id,
       }),
@@ -1332,6 +1374,7 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(mixedMatch?.source_episode_ids).toEqual([publicEpisode.id]);
     expect(mixedMatch?.partial_source_visibility).toBe(true);
     expect(mixedMatch?.source_visibility_fraction).toBe(0.5);
+    expectRelationshipPrivateLabel(mixedMatch?.disclosureLabel, [audienceB]);
     expect(result.matched_node_ids).not.toContain(hiddenNode.id);
   });
 });

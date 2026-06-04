@@ -334,7 +334,12 @@ function summarizeUnderReviewPrefix(node: {
     return "";
   }
 
-  return `[under re-evaluation: ${node.under_review.reason_code}] `;
+  const disclosure =
+    node.under_review.disclosureLabel.disclosureClass === "public"
+      ? ""
+      : ` ${renderMemoryDisclosureLabelForModel(node.under_review.disclosureLabel, { context: "semantic_source" })}`;
+
+  return `[under re-evaluation: ${node.under_review.reason_code}]${disclosure} `;
 }
 
 function summarizeSemanticStatusPrefix(
