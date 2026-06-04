@@ -172,7 +172,7 @@ describe("reflector process", () => {
       expect.objectContaining({
         kind: "new_insight",
         refs: expect.objectContaining({
-          evidence_cluster_key: "public:shared|tag:deploy-pattern",
+          evidence_cluster_key: "tag:deploy-pattern",
           evidence_cluster_size: episodes.length,
           reflector_pending_insight: expect.objectContaining({
             candidate_support_edges: [
@@ -182,7 +182,7 @@ describe("reflector process", () => {
               }),
             ],
             evidence_cluster: expect.objectContaining({
-              key: "public:shared|tag:deploy-pattern",
+              key: "tag:deploy-pattern",
               size: episodes.length,
             }),
           }),
@@ -254,8 +254,11 @@ describe("reflector process", () => {
     expect(reversedInsightNode).toMatchObject({
       archived: true,
       confidence: 0.5,
-      source_episode_ids: episodes.map((episode) => episode.id),
     });
+    expect(reversedInsightNode?.source_episode_ids).toEqual(
+      expect.arrayContaining(episodes.map((episode) => episode.id)),
+    );
+    expect(reversedInsightNode?.source_episode_ids).toHaveLength(episodes.length);
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
     expect(
       harness.semanticEdgeRepository.listEdges({ relation: "supports", includeInvalid: true }),
@@ -407,6 +410,15 @@ describe("reflector process", () => {
     });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["update-reflect", [1, 0, 0, 0]],
+          [
+            "Rollback planning lowers deploy stress\nUpdated evidence says rollback planning lowers deploy stress.",
+            [1, 0, 0, 0],
+          ],
+        ]),
+      ),
       configOverrides: {
         offline: {
           ...DEFAULT_CONFIG.offline,
@@ -456,14 +468,20 @@ describe("reflector process", () => {
     const pendingReview = harness.reviewQueueRepository.getOpen()[0];
     await harness.reviewQueueRepository.resolve(pendingReview!.id, "accept");
 
-    expect(await harness.semanticNodeRepository.get(existingNode.id)).toEqual(
+    const updatedNode = await harness.semanticNodeRepository.get(existingNode.id);
+    expect(updatedNode).toEqual(
       expect.objectContaining({
         description: "Updated evidence says rollback planning lowers deploy stress.",
-        source_episode_ids: [
-          ...previousEpisodes.map((episode) => episode.id),
-          ...updateEpisodes.map((episode) => episode.id),
-        ],
       }),
+    );
+    expect(updatedNode?.source_episode_ids).toEqual(
+      expect.arrayContaining([
+        ...previousEpisodes.map((episode) => episode.id),
+        ...updateEpisodes.map((episode) => episode.id),
+      ]),
+    );
+    expect(updatedNode?.source_episode_ids).toHaveLength(
+      previousEpisodes.length + updateEpisodes.length,
     );
 
     const auditRow = harness.auditLog.list({ process: "reflector" })[0];
@@ -659,7 +677,7 @@ describe("reflector process", () => {
     ).toEqual([]);
   });
 
-  it("partitions reflection clusters by audience scope", async () => {
+  it("clusters reflection evidence across audience scopes", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -738,24 +756,18 @@ describe("reflector process", () => {
       ),
     ];
 
+    const allEpisodes = [...publicEpisodes, ...scopedEpisodes];
+
     llm.pushResponse(
       createReflectorResponse({
-        label: "Sam deploy insight",
-        description: "Sam-only deploy episodes imply a private deploy habit.",
+        label: "Mixed deploy insight",
+        description: "Public and Sam-private deploy episodes imply a reusable deploy habit.",
         confidence: 0.6,
-        source_episode_ids: scopedEpisodes.map((episode) => episode.id),
-      }),
-    );
-    llm.pushResponse(
-      createReflectorResponse({
-        label: "Public deploy insight",
-        description: "Public deploy episodes imply a reusable deploy habit.",
-        confidence: 0.6,
-        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+        source_episode_ids: allEpisodes.map((episode) => episode.id),
       }),
     );
 
-    for (const episode of [...publicEpisodes, ...scopedEpisodes]) {
+    for (const episode of allEpisodes) {
       await harness.episodicRepository.insert(episode);
     }
 
@@ -765,23 +777,166 @@ describe("reflector process", () => {
       reviewQueueRepository: harness.reviewQueueRepository,
       registry: harness.registry,
     });
-    const result = await process.run(harness.createContext(), {
-      dryRun: true,
-    });
+    const plan = await process.plan(harness.createContext());
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const item = plan.items[0];
 
-    expect(result.changes).toHaveLength(2);
-    expect(result.changes.map((change) => change.targets.cluster)).toEqual(
-      expect.arrayContaining([
-        "public:shared|tag:scope-reflect",
-        `${sam}:private|tag:scope-reflect`,
-      ]),
+    expect(plan.items).toHaveLength(1);
+    expect(item?.cluster_key).toBe("tag:scope-reflect");
+    expect(item?.episode_ids).toHaveLength(allEpisodes.length);
+    expect(item?.episode_ids).toEqual(
+      expect.arrayContaining(allEpisodes.map((episode) => episode.id)),
     );
+    expect(prompt).toContain("disclosure_class=relationship_private");
+    expect(prompt).toContain(sam);
+    expect(JSON.stringify(item)).toContain("relationship_private");
+    expect(JSON.stringify(item)).toContain(sam);
   });
 
-  it("does not update an existing semantic node from an incompatible audience scope", async () => {
+  it("labels inserted insights from the full mixed cluster when the candidate cites only public ids", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const sam = harness.entityRepository.resolve("Sam");
+    const publicEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Public sparse citation one",
+          tags: ["sparse-citation"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public sparse citation two",
+          tags: ["sparse-citation"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public sparse citation three",
+          tags: ["sparse-citation"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const scopedEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Sam sparse citation one",
+          tags: ["sparse-citation"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 40_000,
+          updated_at: 40_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam sparse citation two",
+          tags: ["sparse-citation"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 50_000,
+          updated_at: 50_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam sparse citation three",
+          tags: ["sparse-citation"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 60_000,
+          updated_at: 60_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const allEpisodes = [...publicEpisodes, ...scopedEpisodes];
+
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Sparse citation mixed insight",
+        description:
+          "The public and Sam-private sparse-citation episodes jointly show one pattern.",
+        confidence: 0.6,
+        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+      }),
+    );
+
+    for (const episode of allEpisodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const plan = await process.plan(harness.createContext());
+    const item = plan.items[0];
+
+    expect(item?.source_disclosure_label).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [sam],
+      privateToEntityIds: [sam],
+      publicToEntityIds: [],
+    });
+    expect(item?.target.mode).toBe("insert");
+    if (item?.target.mode === "insert") {
+      expect(item.target.node.source_episode_ids).toEqual(
+        expect.arrayContaining(allEpisodes.map((episode) => episode.id)),
+      );
+      expect(item.target.node.source_episode_ids).toHaveLength(allEpisodes.length);
+    }
+
+    await process.apply(harness.createContext(), plan);
+    const openReview = harness.reviewQueueRepository.getOpen()[0];
+    expect(openReview?.refs.source_disclosure_label).toEqual(item?.source_disclosure_label);
+    await harness.reviewQueueRepository.resolve(openReview!.id, "accept");
+
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 20,
+    });
+    const insightNode = nodes.find((node) => node.label === "Sparse citation mixed insight");
+
+    expect(insightNode?.source_episode_ids).toEqual(
+      expect.arrayContaining(allEpisodes.map((episode) => episode.id)),
+    );
+    expect(insightNode?.source_episode_ids).toHaveLength(allEpisodes.length);
+  });
+
+  it("updates an existing semantic node from mixed audience evidence", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["scope-update", [1, 0, 0, 0]],
+          ["Shared label insight\nMixed public and Sam insight description.", [1, 0, 0, 0]],
+        ]),
+      ),
     });
     cleanup.push(harness.cleanup);
     const sam = harness.entityRepository.resolve("Sam");
@@ -857,32 +1012,29 @@ describe("reflector process", () => {
       ),
     ];
 
-    for (const episode of [...publicEpisodes, ...scopedEpisodes]) {
+    const allEpisodes = [...publicEpisodes, ...scopedEpisodes];
+
+    for (const episode of allEpisodes) {
       await harness.episodicRepository.insert(episode);
     }
 
     const existingNode = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture({
-        label: "Shared label insight",
-        description: "Public insight description.",
-        source_episode_ids: publicEpisodes.map((episode) => episode.id),
-      }),
+      createSemanticNodeFixture(
+        {
+          label: "Shared label insight",
+          description: "Public insight description.",
+          source_episode_ids: publicEpisodes.map((episode) => episode.id),
+        },
+        [1, 0, 0, 0],
+      ),
     );
 
     llm.pushResponse(
       createReflectorResponse({
         label: "Shared label insight",
-        description: "Sam insight description.",
+        description: "Mixed public and Sam insight description.",
         confidence: 0.6,
-        source_episode_ids: scopedEpisodes.map((episode) => episode.id),
-      }),
-    );
-    llm.pushResponse(
-      createReflectorResponse({
-        label: "Shared label insight",
-        description: "Public insight description.",
-        confidence: 0.6,
-        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+        source_episode_ids: allEpisodes.map((episode) => episode.id),
       }),
     );
 
@@ -895,6 +1047,12 @@ describe("reflector process", () => {
     await process.run(harness.createContext(), {
       dryRun: false,
     });
+    const pendingReview = harness.reviewQueueRepository.getOpen()[0];
+    const pendingJson = JSON.stringify(pendingReview?.refs ?? {});
+
+    expect(pendingJson).toContain("relationship_private");
+    expect(pendingJson).toContain(sam);
+
     for (const item of harness.reviewQueueRepository.getOpen()) {
       await harness.reviewQueueRepository.resolve(item.id, "accept");
     }
@@ -905,13 +1063,208 @@ describe("reflector process", () => {
     });
     const sharedLabelNodes = nodes.filter((node) => node.label === "Shared label insight");
 
-    expect(sharedLabelNodes).toHaveLength(2);
-    expect(sharedLabelNodes.find((node) => node.id === existingNode.id)?.description).toBe(
-      "Public insight description.",
+    expect(sharedLabelNodes).toHaveLength(1);
+    expect(sharedLabelNodes[0]?.id).toBe(existingNode.id);
+    expect(sharedLabelNodes[0]?.description).toBe("Mixed public and Sam insight description.");
+    expect(sharedLabelNodes[0]?.source_episode_ids).toEqual(
+      expect.arrayContaining(allEpisodes.map((episode) => episode.id)),
     );
-    expect(
-      sharedLabelNodes.find((node) => node.id !== existingNode.id)?.source_episode_ids,
-    ).toEqual(scopedEpisodes.map((episode) => episode.id));
+    expect(sharedLabelNodes[0]?.source_episode_ids).toHaveLength(allEpisodes.length);
+  });
+
+  it("does not update an exact-label proposition when embedding similarity is low", async () => {
+    const label = "Shared exact label";
+    const description = "A distinct proposition with the same label but different meaning.";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["same-label-low-sim", [1, 0, 0, 0]],
+          [`${label}\n${description}`, [1, 0, 0, 0]],
+        ]),
+      ),
+    });
+    cleanup.push(harness.cleanup);
+    const episodes = [
+      createEpisodeFixture(
+        {
+          title: "Low similarity one",
+          tags: ["same-label-low-sim"],
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Low similarity two",
+          tags: ["same-label-low-sim"],
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Low similarity three",
+          tags: ["same-label-low-sim"],
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    llm.pushResponse(
+      createReflectorResponse({
+        label,
+        description,
+        confidence: 0.6,
+        source_episode_ids: episodes.map((episode) => episode.id),
+      }),
+    );
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const existingNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label,
+          description: "Existing proposition with the same label but another meaning.",
+          source_episode_ids: [episodes[0]!.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const plan = await process.plan(harness.createContext());
+
+    expect(plan.items[0]?.target.mode).toBe("insert");
+    await process.apply(harness.createContext(), plan);
+    await harness.reviewQueueRepository.resolve(
+      harness.reviewQueueRepository.getOpen()[0]!.id,
+      "accept",
+    );
+
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 20,
+    });
+    const sameLabelNodes = nodes.filter((node) => node.label === label);
+
+    expect(sameLabelNodes).toHaveLength(2);
+    expect(sameLabelNodes.find((node) => node.id === existingNode.id)?.description).toBe(
+      "Existing proposition with the same label but another meaning.",
+    );
+  });
+
+  it("does not update an exact-label proposition when multiple compatible nodes are plausible", async () => {
+    const label = "Ambiguous exact label";
+    const description = "A proposition whose label already has multiple compatible nodes.";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["same-label-ambiguous", [1, 0, 0, 0]],
+          [`${label}\n${description}`, [1, 0, 0, 0]],
+        ]),
+      ),
+    });
+    cleanup.push(harness.cleanup);
+    const episodes = [
+      createEpisodeFixture(
+        {
+          title: "Ambiguous label one",
+          tags: ["same-label-ambiguous"],
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Ambiguous label two",
+          tags: ["same-label-ambiguous"],
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Ambiguous label three",
+          tags: ["same-label-ambiguous"],
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+
+    llm.pushResponse(
+      createReflectorResponse({
+        label,
+        description,
+        confidence: 0.6,
+        source_episode_ids: episodes.map((episode) => episode.id),
+      }),
+    );
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label,
+          description: "First compatible existing proposition.",
+          source_episode_ids: [episodes[0]!.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label,
+          description: "Second compatible existing proposition.",
+          source_episode_ids: [episodes[1]!.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const plan = await process.plan(harness.createContext());
+
+    expect(plan.items[0]?.target.mode).toBe("insert");
+    await process.apply(harness.createContext(), plan);
+    await harness.reviewQueueRepository.resolve(
+      harness.reviewQueueRepository.getOpen()[0]!.id,
+      "accept",
+    );
+
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 20,
+    });
+
+    expect(nodes.filter((node) => node.label === label)).toHaveLength(3);
   });
 
   it("halts further llm work after budget exhaustion", async () => {
@@ -1160,6 +1513,15 @@ describe("reflector process", () => {
     });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["deploy-pattern", [1, 0, 0, 0]],
+          [
+            "Rollback plans reduce deploy stress\nFresh evidence says documented rollback plans reduce deploy stress.",
+            [1, 0, 0, 0],
+          ],
+        ]),
+      ),
     });
     cleanup.push(harness.cleanup);
 
@@ -1168,14 +1530,17 @@ describe("reflector process", () => {
     }
 
     const archived = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture({
-        kind: "proposition",
-        label: "Rollback plans reduce deploy stress",
-        description: "Archived stale insight",
-        archived: true,
-        confidence: 0.2,
-        source_episode_ids: [episodes[0]!.id],
-      }),
+      createSemanticNodeFixture(
+        {
+          kind: "proposition",
+          label: "Rollback plans reduce deploy stress",
+          description: "Archived stale insight",
+          archived: true,
+          confidence: 0.2,
+          source_episode_ids: [episodes[0]!.id],
+        },
+        [1, 0, 0, 0],
+      ),
     );
     const process = new ReflectorProcess({
       semanticNodeRepository: harness.semanticNodeRepository,

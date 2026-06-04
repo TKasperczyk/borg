@@ -7,23 +7,6 @@ import {
 
 export { normalizeEpisodeAccess, type EpisodeAccessLike } from "./audience-filter.js";
 
-export function episodeAccessScopeKey(input: EpisodeAccessLike): string {
-  const normalized = normalizeEpisodeAccess(input);
-  const origins =
-    normalized.origin_audience_entity_ids.length === 0
-      ? "public"
-      : [...normalized.origin_audience_entity_ids].sort().join("+");
-
-  return `${origins}:${normalized.shared ? "shared" : "private"}`;
-}
-
-export function hasSameEpisodeAccessScope(
-  left: EpisodeAccessLike,
-  right: EpisodeAccessLike,
-): boolean {
-  return episodeAccessScopeKey(left) === episodeAccessScopeKey(right);
-}
-
 export function isEpisodeVisibleToAudience(
   input: EpisodeAccessLike,
   audienceEntityId: EntityId | null | undefined,

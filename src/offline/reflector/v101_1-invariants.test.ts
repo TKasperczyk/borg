@@ -36,8 +36,7 @@ function createReflectorResponse(input: {
 }
 
 describe("v101.1 cross-audience synthesis invariants", () => {
-  // v101.1 Sprint E expected flip: offline synthesis can derive one labeled insight from cross-audience evidence.
-  it.fails("synthesizes public, Alice-private, and Bob-private episodes into one labeled insight", async () => {
+  it("synthesizes public, Alice-private, and Bob-private episodes into one labeled insight", async () => {
     const alice = "ent_aaaaaaaaaaaaaaaa" as never;
     const bob = "ent_bbbbbbbbbbbbbbbb" as never;
     const episodes = [
@@ -126,7 +125,10 @@ describe("v101.1 cross-audience synthesis invariants", () => {
       expect(prompt).toContain(alice);
       expect(prompt).toContain(bob);
       expect(plan.items).toHaveLength(1);
-      expect(plan.items[0]?.episode_ids).toEqual(episodes.map((episode) => episode.id));
+      expect(plan.items[0]?.episode_ids).toHaveLength(episodes.length);
+      expect(plan.items[0]?.episode_ids).toEqual(
+        expect.arrayContaining(episodes.map((episode) => episode.id)),
+      );
       expect(itemJson).toContain("relationship_private");
       expect(itemJson).toContain(alice);
       expect(itemJson).toContain(bob);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { episodeIdSchema } from "../../episodic/index.js";
+import { memoryDisclosureLabelSchema } from "../../common/disclosure-label.js";
 import { SemanticError } from "../../../util/errors.js";
 import {
   semanticEdgeIdSchema,
@@ -100,6 +101,7 @@ export const newInsightReviewRefsSchema = z
     episode_ids: z.array(episodeIdSchema).min(1),
     evidence_cluster_key: z.string().min(1),
     evidence_cluster_size: z.number().int().positive(),
+    source_disclosure_label: memoryDisclosureLabelSchema.optional(),
     reflector_pending_insight: pendingReflectorInsightSchema,
   })
   .strict();

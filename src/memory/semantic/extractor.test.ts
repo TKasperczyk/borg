@@ -175,8 +175,11 @@ describe("semantic extractor", () => {
   });
 
   it("includes event-vs-state guidance in the extraction prompt", async () => {
+    const privateAudience = createEntityId();
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Madrid travel note", {
       narrative: "The user described arrival and return dates for a Madrid visit.",
+      audience_entity_id: privateAudience,
+      shared: false,
     });
     const llm = new FakeLLMClient({
       responses: [
@@ -231,6 +234,9 @@ describe("semantic extractor", () => {
     );
     expect(prompt).toContain("Thread roster:");
     expect(prompt).toContain("relational_slot:rslot_grounded");
+    expect(prompt).toContain("disclosure_class=relationship_private");
+    expect(prompt).toContain("usable internally");
+    expect(prompt).toContain(privateAudience);
   });
 
   it("traces and skips semantic nodes with ungrounded relationship claims", async () => {
@@ -1108,7 +1114,7 @@ describe("semantic extractor", () => {
     expect(edgeRepository.listEdges()).toHaveLength(1);
   });
 
-  it("merges duplicate edge evidence across repeated extraction", async () => {
+  it("merges duplicate node and edge evidence across repeated cross-scope extraction", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1130,8 +1136,19 @@ describe("semantic extractor", () => {
       db,
       clock,
     });
-    const firstEpisode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas first note");
-    const secondEpisode = buildEpisode("ep_bbbbbbbbbbbbbbbb" as Episode["id"], "Atlas second note");
+    const privateAudience = createEntityId();
+    const firstEpisode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas public note", {
+      audience_entity_id: null,
+      shared: true,
+    });
+    const secondEpisode = buildEpisode(
+      "ep_bbbbbbbbbbbbbbbb" as Episode["id"],
+      "Atlas private note",
+      {
+        audience_entity_id: privateAudience,
+        shared: false,
+      },
+    );
     const llm = new FakeLLMClient({
       responses: [
         createSemanticToolResponse({
@@ -1512,7 +1529,7 @@ describe("semantic extractor", () => {
     expect(edgeRepository.listEdges()).toHaveLength(0);
   });
 
-  it("does not resolve label-only edges across audience scopes", async () => {
+  it("resolves label-only edges across audience scopes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1605,6 +1622,94 @@ describe("semantic extractor", () => {
     });
 
     const result = await extractor.extractFromEpisodes([publicEpisode]);
+
+    expect(result).toMatchObject({
+      insertedEdges: 1,
+      skippedEdges: 0,
+    });
+    expect(edgeRepository.listEdges()).toHaveLength(1);
+  });
+
+  it("skips label-only edges when an existing endpoint label is ambiguous", async () => {
+    const { nodeRepository, edgeRepository, clock } = await createSemanticRepositories(cleanup);
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Ambiguous Alice");
+    const firstAliceId = createSemanticNodeId();
+    const secondAliceId = createSemanticNodeId();
+
+    await nodeRepository.insert({
+      id: firstAliceId,
+      kind: "entity",
+      label: "Alice",
+      description: "Alice from the public project context.",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    await nodeRepository.insert({
+      id: secondAliceId,
+      kind: "entity",
+      label: "Alice",
+      description: "Alice from a separate private context.",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 2,
+      updated_at: 2,
+      last_verified_at: 2,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Bob",
+      description: "Bob existing node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 0, 1, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [],
+            edges: [
+              {
+                from_label: "Alice",
+                to_label: "Bob",
+                relation: "related_to",
+                confidence: 0.8,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
 
     expect(result).toMatchObject({
       insertedEdges: 0,
@@ -1779,7 +1884,7 @@ describe("semantic extractor", () => {
     expect(edgeRepository.listEdges()).toHaveLength(0);
   });
 
-  it("keeps homonyms separate by access scope, not by domain", async () => {
+  it("keeps same-label distinct concepts separate by kind, not access scope", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1833,7 +1938,7 @@ describe("semantic extractor", () => {
         createSemanticToolResponse({
           nodes: [
             {
-              kind: "entity",
+              kind: "place",
               label: "Tomasz",
               description: "A city mentioned in the travel discussion.",
               domain: "places",
@@ -1870,13 +1975,14 @@ describe("semantic extractor", () => {
     });
 
     expect(matches).toHaveLength(2);
+    expect(matches.map((node) => node.kind).sort()).toEqual(["entity", "place"]);
     expect(matches.map((node) => node.domain).sort()).toEqual(["people", "places"]);
     expect(matches.map((node) => node.source_episode_ids[0])).toEqual(
       expect.arrayContaining([episodeA.id, episodeB.id]),
     );
   });
 
-  it("merges same-scope nodes even when one candidate has a specific domain", async () => {
+  it("merges compatible nodes even when one candidate has a specific domain", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),

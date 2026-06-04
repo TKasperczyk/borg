@@ -8,6 +8,7 @@ import {
   createOfflineTestHarness,
   createSemanticEdgeFixture,
   createSemanticNodeFixture,
+  TestEmbeddingClient,
 } from "../test-support.js";
 import { MaintenanceOrchestrator } from "../orchestrator.js";
 import { MaintenanceScheduler } from "../scheduler.js";
@@ -36,6 +37,10 @@ function createSemanticToolResponse(input: { nodes: unknown[]; edges: unknown[] 
       },
     ],
   };
+}
+
+function semanticNodeEmbeddingText(input: { label: string; description: string }): string {
+  return [input.label, input.description, ""].join("\n");
 }
 
 class CaptureTracer implements TurnTracer {
@@ -621,6 +626,9 @@ describe("semantic extractor process", () => {
 
   it("traces node dedupe when extraction updates an existing compatible node", async () => {
     const tracer = new CaptureTracer();
+    const label = "Minds-as-kind";
+    const candidateDescription = "Minds are discussed as a kind rather than a single agent.";
+    const compatibleVector = [0, 0, 1, 0];
     const priorEpisode = createEpisodeFixture({
       title: "Prior Minds note",
       narrative: "A prior public episode established the Minds-as-kind concept.",
@@ -635,8 +643,8 @@ describe("semantic extractor process", () => {
           nodes: [
             {
               kind: "concept",
-              label: "Minds-as-kind",
-              description: "Minds are discussed as a kind rather than a single agent.",
+              label,
+              description: candidateDescription,
               domain: "philosophy",
               aliases: [],
               confidence: 0.66,
@@ -649,18 +657,32 @@ describe("semantic extractor process", () => {
     });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [
+            semanticNodeEmbeddingText({
+              label,
+              description: candidateDescription,
+            }),
+            compatibleVector,
+          ],
+        ]),
+      ),
       tracer,
     });
     cleanup.push(harness.cleanup);
     await harness.episodicRepository.insert(priorEpisode);
     await harness.episodicRepository.insert(episode);
     await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture({
-        kind: "concept",
-        label: "Minds-as-kind",
-        description: "Minds are a durable conceptual kind.",
-        source_episode_ids: [priorEpisode.id],
-      }),
+      createSemanticNodeFixture(
+        {
+          kind: "concept",
+          label,
+          description: "Minds are a durable conceptual kind.",
+          source_episode_ids: [priorEpisode.id],
+        },
+        compatibleVector,
+      ),
     );
     const process = createProcess(harness);
     const ctx = harness.createContext();
@@ -675,6 +697,98 @@ describe("semantic extractor process", () => {
       rejected: 0,
     });
     expect(tracer.events).toContainEqual({
+      event: "semantic_insert.skipped",
+      data: expect.objectContaining({
+        turnId: ctx.runId,
+        kind: "node",
+        reason: "dedupe_match",
+      }),
+    });
+  });
+
+  it("keeps a same-label concept separate when embedding compatibility is low", async () => {
+    const tracer = new CaptureTracer();
+    const label = "Minds-as-kind";
+    const candidateDescription = "Minds-as-kind names a separate taxonomy label in this context.";
+    const priorEpisode = createEpisodeFixture({
+      title: "Prior Minds note",
+      narrative: "A prior public episode established one Minds-as-kind concept.",
+    });
+    const episode = createEpisodeFixture({
+      title: "Distinct Minds follow-up",
+      narrative: "The conversation uses the same label for a distinct conceptual taxonomy.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label,
+              description: candidateDescription,
+              domain: "philosophy",
+              aliases: [],
+              confidence: 0.66,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [
+            semanticNodeEmbeddingText({
+              label,
+              description: candidateDescription,
+            }),
+            [1, 0, 0, 0],
+          ],
+        ]),
+      ),
+      tracer,
+    });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.insert(priorEpisode);
+    await harness.episodicRepository.insert(episode);
+    const existing = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "concept",
+          label,
+          description: "Minds are a durable conceptual kind.",
+          source_episode_ids: [priorEpisode.id],
+        },
+        [0, 0, 1, 0],
+      ),
+    );
+    const process = createProcess(harness);
+    const ctx = harness.createContext();
+
+    const plan = await process.plan(ctx);
+    const result = await process.apply(ctx, plan);
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 10,
+    });
+    const sameLabelNodes = nodes.filter((node) => node.label === label);
+
+    expect(result.candidate_stats).toEqual({
+      proposed: 1,
+      accepted: 1,
+      rejected: 0,
+    });
+    expect(sameLabelNodes).toHaveLength(2);
+    expect(sameLabelNodes.find((node) => node.id === existing.id)?.source_episode_ids).toEqual([
+      priorEpisode.id,
+    ]);
+    expect(sameLabelNodes.find((node) => node.id !== existing.id)?.source_episode_ids).toEqual([
+      episode.id,
+    ]);
+    expect(tracer.events).not.toContainEqual({
       event: "semantic_insert.skipped",
       data: expect.objectContaining({
         turnId: ctx.runId,

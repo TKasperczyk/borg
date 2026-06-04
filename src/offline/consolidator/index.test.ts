@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { ConsolidatorProcess } from "./index.js";
@@ -228,12 +229,12 @@ describe("consolidator process", () => {
     expect((directHarness.llmClient as FakeLLMClient).requests).toHaveLength(1);
   });
 
-  it("clusters only episodes that share the same audience scope", async () => {
+  it("merges overlapping cross-scope episodes into one private combined episode", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createConsolidationResponse(
-          "Merged public cluster",
-          "Two public notes were merged while scoped notes stayed isolated.",
+          "Merged architecture pattern",
+          "Public, Alice-private, and Bob-private notes were merged into one grounded architecture memory.",
         ),
       ],
     });
@@ -241,14 +242,13 @@ describe("consolidator process", () => {
       llmClient: llm,
     });
     cleanup.push(harness.cleanup);
-    const sam = harness.entityRepository.resolve("Sam");
-    const alex = harness.entityRepository.resolve("Alex");
-
-    const publicEpisodes = [
+    const alice = harness.entityRepository.resolve("Alice");
+    const bob = harness.entityRepository.resolve("Bob");
+    const sourceEpisodes = [
       createEpisodeFixture(
         {
           title: "Public architecture note one",
-          tags: ["scope-public"],
+          tags: ["architecture"],
           audience_entity_id: null,
           shared: true,
           created_at: 10_000,
@@ -258,70 +258,29 @@ describe("consolidator process", () => {
       ),
       createEpisodeFixture(
         {
-          title: "Public architecture note two",
-          tags: ["scope-public"],
-          audience_entity_id: null,
-          shared: true,
+          title: "Alice-only architecture note",
+          tags: ["architecture"],
+          audience_entity_id: alice,
+          shared: false,
           created_at: 20_000,
           updated_at: 20_000,
         },
         [0.99, 0, 0, 0],
       ),
-    ];
-    const differentAudienceEpisodes = [
       createEpisodeFixture(
         {
-          title: "Sam-only architecture note",
-          tags: ["scope-private"],
-          audience_entity_id: sam,
+          title: "Bob-only architecture note",
+          tags: ["architecture"],
+          audience_entity_id: bob,
           shared: false,
           created_at: 30_000,
           updated_at: 30_000,
         },
-        [1, 0, 0, 0],
-      ),
-      createEpisodeFixture(
-        {
-          title: "Alex-only architecture note",
-          tags: ["scope-private"],
-          audience_entity_id: alex,
-          shared: false,
-          created_at: 40_000,
-          updated_at: 40_000,
-        },
-        [0.99, 0, 0, 0],
-      ),
-    ];
-    const mixedScopeEpisodes = [
-      createEpisodeFixture(
-        {
-          title: "Public deploy note",
-          tags: ["scope-mixed"],
-          audience_entity_id: null,
-          shared: true,
-          created_at: 50_000,
-          updated_at: 50_000,
-        },
-        [1, 0, 0, 0],
-      ),
-      createEpisodeFixture(
-        {
-          title: "Sam deploy note",
-          tags: ["scope-mixed"],
-          audience_entity_id: sam,
-          shared: false,
-          created_at: 60_000,
-          updated_at: 60_000,
-        },
-        [0, 1, 0, 0],
+        [0.98, 0, 0, 0],
       ),
     ];
 
-    for (const episode of [
-      ...publicEpisodes,
-      ...differentAudienceEpisodes,
-      ...mixedScopeEpisodes,
-    ]) {
+    for (const episode of sourceEpisodes) {
       await harness.episodicRepository.insert(episode);
     }
 
@@ -329,15 +288,31 @@ describe("consolidator process", () => {
       episodicRepository: harness.episodicRepository,
       registry: harness.registry,
     });
-    const dryRun = await process.run(harness.createContext(), {
-      dryRun: true,
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
     });
+    const episodes = await harness.episodicRepository.listAll();
+    const merged = episodes.find((episode) => episode.title === "Merged architecture pattern");
+    const expectedPrivateTo = [alice, bob].sort();
 
-    expect(dryRun.changes).toHaveLength(1);
-    expect(dryRun.changes[0]?.targets.source_ids).toEqual(
-      [...publicEpisodes, mixedScopeEpisodes[0]!].map((episode) => episode.id),
-    );
+    expect(result.changes).toHaveLength(1);
+    expect(merged?.lineage.derived_from).toEqual(sourceEpisodes.map((episode) => episode.id));
+    expect(merged?.lineage.supersedes).toEqual(sourceEpisodes.map((episode) => episode.id));
+    expect(merged?.audience_entity_id).toBeNull();
+    expect(merged?.origin_audience_entity_ids).toEqual(expectedPrivateTo);
+    expect(merged?.shared).toBe(false);
+    expect(memoryDisclosureLabelFromEpisodeAccess(merged!)).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: expectedPrivateTo,
+      privateToEntityIds: expectedPrivateTo,
+      publicToEntityIds: [],
+    });
     expect(llm.requests).toHaveLength(1);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    expect(prompt).toContain("disclosure_class=relationship_private");
+    expect(prompt).toContain("usable internally");
+    expect(prompt).toContain(alice);
+    expect(prompt).toContain(bob);
   });
 
   it("halts further llm work after budget exhaustion", async () => {

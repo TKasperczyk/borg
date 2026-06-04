@@ -8,7 +8,6 @@ import {
 } from "../../llm/index.js";
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
-  hasSameEpisodeAccessScope,
   normalizeEpisodeAccess,
   episodeIdSchema,
   episodeLineageSchema,
@@ -20,11 +19,16 @@ import {
 } from "../../memory/episodic/index.js";
 import { episodeAudienceEntityIdSchema, streamEntryIdSchema } from "../../memory/episodic/types.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+} from "../../retrieval/index.js";
 import { createEpisodeId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -146,6 +150,15 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
+function episodeAccessFromCombinedDisclosureLabel(
+  label: ReturnType<typeof combineMemoryDisclosureLabels>,
+): Pick<Episode, "audience_entity_id" | "origin_audience_entity_ids" | "shared"> {
+  return normalizeEpisodeAccess({
+    origin_audience_entity_ids: [...label.originAudienceEntityIds],
+    shared: label.disclosureClass === "public",
+  });
+}
+
 function parseMergeResponse(result: LLMCompleteResult) {
   const call = result.tool_calls.find((toolCall) => toolCall.name === MERGE_TOOL_NAME);
 
@@ -165,17 +178,16 @@ function buildMergePrompt(cluster: EpisodeCluster): string {
     "Preserve facts from all inputs. Keep the narrative to 2-5 sentences.",
     "Episodes:",
     ...cluster.episodes.map((episode) =>
-      JSON.stringify({
-        id: episode.id,
-        title: episode.title,
-        narrative: episode.narrative,
-        participants: episode.participants,
-        location: episode.location,
-        start_time: episode.start_time,
-        end_time: episode.end_time,
-        tags: episode.tags,
-        source_stream_ids: episode.source_stream_ids,
-      }),
+      JSON.stringify(
+        episodeEvidencePromptRow(episode, {
+          participants: episode.participants,
+          location: episode.location,
+          start_time: episode.start_time,
+          end_time: episode.end_time,
+          tags: episode.tags,
+          source_stream_ids: episode.source_stream_ids,
+        }),
+      ),
     ),
   ].join("\n");
 }
@@ -204,10 +216,6 @@ function buildClusters(
       const right = episodes[rightIndex];
 
       if (right === undefined) {
-        continue;
-      }
-
-      if (!hasSameEpisodeAccessScope(left, right)) {
         continue;
       }
 
@@ -320,16 +328,9 @@ async function buildMergedEpisode(
   const embedding = await ctx.embeddingClient.embed(
     `${merged.title}\n${merged.narrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
   );
-  const sourceAccesses = cluster.episodes.map((episode) => normalizeEpisodeAccess(episode));
-  const originAudienceEntityIds = [
-    ...new Set(sourceAccesses.flatMap((access) => access.origin_audience_entity_ids)),
-  ];
-  const access = normalizeEpisodeAccess({
-    origin_audience_entity_ids: originAudienceEntityIds,
-    shared:
-      originAudienceEntityIds.length === 0 ||
-      sourceAccesses.every((sourceAccess) => sourceAccess.shared),
-  });
+  const access = episodeAccessFromCombinedDisclosureLabel(
+    combineMemoryDisclosureLabels(cluster.episodes.map(memoryDisclosureLabelFromEpisodeAccess)),
+  );
 
   return {
     episode: normalizeEpisodeAccess({

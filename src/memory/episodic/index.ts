@@ -8,8 +8,6 @@ export {
   type AudiencePolicy,
 } from "./audience-filter.js";
 export {
-  episodeAccessScopeKey,
-  hasSameEpisodeAccessScope,
   isEpisodeVisibleToAudience,
   normalizeEpisodeAccess,
   type EpisodeAccessLike,

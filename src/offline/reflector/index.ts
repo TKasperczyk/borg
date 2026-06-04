@@ -7,11 +7,8 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import { OFFLINE_REFLECTOR_PROMPT_PREAMBLE } from "../../cognition/prompts/reflector.js";
-import {
-  episodeAccessScopeKey,
-  episodeIdSchema,
-  type Episode,
-} from "../../memory/episodic/index.js";
+import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   semanticEdgeIdSchema,
@@ -37,6 +34,7 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
 
 const insightResponseSchema = z.object({
   label: z.string().min(1),
@@ -101,6 +99,7 @@ const reflectorSupportEdgeCandidateSchema = z.object({
 const reflectorPlanItemSchema = z.object({
   cluster_key: z.string().min(1),
   episode_ids: z.array(episodeIdSchema).min(1),
+  source_disclosure_label: memoryDisclosureLabelSchema,
   target: reflectorTargetSchema,
   candidate_support_edges: z.array(reflectorSupportEdgeCandidateSchema).default([]),
   review: z.object({
@@ -191,13 +190,12 @@ function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly stri
     `Active goals: ${goalDescriptions.join(" | ") || "none"}`,
     "Episodes:",
     ...cluster.episodes.map((episode) =>
-      JSON.stringify({
-        id: episode.id,
-        title: episode.title,
-        narrative: episode.narrative,
-        tags: episode.tags,
-        participants: episode.participants,
-      }),
+      JSON.stringify(
+        episodeEvidencePromptRow(episode, {
+          tags: episode.tags,
+          participants: episode.participants,
+        }),
+      ),
     ),
   ].join("\n");
 }
@@ -236,7 +234,7 @@ function collectReflectionClusters(
       const groupKey = tagGroupByTag.get(tag.trim());
 
       if (groupKey !== undefined) {
-        const key = `${episodeAccessScopeKey(episode)}|tag:${groupKey}`;
+        const key = `tag:${groupKey}`;
         byKey.set(key, [...(byKey.get(key) ?? []), episode]);
       }
     }
@@ -248,7 +246,7 @@ function collectReflectionClusters(
         continue;
       }
 
-      const key = `${episodeAccessScopeKey(episode)}|goal:${goal.key}`;
+      const key = `goal:${goal.key}`;
       byKey.set(key, [...(byKey.get(key) ?? []), episode]);
     }
   }
@@ -341,18 +339,24 @@ async function buildReflectionTagGroups(input: {
   return groups;
 }
 
-async function semanticNodeMatchesClusterScope(
-  ctx: OfflineContext,
+function semanticNodeMatchesReflectorCandidate(
   node: SemanticNode,
-  cluster: ReflectionCluster,
-): Promise<boolean> {
-  const scopeKey = episodeAccessScopeKey(cluster.episodes[0] ?? {});
-  const sourceEpisodes = await ctx.episodicRepository.getMany(node.source_episode_ids);
-
+  candidateEmbedding: Float32Array,
+): boolean {
   return (
-    sourceEpisodes.length === node.source_episode_ids.length &&
-    sourceEpisodes.every((episode) => episodeAccessScopeKey(episode) === scopeKey)
+    node.kind === "proposition" &&
+    cosineSimilarity(node.embedding, candidateEmbedding) >= DEDUP_THRESHOLD
   );
+}
+
+function uniqueSemanticNodes(nodes: readonly SemanticNode[]): SemanticNode[] {
+  const byId = new Map<SemanticNode["id"], SemanticNode>();
+
+  for (const node of nodes) {
+    byId.set(node.id, node);
+  }
+
+  return [...byId.values()];
 }
 
 async function buildInsightCandidate(
@@ -603,7 +607,7 @@ export class ReflectorProcess implements OfflineProcess {
             const eligibleByLabel: SemanticNode[] = [];
 
             for (const node of byLabel) {
-              if (await semanticNodeMatchesClusterScope(ctx, node, cluster)) {
+              if (semanticNodeMatchesReflectorCandidate(node, candidate.embedding)) {
                 eligibleByLabel.push(node);
               }
             }
@@ -611,19 +615,21 @@ export class ReflectorProcess implements OfflineProcess {
             const eligibleByVector: SemanticNode[] = [];
 
             for (const item of byVector) {
-              if (await semanticNodeMatchesClusterScope(ctx, item.node, cluster)) {
+              if (semanticNodeMatchesReflectorCandidate(item.node, candidate.embedding)) {
                 eligibleByVector.push(item.node);
               }
             }
 
-            const existing = eligibleByLabel[0] ?? eligibleByVector[0];
+            const eligibleNodes = uniqueSemanticNodes([...eligibleByLabel, ...eligibleByVector]);
+            const existing = eligibleNodes.length === 1 ? eligibleNodes[0] : undefined;
             const dedupeDecision =
               existing === undefined
                 ? "none"
-                : eligibleByLabel.length > 0
+                : eligibleByLabel.some((node) => node.id === existing.id)
                   ? "exact_label_or_alias"
                   : "vector_similarity";
             const timestamp = ctx.clock.now();
+            const clusterEpisodeIds = cluster.episodes.map((episode) => episode.id);
             const target =
               existing === undefined
                 ? {
@@ -635,7 +641,7 @@ export class ReflectorProcess implements OfflineProcess {
                       description: candidate.description,
                       aliases: [],
                       confidence: candidate.confidence,
-                      source_episode_ids: candidate.sourceEpisodeIds,
+                      source_episode_ids: clusterEpisodeIds,
                       created_at: timestamp,
                       updated_at: timestamp,
                       last_verified_at: timestamp,
@@ -653,13 +659,21 @@ export class ReflectorProcess implements OfflineProcess {
                           ? candidate.description
                           : existing.description,
                       confidence: Math.max(existing.confidence * 0.99, candidate.confidence),
-                      source_episode_ids: candidate.sourceEpisodeIds,
+                      source_episode_ids: clusterEpisodeIds,
                       last_verified_at: timestamp,
                       embedding: Array.from(candidate.embedding),
                       archived: false,
                     },
                   };
             const nodeId = target.mode === "insert" ? target.node.id : target.node_id;
+            const sourceDisclosureEpisodeIds =
+              existing === undefined
+                ? clusterEpisodeIds
+                : [...new Set([...existing.source_episode_ids, ...clusterEpisodeIds])];
+            const sourceDisclosureLabel = await disclosureLabelForEpisodeIds(
+              ctx.episodicRepository,
+              sourceDisclosureEpisodeIds,
+            );
             const candidateSupportEdges = await buildSupportEdgeCandidates(
               ctx,
               nodeId,
@@ -669,6 +683,7 @@ export class ReflectorProcess implements OfflineProcess {
             items.push({
               cluster_key: cluster.key,
               episode_ids: cluster.episodes.map((episode) => episode.id),
+              source_disclosure_label: sourceDisclosureLabel,
               target,
               candidate_support_edges: candidateSupportEdges,
               review: {
@@ -767,6 +782,7 @@ export class ReflectorProcess implements OfflineProcess {
           episode_ids: item.episode_ids,
           evidence_cluster_key: item.cluster_key,
           evidence_cluster_size: item.episode_ids.length,
+          source_disclosure_label: item.source_disclosure_label,
           reflector_pending_insight: {
             target: item.target,
             candidate_support_edges: item.candidate_support_edges,
