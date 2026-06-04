@@ -20,14 +20,14 @@ import {
 import type { BorgDependencies } from "../src/borg/types.js";
 import { createTestConfig, TestEmbeddingClient } from "../src/offline/test-support.js";
 import type { RecallStateRepository, RetrievedContext } from "../src/retrieval/index.js";
-import { createSessionId, type EntityId, type EpisodeId } from "../src/util/ids.js";
+import { createSessionId, type EpisodeId } from "../src/util/ids.js";
 
 const MAYA_TERM = "Maya";
 const AUDIENCE = "Tom";
 
 type ScriptOptions = LLMCompleteOptions | LLMConverseOptions;
 type RetrievalOptions = NonNullable<
-  Parameters<BorgDependencies["retrievalPipeline"]["searchWithContext"]>[1]
+  Parameters<BorgDependencies["retrievalPipeline"]["recallEpisodesForCognition"]>[1]
 >;
 type RetrievalCall = {
   options: RetrievalOptions;
@@ -342,8 +342,10 @@ describe("cross-session recall_state integration", () => {
     try {
       const deps = borgDeps(borg);
       const retrievalCalls: RetrievalCall[] = [];
-      const originalSearch = deps.retrievalPipeline.searchWithContext.bind(deps.retrievalPipeline);
-      vi.spyOn(deps.retrievalPipeline, "searchWithContext").mockImplementation(
+      const originalSearch = deps.retrievalPipeline.recallEpisodesForCognition.bind(
+        deps.retrievalPipeline,
+      );
+      vi.spyOn(deps.retrievalPipeline, "recallEpisodesForCognition").mockImplementation(
         async (query, options) => {
           const result = await originalSearch(query, options);
           retrievalCalls.push({ options: options ?? {}, result });
@@ -386,11 +388,11 @@ describe("cross-session recall_state integration", () => {
       });
       await ingestion!.ingest(sessionA, { minEntriesThreshold: 1 });
 
-      const stateAfterSessionA = recallStateRepository(deps).load(tomEntityId as EntityId);
+      const stateAfterSessionA = recallStateRepository(deps).load("sol");
       const sessionAHandle = stateAfterSessionA?.activeHandles.find(
         (item) => item.handle.source === "episode" && item.handle.episodeId === sessionAEpisodeId,
       );
-      expect(stateAfterSessionA?.scopeKey).toBe(tomEntityId);
+      expect(stateAfterSessionA?.scopeKey).toBe("sol");
       expect(sessionAHandle?.firstSeenTurn).toBe(2);
 
       const episodeGetSpy = vi.spyOn(deps.episodicRepository, "get");
@@ -424,12 +426,12 @@ describe("cross-session recall_state integration", () => {
       expect(turn3Retrieval!.result.episodes.map((item) => item.episode.id)).toContain(
         sessionAEpisodeId,
       );
-      expect(recallLoadSpy).toHaveBeenCalledWith(tomEntityId);
+      expect(recallLoadSpy).toHaveBeenCalledWith("sol");
       expect(recallLoadSpy).not.toHaveBeenCalledWith(sessionA);
       expect(recallLoadSpy).not.toHaveBeenCalledWith(sessionB);
 
       const rows = readRecallStateRows(deps);
-      expect(rows.map((row) => row.scope_key)).toEqual([tomEntityId]);
+      expect(rows.map((row) => row.scope_key)).toEqual(["sol"]);
       const storedState = JSON.parse(rows[0]!.state_json) as {
         scopeKey: string;
         activeHandles: Array<{
@@ -443,7 +445,7 @@ describe("cross-session recall_state integration", () => {
       );
       const storedKeys = collectKeys(storedState);
 
-      expect(storedState.scopeKey).toBe(tomEntityId);
+      expect(storedState.scopeKey).toBe("sol");
       expect(storedState.lastRefreshTurn).toBe(3);
       expect(storedHandle?.firstSeenTurn).toBe(2);
       expect(storedKeys).not.toEqual(

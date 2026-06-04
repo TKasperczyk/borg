@@ -30,6 +30,43 @@ export type MemoryDisclosureLabel = {
   readonly publicToEntityIds: readonly EntityId[];
 };
 
+export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
+  "usable internally; do not disclose to current audience unless authorized";
+
+export type MemoryDisclosureLabelMetadata = {
+  disclosure_class: MemoryDisclosureClass;
+  origin_audience_entity_ids: string[];
+  private_to_entity_ids: string[];
+  public_to_entity_ids: string[];
+};
+
+export function memoryDisclosureLabelMetadata(
+  label: MemoryDisclosureLabel,
+): MemoryDisclosureLabelMetadata {
+  return {
+    disclosure_class: label.disclosureClass,
+    origin_audience_entity_ids: [...label.originAudienceEntityIds],
+    private_to_entity_ids: [...label.privateToEntityIds],
+    public_to_entity_ids: [...label.publicToEntityIds],
+  };
+}
+
+export function renderMemoryDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
+  const fragments = [`disclosure_class=${label.disclosureClass}`];
+
+  if (label.originAudienceEntityIds.length > 0) {
+    fragments.push(`origin_audience=${label.originAudienceEntityIds.join(",")}`);
+  }
+
+  if (label.disclosureClass !== "public") {
+    const privateTo =
+      label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
+    fragments.push(`private-to=${privateTo}; ${MEMORY_DISCLOSURE_INTERNAL_USE_NOTE}`);
+  }
+
+  return fragments.join(" ");
+}
+
 export type CognitionRecallContext = {
   readonly reader: "sol";
   readonly currentSessionId: SessionId;

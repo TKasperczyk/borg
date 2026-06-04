@@ -139,6 +139,11 @@ export type EpisodeSearchOptions = {
   };
 };
 
+export type EpisodeCognitionRecallOptions = Pick<
+  EpisodeSearchOptions,
+  "limit" | "minSimilarity" | "tagFilter" | "tierFilter" | "timeRange"
+>;
+
 export type EpisodeVisibilityOptions = Pick<
   EpisodeSearchOptions,
   | "audienceEntityId"

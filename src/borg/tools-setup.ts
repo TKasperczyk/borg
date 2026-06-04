@@ -113,11 +113,24 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
   toolDispatcher
     .register(
       createEpisodicSearchTool({
-        searchEpisodes: (query, limit, context) =>
-          options.retrievalPipeline.search(query, {
+        searchEpisodes: async (query, limit, context) => {
+          const currentAudienceEntityId = context.audienceEntityId ?? null;
+          const retrieved = await options.retrievalPipeline.recallEpisodesForCognition(query, {
             limit,
-            audienceEntityId: context.audienceEntityId,
-          }),
+            recallContext: {
+              reader: "sol",
+              currentSessionId: context.sessionId,
+              currentAudienceEntityId,
+              currentParticipantEntityIds:
+                currentAudienceEntityId === null ? [] : [currentAudienceEntityId],
+            },
+            rankingAudienceEntityId: currentAudienceEntityId,
+            sessionId: context.sessionId,
+            traceTurnId: context.turnId,
+          });
+
+          return retrieved.episodes;
+        },
       }),
     )
     .register(

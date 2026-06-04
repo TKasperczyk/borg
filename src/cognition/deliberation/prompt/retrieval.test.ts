@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  createEpisodeFixture,
+  createRetrievalScoreFixture,
+} from "../../../offline/test-support.js";
 import type { SemanticEdge, SemanticNode } from "../../../memory/semantic/index.js";
 import type {
   EvidenceItem,
   RetrievalConfidence,
+  RetrievedEpisode,
   RetrievedSemantic,
 } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
@@ -117,6 +122,59 @@ describe("retrieval confidence prompt rendering", () => {
     const summary = summarizeRetrievedEpisodes("Retrieved context", []);
 
     expect(summary).toBe("No episodes retrieved for this turn.");
+  });
+
+  it("renders disclosure labels in the retrieved-episodes fallback", () => {
+    const episode: RetrievedEpisode = {
+      episode: createEpisodeFixture({
+        audience_entity_id: "entity_alice" as never,
+        shared: false,
+      }),
+      score: 0.72,
+      scoreBreakdown: createRetrievalScoreFixture(),
+      citationChain: [],
+    };
+
+    const summary = summarizeRetrievedEpisodes("Retrieved context", [episode]);
+
+    expect(summary).toContain("disclosure: disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=entity_alice");
+    expect(summary).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
+  });
+
+  it("renders disclosure labels on episode evidence items", () => {
+    const evidence: EvidenceItem = {
+      id: "evidence_episode_ep_aaaaaaaaaaaaaaaa_intent",
+      source: "episode",
+      text: "Alice private planning: private launch details.",
+      provenance: {
+        episodeId: "ep_aaaaaaaaaaaaaaaa" as never,
+      },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 0.8,
+      scoreBreakdown: {},
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: ["entity_alice" as never],
+        privateToEntityIds: ["entity_alice" as never],
+        publicToEntityIds: [],
+      },
+    };
+
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      { evidence: [evidence] },
+      1_000,
+    );
+
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=entity_alice");
+    expect(summary).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
   });
 
   it("renders partial-source metadata on semantic evidence items", () => {

@@ -200,6 +200,11 @@ describe("proactive outbound human-mind invariants", () => {
         for (const text of targetRequests) {
           expect(text).toContain(durableCrossAudienceMemory);
           expect(text).toContain(targetVisibleContext);
+          expect(text).toContain("disclosure_class=relationship_private");
+          expect(text).toContain(
+            "usable internally; do not disclose to current audience unless authorized",
+          );
+          expect(text).toContain("disclosure_authorization=not_authorized_for_current_audience");
         }
 
         const targetEntries = new StreamReader({

@@ -286,7 +286,7 @@ describe("TurnRetrievalCoordinator", () => {
       },
     ];
     const retrieval = makeRetrievedContext();
-    const searchWithContext = vi.fn(async () => retrieval);
+    const recallEpisodesForCognition = vi.fn(async () => retrieval);
     const selectedSkill: SkillSelectionResult = {
       skill: {
         id: "skl_aaaaaaaaaaaaaaaa" as never,
@@ -351,7 +351,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => affectiveTrajectory),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select,
@@ -431,10 +431,11 @@ describe("TurnRetrievalCoordinator", () => {
       k: 5,
       proceduralContext: result.proceduralContext,
     });
-    expect(searchWithContext).toHaveBeenCalledWith(
+    expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Solve Atlas",
       expect.objectContaining({
-        audienceEntityId,
+        rankingAudienceEntityId: audienceEntityId,
+        semanticAudienceEntityId: audienceEntityId,
         recallContext: expect.objectContaining({
           reader: "sol",
           currentSessionId: DEFAULT_SESSION_ID,
@@ -465,11 +466,12 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     expect(secondaryRetrieval).toBe(retrieval);
-    expect(searchWithContext).toHaveBeenNthCalledWith(
+    expect(recallEpisodesForCognition).toHaveBeenNthCalledWith(
       2,
       "verify",
       expect.objectContaining({
-        audienceEntityId,
+        rankingAudienceEntityId: audienceEntityId,
+        semanticAudienceEntityId: audienceEntityId,
         limit: 3,
         scoringFeatures,
         strictTimeRange: false,
@@ -480,7 +482,7 @@ describe("TurnRetrievalCoordinator", () => {
 
   it("forwards recent messages into procedural extraction", async () => {
     const llm = new FakeLLMClient();
-    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
@@ -503,7 +505,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => []),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select: vi.fn(async () => null),
@@ -541,7 +543,7 @@ describe("TurnRetrievalCoordinator", () => {
 
   it("skips skill selection for non-problem-solving turns", async () => {
     const select = vi.fn();
-    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
@@ -564,7 +566,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => []),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select,
@@ -594,7 +596,7 @@ describe("TurnRetrievalCoordinator", () => {
     expect(result.selectedSkill).toBeNull();
     expect(result.proceduralContext).toBeNull();
     expect(select).not.toHaveBeenCalled();
-    expect(searchWithContext).toHaveBeenCalledWith(
+    expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Think about this",
       expect.objectContaining({
         audienceTerms: [],
@@ -604,7 +606,7 @@ describe("TurnRetrievalCoordinator", () => {
   });
 
   it("passes selected executive goal as the primary retrieval goal without dropping other goals", async () => {
-    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
@@ -627,7 +629,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => []),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select: vi.fn(async () => null),
@@ -691,7 +693,7 @@ describe("TurnRetrievalCoordinator", () => {
       findEntityByName: () => null,
     });
 
-    expect(searchWithContext).toHaveBeenCalledWith(
+    expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Solve Atlas",
       expect.objectContaining({
         goalDescriptions: ["Resolve Atlas incident", "Ship the sprint"],
@@ -700,9 +702,9 @@ describe("TurnRetrievalCoordinator", () => {
     );
   });
 
-  it("invokes self_continuity retrieval on private self cognition turns", async () => {
+  it("does not request self_continuity visibility bypasses on private self cognition turns", async () => {
     const getSelf = vi.fn(() => makeSelfEntity());
-    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
@@ -725,7 +727,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => []),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select: vi.fn(async () => null),
@@ -752,22 +754,21 @@ describe("TurnRetrievalCoordinator", () => {
       findEntityByName: () => null,
     });
 
-    expect(getSelf).toHaveBeenCalledTimes(1);
-    expect(searchWithContext).toHaveBeenCalledWith(
+    expect(getSelf).not.toHaveBeenCalled();
+    expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Reflect privately",
       expect.objectContaining({
-        audienceEntityId: null,
         audienceTerms: [],
-        globalIdentitySelfAudienceEntityId: selfEntityId,
+        rankingAudienceEntityId: null,
       }),
     );
 
     await result.reRetrieve("Reflect again");
 
-    expect(searchWithContext).toHaveBeenNthCalledWith(
+    expect(recallEpisodesForCognition).toHaveBeenNthCalledWith(
       2,
       "Reflect again",
-      expect.objectContaining({
+      expect.not.objectContaining({
         globalIdentitySelfAudienceEntityId: selfEntityId,
       }),
     );
@@ -775,7 +776,7 @@ describe("TurnRetrievalCoordinator", () => {
 
   it("leaves self_continuity inert on normal audience turns", async () => {
     const getSelf = vi.fn(() => makeSelfEntity());
-    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
@@ -798,7 +799,7 @@ describe("TurnRetrievalCoordinator", () => {
         history: vi.fn(() => []),
       },
       retrievalPipeline: {
-        searchWithContext,
+        recallEpisodesForCognition,
       },
       skillSelector: {
         select: vi.fn(async () => null),
@@ -832,13 +833,15 @@ describe("TurnRetrievalCoordinator", () => {
       findEntityByName: () => null,
     });
 
-    const retrievalOptions = (searchWithContext.mock.calls[0] as unknown[])[1] as Record<
+    const retrievalOptions = (recallEpisodesForCognition.mock.calls[0] as unknown[])[1] as Record<
       string,
       unknown
     >;
 
     expect(getSelf).not.toHaveBeenCalled();
-    expect(retrievalOptions).toHaveProperty("audienceEntityId", bobEntityId);
+    expect(retrievalOptions).toHaveProperty("rankingAudienceEntityId", bobEntityId);
+    expect(retrievalOptions).toHaveProperty("semanticAudienceEntityId", bobEntityId);
+    expect(retrievalOptions).not.toHaveProperty("audienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("globalIdentitySelfAudienceEntityId");
   });
 });

@@ -29,56 +29,59 @@ describe("human-mind memory invariants", () => {
     harness = undefined;
   });
 
-  it.fails(
-    "recalls an Alice-private episode for Sol cognition during a Bob-audience turn",
-    async () => {
-      // Expected to flip in Sprint 2 when cognition recall stops using audience visibility gates.
-      harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
-      const aliceId = harness.entityRepository.resolve("Alice");
-      const bobId = harness.entityRepository.resolve("Bob");
-      const episode = createEpisodeFixture(
-        {
-          title: "Alice private recall invariant",
-          narrative: "A structurally private Alice memory exists for Sol cognition.",
-          participants: ["Alice"],
-          tags: ["human-mind-invariant"],
-          audience_entity_id: aliceId,
-          shared: false,
-        },
-        MATCH_VECTOR,
-      );
-      await harness.episodicRepository.insert(episode);
+  it("recalls an Alice-private episode for Sol cognition during a Bob-audience turn", async () => {
+    harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
+    const aliceId = harness.entityRepository.resolve("Alice");
+    const bobId = harness.entityRepository.resolve("Bob");
+    const episode = createEpisodeFixture(
+      {
+        title: "Alice private recall invariant",
+        narrative: "A structurally private Alice memory exists for Sol cognition.",
+        participants: ["Alice"],
+        tags: ["human-mind-invariant"],
+        audience_entity_id: aliceId,
+        shared: false,
+      },
+      MATCH_VECTOR,
+    );
+    await harness.episodicRepository.insert(episode);
 
-      const recallContext: CognitionRecallContext = {
-        reader: "sol",
-        currentSessionId: DEFAULT_SESSION_ID,
-        currentAudienceEntityId: bobId,
-        currentParticipantEntityIds: [bobId],
-      };
-      const disclosureContext: DisclosureContext = {
-        currentSessionId: DEFAULT_SESSION_ID,
-        currentAudienceEntityId: bobId,
-        audienceRole: "participant",
-        senderEntityId: bobId,
-        senderRole: null,
-        participantEntityIds: [bobId],
-        isPrivateSelfCognition: false,
-      };
+    const recallContext: CognitionRecallContext = {
+      reader: "sol",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId: bobId,
+      currentParticipantEntityIds: [bobId],
+    };
+    const disclosureContext: DisclosureContext = {
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId: bobId,
+      audienceRole: "participant",
+      senderEntityId: bobId,
+      senderRole: null,
+      participantEntityIds: [bobId],
+      isPrivateSelfCognition: false,
+    };
 
-      const result = await harness.retrievalPipeline.searchWithContext(BOB_RECALL_QUERY, {
-        limit: 3,
-        audienceEntityId: bobId,
-        recallContext,
-        disclosureContext,
-        recordRetrieval: false,
-      });
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(BOB_RECALL_QUERY, {
+      limit: 3,
+      recallContext,
+      disclosureContext,
+      rankingAudienceEntityId: bobId,
+      recordRetrieval: false,
+    });
 
-      expect(result.episodes.map((item) => item.episode.id)).toContain(episode.id);
-    },
-  );
+    const recalled = result.episodes.find((item) => item.episode.id === episode.id);
 
-  it.fails("labels the recalled Alice-private episode as private to Alice", async () => {
-    // Expected to flip in Sprint 2; Sprint 1 adds the label type and attachment point.
+    expect(recalled).toBeDefined();
+    expect(recalled?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [aliceId],
+      privateToEntityIds: [aliceId],
+      publicToEntityIds: [],
+    });
+  });
+
+  it("labels the recalled Alice-private episode as private to Alice", async () => {
     harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
     const aliceId = harness.entityRepository.resolve("Alice");
     const bobId = harness.entityRepository.resolve("Bob");
@@ -95,9 +98,8 @@ describe("human-mind memory invariants", () => {
     );
     await harness.episodicRepository.insert(episode);
 
-    const result = await harness.retrievalPipeline.searchWithContext(BOB_RECALL_QUERY, {
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(BOB_RECALL_QUERY, {
       limit: 3,
-      audienceEntityId: bobId,
       recallContext: {
         reader: "sol",
         currentSessionId: DEFAULT_SESSION_ID,
@@ -113,6 +115,7 @@ describe("human-mind memory invariants", () => {
         participantEntityIds: [bobId],
         isPrivateSelfCognition: false,
       },
+      rankingAudienceEntityId: bobId,
       recordRetrieval: false,
     });
     const recalled = result.episodes.find((item) => item.episode.id === episode.id);
@@ -125,29 +128,27 @@ describe("human-mind memory invariants", () => {
     });
   });
 
-  it.fails(
-    "recalls cross-audience prior activity for an operator with no participant present",
-    async () => {
-      // Expected to flip in Sprint 2 when operator cognition recall is no longer audience-pruned.
-      harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
-      const aliceId = harness.entityRepository.resolve("Alice");
-      const operatorId = harness.entityRepository.resolve("Operator");
-      const episode = createEpisodeFixture(
-        {
-          title: "Alice prior activity invariant",
-          narrative: "A prior cross-audience activity record should remain recallable to Sol.",
-          participants: ["Alice"],
-          tags: ["human-mind-invariant"],
-          audience_entity_id: aliceId,
-          shared: false,
-        },
-        MATCH_VECTOR,
-      );
-      await harness.episodicRepository.insert(episode);
+  it("recalls cross-audience prior activity for an operator with no participant present", async () => {
+    harness = await createOfflineTestHarness({ embeddingClient: embeddingClient() });
+    const aliceId = harness.entityRepository.resolve("Alice");
+    const operatorId = harness.entityRepository.resolve("Operator");
+    const episode = createEpisodeFixture(
+      {
+        title: "Alice prior activity invariant",
+        narrative: "A prior cross-audience activity record should remain recallable to Sol.",
+        participants: ["Alice"],
+        tags: ["human-mind-invariant"],
+        audience_entity_id: aliceId,
+        shared: false,
+      },
+      MATCH_VECTOR,
+    );
+    await harness.episodicRepository.insert(episode);
 
-      const result = await harness.retrievalPipeline.searchWithContext(OPERATOR_RECALL_QUERY, {
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(
+      OPERATOR_RECALL_QUERY,
+      {
         limit: 3,
-        audienceEntityId: operatorId,
         recallContext: {
           reader: "sol",
           currentSessionId: DEFAULT_SESSION_ID,
@@ -163,10 +164,19 @@ describe("human-mind memory invariants", () => {
           participantEntityIds: [],
           isPrivateSelfCognition: false,
         },
+        rankingAudienceEntityId: operatorId,
         recordRetrieval: false,
-      });
+      },
+    );
 
-      expect(result.episodes.map((item) => item.episode.id)).toContain(episode.id);
-    },
-  );
+    const recalled = result.episodes.find((item) => item.episode.id === episode.id);
+
+    expect(recalled).toBeDefined();
+    expect(recalled?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [aliceId],
+      privateToEntityIds: [aliceId],
+      publicToEntityIds: [],
+    });
+  });
 });

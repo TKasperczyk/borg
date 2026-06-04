@@ -17,9 +17,9 @@ import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   CognitionRecallContext,
   DisclosureContext,
+  CognitionRecallSearchOptions,
   RetrievedContext,
   RetrievalPipeline,
-  RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import {
   selectActiveScoringValues,
@@ -69,23 +69,20 @@ function selectGoalDescriptions(
 function adaptRecallDisclosureContextToLegacyRetrievalOptions(input: {
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
-  selfAudienceEntityId?: EntityId | null;
 }): Pick<
-  RetrievalSearchOptions,
+  CognitionRecallSearchOptions,
   | "recallContext"
   | "disclosureContext"
-  | "audienceEntityId"
-  | "globalIdentitySelfAudienceEntityId"
+  | "rankingAudienceEntityId"
+  | "semanticAudienceEntityId"
   | "sessionId"
 > {
   return {
     recallContext: input.recallContext,
     disclosureContext: input.disclosureContext,
-    audienceEntityId: input.disclosureContext.currentAudienceEntityId,
+    rankingAudienceEntityId: input.disclosureContext.currentAudienceEntityId,
+    semanticAudienceEntityId: input.disclosureContext.currentAudienceEntityId,
     sessionId: input.recallContext.currentSessionId,
-    ...(input.selfAudienceEntityId === undefined
-      ? {}
-      : { globalIdentitySelfAudienceEntityId: input.selfAudienceEntityId }),
   };
 }
 
@@ -138,7 +135,7 @@ export type TurnRetrievalCoordinatorOptions = {
   entityRepository: Pick<EntityRepository, "getSelf">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list">;
   moodRepository: Pick<MoodRepository, "current" | "history">;
-  retrievalPipeline: Pick<RetrievalPipeline, "searchWithContext">;
+  retrievalPipeline: Pick<RetrievalPipeline, "recallEpisodesForCognition">;
   skillSelector: Pick<SkillSelector, "select">;
   clock: Clock;
   tracer?: TurnTracer;
@@ -179,8 +176,11 @@ export type TurnRetrievalCoordinatorResult = {
   retrievedSemantic: RetrievedContext["semantic"];
   proceduralContext: ProceduralContext | null;
   selectedSkill: SkillSelectionResult | null;
-  retrievalOptions: RetrievalSearchOptions;
-  reRetrieve: (query: string, overrides?: RetrievalSearchOptions) => Promise<RetrievedContext>;
+  retrievalOptions: CognitionRecallSearchOptions;
+  reRetrieve: (
+    query: string,
+    overrides?: Partial<CognitionRecallSearchOptions>,
+  ) => Promise<RetrievedContext>;
 };
 
 export class TurnRetrievalCoordinator {
@@ -232,10 +232,6 @@ export class TurnRetrievalCoordinator {
     });
     const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
-    const selfAudienceEntityId = coordinatorContext.isPrivateSelfCognition
-      ? (this.options.entityRepository.getSelf()?.id ?? null)
-      : undefined;
-
     const attentionWeights = computeWeights(input.perception.mode, {
       currentGoals: input.selfSnapshot.goals,
       hasActiveValues: activeValues.length > 0,
@@ -243,11 +239,10 @@ export class TurnRetrievalCoordinator {
       moodActive: Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > 0.3,
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
-    const retrievalOptions: RetrievalSearchOptions = {
+    const retrievalOptions: CognitionRecallSearchOptions = {
       ...adaptRecallDisclosureContextToLegacyRetrievalOptions({
         recallContext: input.recallContext,
         disclosureContext: input.disclosureContext,
-        selfAudienceEntityId,
       }),
       limit: computeRetrievalLimit(input.perception.mode),
       attentionWeights,
@@ -276,7 +271,7 @@ export class TurnRetrievalCoordinator {
       turnCounter: input.workingMemory.turn_counter,
       traceTurnId: input.turnId,
     };
-    const retrieval = await this.options.retrievalPipeline.searchWithContext(
+    const retrieval = await this.options.retrievalPipeline.recallEpisodesForCognition(
       input.cognitionInput,
       retrievalOptions,
     );
@@ -333,7 +328,7 @@ export class TurnRetrievalCoordinator {
       selectedSkill,
       retrievalOptions,
       reRetrieve: (query, overrides = {}) =>
-        this.options.retrievalPipeline.searchWithContext(query, {
+        this.options.retrievalPipeline.recallEpisodesForCognition(query, {
           ...retrievalOptions,
           ...overrides,
         }),

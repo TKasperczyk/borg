@@ -14,6 +14,7 @@ import {
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
   Episode,
+  EpisodeCognitionRecallOptions,
   EpisodeSearchCandidate,
   EpisodeSearchOptions,
 } from "../memory/episodic/types.js";
@@ -99,7 +100,12 @@ import {
   type SemanticStatusMultipliers,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
-import type { CognitionRecallContext, DisclosureContext } from "./recall-context.js";
+import {
+  memoryDisclosureLabelFromEpisodeAccess,
+  type CognitionRecallContext,
+  type DisclosureContext,
+  type MemoryDisclosureLabel,
+} from "./recall-context.js";
 
 export type {
   RetrievedContext,
@@ -151,6 +157,8 @@ export type RetrievalPipelineOptions = {
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
   recallContext?: CognitionRecallContext;
   disclosureContext?: DisclosureContext;
+  rankingAudienceEntityId?: EntityId | null;
+  semanticAudienceEntityId?: EntityId | null;
   limit?: number;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;
@@ -180,6 +188,21 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   traceTurnId?: string;
   recordRetrieval?: boolean;
 };
+
+type RetrievalAudienceFilterOptionKey =
+  | "audienceEntityId"
+  | "crossAudience"
+  | "globalIdentitySelfAudienceEntityId"
+  | "operatorIntrospectionSelfAudienceEntityId";
+
+export type CognitionRecallSearchOptions = Omit<
+  RetrievalSearchOptions,
+  RetrievalAudienceFilterOptionKey | "recallContext"
+> & {
+  recallContext: CognitionRecallContext;
+};
+
+type RetrievalExecutionMode = "cognition" | "disclosure";
 
 export type RetrievalGetEpisodeOptions = {
   audienceEntityId?: EntityId | null;
@@ -301,6 +324,29 @@ export class RetrievalPipeline {
     query: string,
     options: RetrievalSearchOptions = {},
   ): Promise<RetrievedContext> {
+    return this.searchWithContextInternal(query, options, "disclosure");
+  }
+
+  async recallEpisodesForCognition(
+    query: string,
+    options: CognitionRecallSearchOptions,
+  ): Promise<RetrievedContext> {
+    return this.searchWithContextInternal(query, options, "cognition");
+  }
+
+  async searchEpisodesForDisclosure(
+    query: string,
+    options: RetrievalSearchOptions = {},
+  ): Promise<RetrievedEpisode[]> {
+    const result = await this.searchWithContextInternal(query, options, "disclosure");
+    return result.episodes;
+  }
+
+  private async searchWithContextInternal(
+    query: string,
+    options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
+  ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
@@ -312,11 +358,11 @@ export class RetrievalPipeline {
 
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
-    const recallStateContext = this.loadRecallStateContext(options, nowMs);
+    const recallStateContext = this.loadRecallStateContext(options, nowMs, mode);
     const warmRecallEvidence =
       recallStateContext === null
         ? []
-        : await this.rehydrateRecallStateEvidence(recallStateContext, options, nowMs);
+        : await this.rehydrateRecallStateEvidence(recallStateContext, options, nowMs, mode);
     let scoringFeatures = options.scoringFeatures;
 
     if (scoringFeatures === undefined) {
@@ -351,6 +397,7 @@ export class RetrievalPipeline {
       scoringFeatures,
       nowMs,
       limit,
+      mode,
     );
     const citationResolver = this.createCitationResolver();
     const citationEntries = await citationResolver.resolveCitationEntries(
@@ -463,19 +510,19 @@ export class RetrievalPipeline {
   }
 
   async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
-    const result = await this.searchWithContext(query, options);
-    return result.episodes;
+    return this.searchEpisodesForDisclosure(query, options);
   }
 
   private loadRecallStateContext(
     options: RetrievalSearchOptions,
     nowMs: number,
+    mode: RetrievalExecutionMode,
   ): RecallStateTurnContext | null {
     if (this.options.recallStateRepository === undefined) {
       return null;
     }
 
-    const scopeKey = recallStateScopeKey(options);
+    const scopeKey = recallStateScopeKey(options, mode);
     const loaded =
       this.options.recallStateRepository.load(scopeKey) ??
       createEmptyRecallState({
@@ -495,6 +542,7 @@ export class RetrievalPipeline {
     context: RecallStateTurnContext,
     options: RetrievalSearchOptions,
     nowMs: number,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem[]> {
     const evidence: EvidenceItem[] = [];
     const candidates = selectWarmRecallCandidates(
@@ -505,7 +553,7 @@ export class RetrievalPipeline {
     );
 
     for (const { handle, stateHandle } of candidates) {
-      const item = await this.rehydrateRecallHandle(handle, stateHandle, options, nowMs);
+      const item = await this.rehydrateRecallHandle(handle, stateHandle, options, nowMs, mode);
 
       if (item !== null) {
         evidence.push(item);
@@ -520,13 +568,14 @@ export class RetrievalPipeline {
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
     nowMs: number,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     if (handle.source === "episode") {
-      return this.rehydrateEpisodeHandle(handle, stateHandle, options);
+      return this.rehydrateEpisodeHandle(handle, stateHandle, options, mode);
     }
 
     if (handle.source === "raw_stream") {
-      return this.rehydrateRawStreamHandle(handle, stateHandle, options);
+      return this.rehydrateRawStreamHandle(handle, stateHandle, options, mode);
     }
 
     if (handle.source === "semantic_node") {
@@ -587,6 +636,7 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "episode" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const episode = await this.options.episodicRepository.get(handle.episodeId);
 
@@ -594,7 +644,10 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (!isEpisodeVisibleToRetrievalCapability(episode, episodeVisibilityOptions(options))) {
+    if (
+      mode === "disclosure" &&
+      !isEpisodeVisibleToRetrievalCapability(episode, episodeVisibilityOptions(options))
+    ) {
       return null;
     }
 
@@ -613,6 +666,7 @@ export class RetrievalPipeline {
         provenance: 1,
         recency: computeRecencyEvidenceScore(episode.updated_at),
       },
+      disclosureLabel: memoryDisclosureLabelFromEpisodeAccess(episode),
     };
   }
 
@@ -620,16 +674,22 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "raw_stream" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
+    let parentDisclosureLabel: MemoryDisclosureLabel | undefined;
+
     if (handle.parentEpisodeId !== undefined) {
       const parent = await this.options.episodicRepository.get(handle.parentEpisodeId);
 
       if (
         parent === null ||
-        !isEpisodeVisibleToRetrievalCapability(parent, episodeVisibilityOptions(options))
+        (mode === "disclosure" &&
+          !isEpisodeVisibleToRetrievalCapability(parent, episodeVisibilityOptions(options)))
       ) {
         return null;
       }
+
+      parentDisclosureLabel = memoryDisclosureLabelFromEpisodeAccess(parent);
     }
 
     const adapter = new RawStreamAdapter({
@@ -661,6 +721,7 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
+      ...(parentDisclosureLabel === undefined ? {} : { disclosureLabel: parentDisclosureLabel }),
     };
   }
 
@@ -1133,15 +1194,18 @@ export class RetrievalPipeline {
     scoringFeatures: RetrievalScoringFeatures,
     nowMs: number,
     limit: number,
+    mode: RetrievalExecutionMode,
   ): Promise<EpisodeEvidenceCandidate[]> {
     const rawCandidates = (
       await Promise.all(
-        intents.map((intent) => this.collectEpisodicCandidatesForIntent(intent, options, limit)),
+        intents.map((intent) =>
+          this.collectEpisodicCandidatesForIntent(intent, options, limit, mode),
+        ),
       )
     ).flat();
     const participantEntityIds = this.resolveParticipantEntityIds(
       rawCandidates,
-      options.audienceEntityId,
+      rankingAudienceEntityId(options),
     );
 
     return rawCandidates.map((entry) => {
@@ -1164,6 +1228,7 @@ export class RetrievalPipeline {
     intent: RecallIntent,
     options: RetrievalSearchOptions,
     limit: number,
+    mode: RetrievalExecutionMode,
   ): Promise<RawEpisodeEvidenceCandidate[]> {
     const vectorBudget = Math.max(limit * 2, 12);
     const indexedBudget = Math.max(limit * 2, 8);
@@ -1171,10 +1236,16 @@ export class RetrievalPipeline {
 
     if (intent.kind === "raw_text" || intent.kind === "topic" || intent.kind === "relationship") {
       const intentVector = await this.options.embeddingClient.embed(intent.query);
-      const candidates = await this.options.episodicRepository.searchByVector(intentVector, {
-        ...episodeSearchOptions(options),
-        limit: vectorBudget,
-      });
+      const candidates =
+        mode === "cognition"
+          ? await this.options.episodicRepository.recallByVectorForCognition(intentVector, {
+              ...episodeCognitionRecallOptions(options),
+              limit: vectorBudget,
+            })
+          : await this.options.episodicRepository.searchByVectorForDisclosure(intentVector, {
+              ...episodeSearchOptions(options),
+              limit: vectorBudget,
+            });
 
       return candidates.map((candidate) => ({
         intent,
@@ -1184,13 +1255,21 @@ export class RetrievalPipeline {
     }
 
     if (intent.kind === "known_term") {
-      const candidates = await this.options.episodicRepository.searchByParticipantsOrTags(
-        intent.terms,
-        {
-          ...episodeVisibilityOptions(options),
-          limit: indexedBudget,
-        },
-      );
+      const candidates =
+        mode === "cognition"
+          ? await this.options.episodicRepository.recallByParticipantsOrTagsForCognition(
+              intent.terms,
+              {
+                limit: indexedBudget,
+              },
+            )
+          : await this.options.episodicRepository.searchByParticipantsOrTagsForDisclosure(
+              intent.terms,
+              {
+                ...episodeVisibilityOptions(options),
+                limit: indexedBudget,
+              },
+            );
 
       return candidates.map((candidate) => ({
         intent,
@@ -1200,10 +1279,15 @@ export class RetrievalPipeline {
     }
 
     if (intent.kind === "time" && intent.timeRange !== undefined) {
-      const candidates = await this.options.episodicRepository.searchByTimeRange(intent.timeRange, {
-        ...episodeVisibilityOptions(options),
-        limit: indexedBudget,
-      });
+      const candidates =
+        mode === "cognition"
+          ? await this.options.episodicRepository.recallByTimeRangeForCognition(intent.timeRange, {
+              limit: indexedBudget,
+            })
+          : await this.options.episodicRepository.searchByTimeRangeForDisclosure(intent.timeRange, {
+              ...episodeVisibilityOptions(options),
+              limit: indexedBudget,
+            });
 
       return candidates.map((candidate) => ({
         intent,
@@ -1215,16 +1299,26 @@ export class RetrievalPipeline {
     if (intent.kind === "recent") {
       const recentLimit = Math.max(1, Math.ceil(recentBudget / 2));
       const heatLimit = Math.max(1, recentBudget - recentLimit);
-      const [recent, hottest] = await Promise.all([
-        this.options.episodicRepository.listRecent({
-          ...episodeVisibilityOptions(options),
-          limit: recentLimit,
-        }),
-        this.options.episodicRepository.listHottest({
-          ...episodeVisibilityOptions(options),
-          limit: heatLimit,
-        }),
-      ]);
+      const [recent, hottest] =
+        mode === "cognition"
+          ? await Promise.all([
+              this.options.episodicRepository.listRecentForCognition({
+                limit: recentLimit,
+              }),
+              this.options.episodicRepository.listHottestForCognition({
+                limit: heatLimit,
+              }),
+            ])
+          : await Promise.all([
+              this.options.episodicRepository.listRecentForDisclosure({
+                ...episodeVisibilityOptions(options),
+                limit: recentLimit,
+              }),
+              this.options.episodicRepository.listHottestForDisclosure({
+                ...episodeVisibilityOptions(options),
+                limit: heatLimit,
+              }),
+            ]);
 
       return mergeRawEpisodeCandidates([
         ...recent.map((candidate) => ({
@@ -1255,6 +1349,7 @@ export class RetrievalPipeline {
       entry.candidate,
       {
         ...options,
+        audienceEntityId: rankingAudienceEntityId(options),
         scoringFeatures,
         entityTerms: entry.intent.kind === "known_term" ? entry.intent.terms : [],
         ...(participantEntityIds === undefined ? {} : { participantEntityIds }),
@@ -1288,6 +1383,7 @@ export class RetrievalPipeline {
             intent.query,
             {
               ...options,
+              audienceEntityId: semanticAudienceEntityId(options),
               queryVector: intentVector,
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
@@ -1677,7 +1773,14 @@ function countSemanticHits(semantic: RetrievedSemantic): number {
   );
 }
 
-function recallStateScopeKey(options: RetrievalSearchOptions): string {
+function recallStateScopeKey(
+  options: RetrievalSearchOptions,
+  mode: RetrievalExecutionMode,
+): string {
+  if (mode === "cognition") {
+    return "sol";
+  }
+
   return options.audienceEntityId ?? options.sessionId ?? DEFAULT_SESSION_ID;
 }
 
@@ -1923,6 +2026,29 @@ function episodeSearchOptions(options: RetrievalSearchOptions): EpisodeSearchOpt
   };
 }
 
+function episodeCognitionRecallOptions(
+  options: RetrievalSearchOptions,
+): EpisodeCognitionRecallOptions {
+  return {
+    minSimilarity: options.minSimilarity,
+    tagFilter: options.tagFilter,
+    tierFilter: options.tierFilter,
+    timeRange: options.timeRange,
+  };
+}
+
+function rankingAudienceEntityId(options: RetrievalSearchOptions): EntityId | null | undefined {
+  return options.rankingAudienceEntityId ?? options.audienceEntityId;
+}
+
+function semanticAudienceEntityId(options: RetrievalSearchOptions): EntityId | null | undefined {
+  return (
+    options.semanticAudienceEntityId ??
+    options.disclosureContext?.currentAudienceEntityId ??
+    options.audienceEntityId
+  );
+}
+
 function normalizeTermInput(value: string): string {
   return value.trim();
 }
@@ -2133,6 +2259,7 @@ function episodeCandidateToEvidence(item: EpisodeEvidenceCandidate): EvidenceIte
       recency: computeRecencyEvidenceScore(episode.updated_at),
       exactTerm: item.intent.kind === "known_term" ? item.score.entityRelevance : undefined,
     },
+    disclosureLabel: memoryDisclosureLabelFromEpisodeAccess(episode),
   };
 }
 
@@ -2285,11 +2412,15 @@ function streamEntriesToEvidence(
 ): EvidenceItem[] {
   const intentByStreamId = new Map<string, RecallIntent>();
   const parentEpisodeIdByStreamId = new Map<string, EpisodeId>();
+  const disclosureLabelByStreamId = new Map<string, MemoryDisclosureLabel>();
 
   for (const candidate of episodeCandidates) {
+    const disclosureLabel = memoryDisclosureLabelFromEpisodeAccess(candidate.candidate.episode);
+
     for (const streamId of candidate.candidate.episode.source_stream_ids) {
       intentByStreamId.set(streamId, candidate.intent);
       parentEpisodeIdByStreamId.set(streamId, candidate.candidate.episode.id);
+      disclosureLabelByStreamId.set(streamId, disclosureLabel);
     }
   }
 
@@ -2298,6 +2429,7 @@ function streamEntriesToEvidence(
     .map((entry) =>
       streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!, "raw_stream", {
         parentEpisodeId: parentEpisodeIdByStreamId.get(entry.id),
+        disclosureLabel: disclosureLabelByStreamId.get(entry.id),
       }),
     );
 }
@@ -2308,6 +2440,7 @@ function streamEntryToEvidence(
   source: "raw_stream" | "recent_raw_stream" = "raw_stream",
   options: {
     parentEpisodeId?: EpisodeId;
+    disclosureLabel?: MemoryDisclosureLabel;
   } = {},
 ): EvidenceItem {
   return {
@@ -2327,6 +2460,7 @@ function streamEntryToEvidence(
       provenance: 1,
       recency: intent.kind === "recent" ? 1 : undefined,
     },
+    ...(options.disclosureLabel === undefined ? {} : { disclosureLabel: options.disclosureLabel }),
   };
 }
 

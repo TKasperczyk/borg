@@ -1,4 +1,9 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import {
+  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
+  memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
+} from "../../../retrieval/index.js";
 import { rawStreamActor } from "../entry-metadata.js";
 import {
   COMMITMENT_TRUST_RANK,
@@ -48,6 +53,21 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
       itemStreamIds,
       context.resolver,
     );
+    const disclosureState =
+      item.disclosureLabel === undefined
+        ? ""
+        : ` ${renderMemoryDisclosureLabelForModel(item.disclosureLabel)}`;
+    const stateMetadata = {
+      ...(itemStreamIds.length === 0 ? {} : { stream_ids: [...itemStreamIds] }),
+      ...(item.disclosureLabel === undefined
+        ? {}
+        : {
+            disclosure_label: memoryDisclosureLabelMetadata(item.disclosureLabel),
+            ...(item.disclosureLabel.disclosureClass === "public"
+              ? {}
+              : { disclosure_note: MEMORY_DISCLOSURE_INTERNAL_USE_NOTE }),
+          }),
+    };
     addEntry(
       context.buckets,
       "retrieved_raw_stream_evidence",
@@ -60,8 +80,8 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
         text: item.text,
         value: item.source,
         ...(streamIndex === undefined ? {} : { stream_index: streamIndex }),
-        state: `score=${item.score.toFixed(2)}`,
-        state_metadata: itemStreamIds.length === 0 ? undefined : { stream_ids: [...itemStreamIds] },
+        state: `score=${item.score.toFixed(2)}${disclosureState}`,
+        state_metadata: Object.keys(stateMetadata).length === 0 ? undefined : stateMetadata,
         taint: "none",
         via_retrieval: true,
         ...persistenceClassFromStreamIds(itemStreamIds, context.resolver),

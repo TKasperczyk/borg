@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import {
+  MEMORY_DISCLOSURE_CLASSES,
+  memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
+  type RetrievedEpisode,
+} from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const DEFAULT_EPISODIC_SEARCH_LIMIT = 5;
@@ -25,6 +30,12 @@ const episodicSearchOutputSchema = z.object({
       start_time: z.number().finite(),
       end_time: z.number().finite(),
       source_stream_ids: z.array(z.string().min(1)),
+      disclosure_label: z.object({
+        disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
+        origin_audience_entity_ids: z.array(z.string().min(1)),
+        private_to_entity_ids: z.array(z.string().min(1)),
+        public_to_entity_ids: z.array(z.string().min(1)),
+      }),
       score: z.number().finite(),
       score_breakdown: z.object({
         similarity: z.number().finite(),
@@ -102,6 +113,9 @@ export function createEpisodicSearchTool(
           start_time: result.episode.start_time,
           end_time: result.episode.end_time,
           source_stream_ids: result.episode.source_stream_ids,
+          disclosure_label: memoryDisclosureLabelMetadata(
+            result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
+          ),
           score: result.score,
           score_breakdown: {
             similarity: result.scoreBreakdown.similarity,

@@ -7,6 +7,8 @@ import {
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
+import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
+import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
 
 import { mergeCandidates } from "../test-support/episodic-candidates.js";
 
@@ -34,6 +36,20 @@ function searchWeights(
   return {
     ...defaultWeights(),
     ...overrides,
+  };
+}
+
+function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
+  return {
+    recallContext: {
+      reader: "sol" as const,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId,
+      currentParticipantEntityIds:
+        currentAudienceEntityId === null ? [] : [currentAudienceEntityId],
+    },
+    rankingAudienceEntityId: currentAudienceEntityId,
+    sessionId: DEFAULT_SESSION_ID,
   };
 }
 
@@ -644,7 +660,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(visibleSpy).not.toHaveBeenCalled();
   });
 
-  it("keeps every non-vector generator audience-safe", async () => {
+  it("recalls every non-vector generator globally and labels private episodes", async () => {
     harness = await createHarness();
     const sam = harness.entityRepository.resolve("Sam");
     const alex = harness.entityRepository.resolve("Alex");
@@ -666,34 +682,86 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     await harness.episodicRepository.insert(hidden);
     markHot(harness, hidden.id);
 
-    const temporal = await harness.retrievalPipeline.search(QUERY, {
+    const temporal = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(alex),
       limit: 3,
-      audienceEntityId: alex,
       timeRange: { start: 140_000, end: 170_000 },
       attentionWeights: searchWeights({ time: 0.7, heat: 0.05 }),
     });
-    const audience = await harness.retrievalPipeline.search(QUERY, {
+    const audience = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(alex),
       limit: 3,
-      audienceEntityId: alex,
       audienceTerms: ["Alex"],
       attentionWeights: searchWeights({ social: 1.5, heat: 0.05 }),
     });
-    const entity = await harness.retrievalPipeline.search(QUERY, {
+    const entity = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(alex),
       limit: 3,
-      audienceEntityId: alex,
       entityTerms: ["atlas"],
       attentionWeights: searchWeights({ entity: 1.2, heat: 0.05 }),
     });
-    const recentHeat = await harness.retrievalPipeline.search(QUERY, {
+    const recentHeat = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(alex),
       limit: 3,
-      audienceEntityId: alex,
       attentionWeights: searchWeights({ heat: 0.9 }),
     });
 
-    expect(temporal.map((item) => item.episode.id)).not.toContain(hidden.id);
-    expect(audience.map((item) => item.episode.id)).not.toContain(hidden.id);
-    expect(entity.map((item) => item.episode.id)).not.toContain(hidden.id);
-    expect(recentHeat.map((item) => item.episode.id)).not.toContain(hidden.id);
+    for (const result of [temporal, audience, entity, recentHeat]) {
+      const recalled = result.episodes.find((item) => item.episode.id === hidden.id);
+      expect(recalled?.disclosureLabel).toMatchObject({
+        disclosureClass: "relationship_private",
+        privateToEntityIds: [sam],
+      });
+    }
+  });
+
+  it("labels raw-stream evidence sourced from private cognition-recalled episodes", async () => {
+    harness = await createHarness();
+    const alice = harness.entityRepository.resolve("Alice");
+    const bob = harness.entityRepository.resolve("Bob");
+    const streamEntry = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Alice private raw-stream detail for the Atlas plan.",
+    });
+    const privateEpisode = createEpisodeFixture(
+      {
+        title: "Alice private raw stream episode",
+        narrative: "Alice private episode narrative.",
+        source_stream_ids: [streamEntry.id],
+        participants: ["Alice"],
+        tags: ["Atlas"],
+        audience_entity_id: alice,
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(privateEpisode);
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(bob),
+      limit: 3,
+    });
+    const rawStreamEvidence = result.evidence.find(
+      (item) =>
+        item.source === "raw_stream" && item.provenance?.parentEpisodeId === privateEpisode.id,
+    );
+
+    expect(rawStreamEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice],
+      privateToEntityIds: [alice],
+      publicToEntityIds: [],
+    });
+    const rendered = summarizeRetrievedEvidence(
+      "Retrieved context",
+      { evidence: rawStreamEvidence === undefined ? [] : [rawStreamEvidence] },
+      1_000,
+    );
+    expect(rendered).toContain("disclosure_class=relationship_private");
+    expect(rendered).toContain(`private-to=${alice}`);
+    expect(rendered).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
   });
 
   it("lets MMR select a zero-similarity rescued candidate with a valid embedding", async () => {

@@ -1,13 +1,15 @@
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
-import type {
-  EvidenceItem,
-  RetrievalConfidence,
-  RetrievedContradictionRouting,
-  RetrievedEpisode,
-  RetrievedSemantic,
-  RetrievedSemanticHit,
-  RetrievedSemanticNode,
+import {
+  memoryDisclosureLabelFromEpisodeAccess,
+  renderMemoryDisclosureLabelForModel,
+  type EvidenceItem,
+  type RetrievalConfidence,
+  type RetrievedContradictionRouting,
+  type RetrievedEpisode,
+  type RetrievedSemantic,
+  type RetrievedSemanticHit,
+  type RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
@@ -138,6 +140,7 @@ export function summarizeRetrievedEpisodes(
         : normalizedNarrative;
     const blockLines = [
       `- ${result.episode.title} [score=${result.score.toFixed(2)} sim=${result.scoreBreakdown.similarity.toFixed(2)} salience=${result.scoreBreakdown.decayedSalience.toFixed(2)}]`,
+      `  disclosure: ${renderMemoryDisclosureLabelForModel(result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode))}`,
       `  narrative: ${narrative}`,
       `  participants: ${result.episode.participants.join(", ") || "none"}`,
       `  tags: ${result.episode.tags.join(", ") || "none"}`,
@@ -211,9 +214,13 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   const provenance = summarizeEvidenceProvenance(item);
   const terms = item.matchedTerms.length === 0 ? "" : ` terms=${item.matchedTerms.join(", ")}`;
   const sourceVisibility = summarizeEvidenceSourceVisibility(item);
+  const disclosure =
+    item.disclosureLabel === undefined
+      ? ""
+      : ` ${renderMemoryDisclosureLabelForModel(item.disclosureLabel)}`;
 
   return [
-    `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}]${provenance}`,
+    `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
   ].join("\n");
 }

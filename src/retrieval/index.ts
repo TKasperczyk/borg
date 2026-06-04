@@ -29,7 +29,10 @@ export {
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   MEMORY_DISCLOSURE_CLASSES,
+  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureClass,
@@ -37,6 +40,7 @@ export {
 } from "./recall-context.js";
 export {
   RetrievalPipeline,
+  type CognitionRecallSearchOptions,
   type RetrievedContext,
   type RetrievedContradictionRouting,
   type RetrievedContradictionRoutingItem,

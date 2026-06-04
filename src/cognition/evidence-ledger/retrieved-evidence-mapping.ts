@@ -1,4 +1,9 @@
-import type { EvidenceItem } from "../../retrieval/index.js";
+import {
+  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
+  memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
+  type EvidenceItem,
+} from "../../retrieval/index.js";
 import {
   combineScopes,
   scopeFromEpisodeIds,
@@ -81,6 +86,9 @@ export function evidenceItemState(item: EvidenceItem): string {
     item.imageUnavailableReason === undefined
       ? null
       : `image_unavailable=${item.imageUnavailableReason}`,
+    item.disclosureLabel === undefined
+      ? null
+      : renderMemoryDisclosureLabelForModel(item.disclosureLabel),
   ].filter((part): part is string => part !== null);
 
   return parts.join(" ");
@@ -114,5 +122,13 @@ export function evidenceItemProvenanceMetadata(
     ...(provenance.streamIds === undefined || provenance.streamIds.length === 0
       ? {}
       : { stream_ids: provenance.streamIds }),
+    ...(item.disclosureLabel === undefined
+      ? {}
+      : {
+          disclosure_label: memoryDisclosureLabelMetadata(item.disclosureLabel),
+          ...(item.disclosureLabel.disclosureClass === "public"
+            ? {}
+            : { disclosure_note: MEMORY_DISCLOSURE_INTERNAL_USE_NOTE }),
+        }),
   };
 }

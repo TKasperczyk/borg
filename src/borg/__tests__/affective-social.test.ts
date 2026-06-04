@@ -176,7 +176,7 @@ describe("Borg", () => {
             options: {
               affectiveSignalDetector?: () => Promise<unknown>;
               retrievalPipeline: {
-                searchWithContext: (
+                recallEpisodesForCognition: (
                   query: string,
                   options?: Record<string, unknown>,
                 ) => Promise<unknown>;
@@ -192,7 +192,7 @@ describe("Borg", () => {
       });
       const searchSpy = vi.spyOn(
         internal.deps.turnOrchestrator.options.retrievalPipeline,
-        "searchWithContext",
+        "recallEpisodesForCognition",
       );
 
       await borg.turn({

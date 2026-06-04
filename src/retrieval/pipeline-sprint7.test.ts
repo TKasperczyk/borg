@@ -4,7 +4,9 @@ import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
+  TestEmbeddingClient,
 } from "../offline/test-support.js";
+import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
 
 function socialAttentionWeights() {
   return {
@@ -17,6 +19,21 @@ function socialAttentionWeights() {
     entity: 0,
     heat: 0.1,
     suppression_penalty: 0.5,
+  };
+}
+
+function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
+  return {
+    recallContext: {
+      reader: "sol" as const,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId,
+      currentParticipantEntityIds:
+        currentAudienceEntityId === null ? [] : [currentAudienceEntityId],
+    },
+    rankingAudienceEntityId: currentAudienceEntityId,
+    semanticAudienceEntityId: currentAudienceEntityId,
+    sessionId: DEFAULT_SESSION_ID,
   };
 }
 
@@ -289,7 +306,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(findSpy).not.toHaveBeenCalled();
   });
 
-  it("hard-excludes audience-scoped episodes from other audiences", async () => {
+  it("recalls audience-scoped episodes across audiences and labels them", async () => {
     harness = await createOfflineTestHarness();
     const sam = harness.entityRepository.resolve("Sam");
     const alex = harness.entityRepository.resolve("Alex");
@@ -301,12 +318,17 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     });
     await harness.episodicRepository.insert(privateEpisode);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.recallEpisodesForCognition("architecture", {
+      ...cognitionRecallOptions(alex),
       limit: 3,
-      audienceEntityId: alex,
     });
 
-    expect(results).toEqual([]);
+    const recalled = results.episodes.find((result) => result.episode.id === privateEpisode.id);
+    expect(recalled).toBeDefined();
+    expect(recalled?.disclosureLabel).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [sam],
+    });
   });
 
   it("keeps public episodes visible for any audience", async () => {
@@ -328,7 +350,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(results.map((result) => result.episode.id)).toContain(publicEpisode.id);
   });
 
-  it("uses self_continuity to retrieve self-scoped episodes without admitting other private episodes", async () => {
+  it("recalls self-scoped and other private episodes globally while preserving labels", async () => {
     harness = await createOfflineTestHarness();
     const selfEntityId = harness.entityRepository.add({
       canonicalName: "Sol",
@@ -351,25 +373,82 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     await harness.episodicRepository.insert(selfScopedEpisode);
     await harness.episodicRepository.insert(otherPrivateEpisode);
 
-    const selfContinuity = await harness.retrievalPipeline.search("architecture", {
+    const cognition = await harness.retrievalPipeline.recallEpisodesForCognition("architecture", {
+      ...cognitionRecallOptions(audienceEntityId),
       limit: 5,
-      globalIdentitySelfAudienceEntityId: selfEntityId,
       entityTerms: ["architecture"],
     });
-    const normalAudience = await harness.retrievalPipeline.search("architecture", {
+    const disclosure = await harness.retrievalPipeline.search("architecture", {
       limit: 5,
       audienceEntityId: audienceEntityId,
       entityTerms: ["architecture"],
     });
 
-    expect(selfContinuity.map((result) => result.episode.id)).toContain(selfScopedEpisode.id);
-    expect(selfContinuity.map((result) => result.episode.id)).not.toContain(
-      otherPrivateEpisode.id,
+    const cognitionById = new Map(cognition.episodes.map((result) => [result.episode.id, result]));
+    expect(cognitionById.get(selfScopedEpisode.id)?.disclosureLabel).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [selfEntityId],
+    });
+    expect(cognitionById.get(otherPrivateEpisode.id)?.disclosureLabel).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [otherEntityId],
+    });
+    expect(disclosure.map((result) => result.episode.id)).not.toContain(selfScopedEpisode.id);
+    expect(disclosure.map((result) => result.episode.id)).not.toContain(otherPrivateEpisode.id);
+  });
+
+  it("keeps semantic source-visibility pruning audience-scoped during cognition recall", async () => {
+    const query = "atlas semantic source visibility";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(new Map([[query, [1, 0, 0, 0]]])),
+    });
+    const currentAudience = harness.entityRepository.resolve("Current Audience");
+    const otherAudience = harness.entityRepository.resolve("Other Audience");
+    const currentPrivateEpisode = createEpisodeFixture({
+      title: "Atlas current-audience semantic source",
+      tags: ["atlas"],
+      audience_entity_id: currentAudience,
+      shared: false,
+    });
+    const otherPrivateEpisode = createEpisodeFixture({
+      title: "Atlas other-audience semantic source",
+      tags: ["atlas"],
+      audience_entity_id: otherAudience,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(currentPrivateEpisode);
+    await harness.episodicRepository.insert(otherPrivateEpisode);
+    const currentNode = createSemanticNodeFixture(
+      {
+        kind: "entity",
+        label: "Atlas Current Audience Private",
+        description: "Atlas node backed by current-audience private evidence.",
+        source_episode_ids: [currentPrivateEpisode.id],
+      },
+      [1, 0, 0, 0],
     );
-    expect(normalAudience.map((result) => result.episode.id)).not.toContain(selfScopedEpisode.id);
-    expect(normalAudience.map((result) => result.episode.id)).not.toContain(
-      otherPrivateEpisode.id,
+    const otherNode = createSemanticNodeFixture(
+      {
+        kind: "entity",
+        label: "Atlas Other Audience Private",
+        description: "Atlas node backed by other-audience private evidence.",
+        source_episode_ids: [otherPrivateEpisode.id],
+      },
+      [1, 0, 0, 0],
     );
+    await harness.semanticNodeRepository.insert(currentNode);
+    await harness.semanticNodeRepository.insert(otherNode);
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(query, {
+      ...cognitionRecallOptions(currentAudience),
+      limit: 5,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const matchedNodeIds = result.semantic.matched_nodes.map((node) => node.id);
+
+    expect(matchedNodeIds).toContain(currentNode.id);
+    expect(matchedNodeIds).not.toContain(otherNode.id);
   });
 
   it("keeps semantic nodes whose source episodes include visible evidence", async () => {

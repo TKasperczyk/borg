@@ -32,6 +32,7 @@ import {
 
 import {
   type Episode,
+  type EpisodeCognitionRecallOptions,
   type EpisodeListOptions,
   type EpisodeListResult,
   type EpisodePatch,
@@ -77,6 +78,7 @@ type CursorPayload = {
 };
 
 type IndexedEpisodeOrder = "recent" | "heat";
+type EpisodeSearchVisibilityMode = "cognition" | "disclosure";
 
 type IndexedVisibilityBranch = {
   where: string;
@@ -833,6 +835,27 @@ export class EpisodicRepository {
     return rows.map((row) => parseEpisodeId(row.episode_id));
   }
 
+  private queryAllIndexedEpisodeIds(order: IndexedEpisodeOrder, limit: number): EpisodeId[] {
+    const orderBy =
+      order === "heat"
+        ? "heat_score DESC, updated_at DESC, episode_id DESC"
+        : "updated_at DESC, episode_id DESC";
+    const indexName = order === "heat" ? "idx_episode_index_heat" : "idx_episode_index_recent";
+    const rows = this.db
+      .prepare(
+        `
+          SELECT episode_id
+          FROM episode_index INDEXED BY ${indexName}
+          WHERE archived = 0
+          ORDER BY ${orderBy}
+          LIMIT ?
+        `,
+      )
+      .all(limit) as IndexedEpisodeIdRow[];
+
+    return rows.map((row) => parseEpisodeId(row.episode_id));
+  }
+
   private async hydrateCandidatesByIds(
     ids: readonly EpisodeId[],
   ): Promise<EpisodeSearchCandidate[]> {
@@ -1297,9 +1320,31 @@ export class EpisodicRepository {
     });
   }
 
+  async recallByVectorForCognition(
+    vector: Float32Array,
+    options: EpisodeCognitionRecallOptions = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByVectorInternal(vector, options, "cognition");
+  }
+
+  async searchByVectorForDisclosure(
+    vector: Float32Array,
+    options: EpisodeSearchOptions = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByVectorInternal(vector, options, "disclosure");
+  }
+
   async searchByVector(
     vector: Float32Array,
     options: EpisodeSearchOptions = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByVectorForDisclosure(vector, options);
+  }
+
+  private async searchByVectorInternal(
+    vector: Float32Array,
+    options: EpisodeCognitionRecallOptions | EpisodeSearchOptions,
+    visibilityMode: EpisodeSearchVisibilityMode,
   ): Promise<EpisodeSearchCandidate[]> {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
     const searchLimit = Math.max(limit * 5, limit, 20);
@@ -1307,7 +1352,10 @@ export class EpisodicRepository {
       limit: searchLimit,
       vectorColumn: "embedding",
       distanceType: "cosine",
-      where: this.buildOptionsVisibilityWhereClause(options),
+      where:
+        visibilityMode === "disclosure"
+          ? this.buildOptionsVisibilityWhereClause(options as EpisodeSearchOptions)
+          : undefined,
     });
     const ranked = rows.map((row) => {
       const episode = fromEpisodeRow(row);
@@ -1318,14 +1366,17 @@ export class EpisodicRepository {
     });
     const statsById = this.getStatsMany(ranked.map((item) => item.episode.id));
     const results: EpisodeSearchCandidate[] = [];
-    const viewer = resolveViewerCapability(options);
+    const viewer =
+      visibilityMode === "disclosure"
+        ? resolveViewerCapability(options as EpisodeSearchOptions)
+        : null;
 
     for (const item of ranked) {
       const episode = item.episode;
       const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
       const similarity = item.similarity;
 
-      if (!isEpisodeVisibleToCapability(episode, viewer)) {
+      if (viewer !== null && !isEpisodeVisibleToCapability(episode, viewer)) {
         continue;
       }
 
@@ -1377,18 +1428,54 @@ export class EpisodicRepository {
     return results;
   }
 
+  async recallByTimeRangeForCognition(
+    range: { start: number; end: number },
+    options: {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByTimeRangeInternal(range, options, "cognition");
+  }
+
+  async searchByTimeRangeForDisclosure(
+    range: { start: number; end: number },
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByTimeRangeInternal(range, options, "disclosure");
+  }
+
   async searchByTimeRange(
     range: { start: number; end: number },
     options: EpisodeVisibilityOptions & {
       limit?: number;
     } = {},
   ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByTimeRangeForDisclosure(range, options);
+  }
+
+  private async searchByTimeRangeInternal(
+    range: { start: number; end: number },
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    },
+    visibilityMode: EpisodeSearchVisibilityMode,
+  ): Promise<EpisodeSearchCandidate[]> {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
     await this.ensureEpisodeIndexBackfilled();
 
-    const visibility = this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei");
-    const clauses = ["ei.archived = 0", visibility.sql];
-    const params: unknown[] = [...visibility.params];
+    const clauses = ["ei.archived = 0"];
+    const params: unknown[] = [];
+
+    if (visibilityMode === "disclosure") {
+      const visibility = this.buildIndexedVisibilityWhereClause(
+        resolveViewerCapability(options),
+        "ei",
+      );
+      clauses.push(visibility.sql);
+      params.push(...visibility.params);
+    }
 
     if (Number.isFinite(range.end)) {
       clauses.push("ei.start_time <= ?");
@@ -1448,11 +1535,39 @@ export class EpisodicRepository {
     return this.hydrateCandidatesByIds(rows.map((row) => parseEpisodeId(row.episode_id)));
   }
 
+  async recallByParticipantsOrTagsForCognition(
+    terms: readonly string[],
+    options: {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByParticipantsOrTagsInternal(terms, options, "cognition");
+  }
+
+  async searchByParticipantsOrTagsForDisclosure(
+    terms: readonly string[],
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByParticipantsOrTagsInternal(terms, options, "disclosure");
+  }
+
   async searchByParticipantsOrTags(
     terms: readonly string[],
     options: EpisodeVisibilityOptions & {
       limit?: number;
     } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByParticipantsOrTagsForDisclosure(terms, options);
+  }
+
+  private async searchByParticipantsOrTagsInternal(
+    terms: readonly string[],
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    },
+    visibilityMode: EpisodeSearchVisibilityMode,
   ): Promise<EpisodeSearchCandidate[]> {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
     const normalizedTerms = new Set(
@@ -1467,7 +1582,10 @@ export class EpisodicRepository {
 
     const normalizedTermList = [...normalizedTerms];
     const termPlaceholders = sqlPlaceholders(normalizedTermList.length);
-    const visibility = this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei");
+    const visibility =
+      visibilityMode === "disclosure"
+        ? this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei")
+        : { sql: "1 = 1", params: [] };
     const visibilityParams = visibility.params;
     const rows = this.db
       .prepare(
@@ -1503,7 +1621,17 @@ export class EpisodicRepository {
     return this.hydrateCandidatesByIds(rows.map((row) => parseEpisodeId(row.episode_id)));
   }
 
-  async listRecent(
+  async listRecentForCognition(
+    options: {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+    await this.ensureEpisodeIndexBackfilled();
+    return this.hydrateCandidatesByIds(this.queryAllIndexedEpisodeIds("recent", limit));
+  }
+
+  async listRecentForDisclosure(
     options: EpisodeVisibilityOptions & {
       limit?: number;
     } = {},
@@ -1515,7 +1643,25 @@ export class EpisodicRepository {
     );
   }
 
-  async listHottest(
+  async listRecent(
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.listRecentForDisclosure(options);
+  }
+
+  async listHottestForCognition(
+    options: {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+    await this.ensureEpisodeIndexBackfilled();
+    return this.hydrateCandidatesByIds(this.queryAllIndexedEpisodeIds("heat", limit));
+  }
+
+  async listHottestForDisclosure(
     options: EpisodeVisibilityOptions & {
       limit?: number;
     } = {},
@@ -1523,6 +1669,14 @@ export class EpisodicRepository {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
     await this.ensureEpisodeIndexBackfilled();
     return this.hydrateCandidatesByIds(this.queryVisibleIndexedEpisodeIds(options, "heat", limit));
+  }
+
+  async listHottest(
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.listHottestForDisclosure(options);
   }
 
   async list(options: EpisodeListOptions = {}): Promise<EpisodeListResult> {

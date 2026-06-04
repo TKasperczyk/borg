@@ -8,6 +8,7 @@ import type {
   AttachmentId,
   ImagePerceptionId,
 } from "../util/ids.js";
+import type { MemoryDisclosureLabel } from "./recall-context.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
@@ -104,6 +105,7 @@ export type EvidenceItem = {
   imageLabel?: string;
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
+  disclosureLabel?: MemoryDisclosureLabel;
 };
 
 export type EvidencePool = {

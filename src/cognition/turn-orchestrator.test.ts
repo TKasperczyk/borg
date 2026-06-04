@@ -2573,9 +2573,7 @@ describe("TurnOrchestrator operator session snapshot", () => {
       );
 
       expect(snapshotStart).toBeGreaterThanOrEqual(0);
-      expect(snapshotBlock).toContain(
-        `<session alias="session_1" session_id="${otherSessionId}">`,
-      );
+      expect(snapshotBlock).toContain(`<session alias="session_1" session_id="${otherSessionId}">`);
       expect(snapshotBlock).toContain("<audience_label>Alice</audience_label>");
       expect(snapshotBlock).toContain("<conversation_kind>dm</conversation_kind>");
       expect(snapshotBlock).toContain("<participation_policy>active</participation_policy>");
@@ -4081,7 +4079,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("surfaces self identity records across audiences without exposing hidden evidence handles", async () => {
+  it("surfaces self identity records across audiences while labeling private recalled evidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_000_000);
@@ -4281,28 +4279,36 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             ?.evidence_episode_ids,
         ).toEqual([]);
         expect(
-          provenanceEpisodeIds(snapshot.values.find((value) => value.label === "alice-private-value")),
+          provenanceEpisodeIds(
+            snapshot.values.find((value) => value.label === "alice-private-value"),
+          ),
         ).not.toContain(alicePrivateEpisodeId);
         expect(
           snapshot.values.find((value) => value.label === "mixed-visible-value")
             ?.evidence_episode_ids,
         ).toEqual([publicEpisodeId]);
         expect(
-          provenanceEpisodeIds(snapshot.values.find((value) => value.label === "mixed-visible-value")),
+          provenanceEpisodeIds(
+            snapshot.values.find((value) => value.label === "mixed-visible-value"),
+          ),
         ).toEqual([publicEpisodeId]);
         expect(
           snapshot.traits.find((trait) => trait.label === "alice-private-trait")
             ?.evidence_episode_ids,
         ).toEqual([]);
         expect(
-          provenanceEpisodeIds(snapshot.traits.find((trait) => trait.label === "alice-private-trait")),
+          provenanceEpisodeIds(
+            snapshot.traits.find((trait) => trait.label === "alice-private-trait"),
+          ),
         ).not.toContain(alicePrivateEpisodeId);
         expect(
           snapshot.traits.find((trait) => trait.label === "mixed-visible-trait")
             ?.evidence_episode_ids,
         ).toEqual([publicEpisodeId]);
         expect(
-          provenanceEpisodeIds(snapshot.traits.find((trait) => trait.label === "mixed-visible-trait")),
+          provenanceEpisodeIds(
+            snapshot.traits.find((trait) => trait.label === "mixed-visible-trait"),
+          ),
         ).not.toContain(alicePrivateEpisodeId);
         expect(
           snapshot.recentGrowthMarkers?.find(
@@ -4376,8 +4382,12 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(finalizerSystem).toContain("alice-private-period");
       expect(finalizerSystem).toContain("Alice-private period narrative");
       expect(finalizerSystem).toContain("from audience-scoped evidence");
-      expect(allRequestText).not.toContain(alicePrivateEpisodeId);
-      expect(allRequestText).not.toContain("Alice private identity evidence narrative.");
+      expect(allRequestText).toContain(alicePrivateEpisodeId);
+      expect(allRequestText).toContain("Alice private identity evidence narrative.");
+      expect(allRequestText).toContain("disclosure_class=relationship_private");
+      expect(allRequestText).toContain(
+        "usable internally; do not disclose to current audience unless authorized",
+      );
     } finally {
       await borg.close();
     }

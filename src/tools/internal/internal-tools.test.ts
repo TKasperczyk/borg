@@ -255,91 +255,36 @@ describe("internal tools", () => {
     expect(result.episodes[0]?.narrative).toContain("The team traced the retrieval path");
   });
 
-  it("scopes episodic search to the invocation audience", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const llm = new FakeLLMClient();
-    const borg = await openTestBorg(tempDir, llm);
+  it("recalls episodic search globally with disclosure labels", async () => {
+    const harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(new Map([["planning roadmap", [0, 1, 0, 0]]])),
+    });
 
     try {
-      const aliceEntry = await borg.stream.append({
-        kind: "user_msg",
-        content: "Alice private planning note about the roadmap.",
-        audience: "Alice",
-      });
-      const bobEntry = await borg.stream.append({
-        kind: "user_msg",
-        content: "Bob private planning note about the roadmap.",
-        audience: "Bob",
-      });
-      llm.pushResponse({
-        text: "",
-        input_tokens: 10,
-        output_tokens: 5,
-        stop_reason: "tool_use",
-        tool_calls: [
-          {
-            id: "toolu_extract_3",
-            name: "EmitEpisodeCandidates",
-            input: {
-              episodes: [
-                {
-                  title: "Alice private planning",
-                  narrative: "Alice discussed a private roadmap planning note.",
-                  source_stream_ids: [aliceEntry.id],
-                  participants: ["Alice"],
-                  location: null,
-                  tags: ["planning", "roadmap"],
-                  confidence: 0.8,
-                  significance: 0.8,
-                },
-                {
-                  title: "Bob private planning",
-                  narrative: "Bob discussed a private roadmap planning note.",
-                  source_stream_ids: [bobEntry.id],
-                  participants: ["Bob"],
-                  location: null,
-                  tags: ["planning", "roadmap"],
-                  confidence: 0.8,
-                  significance: 0.8,
-                },
-              ],
-            },
-          },
-        ],
-      });
-      await borg.episodic.extract({
-        session: DEFAULT_SESSION_ID,
-      });
-
-      const episodes = await borg.episodic.list({ limit: 10 });
-      const aliceEpisode = episodes.items.find(
-        (episode) => episode.title === "Alice private planning",
+      const alice = harness.entityRepository.resolve("Alice");
+      const bob = harness.entityRepository.resolve("Bob");
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          title: "Alice private planning",
+          narrative: "Alice discussed a private roadmap planning note.",
+          participants: ["Alice"],
+          tags: ["planning", "roadmap"],
+          audience_entity_id: alice,
+          shared: false,
+        }),
       );
-      if (aliceEpisode === undefined || aliceEpisode.audience_entity_id === null) {
-        throw new Error("Expected an Alice-scoped episode");
-      }
-
-      const clock = new ManualClock(1_000_100);
-      const dispatcher = new ToolDispatcher({
-        clock,
-        createStreamWriter: (sessionId) =>
-          new StreamWriter({
-            dataDir: tempDir,
-            sessionId,
-            clock,
-          }),
-      });
-      dispatcher.register(
-        createEpisodicSearchTool({
-          searchEpisodes: (query, limit, context) =>
-            borg.episodic.search(query, {
-              limit,
-              audienceEntityId: context.audienceEntityId,
-            }),
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          title: "Bob private planning",
+          narrative: "Bob discussed a private roadmap planning note.",
+          participants: ["Bob"],
+          tags: ["planning", "roadmap"],
+          audience_entity_id: bob,
+          shared: false,
         }),
       );
 
+      const dispatcher = createHarnessToolDispatcher(harness);
       const result = await dispatcher.dispatch({
         toolName: "tool.episodic.search",
         input: {
@@ -348,7 +293,7 @@ describe("internal tools", () => {
         },
         origin: "deliberator",
         sessionId: DEFAULT_SESSION_ID,
-        audienceEntityId: aliceEpisode.audience_entity_id,
+        audienceEntityId: alice,
       });
 
       expect(result.ok).toBe(true);
@@ -356,13 +301,25 @@ describe("internal tools", () => {
         throw new Error(result.error);
       }
       const output = result.output as {
-        episodes: Array<{ title: string }>;
+        episodes: Array<{
+          title: string;
+          disclosure_label: {
+            disclosure_class: string;
+            private_to_entity_ids: string[];
+          };
+        }>;
       };
-      const titles = output.episodes.map((episode) => episode.title);
-      expect(titles).toContain("Alice private planning");
-      expect(titles).not.toContain("Bob private planning");
+      const byTitle = new Map(output.episodes.map((episode) => [episode.title, episode]));
+      expect(byTitle.get("Alice private planning")?.disclosure_label).toMatchObject({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [alice],
+      });
+      expect(byTitle.get("Bob private planning")?.disclosure_label).toMatchObject({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [bob],
+      });
     } finally {
-      await borg.close();
+      await harness.cleanup();
     }
   });
 

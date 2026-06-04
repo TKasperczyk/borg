@@ -19,6 +19,7 @@ import {
   createSemanticEdgeId,
   createSemanticNodeId,
   createStreamEntryId,
+  type EntityId,
   type SessionId,
 } from "../util/ids.js";
 
@@ -27,6 +28,7 @@ import { RetrievalPipeline } from "./pipeline.js";
 
 const NOW_MS = 10_000;
 const DISTRACTOR_COUNT = 16;
+const COGNITION_RECALL_SCOPE_KEY = "sol";
 
 function createEmbeddingClient() {
   return new TestEmbeddingClient(
@@ -42,6 +44,20 @@ function createEmbeddingClient() {
       ["My partner isn't Maya. I never said that.", [0, 1, 0, 0]],
     ]),
   );
+}
+
+function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
+  return {
+    recallContext: {
+      reader: "sol" as const,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId,
+      currentParticipantEntityIds:
+        currentAudienceEntityId === null ? [] : [currentAudienceEntityId],
+    },
+    rankingAudienceEntityId: currentAudienceEntityId,
+    sessionId: DEFAULT_SESSION_ID,
+  };
 }
 
 async function createHarness(): Promise<OfflineTestHarness> {
@@ -928,44 +944,59 @@ describe("retrieval recall_state", () => {
     expect(state?.activeHandles.some((item) => item.handle.source === "raw_stream")).toBe(false);
   });
 
-  it("isolates audience recall state and drops rehydration when visibility changes", async () => {
+  it("uses global cognition recall state and keeps private warm handles internally recallable", async () => {
     harness = await createHarness();
     const audienceA = createEntityId();
     const audienceB = createEntityId();
-    const sessionId = testSessionId();
-    const privateEpisode = createEpisodeFixture({
-      title: "Atlas private to A",
-      narrative: "Audience A private recall should not warm audience B.",
-      participants: ["Atlas"],
-      tags: ["Atlas"],
-      audience_entity_id: audienceA,
-      shared: false,
-      significance: 0.1,
-      created_at: 1_000,
-      updated_at: 1_000,
-    });
+    const privateEpisode = createEpisodeFixture(
+      {
+        title: "Atlas private to A",
+        narrative: "Audience A private recall should warm global cognition state.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        audience_entity_id: audienceA,
+        shared: false,
+        significance: 0.1,
+        created_at: 1_000,
+        updated_at: 1_000,
+      },
+      [1, 0, 0, 0],
+    );
     await harness.episodicRepository.insert(privateEpisode);
-    await insertDistractors(harness);
-    seedEpisodeHandle(harness, audienceA, privateEpisode.id);
+    seedEpisodeHandle(harness, COGNITION_RECALL_SCOPE_KEY, privateEpisode.id);
 
-    const audienceBResult = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      audienceEntityId: audienceB,
-      sessionId,
-      turnCounter: 1,
-      limit: 1,
-    });
+    const audienceBResult = await harness.retrievalPipeline.recallEpisodesForCognition(
+      "unrelated recall",
+      {
+        ...cognitionRecallOptions(audienceB),
+        turnCounter: 1,
+        limit: 1,
+      },
+    );
 
-    expect(harness.recallStateRepository.load(audienceA)?.activeHandles.length).toBeGreaterThan(0);
+    expect(
+      harness.recallStateRepository.load(COGNITION_RECALL_SCOPE_KEY)?.activeHandles.length,
+    ).toBeGreaterThan(0);
     expect(
       audienceBResult.evidence.some((item) => item.provenance?.episodeId === privateEpisode.id),
-    ).toBe(false);
+    ).toBe(true);
+    expect(harness.recallStateRepository.load(audienceA)).toBeNull();
+    expect(harness.recallStateRepository.load(audienceB)).toBeNull();
+
+    const labeledPrivate = await harness.retrievalPipeline.recallEpisodesForCognition("Atlas", {
+      ...cognitionRecallOptions(audienceB),
+      turnCounter: 1,
+      limit: 3,
+      entityTerms: ["Atlas"],
+    });
+
     expect(
-      harness.recallStateRepository
-        .load(audienceB)
-        ?.activeHandles.some(
-          (item) => item.handle.source === "episode" && item.handle.episodeId === privateEpisode.id,
-        ) ?? false,
-    ).toBe(false);
+      labeledPrivate.episodes.find((item) => item.episode.id === privateEpisode.id)
+        ?.disclosureLabel,
+    ).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [audienceA],
+    });
 
     const publicEpisode = createEpisodeFixture(
       {
@@ -980,21 +1011,36 @@ describe("retrieval recall_state", () => {
       [1, 0, 0, 0],
     );
     await harness.episodicRepository.insert(publicEpisode);
-    seedEpisodeHandle(harness, sessionId, publicEpisode.id);
+    seedEpisodeHandle(harness, COGNITION_RECALL_SCOPE_KEY, publicEpisode.id);
     await harness.episodicRepository.update(publicEpisode.id, {
       audience_entity_id: audienceA,
       shared: false,
     });
 
-    const publicResult = await harness.retrievalPipeline.searchWithContext("quiet turn", {
-      sessionId,
+    const publicResult = await harness.retrievalPipeline.recallEpisodesForCognition("quiet turn", {
+      ...cognitionRecallOptions(audienceB),
       turnCounter: 2,
       limit: 1,
     });
 
     expect(
       publicResult.evidence.some((item) => item.provenance?.episodeId === publicEpisode.id),
-    ).toBe(false);
+    ).toBe(true);
+
+    const updatedPrivate = await harness.retrievalPipeline.recallEpisodesForCognition(
+      "Atlas current",
+      {
+        ...cognitionRecallOptions(audienceB),
+        turnCounter: 3,
+        limit: 3,
+      },
+    );
+    expect(
+      updatedPrivate.episodes.find((item) => item.episode.id === publicEpisode.id)?.disclosureLabel,
+    ).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [audienceA],
+    });
   });
 
   it("leaves the working memory schema untouched", () => {
