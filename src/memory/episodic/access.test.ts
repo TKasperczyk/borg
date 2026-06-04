@@ -15,7 +15,7 @@ const OTHER = "ent_bbbbbbbbbbbbbbbb" as EntityId;
 const PUBLIC: EpisodeAccessLike = { audience_entity_id: null, shared: true };
 const PRIVATE_SELF: EpisodeAccessLike = { audience_entity_id: SELF, shared: false };
 const PRIVATE_OTHER: EpisodeAccessLike = { audience_entity_id: OTHER, shared: false };
-const SHARED_OTHER: EpisodeAccessLike = { audience_entity_id: OTHER, shared: true };
+const CONFLICT_SHARED_OTHER: EpisodeAccessLike = { audience_entity_id: OTHER, shared: true };
 const PRIVATE_SELF_AND_OTHER: EpisodeAccessLike = {
   origin_audience_entity_ids: [SELF, OTHER],
   shared: false,
@@ -61,15 +61,16 @@ describe("isEpisodeVisibleToCapability", () => {
   it("audience arm: sees public/shared and own-audience, never another audience's private", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, audience(SELF))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, audience(SELF))).toBe(true);
-    expect(isEpisodeVisibleToCapability(SHARED_OTHER, audience(SELF))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(SELF))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(OTHER))).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, audience(SELF))).toBe(false);
+    expect(isEpisodeVisibleToCapability(CONFLICT_SHARED_OTHER, audience(SELF))).toBe(false);
+    expect(isEpisodeVisibleToCapability(CONFLICT_SHARED_OTHER, audience(OTHER))).toBe(true);
   });
 
   it("audience arm with null id: only public/shared, no private", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, audience(null))).toBe(true);
-    expect(isEpisodeVisibleToCapability(SHARED_OTHER, audience(null))).toBe(true);
+    expect(isEpisodeVisibleToCapability(CONFLICT_SHARED_OTHER, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(null))).toBe(false);

@@ -7,11 +7,10 @@ import {
 } from "../../memory/decision-artifacts/index.js";
 import {
   combineMemoryDisclosureLabels,
-  relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
-import { uniqueDisclosureEntityIds } from "../disclosure-labels.js";
+import { sharedStateMemoryDisclosureLabel } from "../disclosure-labels.js";
 import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
   activeSharedStateArtifactEntries,
@@ -184,9 +183,7 @@ function renderSharedStateEntry(entry: SharedStateEntry): string {
 }
 
 function sharedStateEntryDisclosureLabel(entry: SharedStateEntry): MemoryDisclosureLabel {
-  return relationshipPrivateMemoryDisclosureLabel(
-    uniqueDisclosureEntityIds([entry.audience_entity_id, entry.owner_entity_id]),
-  );
+  return sharedStateMemoryDisclosureLabel(entry);
 }
 
 function entriesGroupedByStateKey(entries: readonly SharedStateEntry[]): Array<{

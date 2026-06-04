@@ -16,6 +16,10 @@ import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
+import {
+  resolveMemoryDisclosureLabelForEpisodeIds,
+  type MemoryDisclosureLabel,
+} from "../retrieval/index.js";
 import { StreamReader } from "../stream/index.js";
 import { AttachmentError, StorageError } from "../util/errors.js";
 import {
@@ -25,6 +29,12 @@ import {
   type ImagePerceptionId,
 } from "../util/ids.js";
 import type { BorgFacades } from "./facade-types.js";
+import type {
+  SemanticEdge,
+  SemanticNode,
+  SemanticNodeSearchCandidate,
+  SemanticWalkStep,
+} from "../memory/semantic/index.js";
 import type {
   BorgDependencies,
   BorgDreamOptions,
@@ -96,6 +106,59 @@ export function createCreatorDirectivesFacade(
     supersedeFamilyAtomic: (...args) =>
       deps.creatorDirectiveRepository.supersedeFamilyAtomic(...args),
     revoke: (...args) => deps.creatorDirectiveRepository.revoke(...args),
+  };
+}
+
+async function semanticDisclosureLabel(
+  deps: BorgDependencies,
+  episodeIds: readonly SemanticNode["source_episode_ids"][number][],
+): Promise<MemoryDisclosureLabel> {
+  return resolveMemoryDisclosureLabelForEpisodeIds(deps.episodicRepository, episodeIds);
+}
+
+async function semanticNodeWithDisclosure(
+  deps: BorgDependencies,
+  node: SemanticNode,
+): Promise<SemanticNode & { disclosureLabel: MemoryDisclosureLabel }> {
+  return {
+    ...node,
+    disclosureLabel: await semanticDisclosureLabel(deps, node.source_episode_ids),
+  };
+}
+
+async function semanticEdgeWithDisclosure(
+  deps: BorgDependencies,
+  edge: SemanticEdge,
+): Promise<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }> {
+  return {
+    ...edge,
+    disclosureLabel: await semanticDisclosureLabel(deps, edge.evidence_episode_ids),
+  };
+}
+
+async function semanticSearchCandidateWithDisclosure(
+  deps: BorgDependencies,
+  candidate: SemanticNodeSearchCandidate,
+): Promise<SemanticNodeSearchCandidate & { node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel } }> {
+  return {
+    ...candidate,
+    node: await semanticNodeWithDisclosure(deps, candidate.node),
+  };
+}
+
+async function semanticWalkStepWithDisclosure(
+  deps: BorgDependencies,
+  step: SemanticWalkStep,
+): Promise<
+  Omit<SemanticWalkStep, "node" | "edgePath"> & {
+    node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
+    edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
+  }
+> {
+  return {
+    ...step,
+    node: await semanticNodeWithDisclosure(deps, step.node),
+    edgePath: await Promise.all(step.edgePath.map((edge) => semanticEdgeWithDisclosure(deps, edge))),
   };
 }
 
@@ -509,23 +572,51 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
             superseded_by: null,
           });
         },
-        get: (id) => deps.semanticNodeRepository.get(id),
-        list: (...args) => deps.semanticNodeRepository.list(...args),
-        listPage: (...args) => deps.semanticNodeRepository.listPage(...args),
+        get: async (id) => {
+          const node = await deps.semanticNodeRepository.get(id);
+          return node === null ? null : semanticNodeWithDisclosure(deps, node);
+        },
+        list: async (...args) => {
+          const nodes = await deps.semanticNodeRepository.list(...args);
+          return Promise.all(nodes.map((node) => semanticNodeWithDisclosure(deps, node)));
+        },
+        listPage: async (...args) => {
+          const page = await deps.semanticNodeRepository.listPage(...args);
+          return {
+            ...page,
+            items: await Promise.all(
+              page.items.map((node) => semanticNodeWithDisclosure(deps, node)),
+            ),
+          };
+        },
         countByStatus: () => deps.semanticNodeRepository.countByStatus(),
         search: async (query, options = {}) => {
           const vector = await deps.embeddingClient.embed(query);
-          return deps.semanticNodeRepository.searchByVector(vector, {
+          const results = await deps.semanticNodeRepository.searchByVector(vector, {
             limit: options.limit,
           });
+          return Promise.all(
+            results.map((candidate) => semanticSearchCandidateWithDisclosure(deps, candidate)),
+          );
         },
       },
       edges: {
         add: (input) => deps.semanticEdgeRepository.addEdge(input),
-        get: (id) => deps.semanticEdgeRepository.getEdge(id),
-        list: (...args) => deps.semanticEdgeRepository.listEdges(...args),
+        get: async (id) => {
+          const edge = deps.semanticEdgeRepository.getEdge(id);
+          return edge === null ? null : semanticEdgeWithDisclosure(deps, edge);
+        },
+        list: async (...args) =>
+          Promise.all(
+            deps.semanticEdgeRepository
+              .listEdges(...args)
+              .map((edge) => semanticEdgeWithDisclosure(deps, edge)),
+          ),
       },
-      walk: (fromId, ...args) => deps.semanticGraph.walk(fromId, ...args),
+      walk: async (fromId, ...args) => {
+        const steps = await deps.semanticGraph.walk(fromId, ...args);
+        return Promise.all(steps.map((step) => semanticWalkStepWithDisclosure(deps, step)));
+      },
       extract: async (episodes) => {
         const extractor = new SemanticExtractor({
           nodeRepository: deps.semanticNodeRepository,

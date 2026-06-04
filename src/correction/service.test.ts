@@ -14,6 +14,7 @@ import {
   createSemanticNodeFixture,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
+import { createEntityId } from "../util/ids.js";
 import { CorrectionService, type CorrectionServiceOptions } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
@@ -299,6 +300,42 @@ describe("correction service", () => {
           }),
         ]),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("labels open-question corrections from the question audience instead of falling back public", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const alice = createEntityId();
+      const question = harness.openQuestionsRepository.add({
+        question: "Which Alice-scoped correction label should render?",
+        urgency: 0.5,
+        audience_entity_id: alice,
+        provenance: { kind: "manual" },
+        source: "reflection",
+      });
+
+      const queued = await correction.correct(question.id, {
+        urgency: 0.75,
+      });
+
+      expect(queued.refs).toMatchObject({
+        target_id: question.id,
+        target_type: "open_question",
+        audience_entity_id: alice,
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          origin_audience_entity_ids: [alice],
+          private_to_entity_ids: [alice],
+          public_to_entity_ids: [],
+        },
+      });
     } finally {
       await harness.cleanup();
     }

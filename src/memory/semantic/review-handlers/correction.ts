@@ -19,11 +19,28 @@ import {
 } from "../review-queue.js";
 
 const correctionPatchSchema = z.record(z.string(), z.unknown());
+const memoryDisclosureClassSchema = z.enum([
+  "public",
+  "relationship_private",
+  "operator_private",
+  "self_private",
+  "sensitive",
+  "unknown",
+]);
+const memoryDisclosureLabelMetadataSchema = z
+  .object({
+    disclosure_class: memoryDisclosureClassSchema,
+    origin_audience_entity_ids: z.array(entityIdSchema),
+    private_to_entity_ids: z.array(entityIdSchema),
+    public_to_entity_ids: z.array(entityIdSchema),
+  })
+  .strict();
 const correctionBaseShape = {
   patch: correctionPatchSchema,
   proposed_provenance: provenanceSchema.optional(),
   audience_entity_id: entityIdSchema.nullable().optional(),
   origin_audience_entity_ids: z.array(entityIdSchema).optional(),
+  disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
   prompt_summary: z.string().min(1).optional(),
   operator_reason: z.string().min(1).optional(),
 };

@@ -1793,6 +1793,8 @@ describe("buildBaseSystemPrompt", () => {
     expect(completedBlock).toContain("things that did happen");
     expect(completedBlock).toContain("distinct from pending follow-ups");
     expect(completedBlock).toContain(completed);
+    expect(completedBlock).toContain("disclosure_class=self_private");
+    expect(completedBlock).not.toContain("disclosure_class=public");
     expect(completedBlock).not.toContain(pending);
   });
 

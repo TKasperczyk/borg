@@ -33,16 +33,19 @@ import type {
   ReviewQueueItem,
   ReviewResolveOptions,
   ReviewResolutionInput,
+  SemanticEdge,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNode,
   SemanticNodeRepository,
   SemanticNodeSearchCandidate,
+  SemanticWalkStep,
 } from "../memory/semantic/index.js";
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { ChatResponseCatchUpWorker } from "../cognition/ingestion/index.js";
+import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
@@ -293,6 +296,33 @@ export type BorgAttachmentsFacade = {
   ) => BorgAttachmentBytesResult | null;
 };
 
+export type BorgSemanticNodeWithDisclosure = SemanticNode & {
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+export type BorgSemanticEdgeWithDisclosure = SemanticEdge & {
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+export type BorgSemanticNodeSearchCandidateWithDisclosure = Omit<
+  SemanticNodeSearchCandidate,
+  "node"
+> & {
+  node: BorgSemanticNodeWithDisclosure;
+};
+
+export type BorgSemanticNodeListResultWithDisclosure = Omit<
+  ReturnType<SemanticNodeRepository["listPage"]> extends Promise<infer T> ? T : never,
+  "items"
+> & {
+  items: BorgSemanticNodeWithDisclosure[];
+};
+
+export type BorgSemanticWalkStepWithDisclosure = Omit<SemanticWalkStep, "node" | "edgePath"> & {
+  node: BorgSemanticNodeWithDisclosure;
+  edgePath: BorgSemanticEdgeWithDisclosure[];
+};
+
 export type BorgSemanticFacade = {
   nodes: {
     add: (input: {
@@ -304,20 +334,20 @@ export type BorgSemanticFacade = {
       confidence?: number;
       sourceEpisodeIds: SemanticNode["source_episode_ids"];
     }) => Promise<SemanticNode>;
-    get: (id: SemanticNode["id"]) => Promise<SemanticNode | null>;
+    get: (id: SemanticNode["id"]) => Promise<BorgSemanticNodeWithDisclosure | null>;
     list: (
       ...args: Parameters<SemanticNodeRepository["list"]>
-    ) => ReturnType<SemanticNodeRepository["list"]>;
+    ) => Promise<BorgSemanticNodeWithDisclosure[]>;
     listPage: (
       ...args: Parameters<SemanticNodeRepository["listPage"]>
-    ) => ReturnType<SemanticNodeRepository["listPage"]>;
+    ) => Promise<BorgSemanticNodeListResultWithDisclosure>;
     countByStatus: () => ReturnType<SemanticNodeRepository["countByStatus"]>;
     search: (
       query: string,
       options?: Omit<RetrievalSearchOptions, "temporalCue" | "attentionWeights" | "asOf"> & {
         limit?: number;
       },
-    ) => Promise<SemanticNodeSearchCandidate[]>;
+    ) => Promise<BorgSemanticNodeSearchCandidateWithDisclosure[]>;
   };
   edges: {
     add: (
@@ -325,15 +355,15 @@ export type BorgSemanticFacade = {
     ) => ReturnType<SemanticEdgeRepository["addEdge"]>;
     get: (
       id: Parameters<SemanticEdgeRepository["getEdge"]>[0],
-    ) => ReturnType<SemanticEdgeRepository["getEdge"]>;
+    ) => Promise<BorgSemanticEdgeWithDisclosure | null>;
     list: (
       ...args: Parameters<BorgDependencies["semanticEdgeRepository"]["listEdges"]>
-    ) => ReturnType<BorgDependencies["semanticEdgeRepository"]["listEdges"]>;
+    ) => Promise<BorgSemanticEdgeWithDisclosure[]>;
   };
   walk: (
     fromId: SemanticNode["id"],
     ...args: Parameters<SemanticGraph["walk"]> extends [unknown, ...infer Rest] ? Rest : never
-  ) => ReturnType<SemanticGraph["walk"]>;
+  ) => Promise<BorgSemanticWalkStepWithDisclosure[]>;
   extract: (
     episodes: readonly Parameters<SemanticExtractor["extractFromEpisodes"]>[0][number][],
   ) => Promise<Awaited<ReturnType<SemanticExtractor["extractFromEpisodes"]>>>;

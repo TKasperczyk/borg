@@ -602,6 +602,7 @@ describe("ChatResponseCatchUpWorker", () => {
       visual_embedding_ref: null,
       active: false,
       audience: null,
+      audience_entity_id: null,
       created_turn_global: null,
       parent_entry_id: parentEntry.id,
       stream_entry_id: null,

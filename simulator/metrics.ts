@@ -3401,7 +3401,7 @@ export class MetricsCapture {
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
-    const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
+    const semanticEdges = await borg.semantic.edges.list({ includeInvalid: true });
     const semanticNodesAdded =
       this.previousSemanticNodeCount === undefined
         ? 0
@@ -3954,7 +3954,7 @@ export class MetricsCapture {
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
-    const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
+    const semanticEdges = await borg.semantic.edges.list({ includeInvalid: true });
     const allOpenQuestions = borg.self.openQuestions.list({
       limit: LARGE_COUNT_LIMIT,
     });

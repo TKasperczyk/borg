@@ -129,6 +129,7 @@ export class MessageEnqueuer {
                 attachments,
                 streamWriter: writer,
                 parentEntry: entry,
+                audienceEntityId: input.audienceEntityId ?? session.audience_entity_id ?? null,
               });
 
         this.recordReceiptContact({
@@ -226,6 +227,7 @@ export class MessageEnqueuer {
             attachments: context.attachments,
             streamWriter: writer,
             parentEntry: this.parentEntryFromDuplicateRecord(context),
+            audienceEntityId: context.input.audienceEntityId ?? context.session.audience_entity_id ?? null,
           });
         } finally {
           writer.close();
@@ -261,11 +263,13 @@ export class MessageEnqueuer {
     attachments: readonly TurnInputAttachment[];
     streamWriter: Pick<StreamWriter, "appendMany">;
     parentEntry: StreamEntry;
+    audienceEntityId: EntityId | null;
   }): Promise<StreamEntry[]> {
     const persisted = await this.options.attachmentService.persistParentEntryAttachments({
       attachments: input.attachments,
       streamWriter: input.streamWriter,
       parentEntry: input.parentEntry,
+      audienceEntityId: input.audienceEntityId,
     });
     this.options.entryIndex.setReceiptPending(input.parentEntry.id, false);
 

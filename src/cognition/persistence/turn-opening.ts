@@ -85,6 +85,7 @@ export class TurnOpeningPersistence {
             streamWriter: input.streamWriter,
             parentEntry: persistedUserEntry,
             turnId: input.turnId,
+            audienceEntityId: input.audienceEntityId ?? null,
           });
     const currentUserContent = [
       {

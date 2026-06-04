@@ -586,7 +586,7 @@ async function captureMaintenanceBandSnapshot(
   const borg = transport.getBorg();
   const episodes = await borg.episodic.list({ limit: 9_999 });
   const semanticNodes = await borg.semantic.nodes.list({ limit: 9_999 });
-  const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
+  const semanticEdges = await borg.semantic.edges.list({ includeInvalid: true });
   const openQuestions = borg.self.openQuestions.list({ status: "open", limit: 9_999 });
   const goals = borg.self.goals.list({ status: "active" });
   return {

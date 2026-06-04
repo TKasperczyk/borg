@@ -1,7 +1,7 @@
 import { ConfigError, StorageError } from "../util/errors.js";
 import { isPlainRecord } from "../util/guards.js";
 import type { JsonValue } from "../util/json-value.js";
-import { correctionTargetIdKindDescriptors, type EntityId } from "../util/ids.js";
+import { correctionTargetIdKindDescriptors, type EntityId, type EpisodeId } from "../util/ids.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Config } from "../config/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -34,6 +34,13 @@ import {
   type SemanticNodeRepository,
 } from "../memory/semantic/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
+import {
+  memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
+  resolveMemoryDisclosureLabelForEpisodeIds,
+  selfPrivateMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../retrieval/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import {
   GoalsRepository,
@@ -43,6 +50,11 @@ import {
 } from "../memory/self/index.js";
 import { episodePatchSchema } from "../memory/episodic/types.js";
 import { openQuestionPatchSchema, type OpenQuestionPatch } from "../memory/self/types.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+  openQuestionMemoryDisclosureLabel,
+} from "../cognition/disclosure-labels.js";
 
 const MANUAL_PROVENANCE = {
   kind: "manual" as const,
@@ -247,6 +259,7 @@ export class CorrectionService {
     targetLabel: string;
     audienceEntityId: EntityId | null;
     originAudienceEntityIds?: EntityId[];
+    disclosureLabel: MemoryDisclosureLabel;
   }> {
     switch (target.type) {
       case "episode": {
@@ -264,6 +277,7 @@ export class CorrectionService {
           targetLabel: episode.title,
           audienceEntityId: access.audience_entity_id,
           originAudienceEntityIds: access.origin_audience_entity_ids,
+          disclosureLabel: memoryDisclosureLabelFromEpisodeAccess(episode),
         };
       }
       case "semantic_node": {
@@ -278,6 +292,10 @@ export class CorrectionService {
         return {
           targetLabel: node.label,
           audienceEntityId: null,
+          disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
+            this.options.episodicRepository,
+            node.source_episode_ids,
+          ),
         };
       }
       case "semantic_edge": {
@@ -292,6 +310,10 @@ export class CorrectionService {
         return {
           targetLabel: `${edge.relation} ${edge.from_node_id} -> ${edge.to_node_id}`,
           audienceEntityId: null,
+          disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
+            this.options.episodicRepository,
+            edge.evidence_episode_ids,
+          ),
         };
       }
       case "value": {
@@ -306,6 +328,9 @@ export class CorrectionService {
         return {
           targetLabel: record.label,
           audienceEntityId: null,
+          disclosureLabel: await this.selfMemoryCorrectionDisclosureLabel(
+            record.evidence_episode_ids,
+          ),
         };
       }
       case "goal": {
@@ -319,7 +344,8 @@ export class CorrectionService {
 
         return {
           targetLabel: truncate(record.description),
-          audienceEntityId: null,
+          audienceEntityId: record.audience_entity_id ?? record.owner_entity_id ?? null,
+          disclosureLabel: goalMemoryDisclosureLabel(record),
         };
       }
       case "trait": {
@@ -334,6 +360,9 @@ export class CorrectionService {
         return {
           targetLabel: record.label,
           audienceEntityId: null,
+          disclosureLabel: await this.selfMemoryCorrectionDisclosureLabel(
+            record.evidence_episode_ids,
+          ),
         };
       }
       case "commitment": {
@@ -347,7 +376,8 @@ export class CorrectionService {
 
         return {
           targetLabel: truncate(record.directive),
-          audienceEntityId: record.restricted_audience,
+          audienceEntityId: record.restricted_audience ?? record.made_to_entity,
+          disclosureLabel: commitmentMemoryDisclosureLabel(record),
         };
       }
       case "open_question": {
@@ -361,10 +391,26 @@ export class CorrectionService {
 
         return {
           targetLabel: truncate(record.question),
-          audienceEntityId: null,
+          audienceEntityId: record.audience_entity_id,
+          disclosureLabel: openQuestionMemoryDisclosureLabel(record),
         };
       }
     }
+  }
+
+  private async selfMemoryCorrectionDisclosureLabel(
+    evidenceEpisodeIds: readonly EpisodeId[],
+  ): Promise<MemoryDisclosureLabel> {
+    if (evidenceEpisodeIds.length === 0) {
+      return selfPrivateMemoryDisclosureLabel();
+    }
+
+    const sourceLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
+      this.options.episodicRepository,
+      evidenceEpisodeIds,
+    );
+
+    return selfPrivateMemoryDisclosureLabel(sourceLabel.originAudienceEntityIds);
   }
 
   async forget(id: string): Promise<{
@@ -854,6 +900,7 @@ export class CorrectionService {
         ...(metadata.originAudienceEntityIds === undefined
           ? {}
           : { origin_audience_entity_ids: metadata.originAudienceEntityIds }),
+        disclosure_label: memoryDisclosureLabelMetadata(metadata.disclosureLabel),
         prompt_summary: reviewPromptSummary(target.type, metadata.targetLabel, patch),
         ...(operatorReason === undefined ? {} : { operator_reason: operatorReason }),
       },

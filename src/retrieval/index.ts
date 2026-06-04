@@ -41,6 +41,7 @@ export {
   renderMemoryDisclosureLabelForModel,
   renderSemanticSourceDisclosureLabelForModel,
   selfPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureClass,

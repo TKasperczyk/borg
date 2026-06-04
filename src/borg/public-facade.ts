@@ -84,6 +84,7 @@ import type {
   SemanticWalkOptions,
   SemanticWalkStep,
 } from "../memory/semantic/types.js";
+import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
@@ -673,21 +674,51 @@ export type BorgExtractSemanticResult = {
   skippedEdges: number;
 };
 
+export type BorgSemanticNodeWithDisclosure = SemanticNode & {
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+export type BorgSemanticEdgeWithDisclosure = SemanticEdge & {
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+export type BorgSemanticNodeSearchCandidateWithDisclosure = Omit<
+  SemanticNodeSearchCandidate,
+  "node"
+> & {
+  node: BorgSemanticNodeWithDisclosure;
+};
+
+export type BorgSemanticNodeListResultWithDisclosure = Omit<SemanticNodeListResult, "items"> & {
+  items: BorgSemanticNodeWithDisclosure[];
+};
+
+export type BorgSemanticWalkStepWithDisclosure = Omit<SemanticWalkStep, "node" | "edgePath"> & {
+  node: BorgSemanticNodeWithDisclosure;
+  edgePath: BorgSemanticEdgeWithDisclosure[];
+};
+
 export type BorgSemanticFacade = {
   nodes: {
     add(input: BorgSemanticNodeAddInput): Promise<SemanticNode>;
-    get(id: SemanticNodeId): Promise<SemanticNode | null>;
-    list(options?: SemanticNodeListOptions): Promise<SemanticNode[]>;
-    listPage(options?: SemanticNodeListOptions): Promise<SemanticNodeListResult>;
+    get(id: SemanticNodeId): Promise<BorgSemanticNodeWithDisclosure | null>;
+    list(options?: SemanticNodeListOptions): Promise<BorgSemanticNodeWithDisclosure[]>;
+    listPage(options?: SemanticNodeListOptions): Promise<BorgSemanticNodeListResultWithDisclosure>;
     countByStatus(): Record<SemanticNodeStatus, number>;
-    search(query: string, options?: { limit?: number }): Promise<SemanticNodeSearchCandidate[]>;
+    search(
+      query: string,
+      options?: { limit?: number },
+    ): Promise<BorgSemanticNodeSearchCandidateWithDisclosure[]>;
   };
   edges: {
     add(input: BorgSemanticEdgeAddInput): SemanticEdge;
-    get(id: SemanticEdgeId): SemanticEdge | null;
-    list(options?: SemanticEdgeListOptions): SemanticEdge[];
+    get(id: SemanticEdgeId): Promise<BorgSemanticEdgeWithDisclosure | null>;
+    list(options?: SemanticEdgeListOptions): Promise<BorgSemanticEdgeWithDisclosure[]>;
   };
-  walk(fromId: SemanticNodeId, options?: SemanticWalkOptions): Promise<SemanticWalkStep[]>;
+  walk(
+    fromId: SemanticNodeId,
+    options?: SemanticWalkOptions,
+  ): Promise<BorgSemanticWalkStepWithDisclosure[]>;
   extract(episodes: readonly Episode[]): Promise<BorgExtractSemanticResult>;
 };
 

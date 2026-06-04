@@ -946,6 +946,65 @@ describe("retrieval recall_state", () => {
     expect(state?.activeHandles.some((item) => item.handle.source === "raw_stream")).toBe(false);
   });
 
+  it("labels warm-recalled Alice and null-audience open questions in Bob's turn", async () => {
+    harness = await createHarness();
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceQuestion = harness.openQuestionsRepository.add({
+      question: "Should Alice's private planning question stay labeled?",
+      urgency: 0.9,
+      source: "reflection",
+      audience_entity_id: alice,
+      provenance: { kind: "manual" },
+    });
+    const nullAudienceQuestion = harness.openQuestionsRepository.add({
+      question: "Should this private planning question stay labeled?",
+      urgency: 0.8,
+      source: "reflection",
+      audience_entity_id: null,
+      provenance: { kind: "manual" },
+    });
+    seedRecallHandles({
+      harness,
+      scopeKey: COGNITION_RECALL_SCOPE_KEY,
+      activeHandles: [
+        createStateHandle({
+          source: "open_question",
+          openQuestionId: aliceQuestion.id,
+        }),
+        createStateHandle({
+          source: "open_question",
+          openQuestionId: nullAudienceQuestion.id,
+        }),
+      ],
+    });
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition("quiet turn", {
+      ...cognitionRecallOptions(bob),
+      turnCounter: 2,
+      limit: 3,
+    });
+    const warmAliceQuestion = result.evidence.find(
+      (item) =>
+        item.source === "warm_recall" && item.provenance?.openQuestionId === aliceQuestion.id,
+    );
+    const warmNullAudienceQuestion = result.evidence.find(
+      (item) =>
+        item.source === "warm_recall" &&
+        item.provenance?.openQuestionId === nullAudienceQuestion.id,
+    );
+
+    expect(warmAliceQuestion?.disclosureLabel).toMatchObject({
+      disclosureClass: "relationship_private",
+      privateToEntityIds: [alice],
+    });
+
+    expect(warmNullAudienceQuestion?.disclosureLabel).toMatchObject({
+      disclosureClass: "self_private",
+      privateToEntityIds: [],
+    });
+  });
+
   it("uses global cognition recall state and keeps private warm handles internally recallable", async () => {
     harness = await createHarness();
     const audienceA = createEntityId();

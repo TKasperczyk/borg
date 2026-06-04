@@ -6,6 +6,7 @@ import {
   createAttachmentId,
   streamEntryIdHelpers,
   type AttachmentId,
+  type EntityId,
   type StreamEntryId,
 } from "../util/ids.js";
 import type {
@@ -57,6 +58,7 @@ export type PersistTurnAttachmentsInput = {
   streamWriter: Pick<StreamWriter, "appendMany">;
   parentEntry: StreamEntry;
   turnId: string;
+  audienceEntityId?: EntityId | null;
   createdTurnGlobal?: number;
 };
 
@@ -70,6 +72,7 @@ export type PersistParentEntryAttachmentsInput = {
   attachments: readonly TurnInputAttachment[];
   streamWriter: Pick<StreamWriter, "appendMany">;
   parentEntry: StreamEntry;
+  audienceEntityId?: EntityId | null;
   createdTurnGlobal?: number;
 };
 
@@ -185,6 +188,7 @@ export class AttachmentService {
         attachment,
         parentEntry: input.parentEntry,
         parentTurnId: input.turnId,
+        audienceEntityId: input.audienceEntityId ?? null,
         createdTurnGlobal: input.createdTurnGlobal ?? null,
         ordinal,
         traceTurnId: input.turnId,
@@ -243,6 +247,7 @@ export class AttachmentService {
         attachment,
         parentEntry: input.parentEntry,
         parentTurnId: null,
+        audienceEntityId: input.audienceEntityId ?? null,
         createdTurnGlobal: input.createdTurnGlobal ?? null,
         ordinal: existing.length + missingIndex,
         traceTurnId: input.parentEntry.id,
@@ -425,6 +430,7 @@ export class AttachmentService {
     attachment: TurnInputAttachment;
     parentEntry: StreamEntry;
     parentTurnId: string | null;
+    audienceEntityId: EntityId | null;
     createdTurnGlobal: number | null;
     ordinal: number;
     traceTurnId: string;
@@ -450,6 +456,7 @@ export class AttachmentService {
       visual_embedding_ref: null,
       active: false,
       audience: input.parentEntry.audience ?? null,
+      audience_entity_id: input.audienceEntityId,
       created_turn_global: input.createdTurnGlobal,
       ordinal: input.ordinal,
       parent_entry_id: input.parentEntry.id,

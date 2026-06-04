@@ -37,9 +37,12 @@ import {
 } from "../../../retrieval/index.js";
 import { isCreatorInOperatorContext } from "../../authority.js";
 import {
-  commitmentDisclosureEntityIds,
+  actionMemoryDisclosureLabel,
   correctionMemoryDisclosureLabel,
-  uniqueDisclosureEntityIds,
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+  openQuestionMemoryDisclosureLabel,
+  relationalSlotMemoryDisclosureLabel,
 } from "../../disclosure-labels.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
@@ -706,7 +709,7 @@ function renderCommitmentDetailsLines(context: DeliberationContext, indent: stri
   for (const [index, commitment] of commitments.entries()) {
     const detailIndent = `${indent}    `;
     const disclosure = renderMemoryDisclosureLabelForModel(
-      relationshipPrivateMemoryDisclosureLabel(commitmentDisclosureEntityIds(commitment)),
+      commitmentMemoryDisclosureLabel(commitment),
     );
     const refs = [
       renderCommitmentEntityRefLine(
@@ -1256,13 +1259,7 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
 }
 
 function summarizeSelfSnapshotGoal(goal: GoalRecord): string {
-  const disclosureIds = uniqueDisclosureEntityIds([goal.audience_entity_id, goal.owner_entity_id]);
-  const disclosure =
-    disclosureIds.length === 0
-      ? ""
-      : ` ${renderMemoryDisclosureLabelForModel(
-          relationshipPrivateMemoryDisclosureLabel(disclosureIds),
-        )}`;
+  const disclosure = ` ${renderMemoryDisclosureLabelForModel(goalMemoryDisclosureLabel(goal))}`;
 
   return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
@@ -1515,7 +1512,7 @@ function summarizeRelationalSlotConstraints(
           ? "conflicting evidence reached quarantine"
           : "conflicting evidence is contested";
       const disclosure = renderMemoryDisclosureLabelForModel(
-        relationshipPrivateMemoryDisclosureLabel([slot.subject_entity_id]),
+        relationalSlotMemoryDisclosureLabel(slot),
       );
 
       return `- ${subjectPrefix}${slot.slot_key}: ${slot.state.toUpperCase()} (${reason}; ${disclosure}). Do not name this relation. Use "${neutral}" or "they". Re-establish only if the user names it in the current message.`;
@@ -1612,11 +1609,7 @@ function summarizeRecentCompletedActions(actions: readonly ActionRecord[]): stri
     "Treat these as completed action evidence, distinct from pending follow-ups.",
     ...completed.map((action) => {
       const completedAt = action.completed_at ?? action.updated_at;
-      const disclosure = renderMemoryDisclosureLabelForModel(
-        relationshipPrivateMemoryDisclosureLabel(
-          action.audience_entity_id === null ? [] : [action.audience_entity_id],
-        ),
-      );
+      const disclosure = renderMemoryDisclosureLabelForModel(actionMemoryDisclosureLabel(action));
       return `- ${action.description.trim()} (actor=${promptSafeActionActor(action.actor)}, completed=${new Date(
         completedAt,
       ).toISOString()}, conf=${action.confidence.toFixed(2)}, ${disclosure}, ${summarizeActionProvenance(action)})`;
@@ -1633,9 +1626,7 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
     "Open questions you're carrying:",
     ...openQuestions.slice(0, 3).map((question) => {
       const disclosure = renderMemoryDisclosureLabelForModel(
-        relationshipPrivateMemoryDisclosureLabel(
-          question.audience_entity_id === null ? [] : [question.audience_entity_id],
-        ),
+        openQuestionMemoryDisclosureLabel(question),
       );
       return `- ${question.question} (urgency=${question.urgency.toFixed(2)}, source=${question.source}, ${disclosure})${
         question.provenance === null

@@ -1528,6 +1528,9 @@ describe("cli", () => {
       id: atlasNode.id,
       label: "Atlas",
       domain: "technology",
+      disclosureLabel: {
+        disclosureClass: "unknown",
+      },
     });
 
     const searchNodeOut = createOutputBuffer();
@@ -1543,6 +1546,9 @@ describe("cli", () => {
         expect.objectContaining({
           node: expect.objectContaining({
             id: atlasNode.id,
+            disclosureLabel: expect.objectContaining({
+              disclosureClass: "unknown",
+            }),
           }),
         }),
       ]),
@@ -1556,7 +1562,18 @@ describe("cli", () => {
         ...cliOptions,
       }),
     ).toBe(0);
-    expect(JSON.parse(listNodesOut.read())).toHaveLength(2);
+    const listedNodes = JSON.parse(listNodesOut.read());
+    expect(listedNodes).toHaveLength(2);
+    expect(listedNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: atlasNode.id,
+          disclosureLabel: expect.objectContaining({
+            disclosureClass: "unknown",
+          }),
+        }),
+      ]),
+    );
 
     const addSupportOut = createOutputBuffer();
     expect(
@@ -1624,7 +1641,17 @@ describe("cli", () => {
         ...cliOptions,
       }),
     ).toBe(0);
-    expect(JSON.parse(listEdgesOut.read())).toHaveLength(2);
+    const listedEdges = JSON.parse(listEdgesOut.read());
+    expect(listedEdges).toHaveLength(2);
+    expect(listedEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          disclosureLabel: expect.objectContaining({
+            disclosureClass: "unknown",
+          }),
+        }),
+      ]),
+    );
 
     const walkOut = createOutputBuffer();
     expect(
@@ -1638,7 +1665,17 @@ describe("cli", () => {
       expect.objectContaining({
         node: expect.objectContaining({
           id: rollbackNode.id,
+          disclosureLabel: expect.objectContaining({
+            disclosureClass: "unknown",
+          }),
         }),
+        edgePath: expect.arrayContaining([
+          expect.objectContaining({
+            disclosureLabel: expect.objectContaining({
+              disclosureClass: "unknown",
+            }),
+          }),
+        ]),
       }),
     ]);
 

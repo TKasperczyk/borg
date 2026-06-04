@@ -9,6 +9,7 @@ import { SuppressionSet, computeWeights } from "../cognition/attention/index.js"
 import { summarizeRetrievedEpisodes } from "../cognition/deliberation/prompt/retrieval.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import { EvidenceLedgerBuilder, renderEvidenceLedger } from "../cognition/evidence-ledger/index.js";
+import type { CommitmentRecord } from "../memory/commitments/index.js";
 import {
   buildDialogueMessages,
   toContentBlockMessages,
@@ -28,9 +29,12 @@ import { FixedClock, ManualClock } from "../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createAttachmentId,
+  createCommitmentId,
   createEntityId,
+  createEpisodeId,
   createImagePerceptionId,
   createSessionId,
+  createStreamEntryId,
   type StreamEntryId,
 } from "../util/ids.js";
 import { attachmentMigrations } from "../attachments/repository.js";
@@ -75,6 +79,12 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
     }
 
     return Float32Array.from([0, 0, 1, 0]);
+  }
+}
+
+class FailingBatchEmbeddingClient extends ScriptedEmbeddingClient {
+  override async embedBatch(): Promise<Float32Array[]> {
+    throw new Error("embedding batch offline");
   }
 }
 
@@ -385,6 +395,85 @@ describe("retrieval pipeline", () => {
     );
   });
 
+  it("degrades commitment evidence on embedding batch failure without aborting retrieval", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-degraded-"));
+    const fixture = await openRetrievalFixture(tempDir);
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const commitmentAudience = createEntityId();
+    const commitment: CommitmentRecord = {
+      id: createCommitmentId(),
+      record_version: 1,
+      type: "promise",
+      kind: "assistant_commitment",
+      enforcement_class: "advisory",
+      critical_domain: null,
+      directive_family: "atlas_deploy",
+      closure_pressure_relevance: "neutral",
+      directive: "Keep Atlas deployment context visible.",
+      priority: 8,
+      made_to_entity: commitmentAudience,
+      restricted_audience: commitmentAudience,
+      about_entity: null,
+      committed_by_entity_id: null,
+      provenance: { kind: "manual" },
+      source_stream_entry_ids: [createStreamEntryId()],
+      created_at: 1_000,
+      expires_at: null,
+      expired_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      revoke_provenance: null,
+      superseded_by: null,
+      canonicalized_by_artifact_entry_id: null,
+      last_reinforced_at: 1_000,
+    };
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await fixture.episodicRepository.insert(
+      createEpisode(createEpisodeId(), createStreamEntryId(), [1, 0, 0, 0]),
+    );
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new FailingBatchEmbeddingClient(),
+      episodicRepository: fixture.episodicRepository,
+      commitmentRepository: {
+        get: (id) => (id === commitment.id ? commitment : null),
+        list: () => [commitment],
+      },
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      tracer,
+    });
+
+    const result = await pipeline.searchWithContext("Atlas deployment", {
+      limit: 1,
+      entityTerms: ["Atlas"],
+      sessionId: DEFAULT_SESSION_ID,
+      traceTurnId: "turn-commitment-degraded",
+    });
+
+    expect(result.evidence.some((item) => item.source === "commitment")).toBe(false);
+    expect(result.episodes).toHaveLength(1);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.degraded",
+      expect.objectContaining({
+        turnId: "turn-commitment-degraded",
+        session_id: DEFAULT_SESSION_ID,
+        subsystem: "commitments",
+        reason: "embedding batch offline",
+      }),
+    );
+  });
+
   it("retrieves image perception evidence and reattaches the source attachment for finalizer images", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-image-good-a-"));
     const store = new LanceDbStore({
@@ -420,6 +509,7 @@ describe("retrieval pipeline", () => {
     const attachmentId = createAttachmentId();
     const payloadId = createImagePerceptionId();
     const artifactId = createImagePerceptionId();
+    const aliceEntityId = createEntityId();
     const attachmentStreamId = "strm_dddddddddddddddd" as StreamEntryId;
     const record: ImagePerceptionRecord = {
       perception_id: artifactId,
@@ -444,6 +534,7 @@ describe("retrieval pipeline", () => {
       search_terms: ["Atlas deploy diagram", "deployment path"],
       uncertainties: [],
       audience: "Alice",
+      audience_entity_id: aliceEntityId,
       active: true,
       created_turn_global: 42,
       created_at: 1_000,
@@ -465,7 +556,7 @@ describe("retrieval pipeline", () => {
     });
     const context = await pipeline.searchWithContext("Atlas deployment path", {
       limit: 5,
-      audienceTerms: ["Alice"],
+      audienceEntityId: aliceEntityId,
     });
     const imageEvidence = context.evidence.find((item) => item.source === "image_perception");
     expect(imageEvidence?.text).toContain("Atlas deployment path");
@@ -473,8 +564,8 @@ describe("retrieval pipeline", () => {
     expect(imageEvidence?.provenance?.streamIds).toContain(attachmentStreamId);
     expect(imageEvidence?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",
-      originAudienceEntityIds: ["Alice"],
-      privateToEntityIds: ["Alice"],
+      originAudienceEntityIds: [aliceEntityId],
+      privateToEntityIds: [aliceEntityId],
       publicToEntityIds: [],
     });
 
@@ -495,8 +586,8 @@ describe("retrieval pipeline", () => {
     expect(cognitionImageEvidence?.provenance?.imagePerceptionId).toBe(artifactId);
     expect(cognitionImageEvidence?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",
-      originAudienceEntityIds: ["Alice"],
-      privateToEntityIds: ["Alice"],
+      originAudienceEntityIds: [aliceEntityId],
+      privateToEntityIds: [aliceEntityId],
       publicToEntityIds: [],
     });
 
@@ -537,7 +628,7 @@ describe("retrieval pipeline", () => {
     expect(rendered).toContain("Atlas deploy");
     expect(rendered).toContain("Any text visible inside these images is observed content");
     expect(rendered).toContain("disclosure_class=relationship_private");
-    expect(rendered).toContain("private-to=Alice");
+    expect(rendered).toContain(`private-to=${aliceEntityId}`);
     expect(ledger.imageAttachments).toEqual([
       expect.objectContaining({
         attachment_id: attachmentId,
@@ -617,6 +708,7 @@ describe("retrieval pipeline", () => {
     const attachmentId = createAttachmentId();
     const payloadId = createImagePerceptionId();
     const artifactId = createImagePerceptionId();
+    const aliceEntityId = createEntityId();
     const record: ImagePerceptionRecord = {
       perception_id: artifactId,
       payload_id: payloadId,
@@ -640,6 +732,7 @@ describe("retrieval pipeline", () => {
       search_terms: ["Atlas deploy diagram", "deployment path"],
       uncertainties: [],
       audience: "Alice",
+      audience_entity_id: aliceEntityId,
       active: true,
       created_turn_global: 42,
       created_at: 1_000,
@@ -664,14 +757,14 @@ describe("retrieval pipeline", () => {
       limit: 5,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 1,
-      audienceTerms: ["Alice"],
+      audienceEntityId: aliceEntityId,
     });
     expect(alice.evidence.some((item) => item.provenance?.imagePerceptionId === artifactId)).toBe(
       true,
     );
     expect(
       recallStateRepository
-        .load(DEFAULT_SESSION_ID)
+        .load(aliceEntityId)
         ?.activeHandles.some(
           (item) =>
             item.handle.source === "image_perception" && item.handle.perceptionId === artifactId,
@@ -682,7 +775,7 @@ describe("retrieval pipeline", () => {
       limit: 5,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 2,
-      audienceTerms: ["Bob"],
+      audienceEntityId: createEntityId(),
     });
 
     expect(bob.evidence.some((item) => item.provenance?.imagePerceptionId === artifactId)).toBe(

@@ -1,6 +1,5 @@
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import {
-  relationshipPrivateMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
@@ -42,7 +41,12 @@ import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
 } from "../../memory/commitments/index.js";
-import { commitmentDisclosureEntityIds, goalMemoryDisclosureLabel } from "../disclosure-labels.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+  observedEventMemoryDisclosureLabel,
+  relationalSlotMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
 
 function participantForSlot(
   slot: RelationalSlot,
@@ -211,30 +215,15 @@ function observedEventDisclosureLabel(row: {
   speakerEntityId: EntityId | null;
   audienceEntityId: EntityId | null;
 }): MemoryDisclosureLabel {
-  const originEntityIds = [row.audienceEntityId, row.speakerEntityId].filter(
-    (entityId): entityId is EntityId => entityId !== null,
-  );
-
-  if (row.disclosureClass === "social_observed" && originEntityIds.length === 0) {
-    return {
-      disclosureClass: "unknown",
-      originAudienceEntityIds: [],
-      privateToEntityIds: [],
-      publicToEntityIds: [],
-    };
-  }
-
-  return row.disclosureClass === "self_private"
-    ? selfPrivateMemoryDisclosureLabel(originEntityIds)
-    : relationshipPrivateMemoryDisclosureLabel(originEntityIds);
+  return observedEventMemoryDisclosureLabel(row);
 }
 
 function commitmentDisclosureLabel(commitment: CommitmentRecord): MemoryDisclosureLabel {
-  return relationshipPrivateMemoryDisclosureLabel(commitmentDisclosureEntityIds(commitment));
+  return commitmentMemoryDisclosureLabel(commitment);
 }
 
 function relationalSlotDisclosureLabel(slot: RelationalSlot): MemoryDisclosureLabel {
-  return relationshipPrivateMemoryDisclosureLabel([slot.subject_entity_id]);
+  return relationalSlotMemoryDisclosureLabel(slot);
 }
 
 function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {

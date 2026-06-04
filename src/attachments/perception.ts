@@ -13,6 +13,7 @@ import { serializeJsonValue } from "../util/json-value.js";
 import {
   createImagePerceptionId,
   type AttachmentId,
+  type EntityId,
   type ImagePerceptionId,
   type StreamEntryId,
 } from "../util/ids.js";
@@ -66,6 +67,7 @@ export type ImagePerceptionRecord = ImagePerceptionArtifact & {
   perception_prompt_version: string;
   model: string;
   audience: string | null;
+  audience_entity_id: EntityId | null;
   active: boolean;
   created_turn_global: number | null;
   created_at: number;
@@ -113,6 +115,7 @@ type ImagePerceptionRow = {
   search_terms: string;
   uncertainties: string;
   audience: string | null;
+  audience_entity_id: string | null;
   active: number;
   created_turn_global: number | null;
   created_at: number;
@@ -210,6 +213,17 @@ export const imagePerceptionMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "image_perception_audience_entity_id",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE image_perception_artifacts ADD COLUMN audience_entity_id TEXT NULL;
+        CREATE INDEX idx_image_perception_active_audience_entity
+      ON image_perception_artifacts(active, audience_entity_id);
+      `);
+    },
+  },
 ];
 
 export function createImagePerceptionTableSchema(dimensions: number) {
@@ -266,6 +280,7 @@ function rowToRecord(row: ImagePerceptionRow): ImagePerceptionRecord {
     search_terms: parseJsonArray<string>(row.search_terms, "search_terms", JSON_ARRAY_CODEC),
     uncertainties: parseJsonArray<string>(row.uncertainties, "uncertainties", JSON_ARRAY_CODEC),
     audience: row.audience,
+    audience_entity_id: row.audience_entity_id as EntityId | null,
     active: row.active !== 0,
     created_turn_global: row.created_turn_global,
     created_at: row.created_at,
@@ -417,6 +432,7 @@ function recordWithPayload(
     perception_prompt_version: payload.perception_prompt_version,
     model: payload.model,
     audience: record.audience,
+    audience_entity_id: record.audience_entity_id,
     active: record.active,
     created_turn_global: record.created_turn_global,
     created_at: record.created_at,
@@ -437,7 +453,7 @@ export class ImagePerceptionRepository {
       .prepare(
         `SELECT artifacts.artifact_id, artifacts.attachment_id, artifacts.payload_id,
                 artifacts.parent_entry_id, artifacts.parent_turn_id, artifacts.stream_entry_id,
-                artifacts.audience, artifacts.active, artifacts.created_turn_global,
+                artifacts.audience, artifacts.audience_entity_id, artifacts.active, artifacts.created_turn_global,
                 artifacts.created_at, payloads.sha256, payloads.media_type,
                 payloads.perception_prompt_version, payloads.model, payloads.caption,
                 payloads.image_kind, payloads.visible_text, payloads.objects,
@@ -472,7 +488,7 @@ export class ImagePerceptionRepository {
       .prepare(
         `SELECT artifacts.artifact_id, artifacts.attachment_id, artifacts.payload_id,
                 artifacts.parent_entry_id, artifacts.parent_turn_id, artifacts.stream_entry_id,
-                artifacts.audience, artifacts.active, artifacts.created_turn_global,
+                artifacts.audience, artifacts.audience_entity_id, artifacts.active, artifacts.created_turn_global,
                 artifacts.created_at, payloads.sha256, payloads.media_type,
                 payloads.perception_prompt_version, payloads.model, payloads.caption,
                 payloads.image_kind, payloads.visible_text, payloads.objects,
@@ -606,9 +622,9 @@ export class ImagePerceptionRepository {
       .prepare(
         `INSERT INTO image_perception_artifacts (
            artifact_id, attachment_id, payload_id, parent_entry_id, parent_turn_id,
-           stream_entry_id, audience, active, created_turn_global, created_at
+           stream_entry_id, audience, audience_entity_id, active, created_turn_global, created_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (attachment_id) DO UPDATE SET
            artifact_id = excluded.artifact_id,
            payload_id = excluded.payload_id,
@@ -616,6 +632,7 @@ export class ImagePerceptionRepository {
            parent_turn_id = excluded.parent_turn_id,
            stream_entry_id = excluded.stream_entry_id,
            audience = excluded.audience,
+           audience_entity_id = excluded.audience_entity_id,
            active = excluded.active,
            created_turn_global = excluded.created_turn_global`,
       )
@@ -627,6 +644,7 @@ export class ImagePerceptionRepository {
         record.parent_turn_id,
         record.stream_entry_id,
         record.audience,
+        record.audience_entity_id,
         record.active ? 1 : 0,
         record.created_turn_global,
         record.created_at,
@@ -672,7 +690,7 @@ export class ImagePerceptionRepository {
     return this.searchInternal({
       vector: input.vector,
       limit: input.limit,
-      audienceTerms: [],
+      audienceEntityId: null,
       includeAllAudiences: true,
     });
   }
@@ -680,13 +698,13 @@ export class ImagePerceptionRepository {
   async searchForDisclosure(input: {
     vector: Float32Array;
     limit: number;
-    audienceTerms: readonly string[];
+    audienceEntityId: EntityId | null;
     crossAudience?: boolean;
   }): Promise<ImagePerceptionSearchHit[]> {
     return this.searchInternal({
       vector: input.vector,
       limit: input.limit,
-      audienceTerms: input.audienceTerms,
+      audienceEntityId: input.audienceEntityId,
       includeAllAudiences: input.crossAudience === true,
     });
   }
@@ -694,7 +712,7 @@ export class ImagePerceptionRepository {
   async search(input: {
     vector: Float32Array;
     limit: number;
-    audienceTerms: readonly string[];
+    audienceEntityId: EntityId | null;
     crossAudience?: boolean;
   }): Promise<ImagePerceptionSearchHit[]> {
     return this.searchForDisclosure(input);
@@ -703,7 +721,7 @@ export class ImagePerceptionRepository {
   private async searchInternal(input: {
     vector: Float32Array;
     limit: number;
-    audienceTerms: readonly string[];
+    audienceEntityId: EntityId | null;
     includeAllAudiences: boolean;
   }): Promise<ImagePerceptionSearchHit[]> {
     const rows = await this.table.search(Array.from(input.vector), {
@@ -712,7 +730,7 @@ export class ImagePerceptionRepository {
     });
     const recordsByPayload = this.hydrateVisibleArtifactsForPayloads(
       rows.map((row) => String(row.payload_id) as ImagePerceptionId),
-      input.audienceTerms,
+      input.audienceEntityId,
       input.includeAllAudiences,
     );
 
@@ -729,7 +747,7 @@ export class ImagePerceptionRepository {
 
   private hydrateVisibleArtifactsForPayloads(
     payloadIds: readonly ImagePerceptionId[],
-    audienceTerms: readonly string[],
+    audienceEntityId: EntityId | null,
     includeAllAudiences: boolean,
   ): Map<string, ImagePerceptionRecord[]> {
     if (payloadIds.length === 0) {
@@ -741,16 +759,14 @@ export class ImagePerceptionRepository {
     const audienceWhere =
       includeAllAudiences
         ? ""
-        : audienceTerms.length === 0
-          ? "AND artifacts.audience IS NULL"
-          : `AND (artifacts.audience IS NULL OR artifacts.audience IN (${[...new Set(audienceTerms)]
-              .map(quoteSqlString)
-              .join(", ")}))`;
+        : audienceEntityId === null
+          ? "AND 0"
+          : `AND artifacts.audience_entity_id = ${quoteSqlString(audienceEntityId)}`;
     const rows = this.db
       .prepare(
         `SELECT artifacts.artifact_id, artifacts.attachment_id, artifacts.payload_id,
                 artifacts.parent_entry_id, artifacts.parent_turn_id, artifacts.stream_entry_id,
-                artifacts.audience, artifacts.active, artifacts.created_turn_global,
+                artifacts.audience, artifacts.audience_entity_id, artifacts.active, artifacts.created_turn_global,
                 artifacts.created_at, payloads.sha256, payloads.media_type,
                 payloads.perception_prompt_version, payloads.model, payloads.caption,
                 payloads.image_kind, payloads.visible_text, payloads.objects,
@@ -978,6 +994,7 @@ export class ImagePerceptionService {
         perception_prompt_version: this.promptVersion,
         model: this.model,
         audience: attachment.audience,
+        audience_entity_id: attachment.audience_entity_id,
         active: attachment.active,
         created_turn_global: attachment.created_turn_global,
         created_at: attachment.created_at,
@@ -1061,8 +1078,9 @@ export class ImagePerceptionService {
       media_type: payload.media_type,
       perception_prompt_version: payload.perception_prompt_version,
       model: payload.model,
-      audience: attachment.audience,
-      active: attachment.active,
+        audience: attachment.audience,
+        audience_entity_id: attachment.audience_entity_id,
+        active: attachment.active,
       created_turn_global: attachment.created_turn_global,
       created_at: attachment.created_at,
       text_embedding_ref: `image_perception_embeddings:${payload.payload_id}`,

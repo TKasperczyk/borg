@@ -17,7 +17,8 @@ const GROUP_AUDIENCE = "ent_cccccccccccccccc" as EntityId;
 const PUBLIC_EPISODE = "ep_aaaaaaaaaaaaaaaa" as EpisodeId;
 const PRIVATE_A_EPISODE = "ep_bbbbbbbbbbbbbbbb" as EpisodeId;
 const PRIVATE_B_EPISODE = "ep_cccccccccccccccc" as EpisodeId;
-const SHARED_B_EPISODE = "ep_dddddddddddddddd" as EpisodeId;
+const SHARED_PUBLIC_EPISODE = "ep_dddddddddddddddd" as EpisodeId;
+const CONFLICT_SHARED_B_EPISODE = "ep_ffffffffffffffff" as EpisodeId;
 const PRIVATE_GROUP_EPISODE = "ep_eeeeeeeeeeeeeeee" as EpisodeId;
 
 function episode(
@@ -52,13 +53,38 @@ describe("filterEpisodesByAudience", () => {
           [
             episode(PUBLIC_EPISODE, null),
             episode(PRIVATE_A_EPISODE, AUDIENCE_A),
-            episode(SHARED_B_EPISODE, AUDIENCE_B, true),
+            episode(SHARED_PUBLIC_EPISODE, null, true),
           ],
           AUDIENCE_A,
           "filter",
         ),
       ).toEqual({
-        visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_A_EPISODE, SHARED_B_EPISODE],
+        visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_A_EPISODE, SHARED_PUBLIC_EPISODE],
+        hiddenEpisodeIds: [],
+        hasPrivateMix: false,
+      });
+    });
+
+    it("normalizes conflicting shared origins to private visibility", () => {
+      expect(
+        filterEpisodesByAudience(
+          [episode(CONFLICT_SHARED_B_EPISODE, AUDIENCE_B, true)],
+          AUDIENCE_A,
+          "filter",
+        ),
+      ).toEqual({
+        visibleEpisodeIds: [],
+        hiddenEpisodeIds: [CONFLICT_SHARED_B_EPISODE],
+        hasPrivateMix: true,
+      });
+      expect(
+        filterEpisodesByAudience(
+          [episode(CONFLICT_SHARED_B_EPISODE, AUDIENCE_B, true)],
+          AUDIENCE_B,
+          "filter",
+        ),
+      ).toEqual({
+        visibleEpisodeIds: [CONFLICT_SHARED_B_EPISODE],
         hiddenEpisodeIds: [],
         hasPrivateMix: false,
       });
@@ -104,13 +130,13 @@ describe("filterEpisodesByAudience", () => {
             episode(PUBLIC_EPISODE, null),
             episode(PRIVATE_GROUP_EPISODE, GROUP_AUDIENCE),
             episode(PRIVATE_A_EPISODE, AUDIENCE_A),
-            episode(SHARED_B_EPISODE, AUDIENCE_B, true),
+            episode(SHARED_PUBLIC_EPISODE, null, true),
           ],
           GROUP_AUDIENCE,
           "filter",
         ),
       ).toEqual({
-        visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_GROUP_EPISODE, SHARED_B_EPISODE],
+        visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_GROUP_EPISODE, SHARED_PUBLIC_EPISODE],
         hiddenEpisodeIds: [PRIVATE_A_EPISODE],
         hasPrivateMix: true,
       });

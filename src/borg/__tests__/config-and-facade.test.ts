@@ -400,8 +400,108 @@ describe("Borg", () => {
         last_verified_at: clock.now(),
       });
 
-      expect(borg.semantic.edges.get(edge.id)).toEqual(edge);
-      expect(borg.semantic.edges.get(createSemanticEdgeId())).toBeNull();
+      await expect(borg.semantic.edges.get(edge.id)).resolves.toMatchObject(edge);
+      await expect(borg.semantic.edges.get(createSemanticEdgeId())).resolves.toBeNull();
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("exports semantic nodes and walks with disclosure labels from private source episodes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const llm = new FakeLLMClient();
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+    });
+
+    try {
+      const entry = await borg.stream.append({
+        kind: "user_msg",
+        content: "Alice privately described the Atlas deployment rollback.",
+        audience: "Alice",
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_private_episode",
+            name: EPISODE_TOOL_NAME,
+            input: {
+              episodes: [
+                {
+                  title: "Alice private Atlas rollback",
+                  narrative: "Alice privately described the Atlas deployment rollback.",
+                  source_stream_ids: [entry.id],
+                  participants: ["Alice"],
+                  location: null,
+                  tags: ["Atlas"],
+                  confidence: 0.9,
+                  significance: 0.8,
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      await borg.episodic.extract({ sinceTs: entry.timestamp });
+      const privateEpisode = (await borg.episodic.listAll())
+        .find((episode) => episode.title === "Alice private Atlas rollback");
+      const privateAudienceEntityId = privateEpisode?.audience_entity_id ?? null;
+
+      expect(privateAudienceEntityId).not.toBeNull();
+
+      const first = await borg.semantic.nodes.add({
+        kind: "concept",
+        label: "Atlas rollback private node",
+        description: "Private Atlas rollback source.",
+        sourceEpisodeIds: [privateEpisode!.id],
+      });
+      const second = await borg.semantic.nodes.add({
+        kind: "proposition",
+        label: "Atlas rollback private support",
+        description: "Private Atlas rollback support.",
+        sourceEpisodeIds: [privateEpisode!.id],
+      });
+      borg.semantic.edges.add({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [privateEpisode!.id],
+        created_at: clock.now(),
+        last_verified_at: clock.now(),
+      });
+
+      const expectedLabel = {
+        disclosureClass: "relationship_private",
+        privateToEntityIds: [privateAudienceEntityId],
+      };
+      const fetched = await borg.semantic.nodes.get(first.id);
+      const listed = await borg.semantic.nodes.list();
+      const searched = await borg.semantic.nodes.search("Atlas rollback private", {
+        limit: 5,
+      });
+      const walked = await borg.semantic.walk(first.id, { depth: 1 });
+
+      expect(fetched?.disclosureLabel).toMatchObject(expectedLabel);
+      expect(listed.find((node) => node.id === first.id)?.disclosureLabel).toMatchObject(
+        expectedLabel,
+      );
+      expect(searched.find((candidate) => candidate.node.id === first.id)?.node.disclosureLabel)
+        .toMatchObject(expectedLabel);
+      expect(walked[0]?.node.disclosureLabel).toMatchObject(expectedLabel);
+      expect(walked[0]?.edgePath[0]?.disclosureLabel).toMatchObject(expectedLabel);
     } finally {
       await borg.close();
     }

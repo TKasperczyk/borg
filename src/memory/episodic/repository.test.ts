@@ -259,7 +259,7 @@ describe("episodic repository", () => {
 
     expect(defaultSearch.map((item) => item.episode.id)).toEqual([publicEpisode.id]);
     expect(searchSpy.mock.calls[0]?.[1]?.where).toBe(
-      "(((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL) OR shared = true)",
+      "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL)",
     );
   });
 

@@ -3456,11 +3456,16 @@ describe("deliberator", () => {
       },
     });
 
-    expect(requestSystemText(llm.requests[1]?.system)).toContain("<borg_open_questions>");
-    expect(requestSystemText(llm.requests[1]?.system)).toContain("Open questions you're carrying:");
-    expect(requestSystemText(llm.requests[1]?.system)).toContain(
-      "Why does Atlas fail after rollback?",
-    );
+    const system = requestSystemText(llm.requests[1]?.system);
+    const openQuestionsBlock = system.match(
+      /<borg_open_questions>[\s\S]*<\/borg_open_questions>/,
+    )?.[0];
+
+    expect(system).toContain("<borg_open_questions>");
+    expect(system).toContain("Open questions you're carrying:");
+    expect(system).toContain("Why does Atlas fail after rollback?");
+    expect(openQuestionsBlock).toContain("disclosure_class=self_private");
+    expect(openQuestionsBlock).not.toContain("disclosure_class=public");
   });
 
   it("tags unified additional retrieval evidence in the S2 finalizer prompt", async () => {
@@ -3865,7 +3870,7 @@ describe("deliberator", () => {
       expect(system).toContain("Traits you express: engaged:0.80 (conf 0.82, offline: reflector)");
       expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
       expect(system).toContain(
-        "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection, disclosure_class=public) (from ep_aaaaaaaaaaaaaaaa)",
+        "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection, disclosure_class=self_private private-to=unknown; usable internally; do not disclose to current audience unless authorized) (from ep_aaaaaaaaaaaaaaaa)",
       );
       expect(system).toContain(
         "- [CRITICAL:audience_scope boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",

@@ -46,6 +46,7 @@ describe("ImageAttachmentLifecycleService", () => {
     const attachmentId = createAttachmentId();
     const perceptionId = createImagePerceptionId();
     const payloadId = createImagePerceptionId();
+    const aliceEntityId = "ent_aaaaaaaaaaaaaaaa" as never;
 
     attachmentRepository.insert({
       attachment_id: attachmentId,
@@ -61,6 +62,7 @@ describe("ImageAttachmentLifecycleService", () => {
       visual_embedding_ref: null,
       active: true,
       audience: "Alice",
+      audience_entity_id: aliceEntityId,
       created_turn_global: 7,
       parent_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
       stream_entry_id: "strm_bbbbbbbbbbbbbbbb" as never,
@@ -91,6 +93,7 @@ describe("ImageAttachmentLifecycleService", () => {
       search_terms: ["caption"],
       uncertainties: [],
       audience: "Alice",
+      audience_entity_id: aliceEntityId,
       active: true,
       created_turn_global: 7,
       created_at: 1,

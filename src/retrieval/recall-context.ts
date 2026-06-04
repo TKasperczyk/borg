@@ -167,13 +167,12 @@ export function memoryDisclosureLabelFromEpisodeAccess(
   const normalized = normalizeEpisodeAccess(input);
   const originAudienceEntityIds = normalized.origin_audience_entity_ids;
 
-  if (originAudienceEntityIds.length === 0 || normalized.shared) {
-    return {
-      disclosureClass: "public",
-      originAudienceEntityIds,
-      privateToEntityIds: [],
-      publicToEntityIds: [],
-    };
+  if (originAudienceEntityIds.length === 0 && normalized.shared) {
+    return publicMemoryDisclosureLabel();
+  }
+
+  if (originAudienceEntityIds.length === 0) {
+    return unknownMemoryDisclosureLabel();
   }
 
   return {
@@ -193,13 +192,28 @@ export function publicMemoryDisclosureLabel(): MemoryDisclosureLabel {
   };
 }
 
-export function relationshipPrivateMemoryDisclosureLabel(
-  entityIds: readonly EntityId[],
+export function unknownMemoryDisclosureLabel(
+  originAudienceEntityIds: readonly EntityId[] = [],
 ): MemoryDisclosureLabel {
-  const uniqueEntityIds = [...new Set(entityIds)];
+  const uniqueEntityIds = [...new Set(originAudienceEntityIds)];
+
+  return {
+    disclosureClass: "unknown",
+    originAudienceEntityIds: uniqueEntityIds,
+    privateToEntityIds: uniqueEntityIds,
+    publicToEntityIds: [],
+  };
+}
+
+export function relationshipPrivateMemoryDisclosureLabel(
+  entityIds: readonly (EntityId | null | undefined)[],
+): MemoryDisclosureLabel {
+  const uniqueEntityIds = [
+    ...new Set(entityIds.filter((entityId): entityId is EntityId => entityId != null)),
+  ];
 
   if (uniqueEntityIds.length === 0) {
-    return publicMemoryDisclosureLabel();
+    return unknownMemoryDisclosureLabel();
   }
 
   return {

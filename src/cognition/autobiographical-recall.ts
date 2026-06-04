@@ -1,6 +1,8 @@
 import {
+  actionMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
+  observedEventMemoryDisclosureLabel,
 } from "./disclosure-labels.js";
 import type { PerceptionResult, TemporalCue } from "./types.js";
 import type {
@@ -26,9 +28,7 @@ import type {
 } from "../memory/self/index.js";
 import type { Provenance } from "../memory/common/provenance.js";
 import {
-  combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
-  relationshipPrivateMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
@@ -232,24 +232,7 @@ function observedEventDisclosureLabel(
     "disclosureClass" | "audienceEntityId" | "speakerEntityId"
   >,
 ): MemoryDisclosureLabel {
-  const originIds = [event.audienceEntityId, event.speakerEntityId].filter(
-    (id): id is EntityId => id !== null,
-  );
-
-  if (event.disclosureClass === "self_private") {
-    return selfPrivateMemoryDisclosureLabel(originIds);
-  }
-
-  if (originIds.length === 0) {
-    return {
-      disclosureClass: "unknown",
-      originAudienceEntityIds: [],
-      privateToEntityIds: [],
-      publicToEntityIds: [],
-    };
-  }
-
-  return relationshipPrivateMemoryDisclosureLabel(originIds);
+  return observedEventMemoryDisclosureLabel(event);
 }
 
 function streamDisclosureLabel(entry: StreamEntry): MemoryDisclosureLabel {
@@ -776,13 +759,6 @@ export class AutobiographicalRecallService {
 
     for (const action of actions) {
       const occurredAt = actionTimestamp(action);
-      const actionLabel =
-        action.audience_entity_id === null
-          ? selfPrivateMemoryDisclosureLabel()
-          : combineMemoryDisclosureLabels([
-              selfPrivateMemoryDisclosureLabel([action.audience_entity_id]),
-              relationshipPrivateMemoryDisclosureLabel([action.audience_entity_id]),
-            ]);
       input.addItem({
         id: `action:${action.id}`,
         kind: "action",
@@ -794,7 +770,7 @@ export class AutobiographicalRecallService {
           `action_state=${action.state}`,
           `description=${sanitizePromptText(action.description)}`,
         ].join(" "),
-        disclosureLabel: actionLabel,
+        disclosureLabel: actionMemoryDisclosureLabel(action),
         sourceStreamEntryIds: action.provenance_stream_entry_ids,
         sourceEpisodeIds: action.provenance_episode_ids,
         metadata: {

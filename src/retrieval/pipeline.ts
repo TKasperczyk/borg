@@ -1,6 +1,7 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import {
   commitmentMemoryDisclosureLabel,
+  imagePerceptionMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
 } from "../cognition/disclosure-labels.js";
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
@@ -108,7 +109,6 @@ import { resolveTimeSignals } from "./time-signals.js";
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
-  relationshipPrivateMemoryDisclosureLabel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureLabel,
@@ -616,8 +616,8 @@ export class RetrievalPipeline {
     if (
       mode === "disclosure" &&
       options.crossAudience !== true &&
-      record.audience !== null &&
-      !new Set(options.audienceTerms ?? []).has(record.audience)
+      (record.audience_entity_id === null ||
+        record.audience_entity_id !== (options.audienceEntityId ?? null))
     ) {
       return null;
     }
@@ -1010,6 +1010,7 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
+      disclosureLabel: openQuestionMemoryDisclosureLabel(question),
     };
   }
 
@@ -1578,7 +1579,7 @@ export class RetrievalPipeline {
                 )
               : await this.options.imagePerceptionRepository!.searchForDisclosure({
                   ...imageRecallInput,
-                  audienceTerms: options.audienceTerms ?? [],
+                  audienceEntityId: options.audienceEntityId ?? null,
                   crossAudience: options.crossAudience,
                 });
 
@@ -1646,12 +1647,19 @@ export class RetrievalPipeline {
       return [];
     }
 
-    const intentVectors = await this.options.embeddingClient.embedBatch(
-      relevantIntents.map((intent) => intent.query),
-    );
-    const commitmentVectors = await this.options.embeddingClient.embedBatch(
-      activeCommitments.map((commitment) => commitment.directive),
-    );
+    let intentVectors: Float32Array[];
+    let commitmentVectors: Float32Array[];
+    try {
+      intentVectors = await this.options.embeddingClient.embedBatch(
+        relevantIntents.map((intent) => intent.query),
+      );
+      commitmentVectors = await this.options.embeddingClient.embedBatch(
+        activeCommitments.map((commitment) => commitment.directive),
+      );
+    } catch (error) {
+      this.emitRetrievalDegraded(options, "commitments", error);
+      return [];
+    }
     const threshold =
       this.options.commitmentEvidenceSimilarityThreshold ??
       DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD;
@@ -2446,10 +2454,7 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     record.created_turn_global === null ? "unknown turn" : `turn ${record.created_turn_global}`;
   const audienceLabel = record.audience ?? "global";
   const imageLabel = `Image: user-uploaded ${record.image_kind} from ${turnLabel} (audience: ${audienceLabel})`;
-  const disclosureLabel =
-    record.audience === null
-      ? relationshipPrivateMemoryDisclosureLabel([])
-      : relationshipPrivateMemoryDisclosureLabel([record.audience as EntityId]);
+  const disclosureLabel = imagePerceptionMemoryDisclosureLabel(record);
 
   return {
     id: `evidence_image_perception_${record.perception_id}_${item.intent.id}`,

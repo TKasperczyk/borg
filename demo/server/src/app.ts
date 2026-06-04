@@ -1719,7 +1719,7 @@ async function semanticGraphSnapshot(borg: Borg, limit: number) {
   const statusCounts = borg.semantic.nodes.countByStatus();
   const totalNodes = sumRecord(statusCounts);
   const nodes = totalNodes === 0 ? [] : await borg.semantic.nodes.list({ limit: totalNodes });
-  const edges = borg.semantic.edges.list();
+  const edges = await borg.semantic.edges.list();
   const edgeCounts = new Map<string, number>();
 
   for (const edge of edges) {
@@ -2104,9 +2104,10 @@ function selfSnapshot(borg: Borg) {
 async function pendingSemanticExtractionEpisodes(borg: Borg): Promise<number> {
   const episodic = borg.episodic as SemanticExtractionEpisodicFacade;
   const processed = new Set<Episode["id"]>();
-  const [episodes, semanticNodes] = await Promise.all([
+  const [episodes, semanticNodes, semanticEdges] = await Promise.all([
     episodic.listAll(),
     borg.semantic.nodes.list({ includeArchived: true, limit: 100_000 }),
+    borg.semantic.edges.list({ includeInvalid: true }),
   ]);
 
   for (const node of semanticNodes) {
@@ -2115,7 +2116,7 @@ async function pendingSemanticExtractionEpisodes(borg: Borg): Promise<number> {
     }
   }
 
-  for (const edge of borg.semantic.edges.list({ includeInvalid: true })) {
+  for (const edge of semanticEdges) {
     for (const episodeId of edge.evidence_episode_ids) {
       processed.add(episodeId);
     }
@@ -2548,10 +2549,10 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json({ node: mapSemanticMemoryNode(node) });
   });
 
-  app.get("/api/semantic/edges/:id", (c) => {
+  app.get("/api/semantic/edges/:id", async (c) => {
     try {
       const id = parseRequest(semanticEdgeIdSchema, c.req.param("id"));
-      const edge = input.borg.semantic.edges.get(id);
+      const edge = await input.borg.semantic.edges.get(id);
 
       if (edge === null) {
         throw new HTTPException(404, { message: `semantic edge ${id} not found` });
@@ -2618,7 +2619,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
           cursor: query.cursor,
         });
         // Rich topology is served by GET /api/semantic/graph; this band preview keeps edges bounded.
-        const edges = input.borg.semantic.edges.list().slice(0, 50);
+        const edges = (await input.borg.semantic.edges.list()).slice(0, 50);
 
         return c.json({
           band,

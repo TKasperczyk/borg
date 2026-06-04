@@ -516,10 +516,10 @@ export class EpisodicRepository {
         return undefined;
       case "audience":
         return capability.audienceEntityId === null
-          ? `(${lancePublicOriginSql()} OR shared = true)`
+          ? lancePublicOriginSql()
           : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
               capability.audienceEntityId,
-            )} OR shared = true)`;
+            )})`;
       default: {
         const exhaustive: never = capability;
         throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
@@ -544,11 +544,11 @@ export class EpisodicRepository {
       case "audience":
         return capability.audienceEntityId === null
           ? {
-              sql: `(${indexedPublicOriginSql(alias)} OR ${alias}.shared = 1)`,
+              sql: indexedPublicOriginSql(alias),
               params: [],
             }
           : {
-              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)} OR ${alias}.shared = 1)`,
+              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
               params: [capability.audienceEntityId, capability.audienceEntityId],
             };
       default: {

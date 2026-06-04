@@ -24,15 +24,8 @@ import { ACTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 import {
   combineMemoryDisclosureLabels,
-  relationshipPrivateMemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
-import type { EntityId } from "../../../util/ids.js";
-
-function actionRecordDisclosureLabel(record: { audience_entity_id: EntityId | null }) {
-  return relationshipPrivateMemoryDisclosureLabel(
-    record.audience_entity_id === null ? [] : [record.audience_entity_id],
-  );
-}
+import { actionMemoryDisclosureLabel } from "../../disclosure-labels.js";
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
   const sourceRecordLimit = normalizePositiveInteger(
@@ -81,7 +74,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
 
   for (const thread of renderedThreads) {
     const disclosureLabel = combineMemoryDisclosureLabels(
-      thread.records.map((record) => actionRecordDisclosureLabel(record)),
+      thread.records.map((record) => actionMemoryDisclosureLabel(record)),
     );
     addEntry(
       context.buckets,
@@ -144,9 +137,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
 
   const olderThreads = orderActionThreadsBySalience(threadsWithSalience).slice(renderLimit);
   const olderDisclosureLabel = combineMemoryDisclosureLabels(
-    olderThreads.flatMap((thread) =>
-      thread.records.map((record) => actionRecordDisclosureLabel(record)),
-    ),
+    olderThreads.flatMap((thread) => thread.records.map((record) => actionMemoryDisclosureLabel(record))),
   );
 
   addEntry(context.buckets, "action_states", {

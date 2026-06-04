@@ -33,9 +33,12 @@ import {
   scopeFromStreamIds,
   slotScope,
 } from "../scope-resolver.js";
-import { commitmentDisclosureEntityIds } from "../../disclosure-labels.js";
+import {
+  actionMemoryDisclosureLabel,
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+} from "../../disclosure-labels.js";
 import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
-import type { EntityId } from "../../../util/ids.js";
 
 export function addGroupChannelMemorySection(context: BuilderSectionContext): void {
   const audienceEntityId = context.input.audienceEntityId;
@@ -130,9 +133,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
   );
 
   for (const commitment of scopedCommitments) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      commitmentDisclosureEntityIds(commitment),
-    );
+    const disclosureLabel = commitmentMemoryDisclosureLabel(commitment);
     addEntry(
       context.buckets,
       "group_channel_memory",
@@ -170,11 +171,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
   ).filter((goal) => goalBelongsToGroupChannel(goal, audienceEntityId, context.repos.entities));
 
   for (const goal of scopedGoals) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      [goal.audience_entity_id, goal.owner_entity_id ?? null].filter(
-        (entityId): entityId is EntityId => entityId !== null,
-      ),
-    );
+    const disclosureLabel = goalMemoryDisclosureLabel(goal);
     addEntry(context.buckets, "group_channel_memory", {
       id: `group_goal:${goal.id}`,
       source_type: "system_metadata",
@@ -210,9 +207,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
         actionBelongsToGroupChannel(record, audienceEntityId, context.repos.entities),
       ),
   ]).slice(0, DEFAULT_ACTION_THREAD_RENDER_LIMIT)) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      action.audience_entity_id === null ? [] : [action.audience_entity_id],
-    );
+    const disclosureLabel = actionMemoryDisclosureLabel(action);
     addEntry(
       context.buckets,
       "group_channel_memory",

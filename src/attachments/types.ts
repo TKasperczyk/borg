@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { attachmentIdHelpers, type AttachmentId, type StreamEntryId } from "../util/ids.js";
+import {
+  attachmentIdHelpers,
+  type AttachmentId,
+  type EntityId,
+  type StreamEntryId,
+} from "../util/ids.js";
 
 export const SUPPORTED_IMAGE_MEDIA_TYPES = [
   "image/jpeg",
@@ -49,6 +54,7 @@ export type StoredAttachmentRecord = {
   visual_embedding_ref: string | null;
   active: boolean;
   audience: string | null;
+  audience_entity_id: EntityId | null;
   created_turn_global: number | null;
   ordinal?: number;
   parent_entry_id: StreamEntryId;

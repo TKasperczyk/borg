@@ -1,5 +1,4 @@
-import { uniqueDisclosureEntityIds } from "../../disclosure-labels.js";
-import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/recall-context.js";
+import { sharedStateMemoryDisclosureLabel } from "../../disclosure-labels.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -9,9 +8,7 @@ import { SHARED_STATE_RECALL_TRUST_RANK, addEntry } from "../section-buckets.js"
 
 export function addSharedStateRecallSection(context: BuilderSectionContext): void {
   for (const entry of context.input.sharedStateRecall ?? []) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      uniqueDisclosureEntityIds([entry.audience_entity_id, entry.owner_entity_id]),
-    );
+    const disclosureLabel = sharedStateMemoryDisclosureLabel(entry);
     const stateParts = [
       `kind=${entry.kind}`,
       `state_key=${entry.state_key}`,

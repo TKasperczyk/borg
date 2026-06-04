@@ -43,7 +43,7 @@ export function normalizeEpisodeAccess<T extends EpisodeAccessLike>(
     ...input,
     audience_entity_id: audienceEntityId,
     origin_audience_entity_ids: originAudienceEntityIds,
-    shared: input.shared ?? originAudienceEntityIds.length === 0,
+    shared: originAudienceEntityIds.length === 0 && input.shared !== false,
   };
 }
 

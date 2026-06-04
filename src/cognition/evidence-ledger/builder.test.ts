@@ -475,6 +475,7 @@ describe("EvidenceLedgerBuilder", () => {
           text_embedding_ref: null,
           visual_embedding_ref: null,
           audience: null,
+          audience_entity_id: null,
           created_turn_global: attachmentId === attachmentA ? 4 : 5,
           parent_entry_id: createStreamEntryId(),
           stream_entry_id: createStreamEntryId(),
@@ -2039,8 +2040,11 @@ describe("EvidenceLedgerBuilder", () => {
     ).toMatchObject({
       source_type: "action_record",
       session_scope: "current_session",
-      state: "scheduled",
+      state: expect.stringContaining("scheduled"),
     });
+    expect(
+      ledger.sections.find((section) => section.id === "action_states")?.entries[0]?.state,
+    ).toContain("disclosure_class=self_private");
     expect(ledger.audienceStanding?.relationalEntries[0]).toMatchObject({
       session_scope: "current_session",
       value: "tutor.name=Marta",
@@ -2941,13 +2945,14 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries).toHaveLength(1);
     expect(actionEntries[0]).toMatchObject({
       id: expect.stringMatching(/^action_thread:/),
-      state: "completed",
+      state: expect.stringContaining("completed"),
       state_metadata: expect.objectContaining({
         transitions: 3,
         current_action_id: completed.id,
         goal_id: goalId,
       }),
     });
+    expect(actionEntries[0]?.state).toContain("disclosure_class=unknown");
     expect(actionEntries[0]?.text).toContain(
       "originating_intent: consider writing the harness presentation",
     );

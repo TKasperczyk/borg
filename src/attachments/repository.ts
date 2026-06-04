@@ -2,6 +2,7 @@ import type { Migration, SqliteDatabase } from "../storage/sqlite/index.js";
 import { AttachmentError } from "../util/errors.js";
 import {
   type AttachmentId,
+  type EntityId,
   type StreamEntryId,
   attachmentIdHelpers,
   streamEntryIdHelpers,
@@ -50,6 +51,17 @@ export const attachmentMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "attachment_audience_entity_id",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE stream_attachments ADD COLUMN audience_entity_id TEXT NULL;
+        CREATE INDEX idx_stream_attachments_audience_entity_id
+      ON stream_attachments(audience_entity_id);
+      `);
+    },
+  },
 ];
 
 type AttachmentRow = {
@@ -66,6 +78,7 @@ type AttachmentRow = {
   visual_embedding_ref: string | null;
   active: number;
   audience: string | null;
+  audience_entity_id: string | null;
   created_turn_global: number | null;
   ordinal: number;
   parent_entry_id: string;
@@ -89,6 +102,7 @@ function rowToRecord(row: AttachmentRow): StoredAttachmentRecord {
     visual_embedding_ref: row.visual_embedding_ref,
     active: row.active !== 0,
     audience: row.audience,
+    audience_entity_id: row.audience_entity_id as EntityId | null,
     created_turn_global: row.created_turn_global,
     ordinal: row.ordinal,
     parent_entry_id: row.parent_entry_id as StreamEntryId,
@@ -157,10 +171,10 @@ export class AttachmentRepository {
         `INSERT INTO stream_attachments (
            attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
            thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-           active, audience, created_turn_global, ordinal, parent_entry_id, stream_entry_id,
-           parent_turn_id, created_at
+           active, audience, audience_entity_id, created_turn_global, ordinal, parent_entry_id,
+           stream_entry_id, parent_turn_id, created_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.attachment_id,
@@ -176,6 +190,7 @@ export class AttachmentRepository {
         record.visual_embedding_ref,
         record.active ? 1 : 0,
         record.audience,
+        record.audience_entity_id,
         record.created_turn_global,
         record.ordinal ?? 0,
         record.parent_entry_id,
@@ -190,7 +205,7 @@ export class AttachmentRepository {
       .prepare(
         `SELECT stream_attachments.attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
                 thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-                stream_attachments.active, audience, created_turn_global, ordinal,
+                stream_attachments.active, audience, audience_entity_id, created_turn_global, ordinal,
                 parent_entry_id, stream_entry_id, parent_turn_id, created_at
          FROM stream_attachments
          WHERE attachment_id = ?`,
@@ -224,7 +239,7 @@ export class AttachmentRepository {
           .prepare(
             `SELECT stream_attachments.attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
                     thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-                    stream_attachments.active, audience, created_turn_global, ordinal,
+                    stream_attachments.active, audience, audience_entity_id, created_turn_global, ordinal,
                     parent_entry_id, stream_entry_id, parent_turn_id, created_at
              FROM stream_attachments
              LEFT JOIN stream_entry_index
@@ -241,8 +256,8 @@ export class AttachmentRepository {
           .prepare(
             `SELECT attachment_id, sha256, media_type, byte_size, width, height, storage_ref,
                     thumbnail_ref, perception_id, text_embedding_ref, visual_embedding_ref,
-                    active, audience, created_turn_global, ordinal, parent_entry_id, stream_entry_id,
-                    parent_turn_id, created_at
+                    active, audience, audience_entity_id, created_turn_global, ordinal,
+                    parent_entry_id, stream_entry_id, parent_turn_id, created_at
              FROM stream_attachments
              WHERE parent_entry_id = ?
              ORDER BY ordinal ASC, created_at ASC, attachment_id ASC`,

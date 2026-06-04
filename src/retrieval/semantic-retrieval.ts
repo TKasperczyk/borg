@@ -23,8 +23,13 @@ import type {
 import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
 import {
-  combineMemoryDisclosureLabels,
+  semanticEdgeMemoryDisclosureLabel,
+  semanticNodeMemoryDisclosureLabel,
+  semanticSourceMemoryDisclosureLabel,
+} from "../cognition/disclosure-labels.js";
+import {
   memoryDisclosureLabelFromEpisodeAccess,
+  unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "./recall-context.js";
 
@@ -204,18 +209,12 @@ async function resolveEpisodeDisclosureLabels(
   );
 }
 
-function unknownMemoryDisclosureLabel(): MemoryDisclosureLabel {
-  return combineMemoryDisclosureLabels([]);
-}
-
 function disclosureLabelForEpisodeIds(
   episodeIds: readonly Episode["id"][],
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): MemoryDisclosureLabel {
-  return combineMemoryDisclosureLabels(
-    episodeIds.map(
-      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
-    ),
+  return semanticSourceMemoryDisclosureLabel(
+    episodeIds.map((episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel()),
   );
 }
 
@@ -225,7 +224,7 @@ function withSemanticSourceDisclosure<T extends SemanticNode>(
 ): T & Pick<RetrievedSemanticNode, "disclosureLabel"> {
   return {
     ...node,
-    disclosureLabel: disclosureLabelForEpisodeIds(node.source_episode_ids, labelsByEpisodeId),
+    disclosureLabel: semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, node),
   };
 }
 
@@ -244,7 +243,7 @@ function withSemanticEdgeDisclosure<T extends SemanticEdge>(
 ): T & Pick<RetrievedSemanticEdge, "disclosureLabel"> {
   return {
     ...edge,
-    disclosureLabel: disclosureLabelForEpisodeIds(edge.evidence_episode_ids, labelsByEpisodeId),
+    disclosureLabel: semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, edge),
   };
 }
 
