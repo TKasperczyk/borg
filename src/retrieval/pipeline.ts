@@ -266,6 +266,7 @@ export class RetrievalPipeline {
     options: {
       relatedSemanticNodeIds?: readonly SemanticNode["id"][];
       audienceEntityId?: EntityId | null;
+      globalIdentitySelfAudienceEntityId?: EntityId | null;
       limit?: number;
       queryVector?: Float32Array;
       traceTurnId?: string;
@@ -847,7 +848,7 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (!isOpenQuestionVisibleToAudience(question, options.audienceEntityId)) {
+    if (!isOpenQuestionVisibleToAudience(question, options)) {
       return null;
     }
 
@@ -1336,16 +1337,19 @@ export class RetrievalPipeline {
           const questions = await this.retrieveOpenQuestionsForQuery(intent.query, {
             relatedSemanticNodeIds: semantic.matchedNodeIds,
             audienceEntityId: options.audienceEntityId ?? null,
+            globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
             limit: options.openQuestionsLimit,
             traceTurnId: options.traceTurnId,
             sessionId: options.sessionId,
           });
 
-          return questions.map((question) => ({
-            intent,
-            question,
-            score: question.urgency + intent.priority / 100,
-          }));
+          return questions
+            .filter((question) => isOpenQuestionVisibleToAudience(question, options))
+            .map((question) => ({
+              intent,
+              question,
+              score: question.urgency + intent.priority / 100,
+            }));
         } catch (error) {
           this.emitRetrievalDegraded(options, "open_questions", error);
           return [];
@@ -1872,12 +1876,18 @@ function warmRecallScore(stateHandle: RecallStateHandle): number {
 
 function isOpenQuestionVisibleToAudience(
   question: OpenQuestion,
-  audienceEntityId: EntityId | null | undefined,
+  options: Pick<RetrievalSearchOptions, "audienceEntityId" | "globalIdentitySelfAudienceEntityId">,
 ): boolean {
+  if (options.globalIdentitySelfAudienceEntityId !== undefined) {
+    return true;
+  }
+
   // Phase B intentionally does NOT expand audience scoping to individual participants.
   // Group audience turns currently see only memories scoped to the group entity OR
   // to public/self/shared. Participant-private memories remain invisible from a group turn.
   // This is Phase C territory (ACL-style DM+group coexistence).
+  const audienceEntityId = options.audienceEntityId;
+
   if (audienceEntityId === null || audienceEntityId === undefined) {
     return question.audience_entity_id === null;
   }

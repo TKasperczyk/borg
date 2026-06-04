@@ -13,6 +13,7 @@ export async function retrieveOpenQuestionsForQuery(
   options: {
     relatedSemanticNodeIds?: readonly SemanticNode["id"][];
     audienceEntityId?: EntityId | null;
+    globalIdentitySelfAudienceEntityId?: EntityId | null;
     limit?: number;
     queryVector?: Float32Array;
     onDegraded?: (reason: string, error?: unknown) => void | Promise<void>;
@@ -25,6 +26,10 @@ export async function retrieveOpenQuestionsForQuery(
   const relatedNodeIds = new Set(options.relatedSemanticNodeIds ?? []);
   const limit = Math.max(1, options.limit ?? 3);
   const listLimit = Math.max(100, limit * 10);
+  const visibleToAudienceEntityId =
+    options.globalIdentitySelfAudienceEntityId === undefined
+      ? (options.audienceEntityId ?? null)
+      : undefined;
   let vectorCandidates: Awaited<ReturnType<OpenQuestionsRepository["searchByVector"]>> = [];
 
   if (embeddingClient !== undefined) {
@@ -33,7 +38,7 @@ export async function retrieveOpenQuestionsForQuery(
         options.queryVector ?? (await embeddingClient.embed(query)),
         {
           status: "open",
-          visibleToAudienceEntityId: options.audienceEntityId ?? null,
+          visibleToAudienceEntityId,
           limit: listLimit,
           minSimilarity: DEFAULT_OPEN_QUESTION_MIN_SIMILARITY,
         },
@@ -47,7 +52,7 @@ export async function retrieveOpenQuestionsForQuery(
 
   const listCandidates = openQuestionsRepository.list({
     status: "open",
-    visibleToAudienceEntityId: options.audienceEntityId ?? null,
+    visibleToAudienceEntityId,
     limit: listLimit,
   });
   const candidateById = new Map<OpenQuestion["id"], OpenQuestion>();

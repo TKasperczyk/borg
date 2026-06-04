@@ -1747,7 +1747,7 @@ describe("retrieval pipeline", () => {
     expect(defaultResult.open_questions).toEqual([]);
   });
 
-  it("keeps participant-private open questions hidden from group audience retrieval", async () => {
+  it("widens open-question visibility only for private self-cognition", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1777,6 +1777,7 @@ describe("retrieval pipeline", () => {
     });
     const group = createEntityId();
     const alice = createEntityId();
+    const self = createEntityId();
 
     cleanup.push(async () => {
       db.close();
@@ -1802,7 +1803,7 @@ describe("retrieval pipeline", () => {
       provenance: { kind: "manual" },
     });
     openQuestionsRepository.add({
-      question: "Why does Atlas deployment keep failing for Alice privately?",
+      question: "Por que falla Atlas deployment para Alicia en privado?",
       urgency: 1,
       audience_entity_id: alice,
       source: "reflection",
@@ -1824,7 +1825,14 @@ describe("retrieval pipeline", () => {
       audienceEntityId: group,
       openQuestionsLimit: 10,
     });
+    const selfReflection = await pipeline.searchWithContext("Atlas deployment", {
+      limit: 1,
+      includeOpenQuestions: true,
+      globalIdentitySelfAudienceEntityId: self,
+      openQuestionsLimit: 10,
+    });
     const questions = result.open_questions.map((question) => question.question);
+    const selfReflectionQuestions = selfReflection.open_questions.map((question) => question.question);
 
     expect(questions).toEqual(
       expect.arrayContaining([
@@ -1832,6 +1840,13 @@ describe("retrieval pipeline", () => {
         "Why does Atlas deployment keep failing in the group?",
       ]),
     );
-    expect(questions).not.toContain("Why does Atlas deployment keep failing for Alice privately?");
+    expect(questions).not.toContain("Por que falla Atlas deployment para Alicia en privado?");
+    expect(selfReflectionQuestions).toEqual(
+      expect.arrayContaining([
+        "Why does Atlas deployment keep failing for everyone?",
+        "Why does Atlas deployment keep failing in the group?",
+        "Por que falla Atlas deployment para Alicia en privado?",
+      ]),
+    );
   });
 });
