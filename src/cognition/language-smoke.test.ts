@@ -171,13 +171,11 @@ describe("cross-language cognition smoke", () => {
         clock: harness.clock,
       });
       const coordinated = await coordinator.coordinate({
-        sessionId: DEFAULT_SESSION_ID,
         turnId: "turn_chinese_smoke",
         userMessage: chineseTurn,
         recentMessages: [],
         cognitionInput: chineseTurn,
         isSelfAudience: true,
-        isPrivateSelfCognition: false,
         recallContext: {
           reader: "sol",
           currentSessionId: DEFAULT_SESSION_ID,
@@ -193,7 +191,6 @@ describe("cross-language cognition smoke", () => {
           participantEntityIds: [],
           isPrivateSelfCognition: false,
         },
-        audienceEntityId: null,
         audienceEntity: null,
         audienceProfile: null,
         perception,
@@ -207,7 +204,6 @@ describe("cross-language cognition smoke", () => {
         activeValues: [valueRecord],
         scoringFeatures: retrievalScoringFeatures,
         suppressionSet: new SuppressionSet(),
-        findEntityByName: () => null,
         llmClient,
         proceduralContextModel: "claude-opus-4-6",
       });

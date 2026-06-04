@@ -26,7 +26,7 @@ import {
   type RetrievalScoringFeatures,
 } from "../../retrieval/scoring-features.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, SessionId } from "../../util/ids.js";
+import type { EntityId } from "../../util/ids.js";
 import type { LLMClient } from "../../llm/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
@@ -67,7 +67,7 @@ function selectGoalDescriptions(
   };
 }
 
-function adaptRecallDisclosureContextToLegacyRetrievalOptions(input: {
+function retrievalOptionsFromRecallDisclosureContext(input: {
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
 }): Pick<
@@ -82,47 +82,16 @@ function adaptRecallDisclosureContextToLegacyRetrievalOptions(input: {
   };
 }
 
-function sameEntityIds(left: readonly EntityId[], right: readonly EntityId[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function deriveCoordinatorContext(input: TurnRetrievalCoordinatorInput): {
-  sessionId: SessionId;
+function coordinatorContextFromRecallDisclosureContext(input: {
+  recallContext: CognitionRecallContext;
+  disclosureContext: DisclosureContext;
+}): {
+  sessionId: CognitionRecallContext["currentSessionId"];
   audienceEntityId: EntityId | null;
-  isPrivateSelfCognition: boolean;
 } {
-  const sessionId = input.recallContext.currentSessionId;
-  const audienceEntityId = input.disclosureContext.currentAudienceEntityId;
-  const isPrivateSelfCognition = input.disclosureContext.isPrivateSelfCognition;
-
-  if (
-    input.sessionId !== sessionId ||
-    input.disclosureContext.currentSessionId !== sessionId ||
-    input.audienceEntityId !== audienceEntityId ||
-    input.recallContext.currentAudienceEntityId !== audienceEntityId ||
-    input.isPrivateSelfCognition !== isPrivateSelfCognition ||
-    !sameEntityIds(
-      input.recallContext.currentParticipantEntityIds,
-      input.disclosureContext.participantEntityIds,
-    )
-  ) {
-    throw new Error("Turn retrieval coordinator context mismatch");
-  }
-
   return {
-    sessionId,
-    audienceEntityId,
-    isPrivateSelfCognition,
+    sessionId: input.recallContext.currentSessionId,
+    audienceEntityId: input.disclosureContext.currentAudienceEntityId,
   };
 }
 
@@ -138,17 +107,14 @@ export type TurnRetrievalCoordinatorOptions = {
 };
 
 export type TurnRetrievalCoordinatorInput = {
-  sessionId: SessionId;
   turnId: string;
   userMessage: string;
   recentMessages: readonly { role: "user" | "assistant"; content: string }[];
   cognitionInput: string;
   inputAudience?: string;
   isSelfAudience: boolean;
-  isPrivateSelfCognition: boolean;
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
-  audienceEntityId: EntityId | null;
   audienceEntity: EntityRecord | null;
   audienceProfile: SocialProfile | null;
   perception: PerceptionResult;
@@ -158,7 +124,6 @@ export type TurnRetrievalCoordinatorInput = {
   activeValues?: readonly SelfSnapshot["values"][number][];
   scoringFeatures?: RetrievalScoringFeatures;
   suppressionSet: SuppressionSet;
-  findEntityByName: (name: string) => EntityId | null;
   llmClient?: LLMClient;
   proceduralContextModel?: string;
 };
@@ -196,7 +161,7 @@ export class TurnRetrievalCoordinator {
   }
 
   async coordinate(input: TurnRetrievalCoordinatorInput): Promise<TurnRetrievalCoordinatorResult> {
-    const coordinatorContext = deriveCoordinatorContext(input);
+    const coordinatorContext = coordinatorContextFromRecallDisclosureContext(input);
     const applicableCommitments = this.collectApplicableCommitments(
       coordinatorContext.audienceEntityId,
     );
@@ -228,7 +193,7 @@ export class TurnRetrievalCoordinator {
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
     const retrievalOptions: CognitionRecallSearchOptions = {
-      ...adaptRecallDisclosureContextToLegacyRetrievalOptions({
+      ...retrievalOptionsFromRecallDisclosureContext({
         recallContext: input.recallContext,
         disclosureContext: input.disclosureContext,
       }),

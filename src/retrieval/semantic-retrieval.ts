@@ -22,11 +22,7 @@ import type {
 } from "../memory/semantic/types.js";
 import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
-import {
-  semanticEdgeMemoryDisclosureLabel,
-  semanticNodeMemoryDisclosureLabel,
-  semanticSourceMemoryDisclosureLabel,
-} from "../cognition/disclosure-labels.js";
+import { semanticSourceMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   unknownMemoryDisclosureLabel,
@@ -92,7 +88,6 @@ export type SemanticRetrievalOptions = {
   audienceEntityId?: EntityId | null;
   // Disclosure/admin-only all-audiences source search. Ignored for cognition source recall.
   crossAudience?: boolean;
-  sourceVisibilityMode?: "cognition" | "disclosure";
   graphWalkDepth?: number;
   maxGraphNodes?: number;
   asOf?: number;
@@ -107,6 +102,15 @@ type SemanticVisibilityOptions = Pick<
   SemanticRetrievalOptions,
   "audienceEntityId" | "crossAudience"
 >;
+
+type SemanticSourceMode = "cognition" | "disclosure";
+
+export type SemanticSourceAdapter = {
+  visibleEpisodeIds: Episode["id"][];
+  partial: boolean;
+  sourceVisibilityFraction?: number;
+  disclosureLabel: MemoryDisclosureLabel;
+};
 
 export type SemanticRetrievalDependencies = {
   embeddingClient: EmbeddingClient;
@@ -186,12 +190,6 @@ async function resolveVisibleEpisodeIds(
   );
 }
 
-function semanticSourceVisibilityMode(
-  options: SemanticRetrievalOptions,
-): "cognition" | "disclosure" {
-  return options.sourceVisibilityMode ?? "cognition";
-}
-
 async function resolveEpisodeDisclosureLabels(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
@@ -214,18 +212,68 @@ function disclosureLabelForEpisodeIds(
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): MemoryDisclosureLabel {
   return semanticSourceMemoryDisclosureLabel(
-    episodeIds.map((episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel()),
+    episodeIds.map(
+      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+    ),
   );
 }
 
-function withSemanticSourceDisclosure<T extends SemanticNode>(
-  node: T,
-  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
-): T & Pick<RetrievedSemanticNode, "disclosureLabel"> {
+function adaptSemanticSourceEpisodes(input: {
+  sourceEpisodeIds: readonly Episode["id"][];
+  visibleEpisodeIds: ReadonlySet<string> | null;
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
+}): SemanticSourceAdapter {
+  const visibleEpisodeIds =
+    input.visibleEpisodeIds === null
+      ? [...input.sourceEpisodeIds]
+      : input.sourceEpisodeIds.filter((episodeId) => input.visibleEpisodeIds?.has(episodeId));
+  const partial =
+    input.visibleEpisodeIds !== null &&
+    visibleEpisodeIds.length > 0 &&
+    visibleEpisodeIds.length < input.sourceEpisodeIds.length;
+
   return {
-    ...node,
-    disclosureLabel: semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, node),
+    visibleEpisodeIds,
+    partial,
+    ...(partial
+      ? {
+          sourceVisibilityFraction: visibleEpisodeIds.length / input.sourceEpisodeIds.length,
+        }
+      : {}),
+    disclosureLabel: disclosureLabelForEpisodeIds(visibleEpisodeIds, input.labelsByEpisodeId),
   };
+}
+
+export async function resolveSemanticSourceAdapter(input: {
+  episodicRepository: EpisodicRepository;
+  sourceEpisodeIds: readonly Episode["id"][];
+  mode: SemanticSourceMode;
+  visibility: SemanticVisibilityOptions;
+}): Promise<SemanticSourceAdapter | null> {
+  const visibleEpisodeIds =
+    input.mode === "disclosure"
+      ? await resolveVisibleEpisodeIds(
+          input.episodicRepository,
+          input.sourceEpisodeIds,
+          input.visibility,
+        )
+      : null;
+  const adapted = adaptSemanticSourceEpisodes({
+    sourceEpisodeIds: input.sourceEpisodeIds,
+    visibleEpisodeIds,
+    labelsByEpisodeId: await resolveEpisodeDisclosureLabels(
+      input.episodicRepository,
+      visibleEpisodeIds === null
+        ? input.sourceEpisodeIds
+        : input.sourceEpisodeIds.filter((episodeId) => visibleEpisodeIds.has(episodeId)),
+    ),
+  });
+
+  return input.mode === "disclosure" &&
+    visibleEpisodeIds !== null &&
+    adapted.visibleEpisodeIds.length === 0
+    ? null
+    : adapted;
 }
 
 export async function resolveMemoryDisclosureLabelForEpisodeIds(
@@ -237,13 +285,66 @@ export async function resolveMemoryDisclosureLabelForEpisodeIds(
   return disclosureLabelForEpisodeIds(episodeIds, labelsByEpisodeId);
 }
 
-function withSemanticEdgeDisclosure<T extends SemanticEdge>(
-  edge: T,
+function semanticSourcePartialFields(
+  source: SemanticSourceAdapter,
+): Pick<RetrievedSemanticNode, "partial_source_visibility" | "source_visibility_fraction"> {
+  return source.partial
+    ? {
+        partial_source_visibility: true,
+        source_visibility_fraction: source.sourceVisibilityFraction,
+      }
+    : {};
+}
+
+function withSemanticNodeSourceAdapter<T extends SemanticNode>(
+  node: T,
+  visibleEpisodeIds: ReadonlySet<string> | null,
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
-): T & Pick<RetrievedSemanticEdge, "disclosureLabel"> {
+): T &
+  Pick<
+    RetrievedSemanticNode,
+    "partial_source_visibility" | "source_visibility_fraction" | "disclosureLabel"
+  > {
+  const source = adaptSemanticSourceEpisodes({
+    sourceEpisodeIds: node.source_episode_ids,
+    visibleEpisodeIds,
+    labelsByEpisodeId,
+  });
+
+  return {
+    ...node,
+    ...(visibleEpisodeIds !== null &&
+    source.visibleEpisodeIds.length !== node.source_episode_ids.length
+      ? { source_episode_ids: source.visibleEpisodeIds }
+      : {}),
+    ...semanticSourcePartialFields(source),
+    disclosureLabel: source.disclosureLabel,
+  };
+}
+
+function withSemanticEdgeSourceAdapter<T extends SemanticEdge>(
+  edge: T,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): T &
+  Pick<
+    RetrievedSemanticEdge,
+    "partial_source_visibility" | "source_visibility_fraction" | "disclosureLabel"
+  > {
+  const source = adaptSemanticSourceEpisodes({
+    sourceEpisodeIds: edge.evidence_episode_ids,
+    visibleEpisodeIds,
+    labelsByEpisodeId,
+  });
+
   return {
     ...edge,
-    disclosureLabel: semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, edge),
+    ...(visibleEpisodeIds !== null &&
+    source.visibleEpisodeIds.length !== edge.evidence_episode_ids.length
+      ? { evidence_episode_ids: source.visibleEpisodeIds }
+      : {}),
+    ...semanticSourcePartialFields(source),
+    disclosureLabel: source.disclosureLabel,
   };
 }
 
@@ -376,7 +477,7 @@ function withVisibleSemanticWalkStepEdges(
 
       return disclosureLabelsByEpisodeId === undefined
         ? visibleEdge
-        : withSemanticEdgeDisclosure(visibleEdge, disclosureLabelsByEpisodeId);
+        : withSemanticEdgeSourceAdapter(edge, visibleEpisodeIds, disclosureLabelsByEpisodeId);
     }),
   };
 }
@@ -554,8 +655,9 @@ function annotateSemanticNode(
   const status = buildUnderReviewStatus(
     input.underReviewByNodeId.get(semanticNodeTargetKey(node.id)),
   );
-  const visibleNode = withSemanticSourceDisclosure(
-    withVisibleSemanticSources(node, input.visibleEpisodeIds),
+  const visibleNode = withSemanticNodeSourceAdapter(
+    node,
+    input.visibleEpisodeIds,
     input.disclosureLabelsByEpisodeId,
   );
   const statusMultiplier = input.statusMultipliers[node.status];
@@ -648,10 +750,11 @@ async function isHistoricalPropositionMatch(
   return supportNeighbors.every(({ edge }) => edge.valid_to !== null && edge.valid_to <= asOf);
 }
 
-export async function resolveSemanticContext(
+async function resolveSemanticContextWithSourceMode(
   query: string,
   options: SemanticRetrievalOptions,
   dependencies: SemanticRetrievalDependencies,
+  sourceMode: SemanticSourceMode,
 ): Promise<ResolvedSemanticRetrieval> {
   const { embeddingClient, episodicRepository, semanticNodeRepository, semanticGraph } =
     dependencies;
@@ -664,7 +767,6 @@ export async function resolveSemanticContext(
   const statusMultipliers = normalizeStatusMultipliers(options.statusMultipliers);
   const overfetchMultiplier = normalizeOverfetchMultiplier(options.overfetchMultiplier);
   const exactTerms = options.exactTerms ?? [];
-  const sourceVisibilityMode = semanticSourceVisibilityMode(options);
   const directMatchLimit =
     exactTerms.length > 0 ? DEFAULT_EXACT_MATCH_LIMIT : DEFAULT_VECTOR_MATCH_LIMIT;
   const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();
@@ -696,7 +798,7 @@ export async function resolveSemanticContext(
 
   const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];
   const matchedNodeVisibility =
-    sourceVisibilityMode === "disclosure"
+    sourceMode === "disclosure"
       ? await resolveVisibleEpisodeIds(
           episodicRepository,
           matchedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
@@ -808,7 +910,7 @@ export async function resolveSemanticContext(
     ]),
   ];
   const semanticVisibility =
-    sourceVisibilityMode === "disclosure"
+    sourceMode === "disclosure"
       ? await resolveVisibleEpisodeIds(episodicRepository, semanticSourceEpisodeIds, options)
       : null;
   const semanticDisclosureEpisodeIds =
@@ -979,6 +1081,30 @@ export async function resolveSemanticContext(
     categoryHits,
     asOf: options.asOf,
   };
+}
+
+export async function resolveSemanticContextForCognition(
+  query: string,
+  options: SemanticRetrievalOptions,
+  dependencies: SemanticRetrievalDependencies,
+): Promise<ResolvedSemanticRetrieval> {
+  return resolveSemanticContextWithSourceMode(query, options, dependencies, "cognition");
+}
+
+export async function resolveSemanticContextForDisclosure(
+  query: string,
+  options: SemanticRetrievalOptions,
+  dependencies: SemanticRetrievalDependencies,
+): Promise<ResolvedSemanticRetrieval> {
+  return resolveSemanticContextWithSourceMode(query, options, dependencies, "disclosure");
+}
+
+export async function resolveSemanticContext(
+  query: string,
+  options: SemanticRetrievalOptions,
+  dependencies: SemanticRetrievalDependencies,
+): Promise<ResolvedSemanticRetrieval> {
+  return resolveSemanticContextForCognition(query, options, dependencies);
 }
 
 export function toRetrievedSemantic(resolved: ResolvedSemanticRetrieval): RetrievedSemantic {

@@ -264,3 +264,9 @@ export async function selectObservedEventIntrospection(
     };
   });
 }
+
+export async function recallObservedEventsForCognition(
+  input: ObservedEventIntrospectionProjectionInput,
+): Promise<ObservedEventIntrospectionRow[]> {
+  return selectObservedEventIntrospection(input);
+}

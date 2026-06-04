@@ -171,7 +171,7 @@ function buildObservedEventIntrospectionEntries(
     );
     const audienceKind = originAudienceKind(context, row.audienceEntityId);
     const descriptor = originDescriptor(audienceKind);
-    const disclosureLabel = observedEventDisclosureLabel(row);
+    const disclosureLabel = observedEventMemoryDisclosureLabel(row);
 
     return {
       id: `observed_event_introspection:${index + 1}`,
@@ -208,14 +208,6 @@ function buildObservedEventIntrospectionEntries(
       taint: "none",
     };
   });
-}
-
-function observedEventDisclosureLabel(row: {
-  disclosureClass: "social_observed" | "self_private";
-  speakerEntityId: EntityId | null;
-  audienceEntityId: EntityId | null;
-}): MemoryDisclosureLabel {
-  return observedEventMemoryDisclosureLabel(row);
 }
 
 function commitmentDisclosureLabel(commitment: CommitmentRecord): MemoryDisclosureLabel {

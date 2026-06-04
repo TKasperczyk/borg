@@ -31,7 +31,7 @@ import type {
   SemanticNodeRepository,
 } from "../memory/semantic/repository.js";
 import type { ReviewQueueRepository } from "../memory/semantic/review-queue.js";
-import type { SemanticEdge, SemanticNode } from "../memory/semantic/types.js";
+import type { SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
@@ -97,12 +97,13 @@ import {
   type RetrievalScoringFeatures,
 } from "./scoring-features.js";
 import {
-  isSemanticNodeVisibleToAudience,
-  resolveMemoryDisclosureLabelForEpisodeIds,
-  resolveSemanticContext,
+  resolveSemanticContextForCognition,
+  resolveSemanticContextForDisclosure,
+  resolveSemanticSourceAdapter,
   toRetrievedSemantic,
   type ResolvedSemanticRetrieval,
   type RetrievedSemantic,
+  type SemanticSourceAdapter,
   type SemanticStatusMultipliers,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
@@ -161,6 +162,10 @@ export type RetrievalPipelineOptions = {
   maxRetrievedImageRefs?: number;
 };
 
+// TODO(post-inversion options split): split this overloaded shape into
+// CognitionRetrievalOptions and DisclosureRetrievalOptions, with shared ranking/scoring options
+// extracted once call sites no longer depend on this single type for search, warm rehydration,
+// re-retrieval overrides, and public disclosure/admin reads.
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
   recallContext?: CognitionRecallContext;
   disclosureContext?: DisclosureContext;
@@ -195,9 +200,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   recordRetrieval?: boolean;
 };
 
-type RetrievalAudienceFilterOptionKey =
-  | "audienceEntityId"
-  | "crossAudience";
+type RetrievalAudienceFilterOptionKey = "audienceEntityId" | "crossAudience";
 
 // Cognition recall is audience-global. The omitted keys remain available only on the generic
 // disclosure/admin search options and must not be reintroduced as cognition filters.
@@ -247,6 +250,17 @@ type SemanticEvidenceCandidate = {
   intent: RecallIntent;
   semantic: ResolvedSemanticRetrieval;
 };
+
+function semanticSourceAdapterPartialEvidenceFields(
+  source: SemanticSourceAdapter,
+): Pick<EvidenceItem, "partial_source_visibility" | "source_visibility_fraction"> {
+  return source.partial
+    ? {
+        partial_source_visibility: true,
+        source_visibility_fraction: source.sourceVisibilityFraction,
+      }
+    : {};
+}
 
 type OpenQuestionEvidenceCandidate = {
   intent: RecallIntent;
@@ -743,9 +757,14 @@ export class RetrievalPipeline {
       return null;
     }
 
-    const sourceVisibility = await this.resolveSemanticNodeSourceVisibility(node, options, mode);
+    const source = await resolveSemanticSourceAdapter({
+      episodicRepository: this.options.episodicRepository,
+      sourceEpisodeIds: node.source_episode_ids,
+      mode,
+      visibility: episodeVisibilityOptions(options),
+    });
 
-    if (sourceVisibility === null) {
+    if (source === null) {
       return null;
     }
 
@@ -762,18 +781,9 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
-      source_episode_ids: sourceVisibility.visibleSourceEpisodeIds,
-      ...(sourceVisibility.partial
-        ? {
-            partial_source_visibility: true,
-            source_visibility_fraction:
-              sourceVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
-          }
-        : {}),
-      disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
-        this.options.episodicRepository,
-        sourceVisibility.visibleSourceEpisodeIds,
-      ),
+      source_episode_ids: source.visibleEpisodeIds,
+      ...semanticSourceAdapterPartialEvidenceFields(source),
+      disclosureLabel: source.disclosureLabel,
     };
   }
 
@@ -801,26 +811,26 @@ export class RetrievalPipeline {
       return null;
     }
 
-    const nodeVisibility = await this.resolveSemanticNodeSourceVisibility(node, options, mode);
-    const edgeVisibility = await this.resolveSemanticEdgeVisibility(edge, node, options, mode);
+    const nodeSource = await resolveSemanticSourceAdapter({
+      episodicRepository: this.options.episodicRepository,
+      sourceEpisodeIds: node.source_episode_ids,
+      mode,
+      visibility: episodeVisibilityOptions(options),
+    });
+    const edgeSource = await resolveSemanticSourceAdapter({
+      episodicRepository: this.options.episodicRepository,
+      sourceEpisodeIds: edge.evidence_episode_ids,
+      mode,
+      visibility: episodeVisibilityOptions(options),
+    });
 
-    if (nodeVisibility === null || edgeVisibility === null) {
+    if (nodeSource === null || edgeSource === null) {
       return null;
     }
-    const nodeDisclosureLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
-      this.options.episodicRepository,
-      nodeVisibility.visibleSourceEpisodeIds,
-    );
-    const edgeDisclosureLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
-      this.options.episodicRepository,
-      edgeVisibility.visibleEvidenceEpisodeIds,
-    );
     const semanticEdgeSourceEpisodeIds = [
-      ...new Set([
-        ...nodeVisibility.visibleSourceEpisodeIds,
-        ...edgeVisibility.visibleEvidenceEpisodeIds,
-      ]),
+      ...new Set([...nodeSource.visibleEpisodeIds, ...edgeSource.visibleEpisodeIds]),
     ];
+    const partialSource = edgeSource.partial ? edgeSource : nodeSource.partial ? nodeSource : null;
 
     return {
       id: `warm_recall_semantic_edge_${edge.id}`,
@@ -837,114 +847,11 @@ export class RetrievalPipeline {
         provenance: 1,
       },
       source_episode_ids: semanticEdgeSourceEpisodeIds,
-      ...(nodeVisibility.partial || edgeVisibility.partial
-        ? {
-            partial_source_visibility: true,
-            source_visibility_fraction: edgeVisibility.partial
-              ? edgeVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length
-              : nodeVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
-          }
-        : {}),
-      disclosureLabel: combineMemoryDisclosureLabels([nodeDisclosureLabel, edgeDisclosureLabel]),
-    };
-  }
-
-  private async resolveSemanticNodeSourceVisibility(
-    node: SemanticNode,
-    options: RetrievalSearchOptions,
-    mode: RetrievalExecutionMode,
-  ): Promise<{
-    visibleSourceEpisodeIds: Episode["id"][];
-    partial: boolean;
-  } | null> {
-    if (mode === "cognition") {
-      return {
-        visibleSourceEpisodeIds: [...node.source_episode_ids],
-        partial: false,
-      };
-    }
-
-    const viewer = resolveViewerCapability(episodeVisibilityOptions(options));
-
-    if (viewer.kind === "unrestricted") {
-      return {
-        visibleSourceEpisodeIds: [...node.source_episode_ids],
-        partial: false,
-      };
-    }
-
-    const sourceEpisodes = await this.options.episodicRepository.getMany(node.source_episode_ids);
-    const visibleEpisodeIds = new Set(
-      sourceEpisodes
-        .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
-        .map((episode) => episode.id),
-    );
-    const visibleSourceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
-      visibleEpisodeIds.has(episodeId),
-    );
-
-    if (visibleSourceEpisodeIds.length === 0) {
-      return null;
-    }
-
-    return {
-      visibleSourceEpisodeIds,
-      partial: visibleSourceEpisodeIds.length < node.source_episode_ids.length,
-    };
-  }
-
-  private async resolveSemanticEdgeVisibility(
-    edge: SemanticEdge,
-    node: SemanticNode,
-    options: RetrievalSearchOptions,
-    mode: RetrievalExecutionMode,
-  ): Promise<{
-    visibleEvidenceEpisodeIds: Episode["id"][];
-    partial: boolean;
-  } | null> {
-    if (mode === "cognition") {
-      return {
-        visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
-        partial: false,
-      };
-    }
-
-    if (
-      !(await isSemanticNodeVisibleToAudience(node, options, {
-        episodicRepository: this.options.episodicRepository,
-      }))
-    ) {
-      return null;
-    }
-
-    const viewer = resolveViewerCapability(episodeVisibilityOptions(options));
-
-    if (viewer.kind === "unrestricted") {
-      return {
-        visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
-        partial: false,
-      };
-    }
-
-    const evidenceEpisodes = await this.options.episodicRepository.getMany(
-      edge.evidence_episode_ids,
-    );
-    const visibleEpisodeIds = new Set(
-      evidenceEpisodes
-        .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
-        .map((episode) => episode.id),
-    );
-    const visibleEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
-      visibleEpisodeIds.has(episodeId),
-    );
-
-    if (visibleEvidenceEpisodeIds.length === 0) {
-      return null;
-    }
-
-    return {
-      visibleEvidenceEpisodeIds,
-      partial: visibleEvidenceEpisodeIds.length < edge.evidence_episode_ids.length,
+      ...(partialSource === null ? {} : semanticSourceAdapterPartialEvidenceFields(partialSource)),
+      disclosureLabel: combineMemoryDisclosureLabels([
+        nodeSource.disclosureLabel,
+        edgeSource.disclosureLabel,
+      ]),
     };
   }
 
@@ -1462,11 +1369,14 @@ export class RetrievalPipeline {
       async (intent): Promise<SemanticEvidenceCandidate | null> => {
         try {
           const intentVector = await this.options.embeddingClient.embed(intent.query);
-          const semantic = await resolveSemanticContext(
+          const resolveSemanticContextForMode =
+            mode === "disclosure"
+              ? resolveSemanticContextForDisclosure
+              : resolveSemanticContextForCognition;
+          const semantic = await resolveSemanticContextForMode(
             intent.query,
             {
               ...options,
-              sourceVisibilityMode: mode === "disclosure" ? "disclosure" : "cognition",
               queryVector: intentVector,
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
@@ -1574,9 +1484,7 @@ export class RetrievalPipeline {
           };
           const hits =
             mode === "cognition"
-              ? await this.options.imagePerceptionRepository!.recallForCognition(
-                  imageRecallInput,
-                )
+              ? await this.options.imagePerceptionRepository!.recallForCognition(imageRecallInput)
               : await this.options.imagePerceptionRepository!.searchForDisclosure({
                   ...imageRecallInput,
                   audienceEntityId: options.audienceEntityId ?? null,

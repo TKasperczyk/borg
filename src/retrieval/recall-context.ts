@@ -4,10 +4,10 @@ import type { SessionAudienceRole } from "../sessions/index.js";
 import type { EntityId, SessionId } from "../util/ids.js";
 
 /**
- * Transitional Sprint-1 memory label classes for recalled records. This sits beside existing
- * disclosure vocabularies: observed-events `disclosure_class`, self-decisions `self_private`,
- * and creator-directives `content_scope` / allow-list policy. It is metadata for recall results,
- * not an authorization vocabulary; Sprint 5 must reconcile these into one disclosure-policy layer.
+ * Memory disclosure label classes for recalled records. These are metadata for render/emission
+ * judgment after global cognition recall; they are not predicates for hiding records from Sol.
+ * `operator_private` and `sensitive` are reserved classes for future per-record disclosure
+ * policies and may appear in persisted review/tool metadata.
  */
 export const MEMORY_DISCLOSURE_CLASSES = [
   "public",

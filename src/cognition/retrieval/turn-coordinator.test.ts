@@ -427,16 +427,13 @@ describe("TurnRetrievalCoordinator", () => {
     };
 
     const result = await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Solve Atlas",
       recentMessages: [],
       cognitionInput: "Solve Atlas",
       inputAudience: "alice",
       isSelfAudience: false,
-      isPrivateSelfCognition: false,
       ...makeContexts({ audienceEntityId }),
-      audienceEntityId,
       audienceEntity,
       audienceProfile: makeAudienceProfile(),
       perception: {
@@ -447,8 +444,6 @@ describe("TurnRetrievalCoordinator", () => {
       selfSnapshot: makeSelfSnapshot(),
       scoringFeatures,
       suppressionSet,
-      findEntityByName: (name) =>
-        name === "Atlas" ? atlasEntityId : name === "Bob" ? bobEntityId : null,
       llmClient: llm,
       proceduralContextModel: "haiku",
     });
@@ -460,9 +455,11 @@ describe("TurnRetrievalCoordinator", () => {
     });
     expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
     expect(
-      (result.pendingCorrections.find((item) => item.id === 3) as ReviewQueueItem & {
-        disclosureLabel?: unknown;
-      })?.disclosureLabel,
+      (
+        result.pendingCorrections.find((item) => item.id === 3) as ReviewQueueItem & {
+          disclosureLabel?: unknown;
+        }
+      )?.disclosureLabel,
     ).toEqual({
       disclosureClass: "relationship_private",
       originAudienceEntityIds: [bobEntityId],
@@ -569,16 +566,13 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     const result = await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-bob-correction",
       userMessage: "Bob asks what still needs correction.",
       recentMessages: [],
       cognitionInput: "Bob asks what still needs correction.",
       inputAudience: "bob",
       isSelfAudience: false,
-      isPrivateSelfCognition: false,
       ...makeContexts({ audienceEntityId: bobEntityId }),
-      audienceEntityId: bobEntityId,
       audienceEntity: {
         id: bobEntityId,
         canonical_name: "Bob",
@@ -592,7 +586,6 @@ describe("TurnRetrievalCoordinator", () => {
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       selfSnapshot: makeSelfSnapshot(),
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
     });
     const recalled = result.pendingCorrections[0] as ReviewQueueItem & {
       disclosureLabel?: unknown;
@@ -653,16 +646,13 @@ describe("TurnRetrievalCoordinator", () => {
       });
 
       const result = await coordinator.coordinate({
-        sessionId: DEFAULT_SESSION_ID,
         turnId: "turn-bob-commitment",
         userMessage: "Bob asks about the Atlas launch date.",
         recentMessages: [],
         cognitionInput: "Bob asks about Atlas launch confidentiality.",
         inputAudience: "bob",
         isSelfAudience: false,
-        isPrivateSelfCognition: false,
         ...makeContexts({ audienceEntityId: bobId }),
-        audienceEntityId: bobId,
         audienceEntity: {
           id: bobId,
           canonical_name: "Bob",
@@ -676,7 +666,6 @@ describe("TurnRetrievalCoordinator", () => {
         workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
         selfSnapshot: makeSelfSnapshot(),
         suppressionSet: SuppressionSet.fromEntries([], 1),
-        findEntityByName: () => null,
       });
       const recalled = result.retrieval.evidence.find(
         (item) => item.provenance?.commitmentId === commitment.id,
@@ -758,22 +747,18 @@ describe("TurnRetrievalCoordinator", () => {
     ];
 
     await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "yeah, same error",
       recentMessages,
       cognitionInput: "yeah, same error",
       isSelfAudience: true,
-      isPrivateSelfCognition: false,
       ...makeContexts(),
-      audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
       perception: makePerception("problem_solving"),
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       selfSnapshot: makeSelfSnapshot(),
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
       llmClient: llm,
       proceduralContextModel: "haiku",
     });
@@ -815,22 +800,18 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     const result = await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Think about this",
       recentMessages: [],
       cognitionInput: "Think about this",
       isSelfAudience: true,
-      isPrivateSelfCognition: false,
       ...makeContexts(),
-      audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
       perception: makePerception("reflective"),
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       selfSnapshot: makeSelfSnapshot(),
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
     });
 
     expect(result.selectedSkill).toBeNull();
@@ -911,15 +892,12 @@ describe("TurnRetrievalCoordinator", () => {
     };
 
     await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Solve Atlas",
       recentMessages: [],
       cognitionInput: "Solve Atlas",
       isSelfAudience: true,
-      isPrivateSelfCognition: false,
       ...makeContexts(),
-      audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
       perception: makePerception("reflective"),
@@ -930,7 +908,6 @@ describe("TurnRetrievalCoordinator", () => {
       },
       executiveFocus,
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
     });
 
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
@@ -976,22 +953,18 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     const result = await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-self",
       userMessage: "Reflect privately",
       recentMessages: [],
       cognitionInput: "Reflect privately",
       isSelfAudience: true,
-      isPrivateSelfCognition: true,
       ...makeContexts({ isPrivateSelfCognition: true }),
-      audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
       perception: makePerception("reflective"),
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       selfSnapshot: makeSelfSnapshot(),
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
     });
 
     expect(getSelf).not.toHaveBeenCalled();
@@ -1048,15 +1021,12 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     await coordinator.coordinate({
-      sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-audience",
       userMessage: "Hello Bob",
       recentMessages: [],
       cognitionInput: "Hello Bob",
       isSelfAudience: false,
-      isPrivateSelfCognition: false,
       ...makeContexts({ audienceEntityId: bobEntityId }),
-      audienceEntityId: bobEntityId,
       audienceEntity: {
         id: bobEntityId,
         canonical_name: "Bob",
@@ -1070,7 +1040,6 @@ describe("TurnRetrievalCoordinator", () => {
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       selfSnapshot: makeSelfSnapshot(),
       suppressionSet: SuppressionSet.fromEntries([], 1),
-      findEntityByName: () => null,
     });
 
     const retrievalOptions = (recallEpisodesForCognition.mock.calls[0] as unknown[])[1] as Record<

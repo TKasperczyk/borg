@@ -9,7 +9,11 @@ import { summarizeSemanticContext } from "../cognition/deliberation/prompt/retri
 import { SemanticGraph, type SemanticEdge } from "../memory/semantic/index.js";
 import { ManualClock } from "../util/clock.js";
 import type { EntityId } from "../util/ids.js";
-import { resolveSemanticContext, toRetrievedSemantic } from "./semantic-retrieval.js";
+import {
+  resolveSemanticContext,
+  resolveSemanticContextForDisclosure,
+  toRetrievedSemantic,
+} from "./semantic-retrieval.js";
 
 type OfflineTestHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 
@@ -48,11 +52,10 @@ async function resolveDisclosureProbe(harness: OfflineTestHarness, audienceEntit
   });
 
   return toRetrievedSemantic(
-    await resolveSemanticContext(
+    await resolveSemanticContextForDisclosure(
       "Atlas visibility probe",
       {
         audienceEntityId,
-        sourceVisibilityMode: "disclosure",
         graphWalkDepth: 1,
         maxGraphNodes: 4,
         queryVector: Float32Array.from([1, 0, 0, 0]),

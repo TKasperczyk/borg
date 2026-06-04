@@ -64,4 +64,10 @@ export {
   type RetrievalPipelineOptions,
   type RetrievalSearchOptions,
 } from "./pipeline.js";
-export { resolveMemoryDisclosureLabelForEpisodeIds } from "./semantic-retrieval.js";
+export {
+  resolveMemoryDisclosureLabelForEpisodeIds,
+  resolveSemanticContextForCognition,
+  resolveSemanticContextForDisclosure,
+  resolveSemanticSourceAdapter,
+  type SemanticSourceAdapter,
+} from "./semantic-retrieval.js";

@@ -13,7 +13,6 @@ import type { ActionRecord, ActionRepository } from "../memory/actions/index.js"
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type {
   ObservedEventDisclosureClass,
-  ObservedEventProjectionSourceEvent,
   ObservedEventRepository,
 } from "../memory/observed-events/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
@@ -224,15 +223,6 @@ function activityDisclosureLabel(
       (id): id is EntityId => id !== null,
     ),
   );
-}
-
-function observedEventDisclosureLabel(
-  event: Pick<
-    ObservedEventProjectionSourceEvent,
-    "disclosureClass" | "audienceEntityId" | "speakerEntityId"
-  >,
-): MemoryDisclosureLabel {
-  return observedEventMemoryDisclosureLabel(event);
 }
 
 function streamDisclosureLabel(entry: StreamEntry): MemoryDisclosureLabel {
@@ -609,7 +599,7 @@ export class AutobiographicalRecallService {
           `recurrence_count=${event.recurrenceCount}`,
           `interaction=${sanitizePromptText(event.interactionText)}`,
         ].join(" "),
-        disclosureLabel: observedEventDisclosureLabel(event),
+        disclosureLabel: observedEventMemoryDisclosureLabel(event),
         sourceStreamEntryIds: event.sourceStreamEntryIds,
         sourceEpisodeIds: [],
         metadata: {

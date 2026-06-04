@@ -60,7 +60,7 @@ import {
 import {
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
-  selectObservedEventIntrospection,
+  recallObservedEventsForCognition,
 } from "../../../memory/observed-events/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
@@ -705,7 +705,6 @@ export async function runRetrievalPhase(input: {
   const executiveFocusWithStep = selfContext.executiveFocus;
 
   const retrievalContext = await input.options.turnRetrievalCoordinator.coordinate({
-    sessionId: input.sessionId,
     turnId: input.turnId,
     userMessage: input.turnInput.userMessage,
     recentMessages: input.recencyMessages.map((message) => ({
@@ -715,10 +714,8 @@ export async function runRetrievalPhase(input: {
     cognitionInput: input.cognitionInput,
     inputAudience: input.turnInput.audience,
     isSelfAudience: input.isSelfAudience,
-    isPrivateSelfCognition,
     recallContext,
     disclosureContext,
-    audienceEntityId: input.audienceEntityId,
     audienceEntity: input.audienceEntity,
     audienceProfile: input.audienceProfile,
     perception: input.perception,
@@ -728,7 +725,6 @@ export async function runRetrievalPhase(input: {
     activeValues: activeScoringValues,
     scoringFeatures: retrievalScoringFeatures,
     suppressionSet: input.suppressionSet,
-    findEntityByName: (name) => input.options.entityRepository.findByName(name),
     llmClient: input.llmClient,
     proceduralContextModel: input.options.config.anthropic.models.background,
   });
@@ -838,7 +834,7 @@ export async function runRetrievalPhase(input: {
   const observedEventIntrospection =
     input.options.observedEventRepository === undefined
       ? []
-      : await selectObservedEventIntrospection({
+      : await recallObservedEventsForCognition({
           repository: input.options.observedEventRepository,
           speakerEntityIds: creatorDirectiveParticipantEntityIds,
           queryVector: observedEventQueryVector,

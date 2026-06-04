@@ -1,9 +1,12 @@
 import {
   memoryDisclosureInternalUseNote,
   memoryDisclosureLabelMetadata,
-  renderMemoryDisclosureLabelForModel,
   type EvidenceItem,
 } from "../../retrieval/index.js";
+import {
+  isSemanticEvidenceItem,
+  renderEvidenceItemDisclosureLabel,
+} from "../evidence-item-disclosure.js";
 import {
   combineScopes,
   scopeFromEpisodeIds,
@@ -92,28 +95,9 @@ export function evidenceItemState(item: EvidenceItem): string {
   return parts.join(" ");
 }
 
-function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
-  if (item.disclosureLabel === undefined) {
-    return "";
-  }
-
-  return renderMemoryDisclosureLabelForModel(item.disclosureLabel, {
-    context: isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
-  });
-}
-
 function evidenceItemDisclosureNote(item: EvidenceItem): string {
   return memoryDisclosureInternalUseNote(
     isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
-  );
-}
-
-function isSemanticEvidenceItem(item: EvidenceItem): boolean {
-  return (
-    item.source === "semantic_node" ||
-    item.source === "semantic_edge" ||
-    item.provenance?.nodeId !== undefined ||
-    item.provenance?.edgeId !== undefined
   );
 }
 

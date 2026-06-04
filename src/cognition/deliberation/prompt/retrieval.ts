@@ -14,6 +14,7 @@ import {
 } from "../../../retrieval/index.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import type { EntityId } from "../../../util/ids.js";
+import { renderEvidenceItemDisclosureLabel } from "../../evidence-item-disclosure.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 
@@ -228,25 +229,6 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
     `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
   ].join("\n");
-}
-
-function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
-  if (item.disclosureLabel === undefined) {
-    return "";
-  }
-
-  return renderMemoryDisclosureLabelForModel(item.disclosureLabel, {
-    context: isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
-  });
-}
-
-function isSemanticEvidenceItem(item: EvidenceItem): boolean {
-  return (
-    item.source === "semantic_node" ||
-    item.source === "semantic_edge" ||
-    item.provenance?.nodeId !== undefined ||
-    item.provenance?.edgeId !== undefined
-  );
 }
 
 function summarizeEvidenceSourceVisibility(item: EvidenceItem): string {

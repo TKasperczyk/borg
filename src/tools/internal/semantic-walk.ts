@@ -11,6 +11,9 @@ import {
 import { MEMORY_DISCLOSURE_CLASSES, type MemoryDisclosureLabel } from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
+// TODO(post-inversion tool output cleanup): migrate semantic walk disclosure output to the
+// shared snake_case disclosure_label serializer used by episodic search. This is an observable
+// tool contract change, so keep the current camelCase shape during pure refactor sessions.
 const semanticWalkDisclosureLabelSchema = z.object({
   disclosureClass: z.enum(MEMORY_DISCLOSURE_CLASSES),
   originAudienceEntityIds: z.array(z.string()),

@@ -9,6 +9,7 @@ export { observedEventMigrations } from "./migrations.js";
 export {
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
+  recallObservedEventsForCognition,
   selectObservedEventIntrospection,
   type ObservedEventIntrospectionProjectionInput,
   type ObservedEventIntrospectionRow,
