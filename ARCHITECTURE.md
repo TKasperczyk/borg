@@ -30,14 +30,15 @@ emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
 is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
 Sol. Disclosure is contextual to the audience."
 
-This inversion is in progress, not done. Several retrieval paths described
-below still hard-gate recall by audience in the current code -- the episodic
-audience filter, dropping multi-audience episodes at extraction, semantic
-source-visibility pruning, and operator-introspection self-context gating.
-Those are marked throughout as DEPRECATED / being-inverted, not the endorsed
-design. Per the LIVE SYSTEM regime in CLAUDE.md, a data reset is allowed after a
-verified backup, so the inversion can change the schema and reseed rather than
-carry every change through a data-preserving migration.
+The inversion is complete. Cognition recall is global across episodic,
+semantic, self/identity, goals/open-questions, social/observed-events,
+commitments, corrections, image-perception, autobiographical, and
+proactive-outbound paths. Audience machinery remains for disclosure labeling,
+ranking, public/export search, admin reads, and action/tool/transport
+permission, not as a predicate on what Sol may internally remember. Per the
+LIVE SYSTEM regime in CLAUDE.md, a data reset is allowed after a verified
+backup, so future schema changes may reset and reseed rather than carry every
+change through a data-preserving migration.
 
 The scope test is the Opus 5.0 test: if a failure would still occur with a
 model ten times stronger than the current one, the failure probably belongs in
@@ -241,14 +242,12 @@ happened, but who was present and who may later be told the memory. That
 metadata is a disclosure label and a ranking signal, not a recall gate: Sol can
 internally recall an episode regardless of the current audience, then decide
 what to disclose. "Who was in the room" is an origin label; "who may be told"
-is a per-fact disclosure policy applied after recall. (DEPRECATED /
-being-inverted, not the endorsed design: the current code path still filters
-episode retrieval by audience before cognition -- `isEpisodeAccessVisible` in
-`src/memory/episodic/audience-filter.ts` -- and `deriveEpisodeAccess` in
-`src/memory/episodic/extractor.ts` still drops multi-audience episodes at
-extraction. Both are currently live. The inversion records all origin audiences
-as labels rather than gating recall; under the reset-after-backup regime
-(CLAUDE.md) it can land as a schema change + reseed.)
+is a per-fact disclosure policy applied after recall. `isEpisodeAccessVisible`
+in `src/memory/episodic/audience-filter.ts` serves disclosure/export/admin
+visibility only. `deriveEpisodeAccess` in `src/memory/episodic/extractor.ts`
+stores multi-audience memories with origin labels instead of dropping them.
+Under the reset-after-backup regime (CLAUDE.md), future schema changes can
+still land as a schema change + reseed after a verified backup.
 
 ### Semantic Memory
 
@@ -418,11 +417,10 @@ Social and observed-events recall is global to Sol. Sol recalls a relevant
 social event by topic, salience, and person regardless of who is currently
 present -- the present speaker is a ranking boost, not a recall gate. The
 present-speaker-keyed observed-events projection
-(`src/memory/observed-events/projection.ts`), which surfaces social events only
-for participants in the room, is the still-live firewall-shaped path here: it is
-DEPRECATED / being-inverted, not the endorsed design, and the inversion makes
-that recall topic/salience/person-driven. See the Cardinal Memory Rule in
-CLAUDE.md.
+(`src/memory/observed-events/projection.ts`) is now a disclosure/ranking
+projection. It must not make Sol unaware of social events for cognition; it
+labels and prioritizes what may be relevant or discloseable to the current
+audience. See the Cardinal Memory Rule in CLAUDE.md.
 
 Writes come from Reflection and offline curation. Reads feed retrieval,
 audience profile rendering, participant context, and group conversation
@@ -766,12 +764,11 @@ Semantic retrieval recalls nodes regardless of the current audience and
 attaches the disclosure status of their source episodes. A node supported only
 by private source episodes is still recalled for cognition, labeled as
 privately sourced so Sol can reason with it internally without disclosing
-source details to the current audience unless permitted. (DEPRECATED /
-being-inverted, not the endorsed design: current code still prunes semantic
-nodes and edges whose source episodes are not audience-visible before they
-reach cognition -- the transitive source-visibility filter in
-`src/retrieval/semantic-retrieval.ts`, currently live. The inversion replaces
-that pruning with a private-source disclosure label.)
+source details to the current audience unless permitted. The transitive
+source-visibility machinery in `src/retrieval/semantic-retrieval.ts` now serves
+disclosure/export source filtering and disclosure-label attachment, not
+cognition recall pruning. The completed inversion replaces that pruning with a
+private-source disclosure label.
 
 Retrieval also tracks per-session suppression. Evidence that has been recently
 used or suppressed can be cooled so Borg does not repeat the same memory
@@ -1131,12 +1128,10 @@ recall is the default for cognition, not an administrative bypass. For group
 audiences, a group turn surfaces participant roster context and constrained
 relational slots as disclosure-labeled context; participant-private memory
 remains recallable to Sol but is labeled not-for-this-audience rather than
-hidden from cognition. (DEPRECATED / being-inverted, not the endorsed design:
-the current pipeline still enforces audience visibility before evidence becomes
-prompt-visible and exposes broad recall only through an explicit cross-audience
-administrative path. That gate is the audience firewall being inverted into a
-disclosure-labeling layer; it is described
-here as live legacy behavior, not the target.)
+hidden from cognition. Broad recall is the cognition default; explicit
+cross-audience administrative paths are disclosure/export/admin reads only.
+Audience constraints become disclosure labels and render guidance, not memory
+blindness.
 
 The result of retrieval is not dumped directly into the model. It is assembled
 into the Evidence Ledger so the finalizer can see evidence classes,
@@ -1313,12 +1308,10 @@ specific entity within a group. These distinctions propagate as labels and
 ranking boosts into Stream entries, Social Memory, Commitments,
 creator-directive disclosure, Shared State, retrieval ranking, the cross-session
 activity projection, and the Evidence Ledger. They do not make Sol unaware of
-episodes or semantic sources. (DEPRECATED / being-inverted, not the endorsed
-design: episodic and semantic source visibility are still hard-gated by audience
-in current code -- `isEpisodeAccessVisible`
-(`src/memory/episodic/audience-filter.ts`) and the transitive source-visibility
-pruning in `src/retrieval/semantic-retrieval.ts` are currently live. That gating
-is the audience firewall being inverted, not an invariant to preserve.)
+episodes or semantic sources. `isEpisodeAccessVisible`
+(`src/memory/episodic/audience-filter.ts`) and semantic source-visibility
+machinery in `src/retrieval/semantic-retrieval.ts` are disclosure/export/admin
+tools, not cognition recall gates.
 
 Group audience scope does not change what Sol may recall. A group turn includes
 participant roster context and constrained relational slots; participant-private
@@ -1342,8 +1335,8 @@ its full self-model (values, traits, goals, Open Questions, decisions); the
 audience a record concerns is its target/disclosure scope, used for ranking and
 disclosure, not a predicate on whether Sol may recall it. The `audience_entity_id`
 on a self record means target_audience, not visible_only_when_present.
-(DEPRECATED / being-inverted: current self-context construction still passes the
-current audience as a visibility filter; this is being inverted.)
+Self-context construction recalls globally for cognition and uses audience
+metadata only as disclosure/ranking context.
 
 ## Cross-Session Activity
 
@@ -1372,11 +1365,9 @@ when the current session's audience role is operator and the current sender's
 Borg role is creator, within a recent time window and under a small cap. Any
 other audience or sender sees Sol decline to disclose, not Sol made amnesic. The
 disclosure gate is purely structural -- roles, recency, count -- never a
-judgment about content. (DEPRECATED / being-inverted: current code gates the
-recall itself on the operator/creator two-key, so non-operator turns make Sol
-unaware of its own activity; that recall-bypass framing is being inverted into a
-disclosure gate, while the two-key
-remains the correct disclosure authorization.)
+judgment about content. Cross-session activity recall is global for cognition;
+the operator/creator two-key remains the correct disclosure authorization, not
+a recall predicate.
 
 Each surfaced row is labeled by the speaker, not by the session it happened in.
 In a group session the audience is the room, so labeling an inbound contact by
@@ -1424,13 +1415,10 @@ as its input but skips extraction, perception persistence, and reflection
 persistence, so the directing channel never bleeds into the target's memory. The
 instruction is scrubbed of internal ids before it enters the prompt, and the
 model is told to convey it without exposing tool names, hidden prompts, or
-dispatch machinery. (DEPRECATED / being-inverted: the current directed-outbound
-turn runs under the target session's audience scope and is grounded only in what
-that audience may see -- no leak by construction via recall-blinding. This is
-being inverted to full-awareness composition with disclosure-constrained output.
-The id-scrubbing, connector-keyed delivery,
+dispatch machinery. Directed-outbound composition has full cognition recall and
+disclosure-constrained output. The id-scrubbing, connector-keyed delivery,
 and Stream-append-before-transport mechanics below are transport-level and
-unchanged.)
+unchanged.
 
 Two paths are authorized, both structurally. The manual path requires a creator
 in an operator session and a reachable target -- the operator snapshot exposes a
@@ -1458,10 +1446,8 @@ Second, it supports disclosure labeling. A semantic node may be globally
 meaningful but supported only by a source episode private to another audience;
 provenance lets the harness recall it for cognition while labeling it privately
 sourced, so Sol may reason with it but not disclose source details to the
-current audience unless permitted. (DEPRECATED / being-inverted: current
-rendering still withholds such evidence from the prompt entirely based on source
-audience; that suppression is being replaced by a private-source disclosure
-label.)
+current audience unless permitted. Rendering uses private-source disclosure
+labels instead of withholding cognition evidence based on source audience.
 
 Third, it supports revision without erasure. When a source is invalidated,
 quarantined, contradicted, or superseded, Borg can find dependent memories and

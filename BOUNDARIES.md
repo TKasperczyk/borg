@@ -2,7 +2,7 @@
 
 **Read this before changing anything in `src/memory/episodic/`, `src/memory/creator-directives/`, `src/retrieval/semantic-retrieval.ts`, or any audience/visibility code.**
 
-This file records the project's **memory/disclosure doctrine** and the in-progress
+This file records the project's **memory/disclosure doctrine** and the completed
 **inversion** that brings the code into line with it. The doctrine is the Cardinal Memory
 Rule in `CLAUDE.md` (see it there for the full, authoritative statement): **recall is global
 to Sol; disclosure is contextual to the audience.** A human mind does not forget what it knows
@@ -11,12 +11,12 @@ works the same way.
 
 > **Slogan:** "Memory is global to Sol. Disclosure is contextual to the audience."
 
-What this file now protects is the **inversion**: broad recall for cognition, plus a
+What this file now protects is the completed architecture: broad recall for cognition, plus a
 post-recall disclosure-judgment layer. It used to defend the opposite -- an audience firewall
-that gated what Sol could recall -- and parts of the codebase still implement that firewall.
-Where that is true, this doc names the concrete code symbol, states plainly it is **CURRENTLY
-LIVE**, and tags it **DEPRECATED / being-inverted, not the endorsed design.** If you are about
-to add or widen an audience/session gate on *recall*, stop and read.
+that gated what Sol could recall. That firewall-as-cognition design is gone. Audience machinery
+that remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
+permission, not a predicate on what Sol may internally remember. If you are about to add or
+widen an audience/session gate on *recall*, stop and read.
 
 A note on the prior decision: this file once recorded a "deliberate architectural decision"
 reached by a 5-design / 3-judge design panel that ranked every firewall-weakening design below
@@ -69,70 +69,45 @@ non-cognitive host boundaries (tool, transport, destructive-op, public-export, p
 safety).** Privacy is enforced at emission -- Sol recalls but does not disclose -- never by
 amnesia.
 
-The rest of this section walks the mechanisms that currently sit on the wrong axis.
+The rest of this section walks the mechanisms that used to sit on the wrong axis and records
+their completed state.
 
-### 1a. The episode audience firewall -- DEPRECATED / being-inverted, not the endorsed design
+### 1a. Episode origin and disclosure filtering -- completed inversion
 
-*"who was in the room when this happened?"* is an **origin label**, but the code currently
-treats it as a recall predicate. One predicate (`src/memory/episodic/audience-filter.ts`,
-`isEpisodeAccessVisible`) decides an episode is "visible" to a viewer iff
+*"who was in the room when this happened?"* is an **origin label**, not a recall predicate.
+`isEpisodeAccessVisible` (`src/memory/episodic/audience-filter.ts`) now belongs to explicit
+disclosure/export/admin visibility reads only. It decides whether an episode is discloseable or
+export-visible to a viewer iff
 
 - its `audience_entity_id` is `NULL` (public), **or**
 - its `shared` flag is `true` (explicitly broadcast), **or**
 - its `audience_entity_id` exactly matches the viewer's audience (private-to-one).
 
-`isEpisodeAccessVisible` **is CURRENTLY LIVE and still gates recall exactly this way.** This is
-the canonical cognition recall filter: it makes Sol unaware of its own experiential memory
-based on who is present. That is the precise disease the Cardinal Memory Rule forbids -- "NEVER
-implement privacy by hiding memories from Sol's cognition."
-
-**Target of the inversion:** `audience_entity_id` and `shared` become **ORIGIN / disclosure
-LABELS**, not recall predicates. Cognition recall (`recallEpisodesForCognition`) returns
-episodes **regardless of current audience**, each carrying its origin and a disclosure label
+For cognition, `audience_entity_id`, `origin_audience_entity_ids`, and `shared` are **ORIGIN /
+disclosure LABELS**, not recall predicates. Cognition recall (`recallEpisodesForCognition`)
+returns episodes regardless of current audience, each carrying its origin and disclosure label
 ("private-to-X -- usable internally, do not disclose to current audience unless authorized").
-The exact-audience-match predicate moves to the **public/export/disclosure-render paths only**
-(`searchEpisodesForDisclosure` / public-export search), where audience filtering is legitimate
-*because* it is isolated from cognition. (How this schema change lands -- reset + reseed after a
-backup, or a forward migration -- is covered under "Inversion: back up, then reset + reseed" below.)
+The exact-audience-match predicate is legitimate only in **public/export/disclosure-render
+paths** (`searchEpisodesForDisclosure` / public-export search), because it is isolated from
+cognition.
 
-### 1b. Dropping multi-audience episodes at extraction -- a correctness defect being inverted
+### 1b. Multi-audience episodes -- completed inversion
 
-`deriveEpisodeAccess` (`src/memory/episodic/extractor.ts`) stamps newly-extracted episodes into
-just two shapes: 0 source audiences -> `{audience: null, shared: true}` (public); exactly 1 ->
-`{audience: X, shared: false}` (private to X); **more than 1 -> the episode is dropped, not
-stored.** Multi-audience content cannot currently exist as a single episode. (`shared = true`
-on a *non-null* audience is a secondary broadcast path -- honored by the predicate but never
-produced by normal derivation.)
+`deriveEpisodeAccess` (`src/memory/episodic/extractor.ts`) stores multi-audience content as
+memory instead of dropping it. An episode records all origin audiences via
+`origin_audience_entity_ids` while preserving `audience_entity_id` as the single-origin legacy
+projection when there is exactly one origin. Multi-audience content is stored once, recallable by
+Sol, and disclosure-labeled by origin/disclosure metadata. If a future schema change is needed,
+the reset-after-backup regime below still allows a reset + reseed after a verified backup.
 
-This is the worst form of the disease: the memory is **never persisted**, so Sol can never
-recall it under any policy, no matter how the disclosure layer is fixed later. **The extractor
-still drops these today.** This is a correctness defect, not correct behavior.
+### 1c. Semantic source disclosure labeling -- completed inversion
 
-**Target of the inversion:** an episode records **ALL** its origin audiences -- an
-`originAudienceEntityIds[]` array, or an `episode_audience_refs` join table with relations like
-`origin` / `mentioned` / `private_to` / `public_to`. Multi-audience content is stored **once**,
-recallable by Sol, and disclosure-labeled **per audience**. With reset allowed (post-backup), the
-simplest path is to change the schema and reseed; if instead you keep the live data via a forward
-migration, surface and repair previously-dropped multi-audience episodes where the source still
-exists, and record any loss honestly.
-
-### 1c. Transitive semantic-graph visibility pruning -- DEPRECATED / being-inverted
-
-Semantic-graph node **and edge** admissibility currently derive *transitively* from the same
-predicate (`src/retrieval/semantic-retrieval.ts`): a node/edge is admissible only if a
-source/evidence episode is firewall-visible. The privacy guarantee is inherited from one
-~15-line chokepoint rather than re-implemented per structure -- a real auditability win, but
-auditability of the **wrong thing**: it makes Sol's *derived semantic knowledge* blind by
-audience. **This pruning is CURRENTLY LIVE.**
-
-**Target of the inversion:** keep the single-chokepoint, source-episode-ID-preserving design --
-but as a **PROVENANCE and DISCLOSURE-LABELING chokepoint, not a recall gate.** Semantic recall
-for cognition must **not** prune nodes/edges by source-episode audience. Instead it **attaches a
-disclosure label** at the same chokepoint: "supported by private source episodes -- usable
-internally, do not reveal source to current audience unless authorized." The auditable
-single-chokepoint property survives in full; it just labels instead of hiding. The chokepoint
-becomes more valuable, not less: one place to reason about provenance and disclosure for the
-whole derived graph.
+Semantic-graph node **and edge** recall no longer derives admissibility from episode visibility
+for cognition. Semantic recall for cognition recalls nodes/edges globally and attaches
+disclosure labels from their source/evidence episodes. The single-chokepoint,
+source-episode-ID-preserving design remains, but it is now a **PROVENANCE and
+DISCLOSURE-LABELING chokepoint, not a recall gate**. Disclosure/export searches may still filter
+or redact source details by audience; cognition receives the labeled semantic memory.
 
 ### 2. The creator-directive engine -- KEEP: the exemplar of the right pattern
 
@@ -180,15 +155,14 @@ decide which of them may be disclosed, to whom.
   a recall path can be made unaware of a memory because of the current audience, that is the
   bug.
 
-- **Do NOT add `crossAudience: true` (or any one-off bypass) as the fix, and do NOT widen
-  `ViewerCapability` to paper over a gap.** A bypass concedes that recall is gated by default;
-  the correct direction is to make recall global so no bypass is meaningful. Adding a wider
-  capability is treating the symptom.
+- **Do NOT add `crossAudience: true` (or any one-off bypass) as a cognition fix, and do NOT widen
+  `ViewerCapability` into cognition recall.** `crossAudience` is explicit disclosure/admin
+  all-audiences plumbing. `ViewerCapability` is disclosure/export/admin visibility plumbing.
+  Cognition recall is already global, so a cognition bypass is a category error.
 
-  **The DO instead:** invert recall to be **global**, **attach disclosure labels** to recalled
-  memories, and **enforce privacy at emission.** Note that an "authorized audiences" set is now
-  *desirable* -- but as a **per-fact DISCLOSURE label** in the disclosure layer, never as a
-  recall gate on episodes.
+  **The DO instead:** use the recall-for-cognition APIs, attach disclosure labels to recalled
+  memories, and enforce privacy at emission. Note that an "authorized audiences" set is desirable
+  as a **per-fact DISCLOSURE label** in the disclosure layer, never as a recall gate on episodes.
 
 - **The superseded panel verdict.** The old design panel evaluated episode authorized-sets,
   fold-directives-into-scoped-nodes, and a unified grant primitive against keeping the firewall
@@ -205,29 +179,18 @@ decide which of them may be disclosed, to whom.
   genuine hard gates (tool, transport, destructive-op, public-export, platform safety). Keep the
   single-chokepoint discipline there; just point it at labeling and emission, not at recall.
 
-## ViewerCapability -- DEPRECATED as a cognition-recall access-control concept
+## ViewerCapability -- disclosure/export/admin only
 
-The code currently routes recall through `ViewerCapability` / `resolveViewerCapability` /
-`isEpisodeVisibleToCapability` (`src/memory/episodic/access.ts`), with two "sanctioned
-bypasses": `unrestricted` (admin/correction read paths) and `self_continuity` (identity
-continuity). A viewer that is missing or under-specified resolves to the most restrictive
-audience scope, and an unrecognized capability throws. **All of this is CURRENTLY LIVE and still
-gates recall.**
+`ViewerCapability` / `resolveViewerCapability` / `isEpisodeVisibleToCapability`
+(`src/memory/episodic/access.ts`) are retained only for explicit disclosure/export/admin
+audience-filtered reads. The capability has two arms: `audience` (public/shared plus
+exact-origin audience matches) and `unrestricted` (explicit admin/correction/export reads).
+`self_continuity` and `operator_introspection` cognition-bypass arms are gone.
 
-This is **DEPRECATED / being-inverted, not the endorsed design.** Treating Sol's recall of its
-own memory as needing a *bypass* (`self_continuity`) or an admin *escalation* (`unrestricted`)
-is exactly backwards: under the Cardinal Memory Rule, **cognition recall needs no capability at
-all** -- recall is global. `self_continuity` and `unrestricted` are firewall artifacts; once
-recall is global they collapse, because there is nothing to bypass. `self_continuity` in
-particular is the "self-continuity scope as a recall bypass" pattern the review flags: Sol
-should *always* recall its own autobiographical activity and self-state, with no special
-capability.
-
-**Target of the inversion:** `ViewerCapability`, if retained at all, belongs to the
-**public/export/UI-render paths only**, where audience-scoped *visibility* is legitimate and
-isolated from cognition. It must not gate what Sol recalls. The fail-closed, throw-on-unknown
-discipline is good engineering -- carry it to the disclosure/emission and hard-gate layers, not
-to recall.
+Cognition recall needs no capability at all -- recall is global. A missing or under-specified
+viewer resolves to the most restrictive disclosure scope, and an unrecognized capability throws.
+That fail-closed discipline belongs to disclosure/export/admin and genuine hard gates, not to
+recall.
 
 ## Disclosure routing of a cross-session fact (DO)
 
@@ -238,19 +201,20 @@ to recall.
   *disclosure* mechanism (what Sol may *say*), not a way to "widen an episode's visibility" for
   recall.
 
-## Inversion: back up, then reset + reseed (or forward-migrate)
+## Future schema changes: back up, then reset + reseed (or forward-migrate)
 
-The inversion is a **schema and data change**. As of 2026-06-04 a data reset is **allowed**, gated
-only on a verified backup (see the LIVE SYSTEM regime in `CLAUDE.md` / `WORKFLOW.md`):
+The completed inversion used schema and data changes. As of 2026-06-04 a data reset is
+**allowed**, gated only on a verified backup (see the LIVE SYSTEM regime in `CLAUDE.md` /
+`WORKFLOW.md`):
 
-- **Back up `demo/server/.borg-data/demo` first.** Then take the simplest path: change the schema
-  (carry episodes' origin audiences; drop the multi-audience-drop behavior) and **reset + reseed**,
-  rather than writing data-preserving backfills.
+- **Back up `demo/server/.borg-data/demo` first.** Then take the simplest path for future schema
+  changes: edit the baseline and **reset + reseed**, or write a data-preserving backfill when that
+  is simpler.
 - A forward migration that preserves live rows is still fine if you want to keep the accumulated
   memory -- but you are no longer required to. "Edit the baseline + reset" is a legitimate path
   again, post-backup.
-- This removes most of the old Sprint-12 backfill burden: with a reset you start from a clean
-  schema instead of repairing previously-dropped multi-audience episodes in place.
+- The old Sprint-12 backfill burden is closed: multi-audience source memories are represented as
+  stored origin labels, not repaired by recall filtering.
 
 ## The known, accepted note (disclosure-layer engineering)
 
