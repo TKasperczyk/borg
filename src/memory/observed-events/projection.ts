@@ -1,5 +1,5 @@
 import { formatRelativeAge } from "../../util/relative-time.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { clamp } from "../../util/math.js";
 import type { ObservedEventProjectionSourceEvent, ObservedEventRepository } from "./repository.js";
 import type { ObservedEventDisclosureClass } from "./types.js";
@@ -25,6 +25,7 @@ export type ObservedEventIntrospectionRow = {
   recurrenceCount: number;
   speakerEntityId: EntityId | null;
   audienceEntityId: EntityId | null;
+  sourceStreamEntryIds: readonly StreamEntryId[];
   text: string;
 };
 
@@ -258,6 +259,7 @@ export async function selectObservedEventIntrospection(
       recurrenceCount: event.recurrenceCount,
       speakerEntityId: event.speakerEntityId,
       audienceEntityId: event.audienceEntityId,
+      sourceStreamEntryIds: event.sourceStreamEntryIds,
       text: rowText(event, relativeAge),
     };
   });

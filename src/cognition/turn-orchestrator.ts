@@ -345,6 +345,7 @@ export class TurnOrchestrator {
       activityRepository: options.activityRepository,
       selfDecisionRepository: options.selfDecisionRepository,
       observedEventRepository: options.observedEventRepository,
+      autobiographicalRepository: options.autobiographicalRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,

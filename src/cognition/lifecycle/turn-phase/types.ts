@@ -42,7 +42,11 @@ import type { EpisodicRepository } from "../../../memory/episodic/index.js";
 import type { ObservedEventRepository } from "../../../memory/observed-events/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../../../memory/self-decisions/index.js";
-import type { GoalsRepository, OpenQuestionsRepository } from "../../../memory/self/index.js";
+import type {
+  AutobiographicalRepository,
+  GoalsRepository,
+  OpenQuestionsRepository,
+} from "../../../memory/self/index.js";
 import type { SemanticNodeRepository } from "../../../memory/semantic/index.js";
 import type { SocialRepository } from "../../../memory/social/index.js";
 import type { WorkingMemoryStore } from "../../../memory/working/index.js";
@@ -104,7 +108,8 @@ export type TurnPhaseResult = {
 export type TurnPhaseCoordinatorOptions = {
   config: Config;
   embeddingClient: EmbeddingClient;
-  episodicRepository?: Pick<EpisodicRepository, "getMany">;
+  episodicRepository?: Pick<EpisodicRepository, "getMany"> &
+    Partial<Pick<EpisodicRepository, "listRecentForCognition">>;
   semanticNodeRepository?: Pick<
     SemanticNodeRepository,
     "searchByVector" | "markSuperseded" | "markContradicted"
@@ -118,7 +123,8 @@ export type TurnPhaseCoordinatorOptions = {
   commitmentRepository: CommitmentRepository;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
-  activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents">;
+  activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
+    Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
   observedEventRepository?: Pick<
     ObservedEventRepository,
@@ -129,6 +135,7 @@ export type TurnPhaseCoordinatorOptions = {
     | "searchByVector"
   >;
   goalsRepository: GoalsRepository;
+  autobiographicalRepository?: Pick<AutobiographicalRepository, "listPeriods">;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,
     "findByHandles" | "get" | "list" | "resolve"

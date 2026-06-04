@@ -1,6 +1,7 @@
 export { activityMigrations } from "./migrations.js";
 export {
   ActivityRepository,
+  type ActivityAutobiographicalSourceEvent,
   type ActivityEventRecordInput,
   type ActivityProjectionSourceEvent,
   type ActivityRepositoryOptions,

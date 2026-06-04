@@ -14,6 +14,7 @@ import {
   type ScopeResolver,
 } from "./scope-resolver.js";
 import { addActionStatesSection } from "./sections/action-states.js";
+import { addAutobiographicalRecallSection } from "./sections/autobiographical-recall.js";
 import {
   addCurrentSessionTranscriptSection,
   addCurrentUserMessageSection,
@@ -179,6 +180,7 @@ export class EvidenceLedgerBuilder {
     addEpisodesSection(context);
     addSemanticGraphSection(context);
     addOpenQuestionsSection(context);
+    addAutobiographicalRecallSection(context);
 
     const orderedSections = finalSections(sections);
 

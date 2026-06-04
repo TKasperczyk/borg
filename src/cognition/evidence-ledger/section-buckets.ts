@@ -14,6 +14,7 @@ export const QUARANTINE_TRUST_RANK = 78;
 export const ACTION_TRUST_RANK = 72;
 export const SLOT_TRUST_RANK = 70;
 export const RAW_STREAM_TRUST_RANK = 68;
+export const AUTOBIOGRAPHICAL_RECALL_TRUST_RANK = 60;
 export const EPISODE_TRUST_RANK = 52;
 export const SEMANTIC_TRUST_RANK = 42;
 export const OPEN_QUESTION_TRUST_RANK = 38;
@@ -24,9 +25,7 @@ export const IMAGE_PERCEPTION_TRUST_RANK = 10;
 export const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
-const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>([
-  "prior_session_memory",
-]);
+const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>(["prior_session_memory"]);
 
 export type SectionBucket = {
   entries: EvidenceLedgerEntry[];

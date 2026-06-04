@@ -103,6 +103,10 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxEntries: 48,
     maxTokens: 4_000,
   },
+  autobiographical_recall: {
+    maxEntries: 48,
+    maxTokens: 5_000,
+  },
 } as const satisfies Record<EvidenceLedgerSectionId, FullEvidenceLedgerSectionOptions>;
 
 // Compaction priority: sections are trimmed lowest-trust first (rank 0) to highest.
@@ -113,16 +117,17 @@ const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
   semantic_graph: 1,
   episodes: 2,
   retrieved_memory_evidence: 3,
-  open_questions: 4,
-  current_session_attribution_sidebar: 5,
-  group_channel_memory: 6,
-  attribution_matrix: 7,
-  action_states: 8,
-  contradictions_quarantines: 9,
-  closure_discourse_state: 10,
-  retrieved_raw_stream_evidence: 11,
-  current_session_transcript: 12,
-  current_user_message: 13,
+  autobiographical_recall: 4,
+  open_questions: 5,
+  current_session_attribution_sidebar: 6,
+  group_channel_memory: 7,
+  attribution_matrix: 8,
+  action_states: 9,
+  contradictions_quarantines: 10,
+  closure_discourse_state: 11,
+  retrieved_raw_stream_evidence: 12,
+  current_session_transcript: 13,
+  current_user_message: 14,
 } as const satisfies Record<EvidenceLedgerSectionId, number>;
 
 const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSectionIds()].sort(

@@ -20,6 +20,7 @@ import type { EntityId, SessionId } from "../../util/ids.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { AutobiographicalRecallResult } from "../autobiographical-recall.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
   Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
@@ -64,4 +65,5 @@ export type EvidenceLedgerBuildInput = {
   crossSessionSelfActivity?: readonly CrossSessionSelfActivityRow[];
   selfDecisionIntrospection?: readonly SelfDecisionIntrospectionRow[];
   observedEventIntrospection?: readonly ObservedEventIntrospectionRow[];
+  autobiographicalRecall?: AutobiographicalRecallResult | null;
 };

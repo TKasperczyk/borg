@@ -115,6 +115,11 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     id: "prior_session_memory",
     label: "12. Prior-Session Memory",
   },
+  {
+    id: "autobiographical_recall",
+    label: "13. Autobiographical Recall",
+    optional: true,
+  },
 ] as const satisfies readonly EvidenceLedgerSectionDefinition[];
 
 export type EvidenceLedgerSectionId = (typeof EVIDENCE_LEDGER_SECTION_DEFINITIONS)[number]["id"];

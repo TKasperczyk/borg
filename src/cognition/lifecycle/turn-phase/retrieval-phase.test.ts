@@ -18,9 +18,11 @@ import { openDatabase } from "../../../storage/sqlite/index.js";
 import { FixedClock } from "../../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createActivityEventId,
   createActionId,
   createCommitmentId,
   createEntityId,
+  createEpisodeId,
   createGoalId,
   createObservedEventId,
   createOpenQuestionId,
@@ -663,6 +665,7 @@ describe("creator directive retrieval briefing", () => {
       recurrenceCount: 1,
       speakerEntityId,
       audienceEntityId: null,
+      sourceStreamEntryIds: [createStreamEntryId()],
     };
     const listRecentGlobal = vi.fn((input: { disclosureClass: string }) =>
       input.disclosureClass === "social_observed" ? [observedEvent] : [],
@@ -773,6 +776,257 @@ describe("creator directive retrieval briefing", () => {
           error: "embedding offline",
         }),
       );
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces temporal-cue autobiographical evidence across source types with disclosure labels", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-recall-"));
+    const operatorSessionId = createSessionId();
+    const arenaSessionId = createSessionId();
+    const operatorAudienceId = createEntityId();
+    const arenaAudienceId = createEntityId();
+    const thoughtWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: operatorSessionId,
+      clock: new FixedClock(2_200),
+    });
+    const thoughtEntry = await thoughtWriter.append({
+      kind: "thought",
+      content: "plan: reflect on recent arena outcomes and operator check-ins",
+      audience: "operator",
+      sender_entity_id: null,
+      reply_target_entity_id: operatorAudienceId,
+    });
+    thoughtWriter.close();
+    const activitySourceEntryId = createStreamEntryId();
+    const episodeSourceEntryId = createStreamEntryId();
+    const episodeId = createEpisodeId();
+    const temporalCue = {
+      sinceTs: 1_000,
+      untilTs: 3_000,
+      label: "recent activity window",
+    };
+
+    options.config = {
+      ...options.config,
+      generation: {
+        ...options.config.generation,
+        evidenceLedger: {
+          ...options.config.generation.evidenceLedger,
+          enabled: true,
+        },
+      },
+    };
+    options.openQuestionsRepository = {
+      ...options.openQuestionsRepository,
+      findByHandles: () => [],
+      get: () => null,
+      resolve: vi.fn(),
+    };
+    options.createStreamReader = (sessionId: SessionId) =>
+      new StreamReader({ dataDir: tempDir, sessionId });
+    options.sessionsRepository = {
+      count: () => 0,
+      get: () => null,
+      list: () => [
+        {
+          session_id: operatorSessionId,
+          source_type: "demo",
+          source_external_id: null,
+          source_url: null,
+          label: "operator console",
+          audience_label: "operator",
+          audience_entity_id: operatorAudienceId,
+          conversation_kind: "demo",
+          created_at: 1_000,
+          last_activity_at: 2_200,
+          last_turn_id: null,
+          message_count: 1,
+          status: "active",
+          privacy_level: "payload_off",
+          participation_policy: "active",
+          audience_role: "operator",
+        },
+        {
+          session_id: arenaSessionId,
+          source_type: "botarena",
+          source_external_id: null,
+          source_url: null,
+          label: "botarena run",
+          audience_label: "arena",
+          audience_entity_id: arenaAudienceId,
+          conversation_kind: "thread",
+          created_at: 1_100,
+          last_activity_at: 2_100,
+          last_turn_id: null,
+          message_count: 1,
+          status: "active",
+          privacy_level: "payload_off",
+          participation_policy: "active",
+          audience_role: "participant",
+        },
+      ],
+    };
+    options.activityRepository = {
+      record: vi.fn(),
+      listRecentOtherActiveSessionEvents: vi.fn(() => []),
+      listRecentGlobalEvents: vi.fn(() => [
+        {
+          id: createActivityEventId(),
+          kind: "turn_completed" as const,
+          occurredAt: 2_100,
+          sessionId: arenaSessionId,
+          sessionSourceType: "botarena",
+          sessionAudienceRole: "participant",
+          sessionLabel: "botarena run",
+          participantLabel: "arena",
+          audienceEntityId: arenaAudienceId,
+          participantEntityIds: [arenaAudienceId],
+          sourceStreamEntryIds: [activitySourceEntryId],
+        },
+      ]),
+    };
+    options.episodicRepository = {
+      getMany: vi.fn(async () => []),
+      listRecentForCognition: vi.fn(async () => [
+        {
+          episode: {
+            id: episodeId,
+            title: "Arena calibration",
+            narrative: "Sol handled a botarena exchange and adjusted its stance.",
+            participants: ["Sol", "arena"],
+            location: null,
+            start_time: 1_900,
+            end_time: 2_050,
+            source_stream_ids: [episodeSourceEntryId],
+            significance: 0.82,
+            tags: ["arena", "calibration"],
+            confidence: 0.9,
+            lineage: {
+              derived_from: [],
+              supersedes: [],
+            },
+            emotional_arc: null,
+            audience_entity_id: arenaAudienceId,
+            origin_audience_entity_ids: [arenaAudienceId],
+            shared: false,
+            embedding: Float32Array.from([1, 0, 0, 0]),
+            created_at: 2_060,
+            updated_at: 2_060,
+          },
+          stats: {
+            episode_id: episodeId,
+            retrieval_count: 0,
+            use_count: 0,
+            last_retrieved: null,
+            win_rate: 0,
+            tier: "T3" as const,
+            promoted_at: 2_060,
+            promoted_from: null,
+            gist: null,
+            gist_generated_at: null,
+            last_decayed_at: null,
+            heat_multiplier: 1,
+            valence_mean: 0,
+            archived: false,
+          },
+          similarity: 0,
+        },
+      ]),
+    };
+
+    try {
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-autobiographical-recall",
+        turnInput: {
+          userMessage: "Status check.",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Status check.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: operatorAudienceId,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      const autobiographicalSection = result.evidenceLedgerContext.ledger?.sections.find(
+        (section) => section.id === "autobiographical_recall",
+      );
+      const rendered = result.evidenceLedgerContext.promptSection ?? "";
+
+      expect(autobiographicalSection?.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: "stream_reflection/stream_reflection",
+            text: expect.stringContaining("recent arena outcomes"),
+            state: expect.stringContaining("disclosure_class=self_private"),
+            state_metadata: expect.objectContaining({
+              window_source: "perception_temporal_cue",
+              source_stream_ids: [thoughtEntry.id],
+            }),
+          }),
+          expect.objectContaining({
+            value: "activity:botarena/participant/activity",
+            text: expect.stringContaining("source_type=botarena"),
+            state: expect.stringContaining("disclosure_class=self_private"),
+          }),
+          expect.objectContaining({
+            value: "episodes/episode",
+            text: expect.stringContaining("Arena calibration"),
+            state: expect.stringContaining("disclosure_class=relationship_private"),
+            state_metadata: expect.objectContaining({
+              source_episode_ids: [episodeId],
+            }),
+          }),
+        ]),
+      );
+      expect(rendered).toContain("## 13. Autobiographical Recall");
+      expect(rendered).toContain("window_source");
+      expect(rendered).toContain("private-to=");
+      expect(rendered).not.toContain("Sol did");
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

@@ -13,6 +13,7 @@ const CANONICAL_SECTION_PRIORITY = {
   retrieved_raw_stream_evidence: 68,
   episodes: 52,
   retrieved_memory_evidence: 50,
+  autobiographical_recall: 48,
   semantic_graph: 42,
   open_questions: 38,
   prior_session_memory: 30,

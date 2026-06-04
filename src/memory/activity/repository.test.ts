@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { commitmentMigrations } from "../commitments/index.js";
+import { sessionMigrations, SessionsRepository } from "../../sessions/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createEntityId,
@@ -83,6 +85,90 @@ describe("ActivityRepository", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM activity_events").get()).toEqual({
       count: 1,
     });
+
+    db.close();
+  });
+
+  it("lists global recent activity with session source metadata for autobiographical recall", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-autobiographical-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const arenaSessionId = createSessionId();
+    const oldSessionId = createSessionId();
+    const audienceEntityId = createEntityId();
+    const recentSourceStreamEntryId = createStreamEntryId();
+
+    sessions.ensure({
+      session_id: arenaSessionId,
+      source_type: "botarena",
+      label: "Arena thread",
+      audience_label: "Arena",
+      audience_entity_id: audienceEntityId,
+      conversation_kind: "thread",
+      audience_role: "participant",
+      status: "active",
+      created_at: 1_000,
+      last_activity_at: 4_000,
+    });
+    sessions.ensure({
+      session_id: oldSessionId,
+      source_type: "demo",
+      label: "Old thread",
+      audience_label: "Old",
+      conversation_kind: "demo",
+      audience_role: "operator",
+      status: "active",
+      created_at: 1_000,
+      last_activity_at: 1_500,
+    });
+    const recent = repository.record({
+      kind: "turn_completed",
+      occurredAt: 4_000,
+      sessionId: arenaSessionId,
+      turnId: "turn-arena",
+      audienceEntityId,
+      participantEntityIds: [audienceEntityId],
+      sourceStreamEntryIds: [recentSourceStreamEntryId],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: 1_500,
+      sessionId: oldSessionId,
+      turnId: "turn-old",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    const rows = repository.listRecentGlobalEvents({
+      sinceMs: 3_000,
+      untilMs: 4_500,
+      limit: 10,
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: recent.id,
+        kind: "turn_completed",
+        occurredAt: 4_000,
+        sessionId: arenaSessionId,
+        sessionSourceType: "botarena",
+        sessionAudienceRole: "participant",
+        sessionLabel: "Arena thread",
+        participantLabel: "Arena",
+        audienceEntityId,
+        participantEntityIds: [audienceEntityId],
+        sourceStreamEntryIds: [recentSourceStreamEntryId],
+      }),
+    ]);
 
     db.close();
   });

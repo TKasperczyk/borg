@@ -46,6 +46,20 @@ export type ActivityProjectionSourceEvent = {
   sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
+export type ActivityAutobiographicalSourceEvent = {
+  id: ActivityEventId;
+  kind: ActivityEventKind;
+  occurredAt: number;
+  sessionId: SessionId;
+  sessionSourceType: string;
+  sessionAudienceRole: string;
+  sessionLabel: string;
+  participantLabel: string;
+  audienceEntityId: EntityId | null;
+  participantEntityIds: readonly EntityId[];
+  sourceStreamEntryIds: readonly StreamEntryId[];
+};
+
 export type ActivityRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
@@ -116,6 +130,31 @@ function mapProjectionRow(row: Record<string, unknown>): ActivityProjectionSourc
     kind: row.kind as ActivityEventKind,
     occurredAt: Number(row.occurred_at),
     participantLabel: String(row.participant_label ?? "A participant"),
+    sourceStreamEntryIds: parseStreamEntryIds(
+      String(row.source_stream_entry_ids ?? "[]"),
+      "source_stream_entry_ids",
+    ),
+  };
+}
+
+function mapAutobiographicalRow(row: Record<string, unknown>): ActivityAutobiographicalSourceEvent {
+  return {
+    id: row.id as ActivityEventId,
+    kind: row.kind as ActivityEventKind,
+    occurredAt: Number(row.occurred_at),
+    sessionId: row.session_id as SessionId,
+    sessionSourceType: String(row.session_source_type ?? "unknown"),
+    sessionAudienceRole: String(row.session_audience_role ?? "participant"),
+    sessionLabel: String(row.session_label ?? "session"),
+    participantLabel: String(row.participant_label ?? "A participant"),
+    audienceEntityId:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : (row.audience_entity_id as EntityId),
+    participantEntityIds: parseEntityIds(
+      String(row.participant_entity_ids ?? "[]"),
+      "participant_entity_ids",
+    ),
     sourceStreamEntryIds: parseStreamEntryIds(
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
@@ -277,5 +316,50 @@ export class ActivityRepository {
       .all(input.currentSessionId, input.sinceMs, input.limit) as Record<string, unknown>[];
 
     return rows.map(mapProjectionRow);
+  }
+
+  listRecentGlobalEvents(input: {
+    sinceMs: number;
+    untilMs?: number;
+    limit: number;
+  }): ActivityAutobiographicalSourceEvent[] {
+    const filters = ["e.status = 'active'", "e.occurred_at >= ?"];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("e.occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    values.push(Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            e.id,
+            e.kind,
+            e.occurred_at,
+            e.session_id,
+            e.audience_entity_id,
+            e.participant_entity_ids,
+            e.source_stream_entry_ids,
+            s.source_type AS session_source_type,
+            s.audience_role AS session_audience_role,
+            s.label AS session_label,
+            COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
+              AS participant_label
+          FROM activity_events e
+          INNER JOIN sessions s ON s.session_id = e.session_id
+          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
+          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          WHERE ${filters.join(" AND ")}
+          ORDER BY e.occurred_at DESC, e.id ASC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
+
+    return rows.map(mapAutobiographicalRow);
   }
 }

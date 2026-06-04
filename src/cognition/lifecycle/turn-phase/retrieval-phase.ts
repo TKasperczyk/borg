@@ -31,6 +31,7 @@ import {
   buildSessionReentryContinuityPrompt,
   type SessionReentryContinuityPrompt,
 } from "../../session-reentry-continuity.js";
+import { AutobiographicalRecallService } from "../../autobiographical-recall.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -844,6 +845,27 @@ export async function runRetrievalPhase(input: {
           recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
         });
+  const autobiographicalRecall = input.options.config.generation.evidenceLedger.enabled
+    ? await new AutobiographicalRecallService({
+        clock: input.options.clock,
+        activityRepository: input.options.activityRepository,
+        selfDecisionRepository: input.options.selfDecisionRepository,
+        observedEventRepository: input.options.observedEventRepository,
+        episodicRepository: input.options.episodicRepository,
+        actionRepository: input.options.actionRepository,
+        goalsRepository: input.options.goalsRepository,
+        openQuestionsRepository: input.options.openQuestionsRepository,
+        autobiographicalRepository: input.options.autobiographicalRepository,
+        sessionsRepository: input.options.sessionsRepository,
+        createStreamReader: input.options.createStreamReader,
+      }).recall({
+        sessionId: input.sessionId,
+        temporalCue: input.perception.temporalCue,
+        isSelfAudience: input.isSelfAudience,
+        sessionAudienceRole,
+        perceptionMode: input.perception.mode,
+      })
+    : null;
   const evidenceLedgerContext = await buildEvidenceLedgerFinalizerContext({
     options: input.options,
     input: {
@@ -866,6 +888,7 @@ export async function runRetrievalPhase(input: {
       crossSessionSelfActivity,
       selfDecisionIntrospection,
       observedEventIntrospection,
+      autobiographicalRecall,
       participantRoster: input.participantRoster,
       isUserTurn: input.isUserTurn,
       perception: input.perception,

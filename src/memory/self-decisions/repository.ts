@@ -43,6 +43,7 @@ export type SelfDecisionProjectionSourceEvent = {
   triggerType: SelfDecisionTriggerType;
   decisionSummary: string;
   decisionRationale: string | null;
+  sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
 export type SelfDecisionRepositoryOptions = {
@@ -104,6 +105,10 @@ function mapProjectionRow(row: Record<string, unknown>): SelfDecisionProjectionS
       row.decision_rationale === null || row.decision_rationale === undefined
         ? null
         : String(row.decision_rationale),
+    sourceStreamEntryIds: parseStreamEntryIds(
+      String(row.source_stream_entry_ids ?? "[]"),
+      "source_stream_entry_ids",
+    ),
   };
 }
 
@@ -211,7 +216,9 @@ export class SelfDecisionRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale
+          SELECT
+            occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale,
+            source_stream_entry_ids
           FROM self_decision_events
           WHERE
             origin = 'autonomous'

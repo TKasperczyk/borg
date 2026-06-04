@@ -1,4 +1,5 @@
 import { formatRelativeAge } from "../../util/relative-time.js";
+import type { StreamEntryId } from "../../util/ids.js";
 import type { SelfDecisionProjectionSourceEvent, SelfDecisionRepository } from "./repository.js";
 import type { SelfDecisionTriggerType } from "./types.js";
 
@@ -12,6 +13,7 @@ export type SelfDecisionIntrospectionRow = {
   triggerType: SelfDecisionTriggerType;
   decisionSummary: string;
   decisionRationale: string | null;
+  sourceStreamEntryIds: readonly StreamEntryId[];
   text: string;
 };
 
@@ -60,6 +62,7 @@ export function selectSelfDecisionIntrospection(
       triggerType: event.triggerType,
       decisionSummary: event.decisionSummary,
       decisionRationale: event.decisionRationale,
+      sourceStreamEntryIds: event.sourceStreamEntryIds,
       text: rowText(event, relativeAge),
     };
   });

@@ -70,6 +70,7 @@ export type ObservedEventProjectionSourceEvent = {
   recurrenceCount: number;
   speakerEntityId: EntityId | null;
   audienceEntityId: EntityId | null;
+  sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
 export type ObservedEventSearchCandidate = {
@@ -201,6 +202,10 @@ function mapProjectionRow(row: Record<string, unknown>): ObservedEventProjection
     recurrenceCount: Number(row.recurrence_count),
     speakerEntityId: nullableRowValue(row.speaker_entity_id) as EntityId | null,
     audienceEntityId: nullableRowValue(row.audience_entity_id) as EntityId | null,
+    sourceStreamEntryIds: parseStreamEntryIds(
+      String(row.source_stream_entry_ids ?? "[]"),
+      "source_stream_entry_ids",
+    ),
   };
 }
 
@@ -219,6 +224,7 @@ function projectionEventFromObservedEvent(
     recurrenceCount: event.recurrence_count,
     speakerEntityId: event.speaker_entity_id,
     audienceEntityId: event.audience_entity_id,
+    sourceStreamEntryIds: event.source_stream_entry_ids,
   };
 }
 
@@ -576,7 +582,8 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id,
+            source_stream_entry_ids
           FROM observed_events
           WHERE
             session_id = ?
@@ -604,7 +611,8 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id,
+            source_stream_entry_ids
           FROM observed_events
           WHERE
             disclosure_class = ?
@@ -628,7 +636,8 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id,
+            source_stream_entry_ids
           FROM observed_events
           WHERE
             disclosure_class = ?
@@ -659,7 +668,8 @@ export class ObservedEventRepository {
         `
           SELECT
             id, occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id
+            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id,
+            source_stream_entry_ids
           FROM observed_events
           WHERE
             speaker_entity_id IN (${placeholders})
