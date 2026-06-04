@@ -13,7 +13,10 @@ import { resolveSemanticContext, toRetrievedSemantic } from "./semantic-retrieva
 
 type OfflineTestHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 
-async function resolveVisibilityProbe(harness: OfflineTestHarness, audienceEntityId: EntityId) {
+async function resolveCognitionProbe(
+  harness: OfflineTestHarness,
+  audienceEntityId: EntityId | null = null,
+) {
   const semanticGraph = new SemanticGraph({
     nodeRepository: harness.semanticNodeRepository,
     edgeRepository: harness.semanticEdgeRepository,
@@ -38,6 +41,44 @@ async function resolveVisibilityProbe(harness: OfflineTestHarness, audienceEntit
   );
 }
 
+async function resolveDisclosureProbe(harness: OfflineTestHarness, audienceEntityId: EntityId) {
+  const semanticGraph = new SemanticGraph({
+    nodeRepository: harness.semanticNodeRepository,
+    edgeRepository: harness.semanticEdgeRepository,
+  });
+
+  return toRetrievedSemantic(
+    await resolveSemanticContext(
+      "Atlas visibility probe",
+      {
+        audienceEntityId,
+        sourceVisibilityMode: "disclosure",
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: harness.embeddingClient,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticGraph,
+      },
+    ),
+  );
+}
+
+function expectRelationshipPrivateLabel(
+  label: unknown,
+  privateToEntityIds: readonly EntityId[],
+): void {
+  expect(label).toEqual({
+    disclosureClass: "relationship_private",
+    originAudienceEntityIds: privateToEntityIds,
+    privateToEntityIds,
+    publicToEntityIds: [],
+  });
+}
+
 describe("resolveSemanticContext temporal validity", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
@@ -46,7 +87,7 @@ describe("resolveSemanticContext temporal validity", () => {
     harness = undefined;
   });
 
-  it("uses self_continuity to retrieve self-scoped semantic memory without admitting other private sources", async () => {
+  it("retrieves self-scoped and other private semantic memory globally with labels", async () => {
     harness = await createOfflineTestHarness();
     const selfEntityId = harness.entityRepository.add({
       canonicalName: "Sol",
@@ -89,22 +130,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const selfContinuity = toRetrievedSemantic(
-      await resolveSemanticContext(
-        "continuity",
-        {
-          globalIdentitySelfAudienceEntityId: selfEntityId,
-          queryVector: Float32Array.from([1, 0, 0, 0]),
-        },
-        {
-          embeddingClient: harness.embeddingClient,
-          episodicRepository: harness.episodicRepository,
-          semanticNodeRepository: harness.semanticNodeRepository,
-          semanticGraph,
-        },
-      ),
-    );
-    const normalAudience = toRetrievedSemantic(
+    const cognition = toRetrievedSemantic(
       await resolveSemanticContext(
         "continuity",
         {
@@ -119,11 +145,13 @@ describe("resolveSemanticContext temporal validity", () => {
         },
       ),
     );
+    const selfMatch = cognition.matched_nodes.find((node) => node.id === selfNode.id);
+    const otherMatch = cognition.matched_nodes.find((node) => node.id === otherNode.id);
 
-    expect(selfContinuity.matched_node_ids).toContain(selfNode.id);
-    expect(selfContinuity.matched_node_ids).not.toContain(otherNode.id);
-    expect(normalAudience.matched_node_ids).not.toContain(selfNode.id);
-    expect(normalAudience.matched_node_ids).not.toContain(otherNode.id);
+    expect(cognition.matched_node_ids).toContain(selfNode.id);
+    expect(cognition.matched_node_ids).toContain(otherNode.id);
+    expectRelationshipPrivateLabel(selfMatch?.disclosureLabel, [selfEntityId]);
+    expectRelationshipPrivateLabel(otherMatch?.disclosureLabel, [otherEntityId]);
   });
 
   it("windows contradiction walks at the requested semantic as-of", async () => {
@@ -972,7 +1000,7 @@ describe("resolveSemanticContext temporal validity", () => {
     );
   });
 
-  it("surfaces a multi-source node with all visible sources rendered", async () => {
+  it("surfaces a multi-source node globally with all source IDs and labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     harness = await createOfflineTestHarness();
     const publicEpisode = createEpisodeFixture({
@@ -1000,18 +1028,21 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
     const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
     const prompt = summarizeSemanticContext(result, 1_000);
 
     expect(match?.source_episode_ids).toEqual([publicEpisode.id, privateEpisodeA.id]);
     expect(match?.partial_source_visibility).toBeUndefined();
+    expectRelationshipPrivateLabel(match?.disclosureLabel, [audienceA]);
     expect(prompt).toContain(publicEpisode.id);
     expect(prompt).toContain(privateEpisodeA.id);
     expect(prompt).not.toContain("partial sources");
+    expect(prompt).toContain("disclosure_class=relationship_private");
+    expect(prompt).toContain(`private-to=${audienceA}`);
   });
 
-  it("surfaces a mixed-visibility multi-source node with only visible sources rendered", async () => {
+  it("surfaces a mixed-source node globally with private source labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     harness = await createOfflineTestHarness();
@@ -1040,19 +1071,22 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
     const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
     const prompt = summarizeSemanticContext(result, 1_000);
 
-    expect(match?.source_episode_ids).toEqual([publicEpisode.id]);
-    expect(match?.partial_source_visibility).toBe(true);
-    expect(match?.source_visibility_fraction).toBe(0.5);
+    expect(match?.source_episode_ids).toEqual([publicEpisode.id, hiddenEpisode.id]);
+    expect(match?.partial_source_visibility).toBeUndefined();
+    expect(match?.source_visibility_fraction).toBeUndefined();
+    expectRelationshipPrivateLabel(match?.disclosureLabel, [audienceB]);
     expect(prompt).toContain(publicEpisode.id);
-    expect(prompt).toContain("partial sources");
-    expect(prompt).not.toContain(hiddenEpisode.id);
+    expect(prompt).toContain(hiddenEpisode.id);
+    expect(prompt).not.toContain("partial sources");
+    expect(prompt).toContain("supported by private source episodes");
+    expect(prompt).toContain(`private-to=${audienceB}`);
   });
 
-  it("surfaces a mixed-visibility edge with only visible evidence rendered", async () => {
+  it("surfaces a mixed-source edge globally with private evidence labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     harness = await createOfflineTestHarness();
@@ -1100,20 +1134,23 @@ describe("resolveSemanticContext temporal validity", () => {
       last_verified_at: 1_000_000,
     });
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
     const hit = result.support_hits.find((candidate) => candidate.node.id === support.id);
     const edge = hit?.edgePath[0];
     const prompt = summarizeSemanticContext(result, 1_000);
 
-    expect(edge?.evidence_episode_ids).toEqual([publicEpisode.id]);
-    expect(edge?.partial_source_visibility).toBe(true);
-    expect(edge?.source_visibility_fraction).toBe(0.5);
+    expect(edge?.evidence_episode_ids).toEqual([publicEpisode.id, hiddenEpisode.id]);
+    expect(edge?.partial_source_visibility).toBeUndefined();
+    expect(edge?.source_visibility_fraction).toBeUndefined();
+    expectRelationshipPrivateLabel(edge?.disclosureLabel, [audienceB]);
     expect(prompt).toContain(`evidence=${publicEpisode.id}`);
-    expect(prompt).toContain("partial_sources=true");
-    expect(prompt).not.toContain(hiddenEpisode.id);
+    expect(prompt).toContain(hiddenEpisode.id);
+    expect(prompt).not.toContain("partial_sources=true");
+    expect(prompt).toContain("supported by private source episodes");
+    expect(prompt).toContain(`private-to=${audienceB}`);
   });
 
-  it("does not surface a multi-source node when all sources are hidden", async () => {
+  it("surfaces a private-only multi-source node globally with private labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     harness = await createOfflineTestHarness();
@@ -1142,13 +1179,20 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
+    const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
+    const prompt = summarizeSemanticContext(result, 1_000);
 
-    expect(result.matched_node_ids).not.toContain(node.id);
-    expect(result.matched_nodes.find((candidate) => candidate.id === node.id)).toBeUndefined();
+    expect(result.matched_node_ids).toContain(node.id);
+    expect(match?.source_episode_ids).toEqual([firstHiddenEpisode.id, secondHiddenEpisode.id]);
+    expectRelationshipPrivateLabel(match?.disclosureLabel, [audienceB]);
+    expect(prompt).toContain(firstHiddenEpisode.id);
+    expect(prompt).toContain(secondHiddenEpisode.id);
+    expect(prompt).toContain("supported by private source episodes");
+    expect(prompt).toContain(`private-to=${audienceB}`);
   });
 
-  it("surfaces a visible single-source node", async () => {
+  it("surfaces a public single-source node with a public label", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     harness = await createOfflineTestHarness();
     const publicEpisode = createEpisodeFixture({
@@ -1169,14 +1213,20 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
     const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
 
     expect(match?.source_episode_ids).toEqual([publicEpisode.id]);
     expect(match?.partial_source_visibility).toBeUndefined();
+    expect(match?.disclosureLabel).toEqual({
+      disclosureClass: "public",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    });
   });
 
-  it("does not surface a hidden single-source node", async () => {
+  it("surfaces a private single-source node globally with a private label", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     harness = await createOfflineTestHarness();
@@ -1198,9 +1248,59 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    const result = await resolveVisibilityProbe(harness, audienceA);
+    const result = await resolveCognitionProbe(harness, audienceA);
+    const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
 
-    expect(result.matched_node_ids).not.toContain(node.id);
-    expect(result.matched_nodes.find((candidate) => candidate.id === node.id)).toBeUndefined();
+    expect(result.matched_node_ids).toContain(node.id);
+    expect(match?.source_episode_ids).toEqual([hiddenEpisode.id]);
+    expectRelationshipPrivateLabel(match?.disclosureLabel, [audienceB]);
+  });
+
+  it("keeps source pruning in explicit disclosure mode", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness();
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public disclosure source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const hiddenEpisode = createEpisodeFixture({
+      title: "Atlas hidden disclosure source",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(hiddenEpisode);
+    const mixedNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas disclosure mixed visibility",
+          description: "Atlas node backed by public and hidden evidence.",
+          source_episode_ids: [publicEpisode.id, hiddenEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const hiddenNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas disclosure hidden",
+          description: "Atlas node backed only by hidden evidence.",
+          source_episode_ids: [hiddenEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveDisclosureProbe(harness, audienceA);
+    const mixedMatch = result.matched_nodes.find((candidate) => candidate.id === mixedNode.id);
+
+    expect(mixedMatch?.source_episode_ids).toEqual([publicEpisode.id]);
+    expect(mixedMatch?.partial_source_visibility).toBe(true);
+    expect(mixedMatch?.source_visibility_fraction).toBe(0.5);
+    expect(result.matched_node_ids).not.toContain(hiddenNode.id);
   });
 });

@@ -1,4 +1,10 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import {
+  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
+  memoryDisclosureLabelMetadata,
+  renderSemanticSourceDisclosureLabelForModel,
+  type MemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
 import { semanticNodeStateMetadata, semanticTaint } from "../entry-metadata.js";
 import { SEMANTIC_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance, scopeFromEpisodeIds } from "../scope-resolver.js";
@@ -24,6 +30,25 @@ function semanticNodeState(node: { kind: string; status: string; under_review?: 
   return node.under_review === undefined ? node.kind : `under_review:${node.kind}`;
 }
 
+function semanticDisclosureState(label: MemoryDisclosureLabel | undefined): string {
+  return label === undefined ? "" : ` ${renderSemanticSourceDisclosureLabelForModel(label)}`;
+}
+
+function semanticDisclosureMetadata(
+  label: MemoryDisclosureLabel | undefined,
+): Record<string, unknown> {
+  if (label === undefined) {
+    return {};
+  }
+
+  return {
+    disclosure_label: memoryDisclosureLabelMetadata(label),
+    ...(label.disclosureClass === "public"
+      ? {}
+      : { disclosure_note: SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE }),
+  };
+}
+
 export function addSemanticGraphSection(context: BuilderSectionContext): void {
   const semantic = context.input.retrievedSemantic;
 
@@ -43,8 +68,11 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         trust_rank: SEMANTIC_TRUST_RANK,
         text: `${semanticNodeStatusAnnotation(node)}${node.description}`,
         value: node.label,
-        state: semanticNodeState(node),
-        state_metadata: semanticNodeStateMetadata(node),
+        state: `${semanticNodeState(node)}${semanticDisclosureState(node.disclosureLabel)}`,
+        state_metadata: {
+          ...(semanticNodeStateMetadata(node) ?? {}),
+          ...semanticDisclosureMetadata(node.disclosureLabel),
+        },
         taint: semanticTaint({ underReview: node.under_review, status: node.status }),
         ...persistenceClassFromProvenance(
           { episodeIds: node.source_episode_ids },
@@ -71,8 +99,11 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         trust_rank: SEMANTIC_TRUST_RANK,
         text: `${semanticNodeStatusAnnotation(hit.node)}${hit.node.description}`,
         value: hit.node.label,
-        state: semanticNodeState(hit.node),
-        state_metadata: semanticNodeStateMetadata(hit.node),
+        state: `${semanticNodeState(hit.node)}${semanticDisclosureState(hit.node.disclosureLabel)}`,
+        state_metadata: {
+          ...(semanticNodeStateMetadata(hit.node) ?? {}),
+          ...semanticDisclosureMetadata(hit.node.disclosureLabel),
+        },
         taint: semanticTaint({ underReview: hit.node.under_review, status: hit.node.status }),
         ...persistenceClassFromProvenance(
           { episodeIds: hit.node.source_episode_ids },
@@ -93,10 +124,11 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
           trust_rank: SEMANTIC_TRUST_RANK,
           text: `${edge.from_node_id} ${edge.relation} ${edge.to_node_id}`,
           value: edge.relation,
-          state: edge.valid_to === null ? "valid" : "closed",
+          state: `${edge.valid_to === null ? "valid" : "closed"}${semanticDisclosureState(edge.disclosureLabel)}`,
           state_metadata: {
             edge_id: edge.id,
             evidence_episode_ids: [...edge.evidence_episode_ids],
+            ...semanticDisclosureMetadata(edge.disclosureLabel),
           },
           taint: semanticTaint({
             validTo: edge.valid_to,

@@ -441,7 +441,7 @@ describe("internal tools", () => {
     });
   });
 
-  it("scopes semantic walks to the invocation audience", async () => {
+  it("walks semantic graph globally with disclosure labels", async () => {
     const harness = await createOfflineTestHarness();
 
     try {
@@ -527,10 +527,42 @@ describe("internal tools", () => {
       }
 
       const output = result.output as {
-        steps: Array<{ node: { id: string; label: string } }>;
+        steps: Array<{
+          node: {
+            id: string;
+            label: string;
+            disclosureLabel?: unknown;
+          };
+          edgePath: Array<{ disclosureLabel?: unknown }>;
+        }>;
       };
-      expect(output.steps.map((step) => step.node.id)).toContain(aliceNode.id);
-      expect(output.steps.map((step) => step.node.id)).not.toContain(bobNode.id);
+      const stepsByNodeId = new Map(output.steps.map((step) => [step.node.id, step]));
+      expect(stepsByNodeId.has(aliceNode.id)).toBe(true);
+      expect(stepsByNodeId.has(bobNode.id)).toBe(true);
+      expect(stepsByNodeId.get(aliceNode.id)?.node.disclosureLabel).toEqual({
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [alice],
+        privateToEntityIds: [alice],
+        publicToEntityIds: [],
+      });
+      expect(stepsByNodeId.get(aliceNode.id)?.edgePath.at(-1)?.disclosureLabel).toEqual({
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [alice],
+        privateToEntityIds: [alice],
+        publicToEntityIds: [],
+      });
+      expect(stepsByNodeId.get(bobNode.id)?.node.disclosureLabel).toEqual({
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [bob],
+        privateToEntityIds: [bob],
+        publicToEntityIds: [],
+      });
+      expect(stepsByNodeId.get(bobNode.id)?.edgePath.at(-1)?.disclosureLabel).toEqual({
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [bob],
+        privateToEntityIds: [bob],
+        publicToEntityIds: [],
+      });
     } finally {
       await harness.cleanup();
     }

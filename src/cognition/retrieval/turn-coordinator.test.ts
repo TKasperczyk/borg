@@ -435,7 +435,6 @@ describe("TurnRetrievalCoordinator", () => {
       "Solve Atlas",
       expect.objectContaining({
         rankingAudienceEntityId: audienceEntityId,
-        semanticAudienceEntityId: audienceEntityId,
         recallContext: expect.objectContaining({
           reader: "sol",
           currentSessionId: DEFAULT_SESSION_ID,
@@ -471,7 +470,6 @@ describe("TurnRetrievalCoordinator", () => {
       "verify",
       expect.objectContaining({
         rankingAudienceEntityId: audienceEntityId,
-        semanticAudienceEntityId: audienceEntityId,
         limit: 3,
         scoringFeatures,
         strictTimeRange: false,
@@ -840,7 +838,7 @@ describe("TurnRetrievalCoordinator", () => {
 
     expect(getSelf).not.toHaveBeenCalled();
     expect(retrievalOptions).toHaveProperty("rankingAudienceEntityId", bobEntityId);
-    expect(retrievalOptions).toHaveProperty("semanticAudienceEntityId", bobEntityId);
+    expect(retrievalOptions).not.toHaveProperty("semanticAudienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("audienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("globalIdentitySelfAudienceEntityId");
   });

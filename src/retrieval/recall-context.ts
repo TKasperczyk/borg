@@ -32,6 +32,17 @@ export type MemoryDisclosureLabel = {
 
 export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
   "usable internally; do not disclose to current audience unless authorized";
+export const SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE =
+  "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized";
+
+const MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK = {
+  public: 0,
+  relationship_private: 1,
+  operator_private: 2,
+  self_private: 3,
+  sensitive: 4,
+  unknown: 5,
+} as const satisfies Record<MemoryDisclosureClass, number>;
 
 export type MemoryDisclosureLabelMetadata = {
   disclosure_class: MemoryDisclosureClass;
@@ -65,6 +76,61 @@ export function renderMemoryDisclosureLabelForModel(label: MemoryDisclosureLabel
   }
 
   return fragments.join(" ");
+}
+
+export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
+  const fragments = [`disclosure_class=${label.disclosureClass}`];
+
+  if (label.originAudienceEntityIds.length > 0) {
+    fragments.push(`origin_audience=${label.originAudienceEntityIds.join(",")}`);
+  }
+
+  if (label.disclosureClass !== "public") {
+    const privateTo =
+      label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
+    fragments.push(`private-to=${privateTo}; ${SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE}`);
+  }
+
+  return fragments.join(" ");
+}
+
+type MemoryDisclosureEntityIdListKey =
+  | "originAudienceEntityIds"
+  | "privateToEntityIds"
+  | "publicToEntityIds";
+
+function mergeEntityIds(
+  labels: readonly MemoryDisclosureLabel[],
+  key: MemoryDisclosureEntityIdListKey,
+) {
+  return [...new Set(labels.flatMap((label) => label[key]))];
+}
+
+export function combineMemoryDisclosureLabels(
+  labels: readonly MemoryDisclosureLabel[],
+): MemoryDisclosureLabel {
+  if (labels.length === 0) {
+    return {
+      disclosureClass: "unknown",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    };
+  }
+
+  const disclosureClass = labels.reduce((mostRestrictive, label) => {
+    return MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK[label.disclosureClass] >
+      MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK[mostRestrictive]
+      ? label.disclosureClass
+      : mostRestrictive;
+  }, "public" as MemoryDisclosureClass);
+
+  return {
+    disclosureClass,
+    originAudienceEntityIds: mergeEntityIds(labels, "originAudienceEntityIds"),
+    privateToEntityIds: mergeEntityIds(labels, "privateToEntityIds"),
+    publicToEntityIds: mergeEntityIds(labels, "publicToEntityIds"),
+  };
 }
 
 export type CognitionRecallContext = {

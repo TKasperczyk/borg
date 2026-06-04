@@ -1,7 +1,9 @@
 import {
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
+  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
   memoryDisclosureLabelMetadata,
   renderMemoryDisclosureLabelForModel,
+  renderSemanticSourceDisclosureLabelForModel,
   type EvidenceItem,
 } from "../../retrieval/index.js";
 import {
@@ -86,12 +88,35 @@ export function evidenceItemState(item: EvidenceItem): string {
     item.imageUnavailableReason === undefined
       ? null
       : `image_unavailable=${item.imageUnavailableReason}`,
-    item.disclosureLabel === undefined
-      ? null
-      : renderMemoryDisclosureLabelForModel(item.disclosureLabel),
+    item.disclosureLabel === undefined ? null : renderEvidenceItemDisclosureLabel(item),
   ].filter((part): part is string => part !== null);
 
   return parts.join(" ");
+}
+
+function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
+  if (item.disclosureLabel === undefined) {
+    return "";
+  }
+
+  return isSemanticEvidenceItem(item)
+    ? renderSemanticSourceDisclosureLabelForModel(item.disclosureLabel)
+    : renderMemoryDisclosureLabelForModel(item.disclosureLabel);
+}
+
+function evidenceItemDisclosureNote(item: EvidenceItem): string {
+  return isSemanticEvidenceItem(item)
+    ? SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE
+    : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
+}
+
+function isSemanticEvidenceItem(item: EvidenceItem): boolean {
+  return (
+    item.source === "semantic_node" ||
+    item.source === "semantic_edge" ||
+    item.provenance?.nodeId !== undefined ||
+    item.provenance?.edgeId !== undefined
+  );
 }
 
 export function evidenceItemProvenanceMetadata(
@@ -128,7 +153,7 @@ export function evidenceItemProvenanceMetadata(
           disclosure_label: memoryDisclosureLabelMetadata(item.disclosureLabel),
           ...(item.disclosureLabel.disclosureClass === "public"
             ? {}
-            : { disclosure_note: MEMORY_DISCLOSURE_INTERNAL_USE_NOTE }),
+            : { disclosure_note: evidenceItemDisclosureNote(item) }),
         }),
   };
 }

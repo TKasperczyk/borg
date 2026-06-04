@@ -204,9 +204,101 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("partial_sources=true");
     expect(summary).toContain("visible_fraction=0.50");
   });
+
+  it("renders semantic disclosure labels with source-detail notes on evidence items", () => {
+    const evidence: EvidenceItem = {
+      id: "evidence_semantic_node_semn_private_intent",
+      source: "semantic_node",
+      text: "Alice private semantic claim.",
+      provenance: {
+        nodeId: "semn_aaaaaaaaaaaaaaaa" as never,
+      },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 0.8,
+      scoreBreakdown: {},
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: ["ent_alice" as never],
+        privateToEntityIds: ["ent_alice" as never],
+        publicToEntityIds: [],
+      },
+    };
+
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      { evidence: [evidence] },
+      1_000,
+    );
+
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=ent_alice");
+    expect(summary).toContain(
+      "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized",
+    );
+  });
 });
 
 describe("semantic retrieval prompt rendering", () => {
+  it("renders semantic disclosure labels in the semantic-context fallback", () => {
+    const root = makeNode({
+      id: "semn_aaaaaaaaaaaaaaaa" as SemanticNode["id"],
+      label: "Alice private claim",
+      description: "A semantic claim backed by Alice-private source episodes.",
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+    }) as RetrievedSemantic["matched_nodes"][number];
+    root.disclosureLabel = {
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: ["ent_alice" as never],
+      privateToEntityIds: ["ent_alice" as never],
+      publicToEntityIds: [],
+    };
+    const edge = makeClosedEdge({
+      from_node_id: root.id,
+      to_node_id: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      valid_to: null,
+      invalidated_at: null,
+    }) as RetrievedSemantic["support_hits"][number]["edgePath"][number];
+    edge.disclosureLabel = root.disclosureLabel;
+    const support = makeNode({
+      id: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+      label: "Alice private support",
+      description: "A supporting claim backed by Alice-private evidence.",
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+    }) as RetrievedSemantic["support_hits"][number]["node"];
+    support.disclosureLabel = root.disclosureLabel;
+
+    const summary = summarizeSemanticContext(
+      {
+        as_of: null,
+        matched_node_ids: [root.id],
+        matched_nodes: [root],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [
+          {
+            root_node_id: root.id,
+            node: support,
+            edgePath: [edge],
+          },
+        ],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      },
+      1_000,
+    );
+
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("private-to=ent_alice");
+    expect(summary).toContain(
+      "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized",
+    );
+  });
+
   it("tags closed path edges for historical as-of context", () => {
     const root = makeNode({
       id: "semn_aaaaaaaaaaaaaaaa" as SemanticNode["id"],

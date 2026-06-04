@@ -93,6 +93,7 @@ import {
 } from "./scoring-features.js";
 import {
   isSemanticNodeVisibleToAudience,
+  resolveMemoryDisclosureLabelForEpisodeIds,
   resolveSemanticContext,
   toRetrievedSemantic,
   type ResolvedSemanticRetrieval,
@@ -101,6 +102,7 @@ import {
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
 import {
+  combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
   type CognitionRecallContext,
   type DisclosureContext,
@@ -158,7 +160,6 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   recallContext?: CognitionRecallContext;
   disclosureContext?: DisclosureContext;
   rankingAudienceEntityId?: EntityId | null;
-  semanticAudienceEntityId?: EntityId | null;
   limit?: number;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;
@@ -403,7 +404,7 @@ export class RetrievalPipeline {
     const citationEntries = await citationResolver.resolveCitationEntries(
       episodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
     );
-    const semanticRetrievals = await this.collectSemanticRetrievals(intents, options);
+    const semanticRetrievals = await this.collectSemanticRetrievals(intents, options, mode);
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
     const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
     const imagePerceptions = await this.collectImagePerceptionEvidence(intents, options);
@@ -579,11 +580,11 @@ export class RetrievalPipeline {
     }
 
     if (handle.source === "semantic_node") {
-      return this.rehydrateSemanticNodeHandle(handle, stateHandle, options);
+      return this.rehydrateSemanticNodeHandle(handle, stateHandle, options, mode);
     }
 
     if (handle.source === "semantic_edge") {
-      return this.rehydrateSemanticEdgeHandle(handle, stateHandle, options);
+      return this.rehydrateSemanticEdgeHandle(handle, stateHandle, options, mode);
     }
 
     if (handle.source === "commitment") {
@@ -729,6 +730,7 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "semantic_node" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const node = await this.options.semanticNodeRepository?.get(handle.nodeId);
 
@@ -736,11 +738,9 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (
-      !(await isSemanticNodeVisibleToAudience(node, options, {
-        episodicRepository: this.options.episodicRepository,
-      }))
-    ) {
+    const sourceVisibility = await this.resolveSemanticNodeSourceVisibility(node, options, mode);
+
+    if (sourceVisibility === null) {
       return null;
     }
 
@@ -757,6 +757,18 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
+      source_episode_ids: sourceVisibility.visibleSourceEpisodeIds,
+      ...(sourceVisibility.partial
+        ? {
+            partial_source_visibility: true,
+            source_visibility_fraction:
+              sourceVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
+          }
+        : {}),
+      disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
+        this.options.episodicRepository,
+        sourceVisibility.visibleSourceEpisodeIds,
+      ),
     };
   }
 
@@ -764,6 +776,7 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "semantic_edge" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const edge = this.options.semanticEdgeRepository?.getEdge(handle.edgeId);
 
@@ -783,11 +796,26 @@ export class RetrievalPipeline {
       return null;
     }
 
-    const edgeVisibility = await this.resolveSemanticEdgeVisibility(edge, node, options);
+    const nodeVisibility = await this.resolveSemanticNodeSourceVisibility(node, options, mode);
+    const edgeVisibility = await this.resolveSemanticEdgeVisibility(edge, node, options, mode);
 
-    if (edgeVisibility === null) {
+    if (nodeVisibility === null || edgeVisibility === null) {
       return null;
     }
+    const nodeDisclosureLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
+      this.options.episodicRepository,
+      nodeVisibility.visibleSourceEpisodeIds,
+    );
+    const edgeDisclosureLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
+      this.options.episodicRepository,
+      edgeVisibility.visibleEvidenceEpisodeIds,
+    );
+    const semanticEdgeSourceEpisodeIds = [
+      ...new Set([
+        ...nodeVisibility.visibleSourceEpisodeIds,
+        ...edgeVisibility.visibleEvidenceEpisodeIds,
+      ]),
+    ];
 
     return {
       id: `warm_recall_semantic_edge_${edge.id}`,
@@ -803,14 +831,60 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
-      source_episode_ids: edgeVisibility.visibleEvidenceEpisodeIds,
-      ...(edgeVisibility.partial
+      source_episode_ids: semanticEdgeSourceEpisodeIds,
+      ...(nodeVisibility.partial || edgeVisibility.partial
         ? {
             partial_source_visibility: true,
-            source_visibility_fraction:
-              edgeVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length,
+            source_visibility_fraction: edgeVisibility.partial
+              ? edgeVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length
+              : nodeVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
           }
         : {}),
+      disclosureLabel: combineMemoryDisclosureLabels([nodeDisclosureLabel, edgeDisclosureLabel]),
+    };
+  }
+
+  private async resolveSemanticNodeSourceVisibility(
+    node: SemanticNode,
+    options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
+  ): Promise<{
+    visibleSourceEpisodeIds: Episode["id"][];
+    partial: boolean;
+  } | null> {
+    if (mode === "cognition") {
+      return {
+        visibleSourceEpisodeIds: [...node.source_episode_ids],
+        partial: false,
+      };
+    }
+
+    const viewer = resolveViewerCapability(episodeVisibilityOptions(options));
+
+    if (viewer.kind === "unrestricted") {
+      return {
+        visibleSourceEpisodeIds: [...node.source_episode_ids],
+        partial: false,
+      };
+    }
+
+    const sourceEpisodes = await this.options.episodicRepository.getMany(node.source_episode_ids);
+    const visibleEpisodeIds = new Set(
+      sourceEpisodes
+        .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
+        .map((episode) => episode.id),
+    );
+    const visibleSourceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
+      visibleEpisodeIds.has(episodeId),
+    );
+
+    if (visibleSourceEpisodeIds.length === 0) {
+      return null;
+    }
+
+    return {
+      visibleSourceEpisodeIds,
+      partial: visibleSourceEpisodeIds.length < node.source_episode_ids.length,
     };
   }
 
@@ -818,10 +892,18 @@ export class RetrievalPipeline {
     edge: SemanticEdge,
     node: SemanticNode,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<{
     visibleEvidenceEpisodeIds: Episode["id"][];
     partial: boolean;
   } | null> {
+    if (mode === "cognition") {
+      return {
+        visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
+        partial: false,
+      };
+    }
+
     if (
       !(await isSemanticNodeVisibleToAudience(node, options, {
         episodicRepository: this.options.episodicRepository,
@@ -1370,6 +1452,7 @@ export class RetrievalPipeline {
   private async collectSemanticRetrievals(
     intents: readonly RecallIntent[],
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<SemanticEvidenceCandidate[]> {
     const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
 
@@ -1383,7 +1466,7 @@ export class RetrievalPipeline {
             intent.query,
             {
               ...options,
-              audienceEntityId: semanticAudienceEntityId(options),
+              sourceVisibilityMode: mode === "disclosure" ? "disclosure" : "cognition",
               queryVector: intentVector,
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
@@ -2041,14 +2124,6 @@ function rankingAudienceEntityId(options: RetrievalSearchOptions): EntityId | nu
   return options.rankingAudienceEntityId ?? options.audienceEntityId;
 }
 
-function semanticAudienceEntityId(options: RetrievalSearchOptions): EntityId | null | undefined {
-  return (
-    options.semanticAudienceEntityId ??
-    options.disclosureContext?.currentAudienceEntityId ??
-    options.audienceEntityId
-  );
-}
-
 function normalizeTermInput(value: string): string {
   return value.trim();
 }
@@ -2289,6 +2364,7 @@ function semanticRetrievalToEvidence(
             source_visibility_fraction: node.source_visibility_fraction,
           }
         : {}),
+      ...(node.disclosureLabel === undefined ? {} : { disclosureLabel: node.disclosureLabel }),
     }),
   );
   const edgeEvidence = [
@@ -2299,6 +2375,18 @@ function semanticRetrievalToEvidence(
   ].map((hit): EvidenceItem => {
     const edge = hit.edgePath.at(-1);
     const edgeId = edge?.id;
+    const semanticEdgeSourceEpisodeIds = [
+      ...new Set([
+        ...hit.node.source_episode_ids,
+        ...hit.edgePath.flatMap((pathEdge) => pathEdge.evidence_episode_ids),
+      ]),
+    ];
+    const semanticEdgeDisclosureLabel = combineMemoryDisclosureLabels([
+      hit.node.disclosureLabel ?? combineMemoryDisclosureLabels([]),
+      ...hit.edgePath.map(
+        (pathEdge) => pathEdge.disclosureLabel ?? combineMemoryDisclosureLabels([]),
+      ),
+    ]);
 
     return {
       id: `evidence_semantic_edge_${edgeId ?? hit.node.id}_${intent.id}`,
@@ -2318,13 +2406,17 @@ function semanticRetrievalToEvidence(
       scoreBreakdown: {
         provenance: hit.edgePath.length > 0 ? 1 : 0,
       },
-      source_episode_ids: [...hit.node.source_episode_ids],
-      ...(hit.node.partial_source_visibility === true
+      source_episode_ids:
+        semanticEdgeSourceEpisodeIds.length === 0
+          ? [...hit.node.source_episode_ids]
+          : semanticEdgeSourceEpisodeIds,
+      ...(edge?.partial_source_visibility === true
         ? {
             partial_source_visibility: true,
-            source_visibility_fraction: hit.node.source_visibility_fraction,
+            source_visibility_fraction: edge.source_visibility_fraction,
           }
         : {}),
+      disclosureLabel: semanticEdgeDisclosureLabel,
     };
   });
 

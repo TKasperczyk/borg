@@ -32,7 +32,6 @@ function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null)
         currentAudienceEntityId === null ? [] : [currentAudienceEntityId],
     },
     rankingAudienceEntityId: currentAudienceEntityId,
-    semanticAudienceEntityId: currentAudienceEntityId,
     sessionId: DEFAULT_SESSION_ID,
   };
 }
@@ -397,7 +396,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(disclosure.map((result) => result.episode.id)).not.toContain(otherPrivateEpisode.id);
   });
 
-  it("keeps semantic source-visibility pruning audience-scoped during cognition recall", async () => {
+  it("recalls private semantic sources globally during cognition and labels them", async () => {
     const query = "atlas semantic source visibility";
     harness = await createOfflineTestHarness({
       embeddingClient: new TestEmbeddingClient(new Map([[query, [1, 0, 0, 0]]])),
@@ -445,10 +444,93 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       graphWalkDepth: 1,
       maxGraphNodes: 4,
     });
-    const matchedNodeIds = result.semantic.matched_nodes.map((node) => node.id);
+    const matchedNodesById = new Map(result.semantic.matched_nodes.map((node) => [node.id, node]));
 
-    expect(matchedNodeIds).toContain(currentNode.id);
-    expect(matchedNodeIds).not.toContain(otherNode.id);
+    expect(matchedNodesById.get(currentNode.id)?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [currentAudience],
+      privateToEntityIds: [currentAudience],
+      publicToEntityIds: [],
+    });
+    expect(matchedNodesById.get(otherNode.id)?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [otherAudience],
+      privateToEntityIds: [otherAudience],
+      publicToEntityIds: [],
+    });
+  });
+
+  it("labels semantic-edge evidence with the private target node source", async () => {
+    const query = "atlas public root private support";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(new Map([[query, [1, 0, 0, 0]]])),
+    });
+    const alice = harness.entityRepository.resolve("Alice");
+    const bob = harness.entityRepository.resolve("Bob");
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public edge evidence",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const privateEpisode = createEpisodeFixture({
+      title: "Atlas Alice private semantic target",
+      tags: ["atlas"],
+      audience_entity_id: alice,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(privateEpisode);
+    const root = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "entity",
+          label: "Atlas Public Root",
+          description: "Atlas root backed by public evidence.",
+          source_episode_ids: [publicEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const privateSupport = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "proposition",
+          label: "Alice Private Support",
+          description: "Alice-private support must not be under-labeled by a public edge.",
+          source_episode_ids: [privateEpisode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: root.id,
+      to_node_id: privateSupport.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [publicEpisode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(query, {
+      ...cognitionRecallOptions(bob),
+      limit: 5,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const edgeEvidence = result.evidence.find(
+      (item) => item.source === "semantic_edge" && item.provenance?.edgeId === edge.id,
+    );
+
+    expect(edgeEvidence?.text).toContain("Alice Private Support");
+    expect(edgeEvidence?.source_episode_ids).toEqual([privateEpisode.id, publicEpisode.id]);
+    expect(edgeEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice],
+      privateToEntityIds: [alice],
+      publicToEntityIds: [],
+    });
   });
 
   it("keeps semantic nodes whose source episodes include visible evidence", async () => {

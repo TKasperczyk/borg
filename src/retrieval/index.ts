@@ -30,9 +30,12 @@ export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   MEMORY_DISCLOSURE_CLASSES,
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
+  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
+  combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelMetadata,
   renderMemoryDisclosureLabelForModel,
+  renderSemanticSourceDisclosureLabelForModel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureClass,
@@ -54,3 +57,4 @@ export {
   type RetrievalPipelineOptions,
   type RetrievalSearchOptions,
 } from "./pipeline.js";
+export { resolveMemoryDisclosureLabelForEpisodeIds } from "./semantic-retrieval.js";

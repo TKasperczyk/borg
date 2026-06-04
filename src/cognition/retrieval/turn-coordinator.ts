@@ -71,17 +71,12 @@ function adaptRecallDisclosureContextToLegacyRetrievalOptions(input: {
   disclosureContext: DisclosureContext;
 }): Pick<
   CognitionRecallSearchOptions,
-  | "recallContext"
-  | "disclosureContext"
-  | "rankingAudienceEntityId"
-  | "semanticAudienceEntityId"
-  | "sessionId"
+  "recallContext" | "disclosureContext" | "rankingAudienceEntityId" | "sessionId"
 > {
   return {
     recallContext: input.recallContext,
     disclosureContext: input.disclosureContext,
     rankingAudienceEntityId: input.disclosureContext.currentAudienceEntityId,
-    semanticAudienceEntityId: input.disclosureContext.currentAudienceEntityId,
     sessionId: input.recallContext.currentSessionId,
   };
 }

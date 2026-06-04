@@ -3,6 +3,7 @@ import type { SemanticNode } from "../../../memory/semantic/index.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
+  renderSemanticSourceDisclosureLabelForModel,
   type EvidenceItem,
   type RetrievalConfidence,
   type RetrievedContradictionRouting,
@@ -215,14 +216,31 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   const terms = item.matchedTerms.length === 0 ? "" : ` terms=${item.matchedTerms.join(", ")}`;
   const sourceVisibility = summarizeEvidenceSourceVisibility(item);
   const disclosure =
-    item.disclosureLabel === undefined
-      ? ""
-      : ` ${renderMemoryDisclosureLabelForModel(item.disclosureLabel)}`;
+    item.disclosureLabel === undefined ? "" : ` ${renderEvidenceItemDisclosureLabel(item)}`;
 
   return [
     `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
   ].join("\n");
+}
+
+function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
+  if (item.disclosureLabel === undefined) {
+    return "";
+  }
+
+  return isSemanticEvidenceItem(item)
+    ? renderSemanticSourceDisclosureLabelForModel(item.disclosureLabel)
+    : renderMemoryDisclosureLabelForModel(item.disclosureLabel);
+}
+
+function isSemanticEvidenceItem(item: EvidenceItem): boolean {
+  return (
+    item.source === "semantic_node" ||
+    item.source === "semantic_edge" ||
+    item.provenance?.nodeId !== undefined ||
+    item.provenance?.edgeId !== undefined
+  );
 }
 
 function summarizeEvidenceSourceVisibility(item: EvidenceItem): string {
@@ -367,13 +385,22 @@ function summarizePartialEvidenceTag(edge: {
   return ` partial_sources=true${fraction}`;
 }
 
+function summarizeSemanticDisclosureTag(input: {
+  disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
+}): string {
+  return input.disclosureLabel === undefined
+    ? ""
+    : `, ${renderSemanticSourceDisclosureLabelForModel(input.disclosureLabel)}`;
+}
+
 function summarizeSemanticNode(
   node: SemanticNode & {
     partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
     under_review?: RetrievedSemanticNode["under_review"];
+    disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
   },
 ): string {
-  return `${summarizeSemanticNodePrefixes(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)})`;
+  return `${summarizeSemanticNodePrefixes(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})`;
 }
 
 function summarizeSemanticNodeWithSources(
@@ -384,7 +411,7 @@ function summarizeSemanticNodeWithSources(
     node.historical === true ? " [historical]" : "",
   ].join("");
 
-  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)}${summarizePartialSourceTag(node)})`;
+  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})`;
 }
 
 function summarizeSemanticHit(
@@ -400,11 +427,12 @@ function summarizeSemanticHit(
   for (const [index, edge] of hit.edgePath.entries()) {
     const evidence = summarizeEpisodeIds(edge.evidence_episode_ids);
     const evidenceVisibility = summarizePartialEvidenceTag(edge);
+    const evidenceDisclosure = summarizeSemanticDisclosureTag(edge);
     const validityTag = options.tagClosedEdges ? summarizeValidityTag(edge) : "";
     const relation =
       edge.from_node_id === currentNodeId
-        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}]${validityTag}->`
-        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}]${validityTag}-`;
+        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}${evidenceDisclosure}]${validityTag}->`
+        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}${evidenceDisclosure}]${validityTag}-`;
 
     pathParts.push(relation);
 
@@ -417,7 +445,7 @@ function summarizeSemanticHit(
     pathParts.push("...");
   }
 
-  return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}; path ${pathParts.join(" ")})`;
+  return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}${summarizeSemanticDisclosureTag(hit.node)}; path ${pathParts.join(" ")})`;
 }
 
 function summarizeSemanticBucket(
@@ -425,6 +453,7 @@ function summarizeSemanticBucket(
   nodes: readonly (SemanticNode & {
     partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
     under_review?: RetrievedSemanticNode["under_review"];
+    disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
   })[],
   limit = 3,
 ): string | null {

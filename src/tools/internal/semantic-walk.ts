@@ -8,7 +8,15 @@ import {
   type SemanticWalkOptions,
   type SemanticWalkStep,
 } from "../../memory/semantic/index.js";
+import { MEMORY_DISCLOSURE_CLASSES, type MemoryDisclosureLabel } from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
+
+const semanticWalkDisclosureLabelSchema = z.object({
+  disclosureClass: z.enum(MEMORY_DISCLOSURE_CLASSES),
+  originAudienceEntityIds: z.array(z.string()),
+  privateToEntityIds: z.array(z.string()),
+  publicToEntityIds: z.array(z.string()),
+});
 
 const semanticWalkInputSchema = z.object({
   node_id: semanticNodeIdSchema,
@@ -26,22 +34,49 @@ const semanticWalkNodeOutputSchema = semanticNodeSchema
   .extend({
     partial_source_visibility: z.boolean().optional(),
     source_visibility_fraction: z.number().min(0).max(1).optional(),
+    disclosureLabel: semanticWalkDisclosureLabelSchema.optional(),
   });
+const semanticWalkEdgeOutputSchema = semanticEdgeSchema.extend({
+  disclosureLabel: semanticWalkDisclosureLabelSchema.optional(),
+});
 
 const semanticWalkOutputSchema = z.object({
   steps: z.array(
     z.object({
       node: semanticWalkNodeOutputSchema,
-      edgePath: z.array(semanticEdgeSchema),
+      edgePath: z.array(semanticWalkEdgeOutputSchema),
     }),
   ),
 });
 
+type SemanticWalkNodeWithDisclosure = SemanticWalkStep["node"] & {
+  partial_source_visibility?: boolean;
+  source_visibility_fraction?: number;
+  disclosureLabel?: MemoryDisclosureLabel;
+};
+
+type SemanticWalkEdgeWithDisclosure = SemanticWalkStep["edgePath"][number] & {
+  disclosureLabel?: MemoryDisclosureLabel;
+};
+
+type SemanticWalkStepWithDisclosure = Omit<SemanticWalkStep, "node" | "edgePath"> & {
+  node: SemanticWalkNodeWithDisclosure;
+  edgePath: SemanticWalkEdgeWithDisclosure[];
+};
+
+function toSemanticWalkDisclosureLabelOutput(
+  label: MemoryDisclosureLabel,
+): z.infer<typeof semanticWalkDisclosureLabelSchema> {
+  return {
+    disclosureClass: label.disclosureClass,
+    originAudienceEntityIds: [...label.originAudienceEntityIds],
+    privateToEntityIds: [...label.privateToEntityIds],
+    publicToEntityIds: [...label.publicToEntityIds],
+  };
+}
+
 function toSemanticWalkNodeOutput(
-  node: SemanticWalkStep["node"] & {
-    partial_source_visibility?: boolean;
-    source_visibility_fraction?: number;
-  },
+  node: SemanticWalkNodeWithDisclosure,
 ): z.infer<typeof semanticWalkNodeOutputSchema> {
   return {
     id: node.id,
@@ -66,6 +101,22 @@ function toSemanticWalkNodeOutput(
     ...(node.source_visibility_fraction === undefined
       ? {}
       : { source_visibility_fraction: node.source_visibility_fraction }),
+    ...(node.disclosureLabel === undefined
+      ? {}
+      : { disclosureLabel: toSemanticWalkDisclosureLabelOutput(node.disclosureLabel) }),
+  };
+}
+
+function toSemanticWalkEdgeOutput(
+  edge: SemanticWalkEdgeWithDisclosure,
+): z.infer<typeof semanticWalkEdgeOutputSchema> {
+  const { disclosureLabel, ...edgeFields } = edge;
+
+  return {
+    ...edgeFields,
+    ...(disclosureLabel === undefined
+      ? {}
+      : { disclosureLabel: toSemanticWalkDisclosureLabelOutput(disclosureLabel) }),
   };
 }
 
@@ -74,7 +125,7 @@ export type SemanticWalkToolOptions = {
     fromId: z.infer<typeof semanticWalkInputSchema>["node_id"],
     options?: SemanticWalkOptions,
     context?: ToolInvocationContext,
-  ) => Promise<SemanticWalkStep[]>;
+  ) => Promise<SemanticWalkStepWithDisclosure[]>;
 };
 
 export function createSemanticWalkTool(
@@ -106,7 +157,7 @@ export function createSemanticWalkTool(
         steps: steps.map((step) => {
           return {
             node: toSemanticWalkNodeOutput(step.node),
-            edgePath: step.edgePath,
+            edgePath: step.edgePath.map(toSemanticWalkEdgeOutput),
           };
         }),
       };

@@ -22,6 +22,11 @@ import type {
 } from "../memory/semantic/types.js";
 import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  type MemoryDisclosureLabel,
+} from "./recall-context.js";
 
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
 const DEFAULT_SEMANTIC_OVERFETCH_MULTIPLIER = 3;
@@ -53,11 +58,13 @@ export type RetrievedSemanticNode = SemanticNode & {
   under_review?: RetrievedSemanticUnderReview;
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
+  disclosureLabel?: MemoryDisclosureLabel;
 };
 
 export type RetrievedSemanticEdge = SemanticEdge & {
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
+  disclosureLabel?: MemoryDisclosureLabel;
 };
 
 export type RetrievedSemanticHit = {
@@ -81,6 +88,7 @@ export type SemanticRetrievalOptions = {
   crossAudience?: boolean;
   globalIdentitySelfAudienceEntityId?: EntityId | null;
   operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
+  sourceVisibilityMode?: "cognition" | "disclosure";
   graphWalkDepth?: number;
   maxGraphNodes?: number;
   asOf?: number;
@@ -175,6 +183,73 @@ async function resolveVisibleEpisodeIds(
       .filter((episode) => isEpisodeVisibleToCapability(episode, viewer))
       .map((episode) => episode.id),
   );
+}
+
+function semanticSourceVisibilityMode(
+  options: SemanticRetrievalOptions,
+): "cognition" | "disclosure" {
+  return options.sourceVisibilityMode ?? "cognition";
+}
+
+async function resolveEpisodeDisclosureLabels(
+  episodicRepository: EpisodicRepository,
+  episodeIds: readonly Episode["id"][],
+): Promise<Map<string, MemoryDisclosureLabel>> {
+  const uniqueEpisodeIds = [...new Set(episodeIds)];
+
+  if (uniqueEpisodeIds.length === 0) {
+    return new Map();
+  }
+
+  const episodes = await episodicRepository.getMany(uniqueEpisodeIds);
+
+  return new Map(
+    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  );
+}
+
+function unknownMemoryDisclosureLabel(): MemoryDisclosureLabel {
+  return combineMemoryDisclosureLabels([]);
+}
+
+function disclosureLabelForEpisodeIds(
+  episodeIds: readonly Episode["id"][],
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): MemoryDisclosureLabel {
+  return combineMemoryDisclosureLabels(
+    episodeIds.map(
+      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+    ),
+  );
+}
+
+function withSemanticSourceDisclosure<T extends SemanticNode>(
+  node: T,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): T & Pick<RetrievedSemanticNode, "disclosureLabel"> {
+  return {
+    ...node,
+    disclosureLabel: disclosureLabelForEpisodeIds(node.source_episode_ids, labelsByEpisodeId),
+  };
+}
+
+export async function resolveMemoryDisclosureLabelForEpisodeIds(
+  episodicRepository: EpisodicRepository,
+  episodeIds: readonly Episode["id"][],
+): Promise<MemoryDisclosureLabel> {
+  const labelsByEpisodeId = await resolveEpisodeDisclosureLabels(episodicRepository, episodeIds);
+
+  return disclosureLabelForEpisodeIds(episodeIds, labelsByEpisodeId);
+}
+
+function withSemanticEdgeDisclosure<T extends SemanticEdge>(
+  edge: T,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): T & Pick<RetrievedSemanticEdge, "disclosureLabel"> {
+  return {
+    ...edge,
+    disclosureLabel: disclosureLabelForEpisodeIds(edge.evidence_episode_ids, labelsByEpisodeId),
+  };
 }
 
 function isSemanticNodeVisible(
@@ -297,10 +372,17 @@ function withVisibleSemanticEdgeSources<T extends SemanticEdge>(
 function withVisibleSemanticWalkStepEdges(
   step: SemanticWalkStep,
   visibleEpisodeIds: ReadonlySet<string> | null,
+  disclosureLabelsByEpisodeId?: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] } {
   return {
     ...step,
-    edgePath: step.edgePath.map((edge) => withVisibleSemanticEdgeSources(edge, visibleEpisodeIds)),
+    edgePath: step.edgePath.map((edge) => {
+      const visibleEdge = withVisibleSemanticEdgeSources(edge, visibleEpisodeIds);
+
+      return disclosureLabelsByEpisodeId === undefined
+        ? visibleEdge
+        : withSemanticEdgeDisclosure(visibleEdge, disclosureLabelsByEpisodeId);
+    }),
   };
 }
 
@@ -471,12 +553,16 @@ function annotateSemanticNode(
     underReviewMultiplier: number;
     statusMultipliers: SemanticStatusMultipliers;
     visibleEpisodeIds: ReadonlySet<string> | null;
+    disclosureLabelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
   },
 ): RetrievedSemanticNode {
   const status = buildUnderReviewStatus(
     input.underReviewByNodeId.get(semanticNodeTargetKey(node.id)),
   );
-  const visibleNode = withVisibleSemanticSources(node, input.visibleEpisodeIds);
+  const visibleNode = withSemanticSourceDisclosure(
+    withVisibleSemanticSources(node, input.visibleEpisodeIds),
+    input.disclosureLabelsByEpisodeId,
+  );
   const statusMultiplier = input.statusMultipliers[node.status];
   const multiplierFields =
     statusMultiplier === 1 ? {} : { status_retrieval_multiplier: statusMultiplier };
@@ -583,6 +669,7 @@ export async function resolveSemanticContext(
   const statusMultipliers = normalizeStatusMultipliers(options.statusMultipliers);
   const overfetchMultiplier = normalizeOverfetchMultiplier(options.overfetchMultiplier);
   const exactTerms = options.exactTerms ?? [];
+  const sourceVisibilityMode = semanticSourceVisibilityMode(options);
   const directMatchLimit =
     exactTerms.length > 0 ? DEFAULT_EXACT_MATCH_LIMIT : DEFAULT_VECTOR_MATCH_LIMIT;
   const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();
@@ -613,11 +700,14 @@ export async function resolveSemanticContext(
   }
 
   const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];
-  const matchedNodeVisibility = await resolveVisibleEpisodeIds(
-    episodicRepository,
-    matchedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
-    options,
-  );
+  const matchedNodeVisibility =
+    sourceVisibilityMode === "disclosure"
+      ? await resolveVisibleEpisodeIds(
+          episodicRepository,
+          matchedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
+          options,
+        )
+      : null;
   const uniqueNodes = new Map(
     matchedNodeCandidates
       .filter(({ node }) => isSemanticNodeVisible(node, matchedNodeVisibility))
@@ -703,53 +793,77 @@ export async function resolveSemanticContext(
     categoryNeighbors.push(...walkedCategories.map((step) => ({ rootNodeId: node.node.id, step })));
   }
 
-  const semanticVisibility = await resolveVisibleEpisodeIds(
+  const semanticSourceEpisodeIds = [
+    ...selectedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
+    ...supportNeighbors.flatMap(({ step }) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+    ...causalNeighbors.flatMap(({ step }) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+    ...contradictionNeighbors.flatMap(({ step }) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+    ...categoryNeighbors.flatMap(({ step }) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+  ];
+  const semanticVisibility =
+    sourceVisibilityMode === "disclosure"
+      ? await resolveVisibleEpisodeIds(episodicRepository, semanticSourceEpisodeIds, options)
+      : null;
+  const semanticDisclosureEpisodeIds =
+    semanticVisibility === null
+      ? semanticSourceEpisodeIds
+      : semanticSourceEpisodeIds.filter((episodeId) => semanticVisibility.has(episodeId));
+  const disclosureLabelsByEpisodeId = await resolveEpisodeDisclosureLabels(
     episodicRepository,
-    [
-      ...selectedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
-      ...supportNeighbors.flatMap(({ step }) => [
-        ...step.node.source_episode_ids,
-        ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
-      ]),
-      ...causalNeighbors.flatMap(({ step }) => [
-        ...step.node.source_episode_ids,
-        ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
-      ]),
-      ...contradictionNeighbors.flatMap(({ step }) => [
-        ...step.node.source_episode_ids,
-        ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
-      ]),
-      ...categoryNeighbors.flatMap(({ step }) => [
-        ...step.node.source_episode_ids,
-        ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
-      ]),
-    ],
-    options,
+    semanticDisclosureEpisodeIds,
   );
 
   const visibleSupportNeighbors = supportNeighbors
     .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+      step: withVisibleSemanticWalkStepEdges(
+        item.step,
+        semanticVisibility,
+        disclosureLabelsByEpisodeId,
+      ),
     }));
   const visibleCausalNeighbors = causalNeighbors
     .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+      step: withVisibleSemanticWalkStepEdges(
+        item.step,
+        semanticVisibility,
+        disclosureLabelsByEpisodeId,
+      ),
     }));
   const visibleContradictionNeighbors = contradictionNeighbors
     .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+      step: withVisibleSemanticWalkStepEdges(
+        item.step,
+        semanticVisibility,
+        disclosureLabelsByEpisodeId,
+      ),
     }));
   const visibleCategoryNeighbors = categoryNeighbors
     .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+      step: withVisibleSemanticWalkStepEdges(
+        item.step,
+        semanticVisibility,
+        disclosureLabelsByEpisodeId,
+      ),
     }));
   const underReviewByNodeId = await collectUnderReviewStatuses(
     [
@@ -772,6 +886,7 @@ export async function resolveSemanticContext(
           underReviewMultiplier,
           statusMultipliers,
           visibleEpisodeIds: semanticVisibility,
+          disclosureLabelsByEpisodeId,
         });
 
         if (await isHistoricalPropositionMatch(candidate.node, semanticGraph, options.asOf)) {
@@ -798,6 +913,7 @@ export async function resolveSemanticContext(
       underReviewMultiplier,
       statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
+      disclosureLabelsByEpisodeId,
     });
     supports.set(item.step.node.id, node);
     supportHits.push({
@@ -815,6 +931,7 @@ export async function resolveSemanticContext(
         underReviewMultiplier,
         statusMultipliers,
         visibleEpisodeIds: semanticVisibility,
+        disclosureLabelsByEpisodeId,
       }),
       edgePath: item.step.edgePath,
     });
@@ -826,6 +943,7 @@ export async function resolveSemanticContext(
       underReviewMultiplier,
       statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
+      disclosureLabelsByEpisodeId,
     });
     contradicts.set(item.step.node.id, node);
     contradictionHits.push({
@@ -841,6 +959,7 @@ export async function resolveSemanticContext(
       underReviewMultiplier,
       statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
+      disclosureLabelsByEpisodeId,
     });
     categories.set(item.step.node.id, node);
     categoryHits.push({

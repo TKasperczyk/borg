@@ -8,12 +8,18 @@ import { isEpisodeVisibleToAudience, type EpisodicRepository } from "../memory/e
 import type { IdentityEvent } from "../memory/identity/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
-import type { SemanticGraph, SemanticNodeRepository } from "../memory/semantic/index.js";
-import type { RetrievalPipeline } from "../retrieval/index.js";
 import {
-  filterSemanticWalkStepsByAudience,
-  isSemanticNodeVisibleToAudience,
-} from "../retrieval/semantic-retrieval.js";
+  resolveMemoryDisclosureLabelForEpisodeIds,
+  type MemoryDisclosureLabel,
+  type RetrievalPipeline,
+} from "../retrieval/index.js";
+import type {
+  SemanticEdge,
+  SemanticGraph,
+  SemanticNode,
+  SemanticNodeRepository,
+  SemanticWalkStep,
+} from "../memory/semantic/index.js";
 import type { EntityId } from "../util/ids.js";
 import {
   ToolDispatcher,
@@ -104,6 +110,36 @@ function isIdentityEventVisible(
   );
 }
 
+async function annotateSemanticWalkStep(
+  step: SemanticWalkStep,
+  episodicRepository: EpisodicRepository,
+): Promise<
+  Omit<SemanticWalkStep, "node" | "edgePath"> & {
+    node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
+    edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
+  }
+> {
+  return {
+    ...step,
+    node: {
+      ...step.node,
+      disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
+        episodicRepository,
+        step.node.source_episode_ids,
+      ),
+    },
+    edgePath: await Promise.all(
+      step.edgePath.map(async (edge) => ({
+        ...edge,
+        disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
+          episodicRepository,
+          edge.evidence_episode_ids,
+        ),
+      })),
+    ),
+  };
+}
+
 export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDispatcher {
   const toolDispatcher = new ToolDispatcher({
     createStreamWriter: options.createStreamWriter,
@@ -135,27 +171,17 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createSemanticWalkTool({
-        walkGraph: async (fromId, walkOptions, context) => {
+        walkGraph: async (fromId, walkOptions) => {
           const root = await options.semanticNodeRepository.get(fromId);
-          const visibility = {
-            audienceEntityId: context?.audienceEntityId,
-          };
 
-          if (
-            root === null ||
-            !(await isSemanticNodeVisibleToAudience(root, visibility, {
-              episodicRepository: options.episodicRepository,
-            }))
-          ) {
+          if (root === null) {
             return [];
           }
 
-          return filterSemanticWalkStepsByAudience(
-            await options.semanticGraph.walk(fromId, walkOptions),
-            visibility,
-            {
-              episodicRepository: options.episodicRepository,
-            },
+          return Promise.all(
+            (await options.semanticGraph.walk(fromId, walkOptions)).map((step) =>
+              annotateSemanticWalkStep(step, options.episodicRepository),
+            ),
           );
         },
       }),

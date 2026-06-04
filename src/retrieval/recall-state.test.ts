@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  createSemanticNodeFixture,
   TestEmbeddingClient,
   testSessionId,
   type OfflineTestHarness,
@@ -38,6 +39,7 @@ function createEmbeddingClient() {
       ["Atlas current", [1, 0, 0, 0]],
       ["unrelated recall", [0, 1, 0, 0]],
       ["quiet turn", [0, 1, 0, 0]],
+      ["warm semantic idle", [0, 0, 1, 0]],
       ["nothing relevant", [0, 1, 0, 0]],
       ["recent memory", [0, 1, 0, 0]],
       ["Maya is my partner. She's making elaborate ramen tonight.", [1, 0, 0, 0]],
@@ -1040,6 +1042,93 @@ describe("retrieval recall_state", () => {
     ).toMatchObject({
       disclosureClass: "relationship_private",
       privateToEntityIds: [audienceA],
+    });
+  });
+
+  it("labels warm semantic-edge handles with private target node sources", async () => {
+    harness = await createHarness();
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const publicEpisode = createEpisodeFixture(
+      {
+        title: "Public semantic edge evidence",
+        tags: ["Atlas"],
+        audience_entity_id: null,
+        shared: true,
+      },
+      [1, 0, 0, 0],
+    );
+    const privateEpisode = createEpisodeFixture(
+      {
+        title: "Alice private semantic target",
+        tags: ["Atlas"],
+        audience_entity_id: alice,
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(privateEpisode);
+    const root = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Public semantic root",
+          source_episode_ids: [publicEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const privateSupport = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Alice private warm support",
+          description: "Private target node text must carry the private source label.",
+          source_episode_ids: [privateEpisode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: root.id,
+      to_node_id: privateSupport.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [publicEpisode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    seedRecallHandles({
+      harness,
+      scopeKey: COGNITION_RECALL_SCOPE_KEY,
+      activeHandles: [
+        createStateHandle({
+          source: "semantic_edge",
+          edgeId: edge.id,
+          nodeId: privateSupport.id,
+        }),
+      ],
+    });
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(
+      "warm semantic idle",
+      {
+        ...cognitionRecallOptions(bob),
+        turnCounter: 2,
+        limit: 1,
+        minSimilarity: 0.99,
+      },
+    );
+    const warmEdge = result.evidence.find(
+      (item) => item.source === "warm_recall" && item.provenance?.edgeId === edge.id,
+    );
+
+    expect(warmEdge?.text).toContain("Alice private warm support");
+    expect(warmEdge?.source_episode_ids).toEqual([privateEpisode.id, publicEpisode.id]);
+    expect(warmEdge?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice],
+      privateToEntityIds: [alice],
+      publicToEntityIds: [],
     });
   });
 
