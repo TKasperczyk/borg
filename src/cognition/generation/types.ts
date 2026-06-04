@@ -164,6 +164,7 @@ export type PendingTurnEmission =
       no_output_categories?: FinalizerNoOutputCategory[];
       primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
       structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+      decision_rationale?: string;
       finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
     };
 
@@ -188,6 +189,7 @@ export type TurnEmission =
       no_output_categories?: FinalizerNoOutputCategory[];
       primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
       structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
+      decision_rationale?: string;
       finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
     };
 

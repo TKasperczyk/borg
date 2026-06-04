@@ -47,6 +47,7 @@ describe("SelfDecisionRepository", () => {
       sourceEventId: "scheduled-reflection:1000",
       fireEventId: actionEntryId,
       decisionSummary: "Sol reflected on recent changes.",
+      decisionRationale: "Reflection found enough pending state to review.",
       turnResultId: "strm_agent_first",
       sourceStreamEntryIds: [wakeEntryId, actionEntryId, wakeEntryId],
     });
@@ -74,6 +75,7 @@ describe("SelfDecisionRepository", () => {
       fire_event_id: actionEntryId,
       origin: "autonomous",
       decision_summary: "Sol reflected on recent changes.",
+      decision_rationale: "Reflection found enough pending state to review.",
       turn_result_id: "strm_agent_first",
       source_stream_entry_ids: [wakeEntryId, actionEntryId],
       disclosure_class: "self_private",

@@ -369,6 +369,9 @@ function buildFinalizerEmission(
         ...(noOutputStructuralFlags === undefined
           ? {}
           : { structural_no_output_flags: noOutputStructuralFlags }),
+        ...(result.decision.kind === "no_output"
+          ? { decision_rationale: result.decision.reason }
+          : {}),
         ...(result.decision.kind !== "invalid_tool"
           ? {}
           : {

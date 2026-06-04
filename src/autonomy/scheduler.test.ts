@@ -14,6 +14,7 @@ import { createOfflineTestHarness } from "../offline/test-support.js";
 import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SelfDecisionRepository } from "../memory/self-decisions/index.js";
+import { selectSelfDecisionIntrospection } from "../memory/self-decisions/projection.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
@@ -318,18 +319,24 @@ describe("AutonomyScheduler", () => {
     ).toHaveLength(2);
   });
 
-  it("records the structural suppression reason as the decision summary for a no-output autonomous wake", async () => {
+  it("records and recalls the finalizer rationale for a no-output autonomous wake", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });
     cleanup = harness.cleanup;
     const selfDecisionRepository = new SelfDecisionRepository({ db: harness.db, clock });
+    const decisionRationale = "Nie pojawiło się nic nowego, więc odpowiedź byłaby tylko echem.";
     const turnRunner = {
       run: vi.fn().mockResolvedValue({
         mode: "idle",
         path: "suppressed",
         response: "",
         emitted: false,
-        emission: { kind: "suppressed", reason: "active_discourse_stop" },
+        emission: {
+          kind: "suppressed",
+          reason: "finalizer_no_output",
+          primary_no_output_reason: "low_value_echo",
+          decision_rationale: decisionRationale,
+        },
         thoughts: [],
         usage: { input_tokens: 1, output_tokens: 1, stop_reason: "end_turn" },
         retrievedEpisodeIds: [],
@@ -367,7 +374,19 @@ describe("AutonomyScheduler", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.decisionSummary).toContain("Stayed silent");
-    expect(rows[0]?.decisionSummary).toContain("active discourse stop");
+    expect(rows[0]?.decisionSummary).toContain("low value echo");
+    expect(rows[0]?.decisionRationale).toBe(decisionRationale);
+
+    const recallRows = selectSelfDecisionIntrospection({
+      repository: selfDecisionRepository,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
+      nowMs: clock.now(),
+    });
+    expect(recallRows).toHaveLength(1);
+    expect(recallRows[0]?.text).toContain(rows[0]?.decisionSummary);
+    expect(recallRows[0]?.text).toContain(`because ${decisionRationale}`);
   });
 
   it("does not record a self decision when the watermark commit fails", async () => {

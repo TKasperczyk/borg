@@ -3562,6 +3562,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(result.emission).toMatchObject({
         kind: "suppressed",
         reason: "finalizer_no_output",
+        decision_rationale: "natural_close",
       });
       expect(suppressedEntry?.content).toMatchObject({
         reason: "finalizer_no_output",

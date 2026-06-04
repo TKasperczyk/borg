@@ -31,6 +31,7 @@ export type SelfDecisionEventRecordInput = {
   sourceEventId: string;
   fireEventId: StreamEntryId;
   decisionSummary: string;
+  decisionRationale?: string | null;
   turnResultId?: string | null;
   sourceStreamEntryIds: readonly StreamEntryId[];
   now?: number;
@@ -41,6 +42,7 @@ export type SelfDecisionProjectionSourceEvent = {
   triggerName: string;
   triggerType: SelfDecisionTriggerType;
   decisionSummary: string;
+  decisionRationale: string | null;
 };
 
 export type SelfDecisionRepositoryOptions = {
@@ -67,6 +69,10 @@ function mapSelfDecisionRow(row: Record<string, unknown>): SelfDecisionEvent {
     fire_event_id: row.fire_event_id,
     origin: row.origin,
     decision_summary: row.decision_summary,
+    decision_rationale:
+      row.decision_rationale === null || row.decision_rationale === undefined
+        ? null
+        : row.decision_rationale,
     turn_result_id:
       row.turn_result_id === null || row.turn_result_id === undefined ? null : row.turn_result_id,
     source_stream_entry_ids: parseStreamEntryIds(
@@ -94,6 +100,10 @@ function mapProjectionRow(row: Record<string, unknown>): SelfDecisionProjectionS
     triggerName: String(row.trigger_name),
     triggerType: row.trigger_type as SelfDecisionTriggerType,
     decisionSummary: String(row.decision_summary ?? ""),
+    decisionRationale:
+      row.decision_rationale === null || row.decision_rationale === undefined
+        ? null
+        : String(row.decision_rationale),
   };
 }
 
@@ -125,9 +135,9 @@ export class SelfDecisionRepository {
         `
           INSERT INTO self_decision_events (
             id, occurred_at, session_id, trigger_name, trigger_type, source_event_id,
-            fire_event_id, origin, decision_summary, turn_result_id, source_stream_entry_ids,
-            disclosure_class, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'autonomous', ?, ?, ?, 'self_private', ?, ?)
+            fire_event_id, origin, decision_summary, decision_rationale, turn_result_id,
+            source_stream_entry_ids, disclosure_class, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'autonomous', ?, ?, ?, ?, 'self_private', ?, ?)
           ON CONFLICT(fire_event_id) DO NOTHING
         `,
       )
@@ -140,6 +150,7 @@ export class SelfDecisionRepository {
         input.sourceEventId,
         input.fireEventId,
         input.decisionSummary,
+        input.decisionRationale ?? null,
         input.turnResultId ?? null,
         serializeJsonValue(sourceStreamEntryIds),
         now,
@@ -163,7 +174,8 @@ export class SelfDecisionRepository {
         `
           SELECT
             id, occurred_at, session_id, trigger_name, trigger_type, source_event_id, origin,
-            fire_event_id, decision_summary, turn_result_id, source_stream_entry_ids,
+            fire_event_id, decision_summary, decision_rationale, turn_result_id,
+            source_stream_entry_ids,
             disclosure_class, created_at, updated_at
           FROM self_decision_events
           WHERE id = ?
@@ -180,7 +192,8 @@ export class SelfDecisionRepository {
         `
           SELECT
             id, occurred_at, session_id, trigger_name, trigger_type, source_event_id,
-            fire_event_id, origin, decision_summary, turn_result_id, source_stream_entry_ids,
+            fire_event_id, origin, decision_summary, decision_rationale, turn_result_id,
+            source_stream_entry_ids,
             disclosure_class, created_at, updated_at
           FROM self_decision_events
           WHERE fire_event_id = ?
@@ -198,7 +211,7 @@ export class SelfDecisionRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT occurred_at, trigger_name, trigger_type, decision_summary
+          SELECT occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale
           FROM self_decision_events
           WHERE
             origin = 'autonomous'

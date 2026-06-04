@@ -49,6 +49,7 @@ export const selfDecisionEventSchema = z
     fire_event_id: selfDecisionStreamEntryIdSchema,
     origin: selfDecisionOriginSchema,
     decision_summary: z.string(),
+    decision_rationale: z.string().nullable(),
     turn_result_id: z.string().min(1).nullable(),
     source_stream_entry_ids: z.array(selfDecisionStreamEntryIdSchema).min(1),
     disclosure_class: selfDecisionDisclosureClassSchema,

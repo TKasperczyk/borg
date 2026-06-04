@@ -14,6 +14,7 @@ export type SelfDecisionIntrospectionRow = {
   triggerName: string;
   triggerType: SelfDecisionTriggerType;
   decisionSummary: string;
+  decisionRationale: string | null;
   text: string;
 };
 
@@ -34,7 +35,12 @@ function promptSafeTriggerName(value: string): string {
 }
 
 function rowText(event: SelfDecisionProjectionSourceEvent, relativeAge: string): string {
-  return `Autonomous ${event.triggerType} ${promptSafeTriggerName(event.triggerName)} completed ${relativeAge}: ${event.decisionSummary}`;
+  const decisionText =
+    event.decisionRationale === null
+      ? event.decisionSummary
+      : `${event.decisionSummary} because ${event.decisionRationale}`;
+
+  return `Autonomous ${event.triggerType} ${promptSafeTriggerName(event.triggerName)} completed ${relativeAge}: ${decisionText}`;
 }
 
 export function selectSelfDecisionIntrospection(
@@ -69,6 +75,7 @@ export function selectSelfDecisionIntrospection(
       triggerName: event.triggerName,
       triggerType: event.triggerType,
       decisionSummary: event.decisionSummary,
+      decisionRationale: event.decisionRationale,
       text: rowText(event, relativeAge),
     };
   });

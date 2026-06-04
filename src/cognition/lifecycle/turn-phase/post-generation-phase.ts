@@ -1169,6 +1169,9 @@ async function suppressFromActionPhase(input: {
     ...(input.actionEmission.structural_no_output_flags === undefined
       ? {}
       : { structural_no_output_flags: [...input.actionEmission.structural_no_output_flags] }),
+    ...(input.actionEmission.decision_rationale === undefined
+      ? {}
+      : { decision_rationale: input.actionEmission.decision_rationale }),
     ...(input.actionEmission.finalizer_invalid_tool === undefined
       ? {}
       : { finalizer_invalid_tool: input.actionEmission.finalizer_invalid_tool }),

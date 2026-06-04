@@ -31,4 +31,14 @@ export const selfDecisionMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "self_decision_events_decision_rationale",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE self_decision_events
+        ADD COLUMN decision_rationale TEXT NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

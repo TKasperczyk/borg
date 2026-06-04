@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, createSessionId, createStreamEntryId } from "../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createSelfDecisionEventId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { selfDecisionMigrations } from "./migrations.js";
 import {
   DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
@@ -90,6 +95,130 @@ describe("selectSelfDecisionIntrospection", () => {
     expect(nonCreatorHidden).toEqual([]);
 
     db.close();
+  });
+
+  it("renders rationale after the structural decision token when present", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-rationale-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({ db, clock: new FixedClock(NOW_MS) });
+    const decisionSummary = "Stayed silent (deliberate silence): low value echo";
+    const decisionRationale = "Nie pojawiło się nic nowego, więc odpowiedź byłaby tylko echem.";
+
+    repository.record({
+      occurredAt: NOW_MS - 60_000,
+      sessionId: DEFAULT_SESSION_ID,
+      triggerName: "scheduled_reflection",
+      triggerType: "trigger",
+      sourceEventId: "scheduled-reflection:rationale",
+      fireEventId: createStreamEntryId(),
+      decisionSummary,
+      decisionRationale,
+      turnResultId: "strm_agent_rationale",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    const rows = selectSelfDecisionIntrospection({
+      repository,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
+      nowMs: NOW_MS,
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        decisionSummary,
+        decisionRationale,
+        text: `Autonomous trigger scheduled_reflection completed 1m ago: ${decisionSummary} because ${decisionRationale}`,
+      }),
+    ]);
+
+    db.close();
+  });
+
+  it("migrates legacy rows with NULL rationale and renders token-only text", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-legacy-rationale-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "self-decisions.db");
+    const legacyDb = openDatabase(dbPath, {
+      migrations: [selfDecisionMigrations[0]!],
+    });
+    const legacyId = createSelfDecisionEventId();
+    const legacyFireEventId = createStreamEntryId();
+    const legacySourceEntryId = createStreamEntryId();
+    const decisionSummary = "Stayed silent (deliberate silence): low value echo";
+
+    legacyDb
+      .prepare(
+        `
+          INSERT INTO self_decision_events (
+            id, occurred_at, session_id, trigger_name, trigger_type, source_event_id,
+            fire_event_id, origin, decision_summary, turn_result_id, source_stream_entry_ids,
+            disclosure_class, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'autonomous', ?, ?, ?, 'self_private', ?, ?)
+        `,
+      )
+      .run(
+        legacyId,
+        NOW_MS - 60_000,
+        DEFAULT_SESSION_ID,
+        "scheduled_reflection",
+        "trigger",
+        "scheduled-reflection:legacy",
+        legacyFireEventId,
+        decisionSummary,
+        "strm_agent_legacy",
+        JSON.stringify([legacySourceEntryId]),
+        NOW_MS - 60_000,
+        NOW_MS - 60_000,
+      );
+    legacyDb.close();
+
+    const migratedDb = openDatabase(dbPath, {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({
+      db: migratedDb,
+      clock: new FixedClock(NOW_MS),
+    });
+
+    expect(
+      migratedDb
+        .prepare("SELECT decision_rationale FROM self_decision_events WHERE id = ?")
+        .get(legacyId),
+    ).toEqual({ decision_rationale: null });
+    expect(
+      repository.listRecentAutonomousSelfPrivate({
+        sinceMs: 0,
+        limit: 10,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        decisionSummary,
+        decisionRationale: null,
+      }),
+    ]);
+
+    const rows = selectSelfDecisionIntrospection({
+      repository,
+      sessionAudienceRole: "participant",
+      currentSenderBorgRole: null,
+      isPrivateSelfCognition: true,
+      nowMs: NOW_MS,
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        decisionSummary,
+        decisionRationale: null,
+        text: `Autonomous trigger scheduled_reflection completed 1m ago: ${decisionSummary}`,
+      }),
+    ]);
+
+    migratedDb.close();
   });
 
   it("recalls default-session autonomous decisions during private self-cognition", () => {

@@ -82,6 +82,12 @@ function summarizeAutonomousDecision(turnResult: TurnResult): string {
   return "";
 }
 
+function autonomousDecisionRationale(turnResult: TurnResult): string | null {
+  return turnResult.emission?.kind === "suppressed"
+    ? (turnResult.emission.decision_rationale ?? null)
+    : null;
+}
+
 function formatError(error: unknown): string {
   if (error instanceof Error) {
     return `${error.name}: ${error.message}`;
@@ -298,6 +304,7 @@ export class AutonomyScheduler {
                 sourceEventId: dueEvent.id,
                 fireEventId: autonomousActionEntry.id,
                 decisionSummary,
+                decisionRationale: autonomousDecisionRationale(turnResult),
                 turnResultId: turnResult.agentMessageId ?? null,
                 sourceStreamEntryIds: [autonomousWakeEntry.id, autonomousActionEntry.id],
               });

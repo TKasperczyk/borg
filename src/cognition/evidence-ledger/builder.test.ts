@@ -695,6 +695,7 @@ describe("EvidenceLedgerBuilder", () => {
           triggerName: "goal_followup_due",
           triggerType: "trigger",
           decisionSummary,
+          decisionRationale: null,
           text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
         },
       ],

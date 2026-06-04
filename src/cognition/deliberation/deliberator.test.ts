@@ -1250,6 +1250,7 @@ describe("deliberator", () => {
         "with_open_question",
         "open_question_rendered",
       ],
+      decision_rationale: "natural_close",
     });
     const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
     expect(emittedEvent?.data).toMatchObject({
@@ -1290,6 +1291,7 @@ describe("deliberator", () => {
       no_output_categories: ["with_state_delta"],
       primary_no_output_reason: "other",
       structural_no_output_flags: ["with_state_delta", "current_turn_state_delta"],
+      decision_rationale: "prune_only_state_delta",
     });
   });
 
@@ -1323,6 +1325,7 @@ describe("deliberator", () => {
       no_output_categories: ["when_borg_addressed"],
       primary_no_output_reason: "when_borg_addressed",
       structural_no_output_flags: ["borg_directly_addressed"],
+      decision_rationale: "addressed_but_no_useful_reply",
     });
   });
 
@@ -1356,6 +1359,7 @@ describe("deliberator", () => {
       no_output_categories: [],
       primary_no_output_reason: "other",
       structural_no_output_flags: [],
+      decision_rationale: "available_open_question_not_rendered",
     });
   });
 
@@ -1567,6 +1571,7 @@ describe("deliberator", () => {
         no_output_categories: [],
         primary_no_output_reason: "other",
         structural_no_output_flags: [],
+        decision_rationale: "natural_close",
       },
     },
     {
@@ -1793,6 +1798,7 @@ describe("deliberator", () => {
       no_output_categories: [],
       primary_no_output_reason: "other",
       structural_no_output_flags: [],
+      decision_rationale: "The operator paused participation.",
     });
   });
 
@@ -1835,6 +1841,7 @@ describe("deliberator", () => {
       no_output_categories: [],
       primary_no_output_reason: "other",
       structural_no_output_flags: [],
+      decision_rationale: "The operator muted participation.",
     });
   });
 
@@ -2262,6 +2269,7 @@ describe("deliberator", () => {
         no_output_categories: [],
         primary_no_output_reason: "other",
         structural_no_output_flags: [],
+        decision_rationale: "planner_recommended_no_output",
       });
       expect(result.emissionRecommendation).toBe("emit");
       expect(result.response).toBe("");
@@ -2372,6 +2380,7 @@ describe("deliberator", () => {
         no_output_categories: [],
         primary_no_output_reason: "other",
         structural_no_output_flags: [],
+        decision_rationale: "No assistant message is needed.",
       });
       expect(result.thoughtsPersisted).toBe(true);
       expect(result.thoughtStreamEntryIds).toHaveLength(1);

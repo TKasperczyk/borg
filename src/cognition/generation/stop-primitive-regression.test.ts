@@ -225,6 +225,7 @@ describe("stop primitive v8 regressions", () => {
         kind: "suppressed",
         reason: "generation_gate",
       });
+      expect(suppressed.emission).not.toHaveProperty("decision_rationale");
       expect(activeStop).toMatchObject({
         provenance: "generation_gate",
       });
@@ -272,6 +273,7 @@ describe("stop primitive v8 regressions", () => {
         kind: "suppressed",
         reason: "active_discourse_stop",
       });
+      expect(suppressed.emission).not.toHaveProperty("decision_rationale");
       expect(agentMessages(borg)).toEqual([
         "I will stop responding until you bring substantive content.",
       ]);
