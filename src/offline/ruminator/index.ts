@@ -7,11 +7,8 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import {
-  episodeIdSchema,
-  isEpisodeInGlobalIdentityScope,
-  isEpisodeVisibleToAudience,
-} from "../../memory/episodic/index.js";
+import { episodeIdSchema } from "../../memory/episodic/index.js";
+import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
 import {
   growthMarkerCategorySchema,
   growthMarkerIdSchema,
@@ -22,7 +19,12 @@ import {
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
-import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  computeRetrievalConfidence,
+  memoryDisclosureLabelFromEpisodeAccess,
+  type RetrievedEpisode,
+} from "../../retrieval/index.js";
 import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
@@ -37,6 +39,7 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import { episodeEvidencePromptRow } from "../evidence-labels.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
@@ -72,6 +75,7 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     previous: openQuestionSchema,
     resolution_evidence_episode_ids: z.array(episodeIdSchema).min(1),
     resolution_evidence_stream_entry_ids: z.array(z.never()).default([]),
+    resolution_disclosure_label: memoryDisclosureLabelSchema,
     resolution_note: z.string().min(1),
     growth_marker: serializableGrowthMarkerSchema.nullable(),
   }),
@@ -243,56 +247,6 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange | null
       next_urgency: item.next_urgency,
     },
   };
-}
-
-function isGlobalIdentityQuestion(
-  question: OpenQuestion,
-  selfAudienceEntityId: ReturnType<OfflineContext["entityRepository"]["findByName"]>,
-): boolean {
-  return (
-    question.audience_entity_id === null ||
-    (selfAudienceEntityId !== null &&
-      selfAudienceEntityId !== undefined &&
-      question.audience_entity_id === selfAudienceEntityId)
-  );
-}
-
-function isResolutionEvidenceVisibleToQuestion(
-  episode: RetrievedEpisode["episode"],
-  question: OpenQuestion,
-  selfAudienceEntityId: ReturnType<OfflineContext["entityRepository"]["findByName"]>,
-): boolean {
-  if (isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId)) {
-    return true;
-  }
-
-  if (question.audience_entity_id === null) {
-    return false;
-  }
-
-  return isEpisodeVisibleToAudience(episode, question.audience_entity_id);
-}
-
-function mergeRetrievedEpisodes(episodeSets: readonly (readonly RetrievedEpisode[])[]) {
-  const byId = new Map<RetrievedEpisode["episode"]["id"], RetrievedEpisode>();
-
-  for (const episodes of episodeSets) {
-    for (const result of episodes) {
-      const current = byId.get(result.episode.id);
-
-      if (
-        current === undefined ||
-        result.score > current.score ||
-        (result.score === current.score && result.episode.updated_at > current.episode.updated_at)
-      ) {
-        byId.set(result.episode.id, result);
-      }
-    }
-  }
-
-  return [...byId.values()].sort(
-    (left, right) => right.score - left.score || right.episode.updated_at - left.episode.updated_at,
-  );
 }
 
 function shareOpenQuestionEntityScope(left: OpenQuestion, right: OpenQuestion): boolean {
@@ -501,7 +455,6 @@ async function searchResolutionEvidence(
   episodes: RetrievedEpisode[];
   expectedCount: number;
 }> {
-  const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
   const baseOptions = {
     limit: Math.max(3, maxQuestionsPerRun),
     attentionWeights: buildReflectionWeights(ctx),
@@ -510,46 +463,20 @@ async function searchResolutionEvidence(
       .map((goal) => goal.description),
     includeOpenQuestions: false,
   };
-  const selfOriginRetrieval = await ctx.retrievalPipeline.recallEpisodesForCognition(
-    question.question,
-    {
-      ...baseOptions,
-      limit: Math.max(baseOptions.limit * 5, 20),
-      recallContext: {
-        reader: "sol",
-        currentSessionId: DEFAULT_SESSION_ID,
-        currentAudienceEntityId: question.audience_entity_id,
-        currentParticipantEntityIds:
-          question.audience_entity_id === null ? [] : [question.audience_entity_id],
-      },
-    },
-  );
-  const selfOriginEpisodes = selfOriginRetrieval.episodes.filter((result) =>
-    isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
-  );
-
-  if (isGlobalIdentityQuestion(question, selfAudienceEntityId)) {
-    return {
-      episodes: selfOriginEpisodes,
-      expectedCount: baseOptions.limit,
-    };
-  }
-
-  // Reuse the disclosure search's audienceEntityId path so the episodic layer
-  // applies audience-eligible retrieval lanes in addition to the self-origin search above.
-  const audienceRetrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
+  const retrieval = await ctx.retrievalPipeline.recallEpisodesForCognition(question.question, {
     ...baseOptions,
-    audienceEntityId: question.audience_entity_id,
+    limit: Math.max(baseOptions.limit * 5, 20),
+    recallContext: {
+      reader: "sol",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentAudienceEntityId: question.audience_entity_id,
+      currentParticipantEntityIds:
+        question.audience_entity_id === null ? [] : [question.audience_entity_id],
+    },
   });
-  const episodes = mergeRetrievedEpisodes([
-    selfOriginEpisodes,
-    audienceRetrieval.episodes.filter((result) =>
-      isResolutionEvidenceVisibleToQuestion(result.episode, question, selfAudienceEntityId),
-    ),
-  ]);
 
   return {
-    episodes,
+    episodes: retrieval.episodes,
     expectedCount: baseOptions.limit,
   };
 }
@@ -603,14 +530,12 @@ async function planResolution(
       oqId: question.id,
       sourcePath: "retrieval_evidence_match",
       decision: "rejected",
-      decisionReason: "no_new_visible_evidence",
+      decisionReason: "no_new_evidence",
     });
     return null;
   }
 
-  // Recompute over the merged fresh visible evidence set instead of trusting
-  // either retrieval lane's confidence. This prevents a strong global/self lane
-  // from authorizing a weaker audience-scoped anchor after the lanes are merged.
+  // Recompute over the fresh global evidence set instead of trusting one top hit.
   const mergedFreshConfidence = computeRetrievalConfidence({
     episodes: freshEvidence,
     contradictionPresent: false,
@@ -635,16 +560,18 @@ async function planResolution(
     decisionReason: "confidence_and_fresh_evidence",
   });
 
-  const evidenceBlock = retrieval.episodes
-    .slice(0, 3)
+  const renderedEvidence = retrieval.episodes.slice(0, 3);
+  const sourceDisclosureLabel = combineMemoryDisclosureLabels(
+    renderedEvidence.map((result) => memoryDisclosureLabelFromEpisodeAccess(result.episode)),
+  );
+  const evidenceBlock = renderedEvidence
     .map((result) =>
-      JSON.stringify({
-        id: result.episode.id,
-        title: result.episode.title,
-        narrative: result.episode.narrative,
-        tags: result.episode.tags,
-        relevance_score: Number(result.score.toFixed(3)),
-      }),
+      JSON.stringify(
+        episodeEvidencePromptRow(result.episode, {
+          tags: result.episode.tags,
+          relevance_score: Number(result.score.toFixed(3)),
+        }),
+      ),
     )
     .join("\n");
   const response = parseResolutionResponse(
@@ -674,6 +601,7 @@ async function planResolution(
           before_description: response.growth_marker.before_description ?? null,
           after_description: response.growth_marker.after_description ?? null,
           evidence_episode_ids: [strongEvidence.episode.id],
+          disclosure_label: sourceDisclosureLabel,
           confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, response.growth_marker.confidence),
           source_process: "ruminator",
           provenance: {
@@ -696,6 +624,7 @@ async function planResolution(
     previous: question,
     resolution_evidence_episode_ids: [strongEvidence.episode.id],
     resolution_evidence_stream_entry_ids: [],
+    resolution_disclosure_label: sourceDisclosureLabel,
     resolution_note: response.resolution_note.trim(),
     growth_marker: growthMarker,
   };
@@ -980,7 +909,9 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           ) ||
           current.resolution_evidence_stream_entry_ids.length !==
             item.resolution_evidence_stream_entry_ids.length ||
-          current.resolution_note !== item.resolution_note
+          current.resolution_note !== item.resolution_note ||
+          JSON.stringify(current.resolution_disclosure_label) !==
+            JSON.stringify(item.resolution_disclosure_label)
         ) {
           const result = resolveOpenQuestionThroughIdentityService({
             openQuestionId: item.question_id,
@@ -988,6 +919,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             resolution: {
               resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
               resolution_evidence_stream_entry_ids: item.resolution_evidence_stream_entry_ids,
+              resolution_disclosure_label: item.resolution_disclosure_label,
               resolution_note: item.resolution_note,
             },
             provenance: processProvenance,

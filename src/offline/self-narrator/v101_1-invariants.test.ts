@@ -7,9 +7,7 @@ import { SelfNarratorProcess } from "./index.js";
 
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
 
-function createSelfNarratorResponse(input: {
-  evidenceEpisodeIds: string[];
-}) {
+function createSelfNarratorResponse(input: { evidenceEpisodeIds: string[] }) {
   return {
     text: "",
     input_tokens: 40,
@@ -40,8 +38,7 @@ function createSelfNarratorResponse(input: {
 }
 
 describe("v101.1 offline self-narrator cognition invariants", () => {
-  // v101.1 Sprint B expected flip: offline self-maintenance recall becomes global-with-labels.
-  it.fails("lets Alice-private evidence influence self-narration with disclosure labels", async () => {
+  it("lets Alice-private evidence influence self-narration with disclosure labels", async () => {
     const aliceEpisodes = [
       createEpisodeFixture({
         id: "ep_aaaaaaaaaaaaaaaa" as never,
@@ -99,6 +96,10 @@ describe("v101.1 offline self-narrator cognition invariants", () => {
             action: "add_growth_marker",
             marker: expect.objectContaining({
               evidence_episode_ids: aliceEpisodes.map((episode) => episode.id),
+              disclosure_label: expect.objectContaining({
+                disclosureClass: "relationship_private",
+                privateToEntityIds: ["ent_aaaaaaaaaaaaaaaa"],
+              }),
             }),
           }),
         ]),

@@ -1,7 +1,26 @@
 import type { BorgRole } from "../memory/commitments/index.js";
+import {
+  MEMORY_DISCLOSURE_CLASSES,
+  publicMemoryDisclosureLabel,
+  relationshipPrivateMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureClass,
+  type MemoryDisclosureLabel,
+} from "../memory/common/disclosure-label.js";
 import { normalizeEpisodeAccess, type EpisodeAccessLike } from "../memory/episodic/index.js";
 import type { SessionAudienceRole } from "../sessions/index.js";
 import type { EntityId, SessionId } from "../util/ids.js";
+
+export {
+  MEMORY_DISCLOSURE_CLASSES,
+  publicMemoryDisclosureLabel,
+  relationshipPrivateMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureClass,
+  type MemoryDisclosureLabel,
+} from "../memory/common/disclosure-label.js";
 
 /**
  * Memory disclosure label classes for recalled records. These are metadata for render/emission
@@ -9,28 +28,10 @@ import type { EntityId, SessionId } from "../util/ids.js";
  * `operator_private` and `sensitive` are reserved classes for future per-record disclosure
  * policies and may appear in persisted review/tool metadata.
  */
-export const MEMORY_DISCLOSURE_CLASSES = [
-  "public",
-  "relationship_private",
-  "operator_private",
-  "self_private",
-  "sensitive",
-  "unknown",
-] as const;
-
-export type MemoryDisclosureClass = (typeof MEMORY_DISCLOSURE_CLASSES)[number];
-
 /**
  * Label attached to recalled memory so render/disclosure can decide what may be said after recall.
  * It must not be used to hide records from Sol cognition.
  */
-export type MemoryDisclosureLabel = {
-  readonly disclosureClass: MemoryDisclosureClass;
-  readonly originAudienceEntityIds: readonly EntityId[];
-  readonly privateToEntityIds: readonly EntityId[];
-  readonly publicToEntityIds: readonly EntityId[];
-};
-
 export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
   "usable internally; do not disclose to current audience unless authorized";
 export const SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE =
@@ -56,9 +57,9 @@ const MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK = {
 
 export type MemoryDisclosureLabelMetadata = {
   disclosure_class: MemoryDisclosureClass;
-  origin_audience_entity_ids: string[];
-  private_to_entity_ids: string[];
-  public_to_entity_ids: string[];
+  origin_audience_entity_ids: EntityId[];
+  private_to_entity_ids: EntityId[];
+  public_to_entity_ids: EntityId[];
 };
 
 export function memoryDisclosureLabelMetadata(
@@ -114,7 +115,10 @@ function mergeEntityIds(
   labels: readonly MemoryDisclosureLabel[],
   key: MemoryDisclosureEntityIdListKey,
 ) {
-  return [...new Set(labels.flatMap((label) => label[key]))];
+  // Canonical sorted order: a disclosure label's entity-id lists are conceptually sets, and
+  // combined labels are persisted as JSON. Sorting makes the merged label deterministic
+  // regardless of the (possibly racing) order the source labels were assembled in.
+  return [...new Set(labels.flatMap((label) => label[key]))].sort();
 }
 
 export function combineMemoryDisclosureLabels(
@@ -179,60 +183,6 @@ export function memoryDisclosureLabelFromEpisodeAccess(
     disclosureClass: "relationship_private",
     originAudienceEntityIds,
     privateToEntityIds: originAudienceEntityIds,
-    publicToEntityIds: [],
-  };
-}
-
-export function publicMemoryDisclosureLabel(): MemoryDisclosureLabel {
-  return {
-    disclosureClass: "public",
-    originAudienceEntityIds: [],
-    privateToEntityIds: [],
-    publicToEntityIds: [],
-  };
-}
-
-export function unknownMemoryDisclosureLabel(
-  originAudienceEntityIds: readonly EntityId[] = [],
-): MemoryDisclosureLabel {
-  const uniqueEntityIds = [...new Set(originAudienceEntityIds)];
-
-  return {
-    disclosureClass: "unknown",
-    originAudienceEntityIds: uniqueEntityIds,
-    privateToEntityIds: uniqueEntityIds,
-    publicToEntityIds: [],
-  };
-}
-
-export function relationshipPrivateMemoryDisclosureLabel(
-  entityIds: readonly (EntityId | null | undefined)[],
-): MemoryDisclosureLabel {
-  const uniqueEntityIds = [
-    ...new Set(entityIds.filter((entityId): entityId is EntityId => entityId != null)),
-  ];
-
-  if (uniqueEntityIds.length === 0) {
-    return unknownMemoryDisclosureLabel();
-  }
-
-  return {
-    disclosureClass: "relationship_private",
-    originAudienceEntityIds: uniqueEntityIds,
-    privateToEntityIds: uniqueEntityIds,
-    publicToEntityIds: [],
-  };
-}
-
-export function selfPrivateMemoryDisclosureLabel(
-  originAudienceEntityIds: readonly EntityId[] = [],
-): MemoryDisclosureLabel {
-  const uniqueEntityIds = [...new Set(originAudienceEntityIds)];
-
-  return {
-    disclosureClass: "self_private",
-    originAudienceEntityIds: uniqueEntityIds,
-    privateToEntityIds: uniqueEntityIds,
     publicToEntityIds: [],
   };
 }

@@ -11,6 +11,7 @@ import {
   memoryDisclosureLabelMetadata,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
+  renderSemanticSourceDisclosureLabelForModel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -67,7 +68,9 @@ export function actionMemoryDisclosureLabel(
     return relationshipPrivateMemoryDisclosureLabel(entityIds);
   }
 
-  return action.actor === "borg" ? selfPrivateMemoryDisclosureLabel() : unknownMemoryDisclosureLabel();
+  return action.actor === "borg"
+    ? selfPrivateMemoryDisclosureLabel()
+    : unknownMemoryDisclosureLabel();
 }
 
 export function observedEventMemoryDisclosureLabel(event: {
@@ -140,6 +143,16 @@ export function memoryDisclosurePayloadFields(label: MemoryDisclosureLabel): {
   };
 }
 
+export function semanticSourceDisclosurePayloadFields(label: MemoryDisclosureLabel): {
+  disclosure: string;
+  disclosure_label: ReturnType<typeof memoryDisclosureLabelMetadata>;
+} {
+  return {
+    disclosure: renderSemanticSourceDisclosureLabelForModel(label),
+    disclosure_label: memoryDisclosureLabelMetadata(label),
+  };
+}
+
 export function correctionDisclosureEntityIds(refs: Record<string, unknown>): EntityId[] {
   const origins = refs.origin_audience_entity_ids;
 
@@ -152,8 +165,7 @@ export function correctionDisclosureEntityIds(refs: Record<string, unknown>): En
 
 function isDisclosureClass(value: unknown): value is MemoryDisclosureLabel["disclosureClass"] {
   return (
-    typeof value === "string" &&
-    (MEMORY_DISCLOSURE_CLASSES as readonly string[]).includes(value)
+    typeof value === "string" && (MEMORY_DISCLOSURE_CLASSES as readonly string[]).includes(value)
   );
 }
 
@@ -163,9 +175,7 @@ function metadataEntityIds(value: unknown): EntityId[] | null {
     : null;
 }
 
-function memoryDisclosureLabelFromRefsMetadata(
-  value: unknown,
-): MemoryDisclosureLabel | null {
+function memoryDisclosureLabelFromRefsMetadata(value: unknown): MemoryDisclosureLabel | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -193,7 +203,9 @@ function memoryDisclosureLabelFromRefsMetadata(
   };
 }
 
-export function correctionMemoryDisclosureLabel(refs: Record<string, unknown>): MemoryDisclosureLabel {
+export function correctionMemoryDisclosureLabel(
+  refs: Record<string, unknown>,
+): MemoryDisclosureLabel {
   const metadataLabel = memoryDisclosureLabelFromRefsMetadata(refs.disclosure_label);
 
   if (metadataLabel !== null) {

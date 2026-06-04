@@ -1087,11 +1087,11 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("resolves global open questions only from public or self evidence", async () => {
+  it("resolves global open questions from global labeled evidence", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createRuminatorResponse({
-          resolution_note: "Public evidence resolved the planning question.",
+          resolution_note: "Labeled evidence resolved the planning question.",
           growth_marker: null,
         }),
       ],
@@ -1159,17 +1159,27 @@ describe("RuminatorProcess", () => {
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_evidence_episode_ids: [publicEpisode.id],
+        resolution_evidence_episode_ids: [alexEpisode.id],
+        resolution_disclosure_label: expect.objectContaining({
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: expect.arrayContaining([sam, alex]),
+          privateToEntityIds: expect.arrayContaining([sam, alex]),
+        }),
       });
-      expect(llm.requests[0]?.messages[0]?.content).toContain("Public planning resolution");
-      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");
-      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Alex private planning");
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect(prompt).toContain("Public planning resolution");
+      expect(prompt).toContain("Sam private planning resolution");
+      expect(prompt).toContain("Alex private planning resolution");
+      expect(prompt).toContain("relationship_private");
+      expect(prompt).toContain(sam);
+      expect(prompt).toContain(alex);
     } finally {
       await harness.cleanup();
     }
   });
 
-  it("resolves audience-tagged open questions from audience-visible evidence", async () => {
+  it("uses an audience tag as a ranking hint without gating global evidence", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createRuminatorResponse({
@@ -1233,10 +1243,21 @@ describe("RuminatorProcess", () => {
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_evidence_episode_ids: [samEpisode.id],
+        resolution_disclosure_label: expect.objectContaining({
+          disclosureClass: "relationship_private",
+        }),
       });
-      expect(llm.requests[0]?.messages[0]?.content).toContain("Sam private planning resolution");
-      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Alex private planning");
+      const resolvedItem = plan.items[0];
+      const resolvedEpisodeId =
+        resolvedItem?.action === "resolve" ? resolvedItem.resolution_evidence_episode_ids[0] : null;
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect([samEpisode.id, alexEpisode.id]).toContain(resolvedEpisodeId);
+      expect(prompt).toContain("Sam private planning resolution");
+      expect(prompt).toContain("Alex private planning");
+      expect(prompt).toContain("relationship_private");
+      expect(prompt).toContain(sam);
+      expect(prompt).toContain(alex);
     } finally {
       await harness.cleanup();
     }

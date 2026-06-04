@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
 import {
   entityIdHelpers,
   autobiographicalPeriodIdHelpers,
@@ -140,6 +141,7 @@ export const autobiographicalPeriodSchema = z
     end_ts: z.number().finite().nullable(),
     narrative: z.string(),
     key_episode_ids: z.array(valueSourceEpisodeIdSchema),
+    disclosure_label: memoryDisclosureLabelSchema.optional(),
     themes: z.array(z.string().min(1)),
     provenance: provenanceSchema,
     created_at: z.number().finite(),
@@ -157,6 +159,7 @@ export const autobiographicalPeriodPatchSchema = z
     end_ts: z.number().finite().nullable().optional(),
     narrative: z.string().optional(),
     key_episode_ids: z.array(valueSourceEpisodeIdSchema).optional(),
+    disclosure_label: memoryDisclosureLabelSchema.optional(),
     themes: z.array(z.string().min(1)).optional(),
     provenance: provenanceSchema.optional(),
   })
@@ -282,6 +285,7 @@ export const openQuestionSchema = z
     last_touched: z.number().finite(),
     resolution_evidence_episode_ids: z.array(episodeIdSchema),
     resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
+    resolution_disclosure_label: memoryDisclosureLabelSchema.optional(),
     resolution_note: z.string().nullable(),
     resolved_at: z.number().finite().nullable(),
     abandoned_reason: z.string().nullable(),
@@ -329,6 +333,7 @@ export const openQuestionPatchSchema = z.object({
   resolution_evidence_stream_entry_ids: z
     .array(openQuestionResolutionStreamEntryIdSchema)
     .optional(),
+  resolution_disclosure_label: memoryDisclosureLabelSchema.optional(),
   resolution_note: z.string().nullable().optional(),
   resolved_at: z.number().finite().nullable().optional(),
   abandoned_reason: z.string().nullable().optional(),

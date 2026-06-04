@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const proceduralMigrations = [
   {
@@ -17,6 +18,7 @@ export const proceduralMigrations = [
           failures INTEGER NOT NULL,
           alternatives TEXT NOT NULL,
           source_episode_ids TEXT NOT NULL,
+          disclosure_label TEXT,
           last_used INTEGER,
           last_successful INTEGER,
           created_at INTEGER NOT NULL,
@@ -76,6 +78,15 @@ export const proceduralMigrations = [
         CREATE INDEX idx_skill_context_stats_skill
           ON skill_context_stats (skill_id, updated_at DESC);
       `);
+    },
+  },
+  {
+    id: 2,
+    name: "procedural_skill_disclosure_labels",
+    up: (db) => {
+      if (!tableHasColumn(db, "skills", "disclosure_label")) {
+        db.exec("ALTER TABLE skills ADD COLUMN disclosure_label TEXT");
+      }
     },
   },
 ] as const satisfies readonly Migration[];

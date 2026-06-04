@@ -6,13 +6,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
-  episodeIdSchema,
-  filterEpisodesByAudience,
-  inferSinglePrivateAudience,
-  isEpisodeInGlobalIdentityScope,
-  type Episode,
-} from "../../memory/episodic/index.js";
+  memoryDisclosureLabelSchema,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import {
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
@@ -25,13 +24,16 @@ import {
   type SkillRecord,
 } from "../../memory/procedural/index.js";
 import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
+import { combineMemoryDisclosureLabels } from "../../retrieval/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
-import { type EntityId, type EpisodeId } from "../../util/ids.js";
+import { type EpisodeId } from "../../util/ids.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -90,7 +92,8 @@ const proceduralSynthesizerDedupDecisionSchema = z.object({
 const proceduralSynthesizerPlanItemSchema = z.object({
   cluster_key: z.string().min(1),
   evidence: z.array(proceduralEvidenceSchema).min(2),
-  source_episode_ids: z.array(episodeIdSchema).min(1),
+  source_episode_ids: z.array(episodeIdSchema),
+  source_disclosure_label: memoryDisclosureLabelSchema,
   candidate: skillCandidateSchema,
   dedup_decision: proceduralSynthesizerDedupDecisionSchema,
   rejection_reason: proceduralSynthesizerRejectionReasonSchema.nullable(),
@@ -148,7 +151,21 @@ const proceduralSkillSplitReversalSchema = z.object({
 type EvidenceCluster = {
   key: string;
   evidence: ProceduralEvidenceRecord[];
+  evidenceRows: LabeledProceduralEvidenceRow[];
   sourceEpisodeIds: EpisodeId[];
+  sourceEpisodes: Episode[];
+  sourceDisclosureLabel: MemoryDisclosureLabel;
+};
+
+type LabeledProceduralEvidenceRow = {
+  evidence: ProceduralEvidenceRecord;
+  sourceEpisodeIds: EpisodeId[];
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+type LabeledSkillSplitCandidate = SkillSplitCandidate & {
+  sourceEpisodes: Episode[];
+  sourceDisclosureLabel: MemoryDisclosureLabel;
 };
 
 function evidenceEmbeddingText(evidence: ProceduralEvidenceRecord): string {
@@ -229,22 +246,38 @@ async function collectEvidenceClusters(
       }
     }
 
+    const labeledEvidenceRows = await Promise.all(
+      clusterEvidence.map(async (evidence): Promise<LabeledProceduralEvidenceRow> => {
+        const sourceEpisodeIds = await resolveEvidenceEpisodeIds(ctx, evidence);
+        const disclosureLabel = await disclosureLabelForEpisodeIds(
+          ctx.episodicRepository,
+          sourceEpisodeIds,
+        );
+
+        return {
+          evidence,
+          sourceEpisodeIds,
+          disclosureLabel,
+        };
+      }),
+    );
     const sourceEpisodeIds = uniqueEpisodeIds(
-      (
-        await Promise.all(
-          clusterEvidence.map((evidence) => resolveEvidenceEpisodeIds(ctx, evidence)),
-        )
-      ).flat(),
+      labeledEvidenceRows.flatMap((evidenceRow) => evidenceRow.sourceEpisodeIds),
     );
 
-    if (sourceEpisodeIds.length === 0) {
-      continue;
-    }
+    const sourceEpisodes = (await ctx.episodicRepository.getMany(sourceEpisodeIds)).filter(
+      (episode): episode is Episode => episode !== null,
+    );
 
     clusters.push({
       key: `procedural:${seed.id}`,
       evidence: clusterEvidence,
+      evidenceRows: labeledEvidenceRows,
       sourceEpisodeIds,
+      sourceEpisodes,
+      sourceDisclosureLabel: combineMemoryDisclosureLabels(
+        labeledEvidenceRows.map((evidenceRow) => evidenceRow.disclosureLabel),
+      ),
     });
   }
 
@@ -265,16 +298,19 @@ function buildPrompt(cluster: EvidenceCluster): string {
     "Set rejection_reason to centered_proper_noun when an otherwise usable candidate remains centered on a project/person/product name instead of a reusable class; set unusable_abstraction when abstraction_fit is not usable; otherwise null.",
     `Cluster: ${cluster.key}`,
     "Evidence:",
-    ...cluster.evidence.map((evidence) =>
+    ...cluster.evidenceRows.map((row) =>
       JSON.stringify({
-        id: evidence.id,
-        problem_text: evidence.pending_attempt_snapshot.problem_text,
-        approach_summary: evidence.pending_attempt_snapshot.approach_summary,
-        classification: evidence.classification,
-        outcome_evidence: evidence.evidence_text,
-        source_episode_ids: evidence.resolved_episode_ids,
+        id: row.evidence.id,
+        problem_text: row.evidence.pending_attempt_snapshot.problem_text,
+        approach_summary: row.evidence.pending_attempt_snapshot.approach_summary,
+        classification: row.evidence.classification,
+        outcome_evidence: row.evidence.evidence_text,
+        source_episode_ids: row.sourceEpisodeIds,
+        ...memoryDisclosurePayloadFields(row.disclosureLabel),
       }),
     ),
+    "Source episodes:",
+    ...cluster.sourceEpisodes.map((episode) => JSON.stringify(episodeEvidencePromptRow(episode))),
   ].join("\n");
 }
 
@@ -331,14 +367,13 @@ function sketchContextStats(stats: SkillContextStatsRecord): string {
   return `${parsed.problem_kind}; ${tagText}; audience=${parsed.audience_scope}`;
 }
 
-function buildSplitPrompt(candidate: SkillSplitCandidate): string {
+function buildSplitPrompt(candidate: LabeledSkillSplitCandidate): string {
   return [
     "A procedural skill has divergent outcomes across context buckets.",
     `Emit your result by calling the ${SKILL_SPLIT_TOOL_NAME} tool exactly once.`,
     "Prefer no_split when the evidence does not clearly imply distinct reusable procedures.",
     "Use refine_in_place only when one narrower skill text would cover the divergence without creating child skills.",
     "Use split only when each part is narrower than the original and can own one or more listed context_keys.",
-    "Do not combine context_keys with different audience scopes into the same part.",
     "target_contexts must be exact context_key strings from the listed buckets.",
     "Original skill:",
     JSON.stringify({
@@ -351,7 +386,10 @@ function buildSplitPrompt(candidate: SkillSplitCandidate): string {
       attempts: candidate.skill.attempts,
       successes: candidate.skill.successes,
       failures: candidate.skill.failures,
+      ...memoryDisclosurePayloadFields(candidate.sourceDisclosureLabel),
     }),
+    "Source episodes:",
+    ...candidate.sourceEpisodes.map((episode) => JSON.stringify(episodeEvidencePromptRow(episode))),
     "Divergent context buckets:",
     ...candidate.buckets.map((bucket) =>
       JSON.stringify({
@@ -375,61 +413,27 @@ function buildSplitPrompt(candidate: SkillSplitCandidate): string {
   ].join("\n");
 }
 
-async function audienceScopedSplitCandidate(
+async function labeledSplitCandidate(
   ctx: OfflineContext,
   candidate: SkillSplitCandidate,
-): Promise<
-  | {
-      candidate: SkillSplitCandidate;
-      audience_entity_id: EntityId | null;
-    }
-  | {
-      rejected: true;
-      reason: string;
-    }
-> {
+): Promise<LabeledSkillSplitCandidate> {
   const sourceEpisodeIds = uniqueEpisodeIds(candidate.skill.source_episode_ids);
   const episodes = (await ctx.episodicRepository.getMany(sourceEpisodeIds)).filter(
     (episode): episode is Episode => episode !== null,
   );
-  const audienceEntityId = inferSinglePrivateAudience(episodes);
-
-  if (audienceEntityId === "multiple") {
-    return {
-      rejected: true,
-      reason: "skill_source_episodes_cross_audiences",
-    };
-  }
-
-  const filtered = filterEpisodesByAudience(episodes, audienceEntityId, "reject_if_mixed");
-
-  if (filtered.hasPrivateMix) {
-    return {
-      rejected: true,
-      reason: "skill_source_episodes_cross_audiences",
-    };
-  }
-
-  const visibleEpisodeIds = new Set(filtered.visibleEpisodeIds);
-  const visibleSourceEpisodeIds = candidate.skill.source_episode_ids.filter((episodeId) =>
-    visibleEpisodeIds.has(episodeId),
+  const sourceDisclosureLabel = await disclosureLabelForEpisodeIds(
+    ctx.episodicRepository,
+    sourceEpisodeIds,
   );
 
-  if (visibleSourceEpisodeIds.length === 0) {
-    return {
-      rejected: true,
-      reason: "skill_source_episode_audience_unresolved",
-    };
-  }
-
   return {
-    audience_entity_id: audienceEntityId,
-    candidate: {
-      ...candidate,
-      skill: {
-        ...candidate.skill,
-        source_episode_ids: visibleSourceEpisodeIds,
-      },
+    ...candidate,
+    sourceEpisodes: episodes,
+    sourceDisclosureLabel,
+    skill: {
+      ...candidate.skill,
+      source_episode_ids: sourceEpisodeIds,
+      disclosure_label: sourceDisclosureLabel,
     },
   };
 }
@@ -450,6 +454,8 @@ function buildPlanChange(item: ProceduralSynthesizerPlan["items"][number]): Offl
       rejected_reason: item.rejection_reason,
       support: item.evidence.length,
       source_episode_ids: item.source_episode_ids,
+      source_disclosure_label: memoryDisclosurePayloadFields(item.source_disclosure_label)
+        .disclosure_label,
     },
   };
 }
@@ -538,6 +544,9 @@ function buildSkillSplitReviewPayload(input: {
     rationale: input.item.proposal.rationale,
     evidence_summary: {
       source_episode_ids: input.item.skill.source_episode_ids,
+      source_disclosure_label: memoryDisclosurePayloadFields(
+        input.item.skill.disclosure_label ?? unknownMemoryDisclosureLabel(),
+      ).disclosure_label,
       divergence: input.item.divergence,
       min_posterior_mean: input.item.min_posterior_mean,
       max_posterior_mean: input.item.max_posterior_mean,
@@ -611,10 +620,6 @@ function recordClusterOutcomes(
   return current;
 }
 
-function contextAudienceScope(stats: SkillContextStatsRecord): string {
-  return resolveContextMetadata(stats)?.audience_scope ?? "unknown";
-}
-
 function validateSplitParts(
   item: ProceduralSynthesizerPlan["split_items"][number],
 ): Array<{ applies_when: string; approach: string; target_contexts: string[] }> {
@@ -644,19 +649,6 @@ function validateSplitParts(
     if (targetContexts.length === 0) {
       throw new StorageError("Skill split part has no target contexts", {
         code: "PROCEDURAL_SKILL_SPLIT_TARGETS_EMPTY",
-      });
-    }
-
-    const audienceScopes = new Set(
-      targetContexts.map((contextKey) => {
-        const stats = statsByContext.get(contextKey);
-        return stats === undefined ? "unknown" : contextAudienceScope(stats);
-      }),
-    );
-
-    if (audienceScopes.size > 1) {
-      throw new StorageError("Skill split part crosses audience scopes", {
-        code: "PROCEDURAL_SKILL_SPLIT_AUDIENCE_CROSSED",
       });
     }
 
@@ -760,7 +752,6 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
   ): Promise<ProceduralSynthesizerPlan> {
     const errors: OfflineProcessError[] = [];
     const budget = opts.budget ?? ctx.config.offline.proceduralSynthesizer.budget;
-    const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
     const minSupport = ctx.config.offline.proceduralSynthesizer.minSupport;
     const synthesizerConfig = ctx.config.offline.proceduralSynthesizer;
     const sourceEvidence = ctx.proceduralEvidenceRepository
@@ -769,11 +760,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         (evidence) =>
           evidence.classification === "success" &&
           evidence.grounded &&
-          evidence.skill_actually_applied &&
-          isEpisodeInGlobalIdentityScope(
-            { audience_entity_id: evidence.audience_entity_id },
-            selfAudienceEntityId,
-          ),
+          evidence.skill_actually_applied,
       );
     const clusters = await collectEvidenceClusters(ctx, sourceEvidence);
     const candidateClusters = clusters
@@ -837,6 +824,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               cluster_key: cluster.key,
               evidence: cluster.evidence,
               source_episode_ids: cluster.sourceEpisodeIds,
+              source_disclosure_label: cluster.sourceDisclosureLabel,
               candidate,
               dedup_decision: {
                 skill_id: similarSkill?.skill.id ?? null,
@@ -877,25 +865,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
           }
 
           try {
-            const scoped = await audienceScopedSplitCandidate(ctx, candidate);
-
-            if ("rejected" in scoped) {
-              ctx.skillRepository.recordSplitAttemptAndClearClaim({
-                skillId: candidate.skill.id,
-                attemptedAt: this.clock.now(),
-                claimedAt,
-              });
-              await appendSkillSplitInternalEvent(
-                ctx,
-                {
-                  hook: "skill_split_skipped",
-                  reason: scoped.reason,
-                  skill_id: candidate.skill.id,
-                },
-                errors,
-              );
-              continue;
-            }
+            const labeledCandidate = await labeledSplitCandidate(ctx, candidate);
 
             const proposal = parseSkillSplitProposal(
               await llmClient.complete({
@@ -905,7 +875,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 messages: [
                   {
                     role: "user",
-                    content: buildSplitPrompt(scoped.candidate),
+                    content: buildSplitPrompt(labeledCandidate),
                   },
                 ],
                 tools: [PROCEDURAL_SKILL_SPLIT_TOOL],
@@ -915,11 +885,11 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               }),
             );
             const splitItem = {
-              skill: scoped.candidate.skill,
-              buckets: scoped.candidate.buckets,
-              min_posterior_mean: scoped.candidate.min_posterior_mean,
-              max_posterior_mean: scoped.candidate.max_posterior_mean,
-              divergence: scoped.candidate.divergence,
+              skill: labeledCandidate.skill,
+              buckets: labeledCandidate.buckets,
+              min_posterior_mean: labeledCandidate.min_posterior_mean,
+              max_posterior_mean: labeledCandidate.max_posterior_mean,
+              divergence: labeledCandidate.divergence,
               split_claimed_at: claimedAt,
               proposal,
             } satisfies ProceduralSynthesizerPlan["split_items"][number];
@@ -1068,6 +1038,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             applies_when: item.candidate.applies_when.trim(),
             approach: item.candidate.approach.trim(),
             sourceEpisodes: item.source_episode_ids,
+            disclosureLabel: item.source_disclosure_label,
             priorAlpha: 2,
             priorBeta: 1,
           });

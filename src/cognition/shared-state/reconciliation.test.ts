@@ -427,7 +427,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     };
     let currentNode = activeNode;
     const searchByVector = vi.fn(async () => [{ node: currentNode, similarity: 0.95 }]);
-    const complete = vi.fn(async () =>
+    const complete = vi.fn(async (_request: unknown) =>
       makeSemanticRevisionResponse({
         verdicts: [
           {
@@ -661,7 +661,7 @@ describe("reconcileSemanticBeliefRevision", () => {
     expect(result.semantic_nodes_reviewed_attempted).toBe(0);
   });
 
-  it("overfetches vector candidates before filtering active and audience visibility", async () => {
+  it("overfetches vector candidates before filtering active status while labeling cross-audience sources", async () => {
     const audience = createEntityId();
     const otherAudience = createEntityId();
     const visibleEpisodeId = createEpisodeId();
@@ -719,7 +719,7 @@ describe("reconcileSemanticBeliefRevision", () => {
           supersededAt,
         }),
     );
-    const complete = vi.fn(async () =>
+    const complete = vi.fn(async (_request: unknown) =>
       makeSemanticRevisionResponse({
         verdicts: [
           {
@@ -772,12 +772,20 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect.objectContaining({ limit: 9 }),
     );
     expect(complete).toHaveBeenCalledTimes(1);
+    const completeRequest = complete.mock.calls[0]?.[0] as
+      | { messages?: Array<{ content?: unknown }> }
+      | undefined;
+    const prompt = String(completeRequest?.messages?.[0]?.content ?? "");
+
+    expect(prompt).toContain("Project runtime is Node 19");
+    expect(prompt).toContain("relationship_private");
+    expect(prompt).toContain(otherAudience);
     expect(markSuperseded).toHaveBeenCalledWith(
       targetNode.id,
       entry.last_updated_stream_entry_ids[0],
       2_000,
     );
-    expect(result.semantic_nodes_reviewed_attempted).toBe(2);
+    expect(result.semantic_nodes_reviewed_attempted).toBe(3);
     expect(result.semantic_nodes_marked_superseded).toBe(1);
   });
 

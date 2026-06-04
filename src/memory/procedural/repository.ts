@@ -19,6 +19,11 @@ import {
   type ProceduralEvidenceId,
   type SkillId,
 } from "../../util/ids.js";
+import {
+  parseMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
 
 import { computeBetaStats, type BetaStats } from "./bayes.js";
 import {
@@ -61,6 +66,7 @@ type SkillSqlRow = {
   last_split_error: string | null;
   requires_manual_review: number;
   source_episode_ids: string;
+  disclosure_label: string;
   last_used: number | null;
   last_successful: number | null;
   created_at: number;
@@ -97,6 +103,7 @@ function rowFromSkill(skill: SkillRecord): SkillSqlRow {
     last_split_error: skill.last_split_error,
     requires_manual_review: skill.requires_manual_review ? 1 : 0,
     source_episode_ids: serializeJsonValue(skill.source_episode_ids),
+    disclosure_label: serializeJsonValue(skill.disclosure_label ?? unknownMemoryDisclosureLabel()),
     last_used: skill.last_used,
     last_successful: skill.last_successful,
     created_at: skill.created_at,
@@ -152,6 +159,7 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
       "source_episode_ids",
       SKILL_JSON_ARRAY_CODEC,
     ).map((value) => parseEpisodeId(value)),
+    disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label),
     last_used: row.last_used === null || row.last_used === undefined ? null : Number(row.last_used),
     last_successful:
       row.last_successful === null || row.last_successful === undefined
@@ -420,8 +428,8 @@ export class SkillRepository {
             id, applies_when, approach, status, alpha, beta, attempts, successes, failures,
             alternatives, superseded_by, superseded_at, splitting_at, last_split_attempt_at,
             split_failure_count, last_split_error, requires_manual_review, source_episode_ids,
-            last_used, last_successful, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            disclosure_label, last_used, last_successful, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             applies_when = excluded.applies_when,
             approach = excluded.approach,
@@ -440,6 +448,7 @@ export class SkillRepository {
             last_split_error = excluded.last_split_error,
             requires_manual_review = excluded.requires_manual_review,
             source_episode_ids = excluded.source_episode_ids,
+            disclosure_label = excluded.disclosure_label,
             last_used = excluded.last_used,
             last_successful = excluded.last_successful,
             updated_at = excluded.updated_at
@@ -464,6 +473,7 @@ export class SkillRepository {
         row.last_split_error,
         row.requires_manual_review,
         row.source_episode_ids,
+        row.disclosure_label,
         row.last_used,
         row.last_successful,
         row.created_at,
@@ -477,6 +487,7 @@ export class SkillRepository {
     approach: string;
     alternatives?: readonly SkillId[];
     sourceEpisodes: readonly EpisodeId[];
+    disclosureLabel?: MemoryDisclosureLabel;
     priorAlpha?: number;
     priorBeta?: number;
     createdAt?: number;
@@ -498,6 +509,7 @@ export class SkillRepository {
       splitting_at: null,
       last_split_attempt_at: null,
       source_episode_ids: input.sourceEpisodes,
+      disclosure_label: input.disclosureLabel ?? unknownMemoryDisclosureLabel(),
       last_used: null,
       last_successful: null,
       created_at: nowMs,
@@ -905,6 +917,7 @@ export class SkillRepository {
         splitting_at: null,
         last_split_attempt_at: null,
         source_episode_ids: original.source_episode_ids,
+        disclosure_label: original.disclosure_label,
         last_used: lastUsed === 0 ? null : lastUsed,
         last_successful: lastSuccessful === 0 ? null : lastSuccessful,
         created_at: nowMs,

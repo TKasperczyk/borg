@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { memoryDisclosureLabelMetadataSchema } from "../../common/disclosure-label.js";
 import { episodeIdSchema } from "../../episodic/index.js";
 import { skillIdHelpers, type SkillId } from "../../../util/ids.js";
 import {
@@ -9,7 +10,6 @@ import {
 } from "../review-queue.js";
 
 const SKILL_SPLIT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
-
 const reviewSkillIdSchema = z
   .string()
   .refine((value) => skillIdHelpers.is(value), {
@@ -64,7 +64,8 @@ export const skillSplitReviewPayloadSchema = z
     rationale: z.string().min(1),
     evidence_summary: z
       .object({
-        source_episode_ids: z.array(episodeIdSchema).min(1),
+        source_episode_ids: z.array(episodeIdSchema),
+        source_disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
         divergence: z.number().min(0).max(1),
         min_posterior_mean: z.number().min(0).max(1),
         max_posterior_mean: z.number().min(0).max(1),

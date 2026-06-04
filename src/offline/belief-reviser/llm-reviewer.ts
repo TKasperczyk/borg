@@ -1,13 +1,12 @@
 import { z } from "zod";
 
-import {
-  filterEpisodesByAudience,
-  inferSinglePrivateAudience,
-  type Episode,
-} from "../../memory/episodic/index.js";
+import { type Episode } from "../../memory/episodic/index.js";
 import { type LLMClient, type LLMCompleteResult, toToolInputSchema } from "../../llm/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import { episodeEvidencePromptRow } from "../evidence-labels.js";
 
 const EMIT_BELIEF_REVISION_TOOL_NAME = "EmitBeliefRevision";
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
@@ -37,7 +36,7 @@ export type BeliefRevisionVerdict = z.infer<typeof beliefRevisionVerdictSchema>;
 export type BeliefRevisionLlmInput = {
   review_id: number;
   audience_entity_id: EntityId | null;
-  visible_episode_ids: Episode["id"][];
+  evidence_episode_ids: Episode["id"][];
   target:
     | {
         target_type: "semantic_node";
@@ -75,7 +74,7 @@ export class BeliefRevisionParseError extends Error {
 const emitBeliefRevisionTool = {
   name: EMIT_BELIEF_REVISION_TOOL_NAME,
   description:
-    "Emit the local disposition for one belief_revision review after considering the target, invalidated support, surviving support, and visible evidence.",
+    "Emit the local disposition for one belief_revision review after considering the target, invalidated support, surviving support, and labeled evidence.",
   inputSchema: toToolInputSchema(beliefRevisionVerdictSchema),
 };
 
@@ -99,53 +98,64 @@ function serializableRecord(value: unknown): unknown {
   return value;
 }
 
-function sanitizedRecord(value: unknown, visibleEpisodeIds: ReadonlySet<string>): unknown {
-  if (value instanceof Float32Array) {
-    return {
-      embedding_dims: value.length,
-    };
+function hasDisclosurePayload(record: Record<string, unknown>): boolean {
+  return record.disclosure_label !== undefined || record.disclosure !== undefined;
+}
+
+function hasSemanticSourceEpisodeIds(record: Record<string, unknown>): boolean {
+  return (
+    Array.isArray(record.source_episode_ids) ||
+    Array.isArray(record.evidence_episode_ids) ||
+    Array.isArray(record.episode_ids)
+  );
+}
+
+function serializableRecordWithFallbackDisclosure(value: unknown): unknown {
+  const serialized = serializableRecord(value);
+
+  if (Array.isArray(serialized)) {
+    return serialized.map((entry) => serializableRecordWithFallbackDisclosure(entry));
   }
 
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizedRecord(entry, visibleEpisodeIds));
-  }
-
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => {
-        if (
-          Array.isArray(entry) &&
-          (key === "episode_ids" || key.endsWith("_episode_ids") || key.endsWith("EpisodeIds"))
-        ) {
-          return [
-            key,
-            entry.filter(
-              (candidate): candidate is string =>
-                typeof candidate === "string" && visibleEpisodeIds.has(candidate),
-            ),
-          ];
-        }
-
-        return [key, sanitizedRecord(entry, visibleEpisodeIds)];
-      }),
+  if (serialized !== null && typeof serialized === "object") {
+    const record = Object.fromEntries(
+      Object.entries(serialized).map(([key, entry]) => [
+        key,
+        serializableRecordWithFallbackDisclosure(entry),
+      ]),
     );
+
+    if (hasSemanticSourceEpisodeIds(record) && !hasDisclosurePayload(record)) {
+      return {
+        ...record,
+        ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+      };
+    }
+
+    return record;
   }
 
-  return value;
+  return serialized;
 }
 
 function promptPayload(input: BeliefRevisionLlmInput): string {
-  const visibleEpisodeIds = new Set(input.visible_episode_ids);
-
   return JSON.stringify(
     {
       task: "Re-evaluate exactly one local semantic belief revision item. Do not infer beyond the provided target-local evidence.",
       review_id: input.review_id,
       audience_entity_id: input.audience_entity_id,
-      target: sanitizedRecord(input.target, visibleEpisodeIds),
-      invalidated_edge: sanitizedRecord(input.invalidated_edge, visibleEpisodeIds),
-      surviving_supports: sanitizedRecord(input.surviving_supports, visibleEpisodeIds),
-      evidence_episodes: serializableRecord(input.evidence_episodes),
+      evidence_episode_ids: input.evidence_episode_ids,
+      target: serializableRecordWithFallbackDisclosure(input.target),
+      invalidated_edge: serializableRecordWithFallbackDisclosure(input.invalidated_edge),
+      surviving_supports: serializableRecordWithFallbackDisclosure(input.surviving_supports),
+      evidence_episodes: input.evidence_episodes.map((episode) =>
+        episodeEvidencePromptRow(episode, {
+          tags: episode.tags,
+          source_stream_ids: episode.source_stream_ids,
+          start_time: episode.start_time,
+          end_time: episode.end_time,
+        }),
+      ),
       allowed_verdicts: ["keep", "weaken", "archive_node", "invalidate_edge", "manual_review"],
     },
     null,
@@ -243,20 +253,4 @@ export async function evaluateBeliefRevision(
     verdict: parsed.data,
     tokensUsed: tokensUsed(result),
   };
-}
-
-export function inferBeliefRevisionAudience(episodes: readonly Episode[]): EntityId | null {
-  const inferred = inferSinglePrivateAudience(episodes);
-  return inferred === "multiple" ? null : inferred;
-}
-
-export function visibleBeliefRevisionEpisodes(
-  episodes: readonly Episode[],
-  audienceEntityId: EntityId | null,
-): Episode[] {
-  const visibleEpisodeIds = new Set(
-    filterEpisodesByAudience(episodes, audienceEntityId, "filter").visibleEpisodeIds,
-  );
-
-  return episodes.filter((episode) => visibleEpisodeIds.has(episode.id));
 }

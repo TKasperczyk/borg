@@ -6,11 +6,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
-  episodeIdSchema,
-  isEpisodeInGlobalIdentityScope,
-  type Episode,
-} from "../../memory/episodic/index.js";
+  memoryDisclosureLabelSchema,
+  unknownMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import {
   GROWTH_MARKER_CATEGORIES,
   autobiographicalPeriodIdSchema,
@@ -31,6 +32,7 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
@@ -78,6 +80,7 @@ const selfNarratorPlanItemSchema = z.discriminatedUnion("action", [
     previous: autobiographicalPeriodSchema,
     narrative: z.string(),
     key_episode_ids: z.array(episodeIdSchema),
+    disclosure_label: memoryDisclosureLabelSchema,
     themes: z.array(z.string().min(1)),
   }),
   z.object({
@@ -149,16 +152,14 @@ function buildObservationPrompt(
             narrative: currentPeriod.narrative,
             themes: currentPeriod.themes,
             key_episode_ids: currentPeriod.key_episode_ids,
+            ...memoryDisclosurePayloadFields(
+              currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel(),
+            ),
           },
     ),
     "Episodes:",
     ...episodes.map((episode) =>
-      JSON.stringify({
-        id: episode.id,
-        title: episode.title,
-        narrative: episode.narrative,
-        start_time: episode.start_time,
-      }),
+      JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
     ),
   ].join("\n");
 }
@@ -308,16 +309,12 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
-    const selfAudienceEntityId = ctx.entityRepository.getSelf()?.id ?? null;
-    // Existing global periods and growth markers may already cite older
-    // audience-scoped evidence; this write-side guard only prevents new ones.
     const sourceEpisodes = (await ctx.episodicRepository.listAll())
       .filter(
         (episode) =>
-          isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId) &&
-          (currentPeriod === null ||
-            episode.start_time >= currentPeriod.start_ts ||
-            episode.end_time >= currentPeriod.start_ts),
+          currentPeriod === null ||
+          episode.start_time >= currentPeriod.start_ts ||
+          episode.end_time >= currentPeriod.start_ts,
       )
       .sort((left, right) => left.start_time - right.start_time || left.id.localeCompare(right.id));
     const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
@@ -375,6 +372,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               const evidenceEpisodeIds = observation.evidence_episode_ids.map(
                 (id) => id as Episode["id"],
               );
+              const disclosureLabel = await disclosureLabelForEpisodeIds(
+                ctx.episodicRepository,
+                evidenceEpisodeIds,
+              );
 
               markerCandidates.push(
                 serializableGrowthMarkerSchema.parse({
@@ -385,6 +386,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                   before_description: observation.before_description ?? null,
                   after_description: observation.after_description ?? null,
                   evidence_episode_ids: evidenceEpisodeIds,
+                  disclosure_label: disclosureLabel,
                   confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, observation.confidence),
                   source_process: "self-narrator",
                   provenance: {
@@ -417,6 +419,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const keyEpisodeIds = uniqueValues(
       markerCandidates.flatMap((marker) => marker.evidence_episode_ids),
     ).slice(0, 8);
+    const periodDisclosureLabel = await disclosureLabelForEpisodeIds(
+      ctx.episodicRepository,
+      keyEpisodeIds as Episode["id"][],
+    );
     const themes = uniqueStrings([
       ...markerCandidates.map((marker) => marker.category),
       ...markerThemes,
@@ -458,6 +464,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           end_ts: null,
           narrative,
           key_episode_ids: keyEpisodeIds,
+          disclosure_label: periodDisclosureLabel,
           themes,
           provenance: {
             kind: "offline",
@@ -479,6 +486,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         ...currentPeriod.key_episode_ids,
         ...keyEpisodeIds,
       ]).slice(0, 8);
+      const nextDisclosureLabel = await disclosureLabelForEpisodeIds(
+        ctx.episodicRepository,
+        nextKeyEpisodes,
+      );
 
       if (
         (nextNarrative !== null && nextNarrative !== currentPeriod.narrative) ||
@@ -491,6 +502,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           previous: currentPeriod,
           narrative: nextNarrative ?? currentPeriod.narrative,
           key_episode_ids: nextKeyEpisodes,
+          disclosure_label: nextDisclosureLabel,
           themes: nextThemes,
         });
       }
@@ -661,6 +673,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           {
             narrative: item.narrative,
             key_episode_ids: item.key_episode_ids,
+            disclosure_label: item.disclosure_label,
             themes: item.themes,
           },
           processProvenance,
@@ -676,6 +689,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               patch: {
                 narrative: item.narrative,
                 key_episode_ids: item.key_episode_ids,
+                disclosure_label: item.disclosure_label,
                 themes: item.themes,
               },
               proposed_provenance: processProvenance,

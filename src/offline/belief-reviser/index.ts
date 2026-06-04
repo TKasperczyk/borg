@@ -18,8 +18,16 @@ import { markSemanticContradicted } from "../../memory/lifecycle-ops/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError } from "../../util/errors.js";
-import type { EntityId } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
+import {
+  memoryDisclosurePayloadFields,
+  semanticEdgeMemoryDisclosureLabel,
+  semanticNodeMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
+import {
+  memoryDisclosureLabelFromEpisodeAccess,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
 import { offlineProcessError } from "../process-errors.js";
@@ -33,10 +41,8 @@ import type {
 import {
   BeliefRevisionParseError,
   evaluateBeliefRevision,
-  inferBeliefRevisionAudience,
   type BeliefRevisionLlmInput,
   type BeliefRevisionVerdict,
-  visibleBeliefRevisionEpisodes,
 } from "./llm-reviewer.js";
 
 const DEFAULT_MAX_REVIEWS_PER_EVENT = 64;
@@ -262,27 +268,50 @@ function collectEpisodeIds(
   return collector;
 }
 
-async function inferAudienceForEpisodeIds(
+async function episodesForIds(
   ctx: OfflineContext,
   episodeIds: readonly Episode["id"][],
-): Promise<EntityId | null> {
-  const episodes = (await ctx.episodicRepository.getMany(episodeIds)).filter(
-    (episode): episode is Episode => episode !== null,
-  );
-
-  return inferBeliefRevisionAudience(episodes);
-}
-
-async function visibleEpisodeIdsForAudience(
-  ctx: OfflineContext,
-  episodeIds: readonly Episode["id"][],
-  audienceEntityId: EntityId | null,
-): Promise<Episode["id"][]> {
+): Promise<Episode[]> {
   const episodes = (await ctx.episodicRepository.getMany([...new Set(episodeIds)])).filter(
     (episode): episode is Episode => episode !== null,
   );
 
-  return visibleBeliefRevisionEpisodes(episodes, audienceEntityId).map((episode) => episode.id);
+  return episodes;
+}
+
+function episodeDisclosureLabelsById(
+  episodes: readonly Episode[],
+): Map<Episode["id"], MemoryDisclosureLabel> {
+  return new Map(
+    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  );
+}
+
+function semanticNodeLlmRecord(
+  node: SemanticNode,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): Record<string, unknown> {
+  return {
+    ...node,
+    ...memoryDisclosurePayloadFields(semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, node)),
+  };
+}
+
+function semanticEdgeLlmRecord(
+  edge: SemanticEdge,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): Record<string, unknown> {
+  return {
+    ...edge,
+    ...memoryDisclosurePayloadFields(semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, edge)),
+  };
+}
+
+function nullableSemanticEdgeLlmRecord(
+  edge: SemanticEdge | null,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): Record<string, unknown> | null {
+  return edge === null ? null : semanticEdgeLlmRecord(edge, labelsByEpisodeId);
 }
 
 function normalizeMaxReviewsPerEvent(value: number | undefined): number {
@@ -596,7 +625,6 @@ async function buildNodeReview(input: {
       input.dependencyPathEdgeIds,
     ),
     evidence_episode_ids: evidenceEpisodeIds,
-    audience_entity_id: await inferAudienceForEpisodeIds(input.ctx, evidenceEpisodeIds),
   });
 }
 
@@ -624,7 +652,6 @@ async function buildEdgeReview(input: {
     dependency_path_edge_ids: uniqueEdgeIds(input.dependencyPathEdgeIds),
     surviving_support_edge_ids: [],
     evidence_episode_ids: evidenceEpisodeIds,
-    audience_entity_id: await inferAudienceForEpisodeIds(input.ctx, evidenceEpisodeIds),
   });
 }
 
@@ -1230,9 +1257,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     const evidenceEpisodes = (
       await ctx.episodicRepository.getMany(refs.evidence_episode_ids)
     ).filter((episode): episode is Episode => episode !== null);
-    const audienceEntityId =
-      refs.audience_entity_id ?? inferBeliefRevisionAudience(evidenceEpisodes);
-    const visibleEpisodes = visibleBeliefRevisionEpisodes(evidenceEpisodes, audienceEntityId);
+    const audienceEntityId = refs.audience_entity_id ?? null;
 
     if (refs.target_type === "semantic_node") {
       const target = await ctx.semanticNodeRepository.get(refs.target_id);
@@ -1240,23 +1265,25 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       if (target === null) {
         throw new Error(`Belief revision target node not found: ${refs.target_id}`);
       }
-      const visibleEpisodeIds = await visibleEpisodeIdsForAudience(
-        ctx,
-        [...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes })],
-        audienceEntityId,
-      );
+      const evidenceEpisodeIds = [
+        ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
+      ];
+      const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
+      const labelsByEpisodeId = episodeDisclosureLabelsById(targetLocalEvidenceEpisodes);
 
       return {
         review_id: item.id,
         audience_entity_id: audienceEntityId,
-        visible_episode_ids: visibleEpisodeIds,
+        evidence_episode_ids: evidenceEpisodeIds,
         target: {
           target_type: "semantic_node",
-          record: target,
+          record: semanticNodeLlmRecord(target, labelsByEpisodeId),
         },
-        invalidated_edge: invalidatedEdge,
-        surviving_supports: survivingSupports,
-        evidence_episodes: visibleEpisodes,
+        invalidated_edge: nullableSemanticEdgeLlmRecord(invalidatedEdge, labelsByEpisodeId),
+        surviving_supports: survivingSupports.map((edge) =>
+          semanticEdgeLlmRecord(edge, labelsByEpisodeId),
+        ),
+        evidence_episodes: targetLocalEvidenceEpisodes,
       };
     }
 
@@ -1265,23 +1292,25 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     if (target === null) {
       throw new Error(`Belief revision target edge not found: ${refs.target_id}`);
     }
-    const visibleEpisodeIds = await visibleEpisodeIdsForAudience(
-      ctx,
-      [...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes })],
-      audienceEntityId,
-    );
+    const evidenceEpisodeIds = [
+      ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
+    ];
+    const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
+    const labelsByEpisodeId = episodeDisclosureLabelsById(targetLocalEvidenceEpisodes);
 
     return {
       review_id: item.id,
       audience_entity_id: audienceEntityId,
-      visible_episode_ids: visibleEpisodeIds,
+      evidence_episode_ids: evidenceEpisodeIds,
       target: {
         target_type: "semantic_edge",
-        record: target,
+        record: semanticEdgeLlmRecord(target, labelsByEpisodeId),
       },
-      invalidated_edge: invalidatedEdge,
-      surviving_supports: survivingSupports,
-      evidence_episodes: visibleEpisodes,
+      invalidated_edge: nullableSemanticEdgeLlmRecord(invalidatedEdge, labelsByEpisodeId),
+      surviving_supports: survivingSupports.map((edge) =>
+        semanticEdgeLlmRecord(edge, labelsByEpisodeId),
+      ),
+      evidence_episodes: targetLocalEvidenceEpisodes,
     };
   }
 

@@ -31,8 +31,7 @@ function createRuminatorResponse() {
 }
 
 describe("v101.1 ruminator cognition invariants", () => {
-  // v101.1 Sprint B expected flip: open-question resolution uses global labeled evidence.
-  it.fails("uses Bob-private evidence to resolve a global open question with disclosure labels", async () => {
+  it("uses Bob-private evidence to resolve a global open question with disclosure labels", async () => {
     const questionText = "What resolved the recurring private pattern?";
     const bob = "ent_bbbbbbbbbbbbbbbb" as never;
     const bobEpisode = createEpisodeFixture(
@@ -91,6 +90,10 @@ describe("v101.1 ruminator cognition invariants", () => {
           action: "resolve",
           question_id: question.id,
           resolution_evidence_episode_ids: [bobEpisode.id],
+          resolution_disclosure_label: expect.objectContaining({
+            disclosureClass: "relationship_private",
+            privateToEntityIds: [bob],
+          }),
         }),
       ]);
     } finally {

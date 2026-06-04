@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
 import { type EpisodeId, type SkillId, skillIdHelpers } from "../../util/ids.js";
 import {
   proceduralEvidenceIdHelpers,
@@ -45,7 +46,8 @@ export const skillSchema = z.object({
   split_failure_count: z.number().int().nonnegative().default(0),
   last_split_error: z.string().min(1).nullable().default(null),
   requires_manual_review: z.boolean().default(false),
-  source_episode_ids: z.array(episodeIdSchema).min(1),
+  source_episode_ids: z.array(episodeIdSchema),
+  disclosure_label: memoryDisclosureLabelSchema.optional(),
   last_used: z.number().finite().nullable(),
   last_successful: z.number().finite().nullable(),
   created_at: z.number().finite(),

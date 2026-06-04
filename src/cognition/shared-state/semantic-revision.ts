@@ -1,9 +1,6 @@
 import { z } from "zod";
 
-import {
-  isEpisodeVisibleToAudience,
-  type EpisodicRepository,
-} from "../../memory/episodic/index.js";
+import { type EpisodicRepository } from "../../memory/episodic/index.js";
 import type { SemanticNode, SemanticNodeSearchCandidate } from "../../memory/semantic/index.js";
 import {
   markSemanticContradicted,
@@ -24,6 +21,17 @@ import type {
 import type { SharedStateEntryId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import {
+  memoryDisclosurePayloadFields,
+  semanticSourceDisclosurePayloadFields,
+  sharedStateMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import {
   traceLlmCallError,
   traceLlmCallResponse,
@@ -72,6 +80,10 @@ type CacheableSemanticRevisionVerdict = Extract<
   SemanticRevisionVerdict["verdict"],
   "keep" | "uncertain"
 >;
+
+type LabeledSemanticNodeSearchCandidate = SemanticNodeSearchCandidate & {
+  disclosureLabel: MemoryDisclosureLabel;
+};
 
 type SemanticRevisionSkipReason =
   | "unknown_candidate"
@@ -243,18 +255,13 @@ async function semanticNodeRevisionCandidateSourceInfo(input: {
   episodicRepository: Pick<EpisodicRepository, "getMany">;
   artifactSourceIds: ReadonlySet<StreamEntryId>;
 }): Promise<{
-  visibleToArtifactAudience: boolean;
   sharesArtifactSource: boolean;
+  disclosureLabel: MemoryDisclosureLabel;
 }> {
   const episodes = await input.episodicRepository.getMany(input.node.source_episode_ids);
-  let visibleToArtifactAudience = false;
   let sharesArtifactSource = false;
 
   for (const episode of episodes) {
-    if (isEpisodeVisibleToAudience(episode, input.entry.audience_entity_id)) {
-      visibleToArtifactAudience = true;
-    }
-
     if (
       episode.source_stream_ids.some((sourceStreamId) =>
         input.artifactSourceIds.has(sourceStreamId),
@@ -264,16 +271,24 @@ async function semanticNodeRevisionCandidateSourceInfo(input: {
     }
   }
 
+  const labelsByEpisodeId = new Map(
+    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  );
+
   return {
-    visibleToArtifactAudience,
     sharesArtifactSource,
+    disclosureLabel: combineMemoryDisclosureLabels(
+      input.node.source_episode_ids.map(
+        (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+      ),
+    ),
   };
 }
 
 async function enumerateSemanticRevisionCandidates(input: {
   entry: SharedStateEntry;
   dependencies: SharedStateSemanticBeliefRevisionDependencies;
-}): Promise<SemanticNodeSearchCandidate[]> {
+}): Promise<LabeledSemanticNodeSearchCandidate[]> {
   const limit = semanticRevisionCandidateLimit(input.dependencies.candidateLimit);
   const rawLimit = semanticRevisionRawCandidateLimit(limit);
   const embedding = await input.dependencies.embeddingClient.embed(input.entry.text);
@@ -282,7 +297,7 @@ async function enumerateSemanticRevisionCandidates(input: {
     minSimilarity: input.dependencies.minSimilarity ?? DEFAULT_SEMANTIC_REVISION_MIN_SIMILARITY,
     includeArchived: false,
   });
-  const visible: SemanticNodeSearchCandidate[] = [];
+  const selected: LabeledSemanticNodeSearchCandidate[] = [];
   const artifactSourceIds = artifactEntrySourceIds(input.entry);
 
   for (const candidate of candidates) {
@@ -297,23 +312,26 @@ async function enumerateSemanticRevisionCandidates(input: {
       artifactSourceIds,
     });
 
-    if (!sourceInfo.visibleToArtifactAudience || sourceInfo.sharesArtifactSource) {
+    if (sourceInfo.sharesArtifactSource) {
       continue;
     }
 
-    visible.push(candidate);
+    selected.push({
+      ...candidate,
+      disclosureLabel: sourceInfo.disclosureLabel,
+    });
 
-    if (visible.length >= limit) {
+    if (selected.length >= limit) {
       break;
     }
   }
 
-  return visible.slice(0, limit);
+  return selected.slice(0, limit);
 }
 
 function semanticRevisionPromptPayload(input: {
   entry: SharedStateEntry;
-  candidates: readonly SemanticNodeSearchCandidate[];
+  candidates: readonly LabeledSemanticNodeSearchCandidate[];
 }): string {
   return JSON.stringify(
     {
@@ -323,6 +341,7 @@ function semanticRevisionPromptPayload(input: {
         text: input.entry.text,
         audience_entity_id: input.entry.audience_entity_id,
         source_stream_entry_ids: input.entry.last_updated_stream_entry_ids,
+        ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(input.entry)),
       },
       candidates: input.candidates.map((candidate) => ({
         id: candidate.node.id,
@@ -332,6 +351,7 @@ function semanticRevisionPromptPayload(input: {
         status: candidate.node.status,
         confidence: candidate.node.confidence,
         similarity: candidate.similarity,
+        ...semanticSourceDisclosurePayloadFields(candidate.disclosureLabel),
       })),
       verdict_guidance: {
         supersede:
@@ -427,7 +447,7 @@ function parseSemanticRevisionJudgeResult(result: LLMCompleteResult): SemanticRe
 
 async function judgeSemanticRevision(input: {
   entry: SharedStateEntry;
-  candidates: readonly SemanticNodeSearchCandidate[];
+  candidates: readonly LabeledSemanticNodeSearchCandidate[];
   dependencies: SharedStateSemanticBeliefRevisionDependencies;
   tracer?: TurnTracer;
   turnId?: string;
@@ -561,7 +581,7 @@ export async function reconcileSemanticBeliefRevision(
       continue;
     }
 
-    let candidates: SemanticNodeSearchCandidate[];
+    let candidates: LabeledSemanticNodeSearchCandidate[];
     let verdicts: SemanticRevisionVerdict[];
 
     try {
@@ -599,7 +619,7 @@ export async function reconcileSemanticBeliefRevision(
 
     const entryTextHash = semanticRevisionEntryTextHash(entry.text);
     const cachedVerdicts: SemanticRevisionVerdict[] = [];
-    const candidatesToJudge: SemanticNodeSearchCandidate[] = [];
+    const candidatesToJudge: LabeledSemanticNodeSearchCandidate[] = [];
 
     for (const candidate of candidates) {
       const cached = verdictCache.get({

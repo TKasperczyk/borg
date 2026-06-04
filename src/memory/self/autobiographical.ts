@@ -16,6 +16,11 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import {
+  parseMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
+import {
   parseStoredProvenance,
   toStoredProvenance,
   type Provenance,
@@ -78,6 +83,7 @@ function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
       valueSourceEpisodeIdSchema,
       "autobiographical key_episode_ids",
     ),
+    disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label),
     themes: parseStringArray(
       String(row.themes ?? "[]"),
       z.string().min(1),
@@ -125,6 +131,7 @@ export class AutobiographicalRepository {
       end_ts?: number | null;
       narrative: string;
       key_episode_ids?: readonly EpisodeId[];
+      disclosure_label?: MemoryDisclosureLabel;
       themes?: readonly string[];
       provenance: Provenance;
       created_at?: number;
@@ -162,6 +169,8 @@ export class AutobiographicalRepository {
       end_ts: input.end_ts ?? null,
       narrative: input.narrative,
       key_episode_ids: input.key_episode_ids ?? [],
+      disclosure_label:
+        input.disclosure_label ?? existing?.disclosure_label ?? unknownMemoryDisclosureLabel(),
       themes: input.themes ?? [],
       provenance: input.provenance,
       created_at: existing?.created_at ?? input.created_at ?? nowMs,
@@ -198,9 +207,9 @@ export class AutobiographicalRepository {
           .prepare(
             `
               INSERT INTO autobiographical_periods (
-                id, label, start_ts, end_ts, narrative, key_episode_ids, themes, provenance_kind,
+                id, label, start_ts, end_ts, narrative, key_episode_ids, disclosure_label, themes, provenance_kind,
                 provenance_episode_ids, provenance_process, created_at, last_updated
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
           )
           .run(
@@ -210,6 +219,7 @@ export class AutobiographicalRepository {
             period.end_ts,
             period.narrative,
             serializeJsonValue(period.key_episode_ids),
+            serializeJsonValue(period.disclosure_label),
             serializeJsonValue(period.themes),
             storedProvenance.provenance_kind,
             storedProvenance.provenance_episode_ids,
@@ -224,7 +234,7 @@ export class AutobiographicalRepository {
         .prepare(
           `
             UPDATE autobiographical_periods
-            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, themes = ?,
+            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, disclosure_label = ?, themes = ?,
                 provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, last_updated = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
@@ -236,6 +246,7 @@ export class AutobiographicalRepository {
           period.end_ts,
           period.narrative,
           serializeJsonValue(period.key_episode_ids),
+          serializeJsonValue(period.disclosure_label),
           serializeJsonValue(period.themes),
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,

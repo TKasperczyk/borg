@@ -591,24 +591,127 @@ describe("ProceduralSynthesizerProcess", () => {
     },
   );
 
-  it("excludes private audience evidence from synthesis", async () => {
+  it("synthesizes cross-private-audience evidence with per-row labels and an inherited label", async () => {
+    const sam = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const alex = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    const approach = "Compare the private plan against the active milestone list.";
+    const samProblem = "Sam private planning issue one";
+    const alexProblem = "Alex private planning issue two";
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillCandidateResponse({
+          applies_when: "private planning comparison",
+          approach,
+        }),
+      ],
+    });
     harness = await createOfflineTestHarness({
       configOverrides: proceduralConfig({ minSupport: 2 }),
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [evidenceEmbeddingText(samProblem, approach), [1, 0, 0, 0]],
+          [evidenceEmbeddingText(alexProblem, approach), [1, 0, 0, 0]],
+        ]),
+      ),
+      llmClient: llm,
     });
-    const sam = harness.entityRepository.resolve("Sam");
     await addSuccessEvidence(harness, {
       audienceEntityId: sam,
-      problemText: "Sam private planning issue one",
+      problemText: samProblem,
+      approachSummary: approach,
+      evidenceText: "Sam confirmed the private planning comparison worked.",
     });
     await addSuccessEvidence(harness, {
-      audienceEntityId: sam,
-      problemText: "Sam private planning issue two",
+      audienceEntityId: alex,
+      problemText: alexProblem,
+      approachSummary: approach,
+      evidenceText: "Alex confirmed the private planning comparison worked.",
     });
 
     const process = createProcess(harness);
-    const plan = await process.plan(harness.createContext());
+    const result = await process.run(harness.createContext(), {});
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [skill] = harness.skillRepository.list();
 
-    expect(plan.items).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(prompt).toContain(samProblem);
+    expect(prompt).toContain(alexProblem);
+    expect(prompt).toContain("relationship_private");
+    expect(prompt).toContain(sam);
+    expect(prompt).toContain(alex);
+    expect(skill).toMatchObject({
+      applies_when: "private planning comparison",
+      disclosure_label: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [sam, alex],
+        privateToEntityIds: [sam, alex],
+        publicToEntityIds: [],
+      },
+    });
+  });
+
+  it("labels unresolved procedural evidence sources as unknown instead of dropping them", async () => {
+    const approach = "Compare the orphaned evidence against the intended procedure.";
+    const firstProblem = "Unresolved source evidence one";
+    const secondProblem = "Unresolved source evidence two";
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillCandidateResponse({
+          applies_when: "unresolved evidence comparison",
+          approach,
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [evidenceEmbeddingText(firstProblem, approach), [1, 0, 0, 0]],
+          [evidenceEmbeddingText(secondProblem, approach), [1, 0, 0, 0]],
+        ]),
+      ),
+      llmClient: llm,
+    });
+
+    for (const problemText of [firstProblem, secondProblem]) {
+      harness.proceduralEvidenceRepository.insert({
+        pendingAttemptSnapshot: {
+          problem_text: problemText,
+          approach_summary: approach,
+          selected_skill_id: null,
+          source_stream_ids: [createStreamEntryId()],
+          turn_counter: 1,
+          audience_entity_id: null,
+        },
+        classification: "success",
+        evidenceText: `${problemText} succeeded without a resolved episode.`,
+        grounded: true,
+        skillActuallyApplied: true,
+        resolvedEpisodeIds: [],
+        audienceEntityId: null,
+      });
+    }
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [skill] = harness.skillRepository.list();
+
+    expect(result.errors).toEqual([]);
+    expect(prompt).toContain(firstProblem);
+    expect(prompt).toContain(secondProblem);
+    expect(prompt).toContain("disclosure_class=unknown");
+    expect(skill).toMatchObject({
+      applies_when: "unresolved evidence comparison",
+      source_episode_ids: [],
+      disclosure_label: {
+        disclosureClass: "unknown",
+        originAudienceEntityIds: [],
+        privateToEntityIds: [],
+        publicToEntityIds: [],
+      },
+    });
   });
 
   it("queues and accepts an LLM skill split, then migrates context stats to the new skills", async () => {
@@ -1283,7 +1386,7 @@ describe("ProceduralSynthesizerProcess", () => {
     });
   });
 
-  it("rejects split planning when skill source episodes span private audiences", async () => {
+  it("plans splits from skill source episodes spanning private audiences with disclosure labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     const llm = new FakeLLMClient({
@@ -1360,26 +1463,42 @@ describe("ProceduralSynthesizerProcess", () => {
 
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
-    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const review = getOpenSkillSplitReview(harness, skill.id);
 
     expect(result.errors).toEqual([]);
-    expect(result.changes).toEqual([]);
-    expect(llm.requests).toHaveLength(0);
-    expect(harness.skillRepository.get(skill.id)).toMatchObject({
-      status: "active",
-      last_split_attempt_at: expect.any(Number),
-      splitting_at: null,
-    });
-    expect(entries).toContainEqual(
+    expect(result.changes).toEqual([
       expect.objectContaining({
-        kind: "internal_event",
-        content: expect.objectContaining({
-          hook: "skill_split_skipped",
-          reason: "skill_source_episodes_cross_audiences",
-          skill_id: skill.id,
+        action: "skill_split_proposal",
+        targets: expect.objectContaining({
+          review_item_id: review!.id,
+        }),
+      }),
+    ]);
+    expect(llm.requests).toHaveLength(1);
+    expect(prompt).toContain("Audience A private skill evidence");
+    expect(prompt).toContain("Audience B private skill evidence");
+    expect(prompt).toContain("relationship_private");
+    expect(prompt).toContain(audienceA);
+    expect(prompt).toContain(audienceB);
+    expect(review?.refs).toEqual(
+      expect.objectContaining({
+        evidence_summary: expect.objectContaining({
+          source_episode_ids: [episodeA.id, episodeB.id],
+          source_disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [audienceA, audienceB],
+            private_to_entity_ids: [audienceA, audienceB],
+            public_to_entity_ids: [],
+          },
         }),
       }),
     );
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      last_split_attempt_at: null,
+      splitting_at: expect.any(Number),
+    });
   });
 
   it("clears pending attempts that referenced a superseded split skill", async () => {
@@ -1524,7 +1643,7 @@ describe("ProceduralSynthesizerProcess", () => {
     ]);
   });
 
-  it("uses stored metadata for v2 context sketches and split audience validation", async () => {
+  it("uses stored metadata for v2 context sketches without audience split validation", async () => {
     const selfContext = {
       problem_kind: "code_debugging" as const,
       domain_tags: ["typescript", "deployment"],
@@ -1543,7 +1662,7 @@ describe("ProceduralSynthesizerProcess", () => {
           parts: [
             {
               applies_when: "Mixed-audience deployment debugging",
-              approach: "This invalidly crosses audience scopes.",
+              approach: "This combines different audience scopes as ordinary context metadata.",
               target_contexts: [selfKey, knownOtherKey],
             },
             {
@@ -1603,7 +1722,7 @@ describe("ProceduralSynthesizerProcess", () => {
       expect.objectContaining({
         hook: "skill_split_decision",
         decision: "no_split",
-        rationale: "Rejected split proposal: Skill split part crosses audience scopes",
+        rationale: `Rejected split proposal: Split target context assigned more than once: ${selfKey}`,
       }),
     );
   });

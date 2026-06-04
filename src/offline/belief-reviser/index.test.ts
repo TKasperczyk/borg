@@ -1122,14 +1122,14 @@ describe("belief reviser process", () => {
     }
   });
 
-  it("filters LLM evidence episodes to the review's audience", async () => {
+  it("sends global labeled evidence episodes to the LLM review", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     const llmClient = new FakeLLMClient({
       responses: [
         beliefRevisionResponse({
           verdict: "keep",
-          rationale: "Audience-local evidence is sufficient.",
+          rationale: "Labeled evidence is sufficient.",
         }),
       ],
     });
@@ -1141,13 +1141,13 @@ describe("belief reviser process", () => {
     try {
       const privateA = createEpisodeFixture({
         title: "Private A episode",
-        narrative: "Only audience A should see this narrative.",
+        narrative: "Audience A private narrative should be labeled, not hidden.",
         audience_entity_id: audienceA,
         shared: false,
       });
       const privateB = createEpisodeFixture({
         title: "Private B episode",
-        narrative: "Only audience B should see this narrative.",
+        narrative: "Audience B private narrative should be labeled, not hidden.",
         audience_entity_id: audienceB,
         shared: false,
       });
@@ -1163,23 +1163,26 @@ describe("belief reviser process", () => {
 
       const prompt = llmClient.requests[0]?.messages[0]?.content ?? "";
 
+      expect(prompt).toContain("Private A episode");
+      expect(prompt).toContain("Audience A private narrative should be labeled, not hidden.");
       expect(prompt).toContain("Private B episode");
-      expect(prompt).toContain("Only audience B should see this narrative.");
-      expect(prompt).not.toContain("Private A episode");
-      expect(prompt).not.toContain("Only audience A should see this narrative.");
+      expect(prompt).toContain("Audience B private narrative should be labeled, not hidden.");
+      expect(prompt).toContain("relationship_private");
+      expect(prompt).toContain(audienceA);
+      expect(prompt).toContain(audienceB);
     } finally {
       await harness.cleanup();
     }
   });
 
-  it("sanitizes target and edge episode ids in LLM input by review audience", async () => {
+  it("keeps target and edge episode ids in LLM input with disclosure labels", async () => {
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
     const llmClient = new FakeLLMClient({
       responses: [
         beliefRevisionResponse({
           verdict: "keep",
-          rationale: "Audience-local evidence is sufficient.",
+          rationale: "Labeled evidence is sufficient.",
         }),
       ],
     });
@@ -1225,9 +1228,12 @@ describe("belief reviser process", () => {
       const prompt = llmClient.requests[0]?.messages[0]?.content ?? "";
 
       expect(prompt).toContain(visible.id);
-      expect(prompt).not.toContain(hidden.id);
+      expect(prompt).toContain(hidden.id);
       expect(prompt).toContain("Audience A support");
-      expect(prompt).not.toContain("Audience B private support");
+      expect(prompt).toContain("Audience B private support");
+      expect(prompt).toContain("relationship_private");
+      expect(prompt).toContain(audienceA);
+      expect(prompt).toContain(audienceB);
     } finally {
       await harness.cleanup();
     }

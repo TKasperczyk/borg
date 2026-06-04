@@ -39,6 +39,11 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import {
+  parseMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
+import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
@@ -288,6 +293,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       openQuestionResolutionStreamEntryIdSchema,
       "open question resolution_evidence_stream_entry_ids",
     ),
+    resolution_disclosure_label: parseMemoryDisclosureLabel(row.resolution_disclosure_label),
     resolution_note:
       row.resolution_note === null || row.resolution_note === undefined
         ? null
@@ -716,6 +722,7 @@ export class OpenQuestionsRepository {
       last_touched: input.last_touched ?? nowMs,
       resolution_evidence_episode_ids: [],
       resolution_evidence_stream_entry_ids: [],
+      resolution_disclosure_label: unknownMemoryDisclosureLabel(),
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: null,
@@ -746,9 +753,9 @@ export class OpenQuestionsRepository {
             related_episode_ids, related_semantic_node_ids, provenance_kind,
             provenance_episode_ids, provenance_process, source, created_at, last_touched,
             resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
-            resolution_note, resolved_at, abandoned_reason, abandoned_at,
+            resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason, abandoned_at,
             resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -769,6 +776,7 @@ export class OpenQuestionsRepository {
         question.last_touched,
         serializeJsonValue(question.resolution_evidence_episode_ids),
         serializeJsonValue(question.resolution_evidence_stream_entry_ids),
+        serializeJsonValue(question.resolution_disclosure_label),
         question.resolution_note,
         question.resolved_at,
         question.abandoned_reason,
@@ -999,7 +1007,7 @@ export class OpenQuestionsRepository {
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
               resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
-              resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
+              resolution_disclosure_label = ?, resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
               resolved_by_artifact_entry_id = ?, dedupe_key = ?,
               unresolved_rumination_ticks = ?, last_ruminated_at = ?,
               record_version = record_version + 1
@@ -1021,6 +1029,7 @@ export class OpenQuestionsRepository {
         next.last_touched,
         serializeJsonValue(next.resolution_evidence_episode_ids),
         serializeJsonValue(next.resolution_evidence_stream_entry_ids),
+        serializeJsonValue(next.resolution_disclosure_label),
         next.resolution_note,
         next.resolved_at,
         next.abandoned_reason,
@@ -1067,7 +1076,8 @@ export class OpenQuestionsRepository {
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
               last_touched = ?, resolution_evidence_episode_ids = ?,
-              resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
+              resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
+              resolution_note = ?, resolved_at = ?,
               abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = ?, last_ruminated_at = ?
           WHERE id = ?
@@ -1090,6 +1100,7 @@ export class OpenQuestionsRepository {
         parsed.last_touched,
         serializeJsonValue(parsed.resolution_evidence_episode_ids),
         serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),
+        serializeJsonValue(parsed.resolution_disclosure_label),
         parsed.resolution_note,
         parsed.resolved_at,
         parsed.abandoned_reason,
@@ -1194,6 +1205,7 @@ export class OpenQuestionsRepository {
       resolution_evidence_stream_entry_ids?: readonly z.infer<
         typeof openQuestionResolutionStreamEntryIdSchema
       >[];
+      resolution_disclosure_label?: MemoryDisclosureLabel;
       resolution_note: string;
     },
     options: OpenQuestionResolveOptions = {},
@@ -1235,7 +1247,8 @@ export class OpenQuestionsRepository {
         `
           UPDATE open_questions
           SET status = 'resolved', resolution_evidence_episode_ids = ?,
-              resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
+              resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
+              resolution_note = ?, resolved_at = ?,
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
               resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
@@ -1246,6 +1259,7 @@ export class OpenQuestionsRepository {
       .run(
         serializeJsonValue(resolutionEvidenceEpisodeIds),
         serializeJsonValue(resolutionEvidenceStreamEntryIds),
+        serializeJsonValue(input.resolution_disclosure_label ?? unknownMemoryDisclosureLabel()),
         input.resolution_note,
         resolvedAt,
         resolvedAt,
@@ -1266,6 +1280,8 @@ export class OpenQuestionsRepository {
       status: "resolved",
       resolution_evidence_episode_ids: resolutionEvidenceEpisodeIds,
       resolution_evidence_stream_entry_ids: resolutionEvidenceStreamEntryIds,
+      resolution_disclosure_label:
+        input.resolution_disclosure_label ?? unknownMemoryDisclosureLabel(),
       resolution_note: input.resolution_note,
       resolved_at: resolvedAt,
       abandoned_reason: null,
@@ -1308,14 +1324,21 @@ export class OpenQuestionsRepository {
           UPDATE open_questions
           SET status = 'abandoned', abandoned_reason = ?, abandoned_at = ?,
               resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
-              resolution_note = NULL, resolved_at = NULL, last_touched = ?,
+              resolution_disclosure_label = ?, resolution_note = NULL, resolved_at = NULL, last_touched = ?,
               resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
       )
-      .run(reason, abandonedAt, abandonedAt, id, expectedVersion);
+      .run(
+        reason,
+        abandonedAt,
+        serializeJsonValue(unknownMemoryDisclosureLabel()),
+        abandonedAt,
+        id,
+        expectedVersion,
+      );
     assertIdentityCasUpdated({
       result,
       recordType: "open_question",
@@ -1329,6 +1352,7 @@ export class OpenQuestionsRepository {
       status: "abandoned",
       resolution_evidence_episode_ids: [],
       resolution_evidence_stream_entry_ids: [],
+      resolution_disclosure_label: unknownMemoryDisclosureLabel(),
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: reason,
@@ -1509,7 +1533,8 @@ export class OpenQuestionsRepository {
           UPDATE open_questions
           SET status = 'open', urgency = ?, last_touched = ?,
               resolution_evidence_episode_ids = '[]',
-              resolution_evidence_stream_entry_ids = '[]', resolution_note = NULL,
+              resolution_evidence_stream_entry_ids = '[]', resolution_disclosure_label = ?,
+              resolution_note = NULL,
               resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
               resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
@@ -1517,7 +1542,13 @@ export class OpenQuestionsRepository {
           WHERE id = ? AND record_version = ?
         `,
       )
-      .run(nextUrgency, nowMs, id, expectedVersion);
+      .run(
+        nextUrgency,
+        nowMs,
+        serializeJsonValue(unknownMemoryDisclosureLabel()),
+        id,
+        expectedVersion,
+      );
     assertIdentityCasUpdated({
       result,
       recordType: "open_question",
@@ -1533,6 +1564,7 @@ export class OpenQuestionsRepository {
       last_touched: nowMs,
       resolution_evidence_episode_ids: [],
       resolution_evidence_stream_entry_ids: [],
+      resolution_disclosure_label: unknownMemoryDisclosureLabel(),
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: null,

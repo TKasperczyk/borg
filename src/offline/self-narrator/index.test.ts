@@ -505,7 +505,7 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
-  it("does not use audience-scoped episodes as global growth-marker evidence", async () => {
+  it("uses audience-scoped episodes as labeled global growth-marker evidence", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSelfNarratorResponse({
@@ -513,9 +513,14 @@ describe("SelfNarratorProcess", () => {
             category: "understanding",
             what_changed: "Public planning became more explicit.",
             before_description: "Planning evidence was scattered.",
-            after_description: "Public evidence now supports the planning pattern.",
+            after_description:
+              "Public and labeled private evidence now support the planning pattern.",
             confidence: 0.9,
-            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+            evidence_episode_ids: [
+              "ep_aaaaaaaaaaaaaaaa",
+              "ep_bbbbbbbbbbbbbbbb",
+              "ep_cccccccccccccccc",
+            ],
           },
         }),
       ],
@@ -565,9 +570,20 @@ describe("SelfNarratorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
       const marker = plan.items.find((item) => item.action === "add_growth_marker")?.marker;
 
-      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");
-      expect(marker?.evidence_episode_ids).toEqual(["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"]);
-      expect(marker?.evidence_episode_ids).not.toContain("ep_cccccccccccccccc");
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect(prompt).toContain("Sam private planning");
+      expect(prompt).toContain("relationship_private");
+      expect(prompt).toContain(sam);
+      expect(marker?.evidence_episode_ids).toEqual([
+        "ep_aaaaaaaaaaaaaaaa",
+        "ep_bbbbbbbbbbbbbbbb",
+        "ep_cccccccccccccccc",
+      ]);
+      expect(marker?.disclosure_label).toMatchObject({
+        disclosureClass: "relationship_private",
+        privateToEntityIds: [sam],
+      });
     } finally {
       await harness.cleanup();
     }

@@ -10,7 +10,6 @@ export {
 export {
   episodeAccessScopeKey,
   hasSameEpisodeAccessScope,
-  isEpisodeInGlobalIdentityScope,
   isEpisodeVisibleToAudience,
   normalizeEpisodeAccess,
   type EpisodeAccessLike,

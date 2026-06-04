@@ -38,20 +38,6 @@ export function isEpisodeVisibleToAudience(
   return isEpisodeAccessVisible(input, audienceEntityId);
 }
 
-export function isEpisodeInGlobalIdentityScope(
-  input: EpisodeAccessLike,
-  selfAudienceEntityId?: EntityId | null,
-): boolean {
-  const normalized = normalizeEpisodeAccess(input);
-
-  return (
-    normalized.origin_audience_entity_ids.length === 0 ||
-    (selfAudienceEntityId !== null &&
-      selfAudienceEntityId !== undefined &&
-      normalized.origin_audience_entity_ids.includes(selfAudienceEntityId))
-  );
-}
-
 // Disclosure/admin-only viewer capabilities for audience-filtered episodic reads. Cognition
 // recall is global and must not route through this resolver; use EpisodeCognitionRecallOptions
 // / CognitionRecallSearchOptions for cognition paths. For explicit disclosure/export paths there

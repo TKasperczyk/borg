@@ -22,6 +22,7 @@ import {
   EntityRepository,
   commitmentMigrations,
 } from "../memory/commitments/index.js";
+import { unknownMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import {
   CreatorDirectiveRepository,
   creatorDirectiveMigrations,
@@ -1065,6 +1066,7 @@ export function createAutobiographicalPeriodFixture(
     end_ts: overrides.end_ts ?? null,
     narrative: overrides.narrative ?? "A test autobiographical period.",
     key_episode_ids: overrides.key_episode_ids ?? [],
+    disclosure_label: overrides.disclosure_label ?? unknownMemoryDisclosureLabel(),
     themes: overrides.themes ?? ["testing"],
     provenance: overrides.provenance ?? {
       kind: "system",
@@ -1096,6 +1098,7 @@ export function createSkillFixture(overrides: Partial<SkillRecord> = {}): SkillR
     last_split_error: overrides.last_split_error ?? null,
     requires_manual_review: overrides.requires_manual_review ?? false,
     source_episode_ids: overrides.source_episode_ids ?? [createEpisodeId()],
+    disclosure_label: overrides.disclosure_label ?? unknownMemoryDisclosureLabel(),
     last_used: overrides.last_used ?? null,
     last_successful: overrides.last_successful ?? null,
     created_at: nowMs,

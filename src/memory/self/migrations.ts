@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const selfMigrations = [
   {
@@ -88,6 +89,7 @@ export const selfMigrations = [
           themes TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           last_updated INTEGER NOT NULL,
+          disclosure_label TEXT,
           provenance_kind TEXT,
           provenance_episode_ids TEXT,
           provenance_process TEXT
@@ -110,6 +112,7 @@ export const selfMigrations = [
           before_description TEXT,
           after_description TEXT,
           evidence_episode_ids TEXT NOT NULL,
+          disclosure_label TEXT,
           confidence REAL NOT NULL,
           source_process TEXT NOT NULL,
           created_at INTEGER NOT NULL,
@@ -145,6 +148,7 @@ export const selfMigrations = [
           last_touched INTEGER NOT NULL,
           resolution_evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
           resolution_evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_disclosure_label TEXT,
           resolution_note TEXT,
           resolved_at INTEGER,
           abandoned_reason TEXT,
@@ -215,6 +219,21 @@ export const selfMigrations = [
         CREATE INDEX idx_trait_contradiction_events_trait_ts
           ON trait_contradiction_events (trait_id, ts DESC, id DESC);
       `);
+    },
+  },
+  {
+    id: 2,
+    name: "self_disclosure_labels",
+    up: (db) => {
+      if (!tableHasColumn(db, "autobiographical_periods", "disclosure_label")) {
+        db.exec("ALTER TABLE autobiographical_periods ADD COLUMN disclosure_label TEXT");
+      }
+      if (!tableHasColumn(db, "growth_markers", "disclosure_label")) {
+        db.exec("ALTER TABLE growth_markers ADD COLUMN disclosure_label TEXT");
+      }
+      if (!tableHasColumn(db, "open_questions", "resolution_disclosure_label")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN resolution_disclosure_label TEXT");
+      }
     },
   },
 ] as const satisfies readonly Migration[];

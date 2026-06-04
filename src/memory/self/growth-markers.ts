@@ -9,6 +9,12 @@ import {
   type GrowthMarkerId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
+import {
+  memoryDisclosureLabelSchema,
+  parseMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
 import { episodeIdSchema, streamEntryIdSchema } from "../episodic/types.js";
 import {
   assertIdentityCasUpdated,
@@ -49,6 +55,7 @@ export const growthMarkerSchema = z.object({
   before_description: z.string().nullable(),
   after_description: z.string().nullable(),
   evidence_episode_ids: z.array(growthMarkerEvidenceIdSchema),
+  disclosure_label: memoryDisclosureLabelSchema.optional(),
   confidence: z.number().min(0).max(1),
   source_process: z.string().min(1),
   provenance: provenanceSchema,
@@ -118,6 +125,7 @@ function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
         ? null
         : String(row.after_description),
     evidence_episode_ids: parseEvidenceIds(String(row.evidence_episode_ids ?? "[]")),
+    disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label),
     confidence: Number(row.confidence),
     source_process: row.source_process,
     provenance: parseStoredProvenance({
@@ -157,6 +165,7 @@ export class GrowthMarkersRepository {
     before_description?: string | null;
     after_description?: string | null;
     evidence_episode_ids: readonly z.infer<typeof growthMarkerEvidenceIdSchema>[];
+    disclosure_label?: MemoryDisclosureLabel;
     confidence: number;
     source_process: string;
     provenance: z.infer<typeof provenanceSchema>;
@@ -177,6 +186,7 @@ export class GrowthMarkersRepository {
       before_description: input.before_description ?? null,
       after_description: input.after_description ?? null,
       evidence_episode_ids: input.evidence_episode_ids,
+      disclosure_label: input.disclosure_label ?? unknownMemoryDisclosureLabel(),
       confidence: input.confidence,
       source_process: input.source_process,
       provenance: input.provenance,
@@ -189,9 +199,9 @@ export class GrowthMarkersRepository {
         `
           INSERT INTO growth_markers (
             id, ts, category, what_changed, before_description, after_description,
-            evidence_episode_ids, confidence, source_process, provenance_kind,
+            evidence_episode_ids, disclosure_label, confidence, source_process, provenance_kind,
             provenance_episode_ids, provenance_process, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -202,6 +212,7 @@ export class GrowthMarkersRepository {
         marker.before_description,
         marker.after_description,
         serializeJsonValue(marker.evidence_episode_ids),
+        serializeJsonValue(marker.disclosure_label),
         marker.confidence,
         marker.source_process,
         storedProvenance.provenance_kind,
@@ -291,7 +302,7 @@ export class GrowthMarkersRepository {
         `
           UPDATE growth_markers
           SET ts = ?, category = ?, what_changed = ?, before_description = ?, after_description = ?,
-              evidence_episode_ids = ?, confidence = ?, source_process = ?, provenance_kind = ?,
+              evidence_episode_ids = ?, disclosure_label = ?, confidence = ?, source_process = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
@@ -303,6 +314,7 @@ export class GrowthMarkersRepository {
         next.before_description,
         next.after_description,
         serializeJsonValue(next.evidence_episode_ids),
+        serializeJsonValue(next.disclosure_label),
         next.confidence,
         next.source_process,
         storedProvenance.provenance_kind,
