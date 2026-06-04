@@ -175,7 +175,10 @@ export type TurnPhaseCoordinatorOptions = {
   selfContextBuilder: TurnSelfContextBuilder;
   turnRetrievalCoordinator: TurnRetrievalCoordinator;
   discourseStateService: TurnDiscourseStateService;
-  postGenerationGuardRunner: Pick<TurnPostGenerationGuardRunner, "listRecentCompletedActions">;
+  postGenerationGuardRunner: Pick<
+    TurnPostGenerationGuardRunner,
+    "listRecentCompletedActionsForCognition"
+  >;
   turnActionCoordinator: TurnActionCoordinator;
   turnReflectionCoordinator: TurnReflectionCoordinator;
   clock: Clock;

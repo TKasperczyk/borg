@@ -10,7 +10,6 @@ import {
 } from "../../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
-  GoalRecord,
   GrowthMarker,
   OpenQuestion,
 } from "../../../memory/self/index.js";
@@ -41,6 +40,7 @@ import {
   correctionMemoryDisclosureLabel,
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
+  memoryDisclosureLabelFromMetadata,
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../disclosure-labels.js";
@@ -94,6 +94,24 @@ const AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE = "(from audience-scoped evidence
 const SELF_IDENTITY_DISCLOSURE_LINE = `disclosure: ${renderMemoryDisclosureLabelForModel(
   selfPrivateMemoryDisclosureLabel(),
 )}`;
+
+type ModelFacingDisclosureRecord = {
+  disclosure?: string;
+  disclosure_label?: unknown;
+};
+
+function renderDisclosureForModelFacingRecord(
+  record: ModelFacingDisclosureRecord,
+  fallbackLabel: MemoryDisclosureLabel,
+): string {
+  const payloadLabel = memoryDisclosureLabelFromMetadata(record.disclosure_label);
+
+  if (payloadLabel !== null && typeof record.disclosure === "string") {
+    return record.disclosure;
+  }
+
+  return renderMemoryDisclosureLabelForModel(payloadLabel ?? fallbackLabel);
+}
 
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
@@ -1258,8 +1276,11 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
   return [summary, SELF_IDENTITY_DISCLOSURE_LINE].join("\n");
 }
 
-function summarizeSelfSnapshotGoal(goal: GoalRecord): string {
-  const disclosure = ` ${renderMemoryDisclosureLabelForModel(goalMemoryDisclosureLabel(goal))}`;
+function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string {
+  const disclosure = ` ${renderDisclosureForModelFacingRecord(
+    goal,
+    goalMemoryDisclosureLabel(goal),
+  )}`;
 
   return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
@@ -1276,9 +1297,16 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
 
   const components = focus.selected_score.components;
   const nextStep = focus.next_step ?? null;
+  const selectedGoalDisclosureLabel =
+    memoryDisclosureLabelFromMetadata(focus.selected_goal.disclosure_label) ??
+    goalMemoryDisclosureLabel(focus.selected_goal);
+  const selectedGoalDisclosure = renderDisclosureForModelFacingRecord(
+    focus.selected_goal,
+    selectedGoalDisclosureLabel,
+  );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description}`,
+    `Current driving goal: ${focus.selected_goal.description} ${selectedGoalDisclosure}`,
     `Why selected: ${focus.selected_score.reason} (score ${focus.selected_score.score.toFixed(2)}, threshold ${focus.threshold.toFixed(2)})`,
     [
       `Components: priority=${components.priority.toFixed(2)}`,
@@ -1290,7 +1318,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
       ? null
       : `Next step: ${nextStep.description} (kind: ${nextStep.kind}, due: ${
           nextStep.due_at === null ? "no deadline" : new Date(nextStep.due_at).toISOString()
-        })`,
+        }) ${renderDisclosureForModelFacingRecord(nextStep, selectedGoalDisclosureLabel)}`,
     SELF_IDENTITY_DISCLOSURE_LINE,
     "Use this as a bias, not an override of the user's request or commitments.",
   ]

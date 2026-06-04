@@ -1,10 +1,6 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import {
-  ACTIVE_ACTION_STATES,
-  type ActionRecord,
-  type ActionRepository,
-} from "../../memory/actions/index.js";
+import { ACTIVE_ACTION_STATES, type ActionRepository } from "../../memory/actions/index.js";
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import type { Clock } from "../../util/clock.js";
 import type {
@@ -16,6 +12,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
+import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
@@ -65,10 +62,6 @@ export type CloseBorgSelfPerformedActionsInput = {
   turnCounter?: number | null;
 };
 
-function uniqueActions(actions: readonly ActionRecord[]): ActionRecord[] {
-  return [...new Map(actions.map((action) => [action.id, action])).values()];
-}
-
 export class TurnActionStateService {
   constructor(private readonly options: TurnActionStateServiceOptions) {}
 
@@ -115,27 +108,16 @@ export class TurnActionStateService {
         });
       },
     });
-    const activeActionsForReference = uniqueActions([
-      ...this.options.actionRepository.list({
-        states: ACTIVE_ACTION_STATES,
-        audienceEntityId: null,
-        limit: 40,
-      }),
-      ...(input.audienceEntityId === null
-        ? []
-        : this.options.actionRepository.list({
-            states: ACTIVE_ACTION_STATES,
-            audienceEntityId: input.audienceEntityId,
-            limit: 40,
-          })),
-      ...(input.speakerEntityId === null || input.speakerEntityId === undefined
-        ? []
-        : this.options.actionRepository.list({
-            states: ACTIVE_ACTION_STATES,
-            actor: input.speakerEntityId,
-            limit: 40,
-          })),
-    ]).slice(0, 80);
+    const activeActionsForReference = listActionCandidatesForCognition({
+      actionRepository: this.options.actionRepository,
+      audienceEntityId: input.audienceEntityId,
+      rankParticipantEntityIds:
+        input.speakerEntityId === null || input.speakerEntityId === undefined
+          ? []
+          : [input.speakerEntityId],
+      states: ACTIVE_ACTION_STATES,
+      limit: 80,
+    }).map((candidate) => candidate.record);
     const actionStateRecords = await actionStateExtractor.extract({
       userMessage: input.userMessage,
       currentUserStreamEntryId,

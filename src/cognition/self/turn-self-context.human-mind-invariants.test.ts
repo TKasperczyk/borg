@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 
+import type { ExecutiveStep } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { ValueRecord } from "../../memory/self/index.js";
+import type { GoalRecord, ValueRecord } from "../../memory/self/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { createEpisodeFixture } from "../../offline/test-support.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../retrieval/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { createEntityId, createValueId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import {
+  createEntityId,
+  createExecutiveStepId,
+  createGoalId,
+  createStreamEntryId,
+  createValueId,
+  DEFAULT_SESSION_ID,
+} from "../../util/ids.js";
+import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import { buildBaseSystemPrompt } from "../deliberation/prompt/system-prompt.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
 import { TurnSelfContextBuilder } from "./turn-self-context.js";
@@ -101,5 +111,106 @@ describe("turn self-context human-mind invariants", () => {
     expect(prompt).toContain(
       "usable internally; do not disclose to current audience unless authorized",
     );
+  });
+
+  it("threads executive-focus source disclosure into selected self goals and next steps", async () => {
+    const aliceId = createEntityId();
+    const clock = new ManualClock(2_000_000);
+    const goal: GoalRecord = {
+      id: createGoalId(),
+      description: "Follow up on the Alice-private source",
+      priority: 10,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: clock.now() - 90_000,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      source_stream_entry_ids: [createStreamEntryId()],
+      provenance: { kind: "manual" },
+    };
+    const nextStep: ExecutiveStep = {
+      id: createExecutiveStepId(),
+      goal_id: goal.id,
+      description: "Use the Alice-private source carefully",
+      status: "queued",
+      kind: "think",
+      due_at: null,
+      last_attempt_ts: null,
+      created_at: clock.now(),
+      updated_at: clock.now(),
+      provenance: { kind: "manual" },
+    };
+    const disclosureFields = memoryDisclosurePayloadFields(
+      relationshipPrivateMemoryDisclosureLabel([aliceId]),
+    );
+    const builder = new TurnSelfContextBuilder({
+      embeddingClient,
+      valuesRepository: {
+        list: () => [],
+      },
+      goalsRepository: {
+        list: () => [{ ...goal, children: [] }],
+      },
+      traitsRepository: {
+        list: () => [],
+      },
+      executiveStepsRepository: {
+        topOpen: () => nextStep,
+      },
+      clock,
+      tracer: NOOP_TRACER,
+      goalFocusThreshold: 0,
+      goalFollowupLookaheadMs: 0,
+      goalFollowupStaleMs: 86_400_000,
+    });
+
+    const context = await builder.build({
+      turnId: "turn_self_context_disclosure",
+      cognitionInput: "autonomous wake",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      autonomyTrigger: {
+        source_name: "executive_focus_due",
+        source_type: "trigger",
+        event_id: "event_private_source",
+        sort_ts: clock.now(),
+        payload: {
+          reason: "goal_stale",
+          selected_goal_id: goal.id,
+          selected_goal: {
+            goal_id: goal.id,
+            description: goal.description,
+            ...disclosureFields,
+          },
+        },
+      },
+      audienceEntityId: null,
+    });
+
+    expect(context.selfSnapshot.goals[0]).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [aliceId],
+      },
+    });
+    expect(context.executiveFocus.selected_goal).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [aliceId],
+      },
+    });
+    expect(context.executiveFocus.next_step).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [aliceId],
+      },
+    });
   });
 });

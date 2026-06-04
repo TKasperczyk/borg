@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSessionId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createActionId,
+  createEntityId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 import { TurnActionStateService } from "./turn-action-state-service.js";
@@ -103,6 +108,85 @@ describe("TurnActionStateService", () => {
         reason: "invalid_payload",
       }),
     );
+  });
+
+  it("passes private active actions to the extractor reference context with disclosure metadata", async () => {
+    const streamEntryId = createStreamEntryId();
+    const actionSourceEntryId = createStreamEntryId();
+    const alice = createEntityId();
+    const privateDescription = "Prepare Alice private launch note";
+    const llm = new FakeLLMClient({
+      responses: [
+        createActionStateResponse({
+          action_states: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+
+    try {
+      harness.actionRepository.add({
+        id: createActionId(),
+        description: privateDescription,
+        actor: "borg",
+        audience_entity_id: alice,
+        goal_id: null,
+        open_question_id: null,
+        state: "scheduled",
+        confidence: 0.9,
+        provenance_episode_ids: [],
+        provenance_stream_entry_ids: [actionSourceEntryId],
+        created_at: 1_000,
+        updated_at: 1_000,
+        considering_at: null,
+        committed_at: null,
+        scheduled_at: 1_000,
+        completed_at: null,
+        not_done_at: null,
+        expired_at: null,
+        archived_at: null,
+        unknown_at: null,
+        canonicalized_by_artifact_entry_id: null,
+        session_scope: null,
+        session_anchor_id: null,
+        last_referenced_at_ms: 1_000,
+        last_referenced_turn_counter: null,
+      });
+      const service = new TurnActionStateService({
+        model: "test-recall",
+        actionRepository: harness.actionRepository,
+        embeddingClient: harness.embeddingClient,
+        clock: harness.clock,
+        tracer: NOOP_TRACER,
+      });
+
+      await service.extract({
+        llmClient: llm,
+        turnId: "turn_private_action_reference",
+        isUserTurn: true,
+        userMessage: "What action memory is active?",
+        persistedUserEntryId: streamEntryId,
+        recentHistory: [],
+        audienceEntityId: null,
+      });
+
+      const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+        active_actions_for_reference?: Array<Record<string, unknown>>;
+      };
+
+      expect(payload.active_actions_for_reference).toEqual([
+        expect.objectContaining({
+          description: privateDescription,
+          disclosure: expect.stringContaining("disclosure_class=relationship_private"),
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "relationship_private",
+            private_to_entity_ids: [alice],
+          }),
+        }),
+      ]);
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("persists goal-linked extracted actions so completion resolves linked open questions", async () => {

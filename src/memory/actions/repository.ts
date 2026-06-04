@@ -187,6 +187,9 @@ export type ActionRecordListFilter = {
   sessionScope?: ActionSessionScope | null;
   sessionAnchorId?: SessionId | null;
   audienceEntityId?: EntityId | null;
+  recallAllAudiences?: boolean;
+  rankAudienceEntityIds?: readonly EntityId[];
+  rankActorEntityIds?: readonly EntityId[];
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
   limit?: number;
@@ -492,6 +495,14 @@ export class ActionRepository {
   list(filter: ActionRecordListFilter = {}): ActionRecord[] {
     const clauses: string[] = [];
     const values: unknown[] = [];
+    const orderBy: string[] = [];
+    const orderValues: unknown[] = [];
+
+    if (filter.recallAllAudiences === true && "audienceEntityId" in filter) {
+      throw new StorageError("Action recallAllAudiences cannot be combined with audienceEntityId", {
+        code: "ACTION_RECORD_FILTER_INVALID",
+      });
+    }
 
     if (filter.state !== undefined) {
       clauses.push("state = ?");
@@ -532,7 +543,7 @@ export class ActionRepository {
       }
     }
 
-    if ("audienceEntityId" in filter) {
+    if (filter.recallAllAudiences !== true && "audienceEntityId" in filter) {
       if (filter.audienceEntityId === null) {
         clauses.push("audience_entity_id IS NULL");
       } else if (filter.audienceEntityId !== undefined) {
@@ -551,6 +562,28 @@ export class ActionRepository {
       values.push(filter.openQuestionId);
     }
 
+    if (filter.rankAudienceEntityIds !== undefined) {
+      const audienceRankIds = [...new Set(filter.rankAudienceEntityIds)];
+
+      if (audienceRankIds.length > 0) {
+        orderBy.push(
+          `CASE WHEN audience_entity_id IN (${audienceRankIds.map(() => "?").join(", ")}) THEN 0 ELSE 1 END ASC`,
+        );
+        orderValues.push(...audienceRankIds);
+      }
+    }
+
+    if (filter.rankActorEntityIds !== undefined) {
+      const actorRankIds = [...new Set(filter.rankActorEntityIds)];
+
+      if (actorRankIds.length > 0) {
+        orderBy.push(
+          `CASE WHEN actor IN (${actorRankIds.map(() => "?").join(", ")}) THEN 0 ELSE 1 END ASC`,
+        );
+        orderValues.push(...actorRankIds);
+      }
+    }
+
     const limit = filter.limit === undefined ? null : Math.max(1, Math.floor(filter.limit));
     const rows = this.db
       .prepare(
@@ -558,11 +591,14 @@ export class ActionRepository {
           SELECT *
           FROM action_records
           ${clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`}
-          ORDER BY updated_at DESC, id ASC
+          ORDER BY ${[...orderBy, "updated_at DESC", "id ASC"].join(", ")}
           ${limit === null ? "" : "LIMIT ?"}
         `,
       )
-      .all(...values, ...(limit === null ? [] : [limit])) as Record<string, unknown>[];
+      .all(...values, ...orderValues, ...(limit === null ? [] : [limit])) as Record<
+      string,
+      unknown
+    >[];
 
     return rows.map((row) => mapActionRow(row));
   }

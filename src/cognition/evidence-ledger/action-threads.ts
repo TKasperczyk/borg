@@ -7,7 +7,9 @@ import {
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
+import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import { actionMemoryDisclosureLabel } from "../disclosure-labels.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
 import { isActionVisibleToSession } from "./audience-visibility.js";
@@ -34,6 +36,11 @@ export type ActionThread = {
 
 export type ActionThreadWithSalience = ActionThread & {
   salienceClass: EvidenceLedgerActionSalienceClass;
+};
+
+export type ActionCandidateForCognition = {
+  record: ActionRecord;
+  disclosureLabel: MemoryDisclosureLabel;
 };
 
 export const PROMPT_SALIENT_ACTION_SALIENCE_CLASSES = [
@@ -66,7 +73,94 @@ export function normalizeUnitInterval(value: number | undefined, fallback: numbe
   return Math.max(0, Math.min(1, value));
 }
 
-export function listVisibleActions(
+function uniqueEntityIds(entityIds: readonly (EntityId | null | undefined)[]): EntityId[] {
+  return [...new Set(entityIds.filter((entityId): entityId is EntityId => entityId != null))];
+}
+
+function actionCognitionRank(input: {
+  action: ActionRecord;
+  audienceEntityId: EntityId | null;
+  participantEntityIds: ReadonlySet<EntityId>;
+}): number {
+  if (
+    input.audienceEntityId !== null &&
+    input.action.audience_entity_id === input.audienceEntityId
+  ) {
+    return 0;
+  }
+
+  if (
+    input.action.actor !== "borg" &&
+    input.action.actor !== "user" &&
+    input.participantEntityIds.has(input.action.actor)
+  ) {
+    return 1;
+  }
+
+  if (
+    input.action.audience_entity_id !== null &&
+    input.participantEntityIds.has(input.action.audience_entity_id)
+  ) {
+    return 2;
+  }
+
+  if (input.action.audience_entity_id === null) {
+    return 3;
+  }
+
+  return 4;
+}
+
+export function listActionCandidatesForCognition(input: {
+  actionRepository: ActionLedgerRepository;
+  audienceEntityId: EntityId | null;
+  activeParticipants?: readonly ActiveParticipant[];
+  rankParticipantEntityIds?: readonly EntityId[];
+  states?: readonly ActionState[];
+  state?: ActionState;
+  actor?: ActionRecord["actor"];
+  limit: number;
+}): ActionCandidateForCognition[] {
+  const participantEntityIds = uniqueEntityIds([
+    ...(input.activeParticipants ?? []).map((participant) => participant.entityId),
+    ...(input.rankParticipantEntityIds ?? []),
+  ]);
+  const participantEntityIdSet = new Set(participantEntityIds);
+  const rankAudienceEntityIds = uniqueEntityIds([input.audienceEntityId, ...participantEntityIds]);
+  const records = input.actionRepository.list({
+    ...(input.state === undefined ? {} : { state: input.state }),
+    ...(input.states === undefined ? {} : { states: input.states }),
+    ...(input.actor === undefined ? {} : { actor: input.actor }),
+    recallAllAudiences: true,
+    rankAudienceEntityIds,
+    rankActorEntityIds: participantEntityIds,
+    limit: input.limit,
+  });
+
+  return records
+    .sort(
+      (left, right) =>
+        actionCognitionRank({
+          action: left,
+          audienceEntityId: input.audienceEntityId,
+          participantEntityIds: participantEntityIdSet,
+        }) -
+          actionCognitionRank({
+            action: right,
+            audienceEntityId: input.audienceEntityId,
+            participantEntityIds: participantEntityIdSet,
+          }) ||
+        right.updated_at - left.updated_at ||
+        left.id.localeCompare(right.id),
+    )
+    .slice(0, input.limit)
+    .map((record) => ({
+      record,
+      disclosureLabel: actionMemoryDisclosureLabel(record),
+    }));
+}
+
+export function listActionsForDisclosure(
   actionRepository: ActionLedgerRepository,
   audienceEntityId: EntityId | null,
   activeParticipants: readonly ActiveParticipant[] | undefined,

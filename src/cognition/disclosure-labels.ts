@@ -175,7 +175,7 @@ function metadataEntityIds(value: unknown): EntityId[] | null {
     : null;
 }
 
-function memoryDisclosureLabelFromRefsMetadata(value: unknown): MemoryDisclosureLabel | null {
+export function memoryDisclosureLabelFromMetadata(value: unknown): MemoryDisclosureLabel | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -206,7 +206,7 @@ function memoryDisclosureLabelFromRefsMetadata(value: unknown): MemoryDisclosure
 export function correctionMemoryDisclosureLabel(
   refs: Record<string, unknown>,
 ): MemoryDisclosureLabel {
-  const metadataLabel = memoryDisclosureLabelFromRefsMetadata(refs.disclosure_label);
+  const metadataLabel = memoryDisclosureLabelFromMetadata(refs.disclosure_label);
 
   if (metadataLabel !== null) {
     return metadataLabel;

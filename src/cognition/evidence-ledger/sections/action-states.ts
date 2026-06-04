@@ -8,7 +8,7 @@ import {
   actionThreadState,
   actionThreadStateMetadata,
   buildActionThreads,
-  listVisibleActions,
+  listActionCandidatesForCognition,
   normalizePositiveInteger,
   normalizeUnitInterval,
   orderActionThreadsBySalience,
@@ -22,9 +22,7 @@ import {
 } from "../entry-metadata.js";
 import { ACTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
-import {
-  combineMemoryDisclosureLabels,
-} from "../../../retrieval/index.js";
+import { combineMemoryDisclosureLabels } from "../../../retrieval/index.js";
 import { actionMemoryDisclosureLabel } from "../../disclosure-labels.js";
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
@@ -40,14 +38,17 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     context.options.actionThreadSimilarityThreshold,
     DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   );
-  const visibleActions = listVisibleActions(
-    context.repos.actions,
-    context.input.audienceEntityId,
-    context.input.activeParticipants,
-    sourceRecordLimit,
+  const actionCandidates = listActionCandidatesForCognition({
+    actionRepository: context.repos.actions,
+    audienceEntityId: context.input.audienceEntityId,
+    activeParticipants: context.input.activeParticipants,
+    limit: sourceRecordLimit,
+  });
+  const disclosureLabelByActionId = new Map(
+    actionCandidates.map((candidate) => [candidate.record.id, candidate.disclosureLabel]),
   );
   const threads = await buildActionThreads({
-    records: visibleActions,
+    records: actionCandidates.map((candidate) => candidate.record),
     repository: context.repos.actions,
     resolver: context.resolver,
     similarityThreshold,
@@ -74,7 +75,9 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
 
   for (const thread of renderedThreads) {
     const disclosureLabel = combineMemoryDisclosureLabels(
-      thread.records.map((record) => actionMemoryDisclosureLabel(record)),
+      thread.records.map(
+        (record) => disclosureLabelByActionId.get(record.id) ?? actionMemoryDisclosureLabel(record),
+      ),
     );
     addEntry(
       context.buckets,
@@ -137,7 +140,11 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
 
   const olderThreads = orderActionThreadsBySalience(threadsWithSalience).slice(renderLimit);
   const olderDisclosureLabel = combineMemoryDisclosureLabels(
-    olderThreads.flatMap((thread) => thread.records.map((record) => actionMemoryDisclosureLabel(record))),
+    olderThreads.flatMap((thread) =>
+      thread.records.map(
+        (record) => disclosureLabelByActionId.get(record.id) ?? actionMemoryDisclosureLabel(record),
+      ),
+    ),
   );
 
   addEntry(context.buckets, "action_states", {

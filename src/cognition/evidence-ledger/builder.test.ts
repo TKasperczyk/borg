@@ -2490,6 +2490,9 @@ describe("EvidenceLedgerBuilder", () => {
     const groupText = JSON.stringify(groupSection?.entries ?? []);
     const participantText = JSON.stringify(ledger.audienceStanding?.relationalEntries ?? []);
     const actionText = JSON.stringify(actionSection?.entries ?? []);
+    const privateOtherAudienceActionEntry = actionSection?.entries.find((entry) =>
+      entry.text?.includes("call the private channel contact"),
+    );
 
     expect(rendered).toContain("## 6. Group/Channel Memory");
     expect(rendered).toContain("trip.destination=Spain");
@@ -2509,7 +2512,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(participantText).toContain("Alice will book the Alhambra visit.");
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");
-    expect(rendered).not.toContain("call the private channel contact");
+    expect(groupText).not.toContain("call the private channel contact");
     expect(rendered).not.toContain("private_channel_task");
     expect(rendered).not.toContain("Alice's private channel goal.");
     expect(
@@ -2523,7 +2526,89 @@ describe("EvidenceLedgerBuilder", () => {
       }),
     });
     expect(actionText).toContain("book Alhambra");
-    expect(actionText).not.toContain("call the private channel contact");
+    expect(actionText).toContain("call the private channel contact");
+    expect(privateOtherAudienceActionEntry).toMatchObject({
+      state: expect.stringContaining("disclosure_class=relationship_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: [otherChannel],
+        }),
+      }),
+    });
+  });
+
+  it("recalls private other-audience action states for cognition with disclosure labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Check action memory.",
+    });
+    const privateAction = makeAction(userEntry.id, {
+      description: "prepare Alice private launch note",
+      actor: "borg",
+      audience_entity_id: alice,
+      state: "scheduled",
+      scheduled_at: NOW_MS,
+    });
+    const actions = [privateAction];
+    const listActions = (filter: ActionRecordListFilter = {}) =>
+      actions
+        .filter(
+          (action) =>
+            (filter.state === undefined || action.state === filter.state) &&
+            (filter.states === undefined || filter.states.includes(action.state)) &&
+            (filter.actor === undefined || action.actor === filter.actor) &&
+            (filter.recallAllAudiences === true ||
+              !("audienceEntityId" in filter) ||
+              (filter.audienceEntityId === null
+                ? action.audience_entity_id === null
+                : action.audience_entity_id === filter.audienceEntityId)),
+        )
+        .slice(0, filter.limit ?? actions.length);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: listActions,
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntry = ledger.sections
+      .find((section) => section.id === "action_states")
+      ?.entries.find((entry) => entry.text?.includes("prepare Alice private launch note"));
+
+    expect(actionEntry).toMatchObject({
+      state: expect.stringContaining("disclosure_class=relationship_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: [alice],
+        }),
+      }),
+    });
   });
 
   it("renders legacy global relational slots when active participant set is empty", async () => {

@@ -205,9 +205,17 @@ describe("executive focus due trigger", () => {
       top_open_step: {
         id: step.id,
         description: "Act on the overdue step",
+        disclosure_label: {
+          disclosure_class: "self_private",
+          private_to_entity_ids: [],
+        },
       },
       due_step: {
         id: step.id,
+        disclosure_label: {
+          disclosure_class: "self_private",
+          private_to_entity_ids: [],
+        },
       },
     });
   });

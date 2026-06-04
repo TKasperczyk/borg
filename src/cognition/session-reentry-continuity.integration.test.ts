@@ -232,7 +232,7 @@ function makeRetrievalOptions(input: {
     turnGoalPromotionService: {},
     discourseStateService: {},
     postGenerationGuardRunner: {
-      listRecentCompletedActions: () => [],
+      listRecentCompletedActionsForCognition: () => [],
     },
     turnActionCoordinator: {},
     turnReflectionCoordinator: {},

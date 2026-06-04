@@ -25,6 +25,7 @@ import type {
 } from "../../memory/self/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../../retrieval/recall-context.js";
 import type {
   RelationalSlot,
   RelationalSlotRepository,
@@ -153,9 +154,14 @@ export type DeliberationRoutingOverride = {
   isOperational?: boolean;
 };
 
+export type SelfSnapshotGoal = GoalRecord & {
+  disclosure?: string;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
+};
+
 export type SelfSnapshot = {
   values: ValueRecord[];
-  goals: GoalRecord[];
+  goals: SelfSnapshotGoal[];
   traits: TraitRecord[];
   /**
    * The being's current autobiographical period (label + narrative). Phase

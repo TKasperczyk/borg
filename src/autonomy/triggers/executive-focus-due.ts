@@ -5,11 +5,18 @@ import {
 } from "../../executive/index.js";
 import type { ExecutiveStep, ExecutiveStepsRepository } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import type { EpisodicRepository } from "../../memory/episodic/index.js";
+import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
+import { goalMemoryDisclosureLabel } from "../../cognition/disclosure-labels.js";
+import { listActiveGoalsForCognition } from "../../cognition/self/active-goals.js";
 import {
-  isEpisodeVisibleToAudience,
-  type EpisodicRepository,
-} from "../../memory/episodic/index.js";
-import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
+  type MemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import {
   buildSelfScoringFeatureSet,
   type GoalScoringVector,
@@ -24,11 +31,25 @@ const TRIGGER_NAME = "executive_focus_due" as const;
 const WATERMARK_PREFIX = "autonomy:executive-focus-due";
 
 type ExecutiveFocusDueReason = "step_due" | "goal_stale";
+type ExecutiveFocusDisclosureLabelMetadata = ReturnType<typeof memoryDisclosureLabelMetadata>;
+
+type ExecutiveFocusDisclosurePayload = {
+  disclosure: string;
+  disclosure_label: ExecutiveFocusDisclosureLabelMetadata;
+};
+
+type ExecutiveFocusGoalDisclosurePayload = ExecutiveFocusDisclosurePayload & {
+  goal_disclosure: string;
+  goal_disclosure_label: ExecutiveFocusDisclosureLabelMetadata;
+  source_disclosure?: string;
+  source_disclosure_label?: ExecutiveFocusDisclosureLabelMetadata;
+};
 
 type ExecutiveFocusDueStepPayload = Pick<
   ExecutiveStep,
   "id" | "goal_id" | "description" | "status" | "kind" | "due_at" | "last_attempt_ts"
->;
+> &
+  ExecutiveFocusDisclosurePayload;
 
 export type ExecutiveFocusDuePayload = {
   reason: ExecutiveFocusDueReason;
@@ -40,7 +61,7 @@ export type ExecutiveFocusDuePayload = {
     priority: number;
     target_at: number | null;
     last_progress_ts: number | null;
-  };
+  } & ExecutiveFocusGoalDisclosurePayload;
   selected_score: {
     score: number;
     components: {
@@ -87,24 +108,6 @@ type ProvenanceScopedSelfRecord = {
   key_episode_ids?: readonly EpisodeId[] | null;
 };
 
-function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
-  const flattened: GoalRecord[] = [];
-  const stack = [...goals];
-
-  while (stack.length > 0) {
-    const next = stack.shift();
-
-    if (next === undefined) {
-      continue;
-    }
-
-    flattened.push(next);
-    stack.push(...next.children);
-  }
-
-  return flattened;
-}
-
 function getSelfRecordEvidenceEpisodeIds(record: ProvenanceScopedSelfRecord): EpisodeId[] {
   if (record.provenance?.kind !== "episodes") {
     return [];
@@ -124,43 +127,82 @@ function getSelfRecordEvidenceEpisodeIds(record: ProvenanceScopedSelfRecord): Ep
   return [...new Set([...(record.provenance.episode_ids ?? []), ...explicitEpisodeIds])];
 }
 
-function isSelfRecordVisible(
-  record: ProvenanceScopedSelfRecord,
-  visibleEpisodeIds: ReadonlySet<EpisodeId>,
-): boolean {
-  const episodeIds = getSelfRecordEvidenceEpisodeIds(record);
-
-  if (episodeIds.length === 0) {
-    return true;
-  }
-
-  return episodeIds.some((episodeId) => visibleEpisodeIds.has(episodeId));
+function disclosurePayload(label: MemoryDisclosureLabel): ExecutiveFocusDisclosurePayload {
+  return {
+    disclosure: renderMemoryDisclosureLabelForModel(label),
+    disclosure_label: memoryDisclosureLabelMetadata(label),
+  };
 }
 
-async function listSelfVisibleActiveGoals(options: {
-  goalsRepository: GoalsRepository;
-  episodicRepository: EpisodicRepository;
-}): Promise<GoalRecord[]> {
-  const goals = flattenGoals(options.goalsRepository.list({ status: "active" }));
-  const evidenceEpisodeIds = [
-    ...new Set(goals.flatMap((goal) => getSelfRecordEvidenceEpisodeIds(goal))),
-  ];
-
-  if (evidenceEpisodeIds.length === 0) {
-    return goals;
-  }
-
-  const evidenceEpisodes = await options.episodicRepository.getMany(evidenceEpisodeIds);
-  const visibleEpisodeIds = new Set(
-    evidenceEpisodes
-      .filter((episode) => isEpisodeVisibleToAudience(episode, null))
-      .map((episode) => episode.id),
+function goalDisclosurePayload(input: {
+  goalLabel: MemoryDisclosureLabel;
+  sourceLabel: MemoryDisclosureLabel | null;
+}): ExecutiveFocusGoalDisclosurePayload {
+  const combinedLabel = combineMemoryDisclosureLabels(
+    input.sourceLabel === null ? [input.goalLabel] : [input.goalLabel, input.sourceLabel],
   );
+  const combined = disclosurePayload(combinedLabel);
+  const goalOnly = disclosurePayload(input.goalLabel);
+  const sourceOnly = input.sourceLabel === null ? null : disclosurePayload(input.sourceLabel);
 
-  return goals.filter((goal) => isSelfRecordVisible(goal, visibleEpisodeIds));
+  return {
+    disclosure: combined.disclosure,
+    disclosure_label: combined.disclosure_label,
+    goal_disclosure: goalOnly.disclosure,
+    goal_disclosure_label: goalOnly.disclosure_label,
+    ...(sourceOnly === null
+      ? {}
+      : {
+          source_disclosure: sourceOnly.disclosure,
+          source_disclosure_label: sourceOnly.disclosure_label,
+        }),
+  };
 }
 
-function serializeStep(step: ExecutiveStep): ExecutiveFocusDueStepPayload {
+async function buildGoalDisclosurePayloads(options: {
+  goals: readonly GoalRecord[];
+  episodicRepository: EpisodicRepository;
+}): Promise<Map<GoalRecord["id"], ExecutiveFocusGoalDisclosurePayload>> {
+  const evidenceEpisodeIds = [
+    ...new Set(options.goals.flatMap((goal) => getSelfRecordEvidenceEpisodeIds(goal))),
+  ];
+  const evidenceEpisodes =
+    evidenceEpisodeIds.length === 0
+      ? []
+      : await options.episodicRepository.getMany(evidenceEpisodeIds);
+  const episodesById = new Map(evidenceEpisodes.map((episode) => [episode.id, episode]));
+  const disclosureByGoalId = new Map<GoalRecord["id"], ExecutiveFocusGoalDisclosurePayload>();
+
+  for (const goal of options.goals) {
+    const goalLabel = goalMemoryDisclosureLabel(goal);
+    const sourceEpisodeIds = getSelfRecordEvidenceEpisodeIds(goal);
+    const sourceLabel =
+      sourceEpisodeIds.length === 0
+        ? null
+        : combineMemoryDisclosureLabels(
+            sourceEpisodeIds.map((episodeId) => {
+              const episode = episodesById.get(episodeId);
+              return episode === undefined
+                ? unknownMemoryDisclosureLabel()
+                : memoryDisclosureLabelFromEpisodeAccess(episode);
+            }),
+          );
+    disclosureByGoalId.set(
+      goal.id,
+      goalDisclosurePayload({
+        goalLabel,
+        sourceLabel,
+      }),
+    );
+  }
+
+  return disclosureByGoalId;
+}
+
+function serializeStep(
+  step: ExecutiveStep,
+  disclosure: ExecutiveFocusDisclosurePayload,
+): ExecutiveFocusDueStepPayload {
   return {
     id: step.id,
     goal_id: step.goal_id,
@@ -169,6 +211,8 @@ function serializeStep(step: ExecutiveStep): ExecutiveFocusDueStepPayload {
     kind: step.kind,
     due_at: step.due_at,
     last_attempt_ts: step.last_attempt_ts,
+    disclosure: disclosure.disclosure,
+    disclosure_label: disclosure.disclosure_label,
   };
 }
 
@@ -178,6 +222,7 @@ function buildScorePayload(input: {
   threshold: number;
   topOpenStep: ExecutiveStep | null;
   reason: ExecutiveFocusDueReason;
+  disclosure: ExecutiveFocusGoalDisclosurePayload;
   dueStep?: ExecutiveStep;
 }): ExecutiveFocusDuePayload {
   return {
@@ -190,6 +235,7 @@ function buildScorePayload(input: {
       priority: input.goal.priority,
       target_at: input.goal.target_at,
       last_progress_ts: input.goal.last_progress_ts,
+      ...input.disclosure,
     },
     selected_score: {
       score: input.score.score,
@@ -197,8 +243,11 @@ function buildScorePayload(input: {
       reason: input.score.reason,
       threshold: input.threshold,
     },
-    top_open_step: input.topOpenStep === null ? null : serializeStep(input.topOpenStep),
-    ...(input.dueStep === undefined ? {} : { due_step: serializeStep(input.dueStep) }),
+    top_open_step:
+      input.topOpenStep === null ? null : serializeStep(input.topOpenStep, input.disclosure),
+    ...(input.dueStep === undefined
+      ? {}
+      : { due_step: serializeStep(input.dueStep, input.disclosure) }),
   };
 }
 
@@ -300,8 +349,9 @@ export function createExecutiveFocusDueTrigger(
       }
 
       const nowMs = clock.now();
-      const goals = await listSelfVisibleActiveGoals({
-        goalsRepository: options.goalsRepository,
+      const goals = listActiveGoalsForCognition(options.goalsRepository);
+      const goalDisclosureById = await buildGoalDisclosurePayloads({
+        goals,
         episodicRepository: options.episodicRepository,
       });
       let goalVectors: GoalScoringVector[] = [];
@@ -384,6 +434,12 @@ export function createExecutiveFocusDueTrigger(
             threshold,
             topOpenStep,
             reason: "step_due",
+            disclosure:
+              goalDisclosureById.get(goal.id) ??
+              goalDisclosurePayload({
+                goalLabel: goalMemoryDisclosureLabel(goal),
+                sourceLabel: null,
+              }),
             dueStep,
           }),
         });
@@ -426,6 +482,12 @@ export function createExecutiveFocusDueTrigger(
               threshold,
               topOpenStep: options.executiveStepsRepository.topOpen(selectedGoal.id),
               reason: "goal_stale",
+              disclosure:
+                goalDisclosureById.get(selectedGoal.id) ??
+                goalDisclosurePayload({
+                  goalLabel: goalMemoryDisclosureLabel(selectedGoal),
+                  sourceLabel: null,
+                }),
             }),
           });
         }

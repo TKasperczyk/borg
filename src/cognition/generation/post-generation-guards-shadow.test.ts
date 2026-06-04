@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import type { ActionRecord } from "../../memory/actions/index.js";
+import type { ActionRecord, ActionRecordListFilter } from "../../memory/actions/index.js";
 import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
@@ -786,5 +786,99 @@ describe("post-generation guard shadow chain", () => {
       verdict: "suppressed",
       leaked_identifiers: [discourseTurnId],
     });
+  });
+
+  it("uses global recent completed actions for cognition and internal-id hygiene", async () => {
+    const alice = createEntityId();
+    const privateAction: ActionRecord = {
+      id: createActionId(),
+      description: "Completed Alice private launch review",
+      actor: "borg",
+      audience_entity_id: alice,
+      goal_id: null,
+      open_question_id: null,
+      state: "completed",
+      confidence: 0.9,
+      provenance_episode_ids: [],
+      provenance_stream_entry_ids: [createStreamEntryId()],
+      created_at: 1_000,
+      updated_at: 2_000,
+      considering_at: null,
+      committed_at: null,
+      scheduled_at: null,
+      completed_at: 2_000,
+      not_done_at: null,
+      expired_at: null,
+      archived_at: null,
+      unknown_at: null,
+      canonicalized_by_artifact_entry_id: null,
+      session_scope: null,
+      session_anchor_id: null,
+      last_referenced_at_ms: 2_000,
+      last_referenced_turn_counter: null,
+    };
+    const actionRepository = {
+      list: vi.fn((filter: ActionRecordListFilter = {}) =>
+        [privateAction].filter(
+          (action) =>
+            (filter.state === undefined || action.state === filter.state) &&
+            (filter.recallAllAudiences === true ||
+              !("audienceEntityId" in filter) ||
+              (filter.audienceEntityId === null
+                ? action.audience_entity_id === null
+                : action.audience_entity_id === filter.audienceEntityId)),
+        ),
+      ),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository,
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit: vi.fn(),
+      },
+    });
+
+    expect(postGenerationRunner.listRecentCompletedActionsForCognition(null)).toEqual([
+      privateAction,
+    ]);
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-private-completed-action-id-leak",
+      response: `The completed action id was ${privateAction.id}.`,
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(actionRepository.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "completed",
+        recallAllAudiences: true,
+      }),
+    );
   });
 });

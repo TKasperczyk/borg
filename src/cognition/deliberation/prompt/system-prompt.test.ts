@@ -23,6 +23,7 @@ import {
   createRelationalSlotId,
   createStreamEntryId,
 } from "../../../util/ids.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import type { EvidenceLedger } from "../../evidence-ledger/types.js";
 import { FixedClock } from "../../../util/clock.js";
 import { openDatabase } from "../../../storage/sqlite/index.js";
@@ -42,6 +43,7 @@ import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { buildCreatorDirectiveBriefingForTurn } from "../../lifecycle/turn-phase/retrieval-phase.js";
 import type { DeliberationContext } from "../types.js";
+import { memoryDisclosurePayloadFields } from "../../disclosure-labels.js";
 
 import {
   buildBaseSystemPrompt,
@@ -1604,6 +1606,80 @@ describe("buildBaseSystemPrompt", () => {
     expect(selfSnapshotBlock).toContain(`private-to=${goalAudienceId}`);
   });
 
+  it("renders propagated source disclosure for executive focus goals and inherited next steps", () => {
+    const alice = createEntityId();
+    const sourceDisclosureFields = memoryDisclosurePayloadFields(
+      relationshipPrivateMemoryDisclosureLabel([alice]),
+    );
+    const goal = {
+      id: "goal_bbbbbbbbbbbbbbbb" as never,
+      description: "Follow the source-grounded private goal",
+      priority: 8,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: NOW_MS,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      source_stream_entry_ids: [createStreamEntryId()],
+      provenance: { kind: "manual" },
+      ...sourceDisclosureFields,
+    } as NonNullable<NonNullable<DeliberationContext["executiveFocus"]>["selected_goal"]>;
+    const selectedScore = {
+      goal_id: goal.id,
+      goal,
+      score: 0.86,
+      components: {
+        priority: 0.8,
+        deadline_pressure: 0.1,
+        context_fit: 0.9,
+        progress_debt: 0.3,
+      },
+      reason: "source-grounded goal is salient",
+    };
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        executiveFocus: {
+          selected_goal: goal,
+          selected_score: selectedScore,
+          next_step: {
+            id: "exstep_bbbbbbbbbbbbbbbb" as never,
+            goal_id: goal.id,
+            description: "Review the source-grounded next step",
+            status: "queued",
+            kind: "think",
+            due_at: null,
+            last_attempt_ts: null,
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+            provenance: { kind: "manual" },
+          },
+          candidates: [selectedScore],
+          threshold: 0.5,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [goal],
+          traits: [],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const executiveBlock = extractBlock(prompt, "borg_executive_focus");
+    const selfSnapshotBlock = extractBlock(prompt, "borg_self_snapshot");
+    const goalLine =
+      executiveBlock.split("\n").find((line) => line.includes("Current driving goal:")) ?? "";
+    const nextStepLine =
+      executiveBlock.split("\n").find((line) => line.includes("Next step:")) ?? "";
+
+    expect(goalLine).toContain(`private-to=${alice}`);
+    expect(nextStepLine).toContain(`private-to=${alice}`);
+    expect(selfSnapshotBlock).toContain("Follow the source-grounded private goal");
+    expect(selfSnapshotBlock).toContain(`private-to=${alice}`);
+  });
+
   it("omits legacy retrieved evidence when the evidence ledger is active", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
@@ -1796,6 +1872,50 @@ describe("buildBaseSystemPrompt", () => {
     expect(completedBlock).toContain("disclosure_class=self_private");
     expect(completedBlock).not.toContain("disclosure_class=public");
     expect(completedBlock).not.toContain(pending);
+  });
+
+  it("renders private recent completed actions with disclosure labels", () => {
+    const alice = createEntityId();
+    const completed = "Reviewed Alice private launch result";
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        recentCompletedActions: [
+          {
+            id: createActionId(),
+            description: completed,
+            actor: "borg",
+            audience_entity_id: alice,
+            goal_id: null,
+            open_question_id: null,
+            state: "completed",
+            confidence: 0.9,
+            provenance_episode_ids: [],
+            provenance_stream_entry_ids: [createStreamEntryId()],
+            created_at: NOW_MS - 1_000,
+            updated_at: NOW_MS,
+            considering_at: null,
+            committed_at: null,
+            scheduled_at: null,
+            completed_at: NOW_MS,
+            not_done_at: null,
+            expired_at: null,
+            archived_at: null,
+            unknown_at: null,
+            canonicalized_by_artifact_entry_id: null,
+            session_scope: null,
+            session_anchor_id: null,
+            last_referenced_at_ms: NOW_MS,
+            last_referenced_turn_counter: null,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const completedBlock = extractBlock(prompt, "borg_recent_completed_actions");
+
+    expect(completedBlock).toContain(completed);
+    expect(completedBlock).toContain("disclosure_class=relationship_private");
+    expect(completedBlock).toContain(`private-to=${alice}`);
   });
 
   it("omits legacy completed actions when the evidence ledger is active", () => {

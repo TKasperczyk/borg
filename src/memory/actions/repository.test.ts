@@ -171,9 +171,19 @@ describe("ActionRepository", () => {
       completed_at: 2_000,
       updated_at: 2_000,
     });
+    const thirdAudienceEntityId = createEntityId();
+    const third = makeAction({
+      description: "Prepare private channel follow-up",
+      actor: "borg",
+      audience_entity_id: thirdAudienceEntityId,
+      state: "scheduled",
+      scheduled_at: 3_000,
+      updated_at: 3_000,
+    });
 
     repository.add(first);
     repository.add(second);
+    repository.add(third);
     repository.update(first.id, {
       state: "completed",
       confidence: 0.95,
@@ -195,6 +205,11 @@ describe("ActionRepository", () => {
       first.id,
     ]);
     expect(repository.list({ audienceEntityId: null }).map((record) => record.id)).toEqual([
+      second.id,
+    ]);
+    expect(repository.list({ recallAllAudiences: true }).map((record) => record.id)).toEqual([
+      first.id,
+      third.id,
       second.id,
     ]);
   });

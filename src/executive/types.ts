@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { GoalRecord } from "../memory/self/index.js";
 import { provenanceSchema, type Provenance } from "../memory/common/provenance.js";
+import type { MemoryDisclosureLabelMetadata } from "../retrieval/recall-context.js";
 import {
   executiveStepIdHelpers,
   goalIdHelpers,
@@ -62,6 +63,15 @@ export type ExecutiveStepStatus = z.infer<typeof executiveStepStatusSchema>;
 export type ExecutiveStepKind = z.infer<typeof executiveStepKindSchema>;
 export type ExecutiveStepProvenance = Provenance;
 
+export type ExecutiveFocusDisclosureFields = {
+  disclosure?: string;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
+};
+
+export type ExecutiveFocusGoal = GoalRecord & ExecutiveFocusDisclosureFields;
+
+export type ExecutiveFocusStep = ExecutiveStep & ExecutiveFocusDisclosureFields;
+
 export const VALID_TRANSITIONS: Record<ExecutiveStepStatus, ReadonlySet<ExecutiveStepStatus>> = {
   queued: new Set(["queued", "doing", "abandoned"]),
   doing: new Set(["doing", "done", "blocked", "abandoned"]),
@@ -86,16 +96,16 @@ export type ExecutiveGoalScoreComponents = {
 
 export type ExecutiveGoalScore = {
   goal_id: GoalRecord["id"];
-  goal: GoalRecord;
+  goal: ExecutiveFocusGoal;
   score: number;
   components: ExecutiveGoalScoreComponents;
   reason: string;
 };
 
 export type ExecutiveFocus = {
-  selected_goal: GoalRecord | null;
+  selected_goal: ExecutiveFocusGoal | null;
   selected_score: ExecutiveGoalScore | null;
-  next_step?: ExecutiveStep | null;
+  next_step?: ExecutiveFocusStep | null;
   candidates: ExecutiveGoalScore[];
   threshold: number;
 };

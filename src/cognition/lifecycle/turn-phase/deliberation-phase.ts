@@ -119,9 +119,10 @@ export async function runDeliberationPhase(input: {
       selectedSkill: input.retrievalPhase.selectedSkill,
       entityRepository: input.options.entityRepository,
       workingMemory: input.workingMemory,
-      recentCompletedActions: input.options.postGenerationGuardRunner.listRecentCompletedActions(
-        input.audienceEntityId,
-      ),
+      recentCompletedActions:
+        input.options.postGenerationGuardRunner.listRecentCompletedActionsForCognition(
+          input.audienceEntityId,
+        ),
       affectiveTrajectory: input.retrievalPhase.affectiveTrajectory,
       selfSnapshot: input.retrievalPhase.selfSnapshot,
       executiveFocus: input.retrievalPhase.executiveFocusWithStep,

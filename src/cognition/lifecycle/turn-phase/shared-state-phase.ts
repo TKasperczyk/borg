@@ -1,6 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
 
-import { isActionVisibleToSession } from "../../evidence-ledger/audience-visibility.js";
 import {
   estimateEvidenceLedgerPromptTokens,
   renderEvidenceLedger,
@@ -236,15 +235,18 @@ export function isSharedStateCommitmentCanonicalizationRecord(
   return SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET.has(commitment.type);
 }
 
-function addScopedActionCandidates(input: {
+function addCurrentAudienceActionCandidatesForCanonicalization(input: {
   target: Map<string, ScopedSharedStateArtifactActionCandidate>;
   actions: readonly ActionRecord[];
   scope: SharedStateArtifactActionCandidateScope;
   audienceEntityId: EntityId | null;
-  activeParticipantIds: ReadonlySet<EntityId>;
 }): void {
   for (const action of input.actions) {
-    if (!isActionVisibleToSession(action, input.audienceEntityId, input.activeParticipantIds)) {
+    if (input.scope === "audience" && action.audience_entity_id !== input.audienceEntityId) {
+      continue;
+    }
+
+    if (input.scope === "global" && action.audience_entity_id !== null) {
       continue;
     }
 
@@ -257,7 +259,7 @@ function addScopedActionCandidates(input: {
   }
 }
 
-export function selectSharedStateArtifactActionCandidates(input: {
+export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalization(input: {
   actionRepository: TurnPhaseCoordinatorOptions["actionRepository"];
   audienceEntityId: EntityId | null;
   activeParticipants: readonly ActiveParticipant[] | undefined;
@@ -265,13 +267,10 @@ export function selectSharedStateArtifactActionCandidates(input: {
   candidates: SharedStateCanonicalizationCandidates["actions"];
   countByScope: Record<SharedStateArtifactActionCandidateScope, number>;
 } {
-  const activeParticipantIds = new Set(
-    (input.activeParticipants ?? []).map((participant) => participant.entityId),
-  );
   const scoped = new Map<string, ScopedSharedStateArtifactActionCandidate>();
 
   if (input.audienceEntityId !== null) {
-    addScopedActionCandidates({
+    addCurrentAudienceActionCandidatesForCanonicalization({
       target: scoped,
       actions: input.actionRepository.list({
         states: ACTIVE_ACTION_STATES,
@@ -280,11 +279,10 @@ export function selectSharedStateArtifactActionCandidates(input: {
       }),
       scope: "audience",
       audienceEntityId: input.audienceEntityId,
-      activeParticipantIds,
     });
   }
 
-  addScopedActionCandidates({
+  addCurrentAudienceActionCandidatesForCanonicalization({
     target: scoped,
     actions: input.actionRepository.list({
       states: ACTIVE_ACTION_STATES,
@@ -293,22 +291,7 @@ export function selectSharedStateArtifactActionCandidates(input: {
     }),
     scope: "global",
     audienceEntityId: input.audienceEntityId,
-    activeParticipantIds,
   });
-
-  for (const participant of input.activeParticipants ?? []) {
-    addScopedActionCandidates({
-      target: scoped,
-      actions: input.actionRepository.list({
-        states: ACTIVE_ACTION_STATES,
-        actor: participant.entityId,
-        limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
-      }),
-      scope: "actor",
-      audienceEntityId: input.audienceEntityId,
-      activeParticipantIds,
-    });
-  }
 
   const selected = [...scoped.values()]
     .sort(
@@ -320,7 +303,6 @@ export function selectSharedStateArtifactActionCandidates(input: {
   const countByScope: Record<SharedStateArtifactActionCandidateScope, number> = {
     audience: 0,
     global: 0,
-    actor: 0,
   };
 
   for (const candidate of selected) {
@@ -387,7 +369,7 @@ const SHARED_STATE_IN_FLIGHT_KINDS = [
   "tentative",
 ] as const satisfies readonly SharedStateEntryKind[];
 const SHARED_STATE_ACTION_CANDIDATE_LIMIT = 80;
-type SharedStateArtifactActionCandidateScope = "audience" | "global" | "actor";
+type SharedStateArtifactActionCandidateScope = "audience" | "global";
 type ScopedSharedStateArtifactActionCandidate = {
   action: ActionRecord;
   scope: SharedStateArtifactActionCandidateScope;

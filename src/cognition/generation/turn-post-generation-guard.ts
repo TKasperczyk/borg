@@ -19,6 +19,7 @@ import {
 } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
+import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import { ClosurePressureGuard } from "./closure-pressure-guard.js";
@@ -228,7 +229,11 @@ export class TurnPostGenerationGuardRunner {
     const relationalSlots = this.options.relationalSlotRepository.list({
       limit: RELATIONAL_SLOT_GUARD_LIMIT,
     });
-    const recentCompletedActions = this.listRecentCompletedActions(input.audienceEntityId);
+    const recentCompletedActions = this.listRecentCompletedActionsForCognition(
+      input.audienceEntityId,
+    );
+    const recentCompletedActionsForInternalIdentifierGuard =
+      this.listRecentCompletedActionsForInternalIdentifierGuard(recentCompletedActions);
 
     const closureGuard = new ClosurePressureGuard({
       llmClient: input.llmClient,
@@ -267,7 +272,7 @@ export class TurnPostGenerationGuardRunner {
         closurePressureHistory: input.closurePressureHistory ?? [],
         recentSuppressions: input.recentSuppressions ?? [],
         relationalSlots,
-        recentCompletedActions,
+        recentCompletedActions: recentCompletedActionsForInternalIdentifierGuard,
         audienceEntityId: input.audienceEntityId,
         knownInternalIdentifiers: input.knownInternalIdentifiers ?? [],
       }),
@@ -275,30 +280,19 @@ export class TurnPostGenerationGuardRunner {
     });
   }
 
-  listRecentCompletedActions(audienceEntityId: EntityId | null): ActionRecord[] {
-    const visibleActions =
-      audienceEntityId === null
-        ? this.options.actionRepository.list({
-            state: "completed",
-            audienceEntityId: null,
-            limit: COMPLETED_ACTION_LIMIT,
-          })
-        : [
-            ...this.options.actionRepository.list({
-              state: "completed",
-              audienceEntityId: null,
-              limit: COMPLETED_ACTION_LIMIT,
-            }),
-            ...this.options.actionRepository.list({
-              state: "completed",
-              audienceEntityId,
-              limit: COMPLETED_ACTION_LIMIT,
-            }),
-          ];
+  listRecentCompletedActionsForCognition(audienceEntityId: EntityId | null): ActionRecord[] {
+    return listActionCandidatesForCognition({
+      actionRepository: this.options.actionRepository,
+      audienceEntityId,
+      state: "completed",
+      limit: COMPLETED_ACTION_LIMIT,
+    }).map((candidate) => candidate.record);
+  }
 
-    return visibleActions
-      .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
-      .slice(0, COMPLETED_ACTION_LIMIT);
+  private listRecentCompletedActionsForInternalIdentifierGuard(
+    modelContextActions: readonly ActionRecord[],
+  ): ActionRecord[] {
+    return [...modelContextActions];
   }
 
   private async loadStreamEntries(sessionId: SessionId): Promise<StreamEntry[]> {

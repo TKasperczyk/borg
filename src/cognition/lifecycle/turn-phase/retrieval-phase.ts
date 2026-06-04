@@ -97,7 +97,7 @@ import {
   collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds,
   compactSharedStateArtifactCandidateText,
   isSharedStateCommitmentCanonicalizationRecord,
-  selectSharedStateArtifactActionCandidates,
+  selectCurrentAudienceSharedStateActionCandidatesForCanonicalization,
   shouldSkipSharedStateCompile,
 } from "./shared-state-phase.js";
 import { runSharedStateArtifactRetryOnlyReconciliation } from "./reconciliation-phase.js";
@@ -1539,11 +1539,12 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     minTailPerSection: sharedStateConfig.ledgerDelta.minTailPerSection,
     sourceTrustValidator,
   });
-  const actionCanonicalizationCandidates = selectSharedStateArtifactActionCandidates({
-    actionRepository: input.options.actionRepository,
-    audienceEntityId,
-    activeParticipants: input.input.activeParticipants,
-  });
+  const currentAudienceActionCandidatesForCanonicalization =
+    selectCurrentAudienceSharedStateActionCandidatesForCanonicalization({
+      actionRepository: input.options.actionRepository,
+      audienceEntityId,
+      activeParticipants: input.input.activeParticipants,
+    });
   const activeGoals = input.options.goalsRepository.list({
     status: "active",
     visibleToAudienceEntityId: audienceEntityId,
@@ -1611,7 +1612,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     ledgerStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
     recentlyRetrievedEntryIds,
     activeOpenQuestionIds: activeOpenQuestions.map((question) => question.id as OpenQuestionId),
-    activeActionIds: (actionCanonicalizationCandidates.candidates ?? []).map(
+    activeActionIds: (currentAudienceActionCandidatesForCanonicalization.candidates ?? []).map(
       (action) => action.id as ActionId,
     ),
     activeGoalIds: activeGoals.map((goal) => goal.id as GoalId),
@@ -1741,7 +1742,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       directive_family: commitment.directive_family,
       enforcement_class: effectiveCommitmentEnforcementClass(commitment),
     })),
-    actions: actionCanonicalizationCandidates.candidates ?? [],
+    actions: currentAudienceActionCandidatesForCanonicalization.candidates ?? [],
     openQuestions: activeOpenQuestions.map((question) => ({
       id: question.id,
       text: compactSharedStateArtifactCandidateText(question.question),
@@ -1751,8 +1752,9 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     input.options.tracer.emit("shared_state.canonicalization.completed", {
       turnId: input.input.turnId,
       session_id: input.input.sessionId,
-      candidate_count_by_scope: actionCanonicalizationCandidates.countByScope,
-      candidate_count_total: (actionCanonicalizationCandidates.candidates ?? []).length,
+      candidate_count_by_scope: currentAudienceActionCandidatesForCanonicalization.countByScope,
+      candidate_count_total: (currentAudienceActionCandidatesForCanonicalization.candidates ?? [])
+        .length,
     });
   }
 

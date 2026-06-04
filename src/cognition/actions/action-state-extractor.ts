@@ -38,6 +38,10 @@ import {
 } from "../../util/ids.js";
 import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import {
+  actionMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../disclosure-labels.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   traceLlmCallError,
@@ -230,6 +234,7 @@ function compactActionForPrompt(action: ActionRecord): Record<string, unknown> {
     session_anchor_id: action.session_anchor_id,
     last_referenced_turn_counter: action.last_referenced_turn_counter,
     last_referenced_turn_global: action.last_referenced_turn_global ?? null,
+    ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(action)),
   };
 }
 

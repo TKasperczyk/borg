@@ -1778,10 +1778,17 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     };
 
     expect(requestPayload.canonicalization_candidates?.active_actions).toEqual([
-      expect.objectContaining({ id: actorAction.id, text: "Alice actor-scoped release action" }),
       expect.objectContaining({ id: audienceAction.id, text: "Audience-scoped release action" }),
       expect.objectContaining({ id: globalAction.id, text: "Global release action" }),
     ]);
+    expect(requestPayload.canonicalization_candidates?.active_actions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: actorAction.id,
+          text: "Alice actor-scoped release action",
+        }),
+      ]),
+    );
     expect(requestPayload.canonicalization_candidates?.active_commitments).toEqual([
       {
         id: promiseCommitment.id,
@@ -1807,9 +1814,8 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
         candidate_count_by_scope: {
           audience: 1,
           global: 1,
-          actor: 1,
         },
-        candidate_count_total: 3,
+        candidate_count_total: 2,
       },
     });
   });

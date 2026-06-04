@@ -16,14 +16,18 @@ import {
   type RetrievalScoringFeatures,
   type SelfScoringFeatureSet,
 } from "../../retrieval/scoring-features.js";
+import type { MemoryDisclosureLabel } from "../../retrieval/recall-context.js";
 import type { Clock } from "../../util/clock.js";
 import { goalIdHelpers, type EntityId, type GoalId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
+import {
+  memoryDisclosureLabelFromMetadata,
+  memoryDisclosurePayloadFields,
+} from "../disclosure-labels.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
-
-type GoalTreeNode = GoalRecord & { children?: unknown };
+import { listActiveGoalsForCognition as listActiveGoalRecordsForCognition } from "./active-goals.js";
 
 export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
@@ -57,27 +61,6 @@ export type TurnSelfContext = {
   executiveFocus: ExecutiveFocus;
 };
 
-function flattenGoals(goals: ReadonlyArray<GoalTreeNode>): GoalRecord[] {
-  const flattened: GoalRecord[] = [];
-  const stack = [...goals];
-
-  while (stack.length > 0) {
-    const next = stack.shift();
-
-    if (next === undefined) {
-      continue;
-    }
-
-    flattened.push(next);
-
-    if ("children" in next && Array.isArray(next.children)) {
-      stack.push(...(next.children as GoalRecord[]));
-    }
-  }
-
-  return flattened;
-}
-
 function getForcedExecutiveFocusGoalId(
   autonomyTrigger: AutonomyTriggerContext | null | undefined,
 ): GoalId | null {
@@ -91,6 +74,51 @@ function getForcedExecutiveFocusGoalId(
   const candidate = autonomyTrigger.payload.force_executive_focus_goal_id;
 
   return typeof candidate === "string" && goalIdHelpers.is(candidate) ? candidate : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function executiveFocusGoalDisclosureLabelsFromTrigger(
+  autonomyTrigger: AutonomyTriggerContext | null | undefined,
+): ReadonlyMap<GoalId, MemoryDisclosureLabel> {
+  if (autonomyTrigger?.source_name !== "executive_focus_due") {
+    return new Map();
+  }
+
+  const selectedGoalId = autonomyTrigger.payload.selected_goal_id;
+  const selectedGoalPayload = autonomyTrigger.payload.selected_goal;
+
+  if (typeof selectedGoalId !== "string" || !goalIdHelpers.is(selectedGoalId)) {
+    return new Map();
+  }
+
+  if (!isRecord(selectedGoalPayload)) {
+    return new Map();
+  }
+
+  const disclosureLabel = memoryDisclosureLabelFromMetadata(
+    selectedGoalPayload.disclosure_label,
+  );
+
+  return disclosureLabel === null ? new Map() : new Map([[selectedGoalId, disclosureLabel]]);
+}
+
+function annotateGoalsWithDisclosure(
+  goals: readonly GoalRecord[],
+  disclosureLabelsByGoalId: ReadonlyMap<GoalId, MemoryDisclosureLabel>,
+): SelfSnapshot["goals"] {
+  return goals.map((goal) => {
+    const disclosureLabel = disclosureLabelsByGoalId.get(goal.id);
+
+    return disclosureLabel === undefined
+      ? goal
+      : {
+          ...goal,
+          ...memoryDisclosurePayloadFields(disclosureLabel),
+        };
+  });
 }
 
 function applyForcedExecutiveFocus(
@@ -118,11 +146,7 @@ export class TurnSelfContextBuilder {
   constructor(private readonly options: TurnSelfContextOptions) {}
 
   async buildSelfSnapshot(_audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
-    const goals = flattenGoals(
-      this.options.goalsRepository.list({
-        status: "active",
-      }),
-    );
+    const goals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
     const values = this.options.valuesRepository.list();
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
@@ -138,17 +162,18 @@ export class TurnSelfContextBuilder {
   }
 
   async listActiveGoalsForCognition(_audienceEntityId: EntityId | null): Promise<GoalRecord[]> {
-    const goals = flattenGoals(
-      this.options.goalsRepository.list({
-        status: "active",
-      }),
-    );
-
-    return goals;
+    return listActiveGoalRecordsForCognition(this.options.goalsRepository);
   }
 
   async build(input: TurnSelfContextInput): Promise<TurnSelfContext> {
-    const selfSnapshot = await this.buildSelfSnapshot(input.audienceEntityId);
+    const baseSelfSnapshot = await this.buildSelfSnapshot(input.audienceEntityId);
+    const disclosureLabelsByGoalId = executiveFocusGoalDisclosureLabelsFromTrigger(
+      input.autonomyTrigger,
+    );
+    const selfSnapshot: SelfSnapshot = {
+      ...baseSelfSnapshot,
+      goals: annotateGoalsWithDisclosure(baseSelfSnapshot.goals, disclosureLabelsByGoalId),
+    };
     const executiveContextText = [
       input.cognitionInput,
       ...input.perception.entities,
@@ -222,9 +247,19 @@ export class TurnSelfContextBuilder {
         ? executiveFocus
         : {
             ...executiveFocus,
-            next_step: this.options.executiveStepsRepository.topOpen(
-              executiveFocus.selected_goal.id,
-            ),
+            next_step: (() => {
+              const step = this.options.executiveStepsRepository.topOpen(
+                executiveFocus.selected_goal.id,
+              );
+              const disclosureLabel = disclosureLabelsByGoalId.get(executiveFocus.selected_goal.id);
+
+              return step === null || disclosureLabel === undefined
+                ? step
+                : {
+                    ...step,
+                    ...memoryDisclosurePayloadFields(disclosureLabel),
+                  };
+            })(),
           };
 
     return {
