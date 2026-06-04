@@ -7,11 +7,13 @@ import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
+import type { LLMCompleteResult } from "../../llm/index.js";
 import type {
   CognitionRecallContext,
   DisclosureContext,
   RetrievedContext,
 } from "../../retrieval/index.js";
+import { createOfflineTestHarness, TestEmbeddingClient } from "../../offline/test-support.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { ManualClock } from "../../util/clock.js";
@@ -25,6 +27,7 @@ import {
 } from "../../util/ids.js";
 import { SuppressionSet } from "../attention/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
+import { buildBaseSystemPrompt } from "../deliberation/prompt/system-prompt.js";
 import type { PerceptionResult } from "../types.js";
 import { TurnRetrievalCoordinator } from "./turn-coordinator.js";
 
@@ -33,6 +36,36 @@ const atlasEntityId = "entity_atlas" as EntityId;
 const bobEntityId = "entity_bob" as EntityId;
 const selfEntityId = "entity_self" as EntityId;
 const PROCEDURAL_CONTEXT_TOOL_NAME = "EmitProceduralContext";
+const PROMPT_OPTIONS = {
+  retrievalContextBudget: 1_000,
+  semanticContextBudget: 1_000,
+};
+
+function recallExpansion(input: {
+  facets?: Array<{
+    kind: "topic" | "relationship" | "commitment" | "open_question";
+    query: string;
+    priority: number;
+  }>;
+  named_terms?: string[];
+}): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_recall_expansion",
+        name: "EmitRecallExpansion",
+        input: {
+          facets: input.facets ?? [],
+          named_terms: input.named_terms ?? [],
+        },
+      },
+    ],
+  };
+}
 
 function makeCommitment(id: string, priority: number, createdAt: number): CommitmentRecord {
   return {
@@ -425,7 +458,17 @@ describe("TurnRetrievalCoordinator", () => {
       audience: audienceEntityId,
       nowMs: 2_000,
     });
-    expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2, 5]);
+    expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(
+      (result.pendingCorrections.find((item) => item.id === 3) as ReviewQueueItem & {
+        disclosureLabel?: unknown;
+      })?.disclosureLabel,
+    ).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [bobEntityId],
+      privateToEntityIds: [bobEntityId],
+      publicToEntityIds: [],
+    });
     expect(result.affectiveTrajectory).toBe(affectiveTrajectory);
     expect(result.retrieval).toBe(retrieval);
     expect(result.selectedSkill).toBe(selectedSkill);
@@ -484,6 +527,197 @@ describe("TurnRetrievalCoordinator", () => {
         traceTurnId: "turn-1",
       }),
     );
+  });
+
+  it("recalls Alice-scoped pending corrections during a Bob turn with disclosure labels", async () => {
+    const pendingCorrections = [
+      makeReviewItem(11, {
+        prompt_summary: "Alice corrected the private Atlas launch date.",
+        audience_entity_id: audienceEntityId,
+        origin_audience_entity_ids: [audienceEntityId],
+      }),
+    ];
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable: vi.fn(() => []),
+      },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => pendingCorrections),
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        recallEpisodesForCognition,
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+
+    const result = await coordinator.coordinate({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-bob-correction",
+      userMessage: "Bob asks what still needs correction.",
+      recentMessages: [],
+      cognitionInput: "Bob asks what still needs correction.",
+      inputAudience: "bob",
+      isSelfAudience: false,
+      isPrivateSelfCognition: false,
+      ...makeContexts({ audienceEntityId: bobEntityId }),
+      audienceEntityId: bobEntityId,
+      audienceEntity: {
+        id: bobEntityId,
+        canonical_name: "Bob",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        created_at: 100,
+      },
+      audienceProfile: null,
+      perception: makePerception("reflective"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: makeSelfSnapshot(),
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+      findEntityByName: () => null,
+    });
+    const recalled = result.pendingCorrections[0] as ReviewQueueItem & {
+      disclosureLabel?: unknown;
+    };
+
+    expect(result.pendingCorrections.map((item) => item.id)).toEqual([11]);
+    expect(recalled.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [audienceEntityId],
+      privateToEntityIds: [audienceEntityId],
+      publicToEntityIds: [],
+    });
+  });
+
+  it("routes an Alice commitment through Bob-turn cognition evidence and prompt disclosure guidance", async () => {
+    const commitmentQuery = "Atlas launch confidentiality";
+    const directive = "Do not tell Bob the Alice-private Atlas launch date.";
+    const llm = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new ManualClock(2_000),
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [commitmentQuery, [1, 0, 0, 0]],
+          [directive, [1, 0, 0, 0]],
+        ]),
+      ),
+      llmClient: llm,
+    });
+
+    try {
+      const aliceId = harness.entityRepository.resolve("Alice");
+      const bobId = harness.entityRepository.resolve("Bob");
+      const commitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directiveFamily: "alice_atlas_launch_confidentiality",
+        directive,
+        priority: 10,
+        madeToEntity: aliceId,
+        restrictedAudience: aliceId,
+        provenance: { kind: "manual" },
+      });
+      const coordinator = new TurnRetrievalCoordinator({
+        commitmentRepository: harness.commitmentRepository,
+        entityRepository: harness.entityRepository,
+        reviewQueueRepository: harness.reviewQueueRepository,
+        moodRepository: harness.moodRepository,
+        retrievalPipeline: harness.retrievalPipeline,
+        skillSelector: {
+          select: vi.fn(async () => null),
+        },
+        clock: harness.clock,
+      });
+
+      const result = await coordinator.coordinate({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-bob-commitment",
+        userMessage: "Bob asks about the Atlas launch date.",
+        recentMessages: [],
+        cognitionInput: "Bob asks about Atlas launch confidentiality.",
+        inputAudience: "bob",
+        isSelfAudience: false,
+        isPrivateSelfCognition: false,
+        ...makeContexts({ audienceEntityId: bobId }),
+        audienceEntityId: bobId,
+        audienceEntity: {
+          id: bobId,
+          canonical_name: "Bob",
+          aliases: [],
+          kind: "person",
+          borg_role: null,
+          created_at: 100,
+        },
+        audienceProfile: null,
+        perception: makePerception("reflective"),
+        workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+        selfSnapshot: makeSelfSnapshot(),
+        suppressionSet: SuppressionSet.fromEntries([], 1),
+        findEntityByName: () => null,
+      });
+      const recalled = result.retrieval.evidence.find(
+        (item) => item.provenance?.commitmentId === commitment.id,
+      );
+      const prompt = buildBaseSystemPrompt(
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          userMessage: "Bob asks about the Atlas launch date.",
+          perception: makePerception("reflective"),
+          retrievalResult: result.retrievedEpisodes,
+          retrievedSemantic: result.retrievedSemantic,
+          retrievedEvidence: result.retrieval.evidence,
+          retrievalConfidence: result.retrieval.confidence,
+          applicableCommitments: result.applicableCommitments,
+          pendingCorrectionsContext: result.pendingCorrections,
+          workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+          selfSnapshot: makeSelfSnapshot(),
+        },
+        PROMPT_OPTIONS,
+      );
+
+      expect(recalled).toEqual(
+        expect.objectContaining({
+          source: "commitment",
+          disclosureLabel: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [aliceId],
+            privateToEntityIds: [aliceId],
+            publicToEntityIds: [],
+          },
+        }),
+      );
+      expect(prompt).toContain(directive);
+      expect(prompt).toContain("disclosure_class=relationship_private");
+      expect(prompt).toContain(`private-to=${aliceId}`);
+      expect(prompt).toContain(
+        "Do not reveal labeled-private content, source details, or the existence of a private memory",
+      );
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("forwards recent messages into procedural extraction", async () => {

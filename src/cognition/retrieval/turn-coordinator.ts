@@ -5,7 +5,6 @@ import type {
   EntityRepository,
   EntityRecord,
 } from "../../memory/commitments/index.js";
-import { isEpisodeAccessVisible } from "../../memory/episodic/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { ReviewQueueItem, ReviewQueueRepository } from "../../memory/semantic/index.js";
 import type {
@@ -34,6 +33,7 @@ import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../a
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
+import { correctionMemoryDisclosureLabel } from "../disclosure-labels.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -126,48 +126,6 @@ function deriveCoordinatorContext(input: TurnRetrievalCoordinatorInput): {
   };
 }
 
-function stringEntityArray(value: unknown): EntityId[] | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-    return null;
-  }
-
-  return value as EntityId[];
-}
-
-function isCorrectionVisibleToAudience(
-  refs: ReviewQueueItem["refs"],
-  audienceEntityId: EntityId | null,
-): boolean {
-  const correctionAudience =
-    typeof refs.audience_entity_id === "string" ? (refs.audience_entity_id as EntityId) : null;
-  const originAudienceEntityIds = stringEntityArray(refs.origin_audience_entity_ids);
-
-  if (originAudienceEntityIds === null) {
-    return false;
-  }
-
-  if (originAudienceEntityIds !== undefined) {
-    return isEpisodeAccessVisible(
-      {
-        audience_entity_id: correctionAudience,
-        origin_audience_entity_ids: originAudienceEntityIds,
-        shared: originAudienceEntityIds.length === 0 && correctionAudience === null,
-      },
-      audienceEntityId,
-    );
-  }
-
-  if (audienceEntityId === null) {
-    return correctionAudience === null;
-  }
-
-  return correctionAudience === null || correctionAudience === audienceEntityId;
-}
-
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
   entityRepository: Pick<EntityRepository, "getSelf">;
@@ -247,9 +205,10 @@ export class TurnRetrievalCoordinator {
         kind: "correction",
         openOnly: true,
       })
-      .filter((item) =>
-        isCorrectionVisibleToAudience(item.refs, coordinatorContext.audienceEntityId),
-      );
+      .map((item) => ({
+        ...item,
+        disclosureLabel: correctionMemoryDisclosureLabel(item.refs),
+      }));
     const perceivedMood = input.workingMemory.mood ?? createNeutralAffectiveSignal();
     const perceivedMoodActive =
       Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;

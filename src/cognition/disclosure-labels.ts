@@ -1,6 +1,7 @@
 import type { CommitmentRecord } from "../memory/commitments/index.js";
 import type { GoalRecord, OpenQuestion } from "../memory/self/index.js";
 import {
+  combineMemoryDisclosureLabels,
   memoryDisclosureLabelMetadata,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
@@ -19,6 +20,12 @@ export function commitmentDisclosureEntityIds(
   commitment: Pick<CommitmentRecord, "restricted_audience" | "made_to_entity">,
 ): EntityId[] {
   return uniqueDisclosureEntityIds([commitment.restricted_audience, commitment.made_to_entity]);
+}
+
+export function commitmentMemoryDisclosureLabel(
+  commitment: Pick<CommitmentRecord, "restricted_audience" | "made_to_entity">,
+): MemoryDisclosureLabel {
+  return relationshipPrivateMemoryDisclosureLabel(commitmentDisclosureEntityIds(commitment));
 }
 
 export function goalMemoryDisclosureLabel(
@@ -62,4 +69,17 @@ export function correctionDisclosureEntityIds(refs: Record<string, unknown>): En
   }
 
   return typeof refs.audience_entity_id === "string" ? [refs.audience_entity_id as EntityId] : [];
+}
+
+export function correctionMemoryDisclosureLabel(refs: Record<string, unknown>): MemoryDisclosureLabel {
+  const origins = refs.origin_audience_entity_ids;
+
+  if (
+    origins !== undefined &&
+    (!Array.isArray(origins) || !origins.every((origin) => typeof origin === "string"))
+  ) {
+    return combineMemoryDisclosureLabels([]);
+  }
+
+  return relationshipPrivateMemoryDisclosureLabel(correctionDisclosureEntityIds(refs));
 }

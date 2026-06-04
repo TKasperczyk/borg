@@ -48,6 +48,7 @@ import {
   createSessionId,
   createSemanticEdgeId,
   createSemanticNodeId,
+  createSharedStateEntryId,
   createStreamEntryId,
   type EntityId,
 } from "../../util/ids.js";
@@ -607,6 +608,83 @@ describe("EvidenceLedgerBuilder", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it("renders private shared-state recall from another audience with disclosure labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-shared-state-recall-"));
+    tempDirs.push(tempDir);
+    const aliceEntityId = createEntityId();
+    const bobEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      commitmentRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-shared-state-recall",
+      audienceEntityId: bobEntityId,
+      currentUserMessage: "Bob asks about Atlas.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+      sharedStateRecall: [
+        {
+          id: createSharedStateEntryId(),
+          audience_entity_id: aliceEntityId,
+          state_key: "relationship:atlas-launch",
+          kind: "live",
+          text: "Alice privately told Sol the Atlas launch date should stay scoped to Alice.",
+          owner_entity_id: aliceEntityId,
+          provenance_stream_entry_ids: [sourceStreamEntryId],
+          last_updated_stream_entry_ids: [sourceStreamEntryId],
+          created_at: NOW_MS,
+          last_updated_at: NOW_MS,
+          last_updated_turn_global: 7,
+          superseded_by_id: null,
+          rank: 0,
+          canonicalizes: {
+            goal_ids: [],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [],
+          },
+        },
+      ],
+    });
+    const section = ledger.sections.find((item) => item.id === "shared_state_recall");
+    const entry = section?.entries[0];
+
+    expect(section?.label).toBe("Cross-Audience Shared State Recall");
+    expect(entry).toEqual(
+      expect.objectContaining({
+        source_type: "shared_state",
+        session_scope: "global",
+        actor: "memory",
+        citations: [sourceStreamEntryId],
+        state_metadata: expect.objectContaining({
+          audience_entity_id: aliceEntityId,
+          current_audience_entity_id: bobEntityId,
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [aliceEntityId],
+            private_to_entity_ids: [aliceEntityId],
+            public_to_entity_ids: [],
+          },
+        }),
+      }),
+    );
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+    expect(rendered).toContain("Cross-Audience Shared State Recall");
+    expect(rendered).toContain("disclosure_class=relationship_private");
+    expect(rendered).toContain(`private-to=${aliceEntityId}`);
   });
 
   it("keeps cross-session self activity as labeled audience-standing metadata with source handles", async () => {

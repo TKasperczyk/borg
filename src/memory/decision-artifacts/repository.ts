@@ -306,6 +306,43 @@ export class SharedStateRepository {
     return mapArtifactRow(row, this.listEntries(audienceEntityId));
   }
 
+  listRecentEntriesForCognition(
+    input: {
+      excludeAudienceEntityId?: EntityId | null;
+      limit?: number;
+    } = {},
+  ): SharedStateEntry[] {
+    const limit = Math.max(0, Math.floor(input.limit ?? 16));
+
+    if (limit === 0) {
+      return [];
+    }
+
+    const excludeAudienceEntityId = input.excludeAudienceEntityId ?? null;
+    const audiencePredicate =
+      excludeAudienceEntityId === null ? "" : "AND audience_entity_id != ?";
+    const args =
+      excludeAudienceEntityId === null ? [limit] : [excludeAudienceEntityId, limit];
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM decision_artifact_entries
+          WHERE superseded_by_id IS NULL
+            ${audiencePredicate}
+          ORDER BY
+            last_updated_at DESC,
+            rank ASC,
+            created_at DESC,
+            id ASC
+          LIMIT ?
+        `,
+      )
+      .all(...args) as Record<string, unknown>[];
+
+    return rows.map((row) => mapEntryRow(row));
+  }
+
   private getEntry(id: SharedStateEntryId, audienceEntityId: EntityId): SharedStateEntry {
     const row = this.db
       .prepare(

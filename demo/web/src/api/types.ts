@@ -931,6 +931,7 @@ export type EvidenceLedgerSourceType =
   | "action_record"
   | "relational_slot"
   | "commitment"
+  | "shared_state"
   | "image_attachment"
   | "assistant_stream"
   | "system_metadata";

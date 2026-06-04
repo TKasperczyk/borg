@@ -33,11 +33,12 @@ import {
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
   selfPrivateMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import { isCreatorInOperatorContext } from "../../authority.js";
 import {
   commitmentDisclosureEntityIds,
-  correctionDisclosureEntityIds,
+  correctionMemoryDisclosureLabel,
   uniqueDisclosureEntityIds,
 } from "../../disclosure-labels.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
@@ -1645,6 +1646,12 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
   ].join("\n");
 }
 
+function pendingCorrectionDisclosureLabel(item: ReviewQueueItem): MemoryDisclosureLabel {
+  const attached = (item as { disclosureLabel?: MemoryDisclosureLabel }).disclosureLabel;
+
+  return attached ?? correctionMemoryDisclosureLabel(item.refs);
+}
+
 function summarizePendingCorrections(items: readonly ReviewQueueItem[]): string | null {
   if (items.length === 0) {
     return null;
@@ -1657,9 +1664,7 @@ function summarizePendingCorrections(items: readonly ReviewQueueItem[]): string 
       typeof item.refs.prompt_summary === "string" && item.refs.prompt_summary.trim().length > 0
         ? item.refs.prompt_summary.trim()
         : `user proposed a correction for ${typeof item.refs.target_id === "string" ? item.refs.target_id : "an existing record"}`;
-    const disclosure = renderMemoryDisclosureLabelForModel(
-      relationshipPrivateMemoryDisclosureLabel(correctionDisclosureEntityIds(item.refs)),
-    );
+    const disclosure = renderMemoryDisclosureLabelForModel(pendingCorrectionDisclosureLabel(item));
     lines.push(`- ${summary} (${disclosure})`);
   }
 

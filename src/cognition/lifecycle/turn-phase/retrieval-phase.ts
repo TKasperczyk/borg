@@ -505,6 +505,7 @@ function currentTurnEligibleCreatorDirectives(input: {
 }
 
 const CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT = 50;
+const SHARED_STATE_COGNITION_RECALL_LIMIT = 12;
 
 function traceCreatorDirectiveRendered(input: {
   tracer: TurnPhaseCoordinatorOptions["tracer"];
@@ -980,15 +981,24 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     };
   }
 
+  const sharedStateRecall =
+    input.options.sharedStateRepository.listRecentEntriesForCognition?.({
+      excludeAudienceEntityId: input.input.audienceEntityId,
+      limit: SHARED_STATE_COGNITION_RECALL_LIMIT,
+    }) ?? [];
+  const finalizerInput: EvidenceLedgerFinalizerBuildInput = {
+    ...input.input,
+    sharedStateRecall,
+  };
   const compacted = await buildCompactedEvidenceLedgerWithoutSharedState({
     options: input.options,
-    input: input.input,
+    input: finalizerInput,
   });
   const ledgerWithoutSharedState = compacted.ledger;
   const renderedWithoutSharedState = compacted.rendered;
   const sharedStateResult = await compileSharedStateArtifactForEvidenceLedgerResult({
     options: input.options,
-    input: input.input,
+    input: finalizerInput,
     previousArtifact: previousSharedState,
     ledger: ledgerWithoutSharedState,
     promptVisibleLedger: renderedWithoutSharedState ?? "",

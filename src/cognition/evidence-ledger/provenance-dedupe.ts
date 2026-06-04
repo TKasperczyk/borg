@@ -11,6 +11,7 @@ const CANONICAL_SECTION_PRIORITY = {
   action_states: 72,
   group_channel_memory: 70,
   retrieved_raw_stream_evidence: 68,
+  shared_state_recall: 64,
   episodes: 52,
   retrieved_memory_evidence: 50,
   autobiographical_recall: 48,

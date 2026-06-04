@@ -14,7 +14,7 @@ import {
 } from "../offline/test-support.js";
 import { StreamWriter } from "../stream/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
-import { createSessionId } from "../util/ids.js";
+import { createEntityId, createSessionId } from "../util/ids.js";
 import { RetrievalPipeline } from "./pipeline.js";
 import { expandRecall } from "./recall-expansion.js";
 
@@ -615,6 +615,62 @@ describe("Recall Core", () => {
 
     expect(commitmentIds).toEqual([matching.id]);
     expect(commitmentIds).not.toContain(unrelated.id);
+  });
+
+  it("recalls an Alice promise during a Bob turn as private internal evidence", async () => {
+    const aliceEntityId = createEntityId();
+    const bobEntityId = createEntityId();
+    const commitmentQuery = "Atlas launch confidentiality";
+    const directive = "Do not tell Bob the Alice-private Atlas launch date.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createCommitmentEmbeddingClient(
+        new Map([
+          [commitmentQuery, [1, 0, 0, 0]],
+          [directive, [1, 0, 0, 0]],
+        ]),
+      ),
+      llmClient,
+    });
+    const commitment = harness.commitmentRepository.add({
+      type: "boundary",
+      directiveFamily: "alice_atlas_launch_confidentiality",
+      directive,
+      priority: 10,
+      madeToEntity: aliceEntityId,
+      restrictedAudience: aliceEntityId,
+      provenance: { kind: "manual" },
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext(
+      "Bob is asking about Atlas launch confidentiality.",
+      {
+        audienceEntityId: bobEntityId,
+        limit: 3,
+      },
+    );
+    const recalled = result.evidence.find(
+      (item) => item.provenance?.commitmentId === commitment.id,
+    );
+
+    expect(recalled).toEqual(
+      expect.objectContaining({
+        source: "commitment",
+        disclosureLabel: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [aliceEntityId],
+          privateToEntityIds: [aliceEntityId],
+          publicToEntityIds: [],
+        },
+      }),
+    );
   });
 
   it("emits no commitment evidence when a commitment intent has no embedding match", async () => {

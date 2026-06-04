@@ -33,6 +33,7 @@ import {
   addRetrievedStructuredEvidenceSection,
 } from "./sections/retrieved-evidence.js";
 import { addSemanticGraphSection } from "./sections/semantic-graph.js";
+import { addSharedStateRecallSection } from "./sections/shared-state-recall.js";
 import { estimateLedgerTokens } from "./trace-summary.js";
 import { compactTranscriptEntries } from "./transcript-compaction.js";
 import type { EvidenceItem } from "../../retrieval/index.js";
@@ -170,6 +171,7 @@ export class EvidenceLedgerBuilder {
     addContradictionsAndQuarantinesSection(context);
     await addActionStatesSection(context);
     addGroupChannelMemorySection(context);
+    addSharedStateRecallSection(context);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
     // The same underlying entry's text was duplicated across both sections

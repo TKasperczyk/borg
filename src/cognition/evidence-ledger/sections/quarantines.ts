@@ -1,7 +1,7 @@
 import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
-import { correctionDisclosureEntityIds } from "../../disclosure-labels.js";
-import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import { correctionMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import type { MemoryDisclosureLabel } from "../../../retrieval/index.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -48,9 +48,9 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
   }
 
   for (const correction of context.input.pendingCorrections) {
-    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
-      correctionDisclosureEntityIds(correction.refs),
-    );
+    const disclosureLabel =
+      (correction as { disclosureLabel?: MemoryDisclosureLabel }).disclosureLabel ??
+      correctionMemoryDisclosureLabel(correction.refs);
     addEntry(
       context.buckets,
       "contradictions_quarantines",

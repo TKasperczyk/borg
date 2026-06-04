@@ -122,7 +122,8 @@ export type TurnPhaseCoordinatorOptions = {
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   commitmentRepository: CommitmentRepository;
   creatorDirectiveRepository: CreatorDirectiveRepository;
-  sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert">;
+  sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert"> &
+    Partial<Pick<SharedStateRepository, "listRecentEntriesForCognition">>;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
     Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;

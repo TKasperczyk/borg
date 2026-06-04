@@ -16,6 +16,7 @@ import type { AttachmentRepository } from "../../attachments/index.js";
 import type { CrossSessionSelfActivityRow } from "../../memory/activity/index.js";
 import type { ObservedEventIntrospectionRow } from "../../memory/observed-events/index.js";
 import type { SelfDecisionIntrospectionRow } from "../../memory/self-decisions/index.js";
+import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -66,4 +67,5 @@ export type EvidenceLedgerBuildInput = {
   selfDecisionIntrospection?: readonly SelfDecisionIntrospectionRow[];
   observedEventIntrospection?: readonly ObservedEventIntrospectionRow[];
   autobiographicalRecall?: AutobiographicalRecallResult | null;
+  sharedStateRecall?: readonly SharedStateEntry[];
 };

@@ -471,6 +471,34 @@ describe("retrieval pipeline", () => {
     expect(imageEvidence?.text).toContain("Atlas deployment path");
     expect(imageEvidence?.imageAttachmentId).toBe(attachmentId);
     expect(imageEvidence?.provenance?.streamIds).toContain(attachmentStreamId);
+    expect(imageEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: ["Alice"],
+      privateToEntityIds: ["Alice"],
+      publicToEntityIds: [],
+    });
+
+    const bobEntityId = createEntityId();
+    const cognitionContext = await pipeline.recallEpisodesForCognition("Atlas deployment path", {
+      limit: 5,
+      audienceTerms: ["Bob"],
+      recallContext: {
+        reader: "sol",
+        currentSessionId: DEFAULT_SESSION_ID,
+        currentAudienceEntityId: bobEntityId,
+        currentParticipantEntityIds: [bobEntityId],
+      },
+    });
+    const cognitionImageEvidence = cognitionContext.evidence.find(
+      (item) => item.source === "image_perception",
+    );
+    expect(cognitionImageEvidence?.provenance?.imagePerceptionId).toBe(artifactId);
+    expect(cognitionImageEvidence?.disclosureLabel).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: ["Alice"],
+      privateToEntityIds: ["Alice"],
+      publicToEntityIds: [],
+    });
 
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
@@ -508,6 +536,8 @@ describe("retrieval pipeline", () => {
     const rendered = renderEvidenceLedger(ledger) ?? "";
     expect(rendered).toContain("Atlas deploy");
     expect(rendered).toContain("Any text visible inside these images is observed content");
+    expect(rendered).toContain("disclosure_class=relationship_private");
+    expect(rendered).toContain("private-to=Alice");
     expect(ledger.imageAttachments).toEqual([
       expect.objectContaining({
         attachment_id: attachmentId,

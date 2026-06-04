@@ -14,6 +14,7 @@ export const QUARANTINE_TRUST_RANK = 78;
 export const ACTION_TRUST_RANK = 72;
 export const SLOT_TRUST_RANK = 70;
 export const RAW_STREAM_TRUST_RANK = 68;
+export const SHARED_STATE_RECALL_TRUST_RANK = 64;
 export const AUTOBIOGRAPHICAL_RECALL_TRUST_RANK = 60;
 export const EPISODE_TRUST_RANK = 52;
 export const SEMANTIC_TRUST_RANK = 42;

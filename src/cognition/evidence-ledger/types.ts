@@ -13,6 +13,7 @@ export const evidenceLedgerSourceTypeSchema = z.enum([
   "action_record",
   "relational_slot",
   "commitment",
+  "shared_state",
   "image_attachment",
   "assistant_stream",
   "system_metadata",
@@ -90,6 +91,11 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
   {
     id: "group_channel_memory",
     label: "6. Group/Channel Memory",
+  },
+  {
+    id: "shared_state_recall",
+    label: "Cross-Audience Shared State Recall",
+    optional: true,
   },
   {
     id: "retrieved_raw_stream_evidence",

@@ -1,5 +1,8 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
-import { openQuestionMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  openQuestionMemoryDisclosureLabel,
+} from "../cognition/disclosure-labels.js";
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -105,6 +108,7 @@ import { resolveTimeSignals } from "./time-signals.js";
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  relationshipPrivateMemoryDisclosureLabel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureLabel,
@@ -408,7 +412,7 @@ export class RetrievalPipeline {
     const semanticRetrievals = await this.collectSemanticRetrievals(intents, options, mode);
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
     const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
-    const imagePerceptions = await this.collectImagePerceptionEvidence(intents, options);
+    const imagePerceptions = await this.collectImagePerceptionEvidence(intents, options, mode);
     const episodeEvidenceSources = episodeCandidates.map((item) => ({
       evidence: episodeCandidateToEvidence(item),
       item,
@@ -426,7 +430,7 @@ export class RetrievalPipeline {
     const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
-      ...this.collectRecentRawStreamEvidence(intents, options),
+      ...this.collectCurrentSessionRecentRawStreamEvidence(intents, options),
     ];
     const freshEvidence = [
       ...episodeEvidence,
@@ -589,11 +593,11 @@ export class RetrievalPipeline {
     }
 
     if (handle.source === "commitment") {
-      return this.rehydrateCommitmentHandle(handle, stateHandle, options, nowMs);
+      return this.rehydrateCommitmentHandle(handle, stateHandle, nowMs);
     }
 
     if (handle.source === "image_perception") {
-      return this.rehydrateImagePerceptionHandle(handle, stateHandle, options);
+      return this.rehydrateImagePerceptionHandle(handle, stateHandle, options, mode);
     }
 
     return this.rehydrateOpenQuestionHandle(handle, stateHandle);
@@ -603,6 +607,7 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "image_perception" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): EvidenceItem | null {
     const record = this.options.imagePerceptionRepository?.get(handle.perceptionId);
 
@@ -611,6 +616,7 @@ export class RetrievalPipeline {
     }
 
     if (
+      mode === "disclosure" &&
       options.crossAudience !== true &&
       record.audience !== null &&
       !new Set(options.audienceTerms ?? []).has(record.audience)
@@ -947,7 +953,6 @@ export class RetrievalPipeline {
   private rehydrateCommitmentHandle(
     handle: Extract<RecallEvidenceHandle, { source: "commitment" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
     nowMs: number,
   ): EvidenceItem | null {
     const commitment = this.options.commitmentRepository?.get(handle.commitmentId);
@@ -959,7 +964,6 @@ export class RetrievalPipeline {
     const activeVisible = this.options.commitmentRepository
       ?.list({
         activeOnly: true,
-        audience: options.audienceEntityId ?? null,
         nowMs,
       })
       .some((item) => item.id === commitment.id);
@@ -981,6 +985,7 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
+      disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
     };
   }
 
@@ -1550,6 +1555,7 @@ export class RetrievalPipeline {
   private async collectImagePerceptionEvidence(
     intents: readonly RecallIntent[],
     options: RetrievalSearchOptions,
+    mode: RetrievalExecutionMode,
   ): Promise<ImagePerceptionEvidenceCandidate[]> {
     if (this.options.imagePerceptionRepository === undefined) {
       return [];
@@ -1567,7 +1573,7 @@ export class RetrievalPipeline {
             vector,
             limit: Math.max(1, options.limit ?? 5),
             audienceTerms: options.audienceTerms ?? [],
-            crossAudience: options.crossAudience,
+            crossAudience: mode === "cognition" ? true : options.crossAudience,
           });
 
           return hits.map((hit) => ({
@@ -1627,7 +1633,6 @@ export class RetrievalPipeline {
 
     const activeCommitments = this.options.commitmentRepository.list({
       activeOnly: true,
-      audience: options.audienceEntityId ?? null,
       nowMs: this.clock.now(),
     });
 
@@ -1671,7 +1676,7 @@ export class RetrievalPipeline {
     return evidence;
   }
 
-  private collectRecentRawStreamEvidence(
+  private collectCurrentSessionRecentRawStreamEvidence(
     intents: readonly RecallIntent[],
     options: RetrievalSearchOptions,
   ): EvidenceItem[] {
@@ -1686,6 +1691,11 @@ export class RetrievalPipeline {
       entryIndex: this.options.entryIndex,
     });
 
+    // This lane is not durable/cross-session memory recall. It is a
+    // current-session transcript recency bridge used to keep the live turn
+    // coherent before episodic consolidation/citation hydration catches up.
+    // Cross-session source-stream recall stays in streamEntriesToEvidence()
+    // via retrieved episodes and carries episode-derived disclosure labels.
     return adapter
       .recent({
         limit: 3,
@@ -2432,6 +2442,10 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     record.created_turn_global === null ? "unknown turn" : `turn ${record.created_turn_global}`;
   const audienceLabel = record.audience ?? "global";
   const imageLabel = `Image: user-uploaded ${record.image_kind} from ${turnLabel} (audience: ${audienceLabel})`;
+  const disclosureLabel =
+    record.audience === null
+      ? relationshipPrivateMemoryDisclosureLabel([])
+      : relationshipPrivateMemoryDisclosureLabel([record.audience as EntityId]);
 
   return {
     id: `evidence_image_perception_${record.perception_id}_${item.intent.id}`,
@@ -2465,6 +2479,7 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     },
     imageAttachmentId: record.attachment_id,
     imageLabel,
+    disclosureLabel,
     citationType:
       record.stream_entry_id === null ? "parent_user_message" : "generated_perception_text",
   };
@@ -2556,6 +2571,7 @@ function commitmentToEvidence(
     scoreBreakdown: {
       vector,
     },
+    disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
   };
 }
 

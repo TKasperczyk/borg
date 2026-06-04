@@ -154,6 +154,34 @@ describe("resolveSemanticContext temporal validity", () => {
     expectRelationshipPrivateLabel(otherMatch?.disclosureLabel, [otherEntityId]);
   });
 
+  it("carries an Alice-private source disclosure label onto a derived semantic node recalled in Bob's turn", async () => {
+    harness = await createOfflineTestHarness();
+    const aliceEntityId = harness.entityRepository.resolve("Alice");
+    const bobEntityId = harness.entityRepository.resolve("Bob");
+    const sourceEpisode = createEpisodeFixture({
+      title: "Alice-private Atlas launch date source",
+      audience_entity_id: aliceEntityId,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(sourceEpisode);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas launch date",
+          description: "Semantic memory derived from an Alice-private episode.",
+          source_episode_ids: [sourceEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const cognition = await resolveCognitionProbe(harness, bobEntityId);
+    const match = cognition.matched_nodes.find((candidate) => candidate.id === node.id);
+
+    expect(cognition.matched_node_ids).toContain(node.id);
+    expectRelationshipPrivateLabel(match?.disclosureLabel, [aliceEntityId]);
+  });
+
   it("windows contradiction walks at the requested semantic as-of", async () => {
     const clock = new ManualClock(1_000_000);
     harness = await createOfflineTestHarness({ clock });
