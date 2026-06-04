@@ -101,6 +101,27 @@ describe("runDirectedOutboundTurn", () => {
         ),
       }),
     );
+    expect(turnOrchestrator.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.stringContaining(
+          "Use Sol's prompt-visible internal memory, current goals, autobiographical/social recall",
+        ),
+      }),
+    );
+    expect(turnOrchestrator.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.stringContaining(
+          "Treat disclosure labels as target-audience constraints",
+        ),
+      }),
+    );
+    expect(turnOrchestrator.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.not.stringContaining(
+          "using only prompt-visible target-session context",
+        ),
+      }),
+    );
   });
 
   it("renders autonomous policy provenance truthfully", async () => {
