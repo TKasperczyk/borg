@@ -85,6 +85,7 @@ export type RetrievedSemantic = SemanticContext & {
 
 export type SemanticRetrievalOptions = {
   audienceEntityId?: EntityId | null;
+  // Disclosure/admin-only all-audiences source search. Ignored for cognition source recall.
   crossAudience?: boolean;
   sourceVisibilityMode?: "cognition" | "disclosure";
   graphWalkDepth?: number;

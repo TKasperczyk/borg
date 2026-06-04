@@ -665,11 +665,46 @@ export class ImagePerceptionRepository {
       .run(status, payloadId);
   }
 
+  async recallForCognition(input: {
+    vector: Float32Array;
+    limit: number;
+  }): Promise<ImagePerceptionSearchHit[]> {
+    return this.searchInternal({
+      vector: input.vector,
+      limit: input.limit,
+      audienceTerms: [],
+      includeAllAudiences: true,
+    });
+  }
+
+  async searchForDisclosure(input: {
+    vector: Float32Array;
+    limit: number;
+    audienceTerms: readonly string[];
+    crossAudience?: boolean;
+  }): Promise<ImagePerceptionSearchHit[]> {
+    return this.searchInternal({
+      vector: input.vector,
+      limit: input.limit,
+      audienceTerms: input.audienceTerms,
+      includeAllAudiences: input.crossAudience === true,
+    });
+  }
+
   async search(input: {
     vector: Float32Array;
     limit: number;
     audienceTerms: readonly string[];
     crossAudience?: boolean;
+  }): Promise<ImagePerceptionSearchHit[]> {
+    return this.searchForDisclosure(input);
+  }
+
+  private async searchInternal(input: {
+    vector: Float32Array;
+    limit: number;
+    audienceTerms: readonly string[];
+    includeAllAudiences: boolean;
   }): Promise<ImagePerceptionSearchHit[]> {
     const rows = await this.table.search(Array.from(input.vector), {
       limit: input.limit,
@@ -678,7 +713,7 @@ export class ImagePerceptionRepository {
     const recordsByPayload = this.hydrateVisibleArtifactsForPayloads(
       rows.map((row) => String(row.payload_id) as ImagePerceptionId),
       input.audienceTerms,
-      input.crossAudience,
+      input.includeAllAudiences,
     );
 
     return rows.flatMap((row) => {
@@ -695,7 +730,7 @@ export class ImagePerceptionRepository {
   private hydrateVisibleArtifactsForPayloads(
     payloadIds: readonly ImagePerceptionId[],
     audienceTerms: readonly string[],
-    crossAudience?: boolean,
+    includeAllAudiences: boolean,
   ): Map<string, ImagePerceptionRecord[]> {
     if (payloadIds.length === 0) {
       return new Map();
@@ -704,7 +739,7 @@ export class ImagePerceptionRepository {
     const uniquePayloadIds = [...new Set(payloadIds)];
     const placeholders = uniquePayloadIds.map(() => "?").join(", ");
     const audienceWhere =
-      crossAudience === true
+      includeAllAudiences
         ? ""
         : audienceTerms.length === 0
           ? "AND artifacts.audience IS NULL"

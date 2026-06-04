@@ -942,7 +942,7 @@ describe("TurnRetrievalCoordinator", () => {
     );
   });
 
-  it("does not request self_continuity visibility bypasses on private self cognition turns", async () => {
+  it("uses global recall options on private self cognition turns", async () => {
     const getSelf = vi.fn(() => makeSelfEntity());
     const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
@@ -1009,12 +1009,12 @@ describe("TurnRetrievalCoordinator", () => {
       2,
       "Reflect again",
       expect.not.objectContaining({
-        globalIdentitySelfAudienceEntityId: selfEntityId,
+        audienceEntityId: selfEntityId,
       }),
     );
   });
 
-  it("leaves self_continuity inert on normal audience turns", async () => {
+  it("uses ranking audience labels without cognition recall audience filters", async () => {
     const getSelf = vi.fn(() => makeSelfEntity());
     const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
@@ -1082,6 +1082,6 @@ describe("TurnRetrievalCoordinator", () => {
     expect(retrievalOptions).toHaveProperty("rankingAudienceEntityId", bobEntityId);
     expect(retrievalOptions).not.toHaveProperty("semanticAudienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("audienceEntityId");
-    expect(retrievalOptions).not.toHaveProperty("globalIdentitySelfAudienceEntityId");
+    expect(retrievalOptions).not.toHaveProperty("crossAudience");
   });
 });

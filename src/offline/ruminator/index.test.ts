@@ -8,6 +8,7 @@ import { FixedClock, ManualClock } from "../../util/clock.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
 import {
   createActionId,
+  DEFAULT_SESSION_ID,
   createEpisodeId,
   createSemanticNodeId,
   createStreamEntryId,
@@ -213,17 +214,26 @@ describe("RuminatorProcess", () => {
         last_touched: 1_000_000,
         provenance: { kind: "manual" },
       });
-      const retrieval = await harness.retrievalPipeline.searchWithContext(question.question, {
-        limit: 3,
-        globalIdentitySelfAudienceEntityId: harness.entityRepository.findByName("self"),
-        attentionWeights: computeWeights("reflective", {
-          currentGoals: [],
-          hasActiveValues: false,
-          hasTemporalCue: false,
-        }),
-        goalDescriptions: [],
-        includeOpenQuestions: false,
-      });
+      const retrieval = await harness.retrievalPipeline.recallEpisodesForCognition(
+        question.question,
+        {
+          limit: 3,
+          recallContext: {
+            reader: "sol",
+            currentSessionId: DEFAULT_SESSION_ID,
+            currentAudienceEntityId: question.audience_entity_id,
+            currentParticipantEntityIds:
+              question.audience_entity_id === null ? [] : [question.audience_entity_id],
+          },
+          attentionWeights: computeWeights("reflective", {
+            currentGoals: [],
+            hasActiveValues: false,
+            hasTemporalCue: false,
+          }),
+          goalDescriptions: [],
+          includeOpenQuestions: false,
+        },
+      );
 
       expect(retrieval.episodes[0]?.score).toBeGreaterThan(
         harness.config.offline.ruminator.resolveConfidenceThreshold,
@@ -247,7 +257,7 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("gates audience-scoped resolution on merged fresh evidence confidence", async () => {
+  it("requires merged eligible evidence confidence for audience-scoped resolution", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createRuminatorResponse({
@@ -307,20 +317,29 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
       });
 
-      const globalRetrieval = await harness.retrievalPipeline.searchWithContext(questionText, {
-        limit: 3,
-        globalIdentitySelfAudienceEntityId: harness.entityRepository.findByName("self"),
-        attentionWeights: computeWeights("reflective", {
-          currentGoals: [],
-          hasActiveValues: false,
-          hasTemporalCue: false,
-        }),
-        goalDescriptions: [],
-        includeOpenQuestions: false,
-      });
+      const globalRetrieval = await harness.retrievalPipeline.recallEpisodesForCognition(
+        questionText,
+        {
+          limit: 3,
+          recallContext: {
+            reader: "sol",
+            currentSessionId: DEFAULT_SESSION_ID,
+            currentAudienceEntityId: question.audience_entity_id,
+            currentParticipantEntityIds:
+              question.audience_entity_id === null ? [] : [question.audience_entity_id],
+          },
+          attentionWeights: computeWeights("reflective", {
+            currentGoals: [],
+            hasActiveValues: false,
+            hasTemporalCue: false,
+          }),
+          goalDescriptions: [],
+          includeOpenQuestions: false,
+        },
+      );
 
-      expect(globalRetrieval.confidence.overall).toBeGreaterThan(
-        harness.config.offline.ruminator.resolveConfidenceThreshold,
+      expect(globalRetrieval.episodes.map((item) => item.episode.id)).toEqual(
+        expect.arrayContaining([oldGlobalEpisode.id, weakAudienceEpisode.id]),
       );
 
       const plan = await process.plan(harness.createContext(), {});

@@ -23,7 +23,7 @@ import {
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
-import { createGrowthMarkerId } from "../../util/ids.js";
+import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 
@@ -510,30 +510,39 @@ async function searchResolutionEvidence(
       .map((goal) => goal.description),
     includeOpenQuestions: false,
   };
-  const globalRetrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
-    ...baseOptions,
-    globalIdentitySelfAudienceEntityId: selfAudienceEntityId,
-  });
-  const globalIdentityEpisodes = globalRetrieval.episodes.filter((result) =>
+  const selfOriginRetrieval = await ctx.retrievalPipeline.recallEpisodesForCognition(
+    question.question,
+    {
+      ...baseOptions,
+      limit: Math.max(baseOptions.limit * 5, 20),
+      recallContext: {
+        reader: "sol",
+        currentSessionId: DEFAULT_SESSION_ID,
+        currentAudienceEntityId: question.audience_entity_id,
+        currentParticipantEntityIds:
+          question.audience_entity_id === null ? [] : [question.audience_entity_id],
+      },
+    },
+  );
+  const selfOriginEpisodes = selfOriginRetrieval.episodes.filter((result) =>
     isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
   );
 
   if (isGlobalIdentityQuestion(question, selfAudienceEntityId)) {
     return {
-      episodes: globalIdentityEpisodes,
+      episodes: selfOriginEpisodes,
       expectedCount: baseOptions.limit,
     };
   }
 
-  // Reuse the retrieval pipeline's audienceEntityId path so the episodic layer
-  // applies its existing audience-visible retrieval lanes in addition to the
-  // global/self search above.
+  // Reuse the disclosure search's audienceEntityId path so the episodic layer
+  // applies audience-eligible retrieval lanes in addition to the self-origin search above.
   const audienceRetrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
     ...baseOptions,
     audienceEntityId: question.audience_entity_id,
   });
   const episodes = mergeRetrievedEpisodes([
-    globalIdentityEpisodes,
+    selfOriginEpisodes,
     audienceRetrieval.episodes.filter((result) =>
       isResolutionEvidenceVisibleToQuestion(result.episode, question, selfAudienceEntityId),
     ),

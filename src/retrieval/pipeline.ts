@@ -197,9 +197,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
 
 type RetrievalAudienceFilterOptionKey =
   | "audienceEntityId"
-  | "crossAudience"
-  | "globalIdentitySelfAudienceEntityId"
-  | "operatorIntrospectionSelfAudienceEntityId";
+  | "crossAudience";
 
 // Cognition recall is audience-global. The omitted keys remain available only on the generic
 // disclosure/admin search options and must not be reintroduced as cognition filters.
@@ -1569,12 +1567,20 @@ export class RetrievalPipeline {
       async (intent): Promise<ImagePerceptionEvidenceCandidate[]> => {
         try {
           const vector = await this.options.embeddingClient.embed(intent.query);
-          const hits = await this.options.imagePerceptionRepository!.search({
+          const imageRecallInput = {
             vector,
             limit: Math.max(1, options.limit ?? 5),
-            audienceTerms: options.audienceTerms ?? [],
-            crossAudience: mode === "cognition" ? true : options.crossAudience,
-          });
+          };
+          const hits =
+            mode === "cognition"
+              ? await this.options.imagePerceptionRepository!.recallForCognition(
+                  imageRecallInput,
+                )
+              : await this.options.imagePerceptionRepository!.searchForDisclosure({
+                  ...imageRecallInput,
+                  audienceTerms: options.audienceTerms ?? [],
+                  crossAudience: options.crossAudience,
+                });
 
           return hits.map((hit) => ({
             intent,
@@ -2069,8 +2075,6 @@ function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearc
   return {
     audienceEntityId: options.audienceEntityId,
     crossAudience: options.crossAudience,
-    globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
-    operatorIntrospectionSelfAudienceEntityId: options.operatorIntrospectionSelfAudienceEntityId,
   };
 }
 

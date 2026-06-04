@@ -54,46 +54,25 @@ export function isEpisodeInGlobalIdentityScope(
 
 // Disclosure/admin-only viewer capabilities for audience-filtered episodic reads. Cognition
 // recall is global and must not route through this resolver; use EpisodeCognitionRecallOptions
-// / CognitionRecallSearchOptions for cognition paths. For explicit visibility paths there are
-// exactly four ways to read:
-//   - audience: the normal firewall path (exact-audience match + public/shared)
-//   - self_continuity: public episodes plus the self/identity entity's episodes
-//   - operator_introspection: public plus self-scope episodes for operator introspection
-//   - unrestricted: see everything (admin/correction read paths ONLY)
+// / CognitionRecallSearchOptions for cognition paths. For explicit disclosure/export paths there
+// are exactly two ways to read:
+//   - audience: public/shared plus exact-origin audience matches
+//   - unrestricted: see everything (admin/correction/export read paths ONLY)
 export type ViewerCapability =
   | { readonly kind: "audience"; readonly audienceEntityId: EntityId | null }
-  | { readonly kind: "self_continuity"; readonly selfAudienceEntityId: EntityId | null }
-  | { readonly kind: "operator_introspection"; readonly selfAudienceEntityId: EntityId | null }
   | { readonly kind: "unrestricted" };
 
 export type ViewerCapabilityOptions = {
-  // Legacy disclosure/admin option shape. These are intentionally not part of cognition recall.
+  // Disclosure/admin option shape. These are intentionally not part of cognition recall.
   readonly audienceEntityId?: EntityId | null;
   readonly crossAudience?: boolean;
-  readonly globalIdentitySelfAudienceEntityId?: EntityId | null;
-  readonly operatorIntrospectionSelfAudienceEntityId?: EntityId | null;
 };
 
-// Collapse the legacy option triple into ONE capability, applying the visibility precedence
-// exactly once: self_continuity wins over unrestricted wins over audience. FAIL-CLOSED by
-// construction -- the fallthrough is the restrictive `audience` arm, and `unrestricted` is
-// produced ONLY by an explicit `crossAudience === true`. A caller that passes nothing
-// resolves to the most restrictive audience scope (public/shared only), never see-all.
+// Collapse the disclosure/admin options into ONE capability. FAIL-CLOSED by construction: the
+// fallthrough is the restrictive `audience` arm, and `unrestricted` is produced ONLY by an
+// explicit `crossAudience === true`. A caller that passes nothing resolves to the most restrictive
+// disclosure scope (public/shared only), never see-all.
 export function resolveViewerCapability(options: ViewerCapabilityOptions): ViewerCapability {
-  if (options.globalIdentitySelfAudienceEntityId !== undefined) {
-    return {
-      kind: "self_continuity",
-      selfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
-    };
-  }
-
-  if (options.operatorIntrospectionSelfAudienceEntityId !== undefined) {
-    return {
-      kind: "operator_introspection",
-      selfAudienceEntityId: options.operatorIntrospectionSelfAudienceEntityId,
-    };
-  }
-
   if (options.crossAudience === true) {
     return { kind: "unrestricted" };
   }
@@ -110,10 +89,6 @@ export function isEpisodeVisibleToCapability(
   switch (capability.kind) {
     case "unrestricted":
       return true;
-    case "self_continuity":
-      return isEpisodeInGlobalIdentityScope(input, capability.selfAudienceEntityId);
-    case "operator_introspection":
-      return isEpisodeInGlobalIdentityScope(input, capability.selfAudienceEntityId);
     case "audience":
       return isEpisodeAccessVisible(input, capability.audienceEntityId);
     default: {

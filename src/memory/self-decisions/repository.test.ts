@@ -142,7 +142,7 @@ describe("SelfDecisionRepository", () => {
     db.close();
   });
 
-  it("lists autonomous self-private decisions without a current-session firewall", () => {
+  it("lists autonomous self-private decisions across sessions for self recall", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-cross-session-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "self-decisions.db"), {

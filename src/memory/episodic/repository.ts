@@ -514,18 +514,6 @@ export class EpisodicRepository {
     switch (capability.kind) {
       case "unrestricted":
         return undefined;
-      case "self_continuity":
-        return capability.selfAudienceEntityId === null
-          ? lancePublicOriginSql()
-          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
-              capability.selfAudienceEntityId,
-            )})`;
-      case "operator_introspection":
-        return capability.selfAudienceEntityId === null
-          ? lancePublicOriginSql()
-          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
-              capability.selfAudienceEntityId,
-            )})`;
       case "audience":
         return capability.audienceEntityId === null
           ? `(${lancePublicOriginSql()} OR shared = true)`
@@ -553,26 +541,6 @@ export class EpisodicRepository {
     switch (capability.kind) {
       case "unrestricted":
         return { sql: "1 = 1", params: [] };
-      case "self_continuity":
-        return capability.selfAudienceEntityId === null
-          ? {
-              sql: indexedPublicOriginSql(alias),
-              params: [],
-            }
-          : {
-              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
-              params: [capability.selfAudienceEntityId, capability.selfAudienceEntityId],
-            };
-      case "operator_introspection":
-        return capability.selfAudienceEntityId === null
-          ? {
-              sql: indexedPublicOriginSql(alias),
-              params: [],
-            }
-          : {
-              sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
-              params: [capability.selfAudienceEntityId, capability.selfAudienceEntityId],
-            };
       case "audience":
         return capability.audienceEntityId === null
           ? {
