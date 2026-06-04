@@ -1440,6 +1440,161 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Rollout evidence from legacy retrieval.");
   });
 
+  it("renders recalled private memory with disclosure label and consolidated guidance", () => {
+    const aliceId = createEntityId();
+    const bobId = createEntityId();
+    const privateMemory = "Alice privately said the fallback launch route is not ready.";
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        audienceEntityId: bobId,
+        retrievedEvidence: [
+          {
+            id: "raw-alice-private",
+            source: "raw_stream",
+            text: privateMemory,
+            recallIntentId: "intent-private-memory",
+            matchedTerms: [],
+            score: 0.91,
+            scoreBreakdown: {},
+            disclosureLabel: {
+              disclosureClass: "relationship_private",
+              originAudienceEntityIds: [aliceId],
+              privateToEntityIds: [aliceId],
+              publicToEntityIds: [],
+            },
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    const retrievedBlock = extractBlock(prompt, "borg_retrieved_evidence");
+    const guidanceBlock = extractBlock(prompt, "borg_memory_disclosure_guidance");
+
+    expect(retrievedBlock).toContain(privateMemory);
+    expect(retrievedBlock).toContain("disclosure_class=relationship_private");
+    expect(retrievedBlock).toContain(`private-to=${aliceId}`);
+    expect(guidanceBlock).toContain("Use labeled-private memories internally to inform judgment");
+    expect(guidanceBlock).toContain(
+      "Do not reveal labeled-private content, source details, or the existence of a private memory",
+    );
+  });
+
+  it("renders operator and creator disclosure affordance in trusted guidance", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        creatorContext: {
+          currentSenderEntityId: createEntityId(),
+          currentSenderDisplayName: "Tom",
+          currentSenderBorgRole: "creator",
+          sessionAudienceRole: "operator",
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    const guidanceBlock = extractBlock(prompt, "borg_memory_disclosure_guidance");
+    const standingBlock = extractBlock(prompt, "borg_standing_with_audience");
+
+    expect(guidanceBlock).toContain("Operator or creator context may permit fuller discussion");
+    expect(standingBlock).toContain("<session_audience_role>operator</session_audience_role>");
+    expect(standingBlock).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
+  });
+
+  it("labels self-memory prompt blocks for executive focus, current period, and recent growth", () => {
+    const goal = {
+      id: "goal_aaaaaaaaaaaaaaaa" as never,
+      description: "Understand the continuity model",
+      priority: 8,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: NOW_MS,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      source_stream_entry_ids: [createStreamEntryId()],
+      provenance: { kind: "manual" },
+    } as NonNullable<NonNullable<DeliberationContext["executiveFocus"]>["selected_goal"]>;
+    const selectedScore = {
+      goal_id: goal.id,
+      goal,
+      score: 0.86,
+      components: {
+        priority: 0.8,
+        deadline_pressure: 0.1,
+        context_fit: 0.9,
+        progress_debt: 0.3,
+      },
+      reason: "continuity is salient",
+    };
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        executiveFocus: {
+          selected_goal: goal,
+          selected_score: selectedScore,
+          next_step: {
+            id: "exstep_aaaaaaaaaaaaaaaa" as never,
+            goal_id: goal.id,
+            description: "Compare the prompt surfaces",
+            status: "queued",
+            kind: "think",
+            due_at: null,
+            last_attempt_ts: null,
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+            provenance: { kind: "manual" },
+          },
+          candidates: [selectedScore],
+          threshold: 0.5,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+          currentPeriod: {
+            id: "abp_aaaaaaaaaaaaaaaa" as never,
+            label: "Continuity sprint",
+            start_ts: NOW_MS,
+            end_ts: null,
+            narrative: "Learning how self-memory should be handled.",
+            key_episode_ids: [],
+            themes: ["continuity"],
+            provenance: { kind: "manual" },
+            created_at: NOW_MS,
+            last_updated: NOW_MS,
+          },
+          recentGrowthMarkers: [
+            {
+              id: "grw_aaaaaaaaaaaaaaaa" as never,
+              ts: NOW_MS,
+              category: "understanding",
+              what_changed: "Noticed a better way to carry private self-memory.",
+              before_description: null,
+              after_description: null,
+              evidence_episode_ids: [],
+              confidence: 0.73,
+              source_process: "manual",
+              provenance: { kind: "manual" },
+              created_at: NOW_MS,
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    for (const tag of ["borg_executive_focus", "borg_current_period", "borg_recent_growth"]) {
+      const block = extractBlock(prompt, tag);
+
+      expect(block).toContain("disclosure_class=self_private");
+      expect(block).toContain(
+        "private-to=unknown; usable internally; do not disclose to current audience unless authorized",
+      );
+    }
+  });
+
   it("omits legacy retrieved evidence when the evidence ledger is active", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
@@ -1953,8 +2108,12 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain("Relational slot constraints");
     expect(block).toContain("dog.name: CONTESTED");
+    expect(block).toContain(`private-to=${subject}`);
     expect(block).toContain('Use "your dog" or "they"');
     expect(block).toContain("partner.role: QUARANTINED");
+    expect(block).toContain(
+      "usable internally; do not disclose to current audience unless authorized",
+    );
     expect(block).toContain('Use "your partner" or "they"');
     expect(block).not.toContain("partner.name: ESTABLISHED");
     expect(block).not.toContain("Sarah");
@@ -2169,12 +2328,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(profileBlock).toContain("Talking to: trust=0.72 | attachment=0.31 | interactions=6");
     expect(profileBlock).toContain("style=direct");
     expect(profileBlock).not.toContain("Participants:");
-    expect(standingBlock).toContain(
-      [
-        "Relational slot constraints (do not violate):",
-        '- partner.name: CONTESTED (conflicting evidence is contested). Do not name this relation. Use "your partner" or "they". Re-establish only if the user names it in the current message.',
-      ].join("\n"),
-    );
+    expect(standingBlock).toContain("Relational slot constraints (do not violate):");
+    expect(standingBlock).toContain("partner.name: CONTESTED");
+    expect(standingBlock).toContain(`private-to=${alice}`);
+    expect(standingBlock).toContain('Use "your partner" or "they"');
     expect(standingBlock).not.toContain("Alice: partner.name");
     expect(prompt).not.toContain("<borg_relational_slot_constraints>");
   });

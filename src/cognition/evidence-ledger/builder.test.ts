@@ -832,10 +832,13 @@ describe("EvidenceLedgerBuilder", () => {
       session_scope: "prior_session",
       actor: "system",
       value: "rejected_frame",
-      state: "active",
+      state: expect.stringContaining("disclosure_class=relationship_private"),
       taint: "none",
       state_metadata: expect.objectContaining({
         disclosure_class: "social_observed",
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+        }),
         stance: "rejected_frame",
         taint: "quarantined",
         belief_effect: "unchanged",
@@ -1885,7 +1888,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.audienceStanding?.relationalEntries[0]).toMatchObject({
       session_scope: "current_session",
       value: "tutor.name=Marta",
-      state: "established",
+      state: expect.stringContaining("disclosure_class=relationship_private"),
     });
     expect(ledger.sections.find((section) => section.id === "episodes")?.entries).toEqual([
       expect.objectContaining({
@@ -2005,16 +2008,22 @@ describe("EvidenceLedgerBuilder", () => {
       "tutor.name=Marta",
     ]);
     expect(relationalEntries.map((entry) => entry.state_metadata)).toEqual([
-      {
+      expect.objectContaining({
         subject_entity_id: bob,
         subject_display_name: "Bob",
         subject_role: "speaker",
-      },
-      {
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+        }),
+      }),
+      expect.objectContaining({
         subject_entity_id: alice,
         subject_display_name: "Alice",
         subject_role: "participant",
-      },
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+        }),
+      }),
     ]);
   });
 
@@ -2363,7 +2372,18 @@ describe("EvidenceLedgerBuilder", () => {
       "tutor.name=Marta",
       "dog.name=Niko",
     ]);
-    expect(relationalEntries.map((entry) => entry.state_metadata)).toEqual([undefined, undefined]);
+    expect(relationalEntries.map((entry) => entry.state_metadata)).toEqual([
+      expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+        }),
+      }),
+      expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+        }),
+      }),
+    ]);
   });
 
   it("surfaces the most recent speaker when the current user entry has a sender", async () => {

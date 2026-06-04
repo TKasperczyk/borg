@@ -1,11 +1,11 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import type { MemoryDisclosureLabel } from "../../../retrieval/index.js";
 import {
-  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
-  memoryDisclosureLabelMetadata,
-  renderSemanticSourceDisclosureLabelForModel,
-  type MemoryDisclosureLabel,
-} from "../../../retrieval/index.js";
-import { semanticNodeStateMetadata, semanticTaint } from "../entry-metadata.js";
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+  semanticNodeStateMetadata,
+  semanticTaint,
+} from "../entry-metadata.js";
 import { SEMANTIC_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance, scopeFromEpisodeIds } from "../scope-resolver.js";
 
@@ -31,7 +31,13 @@ function semanticNodeState(node: { kind: string; status: string; under_review?: 
 }
 
 function semanticDisclosureState(label: MemoryDisclosureLabel | undefined): string {
-  return label === undefined ? "" : ` ${renderSemanticSourceDisclosureLabelForModel(label)}`;
+  const state = appendMemoryDisclosureState({
+    state: "",
+    disclosureLabel: label,
+    renderContext: "semantic_source",
+  });
+
+  return state === undefined || state.length === 0 ? "" : ` ${state}`;
 }
 
 function semanticDisclosureMetadata(
@@ -41,12 +47,13 @@ function semanticDisclosureMetadata(
     return {};
   }
 
-  return {
-    disclosure_label: memoryDisclosureLabelMetadata(label),
-    ...(label.disclosureClass === "public"
-      ? {}
-      : { disclosure_note: SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE }),
-  };
+  return (
+    appendMemoryDisclosureStateMetadata({
+      stateMetadata: undefined,
+      disclosureLabel: label,
+      renderContext: "semantic_source",
+    }) ?? {}
+  );
 }
 
 export function addSemanticGraphSection(context: BuilderSectionContext): void {

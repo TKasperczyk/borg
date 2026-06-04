@@ -1,4 +1,11 @@
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import {
+  memoryDisclosureInternalUseNote,
+  memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
+  type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelRenderContext,
+} from "../../retrieval/index.js";
 import type { StreamEntry, TranscriptStreamEntry } from "../../stream/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
@@ -83,6 +90,64 @@ export function optionalStateMetadata(
   stateMetadata: Record<string, unknown> | undefined,
 ): Pick<EvidenceLedgerEntry, "state_metadata"> {
   return stateMetadata === undefined ? {} : { state_metadata: stateMetadata };
+}
+
+export function appendMemoryDisclosureState(input: {
+  state: string | undefined;
+  disclosureLabel: MemoryDisclosureLabel | undefined;
+  renderContext?: MemoryDisclosureLabelRenderContext;
+}): string | undefined {
+  if (input.disclosureLabel === undefined) {
+    return input.state;
+  }
+
+  if (input.disclosureLabel.disclosureClass === "public") {
+    return input.state;
+  }
+
+  const rendered = renderMemoryDisclosureLabelForModel(input.disclosureLabel, {
+    context: input.renderContext,
+  });
+
+  return input.state === undefined || input.state.length === 0
+    ? rendered
+    : `${input.state} ${rendered}`;
+}
+
+export function memoryDisclosureStateMetadata(input: {
+  disclosureLabel: MemoryDisclosureLabel | undefined;
+  renderContext?: MemoryDisclosureLabelRenderContext;
+  currentAudienceEntityId?: EntityId | null;
+}): Record<string, unknown> {
+  if (input.disclosureLabel === undefined || input.disclosureLabel.disclosureClass === "public") {
+    return {};
+  }
+
+  return {
+    disclosure_label: memoryDisclosureLabelMetadata(input.disclosureLabel),
+    disclosure_note: memoryDisclosureInternalUseNote(input.renderContext),
+    ...(input.currentAudienceEntityId === undefined
+      ? {}
+      : { current_audience_entity_id: input.currentAudienceEntityId }),
+  };
+}
+
+export function appendMemoryDisclosureStateMetadata(input: {
+  stateMetadata: Record<string, unknown> | undefined;
+  disclosureLabel: MemoryDisclosureLabel | undefined;
+  renderContext?: MemoryDisclosureLabelRenderContext;
+  currentAudienceEntityId?: EntityId | null;
+}): Record<string, unknown> | undefined {
+  const metadata = {
+    ...(input.stateMetadata ?? {}),
+    ...memoryDisclosureStateMetadata({
+      disclosureLabel: input.disclosureLabel,
+      renderContext: input.renderContext,
+      currentAudienceEntityId: input.currentAudienceEntityId,
+    }),
+  };
+
+  return Object.keys(metadata).length === 0 ? undefined : metadata;
 }
 
 export function rawStreamActor(

@@ -83,6 +83,7 @@ function sharedStateEntry(input: {
   kind: SharedStateEntryKind;
   index: number;
   source: SharedStateEntry["provenance_stream_entry_ids"][number];
+  owner?: SharedStateEntry["owner_entity_id"];
   text?: string;
 }): SharedStateEntry {
   return {
@@ -91,7 +92,7 @@ function sharedStateEntry(input: {
     state_key: `${input.kind}.decision`,
     kind: input.kind,
     text: input.text ?? `${input.kind} decision ${input.index}`,
-    owner_entity_id: input.audience,
+    owner_entity_id: input.owner === undefined ? input.audience : input.owner,
     provenance_stream_entry_ids: [input.source],
     last_updated_stream_entry_ids: [input.source],
     created_at: 1_000 + input.index,
@@ -211,6 +212,32 @@ describe("renderEvidenceLedger", () => {
 });
 
 describe("renderSharedStateArtifact", () => {
+  it("labels owner-null entries from the audience-scoped artifact in full rows and compact index", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entry = sharedStateEntry({
+      audience,
+      source,
+      kind: "live",
+      index: 1,
+      owner: null,
+      text: "Owner-null audience-scoped private decision.",
+    });
+    const rendered = renderSharedStateArtifact(sharedStateWithEntries([entry], source)) ?? "";
+    const compactIndexStart = rendered.indexOf("SharedStateArtifact compact active-key index:");
+    const rowStart = rendered.indexOf("- kind=live");
+
+    expect(compactIndexStart).toBeGreaterThanOrEqual(0);
+    expect(rowStart).toBeGreaterThan(compactIndexStart);
+    expect(rendered.slice(compactIndexStart, rowStart)).toContain(
+      `private-to=${audience}; usable internally; do not disclose to current audience unless authorized`,
+    );
+    expect(rendered.slice(rowStart)).toContain("owner=null");
+    expect(rendered.slice(rowStart)).toContain(
+      `private-to=${audience}; usable internally; do not disclose to current audience unless authorized`,
+    );
+  });
+
   it("caps a single oversized locked entry", () => {
     const now = 1_000;
     const audience = createEntityId();
@@ -316,10 +343,10 @@ describe("renderSharedStateArtifact", () => {
     const rendered =
       renderSharedStateArtifact(sharedStateWithEntries(entries, source), {
         maxEntries: 12,
-        maxTokens: 1_800,
+        maxTokens: 2_100,
       }) ?? "";
 
-    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(1_800);
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(2_100);
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(2);
     expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(1);
     expect(rendered.match(/kind=tentative/g)?.length ?? 0).toBe(0);

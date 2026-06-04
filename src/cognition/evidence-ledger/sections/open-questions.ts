@@ -1,5 +1,9 @@
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+} from "../entry-metadata.js";
+import {
   LIFECYCLE_OPEN_QUESTION_STATUSES,
   openQuestionEpisodeIds,
   openQuestionScope,
@@ -10,6 +14,7 @@ import {
 } from "../open-question-handles.js";
 import { OPEN_QUESTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
 
 export function addOpenQuestionsSection(context: BuilderSectionContext): void {
   const questionsById = new Map(
@@ -31,6 +36,9 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
   }
 
   for (const question of questionsById.values()) {
+    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
+      question.audience_entity_id === null ? [] : [question.audience_entity_id],
+    );
     addEntry(
       context.buckets,
       "open_questions",
@@ -42,8 +50,14 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
         trust_rank: OPEN_QUESTION_TRUST_RANK,
         text: question.question,
         value: question.source,
-        state: question.status,
-        state_metadata: openQuestionStateMetadata(question),
+        state: appendMemoryDisclosureState({
+          state: question.status,
+          disclosureLabel,
+        }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: openQuestionStateMetadata(question),
+          disclosureLabel,
+        }),
         taint: "none",
         ...persistenceClassFromProvenance(
           {

@@ -419,6 +419,82 @@ describe("post-generation guard shadow chain", () => {
     });
   });
 
+  it("does not suppress final answers merely for containing labeled private memory content", async () => {
+    const aliceId = createEntityId();
+    const privateMemory = "Alice said the fallback route is not ready.";
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-private-content-not-policed",
+      response: `I remember the relevant detail: ${privateMemory}`,
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [
+        {
+          episode: {
+            id: createEpisodeId(),
+            title: "Alice private routing note",
+            narrative: privateMemory,
+            audience_entity_id: null,
+            origin_audience_entity_ids: [aliceId],
+            source_stream_ids: [],
+            lineage: {
+              derived_from: [],
+              supersedes: [],
+            },
+          },
+          disclosureLabel: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [aliceId],
+            privateToEntityIds: [aliceId],
+            publicToEntityIds: [],
+          },
+          citationChain: [],
+        } as unknown as RetrievedEpisode,
+      ],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "message",
+      content: `I remember the relevant detail: ${privateMemory}`,
+    });
+    expect(emit).not.toHaveBeenCalledWith(
+      "internal_identifier_guard.completed",
+      expect.objectContaining({
+        verdict: "suppressed",
+      }),
+    );
+  });
+
   it("collects known stream identifiers from a bounded recent-session scan", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-post-generation-guard-"));
     const scanSpy = vi.spyOn(StreamReader.prototype, "scanReverse");

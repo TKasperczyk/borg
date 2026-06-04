@@ -12,7 +12,11 @@ import {
   scopedGoalsForEntity,
 } from "../audience-visibility.js";
 import type { BuilderSectionContext } from "../builder-context.js";
-import { slotTaint } from "../entry-metadata.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+  slotTaint,
+} from "../entry-metadata.js";
 import {
   ACTION_TRUST_RANK,
   COMMITMENT_TRUST_RANK,
@@ -29,6 +33,9 @@ import {
   scopeFromStreamIds,
   slotScope,
 } from "../scope-resolver.js";
+import { commitmentDisclosureEntityIds } from "../../disclosure-labels.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import type { EntityId } from "../../../util/ids.js";
 
 export function addGroupChannelMemorySection(context: BuilderSectionContext): void {
   const audienceEntityId = context.input.audienceEntityId;
@@ -44,6 +51,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
   }
 
   const displayName = audienceEntity.canonical_name;
+  const groupDisclosureLabel = relationshipPrivateMemoryDisclosureLabel([audienceEntityId]);
 
   addEntry(context.buckets, "group_channel_memory", {
     id: `group_channel:${audienceEntityId}`,
@@ -53,7 +61,14 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
     trust_rank: SLOT_TRUST_RANK,
     text: `Group/channel memory for ${displayName}. These entries belong to the channel, not to any active participant.`,
     value: displayName,
-    state: "group_channel",
+    state: appendMemoryDisclosureState({
+      state: "group_channel",
+      disclosureLabel: groupDisclosureLabel,
+    }),
+    state_metadata: appendMemoryDisclosureStateMetadata({
+      stateMetadata: undefined,
+      disclosureLabel: groupDisclosureLabel,
+    }),
     taint: "none",
   });
 
@@ -78,11 +93,17 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
             ? undefined
             : `alternate_values=${slot.alternate_values.map((alternate) => alternate.value).join(", ")}`,
         value: `${slot.slot_key}=${slot.value}`,
-        state: slot.state,
-        state_metadata: {
-          subject_display_name: displayName,
-          subject_role: "audience",
-        },
+        state: appendMemoryDisclosureState({
+          state: slot.state,
+          disclosureLabel: groupDisclosureLabel,
+        }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            subject_display_name: displayName,
+            subject_role: "audience",
+          },
+          disclosureLabel: groupDisclosureLabel,
+        }),
         taint: slotTaint(slot),
         ...persistenceClassFromProvenance(
           {
@@ -109,6 +130,9 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
   );
 
   for (const commitment of scopedCommitments) {
+    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
+      commitmentDisclosureEntityIds(commitment),
+    );
     addEntry(
       context.buckets,
       "group_channel_memory",
@@ -120,11 +144,14 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
         trust_rank: COMMITMENT_TRUST_RANK,
         text: commitment.directive,
         value: commitment.directive_family,
-        state: "active",
-        state_metadata: {
-          commitment_kind: commitment.kind,
-          commitment_type: commitment.type,
-        },
+        state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            commitment_kind: commitment.kind,
+            commitment_type: commitment.type,
+          },
+          disclosureLabel,
+        }),
         taint: "none",
         ...persistenceClassFromProvenance(
           { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
@@ -143,6 +170,11 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
   ).filter((goal) => goalBelongsToGroupChannel(goal, audienceEntityId, context.repos.entities));
 
   for (const goal of scopedGoals) {
+    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
+      [goal.audience_entity_id, goal.owner_entity_id ?? null].filter(
+        (entityId): entityId is EntityId => entityId !== null,
+      ),
+    );
     addEntry(context.buckets, "group_channel_memory", {
       id: `group_goal:${goal.id}`,
       source_type: "system_metadata",
@@ -151,7 +183,11 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
       trust_rank: OPEN_QUESTION_TRUST_RANK,
       text: goal.description,
       value: "goal",
-      state: goal.status,
+      state: appendMemoryDisclosureState({ state: goal.status, disclosureLabel }),
+      state_metadata: appendMemoryDisclosureStateMetadata({
+        stateMetadata: undefined,
+        disclosureLabel,
+      }),
       taint: "none",
     });
   }
@@ -174,6 +210,9 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
         actionBelongsToGroupChannel(record, audienceEntityId, context.repos.entities),
       ),
   ]).slice(0, DEFAULT_ACTION_THREAD_RENDER_LIMIT)) {
+    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
+      action.audience_entity_id === null ? [] : [action.audience_entity_id],
+    );
     addEntry(
       context.buckets,
       "group_channel_memory",
@@ -185,7 +224,11 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
         trust_rank: ACTION_TRUST_RANK,
         text: action.description,
         value: actionActorDisplay(action.actor, context.repos.entities),
-        state: action.state,
+        state: appendMemoryDisclosureState({ state: action.state, disclosureLabel }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: undefined,
+          disclosureLabel,
+        }),
         taint: "none",
         ...persistenceClassFromProvenance(
           {

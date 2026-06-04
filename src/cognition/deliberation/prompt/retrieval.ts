@@ -3,7 +3,6 @@ import type { SemanticNode } from "../../../memory/semantic/index.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
-  renderSemanticSourceDisclosureLabelForModel,
   type EvidenceItem,
   type RetrievalConfidence,
   type RetrievedContradictionRouting,
@@ -229,9 +228,9 @@ function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
     return "";
   }
 
-  return isSemanticEvidenceItem(item)
-    ? renderSemanticSourceDisclosureLabelForModel(item.disclosureLabel)
-    : renderMemoryDisclosureLabelForModel(item.disclosureLabel);
+  return renderMemoryDisclosureLabelForModel(item.disclosureLabel, {
+    context: isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
+  });
 }
 
 function isSemanticEvidenceItem(item: EvidenceItem): boolean {
@@ -390,7 +389,7 @@ function summarizeSemanticDisclosureTag(input: {
 }): string {
   return input.disclosureLabel === undefined
     ? ""
-    : `, ${renderSemanticSourceDisclosureLabelForModel(input.disclosureLabel)}`;
+    : `, ${renderMemoryDisclosureLabelForModel(input.disclosureLabel, { context: "semantic_source" })}`;
 }
 
 function summarizeSemanticNode(

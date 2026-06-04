@@ -1,4 +1,9 @@
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import {
+  relationshipPrivateMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import type { ActiveParticipant } from "../participants.js";
 import {
   dedupeCommitments,
@@ -10,7 +15,11 @@ import {
   visibleAudienceEntityIds,
 } from "./audience-visibility.js";
 import type { BuilderSectionContext } from "./builder-context.js";
-import { optionalStateMetadata, slotTaint } from "./entry-metadata.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+  slotTaint,
+} from "./entry-metadata.js";
 import {
   COMMITMENT_TRUST_RANK,
   CROSS_SESSION_ACTIVITY_TRUST_RANK,
@@ -27,12 +36,14 @@ import {
 } from "./scope-resolver.js";
 import type { EvidenceLedgerAudienceStanding, EvidenceLedgerEntry } from "./types.js";
 import { resolveSpeakerDisplayName } from "../speaker-tags.js";
-import type { EntityKind } from "../../memory/commitments/index.js";
+import type { CommitmentRecord, EntityKind } from "../../memory/commitments/index.js";
+import type { GoalRecord } from "../../memory/self/index.js";
 import type { EntityId } from "../../util/ids.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
 } from "../../memory/commitments/index.js";
+import { commitmentDisclosureEntityIds } from "../disclosure-labels.js";
 
 function participantForSlot(
   slot: RelationalSlot,
@@ -59,6 +70,7 @@ function slotSubjectStateMetadata(
 
 function buildCrossSessionActivityEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
   const rows = context.input.crossSessionSelfActivity ?? [];
+  const disclosureLabel = selfPrivateMemoryDisclosureLabel();
 
   return rows.map((row, index) => ({
     id: `cross_session_self_activity:${index + 1}`,
@@ -68,12 +80,15 @@ function buildCrossSessionActivityEntries(context: BuilderSectionContext): Evide
     trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
     text: row.text,
     value: row.kind,
-    state: "active",
-    state_metadata: {
-      event_kind: row.kind,
-      occurred_at: row.occurredAt,
-      relative_age: row.relativeAge,
-    },
+    state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
+    state_metadata: appendMemoryDisclosureStateMetadata({
+      stateMetadata: {
+        event_kind: row.kind,
+        occurred_at: row.occurredAt,
+        relative_age: row.relativeAge,
+      },
+      disclosureLabel,
+    }),
     taint: "none",
   }));
 }
@@ -83,6 +98,7 @@ function buildSelfDecisionIntrospectionEntries(
 ): EvidenceLedgerEntry[] {
   // Visibility is resolved upstream by selectSelfDecisionIntrospection.
   const rows = context.input.selfDecisionIntrospection ?? [];
+  const disclosureLabel = selfPrivateMemoryDisclosureLabel();
 
   return rows.map((row, index) => ({
     id: `self_decision_introspection:${index + 1}`,
@@ -92,14 +108,17 @@ function buildSelfDecisionIntrospectionEntries(
     trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
     text: row.text,
     value: row.triggerName,
-    state: "active",
-    state_metadata: {
-      trigger_name: row.triggerName,
-      trigger_type: row.triggerType,
-      occurred_at: row.occurredAt,
-      relative_age: row.relativeAge,
-      disclosure_class: "self_private",
-    },
+    state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
+    state_metadata: appendMemoryDisclosureStateMetadata({
+      stateMetadata: {
+        trigger_name: row.triggerName,
+        trigger_type: row.triggerType,
+        occurred_at: row.occurredAt,
+        relative_age: row.relativeAge,
+        disclosure_class: "self_private",
+      },
+      disclosureLabel,
+    }),
     taint: "none",
   }));
 }
@@ -149,6 +168,7 @@ function buildObservedEventIntrospectionEntries(
     );
     const audienceKind = originAudienceKind(context, row.audienceEntityId);
     const descriptor = originDescriptor(audienceKind);
+    const disclosureLabel = observedEventDisclosureLabel(row);
 
     return {
       id: `observed_event_introspection:${index + 1}`,
@@ -162,28 +182,64 @@ function buildObservedEventIntrospectionEntries(
         originDescriptor: descriptor,
       }),
       value: row.stance,
-      state: "active",
-      state_metadata: {
-        disclosure_class: row.disclosureClass,
-        stance: row.stance,
-        taint: row.taint,
-        belief_effect: row.beliefEffect,
-        recurrence_count: row.recurrenceCount,
-        occurred_at: row.occurredAt,
-        relative_age: row.relativeAge,
-        speaker_entity_id: row.speakerEntityId,
-        speaker_display_name: speakerDisplayName,
-        audience_entity_id: row.audienceEntityId,
-        origin_audience_kind: audienceKind,
-      },
+      state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
+      state_metadata: appendMemoryDisclosureStateMetadata({
+        stateMetadata: {
+          observed_event_disclosure_class: row.disclosureClass,
+          disclosure_class: row.disclosureClass,
+          stance: row.stance,
+          taint: row.taint,
+          belief_effect: row.beliefEffect,
+          recurrence_count: row.recurrenceCount,
+          occurred_at: row.occurredAt,
+          relative_age: row.relativeAge,
+          speaker_entity_id: row.speakerEntityId,
+          speaker_display_name: speakerDisplayName,
+          audience_entity_id: row.audienceEntityId,
+          origin_audience_kind: audienceKind,
+        },
+        disclosureLabel,
+      }),
       taint: "none",
     };
   });
 }
 
+function observedEventDisclosureLabel(row: {
+  disclosureClass: "social_observed" | "self_private";
+  speakerEntityId: EntityId | null;
+  audienceEntityId: EntityId | null;
+}): MemoryDisclosureLabel {
+  const originEntityIds = [row.audienceEntityId, row.speakerEntityId].filter(
+    (entityId): entityId is EntityId => entityId !== null,
+  );
+
+  return row.disclosureClass === "self_private"
+    ? selfPrivateMemoryDisclosureLabel(originEntityIds)
+    : relationshipPrivateMemoryDisclosureLabel(originEntityIds);
+}
+
+function commitmentDisclosureLabel(commitment: CommitmentRecord): MemoryDisclosureLabel {
+  return relationshipPrivateMemoryDisclosureLabel(commitmentDisclosureEntityIds(commitment));
+}
+
+function relationalSlotDisclosureLabel(slot: RelationalSlot): MemoryDisclosureLabel {
+  return relationshipPrivateMemoryDisclosureLabel([slot.subject_entity_id]);
+}
+
+function goalDisclosureLabel(goal: GoalRecord): MemoryDisclosureLabel {
+  return relationshipPrivateMemoryDisclosureLabel(
+    [goal.audience_entity_id, goal.owner_entity_id ?? null].filter(
+      (entityId): entityId is EntityId => entityId !== null,
+    ),
+  );
+}
+
 function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
-  return context.input.applicableCommitments.map((commitment) =>
-    cappedTrustRank({
+  return context.input.applicableCommitments.map((commitment) => {
+    const disclosureLabel = commitmentDisclosureLabel(commitment);
+
+    return cappedTrustRank({
       id: `commitment:${commitment.id}`,
       source_type: "commitment",
       session_scope: commitmentScope(commitment, context.resolver),
@@ -191,25 +247,31 @@ function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerE
       trust_rank: COMMITMENT_TRUST_RANK,
       text: commitment.directive,
       value: commitment.directive_family,
-      state:
-        commitment.revoked_at !== null
-          ? "revoked"
-          : commitment.expired_at !== null
-            ? "expired"
-            : "active",
-      state_metadata: {
-        commitment_kind: commitment.kind,
-        commitment_type: commitment.type,
-        commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
-        commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
-      },
+      state: appendMemoryDisclosureState({
+        state:
+          commitment.revoked_at !== null
+            ? "revoked"
+            : commitment.expired_at !== null
+              ? "expired"
+              : "active",
+        disclosureLabel,
+      }),
+      state_metadata: appendMemoryDisclosureStateMetadata({
+        stateMetadata: {
+          commitment_kind: commitment.kind,
+          commitment_type: commitment.type,
+          commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+          commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+        },
+        disclosureLabel,
+      }),
       taint: "none",
       ...persistenceClassFromProvenance(
         { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
         context.resolver,
       ),
-    }),
-  );
+    });
+  });
 }
 
 function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
@@ -233,6 +295,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
 
   for (const slot of slots.slice(0, RELATIONAL_SLOT_LEDGER_LIMIT)) {
     const participant = participantForSlot(slot, activeParticipants);
+    const disclosureLabel = relationalSlotDisclosureLabel(slot);
     entries.push(
       cappedTrustRank({
         id: `relational_slot:${slot.id}`,
@@ -245,10 +308,15 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
             ? undefined
             : `alternate_values=${slot.alternate_values.map((alternate) => alternate.value).join(", ")}`,
         value: `${slot.slot_key}=${slot.value}`,
-        state: slot.state,
-        ...optionalStateMetadata(
-          slotSubjectStateMetadata(slot, participant, activeParticipants?.length ?? 0),
-        ),
+        state: appendMemoryDisclosureState({ state: slot.state, disclosureLabel }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: slotSubjectStateMetadata(
+            slot,
+            participant,
+            activeParticipants?.length ?? 0,
+          ),
+          disclosureLabel,
+        }),
         taint: slotTaint(slot),
         ...persistenceClassFromProvenance(
           {
@@ -285,6 +353,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
           );
 
     for (const commitment of participantCommitments) {
+      const disclosureLabel = commitmentDisclosureLabel(commitment);
       entries.push(
         cappedTrustRank({
           id: `participant_commitment:${participant.entityId}:${commitment.id}`,
@@ -294,13 +363,16 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
           trust_rank: COMMITMENT_TRUST_RANK,
           text: commitment.directive,
           value: `${participant.displayName ?? "participant"}:${commitment.directive_family}`,
-          state: "active",
-          state_metadata: {
-            subject_display_name: participant.displayName ?? "participant",
-            subject_role: participant.role,
-            commitment_kind: commitment.kind,
-            commitment_type: commitment.type,
-          },
+          state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
+          state_metadata: appendMemoryDisclosureStateMetadata({
+            stateMetadata: {
+              subject_display_name: participant.displayName ?? "participant",
+              subject_role: participant.role,
+              commitment_kind: commitment.kind,
+              commitment_type: commitment.type,
+            },
+            disclosureLabel,
+          }),
           taint: "none",
           ...persistenceClassFromProvenance(
             { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
@@ -328,6 +400,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
           ).filter((goal) => isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds));
 
     for (const goal of participantGoals) {
+      const disclosureLabel = goalDisclosureLabel(goal);
       entries.push({
         id: `participant_goal:${participant.entityId}:${goal.id}`,
         source_type: "system_metadata",
@@ -336,11 +409,14 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
         trust_rank: OPEN_QUESTION_TRUST_RANK,
         text: goal.description,
         value: `${participant.displayName ?? "participant"}:goal`,
-        state: goal.status,
-        state_metadata: {
-          subject_display_name: participant.displayName ?? "participant",
-          subject_role: participant.role,
-        },
+        state: appendMemoryDisclosureState({ state: goal.status, disclosureLabel }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            subject_display_name: participant.displayName ?? "participant",
+            subject_role: participant.role,
+          },
+          disclosureLabel,
+        }),
         taint: "none",
       });
     }

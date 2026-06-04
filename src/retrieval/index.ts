@@ -29,17 +29,23 @@ export {
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   MEMORY_DISCLOSURE_CLASSES,
+  MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureInternalUseNote,
   memoryDisclosureLabelMetadata,
+  publicMemoryDisclosureLabel,
+  relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
   renderSemanticSourceDisclosureLabelForModel,
+  selfPrivateMemoryDisclosureLabel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelRenderContext,
 } from "./recall-context.js";
 export {
   RetrievalPipeline,

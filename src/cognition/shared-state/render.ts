@@ -5,6 +5,13 @@ import {
   type SharedStateEntry,
   type SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureLabelForModel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
+import { uniqueDisclosureEntityIds } from "../disclosure-labels.js";
 import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
   activeSharedStateArtifactEntries,
@@ -164,11 +171,22 @@ function renderSharedStateEntry(entry: SharedStateEntry): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
   const stateKey = `state_key=${sharedStateKeyBucket(entry.state_key)}`;
   const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
+  const disclosureLabel = sharedStateEntryDisclosureLabel(entry);
+  const disclosure =
+    disclosureLabel.disclosureClass === "public"
+      ? ""
+      : ` ${renderMemoryDisclosureLabelForModel(disclosureLabel)}`;
 
   return [
-    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner} last_updated_at=${entry.last_updated_at} ${citations}`,
+    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
     `  text: ${entry.text}`,
   ].join("\n");
+}
+
+function sharedStateEntryDisclosureLabel(entry: SharedStateEntry): MemoryDisclosureLabel {
+  return relationshipPrivateMemoryDisclosureLabel(
+    uniqueDisclosureEntityIds([entry.audience_entity_id, entry.owner_entity_id]),
+  );
 }
 
 function entriesGroupedByStateKey(entries: readonly SharedStateEntry[]): Array<{
@@ -207,6 +225,7 @@ type SharedStateCompactIndexRow = {
   lastUpdatedAt: number;
   activeCount: number;
   excerpt: string;
+  disclosureLabel: MemoryDisclosureLabel;
   expanded: boolean;
 };
 
@@ -226,6 +245,9 @@ function buildSharedStateCompactIndexRows(input: {
       lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
       activeCount: group.entries.length,
       excerpt: sharedStateCompactExcerpt(latestEntry.text),
+      disclosureLabel: combineMemoryDisclosureLabels(
+        group.entries.map((entry) => sharedStateEntryDisclosureLabel(entry)),
+      ),
       expanded: input.expandedBuckets.has(group.stateKey),
     };
   });
@@ -238,9 +260,14 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
       `kinds=${row.kinds.join(",")}`,
       `last_updated_at=${row.lastUpdatedAt}`,
       `active_count=${row.activeCount}`,
+      row.disclosureLabel.disclosureClass === "public"
+        ? null
+        : renderMemoryDisclosureLabelForModel(row.disclosureLabel),
       `excerpt=${JSON.stringify(row.excerpt)}`,
       row.expanded ? "expanded" : "omitted",
-    ].join(" | "),
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" | "),
   );
 
   return ["SharedStateArtifact compact active-key index:", ...lines].join("\n");

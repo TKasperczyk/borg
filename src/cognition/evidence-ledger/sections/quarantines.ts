@@ -1,6 +1,12 @@
 import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
+import { correctionDisclosureEntityIds } from "../../disclosure-labels.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import type { BuilderSectionContext } from "../builder-context.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+} from "../entry-metadata.js";
 import { QUARANTINE_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import {
   persistenceClassFromProvenance,
@@ -42,6 +48,9 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
   }
 
   for (const correction of context.input.pendingCorrections) {
+    const disclosureLabel = relationshipPrivateMemoryDisclosureLabel(
+      correctionDisclosureEntityIds(correction.refs),
+    );
     addEntry(
       context.buckets,
       "contradictions_quarantines",
@@ -53,7 +62,14 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
         trust_rank: QUARANTINE_TRUST_RANK,
         text: correction.reason,
         value: correction.kind,
-        state: correction.resolved_at === null ? "open" : "resolved",
+        state: appendMemoryDisclosureState({
+          state: correction.resolved_at === null ? "open" : "resolved",
+          disclosureLabel,
+        }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: undefined,
+          disclosureLabel,
+        }),
         taint: "contested",
         ...persistenceClassFromProvenance(
           { streamEntryIds: reviewQueueStreamIds(correction) },

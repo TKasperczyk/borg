@@ -1,9 +1,7 @@
 import {
-  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
-  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
+  memoryDisclosureInternalUseNote,
   memoryDisclosureLabelMetadata,
   renderMemoryDisclosureLabelForModel,
-  renderSemanticSourceDisclosureLabelForModel,
   type EvidenceItem,
 } from "../../retrieval/index.js";
 import {
@@ -99,15 +97,15 @@ function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
     return "";
   }
 
-  return isSemanticEvidenceItem(item)
-    ? renderSemanticSourceDisclosureLabelForModel(item.disclosureLabel)
-    : renderMemoryDisclosureLabelForModel(item.disclosureLabel);
+  return renderMemoryDisclosureLabelForModel(item.disclosureLabel, {
+    context: isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
+  });
 }
 
 function evidenceItemDisclosureNote(item: EvidenceItem): string {
-  return isSemanticEvidenceItem(item)
-    ? SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE
-    : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
+  return memoryDisclosureInternalUseNote(
+    isSemanticEvidenceItem(item) ? "semantic_source" : "memory",
+  );
 }
 
 function isSemanticEvidenceItem(item: EvidenceItem): boolean {

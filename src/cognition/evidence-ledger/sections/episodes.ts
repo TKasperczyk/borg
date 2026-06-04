@@ -1,12 +1,11 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+} from "../entry-metadata.js";
 import { EPISODE_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance, scopeFromStreamIds } from "../scope-resolver.js";
-import {
-  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
-  memoryDisclosureLabelFromEpisodeAccess,
-  memoryDisclosureLabelMetadata,
-  renderMemoryDisclosureLabelForModel,
-} from "../../../retrieval/index.js";
+import { memoryDisclosureLabelFromEpisodeAccess } from "../../../retrieval/index.js";
 
 export function addEpisodesSection(context: BuilderSectionContext): void {
   for (const result of context.input.retrievedEpisodes) {
@@ -26,18 +25,18 @@ export function addEpisodesSection(context: BuilderSectionContext): void {
         trust_rank: EPISODE_TRUST_RANK,
         text: result.episode.narrative,
         value: result.episode.title,
-        state: `confidence=${result.episode.confidence.toFixed(2)} score=${result.score.toFixed(2)} ${renderMemoryDisclosureLabelForModel(disclosureLabel)}`,
-        state_metadata: {
-          episode_id: result.episode.id,
-          source_stream_ids: [...result.episode.source_stream_ids],
-          disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel),
-          ...(disclosureLabel.disclosureClass === "public"
-            ? {}
-            : {
-                disclosure_note: MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
-                current_audience_entity_id: context.input.audienceEntityId,
-              }),
-        },
+        state: appendMemoryDisclosureState({
+          state: `confidence=${result.episode.confidence.toFixed(2)} score=${result.score.toFixed(2)}`,
+          disclosureLabel,
+        }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            episode_id: result.episode.id,
+            source_stream_ids: [...result.episode.source_stream_ids],
+          },
+          disclosureLabel,
+          currentAudienceEntityId: context.input.audienceEntityId,
+        }),
         taint: "none",
         ...persistenceClassFromProvenance(
           { streamEntryIds: result.episode.source_stream_ids },

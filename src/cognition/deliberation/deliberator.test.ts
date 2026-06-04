@@ -3865,7 +3865,7 @@ describe("deliberator", () => {
       expect(system).toContain("Traits you express: engaged:0.80 (conf 0.82, offline: reflector)");
       expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
       expect(system).toContain(
-        "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection) (from ep_aaaaaaaaaaaaaaaa)",
+        "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection, disclosure_class=public) (from ep_aaaaaaaaaaaaaaaa)",
       );
       expect(system).toContain(
         "- [CRITICAL:audience_scope boundary/boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",

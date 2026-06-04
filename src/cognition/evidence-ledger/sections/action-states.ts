@@ -16,8 +16,23 @@ import {
   renderOlderActionThreadsSummary,
 } from "../action-threads.js";
 import type { BuilderSectionContext } from "../builder-context.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+} from "../entry-metadata.js";
 import { ACTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
+import {
+  combineMemoryDisclosureLabels,
+  relationshipPrivateMemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
+import type { EntityId } from "../../../util/ids.js";
+
+function actionRecordDisclosureLabel(record: { audience_entity_id: EntityId | null }) {
+  return relationshipPrivateMemoryDisclosureLabel(
+    record.audience_entity_id === null ? [] : [record.audience_entity_id],
+  );
+}
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
   const sourceRecordLimit = normalizePositiveInteger(
@@ -65,6 +80,9 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   ).slice(0, renderLimit);
 
   for (const thread of renderedThreads) {
+    const disclosureLabel = combineMemoryDisclosureLabels(
+      thread.records.map((record) => actionRecordDisclosureLabel(record)),
+    );
     addEntry(
       context.buckets,
       "action_states",
@@ -79,12 +97,18 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
           renderActionThreadText(thread, context.repos.entities),
         ].join("\n"),
         value: actionActorDisplay(thread.current.actor, context.repos.entities),
-        state: actionThreadState(thread),
+        state: appendMemoryDisclosureState({
+          state: actionThreadState(thread),
+          disclosureLabel,
+        }),
         salience_class: thread.salienceClass,
-        state_metadata: {
-          ...actionThreadStateMetadata(thread, context.repos.entities),
-          salience_class: thread.salienceClass,
-        },
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            ...actionThreadStateMetadata(thread, context.repos.entities),
+            salience_class: thread.salienceClass,
+          },
+          disclosureLabel,
+        }),
         taint: "none",
         ...persistenceClassFromProvenance(
           {
@@ -119,6 +143,11 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   }
 
   const olderThreads = orderActionThreadsBySalience(threadsWithSalience).slice(renderLimit);
+  const olderDisclosureLabel = combineMemoryDisclosureLabels(
+    olderThreads.flatMap((thread) =>
+      thread.records.map((record) => actionRecordDisclosureLabel(record)),
+    ),
+  );
 
   addEntry(context.buckets, "action_states", {
     id: "action_threads:older_summary",
@@ -128,7 +157,14 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     trust_rank: ACTION_TRUST_RANK,
     text: renderOlderActionThreadsSummary(olderThreads),
     value: "older_action_threads",
-    state: "omitted",
+    state: appendMemoryDisclosureState({
+      state: "omitted",
+      disclosureLabel: olderDisclosureLabel,
+    }),
+    state_metadata: appendMemoryDisclosureStateMetadata({
+      stateMetadata: undefined,
+      disclosureLabel: olderDisclosureLabel,
+    }),
     taint: "none",
   });
 }

@@ -35,6 +35,15 @@ export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
   "usable internally; do not disclose to current audience unless authorized";
 export const SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE =
   "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized";
+export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
+  "Memory disclosure labels are input-side guidance for reasoning with recalled memory.",
+  "Some entries may be labeled relationship_private, operator_private, self_private, sensitive, or unknown, with private-to=<ids> and origin_audience=<ids> metadata.",
+  "Use labeled-private memories internally to inform judgment, empathy, caution, continuity, and uncertainty.",
+  "Do not reveal labeled-private content, source details, or the existence of a private memory to the current audience unless the rendered disclosure policy, creator/operator context, or current audience authorization permits it.",
+  "Operator or creator context may permit fuller discussion; use the rendered authority and disclosure context to decide how much can be discussed.",
+].join("\n");
+
+export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";
 
 const MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK = {
   public: 0,
@@ -63,7 +72,20 @@ export function memoryDisclosureLabelMetadata(
   };
 }
 
-export function renderMemoryDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
+export function memoryDisclosureInternalUseNote(
+  context: MemoryDisclosureLabelRenderContext = "memory",
+): string {
+  return context === "semantic_source"
+    ? SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE
+    : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
+}
+
+export function renderMemoryDisclosureLabelForModel(
+  label: MemoryDisclosureLabel,
+  options: {
+    context?: MemoryDisclosureLabelRenderContext;
+  } = {},
+): string {
   const fragments = [`disclosure_class=${label.disclosureClass}`];
 
   if (label.originAudienceEntityIds.length > 0) {
@@ -73,26 +95,14 @@ export function renderMemoryDisclosureLabelForModel(label: MemoryDisclosureLabel
   if (label.disclosureClass !== "public") {
     const privateTo =
       label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
-    fragments.push(`private-to=${privateTo}; ${MEMORY_DISCLOSURE_INTERNAL_USE_NOTE}`);
+    fragments.push(`private-to=${privateTo}; ${memoryDisclosureInternalUseNote(options.context)}`);
   }
 
   return fragments.join(" ");
 }
 
 export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
-  const fragments = [`disclosure_class=${label.disclosureClass}`];
-
-  if (label.originAudienceEntityIds.length > 0) {
-    fragments.push(`origin_audience=${label.originAudienceEntityIds.join(",")}`);
-  }
-
-  if (label.disclosureClass !== "public") {
-    const privateTo =
-      label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
-    fragments.push(`private-to=${privateTo}; ${SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE}`);
-  }
-
-  return fragments.join(" ");
+  return renderMemoryDisclosureLabelForModel(label, { context: "semantic_source" });
 }
 
 type MemoryDisclosureEntityIdListKey =
@@ -170,6 +180,45 @@ export function memoryDisclosureLabelFromEpisodeAccess(
     disclosureClass: "relationship_private",
     originAudienceEntityIds,
     privateToEntityIds: originAudienceEntityIds,
+    publicToEntityIds: [],
+  };
+}
+
+export function publicMemoryDisclosureLabel(): MemoryDisclosureLabel {
+  return {
+    disclosureClass: "public",
+    originAudienceEntityIds: [],
+    privateToEntityIds: [],
+    publicToEntityIds: [],
+  };
+}
+
+export function relationshipPrivateMemoryDisclosureLabel(
+  entityIds: readonly EntityId[],
+): MemoryDisclosureLabel {
+  const uniqueEntityIds = [...new Set(entityIds)];
+
+  if (uniqueEntityIds.length === 0) {
+    return publicMemoryDisclosureLabel();
+  }
+
+  return {
+    disclosureClass: "relationship_private",
+    originAudienceEntityIds: uniqueEntityIds,
+    privateToEntityIds: uniqueEntityIds,
+    publicToEntityIds: [],
+  };
+}
+
+export function selfPrivateMemoryDisclosureLabel(
+  originAudienceEntityIds: readonly EntityId[] = [],
+): MemoryDisclosureLabel {
+  const uniqueEntityIds = [...new Set(originAudienceEntityIds)];
+
+  return {
+    disclosureClass: "self_private",
+    originAudienceEntityIds: uniqueEntityIds,
+    privateToEntityIds: uniqueEntityIds,
     publicToEntityIds: [],
   };
 }
