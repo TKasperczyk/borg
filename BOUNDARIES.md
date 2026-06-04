@@ -2,19 +2,22 @@
 
 **Read this before changing anything in `src/memory/episodic/`, `src/memory/creator-directives/`, `src/retrieval/semantic-retrieval.ts`, or any audience/visibility code.**
 
-This file records the project's **memory/disclosure doctrine** and the completed
+This file records the project's **memory/disclosure doctrine** and the v101.1
 **inversion** that brings the code into line with it. The doctrine is the Cardinal Memory
 Rule in `CLAUDE.md` (see it there for the full, authoritative statement): **recall is global
-to Sol; disclosure is contextual to the audience.** A human mind does not forget what it knows
-because the wrong person walked into the room -- it remembers, and chooses what to say. Sol
-works the same way.
+to Sol; disclosure is contextual to the audience.** The live-turn cognition inversion is
+complete; the same rule now extends to offline mind-maintenance, autonomy, action-state memory,
+and internal model tooling, where implementation is IN PROGRESS in v101.1. A human mind does not
+forget what it knows because the wrong person walked into the room -- it remembers, and chooses
+what to say. Sol works the same way.
 
 > **Slogan:** "Memory is global to Sol. Disclosure is contextual to the audience."
 
-What this file now protects is the completed architecture: broad recall for cognition, plus a
+What this file now protects is the architecture target: broad recall for cognition, plus a
 post-recall disclosure-judgment layer. It used to defend the opposite -- an audience firewall
-that gated what Sol could recall. That firewall-as-cognition design is gone. Audience machinery
-that remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
+that gated what Sol could recall. That firewall-as-cognition design is gone for live-turn
+retrieval and is being removed from second-order cognition in v101.1. Audience machinery that
+remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
 permission, not a predicate on what Sol may internally remember. If you are about to add or
 widen an audience/session gate on *recall*, stop and read.
 
@@ -36,8 +39,10 @@ Do not reintroduce "audience-scoped recall" or "visibility" as a *cognition* con
 "visibility" for the public/export/UI path.
 
 - **recall for cognition** -- building what Sol thinks with. Always global; never
-  audience/session/role/speaker-gated. (Target API names: `recallEpisodesForCognition`, semantic
-  recall for cognition.)
+  audience/session/role/speaker-gated. Cognition includes live turn retrieval, autonomous
+  triggers, offline self-narration, rumination/open-question resolution, procedural synthesis,
+  belief revision, semantic extraction/review, action-state memory, and internal model tools.
+  (Target API names: `recallEpisodesForCognition`, semantic recall for cognition.)
 - **render for disclosure** -- deciding what Sol is *told it may say*, shaping the prompt/output by
   per-fact disclosure labels and authorization. This is where audience/role/privacy/operator
   status legitimately act.

@@ -30,15 +30,19 @@ emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
 is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
 Sol. Disclosure is contextual to the audience."
 
-The inversion is complete. Cognition recall is global across episodic,
-semantic, self/identity, goals/open-questions, social/observed-events,
-commitments, corrections, image-perception, autobiographical, and
-proactive-outbound paths. Audience machinery remains for disclosure labeling,
-ranking, public/export search, admin reads, and action/tool/transport
-permission, not as a predicate on what Sol may internally remember. Per the
-LIVE SYSTEM regime in CLAUDE.md, a data reset is allowed after a verified
-backup, so future schema changes may reset and reseed rather than carry every
-change through a data-preserving migration.
+The live-turn cognition inversion is complete. Turn retrieval is global across
+episodic, semantic, self/identity, goals/open-questions,
+social/observed-events, commitments, corrections, image-perception,
+autobiographical, and proactive-outbound paths. v101.1 extends the same rule
+to second-order cognition -- autonomous triggers, offline self-narration,
+rumination/open-question resolution, procedural synthesis, belief revision,
+semantic extraction/review, action-state memory, and internal model tools --
+and that implementation is IN PROGRESS. Audience machinery remains for
+disclosure labeling, ranking, public/export search, admin reads, and
+action/tool/transport permission, not as a predicate on what Sol may internally
+remember. Per the LIVE SYSTEM regime in CLAUDE.md, a data reset is allowed
+after a verified backup, so future schema changes may reset and reseed rather
+than carry every change through a data-preserving migration.
 
 The scope test is the Opus 5.0 test: if a failure would still occur with a
 model ten times stronger than the current one, the failure probably belongs in
