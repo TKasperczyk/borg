@@ -99,6 +99,7 @@ import {
   type SemanticStatusMultipliers,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
+import type { CognitionRecallContext, DisclosureContext } from "./recall-context.js";
 
 export type {
   RetrievedContext,
@@ -148,6 +149,8 @@ export type RetrievalPipelineOptions = {
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
+  recallContext?: CognitionRecallContext;
+  disclosureContext?: DisclosureContext;
   limit?: number;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;

@@ -15,6 +15,8 @@ import type {
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
+  CognitionRecallContext,
+  DisclosureContext,
   RetrievedContext,
   RetrievalPipeline,
   RetrievalSearchOptions,
@@ -64,6 +66,73 @@ function selectGoalDescriptions(
   };
 }
 
+function adaptRecallDisclosureContextToLegacyRetrievalOptions(input: {
+  recallContext: CognitionRecallContext;
+  disclosureContext: DisclosureContext;
+  selfAudienceEntityId?: EntityId | null;
+}): Pick<
+  RetrievalSearchOptions,
+  | "recallContext"
+  | "disclosureContext"
+  | "audienceEntityId"
+  | "globalIdentitySelfAudienceEntityId"
+  | "sessionId"
+> {
+  return {
+    recallContext: input.recallContext,
+    disclosureContext: input.disclosureContext,
+    audienceEntityId: input.disclosureContext.currentAudienceEntityId,
+    sessionId: input.recallContext.currentSessionId,
+    ...(input.selfAudienceEntityId === undefined
+      ? {}
+      : { globalIdentitySelfAudienceEntityId: input.selfAudienceEntityId }),
+  };
+}
+
+function sameEntityIds(left: readonly EntityId[], right: readonly EntityId[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function deriveCoordinatorContext(input: TurnRetrievalCoordinatorInput): {
+  sessionId: SessionId;
+  audienceEntityId: EntityId | null;
+  isPrivateSelfCognition: boolean;
+} {
+  const sessionId = input.recallContext.currentSessionId;
+  const audienceEntityId = input.disclosureContext.currentAudienceEntityId;
+  const isPrivateSelfCognition = input.disclosureContext.isPrivateSelfCognition;
+
+  if (
+    input.sessionId !== sessionId ||
+    input.disclosureContext.currentSessionId !== sessionId ||
+    input.audienceEntityId !== audienceEntityId ||
+    input.recallContext.currentAudienceEntityId !== audienceEntityId ||
+    input.isPrivateSelfCognition !== isPrivateSelfCognition ||
+    !sameEntityIds(
+      input.recallContext.currentParticipantEntityIds,
+      input.disclosureContext.participantEntityIds,
+    )
+  ) {
+    throw new Error("Turn retrieval coordinator context mismatch");
+  }
+
+  return {
+    sessionId,
+    audienceEntityId,
+    isPrivateSelfCognition,
+  };
+}
+
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
   entityRepository: Pick<EntityRepository, "getSelf">;
@@ -84,6 +153,8 @@ export type TurnRetrievalCoordinatorInput = {
   inputAudience?: string;
   isSelfAudience: boolean;
   isPrivateSelfCognition: boolean;
+  recallContext: CognitionRecallContext;
+  disclosureContext: DisclosureContext;
   audienceEntityId: EntityId | null;
   audienceEntity: EntityRecord | null;
   audienceProfile: SocialProfile | null;
@@ -129,7 +200,10 @@ export class TurnRetrievalCoordinator {
   }
 
   async coordinate(input: TurnRetrievalCoordinatorInput): Promise<TurnRetrievalCoordinatorResult> {
-    const applicableCommitments = this.collectApplicableCommitments(input.audienceEntityId);
+    const coordinatorContext = deriveCoordinatorContext(input);
+    const applicableCommitments = this.collectApplicableCommitments(
+      coordinatorContext.audienceEntityId,
+    );
     const pendingCorrections = this.options.reviewQueueRepository
       .list({
         kind: "correction",
@@ -139,24 +213,26 @@ export class TurnRetrievalCoordinator {
         const correctionAudience =
           typeof item.refs.audience_entity_id === "string" ? item.refs.audience_entity_id : null;
 
-        if (input.audienceEntityId === null) {
+        if (coordinatorContext.audienceEntityId === null) {
           return correctionAudience === null;
         }
 
-        return correctionAudience === null || correctionAudience === input.audienceEntityId;
+        return (
+          correctionAudience === null || correctionAudience === coordinatorContext.audienceEntityId
+        );
       });
     const perceivedMood = input.workingMemory.mood ?? createNeutralAffectiveSignal();
     const perceivedMoodActive =
       Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;
     const retrievalMood = perceivedMoodActive
       ? perceivedMood
-      : this.options.moodRepository.current(input.sessionId);
-    const affectiveTrajectory = this.options.moodRepository.history(input.sessionId, {
+      : this.options.moodRepository.current(coordinatorContext.sessionId);
+    const affectiveTrajectory = this.options.moodRepository.history(coordinatorContext.sessionId, {
       limit: 5,
     });
     const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
-    const selfAudienceEntityId = input.isPrivateSelfCognition
+    const selfAudienceEntityId = coordinatorContext.isPrivateSelfCognition
       ? (this.options.entityRepository.getSelf()?.id ?? null)
       : undefined;
 
@@ -168,11 +244,12 @@ export class TurnRetrievalCoordinator {
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
     const retrievalOptions: RetrievalSearchOptions = {
+      ...adaptRecallDisclosureContextToLegacyRetrievalOptions({
+        recallContext: input.recallContext,
+        disclosureContext: input.disclosureContext,
+        selfAudienceEntityId,
+      }),
       limit: computeRetrievalLimit(input.perception.mode),
-      audienceEntityId: input.audienceEntityId,
-      ...(selfAudienceEntityId === undefined
-        ? {}
-        : { globalIdentitySelfAudienceEntityId: selfAudienceEntityId }),
       attentionWeights,
       goalDescriptions: goalSelection.goalDescriptions,
       primaryGoalDescription: goalSelection.primaryGoalDescription,
@@ -196,7 +273,6 @@ export class TurnRetrievalCoordinator {
       entityTerms: input.perception.entities,
       suppressionSet: input.suppressionSet,
       includeOpenQuestions: input.perception.mode === "reflective",
-      sessionId: input.sessionId,
       turnCounter: input.workingMemory.turn_counter,
       traceTurnId: input.turnId,
     };
@@ -218,7 +294,7 @@ export class TurnRetrievalCoordinator {
               recentMessages: input.recentMessages,
               perception: input.perception,
               isSelfAudience: input.isSelfAudience,
-              audienceEntityId: input.audienceEntityId,
+              audienceEntityId: coordinatorContext.audienceEntityId,
               audienceProfile: input.audienceProfile,
               inputAudience: input.inputAudience,
             },
@@ -229,7 +305,7 @@ export class TurnRetrievalCoordinator {
                 if (this.tracer.enabled) {
                   this.tracer.emit("perception.classifier.degraded", {
                     turnId: input.turnId,
-                    ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+                    session_id: coordinatorContext.sessionId,
                     classifier: "procedural_context",
                     reason,
                   });

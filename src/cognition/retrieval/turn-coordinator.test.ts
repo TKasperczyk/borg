@@ -2,12 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
-import type { CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
+import type { BorgRole, CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
-import type { RetrievedContext } from "../../retrieval/index.js";
+import type {
+  CognitionRecallContext,
+  DisclosureContext,
+  RetrievedContext,
+} from "../../retrieval/index.js";
+import type { SessionAudienceRole } from "../../sessions/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { ManualClock } from "../../util/clock.js";
 import {
@@ -15,6 +20,7 @@ import {
   type CommitmentId,
   type EntityId,
   type GoalId,
+  type SessionId,
   type ValueId,
 } from "../../util/ids.js";
 import { SuppressionSet } from "../attention/index.js";
@@ -169,6 +175,43 @@ function makeAudienceProfile(): SocialProfile {
     notes: null,
     created_at: 100,
     updated_at: 100,
+  };
+}
+
+function makeContexts(
+  input: {
+    sessionId?: SessionId;
+    audienceEntityId?: EntityId | null;
+    audienceRole?: SessionAudienceRole;
+    senderEntityId?: EntityId | null;
+    senderRole?: BorgRole | null;
+    participantEntityIds?: readonly EntityId[];
+    isPrivateSelfCognition?: boolean;
+  } = {},
+): { recallContext: CognitionRecallContext; disclosureContext: DisclosureContext } {
+  const currentSessionId = input.sessionId ?? DEFAULT_SESSION_ID;
+  const currentAudienceEntityId = input.audienceEntityId ?? null;
+  const currentAudienceRole = input.audienceRole ?? "participant";
+  const participantEntityIds =
+    input.participantEntityIds ??
+    (currentAudienceEntityId === null ? [] : [currentAudienceEntityId]);
+
+  return {
+    recallContext: {
+      reader: "sol",
+      currentSessionId,
+      currentAudienceEntityId,
+      currentParticipantEntityIds: participantEntityIds,
+    },
+    disclosureContext: {
+      currentSessionId,
+      currentAudienceEntityId,
+      audienceRole: currentAudienceRole,
+      senderEntityId: input.senderEntityId ?? null,
+      senderRole: input.senderRole ?? null,
+      participantEntityIds,
+      isPrivateSelfCognition: input.isPrivateSelfCognition ?? false,
+    },
   };
 }
 
@@ -351,6 +394,7 @@ describe("TurnRetrievalCoordinator", () => {
       inputAudience: "alice",
       isSelfAudience: false,
       isPrivateSelfCognition: false,
+      ...makeContexts({ audienceEntityId }),
       audienceEntityId,
       audienceEntity,
       audienceProfile: makeAudienceProfile(),
@@ -391,6 +435,17 @@ describe("TurnRetrievalCoordinator", () => {
       "Solve Atlas",
       expect.objectContaining({
         audienceEntityId,
+        recallContext: expect.objectContaining({
+          reader: "sol",
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: audienceEntityId,
+        }),
+        disclosureContext: expect.objectContaining({
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: audienceEntityId,
+          audienceRole: "participant",
+        }),
+        sessionId: DEFAULT_SESSION_ID,
         audienceTerms: ["Alice", "Al", "alice"],
         entityTerms: ["Atlas", "Bob"],
         goalDescriptions: ["Ship the sprint"],
@@ -468,6 +523,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "yeah, same error",
       isSelfAudience: true,
       isPrivateSelfCognition: false,
+      ...makeContexts(),
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -524,6 +580,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "Think about this",
       isSelfAudience: true,
       isPrivateSelfCognition: false,
+      ...makeContexts(),
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -619,6 +676,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "Solve Atlas",
       isSelfAudience: true,
       isPrivateSelfCognition: false,
+      ...makeContexts(),
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -683,6 +741,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "Reflect privately",
       isSelfAudience: true,
       isPrivateSelfCognition: true,
+      ...makeContexts({ isPrivateSelfCognition: true }),
       audienceEntityId: null,
       audienceEntity: null,
       audienceProfile: null,
@@ -755,6 +814,7 @@ describe("TurnRetrievalCoordinator", () => {
       cognitionInput: "Hello Bob",
       isSelfAudience: false,
       isPrivateSelfCognition: false,
+      ...makeContexts({ audienceEntityId: bobEntityId }),
       audienceEntityId: bobEntityId,
       audienceEntity: {
         id: bobEntityId,

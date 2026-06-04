@@ -14,6 +14,10 @@ import { clamp } from "../util/math.js";
 
 import { computeTimeRelevance, type ResolvedTimeRange } from "./time-signals.js";
 import type { RetrievalScoringFeatures } from "./scoring-features.js";
+import {
+  memoryDisclosureLabelFromEpisodeAccess,
+  type MemoryDisclosureLabel,
+} from "./recall-context.js";
 
 export { clamp } from "../util/math.js";
 
@@ -32,6 +36,7 @@ export type RetrievalMoodState = Pick<MoodState, "valence" | "arousal">;
 
 export type RetrievedEpisode = {
   episode: Episode;
+  disclosureLabel?: MemoryDisclosureLabel;
   score: number;
   scoreBreakdown: {
     similarity: number;
@@ -342,6 +347,7 @@ export function buildRetrievedEpisode(
 ): RetrievedEpisode {
   return {
     episode: candidate.episode,
+    disclosureLabel: memoryDisclosureLabelFromEpisodeAccess(candidate.episode),
     score,
     scoreBreakdown: {
       similarity: candidate.similarity,

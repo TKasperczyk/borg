@@ -28,6 +28,14 @@ export {
 } from "./confidence.js";
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
+  MEMORY_DISCLOSURE_CLASSES,
+  memoryDisclosureLabelFromEpisodeAccess,
+  type CognitionRecallContext,
+  type DisclosureContext,
+  type MemoryDisclosureClass,
+  type MemoryDisclosureLabel,
+} from "./recall-context.js";
+export {
   RetrievalPipeline,
   type RetrievedContext,
   type RetrievedContradictionRouting,

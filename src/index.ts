@@ -457,8 +457,14 @@ export {
 } from "./memory/decision-artifacts/index.js";
 
 export {
+  MEMORY_DISCLOSURE_CLASSES,
+  memoryDisclosureLabelFromEpisodeAccess,
+  type CognitionRecallContext,
+  type DisclosureContext,
   type EvidenceItem,
   type EvidencePool,
+  type MemoryDisclosureClass,
+  type MemoryDisclosureLabel,
   type RecallEvidenceHandle,
   type RecallIntent,
   type RetrievedContext,

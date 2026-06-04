@@ -63,6 +63,7 @@ import {
 } from "../../../memory/observed-events/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
+import type { CognitionRecallContext, DisclosureContext } from "../../../retrieval/index.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
 import type {
@@ -667,6 +668,22 @@ export async function runRetrievalPhase(input: {
     !input.isUserTurn &&
     input.audienceEntityId === null &&
     creatorDirectiveParticipantEntityIds.length === 0;
+  const sessionAudienceRole = input.sessionAudienceRole ?? "participant";
+  const recallContext: CognitionRecallContext = {
+    reader: "sol",
+    currentSessionId: input.sessionId,
+    currentAudienceEntityId: input.audienceEntityId,
+    currentParticipantEntityIds: creatorDirectiveParticipantEntityIds,
+  };
+  const disclosureContext: DisclosureContext = {
+    currentSessionId: input.sessionId,
+    currentAudienceEntityId: input.audienceEntityId,
+    audienceRole: sessionAudienceRole,
+    senderEntityId: input.turnInput.senderEntityId ?? null,
+    senderRole: input.currentSenderBorgRole ?? null,
+    participantEntityIds: creatorDirectiveParticipantEntityIds,
+    isPrivateSelfCognition,
+  };
   const selfContext =
     input.actionLinkSelfContext !== null &&
     input.persistedPromotions.goalIds.length === 0 &&
@@ -697,6 +714,8 @@ export async function runRetrievalPhase(input: {
     inputAudience: input.turnInput.audience,
     isSelfAudience: input.isSelfAudience,
     isPrivateSelfCognition,
+    recallContext,
+    disclosureContext,
     audienceEntityId: input.audienceEntityId,
     audienceEntity: input.audienceEntity,
     audienceProfile: input.audienceProfile,
