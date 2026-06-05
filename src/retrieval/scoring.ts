@@ -4,7 +4,7 @@ import { computeValueAlignment } from "../cognition/attention/value-alignment.js
 import type { AttentionWeights } from "../cognition/types.js";
 import type { MoodState } from "../memory/affective/index.js";
 import { applyEpisodeDecay, type DecayOptions } from "../memory/episodic/decay.js";
-import { computeEpisodeHeat } from "../memory/episodic/heat.js";
+import { computeEpisodeHeat, RETRIEVAL_HEAT_CAP } from "../memory/episodic/heat.js";
 import type { Episode, EpisodeSearchCandidate } from "../memory/episodic/types.js";
 import type { ValueRecord } from "../memory/self/index.js";
 import type { SocialProfile } from "../memory/social/index.js";
@@ -102,7 +102,7 @@ function defaultDecayOptions(nowMs: number): DecayOptions {
 }
 
 function normalizeHeat(heat: number): number {
-  return clamp(heat / 20, 0, 1);
+  return clamp(heat / RETRIEVAL_HEAT_CAP, 0, 1);
 }
 
 function normalizeAttentionWeights(weights: AttentionWeights): AttentionWeights {

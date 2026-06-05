@@ -95,6 +95,10 @@ type IndexedEpisodeStatsProjectionRow = {
   updated_at: number;
 };
 
+export const HOT_LANE_RETRIEVAL_COOLDOWN_MS = 5 * 60 * 1000;
+export const HOT_LANE_RETRIEVAL_CANDIDATE_BUFFER = 20;
+export const HOT_LANE_RETRIEVAL_CANDIDATE_MULTIPLIER = 5;
+
 const DEFAULT_LIST_LIMIT = 20;
 const DEFAULT_SEARCH_LIMIT = 10;
 const EPISODE_INDEX_BACKFILLED_KEY = "lance_backfilled_at";
@@ -382,6 +386,41 @@ function defaultEpisodeStats(episode: Episode): EpisodeStats {
     valence_mean: valenceMean,
     archived: false,
   };
+}
+
+function hotLaneCandidateLimit(limit: number): number {
+  return Math.max(
+    limit + HOT_LANE_RETRIEVAL_CANDIDATE_BUFFER,
+    limit * HOT_LANE_RETRIEVAL_CANDIDATE_MULTIPLIER,
+  );
+}
+
+function isHotLaneCooled(stats: EpisodeStats, cooldownCutoff: number): boolean {
+  return stats.last_retrieved !== null && stats.last_retrieved >= cooldownCutoff;
+}
+
+function applyHotLaneCooldownPenalty(
+  candidates: readonly EpisodeSearchCandidate[],
+  nowMs: number,
+  limit: number,
+): EpisodeSearchCandidate[] {
+  const cooldownCutoff = nowMs - HOT_LANE_RETRIEVAL_COOLDOWN_MS;
+
+  return candidates
+    .map((candidate, index) => ({
+      candidate,
+      index,
+      cooled: isHotLaneCooled(candidate.stats, cooldownCutoff),
+    }))
+    .sort((left, right) => {
+      if (left.cooled !== right.cooled) {
+        return left.cooled ? 1 : -1;
+      }
+
+      return left.index - right.index;
+    })
+    .slice(0, limit)
+    .map((entry) => entry.candidate);
 }
 
 function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
@@ -1613,7 +1652,11 @@ export class EpisodicRepository {
   ): Promise<EpisodeSearchCandidate[]> {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
     await this.ensureEpisodeIndexBackfilled();
-    return this.hydrateCandidatesByIds(this.queryAllIndexedEpisodeIds("heat", limit));
+    const candidates = await this.hydrateCandidatesByIds(
+      this.queryAllIndexedEpisodeIds("heat", hotLaneCandidateLimit(limit)),
+    );
+
+    return applyHotLaneCooldownPenalty(candidates, this.clock.now(), limit);
   }
 
   async listHottestForDisclosure(

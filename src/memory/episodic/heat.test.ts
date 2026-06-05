@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { computeEpisodeHeat } from "./heat.js";
+import { computeEpisodeHeat, RETRIEVAL_HEAT_CAP } from "./heat.js";
 import type { Episode, EpisodeStats } from "./types.js";
 
 function createEpisode(overrides: Partial<Episode> = {}): Episode {
@@ -74,5 +74,31 @@ describe("episodic heat", () => {
     );
 
     expect(recent).toBeGreaterThan(stale);
+  });
+
+  it("caps retrieval-count heat without mutating retrieval stats", () => {
+    const nowMs = 10 * 24 * 3_600_000;
+    const episode = createEpisode({
+      updated_at: nowMs,
+    });
+    const popular = computeEpisodeHeat(
+      episode,
+      createStats({
+        retrieval_count: RETRIEVAL_HEAT_CAP - 1,
+        last_retrieved: nowMs,
+      }),
+      nowMs,
+    );
+    const capped = computeEpisodeHeat(
+      episode,
+      createStats({
+        retrieval_count: RETRIEVAL_HEAT_CAP * 10,
+        last_retrieved: nowMs,
+      }),
+      nowMs,
+    );
+
+    expect(popular).toBeCloseTo(RETRIEVAL_HEAT_CAP - 1 + 5, 6);
+    expect(capped).toBeCloseTo(RETRIEVAL_HEAT_CAP + 5, 6);
   });
 });

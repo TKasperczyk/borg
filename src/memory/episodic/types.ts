@@ -96,11 +96,21 @@ export const episodeStatsSchema = z.object({
   archived: z.boolean().default(false),
 });
 
-export const episodeStatsPatchSchema = episodeStatsSchema
-  .omit({
-    episode_id: true,
-  })
-  .partial();
+export const episodeStatsPatchSchema = z.object({
+  retrieval_count: z.number().int().nonnegative().optional(),
+  use_count: z.number().int().nonnegative().optional(),
+  last_retrieved: z.number().finite().nullable().optional(),
+  win_rate: z.number().min(0).max(1).optional(),
+  tier: episodeTierSchema.optional(),
+  promoted_at: z.number().finite().optional(),
+  promoted_from: z.string().min(1).nullable().optional(),
+  gist: z.string().min(1).nullable().optional(),
+  gist_generated_at: z.number().finite().nullable().optional(),
+  last_decayed_at: z.number().finite().nullable().optional(),
+  heat_multiplier: z.number().nonnegative().optional(),
+  valence_mean: z.number().min(-1).max(1).optional(),
+  archived: z.boolean().optional(),
+});
 
 export type Episode = z.infer<typeof episodeSchema>;
 export type EpisodePatch = z.infer<typeof episodePatchSchema>;

@@ -13,7 +13,11 @@ import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { createEpisodeId, createStreamEntryId } from "../../util/ids.js";
 import { episodicMigrations } from "./migrations.js";
-import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
+import {
+  EpisodicRepository,
+  HOT_LANE_RETRIEVAL_COOLDOWN_MS,
+  createEpisodesTableSchema,
+} from "./repository.js";
 import type { Episode } from "./types.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 
@@ -201,6 +205,55 @@ describe("episodic repository", () => {
         id: episode.id,
       }),
     );
+  });
+
+  it("does not inject stats defaults when applying partial stat patches", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const episode = createEpisode("ep_statsdefaults001", harness.clock.now());
+    await harness.repo.insert(episode);
+    harness.repo.updateStats(episode.id, {
+      heat_multiplier: 0.5,
+      valence_mean: 0.4,
+      archived: true,
+    });
+
+    const patched = harness.repo.updateStats(episode.id, {
+      use_count: 3,
+    });
+
+    expect(patched).toMatchObject({
+      use_count: 3,
+      heat_multiplier: 0.5,
+      valence_mean: 0.4,
+      archived: true,
+    });
+    expect(harness.repo.getStats(episode.id)).toMatchObject({
+      use_count: 3,
+      heat_multiplier: 0.5,
+      valence_mean: 0.4,
+      archived: true,
+    });
+  });
+
+  it("applies full stats defaults when inserting fresh episodes", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const episode = createEpisode(createEpisodeId(), harness.clock.now(), {
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.insert(episode);
+
+    expect(harness.repo.getStats(episode.id)).toMatchObject({
+      heat_multiplier: 1,
+      retrieval_count: 0,
+      win_rate: 0,
+      archived: false,
+      valence_mean: 0,
+    });
   });
 
   it("defaults vector search to public-only visibility unless cross-audience is explicit", async () => {
@@ -682,6 +735,77 @@ describe("episodic repository", () => {
     expect(participantOrTag[0]?.episode.id).toBe(entity.id);
     expect(hottest[0]?.episode.id).toBe(hot.id);
     expect(visibleSpy).not.toHaveBeenCalled();
+  });
+
+  it("deprioritizes recently retrieved episodes below less-hot uncooled hot-lane candidates", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const cooledHigherHeat = createEpisode(createEpisodeId(), nowMs - 5_000, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const uncooledLowerHeat = createEpisode(createEpisodeId(), nowMs - 10_000, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.insert(cooledHigherHeat);
+    await harness.repo.insert(uncooledLowerHeat);
+    harness.repo.updateStats(cooledHigherHeat.id, {
+      retrieval_count: 40,
+      last_retrieved: nowMs - 1,
+    });
+    harness.repo.updateStats(uncooledLowerHeat.id, {
+      retrieval_count: 30,
+      last_retrieved: nowMs - HOT_LANE_RETRIEVAL_COOLDOWN_MS - 1,
+    });
+
+    const first = await harness.repo.listHottestForCognition({ limit: 1 });
+    const both = await harness.repo.listHottestForCognition({ limit: 2 });
+
+    expect(first.map((item) => item.episode.id)).toEqual([uncooledLowerHeat.id]);
+    expect(both.map((item) => item.episode.id)).toEqual([
+      uncooledLowerHeat.id,
+      cooledHigherHeat.id,
+    ]);
+
+    harness.clock.advance(HOT_LANE_RETRIEVAL_COOLDOWN_MS + 1);
+
+    const afterCooldown = await harness.repo.listHottestForCognition({ limit: 1 });
+
+    expect(afterCooldown.map((item) => item.episode.id)).toEqual([cooledHigherHeat.id]);
+  });
+
+  it("fills cognition hot-lane slots when all candidate episodes are cooled", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const hottest = createEpisode(createEpisodeId(), nowMs - 3_000, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const secondHottest = createEpisode(createEpisodeId(), nowMs - 2_000, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const thirdHottest = createEpisode(createEpisodeId(), nowMs - 1_000, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.insert(hottest);
+    await harness.repo.insert(secondHottest);
+    await harness.repo.insert(thirdHottest);
+    for (const [episode, retrievalCount] of [
+      [hottest, 40],
+      [secondHottest, 35],
+      [thirdHottest, 30],
+    ] as const) {
+      harness.repo.updateStats(episode.id, {
+        retrieval_count: retrievalCount,
+        last_retrieved: nowMs - 1,
+      });
+    }
+
+    const cooled = await harness.repo.listHottestForCognition({ limit: 2 });
+
+    expect(cooled.map((item) => item.episode.id)).toEqual([hottest.id, secondHottest.id]);
   });
 
   it("keeps multi-origin private episodes visible only to origin audiences in indexed disclosure lanes", async () => {

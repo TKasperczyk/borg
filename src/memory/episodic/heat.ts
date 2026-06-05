@@ -1,6 +1,7 @@
 import type { Episode, EpisodeStats } from "./types.js";
 
 const RECENCY_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+export const RETRIEVAL_HEAT_CAP = 40;
 
 export function computeEpisodeHeatForTimestamp(
   updatedAt: number,
@@ -12,10 +13,9 @@ export function computeEpisodeHeatForTimestamp(
   const recencyScore =
     referenceTimestamp <= 0 ? 0 : Math.pow(0.5, elapsedMs / RECENCY_HALF_LIFE_MS);
   const heatMultiplier = stats.heat_multiplier ?? 1;
+  const retrievalHeat = Math.min(stats.retrieval_count, RETRIEVAL_HEAT_CAP);
 
-  return (
-    (stats.retrieval_count + 2 * (stats.win_rate * 10) + 0.5 * (recencyScore * 10)) * heatMultiplier
-  );
+  return (retrievalHeat + 2 * (stats.win_rate * 10) + 0.5 * (recencyScore * 10)) * heatMultiplier;
 }
 
 export function computeEpisodeHeat(episode: Episode, stats: EpisodeStats, nowMs: number): number {
