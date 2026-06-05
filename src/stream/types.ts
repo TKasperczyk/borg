@@ -1,15 +1,14 @@
 import { z } from "zod";
 
+import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import {
   DEFAULT_SESSION_ID,
   entityIdHelpers,
   type EntityId,
   type SessionId,
-  type StreamEntryId,
-  isSessionId,
-  parseSessionId,
-  streamEntryIdHelpers,
 } from "../util/ids.js";
+
+export { sessionIdSchema, streamEntryIdSchema };
 
 export const STREAM_ENTRY_KINDS = [
   "user_msg",
@@ -32,13 +31,6 @@ export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
 export const streamEntryPersistenceClassSchema = z.enum(STREAM_ENTRY_PERSISTENCE_CLASSES);
 export const streamTurnStatusSchema = z.enum(["active", "aborted"]);
 
-export const streamEntryIdSchema = z
-  .string()
-  .refine((value) => streamEntryIdHelpers.is(value), {
-    message: "Invalid stream entry id",
-  })
-  .transform((value) => value as StreamEntryId);
-
 export const streamCursorSchema = z.object({
   ts: z.number().finite(),
   entryId: streamEntryIdSchema,
@@ -57,13 +49,6 @@ export const streamResponseToSchema = z.object({
   source_entry_ids: z.array(streamEntryIdSchema),
   count: z.number().int().nonnegative(),
 });
-
-export const sessionIdSchema = z
-  .string()
-  .refine((value) => isSessionId(value), {
-    message: "Invalid session id",
-  })
-  .transform((value) => parseSessionId(value));
 
 export const streamEntryEntityIdSchema = z
   .string()

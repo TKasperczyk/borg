@@ -13,7 +13,6 @@ import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/
 import {
   activeLockedEntries,
   contaminatedSharedStateArtifactSources,
-  emptyCanonicalizes,
   recordCanonicalizationSkipsForEntry,
   recordUnknownIdSkips,
   traceContaminatedSharedStateEntrySkip,
@@ -23,6 +22,7 @@ import {
   type SharedStateReconciliationResult,
   type SharedStateUnsettledReconciliation,
 } from "./reconciliation-summary.js";
+import { emptyCanonicalizes } from "./patch-validation.js";
 import { reconcileActionCanonicalizations } from "./reconcile-actions.js";
 import { reconcileCommitmentCanonicalizations } from "./reconcile-commitments.js";
 import { reconcileGoalCanonicalizations } from "./reconcile-goals.js";

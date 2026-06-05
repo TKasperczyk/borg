@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 
+// Dev/build config only. Test config lives in vitest.config.ts.
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -12,10 +13,5 @@ export default defineConfig({
         ws: true
       }
     }
-  },
-  test: {
-    environment: "jsdom",
-    setupFiles: ["./src/test/setup.ts"],
-    globals: true
   }
 });

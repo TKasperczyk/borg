@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { entityIdHelpers, isSessionId, parseSessionId, type EntityId } from "../util/ids.js";
+import { sessionIdSchema } from "../util/id-schemas.js";
+import { entityIdHelpers, type EntityId } from "../util/ids.js";
+
+export { sessionIdSchema };
 
 export const SESSION_SOURCE_TYPES = ["demo", "slack", "discord", "imessage", "autonomy"] as const;
 export const CONVERSATION_KINDS = ["dm", "channel", "thread", "demo"] as const;
@@ -22,13 +25,6 @@ export const sessionStatusSchema = z.enum(SESSION_STATUSES);
 export const sessionPrivacyLevelSchema = z.enum(SESSION_PRIVACY_LEVELS);
 export const sessionParticipationPolicySchema = z.enum(SESSION_PARTICIPATION_POLICIES);
 export const sessionAudienceRoleSchema = z.enum(SESSION_AUDIENCE_ROLES);
-
-export const sessionIdSchema = z
-  .string()
-  .refine((value) => isSessionId(value), {
-    message: "Invalid session id",
-  })
-  .transform((value) => parseSessionId(value));
 
 export const sessionEntityIdSchema = z
   .string()

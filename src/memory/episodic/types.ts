@@ -1,14 +1,15 @@
 import { z } from "zod";
 
 import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import { streamEntryIdSchema } from "../../util/id-schemas.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,
-  streamEntryIdHelpers,
   type EpisodeId,
   type EntityId,
 } from "../../util/ids.js";
+
+export { streamEntryIdSchema };
 
 export const EPISODE_TIERS = ["T1", "T2", "T3", "T4"] as const;
 
@@ -18,13 +19,6 @@ export const episodeIdSchema = z
     message: "Invalid episode id",
   })
   .transform((value) => value as EpisodeId);
-
-export const streamEntryIdSchema = z
-  .string()
-  .refine((value) => streamEntryIdHelpers.is(value), {
-    message: "Invalid stream entry id",
-  })
-  .transform((value) => value as StreamEntryId);
 
 export const episodeAudienceEntityIdSchema = z
   .string()

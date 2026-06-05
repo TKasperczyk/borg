@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
-import { type EpisodeId, type SkillId, skillIdHelpers } from "../../util/ids.js";
+import { type SkillId, skillIdHelpers } from "../../util/ids.js";
 import {
   proceduralEvidenceIdHelpers,
   type EntityId,
@@ -129,7 +129,6 @@ export const skillContextStatsSchema = z.object({
 export type SkillContextStatsRecord = z.infer<typeof skillContextStatsSchema>;
 
 export type SkillIdValue = SkillId;
-export type EpisodeIdValue = EpisodeId;
 export type EntityIdValue = EntityId;
 export type PendingProceduralAttemptValue = PendingProceduralAttempt;
 export type ProceduralEvidenceIdValue = ProceduralEvidenceId;

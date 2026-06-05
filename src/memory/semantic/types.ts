@@ -4,7 +4,6 @@ import { episodeIdSchema, streamEntryIdSchema } from "../episodic/types.js";
 import {
   semanticEdgeIdHelpers,
   semanticNodeIdHelpers,
-  type EpisodeId,
   type SemanticEdgeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
@@ -217,4 +216,3 @@ export type SemanticContext = {
 
 export type SemanticNodeIdValue = SemanticNodeId;
 export type SemanticEdgeIdValue = SemanticEdgeId;
-export type EpisodeIdValue = EpisodeId;

@@ -1,17 +1,18 @@
 import { z } from "zod";
 
 import { isPlainRecord } from "../../util/guards.js";
+import { streamEntryIdSchema } from "../../util/id-schemas.js";
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import {
   commitmentIdHelpers,
   sharedStateEntryIdHelpers,
   entityIdHelpers,
-  streamEntryIdHelpers,
   type CommitmentId,
   type SharedStateEntryId,
   type EntityId,
-  type StreamEntryId,
 } from "../../util/ids.js";
+
+export { streamEntryIdSchema };
 
 export const COMMITMENT_TYPES = ["promise", "boundary", "rule", "preference"] as const;
 export const COMMITMENT_KINDS = [
@@ -84,13 +85,6 @@ export const commitmentIdSchema = z
     message: "Invalid commitment id",
   })
   .transform((value) => value as CommitmentId);
-
-export const streamEntryIdSchema = z
-  .string()
-  .refine((value) => streamEntryIdHelpers.is(value), {
-    message: "Invalid stream entry id",
-  })
-  .transform((value) => value as StreamEntryId);
 
 export const commitmentCanonicalizedByArtifactEntryIdSchema = z
   .string()

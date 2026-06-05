@@ -6,7 +6,6 @@ import type {
 } from "../../memory/commitments/index.js";
 import type {
   SharedStateArtifact,
-  SharedStateCanonicalizes,
   SharedStateEntry,
   SharedStateOperation,
   SharedStateSourceTrustRejectionReason,
@@ -159,15 +158,6 @@ export function hasCanonicalizedIds(entry: SharedStateEntry): boolean {
     entry.canonicalizes.action_ids.length > 0 ||
     entry.canonicalizes.open_question_ids.length > 0
   );
-}
-
-export function emptyCanonicalizes(): SharedStateCanonicalizes {
-  return {
-    goal_ids: [],
-    commitment_ids: [],
-    action_ids: [],
-    open_question_ids: [],
-  };
 }
 
 export function activeLockedEntries(
