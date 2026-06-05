@@ -1149,7 +1149,7 @@ describe("review resolver process", () => {
     expect(stored).toBeNull();
   });
 
-  it("keeps persisted private source disclosure on new insight review metadata rows", async () => {
+  it("keeps persisted private source disclosure on new insight prompt rows", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -1192,6 +1192,12 @@ describe("review resolver process", () => {
           private_to_entity_ids?: string[];
         };
       };
+      proposed_insight?: {
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
     };
 
     expect(result.errors).toEqual([]);
@@ -1205,6 +1211,93 @@ describe("review resolver process", () => {
       private_to_entity_ids: [persistedAudienceId],
     });
     expect(promptPayload.evidence_cluster?.disclosure_label?.disclosure_class).not.toBe("public");
+    expect(promptPayload.proposed_insight?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [persistedAudienceId],
+    });
+    expect(promptPayload.proposed_insight?.disclosure_label?.disclosure_class).not.toBe("public");
+  });
+
+  it("keeps current-node private disclosure on new insight update proposed rows", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const currentAudienceId = createEntityId();
+    const currentSource = await insertSource(harness, "Private current source for Atlas.", {
+      audience_entity_id: currentAudienceId,
+      shared: false,
+    });
+    const patchSource = await insertSource(harness, "Public patch source for Atlas.", {
+      shared: true,
+    });
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas deployment preference",
+        description: "Sol prefers Atlas deployment rollback planning.",
+        source_episode_ids: [currentSource.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "Updated low-confidence insight extracted from cluster:update-private",
+      refs: {
+        node_ids: [node.id],
+        episode_ids: [patchSource.episode.id],
+        evidence_cluster_key: "cluster:update-private",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "update" as const,
+            node_id: node.id,
+            patch: {
+              description: "Sol strongly prefers rollback planning before Atlas deployments.",
+              confidence: 0.64,
+              source_episode_ids: [patchSource.episode.id],
+              last_verified_at: 1_000_000,
+              embedding: [0, 0, 1, 0],
+              archived: false,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: {
+            key: "cluster:update-private",
+            episode_ids: [patchSource.episode.id],
+            size: 1,
+          },
+        },
+      },
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "dismiss",
+        confidence: "high",
+        rationale: "The supplied evidence does not ground the proposed update.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      proposed_insight?: {
+        description?: string;
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
+    };
+
+    expect(result.errors).toEqual([]);
+    expect(promptPayload.proposed_insight).toMatchObject({
+      description: "Sol strongly prefers rollback planning before Atlas deployments.",
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [currentAudienceId],
+      },
+    });
+    expect(promptPayload.proposed_insight?.disclosure_label?.disclosure_class).not.toBe("public");
   });
 
   it("keeps ambiguous new insight proposals open with a resolver diagnostic", async () => {

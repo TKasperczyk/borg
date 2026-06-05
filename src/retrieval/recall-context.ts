@@ -45,6 +45,7 @@ export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
   "Disclosure permission and common-ground status are different: being allowed to say something does not mean the current audience already knows it.",
   "A memory being recallable or discloseable does not make it common ground. Do not frame cross-session memory as already-shared knowledge unless the current audience is in its origin_audience, it is established as common ground for them, or there is evidence they have seen it.",
   "When disclosure is permitted but the current audience likely does not know a memory, introduce it as new information rather than presuming it is shared.",
+  "For a group audience, origin_audience means a memory was shared in that venue, not that every current participant saw it; if a participant's presence or prior exposure is uncertain, do not assume it is common ground for them -- introduce it as new or qualify the framing.",
 ].join("\n");
 
 export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";

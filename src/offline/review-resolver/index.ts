@@ -591,16 +591,32 @@ function newInsightEvidenceEpisodeIds(
   ]);
 }
 
-function newInsightProposedPayload(loaded: LoadedNewInsightContext): Record<string, unknown> {
+function newInsightProposedPayload(
+  loaded: LoadedNewInsightContext,
+  sourceDisclosureLabel: MemoryDisclosureLabel,
+): Record<string, unknown> {
   const target = loaded.refs.reflector_pending_insight.target;
 
   if (target.mode === "insert") {
+    const ownDisclosureLabel = semanticNodeMemoryDisclosureLabel(
+      loaded.labelsByEpisodeId,
+      target.node,
+    );
+
     return {
       mode: "insert",
       node_id: target.node.id,
       ...semanticNodePromptPayload(target.node, loaded.labelsByEpisodeId),
+      ...memoryDisclosurePayloadFields(
+        combineMemoryDisclosureLabels([ownDisclosureLabel, sourceDisclosureLabel]),
+      ),
     };
   }
+
+  const ownDisclosureLabel = semanticNodeMemoryDisclosureLabel(
+    loaded.labelsByEpisodeId,
+    target.patch,
+  );
 
   return {
     mode: "update",
@@ -611,7 +627,7 @@ function newInsightProposedPayload(loaded: LoadedNewInsightContext): Record<stri
     confidence: target.patch.confidence,
     source_episode_ids: target.patch.source_episode_ids,
     ...memoryDisclosurePayloadFields(
-      semanticNodeMemoryDisclosureLabel(loaded.labelsByEpisodeId, target.patch),
+      combineMemoryDisclosureLabels([ownDisclosureLabel, sourceDisclosureLabel]),
     ),
     current_node:
       loaded.currentNode === null
@@ -652,9 +668,8 @@ function newInsightPromptPayload(input: {
   item: ReviewQueueItem;
   loaded: LoadedNewInsightContext;
 }): string {
-  const sourceDisclosureFields = memoryDisclosurePayloadFields(
-    newInsightSourceDisclosureLabel(input.loaded),
-  );
+  const sourceDisclosureLabel = newInsightSourceDisclosureLabel(input.loaded);
+  const sourceDisclosureFields = memoryDisclosurePayloadFields(sourceDisclosureLabel);
 
   return JSON.stringify(
     {
@@ -682,7 +697,9 @@ function newInsightPromptPayload(input: {
         created_at: input.item.created_at,
         ...sourceDisclosureFields,
       },
-      proposed_insight: serializableRecord(newInsightProposedPayload(input.loaded)),
+      proposed_insight: serializableRecord(
+        newInsightProposedPayload(input.loaded, sourceDisclosureLabel),
+      ),
       evidence_cluster: {
         key: input.loaded.refs.evidence_cluster_key,
         declared_size: input.loaded.refs.evidence_cluster_size,
