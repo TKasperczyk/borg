@@ -11,10 +11,13 @@ mind-maintenance, autonomy, action-state memory, cross-scope synthesis, internal
 semantic review status, and commitment-reconciliation awareness. The v102.1 pass closed the
 GPT v102 audit's concrete gaps (`~/borg-v102-gpt-verdict.md`): disclosure-label coverage on the
 remaining model-facing prompt rows (reflection evidence, self-narrator period labels,
-commitment-reconciler rows) and the cross-audience online open-question write gate are fixed;
-only GPT's optional prompt-label-coverage guard (Patch 8) and a final "complete" re-confirmation
-remain. A structural guard
-(`pnpm heuristics:guard`) keeps the firewall from being reintroduced under a new name. A human
+commitment-reconciler rows) and the cross-audience online open-question write gate are fixed.
+The v103.1 pass closed the remaining label-coverage blocker across the rest of the model-facing
+serializers and added the Patch 8 label-coverage guard. The recall inversion and the
+disclosure-label contract are both in place; only the final GPT "complete" re-confirmation
+remains (`~/borg-v103-gpt-verdict.md`). Two structural guards
+(`pnpm heuristics:guard`) keep the firewall from being reintroduced under a new name (recall
+gates) and keep model-facing memory rows labeled (disclosure coverage). A human
 mind does not forget what it knows because the wrong person walked into the room -- it remembers,
 and chooses what to say. Sol works the same way.
 

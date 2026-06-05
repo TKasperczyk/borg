@@ -32,11 +32,13 @@ Sol. Disclosure is contextual to the audience."
 
 The inversion is substantially complete across live-turn and second-order
 cognition as of v101.1 (GPT-Pro v102 audit: no longer fundamentally
-misaligned). The v102.1 pass then closed the audit's concrete gaps (see
-`~/borg-v102-gpt-verdict.md`): disclosure-label coverage on the remaining
-model-facing prompt rows and the cross-audience online open-question write
-gate are fixed; only GPT's optional prompt-label-coverage guard (Patch 8)
-and a final "complete" re-confirmation remain.
+misaligned). The v102.1 and v103.1 passes then closed the audit's gaps
+(see `~/borg-v102-gpt-verdict.md`, `~/borg-v103-gpt-verdict.md`):
+disclosure-label coverage across every model-facing serializer and the
+cross-audience online open-question write gate are fixed, and a Patch 8
+label-coverage guard now enforces the contract. The recall inversion and
+the disclosure-label contract are both in place; only the final GPT
+"complete" re-confirmation remains.
 Turn retrieval is global across episodic, semantic, self/identity,
 goals/open-questions, social/observed-events, commitments, corrections,
 image-perception, autobiographical, and proactive-outbound paths. The same rule
