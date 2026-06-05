@@ -207,14 +207,17 @@ describe("cross-language cognition smoke", () => {
         llmClient,
         proceduralContextModel: "claude-opus-4-6",
       });
-      const openQuestionRetrieval = await harness.retrievalPipeline.searchWithContext(chineseTurn, {
-        limit: 3,
-        goalDescriptions: [goal.description],
-        primaryGoalDescription: goal.description,
-        activeValues: [valueRecord],
-        scoringFeatures: retrievalScoringFeatures,
-        includeOpenQuestions: true,
-      });
+      const openQuestionRetrieval = await harness.retrievalPipeline.searchWithContextForDisclosure(
+        chineseTurn,
+        {
+          limit: 3,
+          goalDescriptions: [goal.description],
+          primaryGoalDescription: goal.description,
+          activeValues: [valueRecord],
+          scoringFeatures: retrievalScoringFeatures,
+          includeOpenQuestions: true,
+        },
+      );
 
       expect(classifierFailure).not.toHaveBeenCalled();
       expect(executiveFocus.selected_goal?.id).toBe(goal.id);

@@ -125,4 +125,196 @@ describe("heuristics guard", () => {
       rmSync(fixturePath, { force: true });
     }
   }, 30_000);
+
+  it("fails disclosure search calls from cognition paths", async () => {
+    const fixturePath = join(repoRoot, "src/cognition/recall-guard-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        "async function unsafeRecall(pipeline: {",
+        "  searchWithContextForDisclosure: (query: string) => Promise<unknown>; ",
+        "}) {",
+        '  return pipeline.searchWithContextForDisclosure("private planning");',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            FORCE_COLOR: "0",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        const timeout = setTimeout(() => {
+          child.kill("SIGTERM");
+          reject(new Error("heuristics guard exceeded 30s timeout"));
+        }, 30_000);
+
+        child.stdout.on("data", (chunk: Buffer | string) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve({
+            code,
+            stdout,
+            stderr,
+          });
+        });
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("disclosure search symbols in cognition/recall paths");
+      expect(result.stderr).toContain("searchWithContextForDisclosure");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
+
+  it("fails disclosure-suffixed search calls from cognition paths", async () => {
+    const fixturePath = join(repoRoot, "src/cognition/retrieval-guard-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        "async function unsafeRecall(pipeline: {",
+        "  searchEpisodesForDisclosure: (query: string) => Promise<unknown>; ",
+        "}) {",
+        '  return pipeline.searchEpisodesForDisclosure("private planning");',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            FORCE_COLOR: "0",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        const timeout = setTimeout(() => {
+          child.kill("SIGTERM");
+          reject(new Error("heuristics guard exceeded 30s timeout"));
+        }, 30_000);
+
+        child.stdout.on("data", (chunk: Buffer | string) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve({
+            code,
+            stdout,
+            stderr,
+          });
+        });
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("disclosure search symbols in cognition/recall paths");
+      expect(result.stderr).toContain("searchEpisodesForDisclosure");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
+
+  it("fails aliased disclosure search calls from cognition paths", async () => {
+    const fixturePath = join(repoRoot, "src/cognition/alias-guard-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        'import { filterEpisodesByAudience as f } from "../memory/episodic/audience-filter.js";',
+        "",
+        "function unsafeRecall(episodes: never[]) {",
+        '  return f(episodes, null, "recall");',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            FORCE_COLOR: "0",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        const timeout = setTimeout(() => {
+          child.kill("SIGTERM");
+          reject(new Error("heuristics guard exceeded 30s timeout"));
+        }, 30_000);
+
+        child.stdout.on("data", (chunk: Buffer | string) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve({
+            code,
+            stdout,
+            stderr,
+          });
+        });
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("disclosure search symbols in cognition/recall paths");
+      expect(result.stderr).toContain("f -> filterEpisodesByAudience");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
 });

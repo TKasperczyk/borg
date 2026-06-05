@@ -166,14 +166,17 @@ export const crossAudienceLeakageMetric = {
             audienceEntityId = harness.entityRepository.resolve(scenario.audience);
             audienceProfile = harness.socialRepository.upsertProfile(audienceEntityId);
           }
-          const result = await harness.retrievalPipeline.searchWithContext(fixture.data.query, {
-            limit: 5,
-            audienceEntityId,
-            audienceTerms: scenario.audience === null ? undefined : [scenario.audience],
-            audienceProfile,
-            graphWalkDepth: 1,
-            maxGraphNodes: 8,
-          });
+          const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+            fixture.data.query,
+            {
+              limit: 5,
+              audienceEntityId,
+              audienceTerms: scenario.audience === null ? undefined : [scenario.audience],
+              audienceProfile,
+              graphWalkDepth: 1,
+              maxGraphNodes: 8,
+            },
+          );
           const actualEpisodeIds = result.episodes.map((item) => item.episode.id).sort();
           const actualSemanticNodeIds = [...result.semantic.matched_node_ids].sort();
           const expectedEpisodeIds = [...scenario.expected_episode_ids].sort();
@@ -230,15 +233,18 @@ export const crossAudienceLeakageMetric = {
               audienceProfile = harness.socialRepository.upsertProfile(audienceEntityId);
             }
 
-            const result = await harness.retrievalPipeline.searchWithContext(publicNode.label, {
-              limit: 5,
-              audienceEntityId,
-              audienceTerms: scenario.audience === null ? undefined : [scenario.audience],
-              audienceProfile,
-              graphWalkDepth: 1,
-              maxGraphNodes: 8,
-              asOf: 12_000,
-            });
+            const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+              publicNode.label,
+              {
+                limit: 5,
+                audienceEntityId,
+                audienceTerms: scenario.audience === null ? undefined : [scenario.audience],
+                audienceProfile,
+                graphWalkDepth: 1,
+                maxGraphNodes: 8,
+                asOf: 12_000,
+              },
+            );
             const actualSupportHitIds = result.semantic.support_hits
               .map((hit) => hit.node.id)
               .sort();

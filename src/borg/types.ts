@@ -76,9 +76,9 @@ import type {
   OutboundDelivery,
 } from "../outbound/index.js";
 import type {
+  DisclosureRetrievalOptions,
   RetrievalGetEpisodeOptions,
   RetrievalPipeline,
-  RetrievalSearchOptions,
 } from "../retrieval/index.js";
 import type { SessionsRepository } from "../sessions/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
@@ -218,7 +218,7 @@ export type BorgDreamRunner = ((options?: BorgDreamOptions) => Promise<Orchestra
   }) => Promise<OrchestratorResult>;
 };
 
-export type BorgEpisodeSearchOptions = Omit<RetrievalSearchOptions, "audienceEntityId"> & {
+export type BorgEpisodeSearchOptions = Omit<DisclosureRetrievalOptions, "audienceEntityId"> & {
   audience?: string | null;
   audienceEntityId?: EntityId | null;
 };

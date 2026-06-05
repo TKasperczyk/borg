@@ -15,7 +15,7 @@ import { buildAssembledFramingPromptPreview } from "../cognition/deliberation/pr
 import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
-import type { RetrievalSearchOptions } from "../retrieval/index.js";
+import type { DisclosureRetrievalOptions } from "../retrieval/index.js";
 import {
   resolveMemoryDisclosureLabelForEpisodeIds,
   type MemoryDisclosureLabel,
@@ -139,7 +139,9 @@ async function semanticEdgeWithDisclosure(
 async function semanticSearchCandidateWithDisclosure(
   deps: BorgDependencies,
   candidate: SemanticNodeSearchCandidate,
-): Promise<SemanticNodeSearchCandidate & { node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel } }> {
+): Promise<
+  SemanticNodeSearchCandidate & { node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel } }
+> {
   return {
     ...candidate,
     node: await semanticNodeWithDisclosure(deps, candidate.node),
@@ -158,7 +160,9 @@ async function semanticWalkStepWithDisclosure(
   return {
     ...step,
     node: await semanticNodeWithDisclosure(deps, step.node),
-    edgePath: await Promise.all(step.edgePath.map((edge) => semanticEdgeWithDisclosure(deps, edge))),
+    edgePath: await Promise.all(
+      step.edgePath.map((edge) => semanticEdgeWithDisclosure(deps, edge)),
+    ),
   };
 }
 
@@ -215,7 +219,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
 
   const resolveEpisodeSearchOptions = (
     options: BorgEpisodeSearchOptions | undefined,
-  ): RetrievalSearchOptions => {
+  ): DisclosureRetrievalOptions => {
     const audienceEntityId = resolveEpisodeAudienceEntityId(options);
     const audienceProfile =
       options?.audienceProfile !== undefined
@@ -365,7 +369,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           crossAudience: options.crossAudience,
         }),
       search: (query, options = {}) =>
-        deps.retrievalPipeline.search(query, resolveEpisodeSearchOptions(options)),
+        deps.retrievalPipeline.searchEpisodesForDisclosure(
+          query,
+          resolveEpisodeSearchOptions(options),
+        ),
       extract: async (options = {}) => {
         const extractor = new EpisodicExtractor({
           dataDir: deps.config.dataDir,

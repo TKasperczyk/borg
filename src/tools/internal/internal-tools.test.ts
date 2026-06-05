@@ -531,37 +531,37 @@ describe("internal tools", () => {
           node: {
             id: string;
             label: string;
-            disclosureLabel?: unknown;
+            disclosure_label?: unknown;
           };
-          edgePath: Array<{ disclosureLabel?: unknown }>;
+          edgePath: Array<{ disclosure_label?: unknown }>;
         }>;
       };
       const stepsByNodeId = new Map(output.steps.map((step) => [step.node.id, step]));
       expect(stepsByNodeId.has(aliceNode.id)).toBe(true);
       expect(stepsByNodeId.has(bobNode.id)).toBe(true);
-      expect(stepsByNodeId.get(aliceNode.id)?.node.disclosureLabel).toEqual({
-        disclosureClass: "relationship_private",
-        originAudienceEntityIds: [alice],
-        privateToEntityIds: [alice],
-        publicToEntityIds: [],
+      expect(stepsByNodeId.get(aliceNode.id)?.node.disclosure_label).toEqual({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [alice],
+        private_to_entity_ids: [alice],
+        public_to_entity_ids: [],
       });
-      expect(stepsByNodeId.get(aliceNode.id)?.edgePath.at(-1)?.disclosureLabel).toEqual({
-        disclosureClass: "relationship_private",
-        originAudienceEntityIds: [alice],
-        privateToEntityIds: [alice],
-        publicToEntityIds: [],
+      expect(stepsByNodeId.get(aliceNode.id)?.edgePath.at(-1)?.disclosure_label).toEqual({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [alice],
+        private_to_entity_ids: [alice],
+        public_to_entity_ids: [],
       });
-      expect(stepsByNodeId.get(bobNode.id)?.node.disclosureLabel).toEqual({
-        disclosureClass: "relationship_private",
-        originAudienceEntityIds: [bob],
-        privateToEntityIds: [bob],
-        publicToEntityIds: [],
+      expect(stepsByNodeId.get(bobNode.id)?.node.disclosure_label).toEqual({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [bob],
+        private_to_entity_ids: [bob],
+        public_to_entity_ids: [],
       });
-      expect(stepsByNodeId.get(bobNode.id)?.edgePath.at(-1)?.disclosureLabel).toEqual({
-        disclosureClass: "relationship_private",
-        originAudienceEntityIds: [bob],
-        privateToEntityIds: [bob],
-        publicToEntityIds: [],
+      expect(stepsByNodeId.get(bobNode.id)?.edgePath.at(-1)?.disclosure_label).toEqual({
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [bob],
+        private_to_entity_ids: [bob],
+        public_to_entity_ids: [],
       });
     } finally {
       await harness.cleanup();

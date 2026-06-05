@@ -12,7 +12,7 @@ import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../disclosure-labels.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
-import { isActionVisibleToSession } from "./audience-visibility.js";
+import { isActionVisibleForCurrentAudienceStanding } from "./audience-visibility.js";
 import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver.js";
 import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } from "./types.js";
 
@@ -180,7 +180,7 @@ export function listActionsForDisclosure(
       ...actionRepository
         .list({ actor: participant.entityId })
         .filter((action) =>
-          isActionVisibleToSession(action, audienceEntityId, activeParticipantIds),
+          isActionVisibleForCurrentAudienceStanding(action, audienceEntityId, activeParticipantIds),
         ),
     );
     records.push(...actionRepository.list({ audienceEntityId: participant.entityId, limit }));

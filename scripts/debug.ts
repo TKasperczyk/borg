@@ -535,7 +535,7 @@ async function runPhase9(borg: Borg): Promise<void> {
     borg as unknown as {
       deps: {
         retrievalPipeline: {
-          searchWithContext: (
+          searchWithContextForDisclosure: (
             query: string,
             options?: Record<string, unknown>,
           ) => Promise<{
@@ -556,7 +556,7 @@ async function runPhase9(borg: Borg): Promise<void> {
   ).deps;
 
   const query = "recent deploy outcome";
-  const result = await deps.retrievalPipeline.searchWithContext(query, { limit: 5 });
+  const result = await deps.retrievalPipeline.searchWithContextForDisclosure(query, { limit: 5 });
   const c = result.confidence;
 
   info(`query: ${query}`);

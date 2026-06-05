@@ -21,7 +21,7 @@ import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   CognitionRecallContext,
   DisclosureContext,
-  CognitionRecallSearchOptions,
+  CognitionRetrievalOptions,
   RetrievedContext,
   RetrievalPipeline,
 } from "../../retrieval/index.js";
@@ -75,7 +75,7 @@ function retrievalOptionsFromRecallDisclosureContext(input: {
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
 }): Pick<
-  CognitionRecallSearchOptions,
+  CognitionRetrievalOptions,
   "recallContext" | "disclosureContext" | "rankingAudienceEntityId" | "sessionId"
 > {
   return {
@@ -143,10 +143,10 @@ export type TurnRetrievalCoordinatorResult = {
   retrievedSemantic: RetrievedContext["semantic"];
   proceduralContext: ProceduralContext | null;
   selectedSkill: SkillSelectionResult | null;
-  retrievalOptions: CognitionRecallSearchOptions;
+  retrievalOptions: CognitionRetrievalOptions;
   reRetrieve: (
     query: string,
-    overrides?: Partial<CognitionRecallSearchOptions>,
+    overrides?: Partial<CognitionRetrievalOptions>,
   ) => Promise<RetrievedContext>;
 };
 
@@ -202,7 +202,7 @@ export class TurnRetrievalCoordinator {
       moodActive: Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > 0.3,
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
-    const retrievalOptions: CognitionRecallSearchOptions = {
+    const retrievalOptions: CognitionRetrievalOptions = {
       ...retrievalOptionsFromRecallDisclosureContext({
         recallContext: input.recallContext,
         disclosureContext: input.disclosureContext,

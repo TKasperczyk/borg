@@ -187,7 +187,7 @@ describe("Recall Core", () => {
     });
     const { mayaEpisode, nextWeekStart, nextWeekEnd } = await insertMayaAndDesignReview(harness);
 
-    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 5,
       entityTerms: ["Otto"],
       temporalCue: {
@@ -257,7 +257,7 @@ describe("Recall Core", () => {
     });
     const pipeline = createTracedRetrievalPipeline(harness, tracer);
 
-    await pipeline.searchWithContext(MAYA_TURN, {
+    await pipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 3,
       traceTurnId: "turn-recall-expansion",
     });
@@ -305,7 +305,7 @@ describe("Recall Core", () => {
     });
     const pipeline = createTracedRetrievalPipeline(harness, tracer);
 
-    await pipeline.searchWithContext(MAYA_TURN, {
+    await pipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 3,
       entityTerms: ["Maya"],
       traceTurnId: "turn-recall-expansion-parse-failure",
@@ -354,7 +354,7 @@ describe("Recall Core", () => {
     });
     const pipeline = createTracedRetrievalPipeline(harness, tracer);
 
-    const result = await pipeline.searchWithContext("Atlas", {
+    const result = await pipeline.searchWithContextForDisclosure("Atlas", {
       limit: 3,
       traceTurnId: "turn-recall-expansion-clipped",
     });
@@ -386,7 +386,7 @@ describe("Recall Core", () => {
     });
     const pipeline = createTracedRetrievalPipeline(harness, tracer);
 
-    await pipeline.searchWithContext(MAYA_TURN, {
+    await pipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 3,
       entityTerms: ["Maya"],
       traceTurnId: "turn-recall-expansion-transport-failure",
@@ -414,7 +414,7 @@ describe("Recall Core", () => {
     });
     const { mayaEpisode } = await insertMayaAndDesignReview(harness);
 
-    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 5,
       entityTerms: ["Maya"],
     });
@@ -438,7 +438,7 @@ describe("Recall Core", () => {
     });
     await insertMayaAndDesignReview(harness);
 
-    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 5,
       entityTerms: ["Maya"],
       audienceTerms: ["Maya"],
@@ -459,7 +459,7 @@ describe("Recall Core", () => {
     });
     const { mayaEpisode } = await insertMayaAndDesignReview(harness);
 
-    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 5,
       entityTerms: ["Maya"],
     });
@@ -486,9 +486,12 @@ describe("Recall Core", () => {
     });
     await harness.episodicRepository.insert(recentEpisode);
 
-    const result = await harness.retrievalPipeline.searchWithContext("unrelated turn", {
-      limit: 3,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated turn",
+      {
+        limit: 3,
+      },
+    );
 
     expect(result.recall_intents.map((intent) => intent.kind)).toEqual(
       expect.arrayContaining(["raw_text", "recent"]),
@@ -508,7 +511,7 @@ describe("Recall Core", () => {
     });
     const { mayaEpisode, nextWeekStart, nextWeekEnd } = await insertMayaAndDesignReview(harness);
 
-    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(MAYA_TURN, {
       limit: 5,
       temporalCue: {
         label: "next week",
@@ -551,7 +554,7 @@ describe("Recall Core", () => {
     );
     await harness.episodicRepository.insert(episode);
 
-    const result = await harness.retrievalPipeline.searchWithContext("Maya", {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure("Maya", {
       limit: 1,
       entityTerms: ["Maya"],
     });
@@ -605,7 +608,7 @@ describe("Recall Core", () => {
       provenance: { kind: "manual" },
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext(
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "Can we talk about Atlas confidentiality?",
       { limit: 3 },
     );
@@ -649,7 +652,7 @@ describe("Recall Core", () => {
       provenance: { kind: "manual" },
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext(
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "Bob is asking about Atlas launch confidentiality.",
       {
         audienceEntityId: bobEntityId,
@@ -710,9 +713,12 @@ describe("Recall Core", () => {
       provenance: { kind: "manual" },
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("What can we promise?", {
-      limit: 3,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "What can we promise?",
+      {
+        limit: 3,
+      },
+    );
 
     expect(result.evidence.filter((item) => item.source === "commitment")).toEqual([]);
   });
@@ -758,7 +764,7 @@ describe("Recall Core", () => {
       content: "Unrelated recent chatter",
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas", {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas", {
       limit: 3,
       entityTerms: ["Atlas"],
     });
@@ -812,10 +818,13 @@ describe("Recall Core", () => {
     priorWriter.close();
     freshWriter.close();
 
-    const result = await harness.retrievalPipeline.searchWithContext("nothing relevant", {
-      sessionId: freshSession,
-      limit: 3,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "nothing relevant",
+      {
+        sessionId: freshSession,
+        limit: 3,
+      },
+    );
     const recentStreamIds = result.evidence
       .filter((item) => item.source === "recent_raw_stream")
       .flatMap((item) => item.provenance?.streamIds ?? []);
@@ -891,13 +900,16 @@ describe("Recall Core", () => {
       source: "reflection",
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas projection", {
-      limit: 3,
-      entityTerms: ["Atlas"],
-      includeOpenQuestions: true,
-      graphWalkDepth: 1,
-      maxGraphNodes: 4,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Atlas projection",
+      {
+        limit: 3,
+        entityTerms: ["Atlas"],
+        includeOpenQuestions: true,
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+      },
+    );
     const episodeEvidenceIds = new Set(
       result.evidence
         .filter((item) => item.source === "episode")
@@ -958,7 +970,7 @@ describe("Recall Core", () => {
     );
     await harness.episodicRepository.insert(episode);
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas dedupe", {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas dedupe", {
       limit: 5,
       entityTerms: ["Atlas"],
     });
@@ -1027,12 +1039,15 @@ describe("Recall Core", () => {
       last_verified_at: 1,
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas semantic shape", {
-      limit: 3,
-      entityTerms: ["Atlas"],
-      graphWalkDepth: 1,
-      maxGraphNodes: 4,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Atlas semantic shape",
+      {
+        limit: 3,
+        entityTerms: ["Atlas"],
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+      },
+    );
     const evidenceNodeIds = result.evidence
       .filter((item) => item.source === "semantic_node")
       .map((item) => item.provenance?.nodeId);
@@ -1094,12 +1109,15 @@ describe("Recall Core", () => {
       source: "reflection",
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas open questions", {
-      limit: 3,
-      entityTerms: ["Atlas"],
-      includeOpenQuestions: true,
-      openQuestionsLimit: 3,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Atlas open questions",
+      {
+        limit: 3,
+        entityTerms: ["Atlas"],
+        includeOpenQuestions: true,
+        openQuestionsLimit: 3,
+      },
+    );
     const projectedIds = result.open_questions.map((question) => question.id);
     const evidenceIds = result.evidence
       .filter((item) => item.source === "open_question")
@@ -1142,10 +1160,13 @@ describe("Recall Core", () => {
     await harness.episodicRepository.insert(primary);
     await harness.episodicRepository.insert(secondary);
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas MMR drop", {
-      limit: 1,
-      entityTerms: ["Atlas"],
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Atlas MMR drop",
+      {
+        limit: 1,
+        entityTerms: ["Atlas"],
+      },
+    );
     const candidateIds = [primary.id, secondary.id];
     const projectedIds = new Set(result.episodes.map((item) => item.episode.id));
     const evidenceIds = result.evidence

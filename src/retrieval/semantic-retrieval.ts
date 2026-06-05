@@ -107,7 +107,7 @@ type SemanticVisibilityOptions = Pick<
 type SemanticSourceMode = "cognition" | "disclosure";
 
 export type SemanticSourceAdapter = {
-  visibleEpisodeIds: Episode["id"][];
+  admittedSourceEpisodeIds: Episode["id"][];
   partial: boolean;
   sourceVisibilityFraction?: number;
   disclosureLabel: MemoryDisclosureLabel;
@@ -141,13 +141,13 @@ type MatchedNodeCandidate = {
   baseScore: number;
 };
 
-type SemanticNodeSourceVisibility = {
-  visibleSourceEpisodeIds: SemanticNode["source_episode_ids"];
+type SemanticNodeSourcesForDisclosure = {
+  availableSourceEpisodeIds: SemanticNode["source_episode_ids"];
   partial: boolean;
 };
 
-type SemanticEdgeSourceVisibility = {
-  visibleEvidenceEpisodeIds: SemanticEdge["evidence_episode_ids"];
+type SemanticEdgeSourcesForDisclosure = {
+  availableEvidenceEpisodeIds: SemanticEdge["evidence_episode_ids"];
   partial: boolean;
 };
 
@@ -168,7 +168,7 @@ function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
   };
 }
 
-async function resolveVisibleEpisodeIds(
+async function resolveSemanticSourceEpisodeIdsForDisclosure(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
   visibility: SemanticVisibilityOptions,
@@ -224,28 +224,60 @@ function disclosureLabelForEpisodeIds(
 
 function adaptSemanticSourceEpisodes(input: {
   sourceEpisodeIds: readonly Episode["id"][];
-  visibleEpisodeIds: ReadonlySet<string> | null;
+  admittedSourceEpisodeIds: ReadonlySet<string> | null;
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
 }): SemanticSourceAdapter {
-  const visibleEpisodeIds =
-    input.visibleEpisodeIds === null
+  const admittedSourceEpisodeIds =
+    input.admittedSourceEpisodeIds === null
       ? [...input.sourceEpisodeIds]
-      : input.sourceEpisodeIds.filter((episodeId) => input.visibleEpisodeIds?.has(episodeId));
+      : input.sourceEpisodeIds.filter((episodeId) =>
+          input.admittedSourceEpisodeIds?.has(episodeId),
+        );
   const partial =
-    input.visibleEpisodeIds !== null &&
-    visibleEpisodeIds.length > 0 &&
-    visibleEpisodeIds.length < input.sourceEpisodeIds.length;
+    input.admittedSourceEpisodeIds !== null &&
+    admittedSourceEpisodeIds.length > 0 &&
+    admittedSourceEpisodeIds.length < input.sourceEpisodeIds.length;
 
   return {
-    visibleEpisodeIds,
+    admittedSourceEpisodeIds,
     partial,
     ...(partial
       ? {
-          sourceVisibilityFraction: visibleEpisodeIds.length / input.sourceEpisodeIds.length,
+          sourceVisibilityFraction: admittedSourceEpisodeIds.length / input.sourceEpisodeIds.length,
         }
       : {}),
     disclosureLabel: disclosureLabelForEpisodeIds(input.sourceEpisodeIds, input.labelsByEpisodeId),
   };
+}
+
+export async function resolveSemanticDisclosureSourceAdapter(input: {
+  episodicRepository: EpisodicRepository;
+  sourceEpisodeIds: readonly Episode["id"][];
+  mode: SemanticSourceMode;
+  visibility: SemanticVisibilityOptions;
+}): Promise<SemanticSourceAdapter | null> {
+  const admittedSourceEpisodeIds =
+    input.mode === "disclosure"
+      ? await resolveSemanticSourceEpisodeIdsForDisclosure(
+          input.episodicRepository,
+          input.sourceEpisodeIds,
+          input.visibility,
+        )
+      : null;
+  const adapted = adaptSemanticSourceEpisodes({
+    sourceEpisodeIds: input.sourceEpisodeIds,
+    admittedSourceEpisodeIds,
+    labelsByEpisodeId: await resolveEpisodeDisclosureLabels(
+      input.episodicRepository,
+      input.sourceEpisodeIds,
+    ),
+  });
+
+  return input.mode === "disclosure" &&
+    admittedSourceEpisodeIds !== null &&
+    adapted.admittedSourceEpisodeIds.length === 0
+    ? null
+    : adapted;
 }
 
 export async function resolveSemanticSourceAdapter(input: {
@@ -254,28 +286,7 @@ export async function resolveSemanticSourceAdapter(input: {
   mode: SemanticSourceMode;
   visibility: SemanticVisibilityOptions;
 }): Promise<SemanticSourceAdapter | null> {
-  const visibleEpisodeIds =
-    input.mode === "disclosure"
-      ? await resolveVisibleEpisodeIds(
-          input.episodicRepository,
-          input.sourceEpisodeIds,
-          input.visibility,
-        )
-      : null;
-  const adapted = adaptSemanticSourceEpisodes({
-    sourceEpisodeIds: input.sourceEpisodeIds,
-    visibleEpisodeIds,
-    labelsByEpisodeId: await resolveEpisodeDisclosureLabels(
-      input.episodicRepository,
-      input.sourceEpisodeIds,
-    ),
-  });
-
-  return input.mode === "disclosure" &&
-    visibleEpisodeIds !== null &&
-    adapted.visibleEpisodeIds.length === 0
-    ? null
-    : adapted;
+  return resolveSemanticDisclosureSourceAdapter(input);
 }
 
 export async function resolveMemoryDisclosureLabelForEpisodeIds(
@@ -300,7 +311,7 @@ function semanticSourcePartialFields(
 
 function withSemanticNodeSourceAdapter<T extends SemanticNode>(
   node: T,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): T &
   Pick<
@@ -309,15 +320,15 @@ function withSemanticNodeSourceAdapter<T extends SemanticNode>(
   > {
   const source = adaptSemanticSourceEpisodes({
     sourceEpisodeIds: node.source_episode_ids,
-    visibleEpisodeIds,
+    admittedSourceEpisodeIds,
     labelsByEpisodeId,
   });
 
   return {
     ...node,
-    ...(visibleEpisodeIds !== null &&
-    source.visibleEpisodeIds.length !== node.source_episode_ids.length
-      ? { source_episode_ids: source.visibleEpisodeIds }
+    ...(admittedSourceEpisodeIds !== null &&
+    source.admittedSourceEpisodeIds.length !== node.source_episode_ids.length
+      ? { source_episode_ids: source.admittedSourceEpisodeIds }
       : {}),
     ...semanticSourcePartialFields(source),
     disclosureLabel: source.disclosureLabel,
@@ -326,7 +337,7 @@ function withSemanticNodeSourceAdapter<T extends SemanticNode>(
 
 function withSemanticEdgeSourceAdapter<T extends SemanticEdge>(
   edge: T,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): T &
   Pick<
@@ -335,185 +346,192 @@ function withSemanticEdgeSourceAdapter<T extends SemanticEdge>(
   > {
   const source = adaptSemanticSourceEpisodes({
     sourceEpisodeIds: edge.evidence_episode_ids,
-    visibleEpisodeIds,
+    admittedSourceEpisodeIds,
     labelsByEpisodeId,
   });
 
   return {
     ...edge,
-    ...(visibleEpisodeIds !== null &&
-    source.visibleEpisodeIds.length !== edge.evidence_episode_ids.length
-      ? { evidence_episode_ids: source.visibleEpisodeIds }
+    ...(admittedSourceEpisodeIds !== null &&
+    source.admittedSourceEpisodeIds.length !== edge.evidence_episode_ids.length
+      ? { evidence_episode_ids: source.admittedSourceEpisodeIds }
       : {}),
     ...semanticSourcePartialFields(source),
     disclosureLabel: source.disclosureLabel,
   };
 }
 
-function isSemanticNodeVisible(
+function hasSemanticNodeSourcesForDisclosure(
   node: SemanticNode,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
 ): boolean {
   return (
-    resolveSemanticNodeSourceVisibility(node, visibleEpisodeIds).visibleSourceEpisodeIds.length > 0
+    resolveSemanticNodeSourcesForDisclosure(node, admittedSourceEpisodeIds)
+      .availableSourceEpisodeIds.length > 0
   );
 }
 
-function resolveSemanticNodeSourceVisibility(
+function resolveSemanticNodeSourcesForDisclosure(
   node: SemanticNode,
-  visibleEpisodeIds: ReadonlySet<string> | null,
-): SemanticNodeSourceVisibility {
-  if (visibleEpisodeIds === null) {
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
+): SemanticNodeSourcesForDisclosure {
+  if (admittedSourceEpisodeIds === null) {
     return {
-      visibleSourceEpisodeIds: [...node.source_episode_ids],
+      availableSourceEpisodeIds: [...node.source_episode_ids],
       partial: false,
     };
   }
 
-  const visibleSourceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
-    visibleEpisodeIds.has(episodeId),
+  const availableSourceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
+    admittedSourceEpisodeIds.has(episodeId),
   );
 
   return {
-    visibleSourceEpisodeIds,
+    availableSourceEpisodeIds,
     partial:
-      visibleSourceEpisodeIds.length > 0 &&
-      visibleSourceEpisodeIds.length < node.source_episode_ids.length,
+      availableSourceEpisodeIds.length > 0 &&
+      availableSourceEpisodeIds.length < node.source_episode_ids.length,
   };
 }
 
-function withVisibleSemanticSources<T extends SemanticNode>(
+function withSemanticSourcesForDisclosure<T extends SemanticNode>(
   node: T,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
 ): T & Pick<RetrievedSemanticNode, "partial_source_visibility" | "source_visibility_fraction"> {
-  const sourceVisibility = resolveSemanticNodeSourceVisibility(node, visibleEpisodeIds);
+  const sourceVisibility = resolveSemanticNodeSourcesForDisclosure(node, admittedSourceEpisodeIds);
 
   if (
-    visibleEpisodeIds === null ||
-    sourceVisibility.visibleSourceEpisodeIds.length === node.source_episode_ids.length
+    admittedSourceEpisodeIds === null ||
+    sourceVisibility.availableSourceEpisodeIds.length === node.source_episode_ids.length
   ) {
     return node;
   }
 
   return {
     ...node,
-    source_episode_ids: sourceVisibility.visibleSourceEpisodeIds,
+    source_episode_ids: sourceVisibility.availableSourceEpisodeIds,
     ...(sourceVisibility.partial
       ? {
           partial_source_visibility: true,
           source_visibility_fraction:
-            sourceVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
+            sourceVisibility.availableSourceEpisodeIds.length / node.source_episode_ids.length,
         }
       : {}),
   };
 }
 
-function resolveSemanticEdgeSourceVisibility(
+function resolveSemanticEdgeSourcesForDisclosure(
   edge: SemanticEdge,
-  visibleEpisodeIds: ReadonlySet<string> | null,
-): SemanticEdgeSourceVisibility {
-  if (visibleEpisodeIds === null) {
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
+): SemanticEdgeSourcesForDisclosure {
+  if (admittedSourceEpisodeIds === null) {
     return {
-      visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
+      availableEvidenceEpisodeIds: [...edge.evidence_episode_ids],
       partial: false,
     };
   }
 
-  const visibleEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
-    visibleEpisodeIds.has(episodeId),
+  const availableEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
+    admittedSourceEpisodeIds.has(episodeId),
   );
 
   return {
-    visibleEvidenceEpisodeIds,
+    availableEvidenceEpisodeIds,
     partial:
-      visibleEvidenceEpisodeIds.length > 0 &&
-      visibleEvidenceEpisodeIds.length < edge.evidence_episode_ids.length,
+      availableEvidenceEpisodeIds.length > 0 &&
+      availableEvidenceEpisodeIds.length < edge.evidence_episode_ids.length,
   };
 }
 
-function isSemanticEdgeVisible(
+function hasSemanticEdgeSourcesForDisclosure(
   edge: SemanticEdge,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
 ): boolean {
   return (
-    resolveSemanticEdgeSourceVisibility(edge, visibleEpisodeIds).visibleEvidenceEpisodeIds.length >
-    0
+    resolveSemanticEdgeSourcesForDisclosure(edge, admittedSourceEpisodeIds)
+      .availableEvidenceEpisodeIds.length > 0
   );
 }
 
-function withVisibleSemanticEdgeSources<T extends SemanticEdge>(
+function withSemanticEdgeSourcesForDisclosure<T extends SemanticEdge>(
   edge: T,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
 ): T & Pick<RetrievedSemanticEdge, "partial_source_visibility" | "source_visibility_fraction"> {
-  const sourceVisibility = resolveSemanticEdgeSourceVisibility(edge, visibleEpisodeIds);
+  const sourceVisibility = resolveSemanticEdgeSourcesForDisclosure(edge, admittedSourceEpisodeIds);
 
   if (
-    visibleEpisodeIds === null ||
-    sourceVisibility.visibleEvidenceEpisodeIds.length === edge.evidence_episode_ids.length
+    admittedSourceEpisodeIds === null ||
+    sourceVisibility.availableEvidenceEpisodeIds.length === edge.evidence_episode_ids.length
   ) {
     return edge;
   }
 
   return {
     ...edge,
-    evidence_episode_ids: sourceVisibility.visibleEvidenceEpisodeIds,
+    evidence_episode_ids: sourceVisibility.availableEvidenceEpisodeIds,
     ...(sourceVisibility.partial
       ? {
           partial_source_visibility: true,
           source_visibility_fraction:
-            sourceVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length,
+            sourceVisibility.availableEvidenceEpisodeIds.length / edge.evidence_episode_ids.length,
         }
       : {}),
   };
 }
 
-function withVisibleSemanticWalkStepEdges(
+function withSemanticWalkStepEdgesForDisclosure(
   step: SemanticWalkStep,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
   disclosureLabelsByEpisodeId?: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] } {
   return {
     ...step,
     edgePath: step.edgePath.map((edge) => {
-      const visibleEdge = withVisibleSemanticEdgeSources(edge, visibleEpisodeIds);
+      const visibleEdge = withSemanticEdgeSourcesForDisclosure(edge, admittedSourceEpisodeIds);
 
       return disclosureLabelsByEpisodeId === undefined
         ? visibleEdge
-        : withSemanticEdgeSourceAdapter(edge, visibleEpisodeIds, disclosureLabelsByEpisodeId);
+        : withSemanticEdgeSourceAdapter(
+            edge,
+            admittedSourceEpisodeIds,
+            disclosureLabelsByEpisodeId,
+          );
     }),
   };
 }
 
-export async function isSemanticNodeVisibleToAudience(
+export async function isSemanticNodeAvailableForDisclosure(
   node: SemanticNode,
   visibility: SemanticVisibilityOptions,
   dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
 ): Promise<boolean> {
-  const visibleEpisodeIds = await resolveVisibleEpisodeIds(
+  const admittedSourceEpisodeIds = await resolveSemanticSourceEpisodeIdsForDisclosure(
     dependencies.episodicRepository,
     node.source_episode_ids,
     visibility,
   );
 
-  return isSemanticNodeVisible(node, visibleEpisodeIds);
+  return hasSemanticNodeSourcesForDisclosure(node, admittedSourceEpisodeIds);
 }
 
-function isSemanticWalkStepVisible(
+function isSemanticWalkStepAvailableForDisclosure(
   step: SemanticWalkStep,
-  visibleEpisodeIds: ReadonlySet<string> | null,
+  admittedSourceEpisodeIds: ReadonlySet<string> | null,
 ): boolean {
   return (
-    isSemanticNodeVisible(step.node, visibleEpisodeIds) &&
-    step.edgePath.every((edge) => isSemanticEdgeVisible(edge, visibleEpisodeIds))
+    hasSemanticNodeSourcesForDisclosure(step.node, admittedSourceEpisodeIds) &&
+    step.edgePath.every((edge) =>
+      hasSemanticEdgeSourcesForDisclosure(edge, admittedSourceEpisodeIds),
+    )
   );
 }
 
-export async function filterSemanticWalkStepsByAudience(
+export async function filterSemanticWalkStepsForDisclosure(
   steps: readonly SemanticWalkStep[],
   visibility: SemanticVisibilityOptions,
   dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
 ): Promise<Array<SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] }>> {
-  const visibleEpisodeIds = await resolveVisibleEpisodeIds(
+  const admittedSourceEpisodeIds = await resolveSemanticSourceEpisodeIdsForDisclosure(
     dependencies.episodicRepository,
     steps.flatMap((step) => [
       ...step.node.source_episode_ids,
@@ -523,10 +541,10 @@ export async function filterSemanticWalkStepsByAudience(
   );
 
   return steps
-    .filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds))
+    .filter((step) => isSemanticWalkStepAvailableForDisclosure(step, admittedSourceEpisodeIds))
     .map((step) => ({
-      ...withVisibleSemanticWalkStepEdges(step, visibleEpisodeIds),
-      node: withVisibleSemanticSources(step.node, visibleEpisodeIds),
+      ...withSemanticWalkStepEdgesForDisclosure(step, admittedSourceEpisodeIds),
+      node: withSemanticSourcesForDisclosure(step.node, admittedSourceEpisodeIds),
     }));
 }
 
@@ -651,7 +669,7 @@ function annotateSemanticNode(
     underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
     underReviewMultiplier: number;
     statusMultipliers: SemanticStatusMultipliers;
-    visibleEpisodeIds: ReadonlySet<string> | null;
+    admittedSourceEpisodeIds: ReadonlySet<string> | null;
     disclosureLabelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
   },
 ): RetrievedSemanticNode {
@@ -660,7 +678,7 @@ function annotateSemanticNode(
   );
   const visibleNode = withSemanticNodeSourceAdapter(
     node,
-    input.visibleEpisodeIds,
+    input.admittedSourceEpisodeIds,
     input.disclosureLabelsByEpisodeId,
   );
   const statusMultiplier = input.statusMultipliers[node.status];
@@ -758,7 +776,7 @@ async function isHistoricalPropositionMatch(
   return supportNeighbors.every(({ edge }) => edge.valid_to !== null && edge.valid_to <= asOf);
 }
 
-async function resolveSemanticContextWithSourceMode(
+async function resolveSemanticContextWithDisclosureSourceMode(
   query: string,
   options: SemanticRetrievalOptions,
   dependencies: SemanticRetrievalDependencies,
@@ -807,7 +825,7 @@ async function resolveSemanticContextWithSourceMode(
   const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];
   const matchedNodeVisibility =
     sourceMode === "disclosure"
-      ? await resolveVisibleEpisodeIds(
+      ? await resolveSemanticSourceEpisodeIdsForDisclosure(
           episodicRepository,
           matchedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
           options,
@@ -815,7 +833,7 @@ async function resolveSemanticContextWithSourceMode(
       : null;
   const uniqueNodes = new Map(
     matchedNodeCandidates
-      .filter(({ node }) => isSemanticNodeVisible(node, matchedNodeVisibility))
+      .filter(({ node }) => hasSemanticNodeSourcesForDisclosure(node, matchedNodeVisibility))
       .map((candidate) => [candidate.node.id, candidate] as const),
   );
   const candidateUnderReviewByNodeId = await collectUnderReviewStatuses(
@@ -920,7 +938,11 @@ async function resolveSemanticContextWithSourceMode(
   ];
   const semanticVisibility =
     sourceMode === "disclosure"
-      ? await resolveVisibleEpisodeIds(episodicRepository, semanticSourceEpisodeIds, options)
+      ? await resolveSemanticSourceEpisodeIdsForDisclosure(
+          episodicRepository,
+          semanticSourceEpisodeIds,
+          options,
+        )
       : null;
   const disclosureLabelsByEpisodeId = await resolveEpisodeDisclosureLabels(
     episodicRepository,
@@ -928,40 +950,40 @@ async function resolveSemanticContextWithSourceMode(
   );
 
   const visibleSupportNeighbors = supportNeighbors
-    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .filter(({ step }) => isSemanticWalkStepAvailableForDisclosure(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(
+      step: withSemanticWalkStepEdgesForDisclosure(
         item.step,
         semanticVisibility,
         disclosureLabelsByEpisodeId,
       ),
     }));
   const visibleCausalNeighbors = causalNeighbors
-    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .filter(({ step }) => isSemanticWalkStepAvailableForDisclosure(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(
+      step: withSemanticWalkStepEdgesForDisclosure(
         item.step,
         semanticVisibility,
         disclosureLabelsByEpisodeId,
       ),
     }));
   const visibleContradictionNeighbors = contradictionNeighbors
-    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .filter(({ step }) => isSemanticWalkStepAvailableForDisclosure(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(
+      step: withSemanticWalkStepEdgesForDisclosure(
         item.step,
         semanticVisibility,
         disclosureLabelsByEpisodeId,
       ),
     }));
   const visibleCategoryNeighbors = categoryNeighbors
-    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .filter(({ step }) => isSemanticWalkStepAvailableForDisclosure(step, semanticVisibility))
     .map((item) => ({
       ...item,
-      step: withVisibleSemanticWalkStepEdges(
+      step: withSemanticWalkStepEdgesForDisclosure(
         item.step,
         semanticVisibility,
         disclosureLabelsByEpisodeId,
@@ -981,14 +1003,14 @@ async function resolveSemanticContextWithSourceMode(
   );
   const visibleMatchedNodes = await Promise.all(
     selectedNodeCandidates
-      .filter(({ node }) => isSemanticNodeVisible(node, semanticVisibility))
+      .filter(({ node }) => hasSemanticNodeSourcesForDisclosure(node, semanticVisibility))
       .map(async (candidate): Promise<RetrievedSemanticNode> => {
         const annotated = annotateSemanticNode(candidate.node, {
           baseScore: candidate.baseScore,
           underReviewByNodeId,
           underReviewMultiplier,
           statusMultipliers,
-          visibleEpisodeIds: semanticVisibility,
+          admittedSourceEpisodeIds: semanticVisibility,
           disclosureLabelsByEpisodeId,
         });
 
@@ -1015,7 +1037,7 @@ async function resolveSemanticContextWithSourceMode(
       underReviewByNodeId,
       underReviewMultiplier,
       statusMultipliers,
-      visibleEpisodeIds: semanticVisibility,
+      admittedSourceEpisodeIds: semanticVisibility,
       disclosureLabelsByEpisodeId,
     });
     supports.set(item.step.node.id, node);
@@ -1033,7 +1055,7 @@ async function resolveSemanticContextWithSourceMode(
         underReviewByNodeId,
         underReviewMultiplier,
         statusMultipliers,
-        visibleEpisodeIds: semanticVisibility,
+        admittedSourceEpisodeIds: semanticVisibility,
         disclosureLabelsByEpisodeId,
       }),
       edgePath: item.step.edgePath,
@@ -1045,7 +1067,7 @@ async function resolveSemanticContextWithSourceMode(
       underReviewByNodeId,
       underReviewMultiplier,
       statusMultipliers,
-      visibleEpisodeIds: semanticVisibility,
+      admittedSourceEpisodeIds: semanticVisibility,
       disclosureLabelsByEpisodeId,
     });
     contradicts.set(item.step.node.id, node);
@@ -1061,7 +1083,7 @@ async function resolveSemanticContextWithSourceMode(
       underReviewByNodeId,
       underReviewMultiplier,
       statusMultipliers,
-      visibleEpisodeIds: semanticVisibility,
+      admittedSourceEpisodeIds: semanticVisibility,
       disclosureLabelsByEpisodeId,
     });
     categories.set(item.step.node.id, node);
@@ -1094,7 +1116,7 @@ export async function resolveSemanticContextForCognition(
   options: SemanticRetrievalOptions,
   dependencies: SemanticRetrievalDependencies,
 ): Promise<ResolvedSemanticRetrieval> {
-  return resolveSemanticContextWithSourceMode(query, options, dependencies, "cognition");
+  return resolveSemanticContextWithDisclosureSourceMode(query, options, dependencies, "cognition");
 }
 
 export async function resolveSemanticContextForDisclosure(
@@ -1102,7 +1124,7 @@ export async function resolveSemanticContextForDisclosure(
   options: SemanticRetrievalOptions,
   dependencies: SemanticRetrievalDependencies,
 ): Promise<ResolvedSemanticRetrieval> {
-  return resolveSemanticContextWithSourceMode(query, options, dependencies, "disclosure");
+  return resolveSemanticContextWithDisclosureSourceMode(query, options, dependencies, "disclosure");
 }
 
 export async function resolveSemanticContext(

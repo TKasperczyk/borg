@@ -48,7 +48,7 @@ import type { ChatResponseCatchUpWorker } from "../cognition/ingestion/index.js"
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
-import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
+import type { RetrievedEpisode } from "../retrieval/index.js";
 import type {
   SessionEnsureInput,
   SessionListOptions,
@@ -344,9 +344,7 @@ export type BorgSemanticFacade = {
     countByStatus: () => ReturnType<SemanticNodeRepository["countByStatus"]>;
     search: (
       query: string,
-      options?: Omit<RetrievalSearchOptions, "temporalCue" | "attentionWeights" | "asOf"> & {
-        limit?: number;
-      },
+      options?: { limit?: number },
     ) => Promise<BorgSemanticNodeSearchCandidateWithDisclosure[]>;
   };
   edges: {

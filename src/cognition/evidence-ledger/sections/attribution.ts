@@ -15,7 +15,7 @@ import {
   actionBelongsToGroupChannel,
   commitmentBelongsToGroupChannel,
   goalBelongsToGroupChannel,
-  isActionVisibleToSession,
+  isActionVisibleForCurrentAudienceStanding,
   isCommitmentVisibleToSession,
   isGoalVisibleToSession,
   scopedCommitmentsForEntity,
@@ -147,7 +147,11 @@ function participantActions(
     }),
   )
     .filter((action) =>
-      isActionVisibleToSession(action, context.input.audienceEntityId, activeParticipantIds),
+      isActionVisibleForCurrentAudienceStanding(
+        action,
+        context.input.audienceEntityId,
+        activeParticipantIds,
+      ),
     )
     .slice(0, MATRIX_IDS_PER_ROW);
 }

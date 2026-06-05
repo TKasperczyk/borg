@@ -95,7 +95,7 @@ export const falseMemoryRateMetric = {
         }
 
         for (const query of fixture.data.queries) {
-          const results = await harness.retrievalPipeline.search(query.query, {
+          const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(query.query, {
             limit: fixture.data.max_results,
             attentionWeights: RETRIEVAL_WEIGHTS,
           });

@@ -157,7 +157,7 @@ describe("reflector process", () => {
     ).toBe(false);
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
 
-    const beforeRetrieval = await harness.retrievalPipeline.searchWithContext(
+    const beforeRetrieval = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "Deploys stabilize when rollback plans are documented",
       { limit: 1 },
     );
@@ -223,7 +223,7 @@ describe("reflector process", () => {
       }),
     ]);
 
-    const afterRetrieval = await harness.retrievalPipeline.searchWithContext(
+    const afterRetrieval = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "Deploys stabilize when rollback plans are documented",
       { limit: 1 },
     );
@@ -239,9 +239,12 @@ describe("reflector process", () => {
     // surface the insight via the supports-out walk. Pre-fix the supports
     // edge ran insight->target, so walking supports OUT from the matched
     // anchor found nothing and the insight stayed invisible.
-    const anchorRetrieval = await harness.retrievalPipeline.searchWithContext("Rollback plan", {
-      limit: 1,
-    });
+    const anchorRetrieval = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Rollback plan",
+      {
+        limit: 1,
+      },
+    );
     expect(anchorRetrieval.semantic.support_hits.map((hit) => hit.node.id)).toContain(
       insightNode?.id,
     );

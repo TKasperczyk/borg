@@ -36,10 +36,10 @@ import type {
   EvidenceItem,
   RetrievedContext,
   RetrievedContradictionRouting,
+  CognitionRetrievalOptions,
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
-  RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { AutonomousOutboundPromptContext } from "../../outbound/index.js";
@@ -284,7 +284,10 @@ export type DeliberationContext = {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;
   };
-  reRetrieve?: (query: string, options?: RetrievalSearchOptions) => Promise<RetrievedContext>;
+  reRetrieve?: (
+    query: string,
+    options?: Partial<CognitionRetrievalOptions>,
+  ) => Promise<RetrievedContext>;
 };
 
 export type DeliberationUsage = {

@@ -482,7 +482,10 @@ export {
   type RetrievedSemanticNode,
   type RetrievedSemanticUnderReview,
   type RetrievalConfidence,
+  type CognitionRetrievalOptions,
+  type DisclosureRetrievalOptions,
   type RetrievalGetEpisodeOptions,
+  type RetrievalSharedOptions,
   type RetrievalSearchOptions,
 } from "./retrieval/index.js";
 export {

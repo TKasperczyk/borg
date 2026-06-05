@@ -111,15 +111,21 @@ export const preferenceFormationMetric = {
         NOW_MS - 10,
       );
 
-      const vectorOnly = await harness.retrievalPipeline.search("architecture", {
-        limit: 3,
-        attentionWeights: RETRIEVAL_WEIGHTS,
-      });
-      const withPreference = await harness.retrievalPipeline.search("architecture", {
-        limit: 3,
-        attentionWeights: RETRIEVAL_WEIGHTS,
-        activeValues: [establishedValue],
-      });
+      const vectorOnly = await harness.retrievalPipeline.searchEpisodesForDisclosure(
+        "architecture",
+        {
+          limit: 3,
+          attentionWeights: RETRIEVAL_WEIGHTS,
+        },
+      );
+      const withPreference = await harness.retrievalPipeline.searchEpisodesForDisclosure(
+        "architecture",
+        {
+          limit: 3,
+          attentionWeights: RETRIEVAL_WEIGHTS,
+          activeValues: [establishedValue],
+        },
+      );
 
       const rescuedId = supportEpisodes[2]!.id;
       const casePassed =

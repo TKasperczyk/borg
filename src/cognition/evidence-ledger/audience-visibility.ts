@@ -72,7 +72,7 @@ export function audienceIsVisibleToSession(
   );
 }
 
-export function isActionVisibleToSession(
+export function isActionVisibleForCurrentAudienceStanding(
   action: ActionRecord,
   audienceEntityId: EntityId | null,
   activeParticipantIds: ReadonlySet<EntityId>,

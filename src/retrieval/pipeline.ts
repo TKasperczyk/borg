@@ -99,7 +99,7 @@ import {
 import {
   resolveSemanticContextForCognition,
   resolveSemanticContextForDisclosure,
-  resolveSemanticSourceAdapter,
+  resolveSemanticDisclosureSourceAdapter,
   toRetrievedSemantic,
   type ResolvedSemanticRetrieval,
   type RetrievedSemantic,
@@ -165,15 +165,8 @@ export type RetrievalPipelineOptions = {
   maxRetrievedImageRefs?: number;
 };
 
-// TODO(post-inversion options split): split this overloaded shape into
-// CognitionRetrievalOptions and DisclosureRetrievalOptions, with shared ranking/scoring options
-// extracted once call sites no longer depend on this single type for search, warm rehydration,
-// re-retrieval overrides, and public disclosure/admin reads.
-export type RetrievalSearchOptions = EpisodeSearchOptions & {
-  recallContext?: CognitionRecallContext;
-  disclosureContext?: DisclosureContext;
+export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
   rankingAudienceEntityId?: EntityId | null;
-  limit?: number;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;
   decayOptions?: Omit<DecayOptions, "nowMs">;
@@ -203,16 +196,28 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   recordRetrieval?: boolean;
 };
 
-type RetrievalAudienceFilterOptionKey = "audienceEntityId" | "crossAudience";
-
-// Cognition recall is audience-global. The omitted keys remain available only on the generic
-// disclosure/admin search options and must not be reintroduced as cognition filters.
-export type CognitionRecallSearchOptions = Omit<
-  RetrievalSearchOptions,
-  RetrievalAudienceFilterOptionKey | "recallContext"
-> & {
+export type CognitionRetrievalOptions = RetrievalSharedOptions & {
   recallContext: CognitionRecallContext;
+  disclosureContext?: DisclosureContext;
+  audienceEntityId?: never;
+  crossAudience?: never;
 };
+
+export type DisclosureRetrievalOptions = RetrievalSharedOptions &
+  Pick<EpisodeSearchOptions, "audienceEntityId" | "crossAudience"> & {
+    disclosureContext?: DisclosureContext;
+    recallContext?: never;
+  };
+
+export type CognitionRecallSearchOptions = CognitionRetrievalOptions;
+
+/**
+ * @deprecated Use DisclosureRetrievalOptions for disclosure reads or CognitionRetrievalOptions
+ * for cognition recall.
+ */
+export type RetrievalSearchOptions = DisclosureRetrievalOptions;
+
+type RetrievalExecutionOptions = CognitionRetrievalOptions | DisclosureRetrievalOptions;
 
 type RetrievalExecutionMode = "cognition" | "disclosure";
 
@@ -341,23 +346,23 @@ export class RetrievalPipeline {
     );
   }
 
-  async searchWithContext(
+  async searchWithContextForDisclosure(
     query: string,
-    options: RetrievalSearchOptions = {},
+    options: DisclosureRetrievalOptions = {},
   ): Promise<RetrievedContext> {
     return this.searchWithContextInternal(query, options, "disclosure");
   }
 
   async recallEpisodesForCognition(
     query: string,
-    options: CognitionRecallSearchOptions,
+    options: CognitionRetrievalOptions,
   ): Promise<RetrievedContext> {
     return this.searchWithContextInternal(query, options, "cognition");
   }
 
   async searchEpisodesForDisclosure(
     query: string,
-    options: RetrievalSearchOptions = {},
+    options: DisclosureRetrievalOptions = {},
   ): Promise<RetrievedEpisode[]> {
     const result = await this.searchWithContextInternal(query, options, "disclosure");
     return result.episodes;
@@ -365,7 +370,7 @@ export class RetrievalPipeline {
 
   private async searchWithContextInternal(
     query: string,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
@@ -427,7 +432,11 @@ export class RetrievalPipeline {
     const semanticRetrievals = await this.collectSemanticRetrievals(intents, options, mode);
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
     const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
-    const imagePerceptions = await this.collectImagePerceptionEvidence(intents, options, mode);
+    const imagePerceptions = await this.collectImagePerceptionEvidenceWithDisclosureMode(
+      intents,
+      options,
+      mode,
+    );
     const episodeEvidenceSources = episodeCandidates.map((item) => ({
       evidence: episodeCandidateToEvidence(item),
       item,
@@ -530,12 +539,8 @@ export class RetrievalPipeline {
     return context;
   }
 
-  async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
-    return this.searchEpisodesForDisclosure(query, options);
-  }
-
   private loadRecallStateContext(
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     nowMs: number,
     mode: RetrievalExecutionMode,
   ): RecallStateTurnContext | null {
@@ -561,7 +566,7 @@ export class RetrievalPipeline {
 
   private async rehydrateRecallStateEvidence(
     context: RecallStateTurnContext,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     nowMs: number,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem[]> {
@@ -587,7 +592,7 @@ export class RetrievalPipeline {
   private async rehydrateRecallHandle(
     handle: RecallEvidenceHandle,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     nowMs: number,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
@@ -621,7 +626,7 @@ export class RetrievalPipeline {
   private rehydrateImagePerceptionHandle(
     handle: Extract<RecallEvidenceHandle, { source: "image_perception" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): EvidenceItem | null {
     const record = this.options.imagePerceptionRepository?.get(handle.perceptionId);
@@ -658,7 +663,7 @@ export class RetrievalPipeline {
   private async rehydrateEpisodeHandle(
     handle: Extract<RecallEvidenceHandle, { source: "episode" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const episode = await this.options.episodicRepository.get(handle.episodeId);
@@ -696,7 +701,7 @@ export class RetrievalPipeline {
   private async rehydrateRawStreamHandle(
     handle: Extract<RecallEvidenceHandle, { source: "raw_stream" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     let parentDisclosureLabel: MemoryDisclosureLabel | undefined;
@@ -751,7 +756,7 @@ export class RetrievalPipeline {
   private async rehydrateSemanticNodeHandle(
     handle: Extract<RecallEvidenceHandle, { source: "semantic_node" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const node = await this.options.semanticNodeRepository?.get(handle.nodeId);
@@ -760,7 +765,7 @@ export class RetrievalPipeline {
       return null;
     }
 
-    const source = await resolveSemanticSourceAdapter({
+    const source = await resolveSemanticDisclosureSourceAdapter({
       episodicRepository: this.options.episodicRepository,
       sourceEpisodeIds: node.source_episode_ids,
       mode,
@@ -784,7 +789,7 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
-      source_episode_ids: source.visibleEpisodeIds,
+      source_episode_ids: source.admittedSourceEpisodeIds,
       ...semanticSourceAdapterPartialEvidenceFields(source),
       disclosureLabel: source.disclosureLabel,
     };
@@ -793,7 +798,7 @@ export class RetrievalPipeline {
   private async rehydrateSemanticEdgeHandle(
     handle: Extract<RecallEvidenceHandle, { source: "semantic_edge" }>,
     stateHandle: RecallStateHandle,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
     const edge = this.options.semanticEdgeRepository?.getEdge(handle.edgeId);
@@ -814,13 +819,13 @@ export class RetrievalPipeline {
       return null;
     }
 
-    const nodeSource = await resolveSemanticSourceAdapter({
+    const nodeSource = await resolveSemanticDisclosureSourceAdapter({
       episodicRepository: this.options.episodicRepository,
       sourceEpisodeIds: node.source_episode_ids,
       mode,
       visibility: episodeVisibilityOptions(options),
     });
-    const edgeSource = await resolveSemanticSourceAdapter({
+    const edgeSource = await resolveSemanticDisclosureSourceAdapter({
       episodicRepository: this.options.episodicRepository,
       sourceEpisodeIds: edge.evidence_episode_ids,
       mode,
@@ -831,7 +836,7 @@ export class RetrievalPipeline {
       return null;
     }
     const semanticEdgeSourceEpisodeIds = [
-      ...new Set([...nodeSource.visibleEpisodeIds, ...edgeSource.visibleEpisodeIds]),
+      ...new Set([...nodeSource.admittedSourceEpisodeIds, ...edgeSource.admittedSourceEpisodeIds]),
     ];
     const partialSource = edgeSource.partial ? edgeSource : nodeSource.partial ? nodeSource : null;
 
@@ -1056,7 +1061,7 @@ export class RetrievalPipeline {
 
   private async buildRecallIntents(
     query: string,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
   ): Promise<RecallIntent[]> {
     const intents: RecallIntent[] = [
       {
@@ -1124,7 +1129,7 @@ export class RetrievalPipeline {
 
   private async tryExpandRecall(
     query: string,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
   ): Promise<ExpansionOutcome> {
     if (this.options.llmClient === undefined) {
       return {
@@ -1182,7 +1187,7 @@ export class RetrievalPipeline {
 
   private async collectEpisodicEvidenceCandidates(
     intents: readonly RecallIntent[],
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     scoringFeatures: RetrievalScoringFeatures,
     nowMs: number,
     limit: number,
@@ -1191,7 +1196,7 @@ export class RetrievalPipeline {
     const rawCandidates = (
       await Promise.all(
         intents.map((intent) =>
-          this.collectEpisodicCandidatesForIntent(intent, options, limit, mode),
+          this.collectEpisodicCandidatesForDisclosureModeIntent(intent, options, limit, mode),
         ),
       )
     ).flat();
@@ -1216,9 +1221,9 @@ export class RetrievalPipeline {
     });
   }
 
-  private async collectEpisodicCandidatesForIntent(
+  private async collectEpisodicCandidatesForDisclosureModeIntent(
     intent: RecallIntent,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     limit: number,
     mode: RetrievalExecutionMode,
   ): Promise<RawEpisodeEvidenceCandidate[]> {
@@ -1331,7 +1336,7 @@ export class RetrievalPipeline {
 
   private scoreEpisodeCandidateForIntent(
     entry: RawEpisodeEvidenceCandidate,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     scoringFeatures: RetrievalScoringFeatures,
     nowMs: number,
     participantEntityIds: ParticipantEntityResolutionLookup | undefined,
@@ -1361,7 +1366,7 @@ export class RetrievalPipeline {
 
   private async collectSemanticRetrievals(
     intents: readonly RecallIntent[],
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<SemanticEvidenceCandidate[]> {
     const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
@@ -1415,7 +1420,7 @@ export class RetrievalPipeline {
   private async collectOpenQuestions(
     intents: readonly RecallIntent[],
     semantic: ResolvedSemanticRetrieval,
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
   ): Promise<OpenQuestionEvidenceCandidate[]> {
     const shouldInclude = options.includeOpenQuestions === true;
     const relevantIntents = intents.filter(
@@ -1464,9 +1469,9 @@ export class RetrievalPipeline {
     );
   }
 
-  private async collectImagePerceptionEvidence(
+  private async collectImagePerceptionEvidenceWithDisclosureMode(
     intents: readonly RecallIntent[],
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<ImagePerceptionEvidenceCandidate[]> {
     if (this.options.imagePerceptionRepository === undefined) {
@@ -1519,7 +1524,7 @@ export class RetrievalPipeline {
   }
 
   private emitRetrievalDegraded(
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
     subsystem: string,
     error: unknown,
   ): void {
@@ -1535,7 +1540,7 @@ export class RetrievalPipeline {
 
   private async collectCommitmentEvidence(
     intents: readonly RecallIntent[],
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
   ): Promise<EvidenceItem[]> {
     if (this.options.commitmentRepository === undefined) {
       return [];
@@ -1603,7 +1608,7 @@ export class RetrievalPipeline {
 
   private collectCurrentSessionRecentRawStreamEvidence(
     intents: readonly RecallIntent[],
-    options: RetrievalSearchOptions,
+    options: RetrievalExecutionOptions,
   ): EvidenceItem[] {
     const recentIntent = intents.find((intent) => intent.kind === "recent");
 
@@ -1743,7 +1748,7 @@ export class RetrievalPipeline {
   }
 }
 
-function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {
+function summarizeRetrievalOptions(options: RetrievalExecutionOptions): JsonValue {
   return {
     limit: options.limit ?? null,
     strictTimeRange: options.strictTimeRange ?? false,
@@ -1784,7 +1789,7 @@ function countSemanticHits(semantic: RetrievedSemantic): number {
 }
 
 function recallStateScopeKey(
-  options: RetrievalSearchOptions,
+  options: RetrievalExecutionOptions,
   mode: RetrievalExecutionMode,
 ): string {
   if (mode === "cognition") {
@@ -1990,7 +1995,7 @@ function warmRecallScore(stateHandle: RecallStateHandle): number {
   return clamp(0.12 + Math.min(0.18, stateHandle.reinforcementCount * 0.03), 0, 0.3);
 }
 
-function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {
+function episodeVisibilityOptions(options: RetrievalExecutionOptions): EpisodeSearchOptions {
   return {
     audienceEntityId: options.audienceEntityId,
     crossAudience: options.crossAudience,
@@ -2004,7 +2009,7 @@ function isEpisodeVisibleToRetrievalCapability(
   return isEpisodeVisibleToCapability(episode, resolveViewerCapability(options));
 }
 
-function episodeSearchOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {
+function episodeSearchOptions(options: RetrievalExecutionOptions): EpisodeSearchOptions {
   return {
     ...episodeVisibilityOptions(options),
     minSimilarity: options.minSimilarity,
@@ -2014,7 +2019,7 @@ function episodeSearchOptions(options: RetrievalSearchOptions): EpisodeSearchOpt
 }
 
 function episodeCognitionRecallOptions(
-  options: RetrievalSearchOptions,
+  options: RetrievalExecutionOptions,
 ): EpisodeCognitionRecallOptions {
   return {
     minSimilarity: options.minSimilarity,
@@ -2024,7 +2029,7 @@ function episodeCognitionRecallOptions(
   };
 }
 
-function rankingAudienceEntityId(options: RetrievalSearchOptions): EntityId | null | undefined {
+function rankingAudienceEntityId(options: RetrievalExecutionOptions): EntityId | null | undefined {
   return options.rankingAudienceEntityId ?? options.audienceEntityId;
 }
 

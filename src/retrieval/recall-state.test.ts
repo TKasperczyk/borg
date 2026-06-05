@@ -282,11 +282,14 @@ describe("retrieval recall_state", () => {
     const staleEvidenceId = `evidence_episode_${episode.id}_recall_known_term_0`;
     seedEpisodeHandle(harness, sessionId, episode.id);
 
-    const second = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 2,
-      limit: 1,
-    });
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
     const warm = second.evidence.find(
       (item) => item.source === "warm_recall" && item.provenance?.episodeId === episode.id,
     );
@@ -357,11 +360,14 @@ describe("retrieval recall_state", () => {
     await insertDistractors(harness);
     const getSpy = vi.spyOn(harness.episodicRepository, "get");
 
-    const second = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 2,
-      limit: 1,
-    });
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
     const warm = second.evidence.find(
       (item) => item.source === "warm_recall" && item.provenance?.episodeId === episode.id,
     );
@@ -419,7 +425,7 @@ describe("retrieval recall_state", () => {
       parentEpisodeId: cachedEpisode.id,
     });
 
-    const second = await harness.retrievalPipeline.searchWithContext("Atlas current", {
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas current", {
       sessionId,
       turnCounter: 2,
       limit: 1,
@@ -454,14 +460,14 @@ describe("retrieval recall_state", () => {
     await harness.episodicRepository.insert(episode);
     await insertDistractors(harness);
 
-    await harness.retrievalPipeline.searchWithContext("Atlas", {
+    await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas", {
       sessionId,
       turnCounter: 1,
       limit: 1,
       entityTerms: ["Atlas"],
     });
 
-    const second = await harness.retrievalPipeline.searchWithContext("Atlas", {
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas", {
       sessionId,
       turnCounter: 2,
       limit: 1,
@@ -515,11 +521,14 @@ describe("retrieval recall_state", () => {
       ],
     });
 
-    const second = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 2,
-      limit: 1,
-    });
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
     const warmEvidence = second.evidence.find(
       (item) => item.source === "warm_recall" && item.provenance?.episodeId === episode.id,
     );
@@ -536,11 +545,14 @@ describe("retrieval recall_state", () => {
     expect(handleAfterWarmRender?.reinforcementCount).toBe(10);
     expect(stateAfterWarmRender?.suppressedHandles[key]).toBe(4);
 
-    const third = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 3,
-      limit: 1,
-    });
+    const third = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 3,
+        limit: 1,
+      },
+    );
 
     expect(
       third.evidence.some(
@@ -548,11 +560,14 @@ describe("retrieval recall_state", () => {
       ),
     ).toBe(false);
 
-    const fifth = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 5,
-      limit: 1,
-    });
+    const fifth = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 5,
+        limit: 1,
+      },
+    );
 
     expect(
       fifth.evidence.some(
@@ -595,7 +610,7 @@ describe("retrieval recall_state", () => {
       prefix: "Fresh cap pressure",
     });
 
-    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+    await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas current", {
       sessionId,
       turnCounter: 2,
       limit: 15,
@@ -621,7 +636,7 @@ describe("retrieval recall_state", () => {
       prefix: "Fresh admission",
     });
 
-    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+    await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas current", {
       sessionId,
       turnCounter: 1,
       limit: 15,
@@ -669,7 +684,7 @@ describe("retrieval recall_state", () => {
     });
     const newEpisodeIds = new Set(newEpisodes.map((episode) => episode.id));
 
-    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+    await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas current", {
       sessionId,
       turnCounter: 2,
       limit: 6,
@@ -727,7 +742,7 @@ describe("retrieval recall_state", () => {
     });
     const freshEpisodeIds = new Set(freshEpisodes.map((episode) => episode.id));
 
-    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+    await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas current", {
       sessionId,
       turnCounter: 3,
       limit: 4,
@@ -798,7 +813,7 @@ describe("retrieval recall_state", () => {
       recallStateMaxNewHandlesPerTurn: 0,
     });
 
-    await pipeline.searchWithContext("quiet turn", {
+    await pipeline.searchWithContextForDisclosure("quiet turn", {
       sessionId,
       turnCounter: 2,
       limit: 1,
@@ -897,11 +912,14 @@ describe("retrieval recall_state", () => {
       ],
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      sessionId,
-      turnCounter: 2,
-      limit: 1,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
     const warmEpisodeIds = new Set(
       result.evidence
         .filter((item) => item.source === "warm_recall")
@@ -930,11 +948,14 @@ describe("retrieval recall_state", () => {
     });
     streamWriter.close();
 
-    const result = await harness.retrievalPipeline.searchWithContext("nothing relevant", {
-      sessionId,
-      turnCounter: 1,
-      limit: 1,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "nothing relevant",
+      {
+        sessionId,
+        turnCounter: 1,
+        limit: 1,
+      },
+    );
     const state = harness.recallStateRepository.load(sessionId);
 
     expect(
@@ -1230,12 +1251,15 @@ describe("retrieval recall_state", () => {
 
     expect(harness.recallStateRepository.load(firstSession)).toBeNull();
 
-    const second = await harness.retrievalPipeline.searchWithContext("unrelated recall", {
-      audienceEntityId: audienceA,
-      sessionId: secondSession,
-      turnCounter: 1,
-      limit: 1,
-    });
+    const second = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        audienceEntityId: audienceA,
+        sessionId: secondSession,
+        turnCounter: 1,
+        limit: 1,
+      },
+    );
 
     expect(
       second.evidence.some(
@@ -1268,7 +1292,7 @@ describe("retrieval recall_state", () => {
     );
     await harness.episodicRepository.insert(episode);
 
-    const first = await harness.retrievalPipeline.searchWithContext(mayaTurn, {
+    const first = await harness.retrievalPipeline.searchWithContextForDisclosure(mayaTurn, {
       audienceEntityId: tomAudience,
       sessionId: firstSession,
       turnCounter: 1,
@@ -1285,7 +1309,7 @@ describe("retrieval recall_state", () => {
 
     await insertDistractors(harness, { prefix: "Denial" });
 
-    const denial = await harness.retrievalPipeline.searchWithContext(denialTurn, {
+    const denial = await harness.retrievalPipeline.searchWithContextForDisclosure(denialTurn, {
       audienceEntityId: tomAudience,
       sessionId: secondSession,
       turnCounter: 2,

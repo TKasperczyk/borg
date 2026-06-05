@@ -205,7 +205,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const results = await pipeline.search("planning", {
+    const results = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 1,
     });
 
@@ -296,7 +296,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const readOnlyResults = await pipeline.search("planning", {
+    const readOnlyResults = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 2,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 1,
@@ -319,7 +319,7 @@ describe("retrieval pipeline", () => {
     ).toBe(0);
     expect(recallStateRepository.load(DEFAULT_SESSION_ID)).toBeNull();
 
-    const recordingResults = await pipeline.search("planning", {
+    const recordingResults = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 2,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 1,
@@ -373,7 +373,7 @@ describe("retrieval pipeline", () => {
       tracer,
     });
 
-    await pipeline.searchWithContext("planning", {
+    await pipeline.searchWithContextForDisclosure("planning", {
       limit: 1,
       traceTurnId: "turn-retrieval-session",
       sessionId,
@@ -454,7 +454,7 @@ describe("retrieval pipeline", () => {
       tracer,
     });
 
-    const result = await pipeline.searchWithContext("Atlas deployment", {
+    const result = await pipeline.searchWithContextForDisclosure("Atlas deployment", {
       limit: 1,
       entityTerms: ["Atlas"],
       sessionId: DEFAULT_SESSION_ID,
@@ -554,7 +554,7 @@ describe("retrieval pipeline", () => {
       dataDir: tempDir,
       clock: new FixedClock(10_000),
     });
-    const context = await pipeline.searchWithContext("Atlas deployment path", {
+    const context = await pipeline.searchWithContextForDisclosure("Atlas deployment path", {
       limit: 5,
       audienceEntityId: aliceEntityId,
     });
@@ -753,7 +753,7 @@ describe("retrieval pipeline", () => {
       dataDir: tempDir,
       clock: new FixedClock(10_000),
     });
-    const alice = await pipeline.searchWithContext("Atlas deployment path", {
+    const alice = await pipeline.searchWithContextForDisclosure("Atlas deployment path", {
       limit: 5,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 1,
@@ -771,7 +771,7 @@ describe("retrieval pipeline", () => {
         ),
     ).toBe(true);
 
-    const bob = await pipeline.searchWithContext("unrelated recall", {
+    const bob = await pipeline.searchWithContextForDisclosure("unrelated recall", {
       limit: 5,
       sessionId: DEFAULT_SESSION_ID,
       turnCounter: 2,
@@ -836,7 +836,7 @@ describe("retrieval pipeline", () => {
       tracer,
     });
 
-    const results = await pipeline.search("planning", {
+    const results = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 1,
       traceTurnId: "turn-citations",
     });
@@ -895,10 +895,10 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const defaultResults = await pipeline.search("planning", {
+    const defaultResults = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 5,
     });
-    const crossAudienceResults = await pipeline.search("planning", {
+    const crossAudienceResults = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 5,
       crossAudience: true,
     });
@@ -959,7 +959,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const results = await pipeline.search("planning", {
+    const results = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 2,
     });
 
@@ -1122,7 +1122,7 @@ describe("retrieval pipeline", () => {
       entryIndex,
     });
 
-    const results = await pipeline.search("planning", {
+    const results = await pipeline.searchEpisodesForDisclosure("planning", {
       limit: 2,
       crossAudience: true,
     });
@@ -1295,7 +1295,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const results = await pipeline.search("release planning", {
+    const results = await pipeline.searchEpisodesForDisclosure("release planning", {
       limit: 2,
       attentionWeights: computeWeights("reflective", {
         currentGoals: [
@@ -1479,7 +1479,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const result = await pipeline.searchWithContext("Atlas", {
+    const result = await pipeline.searchWithContextForDisclosure("Atlas", {
       limit: 1,
       graphWalkDepth: 1,
       maxGraphNodes: 8,
@@ -1617,7 +1617,7 @@ describe("retrieval pipeline", () => {
       clock,
     });
 
-    const result = await pipeline.searchWithContext("Atlas", {
+    const result = await pipeline.searchWithContextForDisclosure("Atlas", {
       crossAudience: true,
       graphWalkDepth: 1,
       limit: 1,
@@ -1743,12 +1743,12 @@ describe("retrieval pipeline", () => {
       clock,
     });
 
-    const current = await pipeline.searchWithContext("Atlas", {
+    const current = await pipeline.searchWithContextForDisclosure("Atlas", {
       limit: 1,
       graphWalkDepth: 1,
       maxGraphNodes: 4,
     });
-    const historical = await pipeline.searchWithContext("Atlas", {
+    const historical = await pipeline.searchWithContextForDisclosure("Atlas", {
       limit: 1,
       graphWalkDepth: 1,
       maxGraphNodes: 4,
@@ -1849,12 +1849,12 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const reflective = await pipeline.searchWithContext("Atlas deployment", {
+    const reflective = await pipeline.searchWithContextForDisclosure("Atlas deployment", {
       limit: 1,
       includeOpenQuestions: true,
       audienceEntityId: bob,
     });
-    const defaultResult = await pipeline.searchWithContext("Atlas deployment", {
+    const defaultResult = await pipeline.searchWithContextForDisclosure("Atlas deployment", {
       limit: 1,
     });
 
@@ -1941,7 +1941,7 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
     });
 
-    const result = await pipeline.searchWithContext("Atlas deployment", {
+    const result = await pipeline.searchWithContextForDisclosure("Atlas deployment", {
       limit: 1,
       includeOpenQuestions: true,
       audienceEntityId: group,

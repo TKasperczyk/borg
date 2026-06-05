@@ -98,7 +98,7 @@ export const retrievalPrecisionRecallMetric = {
         }
 
         for (const query of fixture.data.queries) {
-          const results = await harness.retrievalPipeline.search(query.query, {
+          const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(query.query, {
             limit: fixture.data.k,
             attentionWeights: RETRIEVAL_WEIGHTS,
           });

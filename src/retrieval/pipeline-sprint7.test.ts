@@ -71,27 +71,33 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     await harness.episodicRepository.insert(negativeEpisode);
     await harness.episodicRepository.insert(positiveEpisode);
 
-    const withoutMood = await harness.retrievalPipeline.search("Rust lifetime debugging", {
-      limit: 2,
-    });
-    const withMood = await harness.retrievalPipeline.search("Rust lifetime debugging", {
-      limit: 2,
-      attentionWeights: {
-        semantic: 0.7,
-        goal_relevance: 0,
-        value_alignment: 0,
-        mood: 0.2,
-        time: 0,
-        social: 0,
-        entity: 0,
-        heat: 0.1,
-        suppression_penalty: 0.5,
+    const withoutMood = await harness.retrievalPipeline.searchEpisodesForDisclosure(
+      "Rust lifetime debugging",
+      {
+        limit: 2,
       },
-      moodState: {
-        valence: -0.7,
-        arousal: 0.6,
+    );
+    const withMood = await harness.retrievalPipeline.searchEpisodesForDisclosure(
+      "Rust lifetime debugging",
+      {
+        limit: 2,
+        attentionWeights: {
+          semantic: 0.7,
+          goal_relevance: 0,
+          value_alignment: 0,
+          mood: 0.2,
+          time: 0,
+          social: 0,
+          entity: 0,
+          heat: 0.1,
+          suppression_penalty: 0.5,
+        },
+        moodState: {
+          valence: -0.7,
+          arousal: 0.6,
+        },
       },
-    });
+    );
 
     expect(withMood[0]?.episode.id).toBe(negativeEpisode.id);
     expect(withMood[0]?.scoreBreakdown.moodBoost ?? 0).toBeGreaterThan(0);
@@ -115,7 +121,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     await harness.episodicRepository.insert(withAudience);
     await harness.episodicRepository.insert(withoutAudience);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 2,
       attentionWeights: socialAttentionWeights(),
       audienceProfile: harness.socialRepository.getProfile(audienceId),
@@ -140,7 +146,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     );
     await harness.episodicRepository.insert(withAudience);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -164,7 +170,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     );
     await harness.episodicRepository.insert(withFreeFormAudience);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -188,7 +194,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     );
     await harness.episodicRepository.insert(unrelated);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -214,7 +220,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     );
     await harness.episodicRepository.insert(withOtherEntity);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -239,7 +245,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     );
     await harness.episodicRepository.insert(episode);
 
-    const lowTrust = await harness.retrievalPipeline.search("architecture", {
+    const lowTrust = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -249,7 +255,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     const highTrustProfile = harness.socialRepository.adjustTrust(audienceId, 0.3, {
       kind: "manual",
     });
-    const highTrust = await harness.retrievalPipeline.search("architecture", {
+    const highTrust = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -285,7 +291,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     await harness.episodicRepository.insert(second);
     const findSpy = vi.spyOn(harness.entityRepository, "findByName");
 
-    await harness.retrievalPipeline.search("architecture", {
+    await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 2,
       attentionWeights: socialAttentionWeights(),
       audienceEntityId: audienceId,
@@ -296,7 +302,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
 
     findSpy.mockClear();
 
-    await harness.retrievalPipeline.search("architecture", {
+    await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 2,
       attentionWeights: socialAttentionWeights(),
       audienceTerms: ["Tom"],
@@ -341,7 +347,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     });
     await harness.episodicRepository.insert(publicEpisode);
 
-    const results = await harness.retrievalPipeline.search("architecture", {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 3,
       audienceEntityId: alex,
     });
@@ -377,7 +383,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       limit: 5,
       entityTerms: ["architecture"],
     });
-    const disclosure = await harness.retrievalPipeline.search("architecture", {
+    const disclosure = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 5,
       audienceEntityId: audienceEntityId,
       entityTerms: ["architecture"],
@@ -559,12 +565,15 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     });
     await harness.semanticNodeRepository.insert(mixedNode);
 
-    const result = await harness.retrievalPipeline.searchWithContext("Atlas Audience Scoped", {
-      limit: 2,
-      audienceEntityId: alex,
-      graphWalkDepth: 1,
-      maxGraphNodes: 4,
-    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Atlas Audience Scoped",
+      {
+        limit: 2,
+        audienceEntityId: alex,
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+      },
+    );
 
     expect(result.semantic.matched_node_ids).toContain(mixedNode.id);
     expect(result.semantic.matched_nodes).toEqual([
@@ -656,7 +665,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       last_verified_at: 1_000_000,
     });
 
-    const result = await harness.retrievalPipeline.searchWithContext(query, {
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(query, {
       limit: 5,
       audienceEntityId: bob,
       graphWalkDepth: 1,

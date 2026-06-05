@@ -51,6 +51,8 @@ export {
 export {
   RetrievalPipeline,
   type CognitionRecallSearchOptions,
+  type CognitionRetrievalOptions,
+  type DisclosureRetrievalOptions,
   type RetrievedContext,
   type RetrievedContradictionRouting,
   type RetrievedContradictionRoutingItem,
@@ -62,12 +64,14 @@ export {
   type RetrievedSemantic,
   type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,
+  type RetrievalSharedOptions,
   type RetrievalSearchOptions,
 } from "./pipeline.js";
 export {
   resolveMemoryDisclosureLabelForEpisodeIds,
   resolveSemanticContextForCognition,
   resolveSemanticContextForDisclosure,
+  resolveSemanticDisclosureSourceAdapter,
   resolveSemanticSourceAdapter,
   type SemanticSourceAdapter,
 } from "./semantic-retrieval.js";

@@ -167,7 +167,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       limit: 12,
       timeRange,
     });
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       timeRange,
       attentionWeights: searchWeights({
@@ -209,7 +209,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       limit: 12,
       audienceEntityId: sam,
     });
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       audienceEntityId: sam,
       audienceProfile: harness.socialRepository.getProfile(sam),
@@ -250,7 +250,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
       limit: 12,
     });
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       entityTerms: ["atlas"],
       attentionWeights: searchWeights({
@@ -289,7 +289,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
       limit: 12,
     });
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       attentionWeights: searchWeights({
         semantic: 0.15,
@@ -358,7 +358,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(merged[0]?.sources).toEqual(new Set(["vector", "temporal"]));
     expect(merged[0]?.candidate.similarity ?? 0).toBeGreaterThan(0);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 5,
       timeRange: { start: 140_000, end: 170_000 },
       attentionWeights: searchWeights({ semantic: 0.7, time: 0.2, heat: 0 }),
@@ -387,7 +387,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     );
     await harness.episodicRepository.insert(inRange);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       timeRange: {
         start: 140_000,
@@ -429,7 +429,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     );
     await harness.episodicRepository.insert(inRange);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 10,
       temporalCue: {
         label: "yesterday",
@@ -485,21 +485,24 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     await harness.episodicRepository.insert(mayaEpisode);
     await harness.episodicRepository.insert(designReviewEpisode);
 
-    const results = await harness.retrievalPipeline.search(MAYA_CORRECTION_QUERY, {
-      limit: 5,
-      temporalCue: {
-        label: "next week",
-        sinceTs: nextWeekStart,
-        untilTs: nextWeekEnd,
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(
+      MAYA_CORRECTION_QUERY,
+      {
+        limit: 5,
+        temporalCue: {
+          label: "next week",
+          sinceTs: nextWeekStart,
+          untilTs: nextWeekEnd,
+        },
+        strictTimeRange: true,
+        attentionWeights: searchWeights({
+          semantic: 0.75,
+          time: 0.2,
+          heat: 0,
+          entity: 0,
+        }),
       },
-      strictTimeRange: true,
-      attentionWeights: searchWeights({
-        semantic: 0.75,
-        time: 0.2,
-        heat: 0,
-        entity: 0,
-      }),
-    });
+    );
 
     expect(results.map((item) => item.episode.id)).toContain(mayaEpisode.id);
   });
@@ -524,7 +527,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     );
     await harness.episodicRepository.insert(inRange);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 10,
       temporalCue: {
         label: "yesterday",
@@ -576,7 +579,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     await harness.episodicRepository.insert(cueOnly);
     await harness.episodicRepository.insert(explicit);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       timeRange: {
         start: 300_000,
@@ -606,7 +609,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       start_time: 900_000,
       end_time: 901_000,
     });
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       temporalCue: {
         label: "yesterday",
@@ -643,7 +646,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
 
     const visibleSpy = vi.spyOn(harness.episodicRepository, "listVisibleEpisodes");
 
-    await harness.retrievalPipeline.search(QUERY, {
+    await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
       audienceEntityId: sam,
       audienceTerms: ["Sam"],
@@ -794,7 +797,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     await harness.episodicRepository.insert(rescued);
     markHot(harness, rescued.id);
 
-    const results = await harness.retrievalPipeline.search(QUERY, {
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 2,
       mmrLambda: 0.4,
       attentionWeights: searchWeights({ semantic: 0.35, heat: 0.55, entity: 0 }),

@@ -153,7 +153,7 @@ export const semanticTemporalRecallMetric = {
       });
 
       for (const testCase of CASES) {
-        const result = await harness.retrievalPipeline.searchWithContext(QUERY, {
+        const result = await harness.retrievalPipeline.searchWithContextForDisclosure(QUERY, {
           limit: 3,
           graphWalkDepth: 1,
           maxGraphNodes: 8,

@@ -8,18 +8,12 @@ import {
   type SemanticWalkOptions,
   type SemanticWalkStep,
 } from "../../memory/semantic/index.js";
-import { MEMORY_DISCLOSURE_CLASSES, type MemoryDisclosureLabel } from "../../retrieval/index.js";
+import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
+import {
+  memoryDisclosureLabelMetadata,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
-
-// TODO(post-inversion tool output cleanup): migrate semantic walk disclosure output to the
-// shared snake_case disclosure_label serializer used by episodic search. This is an observable
-// tool contract change, so keep the current camelCase shape during pure refactor sessions.
-const semanticWalkDisclosureLabelSchema = z.object({
-  disclosureClass: z.enum(MEMORY_DISCLOSURE_CLASSES),
-  originAudienceEntityIds: z.array(z.string()),
-  privateToEntityIds: z.array(z.string()),
-  publicToEntityIds: z.array(z.string()),
-});
 
 const semanticWalkInputSchema = z.object({
   node_id: semanticNodeIdSchema,
@@ -37,10 +31,10 @@ const semanticWalkNodeOutputSchema = semanticNodeSchema
   .extend({
     partial_source_visibility: z.boolean().optional(),
     source_visibility_fraction: z.number().min(0).max(1).optional(),
-    disclosureLabel: semanticWalkDisclosureLabelSchema.optional(),
+    disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
   });
 const semanticWalkEdgeOutputSchema = semanticEdgeSchema.extend({
-  disclosureLabel: semanticWalkDisclosureLabelSchema.optional(),
+  disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
 });
 
 const semanticWalkOutputSchema = z.object({
@@ -66,17 +60,6 @@ type SemanticWalkStepWithDisclosure = Omit<SemanticWalkStep, "node" | "edgePath"
   node: SemanticWalkNodeWithDisclosure;
   edgePath: SemanticWalkEdgeWithDisclosure[];
 };
-
-function toSemanticWalkDisclosureLabelOutput(
-  label: MemoryDisclosureLabel,
-): z.infer<typeof semanticWalkDisclosureLabelSchema> {
-  return {
-    disclosureClass: label.disclosureClass,
-    originAudienceEntityIds: [...label.originAudienceEntityIds],
-    privateToEntityIds: [...label.privateToEntityIds],
-    publicToEntityIds: [...label.publicToEntityIds],
-  };
-}
 
 function toSemanticWalkNodeOutput(
   node: SemanticWalkNodeWithDisclosure,
@@ -106,7 +89,7 @@ function toSemanticWalkNodeOutput(
       : { source_visibility_fraction: node.source_visibility_fraction }),
     ...(node.disclosureLabel === undefined
       ? {}
-      : { disclosureLabel: toSemanticWalkDisclosureLabelOutput(node.disclosureLabel) }),
+      : { disclosure_label: memoryDisclosureLabelMetadata(node.disclosureLabel) }),
   };
 }
 
@@ -119,7 +102,7 @@ function toSemanticWalkEdgeOutput(
     ...edgeFields,
     ...(disclosureLabel === undefined
       ? {}
-      : { disclosureLabel: toSemanticWalkDisclosureLabelOutput(disclosureLabel) }),
+      : { disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel) }),
   };
 }
 

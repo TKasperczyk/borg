@@ -88,11 +88,11 @@ describe("RetrievalPipeline Sprint 8 preference formation", () => {
       createdAt: NOW_MS - 50,
     });
 
-    const vectorOnly = await harness.retrievalPipeline.search("architecture", {
+    const vectorOnly = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 3,
       attentionWeights: preferenceWeights(),
     });
-    const withValues = await harness.retrievalPipeline.search("architecture", {
+    const withValues = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 3,
       attentionWeights: preferenceWeights(),
       activeValues: [heldValue],

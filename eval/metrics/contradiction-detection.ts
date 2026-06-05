@@ -170,11 +170,14 @@ export const contradictionDetectionMetric = {
           await seedFixture(fixture.data, embeddingClient, harness);
           addContradictionEdge(fixture.data, harness);
 
-          const result = await harness.retrievalPipeline.searchWithContext(fixture.data.query, {
-            limit: 5,
-            graphWalkDepth: 1,
-            maxGraphNodes: 8,
-          });
+          const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+            fixture.data.query,
+            {
+              limit: 5,
+              graphWalkDepth: 1,
+              maxGraphNodes: 8,
+            },
+          );
           const actualContradictionNodeIds = validContradictionNodeIdsAt(result, NOW_MS);
           const actualContradictionHitCount = actualContradictionNodeIds.length;
           const casePassed =
@@ -223,7 +226,7 @@ export const contradictionDetectionMetric = {
             close_at: HISTORICAL_CLOSED_AT_MS,
           });
 
-          const currentResult = await harness.retrievalPipeline.searchWithContext(
+          const currentResult = await harness.retrievalPipeline.searchWithContextForDisclosure(
             fixture.data.query,
             {
               limit: 5,
@@ -231,7 +234,7 @@ export const contradictionDetectionMetric = {
               maxGraphNodes: 8,
             },
           );
-          const historicalResult = await harness.retrievalPipeline.searchWithContext(
+          const historicalResult = await harness.retrievalPipeline.searchWithContextForDisclosure(
             fixture.data.query,
             {
               limit: 5,
