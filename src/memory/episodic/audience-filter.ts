@@ -53,7 +53,7 @@ export function isEpisodeAccessVisible(
 ): boolean {
   const normalized = normalizeEpisodeAccess(input);
 
-  if (normalized.shared || normalized.origin_audience_entity_ids.length === 0) {
+  if (normalized.shared) {
     return true;
   }
 

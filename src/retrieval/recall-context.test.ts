@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EntityId } from "../util/ids.js";
 
 import {
+  combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
@@ -10,6 +11,7 @@ import {
 
 describe("memory disclosure labels", () => {
   const alice = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+  const bob = "ent_bbbbbbbbbbbbbbbb" as EntityId;
 
   it("requires explicit public labels instead of treating empty private origins as public", () => {
     expect(relationshipPrivateMemoryDisclosureLabel([])).toMatchObject({
@@ -55,6 +57,20 @@ describe("memory disclosure labels", () => {
     ).toMatchObject({
       disclosureClass: "relationship_private",
       privateToEntityIds: [alice],
+    });
+  });
+
+  it("combines disclosure entity ids in sorted order", () => {
+    expect(
+      combineMemoryDisclosureLabels([
+        relationshipPrivateMemoryDisclosureLabel([bob]),
+        relationshipPrivateMemoryDisclosureLabel([alice]),
+      ]),
+    ).toMatchObject({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice, bob],
+      privateToEntityIds: [alice, bob],
+      publicToEntityIds: [],
     });
   });
 });

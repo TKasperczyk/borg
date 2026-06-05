@@ -22,12 +22,13 @@ import type {
 } from "../memory/semantic/types.js";
 import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
-import { semanticSourceMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
 import {
-  memoryDisclosureLabelFromEpisodeAccess,
+  combineDisclosureLabelForEpisodeIds,
+  combineMemoryDisclosureLabels,
+  resolveDisclosureLabelsByEpisodeId,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
-} from "./recall-context.js";
+} from "../memory/common/disclosure-label.js";
 
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
 const DEFAULT_SEMANTIC_OVERFETCH_MULTIPLIER = 3;
@@ -198,16 +199,8 @@ async function resolveEpisodeDisclosureLabels(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
 ): Promise<Map<string, MemoryDisclosureLabel>> {
-  const uniqueEpisodeIds = [...new Set(episodeIds)];
-
-  if (uniqueEpisodeIds.length === 0) {
-    return new Map();
-  }
-
-  const episodes = await episodicRepository.getMany(uniqueEpisodeIds);
-
-  return new Map(
-    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  return new Map<string, MemoryDisclosureLabel>(
+    await resolveDisclosureLabelsByEpisodeId(episodeIds, (ids) => episodicRepository.getMany(ids)),
   );
 }
 
@@ -215,7 +208,7 @@ function disclosureLabelForEpisodeIds(
   episodeIds: readonly Episode["id"][],
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): MemoryDisclosureLabel {
-  return semanticSourceMemoryDisclosureLabel(
+  return combineMemoryDisclosureLabels(
     episodeIds.map(
       (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
     ),
@@ -293,9 +286,7 @@ export async function resolveMemoryDisclosureLabelForEpisodeIds(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
 ): Promise<MemoryDisclosureLabel> {
-  const labelsByEpisodeId = await resolveEpisodeDisclosureLabels(episodicRepository, episodeIds);
-
-  return disclosureLabelForEpisodeIds(episodeIds, labelsByEpisodeId);
+  return combineDisclosureLabelForEpisodeIds(episodeIds, (ids) => episodicRepository.getMany(ids));
 }
 
 function semanticSourcePartialFields(

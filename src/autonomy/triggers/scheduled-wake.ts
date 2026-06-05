@@ -1,3 +1,5 @@
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -16,7 +18,7 @@ type ScheduledWakePayload = {
   note: string;
   scheduled_at: number;
   fire_at: number;
-};
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type ScheduledWakeTriggerOptions = {
   scheduledWakesRepository: ScheduledWakesRepository;
@@ -61,6 +63,7 @@ export function createScheduledWakeTrigger(
             note: wake.note,
             scheduled_at: wake.created_at,
             fire_at: wake.fire_at,
+            ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
           },
         });
       }

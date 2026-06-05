@@ -110,6 +110,7 @@ import { resolveTimeSignals } from "./time-signals.js";
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  unknownMemoryDisclosureLabel,
   type CognitionRecallContext,
   type DisclosureContext,
   type MemoryDisclosureLabel,
@@ -704,7 +705,7 @@ export class RetrievalPipeline {
     options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem | null> {
-    let parentDisclosureLabel: MemoryDisclosureLabel | undefined;
+    let disclosureLabel: MemoryDisclosureLabel = unknownMemoryDisclosureLabel();
 
     if (handle.parentEpisodeId !== undefined) {
       const parent = await this.options.episodicRepository.get(handle.parentEpisodeId);
@@ -717,7 +718,7 @@ export class RetrievalPipeline {
         return null;
       }
 
-      parentDisclosureLabel = memoryDisclosureLabelFromEpisodeAccess(parent);
+      disclosureLabel = memoryDisclosureLabelFromEpisodeAccess(parent);
     }
 
     const adapter = new RawStreamAdapter({
@@ -749,7 +750,7 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
-      ...(parentDisclosureLabel === undefined ? {} : { disclosureLabel: parentDisclosureLabel }),
+      disclosureLabel,
     };
   }
 
@@ -2273,7 +2274,7 @@ function semanticRetrievalToEvidence(
             source_visibility_fraction: node.source_visibility_fraction,
           }
         : {}),
-      ...(node.disclosureLabel === undefined ? {} : { disclosureLabel: node.disclosureLabel }),
+      disclosureLabel: node.disclosureLabel ?? unknownMemoryDisclosureLabel(),
     }),
   );
   const edgeEvidence = [
@@ -2479,7 +2480,7 @@ function streamEntryToEvidence(
       provenance: 1,
       recency: intent.kind === "recent" ? 1 : undefined,
     },
-    ...(options.disclosureLabel === undefined ? {} : { disclosureLabel: options.disclosureLabel }),
+    disclosureLabel: options.disclosureLabel ?? unknownMemoryDisclosureLabel(),
   };
 }
 

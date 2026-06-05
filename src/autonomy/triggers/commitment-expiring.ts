@@ -1,4 +1,8 @@
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -13,8 +17,8 @@ type CommitmentExpiringPayload = {
   directive: string;
   priority: number;
   expires_at: number;
-  active_commitments?: CommitmentRecord[];
-};
+  active_commitments?: Array<CommitmentRecord & ReturnType<typeof memoryDisclosurePayloadFields>>;
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type CommitmentExpiringTriggerOptions = {
   commitmentRepository: CommitmentRepository;
@@ -78,6 +82,7 @@ export function createCommitmentExpiringTrigger(
               directive: commitment.directive,
               priority: commitment.priority,
               expires_at: expiresAt,
+              ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
             },
           };
         })

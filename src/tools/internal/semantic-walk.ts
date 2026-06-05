@@ -12,6 +12,7 @@ import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclos
 import {
   memoryDisclosureLabelMetadata,
   type MemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
 } from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
@@ -31,10 +32,10 @@ const semanticWalkNodeOutputSchema = semanticNodeSchema
   .extend({
     partial_source_visibility: z.boolean().optional(),
     source_visibility_fraction: z.number().min(0).max(1).optional(),
-    disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
+    disclosure_label: memoryDisclosureLabelMetadataSchema,
   });
 const semanticWalkEdgeOutputSchema = semanticEdgeSchema.extend({
-  disclosure_label: memoryDisclosureLabelMetadataSchema.optional(),
+  disclosure_label: memoryDisclosureLabelMetadataSchema,
 });
 
 const semanticWalkOutputSchema = z.object({
@@ -87,9 +88,9 @@ function toSemanticWalkNodeOutput(
     ...(node.source_visibility_fraction === undefined
       ? {}
       : { source_visibility_fraction: node.source_visibility_fraction }),
-    ...(node.disclosureLabel === undefined
-      ? {}
-      : { disclosure_label: memoryDisclosureLabelMetadata(node.disclosureLabel) }),
+    disclosure_label: memoryDisclosureLabelMetadata(
+      node.disclosureLabel ?? unknownMemoryDisclosureLabel(),
+    ),
   };
 }
 
@@ -100,9 +101,9 @@ function toSemanticWalkEdgeOutput(
 
   return {
     ...edgeFields,
-    ...(disclosureLabel === undefined
-      ? {}
-      : { disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel) }),
+    disclosure_label: memoryDisclosureLabelMetadata(
+      disclosureLabel ?? unknownMemoryDisclosureLabel(),
+    ),
   };
 }
 

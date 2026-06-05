@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StreamWatermarkRepository } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
+import { formatAutonomyTriggerContext } from "../../cognition/autonomy-trigger.js";
 
 import { createCommitmentExpiringTrigger } from "./commitment-expiring.js";
 
@@ -58,5 +59,49 @@ describe("commitment expiring trigger", () => {
     });
 
     expect(await trigger.scan()).toEqual([]);
+  });
+
+  it("renders expiring commitment disclosure labels in the autonomy payload", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const alex = harness.entityRepository.resolve("Alex");
+    const dueCommitment = harness.commitmentRepository.add({
+      type: "boundary",
+      directiveFamily: "alex_private_boundary",
+      directive: "Keep Alex planning details scoped to Alex",
+      priority: 10,
+      restrictedAudience: alex,
+      provenance: { kind: "manual" },
+      expiresAt: clock.now() + 10_000,
+    });
+
+    const trigger = createCommitmentExpiringTrigger({
+      commitmentRepository: harness.commitmentRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      clock,
+    });
+
+    const events = await trigger.scan();
+    const turn = trigger.buildTurn(events[0]!);
+    const rendered = formatAutonomyTriggerContext(turn.autonomyTrigger!);
+
+    expect(events[0]?.payload).toMatchObject({
+      commitment_id: dueCommitment.id,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [alex],
+      },
+    });
+    expect(rendered).toContain("disclosure_label");
+    expect(rendered).toContain("relationship_private");
+    expect(rendered).toContain(alex);
   });
 });

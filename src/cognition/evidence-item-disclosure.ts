@@ -1,5 +1,6 @@
 import {
   renderMemoryDisclosureLabelForModel,
+  unknownMemoryDisclosureLabel,
   type EvidenceItem,
   type MemoryDisclosureLabelRenderContext,
 } from "../retrieval/index.js";
@@ -20,11 +21,7 @@ export function evidenceItemDisclosureRenderContext(
 }
 
 export function renderEvidenceItemDisclosureLabel(item: EvidenceItem): string {
-  if (item.disclosureLabel === undefined) {
-    return "";
-  }
-
-  return renderMemoryDisclosureLabelForModel(item.disclosureLabel, {
+  return renderMemoryDisclosureLabelForModel(item.disclosureLabel ?? unknownMemoryDisclosureLabel(), {
     context: evidenceItemDisclosureRenderContext(item),
   });
 }

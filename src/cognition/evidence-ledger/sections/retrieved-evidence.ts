@@ -14,6 +14,7 @@ import {
   addEntry,
   cappedTrustRank,
 } from "../section-buckets.js";
+import { unknownMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import {
   persistenceClassFromProvenance,
   persistenceClassFromStreamIds,
@@ -52,9 +53,10 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
       itemStreamIds,
       context.resolver,
     );
+    const disclosureLabel = item.disclosureLabel ?? unknownMemoryDisclosureLabel();
     const stateMetadata = appendMemoryDisclosureStateMetadata({
       stateMetadata: itemStreamIds.length === 0 ? undefined : { stream_ids: [...itemStreamIds] },
-      disclosureLabel: item.disclosureLabel,
+      disclosureLabel,
     });
     addEntry(
       context.buckets,
@@ -70,7 +72,7 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
         ...(streamIndex === undefined ? {} : { stream_index: streamIndex }),
         state: appendMemoryDisclosureState({
           state: `score=${item.score.toFixed(2)}`,
-          disclosureLabel: item.disclosureLabel,
+          disclosureLabel,
         }),
         state_metadata: stateMetadata,
         taint: "none",

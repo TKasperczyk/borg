@@ -20,11 +20,13 @@ import {
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import {
-  combineMemoryDisclosureLabels,
   computeRetrievalConfidence,
-  memoryDisclosureLabelFromEpisodeAccess,
   type RetrievedEpisode,
 } from "../../retrieval/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+} from "../../memory/common/disclosure-label.js";
 import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
@@ -560,9 +562,15 @@ async function planResolution(
     decisionReason: "confidence_and_fresh_evidence",
   });
 
-  const renderedEvidence = retrieval.episodes.slice(0, 3);
+  const citedEvidence = [strongEvidence];
+  const renderedEvidence = [
+    strongEvidence,
+    ...retrieval.episodes
+      .filter((result) => result.episode.id !== strongEvidence.episode.id)
+      .slice(0, 2),
+  ];
   const sourceDisclosureLabel = combineMemoryDisclosureLabels(
-    renderedEvidence.map((result) => memoryDisclosureLabelFromEpisodeAccess(result.episode)),
+    citedEvidence.map((result) => memoryDisclosureLabelFromEpisodeAccess(result.episode)),
   );
   const evidenceBlock = renderedEvidence
     .map((result) =>
@@ -600,7 +608,7 @@ async function planResolution(
           what_changed: response.growth_marker.what_changed,
           before_description: response.growth_marker.before_description ?? null,
           after_description: response.growth_marker.after_description ?? null,
-          evidence_episode_ids: [strongEvidence.episode.id],
+          evidence_episode_ids: citedEvidence.map((result) => result.episode.id),
           disclosure_label: sourceDisclosureLabel,
           confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, response.growth_marker.confidence),
           source_process: "ruminator",
@@ -622,7 +630,7 @@ async function planResolution(
     action: "resolve",
     question_id: question.id,
     previous: question,
-    resolution_evidence_episode_ids: [strongEvidence.episode.id],
+    resolution_evidence_episode_ids: citedEvidence.map((result) => result.episode.id),
     resolution_evidence_stream_entry_ids: [],
     resolution_disclosure_label: sourceDisclosureLabel,
     resolution_note: response.resolution_note.trim(),

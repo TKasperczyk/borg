@@ -14,7 +14,10 @@ import {
 import type { BuilderSectionContext } from "../builder-context.js";
 import { createSectionBuckets } from "../section-buckets.js";
 import { addEpisodesSection } from "./episodes.js";
-import { addRetrievedRawStreamEvidenceSection } from "./retrieved-evidence.js";
+import {
+  addRetrievedRawStreamEvidenceSection,
+  addRetrievedStructuredEvidenceSection,
+} from "./retrieved-evidence.js";
 
 describe("evidence-ledger episode section", () => {
   it("renders disclosure labels for private recalled episodes", () => {
@@ -124,6 +127,52 @@ describe("evidence-ledger episode section", () => {
         disclosure_class: "relationship_private",
         origin_audience_entity_ids: [alice],
         private_to_entity_ids: [alice],
+      },
+      disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+    });
+  });
+
+  it("fails closed for parentless warm raw-stream evidence without a source label", () => {
+    const streamId = createStreamEntryId();
+    const buckets = createSectionBuckets();
+    const evidence: EvidenceItem = {
+      id: "warm_recall_raw_stream_parentless",
+      source: "warm_recall",
+      text: "Parentless persisted raw stream detail.",
+      provenance: {
+        streamIds: [streamId],
+      },
+      recallIntentId: "warm_recall",
+      matchedTerms: [],
+      score: 0.5,
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+
+    addRetrievedStructuredEvidenceSection({
+      input: {
+        retrievedEvidence: [evidence],
+      },
+      resolver: {
+        currentSessionId: DEFAULT_SESSION_ID,
+        streamEntriesById: new Map(),
+        streamOrderById: new Map(),
+        episodeScopesById: new Map(),
+        episodeSourceStreamIdsById: new Map(),
+      },
+      buckets,
+    } as unknown as BuilderSectionContext);
+
+    const entry = buckets.get("retrieved_memory_evidence")?.entries[0];
+    expect(entry?.state).toContain("disclosure_class=unknown");
+    expect(entry?.state_metadata).toMatchObject({
+      stream_ids: [streamId],
+      disclosure_label: {
+        disclosure_class: "unknown",
+        origin_audience_entity_ids: [],
+        private_to_entity_ids: [],
+        public_to_entity_ids: [],
       },
       disclosure_note: "usable internally; do not disclose to current audience unless authorized",
     });

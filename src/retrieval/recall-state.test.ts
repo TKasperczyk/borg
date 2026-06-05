@@ -445,6 +445,47 @@ describe("retrieval recall_state", () => {
     expect(freshIndex).toBeLessThan(warmRawIndex);
   });
 
+  it("fails closed when rehydrating parentless warm raw-stream handles", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const cachedEntry = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Parentless warm raw stream receipt",
+    });
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles: [
+        createStateHandle({
+          source: "raw_stream",
+          streamIds: [cachedEntry.id],
+        }),
+      ],
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
+    const warm = result.evidence.find(
+      (item) =>
+        item.source === "warm_recall" && item.provenance?.streamIds?.includes(cachedEntry.id),
+    );
+
+    expect(warm).toBeDefined();
+    expect(warm?.text).toContain("Parentless warm raw stream receipt");
+    expect(warm?.disclosureLabel).toEqual({
+      disclosureClass: "unknown",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    });
+  });
+
   it("keeps the fresh duplicate evidence item and reinforces the handle", async () => {
     harness = await createHarness();
     const sessionId = testSessionId();

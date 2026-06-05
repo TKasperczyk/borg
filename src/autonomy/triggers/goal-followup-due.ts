@@ -1,4 +1,8 @@
 import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
+import {
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -16,7 +20,7 @@ export type GoalFollowupDuePayload = {
   last_progress_ts: number | null;
   days_stale: number;
   reason: "deadline" | "stale" | "both";
-};
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type GoalFollowupDueTriggerOptions = {
   goalsRepository: GoalsRepository;
@@ -97,6 +101,7 @@ export function createGoalFollowupDueTrigger(
               last_progress_ts: goal.last_progress_ts,
               days_stale: Math.floor(staleSinceMs / DAY_MS),
               reason,
+              ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
             },
           };
         })

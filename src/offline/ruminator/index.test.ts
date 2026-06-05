@@ -13,6 +13,7 @@ import {
   createSemanticNodeId,
   createStreamEntryId,
 } from "../../util/ids.js";
+import type { RetrievedEpisode } from "../../retrieval/index.js";
 
 import {
   createEpisodeFixture,
@@ -56,6 +57,26 @@ function createRuminatorResponse(input: {
         input,
       },
     ],
+  };
+}
+
+function retrievedEpisode(episode: ReturnType<typeof createEpisodeFixture>, score: number): RetrievedEpisode {
+  return {
+    episode,
+    score,
+    scoreBreakdown: {
+      similarity: score,
+      decayedSalience: score,
+      heat: 0,
+      goalRelevance: 0,
+      valueAlignment: 0,
+      timeRelevance: 0,
+      moodBoost: 0,
+      socialRelevance: 0,
+      entityRelevance: 0,
+      suppressionPenalty: 0,
+    },
+    citationChain: [],
   };
 }
 
@@ -174,6 +195,128 @@ describe("RuminatorProcess", () => {
 
       expect(harness.growthMarkersRepository.list()).toHaveLength(0);
       expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("open");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("persists disclosure from the exact cited strong evidence when it is outside the top rendered hits", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Alex-private evidence resolved the dormant planning question.",
+          growth_marker: {
+            category: "understanding",
+            what_changed: "I understand the private planning resolution.",
+            before_description: "The planning resolution was unclear.",
+            after_description: "Alex-private evidence supplied the answer.",
+            confidence: 0.8,
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ruminator: {
+            resolveConfidenceThreshold: 0.01,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const alex = harness.entityRepository.resolve("Alex");
+      const stalePublicEpisodes = [0, 1, 2].map((index) =>
+        createEpisodeFixture({
+          title: `Public stale planning note ${index}`,
+          narrative: `Public stale planning note ${index}.`,
+          tags: ["planning"],
+          created_at: 1_100_000 + index,
+          updated_at: 1_100_000 + index,
+        }),
+      );
+      const privateStrongEpisode = createEpisodeFixture({
+        title: "Alex private resolution evidence",
+        narrative: "Alex-private evidence gives the actual resolution.",
+        tags: ["planning"],
+        audience_entity_id: alex,
+        shared: false,
+        created_at: 2_500_000,
+        updated_at: 2_500_000,
+      });
+      const question = harness.openQuestionsRepository.add({
+        question: "What resolved the planning uncertainty?",
+        urgency: 0.8,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 2_000_000,
+        provenance: { kind: "manual" },
+      });
+      const ctx = harness.createContext();
+      const plan = await process.plan(
+        {
+          ...ctx,
+          retrievalPipeline: {
+            ...ctx.retrievalPipeline,
+            recallEpisodesForCognition: async () => ({
+              episodes: [
+                ...stalePublicEpisodes.map((episode) => retrievedEpisode(episode, 0.95)),
+                retrievedEpisode(privateStrongEpisode, 0.9),
+              ],
+            }),
+          } as unknown as typeof ctx.retrievalPipeline,
+        },
+        {},
+      );
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect(prompt).toContain("Alex private resolution evidence");
+      expect(plan.items[0]).toMatchObject({
+        action: "resolve",
+        question_id: question.id,
+        resolution_evidence_episode_ids: [privateStrongEpisode.id],
+        resolution_disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+        growth_marker: expect.objectContaining({
+          evidence_episode_ids: [privateStrongEpisode.id],
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [alex],
+            privateToEntityIds: [alex],
+            publicToEntityIds: [],
+          },
+        }),
+      });
+
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        resolution_disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+      });
+      expect(harness.growthMarkersRepository.list()[0]).toMatchObject({
+        disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+      });
     } finally {
       await harness.cleanup();
     }
@@ -1160,11 +1303,12 @@ describe("RuminatorProcess", () => {
         action: "resolve",
         question_id: question.id,
         resolution_evidence_episode_ids: [alexEpisode.id],
-        resolution_disclosure_label: expect.objectContaining({
+        resolution_disclosure_label: {
           disclosureClass: "relationship_private",
-          originAudienceEntityIds: expect.arrayContaining([sam, alex]),
-          privateToEntityIds: expect.arrayContaining([sam, alex]),
-        }),
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
       });
       const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 

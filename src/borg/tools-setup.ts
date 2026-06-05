@@ -2,7 +2,10 @@
 
 import type { Clock } from "../util/clock.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
-import { identityEventMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  identityEventMemoryDisclosureLabel,
+} from "../cognition/disclosure-labels.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -124,11 +127,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createCommitmentsListTool({
-        listCommitments: (context) =>
+        listCommitments: () =>
           options.commitmentRepository.list({
             activeOnly: true,
-            audience: context.audienceEntityId ?? null,
           }),
+        disclosureLabelForCommitment: (commitment) => commitmentMemoryDisclosureLabel(commitment),
       }),
     )
     .register(

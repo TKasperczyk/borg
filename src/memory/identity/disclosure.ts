@@ -1,9 +1,6 @@
-import type { z } from "zod";
-
 import { legacyCommitmentSchema } from "../commitments/index.js";
 import {
-  memoryDisclosureLabelMetadataSchema,
-  memoryDisclosureLabelSchema,
+  memoryDisclosureLabelFromMetadata,
   type MemoryDisclosureLabel,
 } from "../common/disclosure-label.js";
 import { isEpisodeAccessVisible, type Episode, type EpisodeAccessLike } from "../episodic/index.js";
@@ -119,27 +116,8 @@ function parseEntityId(value: unknown): EntityId | null | undefined {
   return undefined;
 }
 
-function memoryDisclosureLabelFromMetadata(
-  label: z.infer<typeof memoryDisclosureLabelMetadataSchema>,
-): MemoryDisclosureLabel {
-  return {
-    disclosureClass: label.disclosure_class,
-    originAudienceEntityIds: label.origin_audience_entity_ids,
-    privateToEntityIds: label.private_to_entity_ids,
-    publicToEntityIds: label.public_to_entity_ids,
-  };
-}
-
 function parseDisclosureLabel(value: unknown): MemoryDisclosureLabel | null {
-  const parsedLabel = memoryDisclosureLabelSchema.safeParse(value);
-  if (parsedLabel.success) {
-    return parsedLabel.data;
-  }
-  const parsedMetadata = memoryDisclosureLabelMetadataSchema.safeParse(value);
-  if (parsedMetadata.success) {
-    return memoryDisclosureLabelFromMetadata(parsedMetadata.data);
-  }
-  return null;
+  return memoryDisclosureLabelFromMetadata(value);
 }
 
 function mergeIdentityEventValueDisclosureSources(

@@ -1,25 +1,25 @@
 import type { BorgRole } from "../memory/commitments/index.js";
-import {
-  MEMORY_DISCLOSURE_CLASSES,
-  publicMemoryDisclosureLabel,
-  relationshipPrivateMemoryDisclosureLabel,
-  selfPrivateMemoryDisclosureLabel,
-  unknownMemoryDisclosureLabel,
-  type MemoryDisclosureClass,
-  type MemoryDisclosureLabel,
-} from "../memory/common/disclosure-label.js";
-import { normalizeEpisodeAccess, type EpisodeAccessLike } from "../memory/episodic/index.js";
+import type { MemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import type { SessionAudienceRole } from "../sessions/index.js";
 import type { EntityId, SessionId } from "../util/ids.js";
 
 export {
   MEMORY_DISCLOSURE_CLASSES,
+  combineDisclosureLabelForEpisodeIds,
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelFromMetadata,
+  memoryDisclosureLabelMetadata,
+  memoryDisclosureLabelMetadataSchema,
+  memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
+  resolveDisclosureLabelsByEpisodeId,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelMetadata,
 } from "../memory/common/disclosure-label.js";
 
 /**
@@ -45,33 +45,6 @@ export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
 ].join("\n");
 
 export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";
-
-const MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK = {
-  public: 0,
-  relationship_private: 1,
-  operator_private: 2,
-  self_private: 3,
-  sensitive: 4,
-  unknown: 5,
-} as const satisfies Record<MemoryDisclosureClass, number>;
-
-export type MemoryDisclosureLabelMetadata = {
-  disclosure_class: MemoryDisclosureClass;
-  origin_audience_entity_ids: EntityId[];
-  private_to_entity_ids: EntityId[];
-  public_to_entity_ids: EntityId[];
-};
-
-export function memoryDisclosureLabelMetadata(
-  label: MemoryDisclosureLabel,
-): MemoryDisclosureLabelMetadata {
-  return {
-    disclosure_class: label.disclosureClass,
-    origin_audience_entity_ids: [...label.originAudienceEntityIds],
-    private_to_entity_ids: [...label.privateToEntityIds],
-    public_to_entity_ids: [...label.publicToEntityIds],
-  };
-}
 
 export function memoryDisclosureInternalUseNote(
   context: MemoryDisclosureLabelRenderContext = "memory",
@@ -106,48 +79,6 @@ export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclos
   return renderMemoryDisclosureLabelForModel(label, { context: "semantic_source" });
 }
 
-type MemoryDisclosureEntityIdListKey =
-  | "originAudienceEntityIds"
-  | "privateToEntityIds"
-  | "publicToEntityIds";
-
-function mergeEntityIds(
-  labels: readonly MemoryDisclosureLabel[],
-  key: MemoryDisclosureEntityIdListKey,
-) {
-  // Canonical sorted order: a disclosure label's entity-id lists are conceptually sets, and
-  // combined labels are persisted as JSON. Sorting makes the merged label deterministic
-  // regardless of the (possibly racing) order the source labels were assembled in.
-  return [...new Set(labels.flatMap((label) => label[key]))].sort();
-}
-
-export function combineMemoryDisclosureLabels(
-  labels: readonly MemoryDisclosureLabel[],
-): MemoryDisclosureLabel {
-  if (labels.length === 0) {
-    return {
-      disclosureClass: "unknown",
-      originAudienceEntityIds: [],
-      privateToEntityIds: [],
-      publicToEntityIds: [],
-    };
-  }
-
-  const disclosureClass = labels.reduce((mostRestrictive, label) => {
-    return MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK[label.disclosureClass] >
-      MEMORY_DISCLOSURE_CLASS_RESTRICTION_RANK[mostRestrictive]
-      ? label.disclosureClass
-      : mostRestrictive;
-  }, "public" as MemoryDisclosureClass);
-
-  return {
-    disclosureClass,
-    originAudienceEntityIds: mergeEntityIds(labels, "originAudienceEntityIds"),
-    privateToEntityIds: mergeEntityIds(labels, "privateToEntityIds"),
-    publicToEntityIds: mergeEntityIds(labels, "publicToEntityIds"),
-  };
-}
-
 export type CognitionRecallContext = {
   readonly reader: "sol";
   readonly currentSessionId: SessionId;
@@ -164,25 +95,3 @@ export type DisclosureContext = {
   readonly participantEntityIds: readonly EntityId[];
   readonly isPrivateSelfCognition: boolean;
 };
-
-export function memoryDisclosureLabelFromEpisodeAccess(
-  input: EpisodeAccessLike,
-): MemoryDisclosureLabel {
-  const normalized = normalizeEpisodeAccess(input);
-  const originAudienceEntityIds = normalized.origin_audience_entity_ids;
-
-  if (originAudienceEntityIds.length === 0 && normalized.shared) {
-    return publicMemoryDisclosureLabel();
-  }
-
-  if (originAudienceEntityIds.length === 0) {
-    return unknownMemoryDisclosureLabel();
-  }
-
-  return {
-    disclosureClass: "relationship_private",
-    originAudienceEntityIds,
-    privateToEntityIds: originAudienceEntityIds,
-    publicToEntityIds: [],
-  };
-}

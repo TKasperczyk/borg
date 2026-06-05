@@ -1,6 +1,7 @@
 import {
   memoryDisclosureInternalUseNote,
   memoryDisclosureLabelMetadata,
+  unknownMemoryDisclosureLabel,
   type EvidenceItem,
 } from "../../retrieval/index.js";
 import {
@@ -89,7 +90,7 @@ export function evidenceItemState(item: EvidenceItem): string {
     item.imageUnavailableReason === undefined
       ? null
       : `image_unavailable=${item.imageUnavailableReason}`,
-    item.disclosureLabel === undefined ? null : renderEvidenceItemDisclosureLabel(item),
+    renderEvidenceItemDisclosureLabel(item),
   ].filter((part): part is string => part !== null);
 
   return parts.join(" ");
@@ -105,9 +106,13 @@ export function evidenceItemProvenanceMetadata(
   item: EvidenceItem,
 ): Record<string, unknown> | undefined {
   const provenance = item.provenance;
+  const disclosureLabel = item.disclosureLabel ?? unknownMemoryDisclosureLabel();
 
   if (provenance === undefined) {
-    return undefined;
+    return {
+      disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel),
+      disclosure_note: evidenceItemDisclosureNote(item),
+    };
   }
 
   return {
@@ -129,13 +134,9 @@ export function evidenceItemProvenanceMetadata(
     ...(provenance.streamIds === undefined || provenance.streamIds.length === 0
       ? {}
       : { stream_ids: provenance.streamIds }),
-    ...(item.disclosureLabel === undefined
+    disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel),
+    ...(disclosureLabel.disclosureClass === "public"
       ? {}
-      : {
-          disclosure_label: memoryDisclosureLabelMetadata(item.disclosureLabel),
-          ...(item.disclosureLabel.disclosureClass === "public"
-            ? {}
-            : { disclosure_note: evidenceItemDisclosureNote(item) }),
-        }),
+      : { disclosure_note: evidenceItemDisclosureNote(item) }),
   };
 }

@@ -27,11 +27,9 @@ import {
   sharedStateMemoryDisclosureLabel,
 } from "../disclosure-labels.js";
 import {
-  combineMemoryDisclosureLabels,
-  memoryDisclosureLabelFromEpisodeAccess,
-  unknownMemoryDisclosureLabel,
+  combineDisclosureLabelForEpisodeIds,
   type MemoryDisclosureLabel,
-} from "../../retrieval/index.js";
+} from "../../memory/common/disclosure-label.js";
 import {
   traceLlmCallError,
   traceLlmCallResponse,
@@ -271,16 +269,11 @@ async function semanticNodeRevisionCandidateSourceInfo(input: {
     }
   }
 
-  const labelsByEpisodeId = new Map(
-    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
-  );
-
   return {
     sharesArtifactSource,
-    disclosureLabel: combineMemoryDisclosureLabels(
-      input.node.source_episode_ids.map(
-        (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
-      ),
+    disclosureLabel: await combineDisclosureLabelForEpisodeIds(
+      input.node.source_episode_ids,
+      async () => episodes,
     ),
   };
 }

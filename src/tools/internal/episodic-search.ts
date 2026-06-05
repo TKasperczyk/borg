@@ -4,6 +4,7 @@ import {
   MEMORY_DISCLOSURE_CLASSES,
   memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelMetadata,
+  renderMemoryDisclosureLabelForModel,
   type RetrievedEpisode,
 } from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
@@ -30,6 +31,7 @@ const episodicSearchOutputSchema = z.object({
       start_time: z.number().finite(),
       end_time: z.number().finite(),
       source_stream_ids: z.array(z.string().min(1)),
+      disclosure: z.string().min(1),
       disclosure_label: z.object({
         disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
         origin_audience_entity_ids: z.array(z.string().min(1)),
@@ -104,31 +106,37 @@ export function createEpisodicSearchTool(
       );
 
       return {
-        episodes: results.map((result) => ({
-          id: result.episode.id,
-          title: result.episode.title,
-          narrative: truncateText(result.episode.narrative, MAX_NARRATIVE_CHARS),
-          participants: result.episode.participants,
-          tags: result.episode.tags,
-          start_time: result.episode.start_time,
-          end_time: result.episode.end_time,
-          source_stream_ids: result.episode.source_stream_ids,
-          disclosure_label: memoryDisclosureLabelMetadata(
-            result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
-          ),
-          score: result.score,
-          score_breakdown: {
-            similarity: result.scoreBreakdown.similarity,
-            decayed_salience: result.scoreBreakdown.decayedSalience,
-            time_relevance: result.scoreBreakdown.timeRelevance,
-          },
-          citation_chain: result.citationChain.slice(0, MAX_CITATIONS_PER_EPISODE).map((entry) => ({
-            id: entry.id,
-            kind: entry.kind,
-            timestamp: entry.timestamp,
-            content: summarizeCitationContent(entry.content),
-          })),
-        })),
+        episodes: results.map((result) => {
+          const disclosureLabel =
+            result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode);
+
+          return {
+            id: result.episode.id,
+            title: result.episode.title,
+            narrative: truncateText(result.episode.narrative, MAX_NARRATIVE_CHARS),
+            participants: result.episode.participants,
+            tags: result.episode.tags,
+            start_time: result.episode.start_time,
+            end_time: result.episode.end_time,
+            source_stream_ids: result.episode.source_stream_ids,
+            disclosure: renderMemoryDisclosureLabelForModel(disclosureLabel),
+            disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel),
+            score: result.score,
+            score_breakdown: {
+              similarity: result.scoreBreakdown.similarity,
+              decayed_salience: result.scoreBreakdown.decayedSalience,
+              time_relevance: result.scoreBreakdown.timeRelevance,
+            },
+            citation_chain: result.citationChain
+              .slice(0, MAX_CITATIONS_PER_EPISODE)
+              .map((entry) => ({
+                id: entry.id,
+                kind: entry.kind,
+                timestamp: entry.timestamp,
+                content: summarizeCitationContent(entry.content),
+              })),
+          };
+        }),
       };
     },
   };

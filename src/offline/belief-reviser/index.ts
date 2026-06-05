@@ -25,9 +25,9 @@ import {
   semanticNodeMemoryDisclosureLabel,
 } from "../../cognition/disclosure-labels.js";
 import {
-  memoryDisclosureLabelFromEpisodeAccess,
+  resolveDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,
-} from "../../retrieval/index.js";
+} from "../../memory/common/disclosure-label.js";
 
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
 import { offlineProcessError } from "../process-errors.js";
@@ -277,14 +277,6 @@ async function episodesForIds(
   );
 
   return episodes;
-}
-
-function episodeDisclosureLabelsById(
-  episodes: readonly Episode[],
-): Map<Episode["id"], MemoryDisclosureLabel> {
-  return new Map(
-    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
-  );
 }
 
 function semanticNodeLlmRecord(
@@ -1269,7 +1261,10 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
       ];
       const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
-      const labelsByEpisodeId = episodeDisclosureLabelsById(targetLocalEvidenceEpisodes);
+      const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
+        evidenceEpisodeIds,
+        async () => targetLocalEvidenceEpisodes,
+      );
 
       return {
         review_id: item.id,
@@ -1296,7 +1291,10 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
     ];
     const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
-    const labelsByEpisodeId = episodeDisclosureLabelsById(targetLocalEvidenceEpisodes);
+    const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
+      evidenceEpisodeIds,
+      async () => targetLocalEvidenceEpisodes,
+    );
 
     return {
       review_id: item.id,

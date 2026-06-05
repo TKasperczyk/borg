@@ -11,9 +11,10 @@ import type { SemanticEdge, SemanticNode } from "../memory/semantic/index.js";
 import type { ActionRecord } from "../memory/actions/index.js";
 import type { GoalRecord, OpenQuestion } from "../memory/self/index.js";
 import {
-  MEMORY_DISCLOSURE_CLASSES,
+  combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelFromMetadata,
   memoryDisclosureLabelMetadata,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
@@ -23,6 +24,8 @@ import {
   type MemoryDisclosureLabel,
 } from "../retrieval/recall-context.js";
 import type { EntityId } from "../util/ids.js";
+
+export { memoryDisclosureLabelFromMetadata };
 
 export function uniqueDisclosureEntityIds(
   entityIds: readonly (EntityId | null | undefined)[],
@@ -122,15 +125,8 @@ async function resolveEpisodeSourceDisclosureLabel(
     return unknownMemoryDisclosureLabel();
   }
 
-  const episodes = await options.episodicRepository.getMany(episodeIds);
-  const labelsByEpisodeId = new Map(
-    episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
-  );
-  return combineMemoryDisclosureLabels(
-    episodeIds.map(
-      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
-    ),
-  );
+  const episodicRepository = options.episodicRepository;
+  return combineDisclosureLabelForEpisodeIds(episodeIds, (ids) => episodicRepository.getMany(ids));
 }
 
 export async function identityEventMemoryDisclosureLabel(
@@ -220,46 +216,6 @@ export function correctionDisclosureEntityIds(refs: Record<string, unknown>): En
   }
 
   return typeof refs.audience_entity_id === "string" ? [refs.audience_entity_id as EntityId] : [];
-}
-
-function isDisclosureClass(value: unknown): value is MemoryDisclosureLabel["disclosureClass"] {
-  return (
-    typeof value === "string" && (MEMORY_DISCLOSURE_CLASSES as readonly string[]).includes(value)
-  );
-}
-
-function metadataEntityIds(value: unknown): EntityId[] | null {
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? ([...new Set(value)] as EntityId[])
-    : null;
-}
-
-export function memoryDisclosureLabelFromMetadata(value: unknown): MemoryDisclosureLabel | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const disclosureClass = record.disclosure_class;
-  const originAudienceEntityIds = metadataEntityIds(record.origin_audience_entity_ids);
-  const privateToEntityIds = metadataEntityIds(record.private_to_entity_ids);
-  const publicToEntityIds = metadataEntityIds(record.public_to_entity_ids);
-
-  if (
-    !isDisclosureClass(disclosureClass) ||
-    originAudienceEntityIds === null ||
-    privateToEntityIds === null ||
-    publicToEntityIds === null
-  ) {
-    return unknownMemoryDisclosureLabel();
-  }
-
-  return {
-    disclosureClass,
-    originAudienceEntityIds,
-    privateToEntityIds,
-    publicToEntityIds,
-  };
 }
 
 export function correctionMemoryDisclosureLabel(

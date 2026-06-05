@@ -1,4 +1,8 @@
 import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
+import {
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -19,7 +23,7 @@ type OpenQuestionDormantPayload = {
   urgency: number;
   last_touched: number;
   related_episodes?: EpisodicSearchHit[];
-};
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type OpenQuestionDormantTriggerOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
@@ -67,6 +71,7 @@ export function createOpenQuestionDormantTrigger(
               question: question.question,
               urgency: question.urgency,
               last_touched: question.last_touched,
+              ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
             },
           };
         })

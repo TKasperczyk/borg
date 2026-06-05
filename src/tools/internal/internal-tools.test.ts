@@ -303,6 +303,7 @@ describe("internal tools", () => {
       const output = result.output as {
         episodes: Array<{
           title: string;
+          disclosure: string;
           disclosure_label: {
             disclosure_class: string;
             private_to_entity_ids: string[];
@@ -314,10 +315,16 @@ describe("internal tools", () => {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [alice],
       });
+      expect(byTitle.get("Alice private planning")?.disclosure).toContain(
+        "disclosure_class=relationship_private",
+      );
       expect(byTitle.get("Bob private planning")?.disclosure_label).toMatchObject({
         disclosure_class: "relationship_private",
         private_to_entity_ids: [bob],
       });
+      expect(byTitle.get("Bob private planning")?.disclosure).toContain(
+        "disclosure_class=relationship_private",
+      );
     } finally {
       await harness.cleanup();
     }
@@ -408,6 +415,18 @@ describe("internal tools", () => {
     expect(result.steps[0]?.node.status).toBe("superseded");
     expect(result.steps[0]?.node.superseded_at).toBe(1_250);
     expect(result.steps[0]?.node).not.toHaveProperty("corrected_by");
+    expect(result.steps[0]?.node.disclosure_label).toEqual({
+      disclosure_class: "unknown",
+      origin_audience_entity_ids: [],
+      private_to_entity_ids: [],
+      public_to_entity_ids: [],
+    });
+    expect(result.steps[0]?.edgePath[0]?.disclosure_label).toEqual({
+      disclosure_class: "unknown",
+      origin_audience_entity_ids: [],
+      private_to_entity_ids: [],
+      public_to_entity_ids: [],
+    });
   });
 
   it("forwards semantic walk as-of to the graph", async () => {
@@ -597,12 +616,15 @@ describe("internal tools", () => {
       );
 
       expect(result.commitments.map((item) => item.id)).toContain(commitment.id);
+      expect(result.commitments[0]?.disclosure_label).toMatchObject({
+        disclosure_class: "unknown",
+      });
     } finally {
       await borg.close();
     }
   });
 
-  it("scopes commitment lists to the invocation audience", async () => {
+  it("lists active commitments globally for cognition with disclosure labels", async () => {
     const harness = await createOfflineTestHarness();
 
     try {
@@ -649,7 +671,7 @@ describe("internal tools", () => {
         (defaultResult.output as { commitments: Array<{ id: string }> }).commitments.map(
           (item) => item.id,
         ),
-      ).toEqual([publicCommitment.id]);
+      ).toEqual([samCommitment.id, alexCommitment.id, publicCommitment.id]);
 
       const samResult = await dispatcher.dispatch({
         toolName: "tool.commitments.list",
@@ -669,7 +691,23 @@ describe("internal tools", () => {
       );
       expect(samIds).toContain(publicCommitment.id);
       expect(samIds).toContain(samCommitment.id);
-      expect(samIds).not.toContain(alexCommitment.id);
+      expect(samIds).toContain(alexCommitment.id);
+      expect(
+        (
+          samResult.output as {
+            commitments: Array<{
+              id: string;
+              disclosure_label: {
+                disclosure_class: string;
+                private_to_entity_ids: string[];
+              };
+            }>;
+          }
+        ).commitments.find((item) => item.id === alexCommitment.id)?.disclosure_label,
+      ).toMatchObject({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [alex],
+      });
     } finally {
       await harness.cleanup();
     }

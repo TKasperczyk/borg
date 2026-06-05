@@ -20,6 +20,15 @@ const PRIVATE_SELF_AND_OTHER: EpisodeAccessLike = {
   origin_audience_entity_ids: [SELF, OTHER],
   shared: false,
 };
+const UNKNOWN_ORIGIN: EpisodeAccessLike = {
+  audience_entity_id: null,
+  origin_audience_entity_ids: [],
+  shared: false,
+};
+const LEGACY_PUBLIC: EpisodeAccessLike = {
+  audience_entity_id: null,
+  origin_audience_entity_ids: [],
+};
 
 describe("resolveViewerCapability", () => {
   it("resolves an absent/under-specified viewer to the restrictive audience scope, never unrestricted", () => {
@@ -70,10 +79,19 @@ describe("isEpisodeVisibleToCapability", () => {
 
   it("audience arm with null id: only public/shared, no private", () => {
     expect(isEpisodeVisibleToCapability(PUBLIC, audience(null))).toBe(true);
+    expect(isEpisodeVisibleToCapability(LEGACY_PUBLIC, audience(null))).toBe(true);
+    expect(isEpisodeVisibleToCapability(UNKNOWN_ORIGIN, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(CONFLICT_SHARED_OTHER, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, audience(null))).toBe(false);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, audience(null))).toBe(false);
+  });
+
+  it("fails closed for unknown-origin consolidated episodes in disclosure reads", () => {
+    expect(isEpisodeVisibleToCapability(UNKNOWN_ORIGIN, audience(SELF))).toBe(false);
+    expect(isEpisodeVisibleToCapability(UNKNOWN_ORIGIN, audience(OTHER))).toBe(false);
+    expect(isEpisodeVisibleToCapability(PUBLIC, audience(SELF))).toBe(true);
+    expect(isEpisodeVisibleToCapability(LEGACY_PUBLIC, audience(SELF))).toBe(true);
   });
 
   it("unrestricted arm: sees everything", () => {

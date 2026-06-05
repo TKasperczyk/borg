@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { StreamWatermarkRepository, streamWatermarkMigrations } from "../../stream/index.js";
+import { formatAutonomyTriggerContext } from "../../cognition/autonomy-trigger.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { autonomyMigrations } from "../migrations.js";
@@ -54,6 +55,13 @@ describe("scheduled wake trigger", () => {
       note: "check in",
       scheduled_at: NOW,
       fire_at: NOW + 60_000,
+      disclosure: expect.stringContaining("disclosure_class=self_private"),
+      disclosure_label: {
+        disclosure_class: "self_private",
+        origin_audience_entity_ids: [],
+        private_to_entity_ids: [],
+        public_to_entity_ids: [],
+      },
     });
 
     // The scheduler seals a fire-watermark on success.
@@ -79,6 +87,7 @@ describe("scheduled wake trigger", () => {
     expect(turn.audience).toBe("self");
     expect(turn.autonomyTrigger?.source_name).toBe("scheduled_wake");
     expect(turn.autonomyTrigger?.payload).toMatchObject({ note: "follow up with Tom" });
+    expect(formatAutonomyTriggerContext(turn.autonomyTrigger!)).toContain("self_private");
     db.close();
   });
 
