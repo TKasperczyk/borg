@@ -38,17 +38,40 @@ rumination/open-question resolution, procedural synthesis, belief revision,
 semantic extraction/review, cross-scope synthesis, action-state memory,
 commitment-reconciliation awareness, internal model tools) -- all recalling
 globally and rendering disclosure labels rather than pre-filtering by audience.
-The retrieval option types are split so cognition cannot carry an audience gate
-(`CognitionRetrievalOptions` has no `audienceEntityId`/`crossAudience`). Two
-`pnpm heuristics:guard` passes fail the build on regression: one if a
-disclosure-search symbol is called from a cognition/offline/autonomy/outbound/
-internal-tool path, the other if a model-facing memory row is serialized without a
-disclosure label. Audience machinery remains for disclosure labeling, ranking,
+The retrieval option types are split so cognition literally cannot carry an
+audience gate: `CognitionRetrievalOptions` (`src/retrieval/pipeline.ts`) has no
+`audienceEntityId`/`crossAudience`, while `DisclosureRetrievalOptions` is the
+only shape that carries them. The naming convention encodes the boundary --
+cognition-recall functions are suffixed `*ForCognition` (global recall),
+audience-filtered disclosure/export functions `*ForDisclosure`. Disclosure
+labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
+(`src/cognition/disclosure-labels.ts`) is the per-record serializer used across
+every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
+merges to the most-restrictive class, fails closed to `unknown`, and never
+demotes a private/unknown source to public. Two `pnpm heuristics:guard` passes
+fail the build on regression: a recall-gate pass (any `*ForDisclosure` callee,
+alias-resolved, called from a cognition/offline/autonomy/outbound/internal-tool
+path) and a label-coverage pass (a model-facing object literal or
+serializer-helper return that emits a private-bearing key without a same-object
+disclosure label). Audience machinery remains for disclosure labeling, ranking,
 public/export search, admin reads, and action/tool/transport permission, not as a
 predicate on what Sol may internally remember. Per the LIVE SYSTEM regime in
 CLAUDE.md, a data reset is allowed after a verified backup, so future schema
 changes may reset and reseed rather than carry every change through a
 data-preserving migration.
+
+A third axis rides alongside recall (global to Sol) and disclosure (contextual
+to the audience): common ground -- what the current audience already knows.
+Being permitted to disclose a memory does not make it shared knowledge. Common
+ground is enforced as a prompt rule, not a data structure -- there is no
+`known_to` store. The always-rendered `borg_memory_disclosure_guidance` block
+(`MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL` in `src/retrieval/recall-context.ts`)
+instructs the model that a recallable or discloseable memory is not common
+ground unless the current audience is in its `origin_audience`, it is
+established as common ground for them, or there is evidence they have seen it;
+for a group audience, `origin_audience` means a memory was shared in that venue,
+not that every present participant saw it. It rides on the already-surfaced
+`origin_audience` provenance, not a separate known-to mechanism.
 
 The scope test is the Opus 5.0 test: if a failure would still occur with a
 model ten times stronger than the current one, the failure probably belongs in
@@ -539,8 +562,11 @@ audience-scoped evidence records. The same bytes can share one payload while
 each upload keeps its own audience, parent turn, source entry, and active state.
 
 Retrieval searches text embeddings of perception payloads, then hydrates
-visible artifacts from SQLite. The vector hit finds candidate bytes; artifact
-hydration decides which source records are active and visible to the audience.
+artifacts from SQLite. The vector hit finds candidate bytes; for cognition,
+hydration recalls active artifacts globally and attaches a disclosure label --
+the audience check applies only on the disclosure path
+(`rehydrateImagePerceptionHandle` gates it behind `mode === "disclosure"`), not
+on cognition recall.
 
 When possible, the finalizer receives the original image bytes again. The
 Evidence Ledger labels retrieved images so the model can connect an attached
@@ -819,8 +845,11 @@ final response (entry point: `src/cognition/evidence-ledger/index.ts`). It
 renders the current message, transcript context, attribution, active
 commitments, discourse state, contradictions, action states, group/channel
 memory, relational slots, raw retrieved Stream evidence, structured memory
-evidence, episodes, semantic graph context, Open Questions, cross-session
-self-activity, prior-session memory, and the Shared State artifact.
+evidence, episodes, semantic graph context, Open Questions, cross-audience shared-state
+recall (other audiences' active shared state, recalled globally for cognition
+and rendered with a `relationship_private` disclosure label), autobiographical
+recall of cross-session self-activity, prior-session memory, and the Shared
+State artifact.
 
 The ledger exists because scattering retrieval results across many prompt
 sections makes grounding hard to audit. The finalizer needs one ordered packet
@@ -878,7 +907,14 @@ shared-state entry is most relevant and what may be disclosed, and it feeds
 ledger rendering and identity-sensitive responses. It is not a predicate that
 hides other relationships' shared state from Sol's cognition or prunes semantic
 recall. Sol can recall a private understanding with one person while talking to
-a group; it simply does not disclose it.
+a group; it simply does not disclose it. Concretely, beyond the current
+audience's Shared State artifact, the turn recalls other audiences' active
+shared-state entries globally for cognition via
+`sharedStateRepository.listRecentEntriesForCognition({ excludeAudienceEntityId:
+currentAudience })`. These render in the Evidence Ledger as a
+`shared_state_recall` band (`session_scope: "global"`) carrying a
+`relationship_private` disclosure label -- recall is global, disclosure is
+contextual.
 
 The model-facing lifecycle has four conceptual states:
 
@@ -1013,7 +1049,7 @@ the emission is committed as the turn result (entry point:
 `src/cognition/generation/turn-post-generation-guard.ts`). They enforce narrow,
 known constraints rather than general semantic correctness.
 
-The Commitment Checker compares a message against active commitments. Critical
+The Commitment Checker (run from `src/cognition/commitments/guard-runner.ts`) compares a message against active commitments. Critical
 commitments can trigger regeneration or suppression. Advisory commitments are
 observed in shadow mode. Compliant refusals and generic mentions are not
 violations.
@@ -1061,7 +1097,10 @@ not interpret natural-language claims.
 These guards are not production semantic policers. They do not decide whether
 ordinary factual claims are well grounded. That responsibility belongs
 upstream: better extraction, retrieval, ledger rendering, prompt copy, and
-model reasoning with visible evidence.
+model reasoning with visible evidence. These emission guards constrain what is
+said at output time; they never gate what Sol may recall, and together with the
+closure-pressure, internal-ID, and safety guards they are the only sanctioned
+production output-policing exception.
 
 ### Persistence, Ingestion, And Reflection
 
@@ -1074,8 +1113,10 @@ Reflection then reads the turn as it actually happened (entry point:
 state, pending attribution, working memory, action state, procedural attempt
 tracking, Open Question effects, and post-turn reflection entries.
 
-After Borg emits, a self-stop classifier checks whether the response committed
-Borg to no further output until substantive content appears. When it does,
+After Borg emits, a deterministic read of the finalizer's `discourse_control`
+emission metadata (with a canonical stop-phrase fallback) -- not an LLM
+classifier -- checks whether the response committed Borg to no further output
+until substantive content appears. When it does,
 Working Memory discourse state is updated from Borg's own response, so later
 turn gates can honor that commitment without turning it into durable memory.
 
@@ -1319,9 +1360,15 @@ ranking boosts into Stream entries, Social Memory, Commitments,
 creator-directive disclosure, Shared State, retrieval ranking, the cross-session
 activity projection, and the Evidence Ledger. They do not make Sol unaware of
 episodes or semantic sources. `isEpisodeAccessVisible`
-(`src/memory/episodic/audience-filter.ts`) and semantic source-visibility
-machinery in `src/retrieval/semantic-retrieval.ts` are disclosure/export/admin
-tools, not cognition recall gates.
+(`src/memory/episodic/audience-filter.ts`) and the disclosure-mode
+source-visibility helpers in `src/retrieval/semantic-retrieval.ts` (e.g.
+`resolveSemanticSourceEpisodeIdsForDisclosure`; the cognition path
+`resolveSemanticContextForCognition` in the same file recalls globally) are
+disclosure/export/admin tools, not cognition recall gates. Disclosure, export,
+and admin episodic reads route through `ViewerCapability`
+(`src/memory/episodic/access.ts`), which has exactly two arms -- `audience` and
+`unrestricted` (reserved for admin/correction/export); `resolveViewerCapability`
+is fail-closed to `audience`, and cognition recall never routes through it.
 
 Group audience scope does not change what Sol may recall. A group turn includes
 participant roster context and constrained relational slots; participant-private
@@ -1369,15 +1416,14 @@ gated on the same creator-in-an-operator-session shape: scoping a commitment to
 another channel (see Commitments) and sending a proactive message into another
 session (see Proactive Outbound). Reading Sol's own recent activity is not a
 crossing into another audience's secrets -- it is autobiographical recall -- so
-the two-key governs its DISCLOSURE, not whether Sol may recall it. By default
-the harness renders cross-session activity into the prompt as disclosable only
-when the current session's audience role is operator and the current sender's
-Borg role is creator, within a recent time window and under a small cap. Any
-other audience or sender sees Sol decline to disclose, not Sol made amnesic. The
-disclosure gate is purely structural -- roles, recency, count -- never a
-judgment about content. Cross-session activity recall is global for cognition;
-the operator/creator two-key remains the correct disclosure authorization, not
-a recall predicate.
+it is recalled globally for cognition (`selectCrossSessionSelfActivity` selects
+by current-session, recency window, and cap only, with no role check) and
+surfaced into the Evidence Ledger as `self_private` memory via
+`selfPrivateMemoryDisclosureLabel()`. Whether and to whom to disclose it is the
+model's judgment under that disclosure label, not a harness-applied
+operator-role/creator-role render gate. The only authorization-gated actions on
+this axis -- scoping a commitment to another channel and sending proactive
+outbound -- remain two-keyed; reading and rendering one's own activity is not.
 
 Each surfaced row is labeled by the speaker, not by the session it happened in.
 In a group session the audience is the room, so labeling an inbound contact by
@@ -1388,9 +1434,9 @@ In the Evidence Ledger the projection is its own section with its own trust
 rank, carried as system-attested metadata rather than citable Stream evidence.
 It tells the model what the entity has been doing without becoming a fact to
 cite. As with everything surfaced this way, whether and how to mention it is the
-model's judgment; the harness only decides that the operator, and only the
-operator, is an audience this activity may be disclosed to. See Audience And
-Disclosure Scoping, Provenance And Citations, and Sessions.
+model's judgment; the harness labels the activity `self_private` and leaves
+whether and to whom to mention it to the model under that label. See Audience
+And Disclosure Scoping, Provenance And Citations, and Sessions.
 
 ## Proactive Outbound
 
@@ -1677,9 +1723,12 @@ turn.
 
 ### Self-Narrator
 
-The Self-Narrator consumes identity-visible episodes and current
-autobiographical state. It produces growth markers, period openings, period
-closures, and period narrative updates.
+The Self-Narrator consumes the full episode history within the current
+autobiographical period -- recall is global to Sol; it does not audience-gate or
+visibility-gate which episodes it reads (`listAll()`, temporal filter only) --
+plus current autobiographical state. It produces growth markers, period
+openings, period closures, and period narrative updates, each carrying a
+disclosure label combined from its source episodes.
 
 It runs offline because autobiographical narration needs temporal distance and
 multiple pieces of evidence. Its purpose is to help Borg maintain a coherent
@@ -1747,7 +1796,10 @@ scope groups. Redundant commitments are superseded onto the LLM-chosen
 survivor while merging structured enforcement, priority, source, and
 reinforcement fields. Genuine conflicts become manual
 `commitment_reconciliation` review items; independent commitments remain
-active without queueing.
+active without queueing. A separate cross-scope pass
+(`groupCrossScopeCommitments`) surfaces redundancy or conflict across different
+audience scopes as awareness-only review items; it never auto-supersedes or
+widens disclosure.
 
 This is distinct from the Creator-Directive Reconciler. Creator directives
 maintain operator authority and disclosure policy; commitment reconciliation
