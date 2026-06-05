@@ -200,7 +200,7 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("persists disclosure from the exact cited strong evidence when it is outside the top rendered hits", async () => {
+  it("persists disclosure from every rendered row when private strong evidence is outside the top hits", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createRuminatorResponse({
@@ -278,10 +278,16 @@ describe("RuminatorProcess", () => {
       const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 
       expect(prompt).toContain("Alex private resolution evidence");
+      expect(prompt).toContain("Public stale planning note 0");
+      expect(prompt).toContain("Public stale planning note 1");
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_evidence_episode_ids: [privateStrongEpisode.id],
+        resolution_evidence_episode_ids: expect.arrayContaining([
+          privateStrongEpisode.id,
+          stalePublicEpisodes[0]!.id,
+          stalePublicEpisodes[1]!.id,
+        ]),
         resolution_disclosure_label: {
           disclosureClass: "relationship_private",
           originAudienceEntityIds: [alex],
@@ -289,7 +295,148 @@ describe("RuminatorProcess", () => {
           publicToEntityIds: [],
         },
         growth_marker: expect.objectContaining({
-          evidence_episode_ids: [privateStrongEpisode.id],
+          evidence_episode_ids: expect.arrayContaining([
+            privateStrongEpisode.id,
+            stalePublicEpisodes[0]!.id,
+            stalePublicEpisodes[1]!.id,
+          ]),
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [alex],
+            privateToEntityIds: [alex],
+            publicToEntityIds: [],
+          },
+        }),
+      });
+
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        resolution_disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+      });
+      expect(harness.growthMarkersRepository.list()[0]).toMatchObject({
+        disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("persists private disclosure when strong public evidence is rendered with private context", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Public and Alex-private evidence resolved the planning question.",
+          growth_marker: {
+            category: "understanding",
+            what_changed: "I understand the mixed-source planning resolution.",
+            before_description: "The planning answer was incomplete.",
+            after_description: "The rendered evidence included the missing private context.",
+            confidence: 0.8,
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ruminator: {
+            resolveConfidenceThreshold: 0.01,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const alex = harness.entityRepository.resolve("Alex");
+      const publicStrongEpisode = createEpisodeFixture({
+        title: "Public strongest planning evidence",
+        narrative: "Public evidence is the highest-scoring fresh answer.",
+        tags: ["planning"],
+        created_at: 2_500_000,
+        updated_at: 2_500_000,
+      });
+      const privateRenderedEpisode = createEpisodeFixture({
+        title: "Alex private rendered planning context",
+        narrative: "Alex-private context is also rendered to the ruminator.",
+        tags: ["planning"],
+        audience_entity_id: alex,
+        shared: false,
+        created_at: 2_400_000,
+        updated_at: 2_400_000,
+      });
+      const publicRenderedEpisode = createEpisodeFixture({
+        title: "Public secondary planning evidence",
+        narrative: "Another public row is rendered as context.",
+        tags: ["planning"],
+        created_at: 2_300_000,
+        updated_at: 2_300_000,
+      });
+      const question = harness.openQuestionsRepository.add({
+        question: "What resolved the mixed planning uncertainty?",
+        urgency: 0.8,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 2_000_000,
+        provenance: { kind: "manual" },
+      });
+      const ctx = harness.createContext();
+      const plan = await process.plan(
+        {
+          ...ctx,
+          retrievalPipeline: {
+            ...ctx.retrievalPipeline,
+            recallEpisodesForCognition: async () => ({
+              episodes: [
+                retrievedEpisode(publicStrongEpisode, 0.95),
+                retrievedEpisode(privateRenderedEpisode, 0.8),
+                retrievedEpisode(publicRenderedEpisode, 0.7),
+              ],
+            }),
+          } as unknown as typeof ctx.retrievalPipeline,
+        },
+        {},
+      );
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect(prompt).toContain("Public strongest planning evidence");
+      expect(prompt).toContain("Alex private rendered planning context");
+      expect(plan.items[0]).toMatchObject({
+        action: "resolve",
+        question_id: question.id,
+        resolution_evidence_episode_ids: expect.arrayContaining([
+          publicStrongEpisode.id,
+          privateRenderedEpisode.id,
+          publicRenderedEpisode.id,
+        ]),
+        resolution_disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alex],
+          privateToEntityIds: [alex],
+          publicToEntityIds: [],
+        },
+        growth_marker: expect.objectContaining({
+          evidence_episode_ids: expect.arrayContaining([
+            publicStrongEpisode.id,
+            privateRenderedEpisode.id,
+            publicRenderedEpisode.id,
+          ]),
           disclosure_label: {
             disclosureClass: "relationship_private",
             originAudienceEntityIds: [alex],
@@ -1302,13 +1449,16 @@ describe("RuminatorProcess", () => {
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_evidence_episode_ids: [alexEpisode.id],
-        resolution_disclosure_label: {
+        resolution_evidence_episode_ids: expect.arrayContaining([
+          alexEpisode.id,
+          samEpisode.id,
+          publicEpisode.id,
+        ]),
+        resolution_disclosure_label: expect.objectContaining({
           disclosureClass: "relationship_private",
-          originAudienceEntityIds: [alex],
-          privateToEntityIds: [alex],
-          publicToEntityIds: [],
-        },
+          originAudienceEntityIds: expect.arrayContaining([sam, alex]),
+          privateToEntityIds: expect.arrayContaining([sam, alex]),
+        }),
       });
       const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 

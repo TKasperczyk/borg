@@ -662,6 +662,64 @@ describe("episodic repository", () => {
     expect(scopedToAlex.map((item) => item.episode.id)).toContain(multiOrigin.id);
   });
 
+  it("fails closed for unknown-origin records across indexed disclosure lanes", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const jordan = "ent_eeeeeeeeeeeeeeee" as NonNullable<Episode["audience_entity_id"]>;
+    const publicEpisode = createEpisode(createEpisodeId(), harness.clock.now(), {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: true,
+      participants: ["Atlas"],
+      tags: ["indexed-public"],
+    });
+    const unknownOrigin = createEpisode(createEpisodeId(), harness.clock.now() + 1_000, {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: false,
+      participants: ["Atlas"],
+      tags: ["indexed-public"],
+    });
+
+    await harness.repo.insert(publicEpisode);
+    await harness.repo.insert(unknownOrigin);
+    harness.repo.updateStats(publicEpisode.id, {
+      retrieval_count: 10,
+      win_rate: 1,
+      last_retrieved: harness.clock.now(),
+    });
+    harness.repo.updateStats(unknownOrigin.id, {
+      retrieval_count: 20,
+      win_rate: 1,
+      last_retrieved: harness.clock.now(),
+    });
+
+    const lanes = [
+      await harness.repo.listRecentForDisclosure({ audienceEntityId: jordan, limit: 10 }),
+      await harness.repo.listHottestForDisclosure({ audienceEntityId: jordan, limit: 10 }),
+      await harness.repo.searchByTimeRangeForDisclosure(
+        { start: harness.clock.now() - 1_000, end: harness.clock.now() + 3_000 },
+        { audienceEntityId: jordan, limit: 10 },
+      ),
+      await harness.repo.searchByParticipantsOrTagsForDisclosure(["Atlas"], {
+        audienceEntityId: jordan,
+        limit: 10,
+      }),
+      await harness.repo.searchByParticipantsOrTagsForDisclosure(["indexed-public"], {
+        audienceEntityId: jordan,
+        limit: 10,
+      }),
+    ];
+
+    for (const lane of lanes) {
+      const ids = lane.map((item) => item.episode.id);
+      expect(ids).toContain(publicEpisode.id);
+      expect(ids).not.toContain(unknownOrigin.id);
+    }
+  });
+
   it("backfills normalized episode indexes from existing Lance rows", async () => {
     const harness = await createHarness();
     closers.push(harness.close);

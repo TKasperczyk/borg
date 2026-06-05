@@ -562,16 +562,30 @@ async function planResolution(
     decisionReason: "confidence_and_fresh_evidence",
   });
 
-  const citedEvidence = [strongEvidence];
   const renderedEvidence = [
     strongEvidence,
     ...retrieval.episodes
       .filter((result) => result.episode.id !== strongEvidence.episode.id)
       .slice(0, 2),
   ];
+  const citedEvidence = renderedEvidence;
   const sourceDisclosureLabel = combineMemoryDisclosureLabels(
     citedEvidence.map((result) => memoryDisclosureLabelFromEpisodeAccess(result.episode)),
   );
+  // Persist cited evidence ids deterministically: the strong (primary) episode first, then the
+  // remaining cited ids deduped and sorted. The prompt below stays in relevance order and the
+  // disclosure label is order-independent; only the stored arrays need canonical ordering so the
+  // persisted resolution/growth marker is stable across runs.
+  const citedEvidenceEpisodeIds = [
+    strongEvidence.episode.id,
+    ...[
+      ...new Set(
+        citedEvidence
+          .map((result) => result.episode.id)
+          .filter((episodeId) => episodeId !== strongEvidence.episode.id),
+      ),
+    ].sort(),
+  ];
   const evidenceBlock = renderedEvidence
     .map((result) =>
       JSON.stringify(
@@ -608,7 +622,7 @@ async function planResolution(
           what_changed: response.growth_marker.what_changed,
           before_description: response.growth_marker.before_description ?? null,
           after_description: response.growth_marker.after_description ?? null,
-          evidence_episode_ids: citedEvidence.map((result) => result.episode.id),
+          evidence_episode_ids: citedEvidenceEpisodeIds,
           disclosure_label: sourceDisclosureLabel,
           confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, response.growth_marker.confidence),
           source_process: "ruminator",
@@ -630,7 +644,7 @@ async function planResolution(
     action: "resolve",
     question_id: question.id,
     previous: question,
-    resolution_evidence_episode_ids: citedEvidence.map((result) => result.episode.id),
+    resolution_evidence_episode_ids: citedEvidenceEpisodeIds,
     resolution_evidence_stream_entry_ids: [],
     resolution_disclosure_label: sourceDisclosureLabel,
     resolution_note: response.resolution_note.trim(),

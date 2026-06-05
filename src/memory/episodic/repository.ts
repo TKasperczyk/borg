@@ -215,7 +215,12 @@ function indexedOriginColumn(alias: string): string {
 }
 
 function indexedPublicOriginSql(alias: string): string {
-  return `(json_array_length(${indexedOriginColumn(alias)}) = 0 AND ${alias}.audience_entity_id IS NULL)`;
+  const originColumn = indexedOriginColumn(alias);
+  return [
+    `(${alias}.shared = 1`,
+    `AND (${originColumn} IS NULL OR json_array_length(${originColumn}) = 0)`,
+    `AND ${alias}.audience_entity_id IS NULL)`,
+  ].join(" ");
 }
 
 function indexedOriginContainsSql(alias: string): string {
