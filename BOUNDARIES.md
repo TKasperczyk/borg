@@ -5,21 +5,24 @@
 This file records the project's **memory/disclosure doctrine** and the v101.1
 **inversion** that brings the code into line with it. The doctrine is the Cardinal Memory
 Rule in `CLAUDE.md` (see it there for the full, authoritative statement): **recall is global
-to Sol; disclosure is contextual to the audience.** The live-turn cognition inversion is
-complete; the same rule now extends to offline mind-maintenance, autonomy, action-state memory,
-and internal model tooling, where implementation is IN PROGRESS in v101.1. A human mind does not
-forget what it knows because the wrong person walked into the room -- it remembers, and chooses
-what to say. Sol works the same way.
+to Sol; disclosure is contextual to the audience.** Both the live-turn cognition inversion and
+the second-order inversion are complete as of v101.1: the same rule now governs offline
+mind-maintenance, autonomy, action-state memory, cross-scope synthesis, internal model tooling,
+semantic review status, and commitment-reconciliation awareness. A structural guard
+(`pnpm heuristics:guard`) keeps the firewall from being reintroduced under a new name. A human
+mind does not forget what it knows because the wrong person walked into the room -- it remembers,
+and chooses what to say. Sol works the same way.
 
 > **Slogan:** "Memory is global to Sol. Disclosure is contextual to the audience."
 
 What this file now protects is the architecture target: broad recall for cognition, plus a
 post-recall disclosure-judgment layer. It used to defend the opposite -- an audience firewall
-that gated what Sol could recall. That firewall-as-cognition design is gone for live-turn
-retrieval and is being removed from second-order cognition in v101.1. Audience machinery that
+that gated what Sol could recall. That firewall-as-cognition design is gone for both live-turn
+retrieval and second-order cognition as of v101.1. Audience machinery that
 remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
 permission, not a predicate on what Sol may internally remember. If you are about to add or
-widen an audience/session gate on *recall*, stop and read.
+widen an audience/session gate on *recall*, stop and read -- the `heuristics:guard` will also
+fail the build if a disclosure-search symbol is called from a cognition path.
 
 A note on the prior decision: this file once recorded a "deliberate architectural decision"
 reached by a 5-design / 3-judge design panel that ranked every firewall-weakening design below
