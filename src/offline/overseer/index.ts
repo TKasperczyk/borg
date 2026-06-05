@@ -10,10 +10,7 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-  semanticEdgeMemoryDisclosureLabel,
-  semanticNodeMemoryDisclosureLabel,
 } from "../../cognition/disclosure-labels.js";
-import { resolveDisclosureLabelsByEpisodeId } from "../../memory/common/disclosure-label.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   semanticEdgeIdSchema,
@@ -27,7 +24,7 @@ import { BudgetExceededError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { episodeEvidencePromptRow } from "../evidence-labels.js";
+import { serializeDisclosureLabeledTargetPayload } from "../disclosure-target-serialization.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -245,77 +242,7 @@ async function buildPrompt(
   ctx: OfflineContext,
   sourceBundle: OverseerSourceBundle,
 ): Promise<string> {
-  const serializedTarget =
-    target.type === "episode"
-      ? {
-          type: target.type,
-          content: episodeEvidencePromptRow(target.content, {
-            participants: target.content.participants,
-            location: target.content.location,
-            start_time: target.content.start_time,
-            end_time: target.content.end_time,
-            source_stream_ids: target.content.source_stream_ids,
-            significance: target.content.significance,
-            tags: target.content.tags,
-            confidence: target.content.confidence,
-            emotional_arc: target.content.emotional_arc,
-          }),
-        }
-      : target.type === "semantic_node"
-        ? await (async () => {
-            const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
-              target.content.source_episode_ids,
-              (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
-            );
-
-            return {
-              type: target.type,
-              content: {
-                id: target.content.id,
-                kind: target.content.kind,
-                label: target.content.label,
-                description: target.content.description,
-                aliases: target.content.aliases,
-                confidence: target.content.confidence,
-                source_episode_ids: target.content.source_episode_ids,
-                archived: target.content.archived,
-                superseded_by: target.content.superseded_by,
-                ...memoryDisclosurePayloadFields(
-                  semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, target.content),
-                ),
-              },
-            };
-          })()
-        : await (async () => {
-            const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
-              target.content.evidence_episode_ids,
-              (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
-            );
-
-            return {
-              type: target.type,
-              content: {
-                id: target.content.id,
-                from_node_id: target.content.from_node_id,
-                to_node_id: target.content.to_node_id,
-                relation: target.content.relation,
-                confidence: target.content.confidence,
-                evidence_episode_ids: target.content.evidence_episode_ids,
-                created_at: target.content.created_at,
-                last_verified_at: target.content.last_verified_at,
-                valid_from: target.content.valid_from,
-                valid_to: target.content.valid_to,
-                invalidated_at: target.content.invalidated_at,
-                invalidated_by_edge_id: target.content.invalidated_by_edge_id,
-                invalidated_by_review_id: target.content.invalidated_by_review_id,
-                invalidated_by_process: target.content.invalidated_by_process,
-                invalidated_reason: target.content.invalidated_reason,
-                ...memoryDisclosurePayloadFields(
-                  semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, target.content),
-                ),
-              },
-            };
-          })();
+  const serializedTarget = await serializeDisclosureLabeledTargetPayload(ctx, target);
 
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",

@@ -173,6 +173,7 @@ describe("internal tools", () => {
     const longNarrative = `${"The team traced the retrieval path and compared the tool payload to the prompt evidence. ".repeat(
       8,
     )}The final sentence should be truncated.`;
+    const citationAudience = createEntityId();
     const episode = createEpisodeFixture({
       title: "Retrieval evidence review",
       narrative: longNarrative,
@@ -180,6 +181,8 @@ describe("internal tools", () => {
       tags: ["retrieval", "tools"],
       start_time: 1_700_000,
       end_time: 1_701_000,
+      audience_entity_id: citationAudience,
+      shared: false,
     });
     const tool = createEpisodicSearchTool({
       searchEpisodes: async (_query, limit, _context) => {
@@ -248,6 +251,11 @@ describe("internal tools", () => {
           id: episode.source_stream_ids[0],
           kind: "user_msg",
           content: "We need the search tool to return evidence, not only ids.",
+          disclosure: expect.stringContaining("disclosure_class=relationship_private"),
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "relationship_private",
+            private_to_entity_ids: [citationAudience],
+          }),
         }),
       ],
     });

@@ -9,7 +9,13 @@ import type {
 } from "../../cognition/tracing/tracer.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
-import { createSemanticNodeId, createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createEpisodeId,
+  createSemanticNodeId,
+  createStreamEntryId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -94,7 +100,11 @@ async function runResolver(harness: OfflineHarness, maxItemsPerPass = 3) {
   return process.run(harness.createContext(), {});
 }
 
-async function insertSource(harness: OfflineHarness, content: string) {
+async function insertSource(
+  harness: OfflineHarness,
+  content: string,
+  episodeOverrides: Partial<Episode> = {},
+) {
   const entry = await harness.streamWriter.append({
     kind: "user_msg",
     content,
@@ -103,6 +113,7 @@ async function insertSource(harness: OfflineHarness, content: string) {
     createEpisodeFixture({
       narrative: content,
       source_stream_ids: [entry.id],
+      ...episodeOverrides,
     }),
   );
 
@@ -207,11 +218,13 @@ async function enqueueSemanticMisattribution(
     descriptionPatch?: string;
     aliasesPatch?: string[];
     sourceEpisodeIdsPatch?: Episode["id"][];
+    sourceEpisodeOverrides?: Partial<Episode>;
   } = {},
 ) {
   const source = await insertSource(
     harness,
     "Ben wrote the deployment script and Alice reviewed it.",
+    options.sourceEpisodeOverrides,
   );
   const node = await harness.semanticNodeRepository.insert(
     createSemanticNodeFixture({
@@ -249,17 +262,21 @@ async function enqueueSemanticMisattribution(
     item,
     nodeId: node.id,
     sourceEntryId: source.entry.id,
+    sourceEpisodeId: source.episode.id,
   };
 }
 
 async function enqueueEpisodeMisattribution(harness: OfflineHarness) {
   const source = await insertSource(harness, "Ben wrote the deployment helper.");
+  const targetAudienceId = createEntityId();
   const episode = await harness.episodicRepository.insert(
     createEpisodeFixture({
       title: "Deployment helper authorship",
       narrative: "Alice wrote the deployment helper.",
       participants: ["Alice"],
       source_stream_ids: [source.entry.id],
+      audience_entity_id: targetAudienceId,
+      shared: false,
     }),
   );
   const patch = {
@@ -286,6 +303,7 @@ async function enqueueEpisodeMisattribution(harness: OfflineHarness) {
   return {
     item,
     episodeId: episode.id,
+    targetAudienceId,
     sourceEntryId: source.entry.id,
   };
 }
@@ -358,9 +376,14 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
-    const { item, nodeId, sourceEntryId } = await enqueueSemanticMisattribution(harness, {
-      descriptionPatch: "Ben wrote the deployment script.",
-    });
+    const { item, nodeId, sourceEntryId, sourceEpisodeId } =
+      await enqueueSemanticMisattribution(harness, {
+        descriptionPatch: "Ben wrote the deployment script.",
+        sourceEpisodeOverrides: {
+          audience_entity_id: createEntityId(),
+          shared: false,
+        },
+      });
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
@@ -372,6 +395,27 @@ describe("review resolver process", () => {
     const result = await runResolver(harness);
     const resolved = harness.reviewQueueRepository.get(item.id);
     const node = await harness.semanticNodeRepository.get(nodeId);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+        refs?: {
+          overseer_flag?: unknown;
+        };
+      };
+      target?: {
+        content?: {
+          disclosure?: string;
+          source_episode_ids?: string[];
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+      source_bundle?: {
+        overseer_flag?: {
+          source_episode_ids?: string[];
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+    };
 
     expect(result.errors).toEqual([]);
     expect(resolved).toMatchObject({
@@ -387,6 +431,29 @@ describe("review resolver process", () => {
       corrected_by: sourceEntryId,
       description: "Alice wrote the deployment script.",
     });
+    expect(promptPayload.target).toMatchObject({
+      content: {
+        source_episode_ids: [sourceEpisodeId],
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+        },
+      },
+    });
+    expect(promptPayload.target?.content?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(promptPayload.source_bundle?.overseer_flag).toMatchObject({
+      source_episode_ids: [sourceEpisodeId],
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+      },
+    });
+    expect(promptPayload.review).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+      },
+    });
+    expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
     expect(
       tracer.events.find((event) => event.event === "semantic_node.status.transitioned"),
     ).toMatchObject({
@@ -462,6 +529,12 @@ describe("review resolver process", () => {
     const storedWinner = await harness.semanticNodeRepository.get(winner.id);
     const storedLoser = await harness.semanticNodeRepository.get(loser.id);
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const promptPayload = JSON.parse(prompt) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+        refs?: { overseer_flag?: unknown };
+      };
+    };
 
     expect(result.errors).toEqual([]);
     expect(result.candidate_stats).toMatchObject({
@@ -482,6 +555,148 @@ describe("review resolver process", () => {
     expect(prompt).toContain("Do not populate stream citations");
     expect(prompt).toContain('"disclosure_label"');
     expect(prompt).toContain('"disclosure_class": "public"');
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "public",
+    });
+    expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
+  });
+
+  it("fails closed to unknown labels for review and overseer flags without source episodes", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "Ben wrote the deployment script.");
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Deployment script authorship",
+        description: "Alice wrote the deployment script.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "misattribution",
+      reason: "The node attributes the deployment script to the wrong actor.",
+      refs: {
+        target_type: "semantic_node",
+        target_id: node.id,
+        patch: {
+          description: "Ben wrote the deployment script.",
+        },
+        evidence_stream_ids: [source.entry.id],
+        overseer_flag: {
+          kind: "misattribution",
+          flag_kind: "misattribution",
+          reason: "The node attributes the deployment script to the wrong actor.",
+          confidence: 0.9,
+          patch: {
+            description: "Ben wrote the deployment script.",
+          },
+          source_assessment: "supports_flag",
+          cited_stream_ids: [source.entry.id],
+          quoted_span: "deployment script",
+          audience_entities: [],
+          source_stream_ids: [source.entry.id],
+        },
+      },
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "dismiss_false_positive",
+        reason: "The supplied source does not require a repair.",
+        cited_stream_ids: [],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+        refs?: { overseer_flag?: unknown };
+      };
+      source_bundle?: {
+        overseer_flag?: {
+          source_episode_ids?: string[];
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+    };
+
+    expect(result.errors).toEqual([]);
+    expect(resolved?.resolution).toBe("dismiss");
+    expect(promptPayload.source_bundle?.overseer_flag?.source_episode_ids).toBeUndefined();
+    expect(promptPayload.source_bundle?.overseer_flag?.disclosure_label).toMatchObject({
+      disclosure_class: "unknown",
+    });
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "unknown",
+    });
+    expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
+  });
+
+  it("fails closed to unknown labels for vector-duplicate review rows without source labels", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const missingEpisodeId = createEpisodeId();
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas platform",
+        description: "Atlas is the deployment service.",
+        source_episode_ids: [missingEpisodeId],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Deployment platform",
+        description: "Deployment platform refers to Atlas.",
+        source_episode_ids: [missingEpisodeId],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "duplicate",
+      reason: "Vector-only semantic merge candidate with similarity 0.910",
+      refs: {
+        node_ids: [first.id, second.id],
+        node_labels: [first.label, second.label],
+        duplicate_subtype: "vector_only_merge_candidate",
+        vector_similarity: 0.91,
+        source_overlap: {
+          candidate_source_episode_ids: [missingEpisodeId],
+          matched_source_episode_ids: [missingEpisodeId],
+          overlapping_source_episode_ids: [missingEpisodeId],
+          overlap_count: 1,
+        },
+      },
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "dismiss_false_positive",
+        reason: "The supplied node records are not compatible duplicates.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+        refs?: { overseer_flag?: unknown };
+      };
+    };
+
+    expect(result.errors).toEqual([]);
+    expect(resolved?.resolution).toBe("dismiss");
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "unknown",
+    });
+    expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
   });
 
   it("dismisses vector-only duplicate false positives without stream citations", async () => {
@@ -601,6 +816,12 @@ describe("review resolver process", () => {
     const storedWinner = await harness.semanticNodeRepository.get(winner.id);
     const storedLoser = await harness.semanticNodeRepository.get(loser.id);
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const promptPayload = JSON.parse(prompt) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+        refs?: { overseer_flag?: unknown };
+      };
+    };
 
     expect(result.errors).toEqual([]);
     expect(resolved).toMatchObject({
@@ -617,6 +838,10 @@ describe("review resolver process", () => {
     expect(prompt).toContain("Atlas launch plan replaced");
     expect(prompt).toContain('"disclosure_label"');
     expect(prompt).toContain('"disclosure_class": "public"');
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "public",
+    });
+    expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
   });
 
   it("keeps invalid semantic-pair winners out of the handler and marks needs_manual", async () => {
@@ -1326,7 +1551,8 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
-    const { item, episodeId, sourceEntryId } = await enqueueEpisodeMisattribution(harness);
+    const { item, episodeId, targetAudienceId, sourceEntryId } =
+      await enqueueEpisodeMisattribution(harness);
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
@@ -1338,9 +1564,146 @@ describe("review resolver process", () => {
     await runResolver(harness);
     const resolved = harness.reviewQueueRepository.get(item.id);
     const episode = await harness.episodicRepository.get(episodeId);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      review?: {
+        disclosure_label?: { disclosure_class?: string };
+      };
+      target?: {
+        content?: {
+          id?: string;
+          narrative?: string;
+          disclosure?: string;
+          disclosure_label?: {
+            disclosure_class?: string;
+            private_to_entity_ids?: string[];
+          };
+        };
+      };
+      source_bundle?: {
+        overseer_flag?: {
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+    };
 
     expect(resolved?.resolution).toBe("accept");
     expect(episode?.participants).toEqual(["Ben"]);
+    expect(promptPayload.target?.content).toMatchObject({
+      id: episodeId,
+      narrative: "Alice wrote the deployment helper.",
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [targetAudienceId],
+      }),
+    });
+    expect(promptPayload.target?.content?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(promptPayload.target?.content?.disclosure_label?.disclosure_class).not.toBe("public");
+    expect(promptPayload.source_bundle?.overseer_flag?.disclosure_label).toBeDefined();
+    expect(promptPayload.review?.disclosure_label).toBeDefined();
+  });
+
+  it("labels semantic-edge targets and overseer flags in the generic resolver prompt", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(
+      harness,
+      "The Atlas migration dependency was only valid during the rollout window.",
+      {
+        audience_entity_id: createEntityId(),
+        shared: false,
+      },
+    );
+    const from = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas migration",
+        description: "Atlas migration planning is active.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const to = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Rollout window",
+        description: "The rollout window constrained Atlas migration work.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: from.id,
+      to_node_id: to.id,
+      relation: "supports",
+      confidence: 0.72,
+      evidence_episode_ids: [source.episode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "temporal_drift",
+      reason: "Semantic edge temporal validity needs review.",
+      refs: {
+        target_type: "semantic_edge",
+        target_kind: "semantic_edge",
+        target_id: edge.id,
+        suggested_valid_to: 1_010_000,
+        reason: "The dependency has expired.",
+        overseer_flag: overseerFlag({
+          kind: "temporal_drift",
+          reason: "Semantic edge temporal validity needs review.",
+          sourceEntryId: source.entry.id,
+          sourceEpisodeId: source.episode.id,
+        }),
+      },
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "dismiss_false_positive",
+        reason: "The supplied edge can remain active.",
+        cited_stream_ids: [],
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      target?: {
+        content?: {
+          disclosure?: string;
+          evidence_episode_ids?: string[];
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+      source_bundle?: {
+        overseer_flag?: {
+          source_episode_ids?: string[];
+          disclosure_label?: { disclosure_class?: string };
+        };
+      };
+    };
+
+    expect(result.errors).toEqual([]);
+    expect(resolved?.resolution).toBe("dismiss");
+    expect(promptPayload.target).toMatchObject({
+      content: {
+        evidence_episode_ids: [source.episode.id],
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+        },
+      },
+    });
+    expect(promptPayload.target?.content?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(promptPayload.source_bundle?.overseer_flag).toMatchObject({
+      source_episode_ids: [source.episode.id],
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+      },
+    });
   });
 
   it("fails open and emits degraded when the LLM call fails", async () => {

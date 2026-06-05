@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import {
   MEMORY_DISCLOSURE_CLASSES,
   memoryDisclosureLabelFromEpisodeAccess,
@@ -50,6 +51,13 @@ const episodicSearchOutputSchema = z.object({
           kind: z.string().min(1),
           timestamp: z.number().finite(),
           content: z.string(),
+          disclosure: z.string().min(1),
+          disclosure_label: z.object({
+            disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
+            origin_audience_entity_ids: z.array(z.string().min(1)),
+            private_to_entity_ids: z.array(z.string().min(1)),
+            public_to_entity_ids: z.array(z.string().min(1)),
+          }),
         }),
       ),
     }),
@@ -134,6 +142,7 @@ export function createEpisodicSearchTool(
                 kind: entry.kind,
                 timestamp: entry.timestamp,
                 content: summarizeCitationContent(entry.content),
+                ...memoryDisclosurePayloadFields(disclosureLabel),
               })),
           };
         }),

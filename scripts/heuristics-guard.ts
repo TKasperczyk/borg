@@ -148,6 +148,13 @@ const knownSerializerHelperNames = new Set([
   "directivePreview",
   "toSkillToolOutput",
 ]);
+const recordCopyCalleeNames = new Set(["serializableRecord"]);
+const fallbackDisclosureRecordCopyCalleeNames = new Set(["serializableRecordWithFallbackDisclosure"]);
+const sharedStateTextSerializerFunctionNames = new Set([
+  "toSharedStatePromptSummaryEntry",
+  "toSharedStatePromptSummarySupersededEntry",
+  "compactSharedStateEntryForPrompt",
+]);
 
 type LabelCoverageAllowlistEntry = {
   name: string;
@@ -580,6 +587,84 @@ function objectLiteralHasDisclosureFields(node: ts.ObjectLiteralExpression): boo
   );
 }
 
+function isSharedStateTextBearingObject(node: ts.ObjectLiteralExpression): boolean {
+  const functionName = enclosingFunctionName(node);
+
+  if (
+    functionName !== undefined &&
+    sharedStateTextSerializerFunctionNames.has(functionName)
+  ) {
+    return true;
+  }
+
+  const names = objectLiteralPropertyNames(node);
+  return (
+    names.has("state_key") ||
+    names.has("canonicalizes") ||
+    names.has("last_updated_stream_entry_id")
+  );
+}
+
+function unwrapExpression(node: ts.Expression): ts.Expression {
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
+    return unwrapExpression(node.expression);
+  }
+
+  return node;
+}
+
+function isAllowedRecordCopyInnerExpression(node: ts.Expression): boolean {
+  const inner = unwrapExpression(node);
+
+  if (ts.isObjectLiteralExpression(inner)) {
+    return true;
+  }
+
+  if (!ts.isCallExpression(inner)) {
+    return false;
+  }
+
+  const calleeName = expressionSymbolName(inner.expression);
+  return (
+    fallbackDisclosureRecordCopyCalleeNames.has(calleeName ?? "") ||
+    isSerializerHelperName(calleeName)
+  );
+}
+
+function isRawRecordCopyPassthroughExpression(node: ts.Expression): boolean {
+  const expression = unwrapExpression(node);
+
+  if (!ts.isCallExpression(expression)) {
+    return false;
+  }
+
+  const calleeName = expressionSymbolName(expression.expression);
+
+  if (recordCopyCalleeNames.has(calleeName ?? "")) {
+    const inner = expression.arguments[0];
+    return inner === undefined || !isAllowedRecordCopyInnerExpression(inner);
+  }
+
+  if (calleeName === "map") {
+    return expression.arguments.some((argument) => {
+      const unwrappedArgument = unwrapExpression(argument);
+
+      return (
+        ts.isArrowFunction(unwrappedArgument) &&
+        !ts.isBlock(unwrappedArgument.body) &&
+        isRawRecordCopyPassthroughExpression(unwrappedArgument.body)
+      );
+    });
+  }
+
+  return false;
+}
+
 function privateDynamicFields(node: ts.ObjectLiteralExpression): string[] {
   const fields: string[] = [];
 
@@ -594,11 +679,31 @@ function privateDynamicFields(node: ts.ObjectLiteralExpression): string[] {
       ) {
         fields.push(name);
       }
+
+      if (
+        name === "text" &&
+        isSharedStateTextBearingObject(node) &&
+        !isStaticPromptLiteral(property.initializer)
+      ) {
+        fields.push(name);
+      }
+
+      if (name !== undefined && isRawRecordCopyPassthroughExpression(property.initializer)) {
+        fields.push(name);
+      }
     }
 
     if (
       ts.isShorthandPropertyAssignment(property) &&
       privateBearingModelFieldNames.has(property.name.text)
+    ) {
+      fields.push(property.name.text);
+    }
+
+    if (
+      ts.isShorthandPropertyAssignment(property) &&
+      property.name.text === "text" &&
+      isSharedStateTextBearingObject(node)
     ) {
       fields.push(property.name.text);
     }

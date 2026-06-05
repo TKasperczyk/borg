@@ -2267,14 +2267,33 @@ describe("compileSharedStateArtifact", () => {
     expect(context.promptVisibleLedger).toContain("third compile turn");
   });
 
-  it("sends a summarized previous artifact instead of the full artifact JSON", async () => {
-    repository.upsert(audience, [
+  it("sends a labeled summarized previous artifact instead of the full artifact JSON", async () => {
+    const initial = repository.upsert(audience, [
       {
         type: "add",
-        state_key: "decision.live",
+        state_key: "decision.live.old",
         kind: "live",
-        text: "Live shared-state decision",
+        text: "Old live shared-state decision",
+        owner_entity_id: alice,
         provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const oldEntryId = initial?.entries[0]?.id;
+
+    expect(oldEntryId).toBeDefined();
+
+    repository.upsert(audience, [
+      {
+        type: "supersede",
+        id: oldEntryId!,
+        replacement: {
+          state_key: "decision.live",
+          kind: "live",
+          text: "Live shared-state decision",
+          owner_entity_id: alice,
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+        last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
       },
     ]);
     const llmClient = new FakeLLMClient({
@@ -2287,23 +2306,59 @@ describe("compileSharedStateArtifact", () => {
       previous_artifact?: unknown;
       previous_artifact_summary?: {
         active_entries?: {
-          live?: Array<{ text: string }>;
+          live?: Array<{
+            text: string;
+            disclosure?: string;
+            disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+          }>;
         };
-        active_entries_by_state_key?: Record<string, Array<{ text: string }>>;
+        active_entries_by_state_key?: Record<
+          string,
+          Array<{
+            text: string;
+            disclosure?: string;
+            disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+          }>
+        >;
+        recent_superseded?: Array<{
+          text: string;
+          disclosure?: string;
+          disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+        }>;
       };
     };
+    const activeSummary = prompt.previous_artifact_summary?.active_entries?.live?.[0];
+    const supersededSummary = prompt.previous_artifact_summary?.recent_superseded?.[0];
 
     expect(prompt.previous_artifact).toBeUndefined();
     expect(prompt.previous_artifact_summary?.active_entries?.live).toEqual([
       expect.objectContaining({
         state_key: "decision.live",
         text: "Live shared-state decision",
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: expect.arrayContaining([audience, alice]),
+        }),
       }),
     ]);
+    expect(activeSummary?.disclosure).toContain("disclosure_class=relationship_private");
+    expect(activeSummary?.disclosure_label?.disclosure_class).not.toBe("public");
+    expect(supersededSummary).toMatchObject({
+      text: "Old live shared-state decision",
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: expect.arrayContaining([audience, alice]),
+      }),
+    });
+    expect(supersededSummary?.disclosure).toContain("disclosure_class=relationship_private");
+    expect(supersededSummary?.disclosure_label?.disclosure_class).not.toBe("public");
     expect(prompt.previous_artifact_summary?.active_entries_by_state_key).toMatchObject({
       "decision.live": [
         expect.objectContaining({
           text: "Live shared-state decision",
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "relationship_private",
+          }),
         }),
       ],
     });

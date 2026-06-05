@@ -5,6 +5,10 @@ import {
   type SharedStateEntry,
   type SharedStateEntryKind,
 } from "../../memory/decision-artifacts/index.js";
+import {
+  memoryDisclosurePayloadFields,
+  sharedStateMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
 import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
   activeSharedStateArtifactEntries,
@@ -45,10 +49,14 @@ export type SharedStatePromptSummaryOptions = {
   maxEntryTextTokens?: number;
 };
 
+type MemoryDisclosurePromptFields = ReturnType<typeof memoryDisclosurePayloadFields>;
+
 export type SharedStatePromptSummaryEntry = {
   id: SharedStateEntry["id"];
   state_key: SharedStateEntry["state_key"];
   text: string;
+  disclosure: MemoryDisclosurePromptFields["disclosure"];
+  disclosure_label: MemoryDisclosurePromptFields["disclosure_label"];
   owner_entity_id?: NonNullable<SharedStateEntry["owner_entity_id"]>;
   last_updated_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
   canonicalizes_ids_count: number;
@@ -57,6 +65,8 @@ export type SharedStatePromptSummaryEntry = {
 export type SharedStatePromptSummarySupersededEntry = {
   id: SharedStateEntry["id"];
   text: string;
+  disclosure: MemoryDisclosurePromptFields["disclosure"];
+  disclosure_label: MemoryDisclosurePromptFields["disclosure_label"];
   superseded_by_id: NonNullable<SharedStateEntry["superseded_by_id"]>;
 };
 
@@ -196,6 +206,7 @@ function toSharedStatePromptSummaryEntry(
     id: entry.id,
     state_key: entry.state_key,
     text,
+    ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     ...(entry.owner_entity_id === null ? {} : { owner_entity_id: entry.owner_entity_id }),
     last_updated_stream_entry_id: lastUpdatedStreamEntryId(entry),
     canonicalizes_ids_count: sharedStateCanonicalizesIdCount(entry),
@@ -212,6 +223,7 @@ function toSharedStatePromptSummarySupersededEntry(
   return {
     id: entry.id,
     text: entry.text,
+    ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     superseded_by_id: entry.superseded_by_id,
   };
 }

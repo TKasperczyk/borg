@@ -887,8 +887,12 @@ describe("ActionStateExtractor", () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const agentStreamEntryId = createStreamEntryId();
     const previousStreamEntryId = createStreamEntryId();
+    const sharedAudience = createEntityId();
+    const sharedOwner = createEntityId();
     const sharedStateEntry = makeSharedStateEntry({
       text: "Mom's medication incident has been logged for the family care thread.",
+      audience_entity_id: sharedAudience,
+      owner_entity_id: sharedOwner,
       last_updated_stream_entry_ids: [currentUserStreamEntryId],
       provenance_stream_entry_ids: [currentUserStreamEntryId],
     });
@@ -971,7 +975,32 @@ describe("ActionStateExtractor", () => {
         actions_closed_by_borg_self_performance: 1,
       }),
     });
-    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(sharedStateEntry.text);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      post_turn_self_performance?: {
+        current_turn_shared_state_entries?: Array<{
+          text?: string;
+          disclosure?: string;
+          disclosure_label?: {
+            disclosure_class?: string;
+            private_to_entity_ids?: string[];
+          };
+        }>;
+      };
+    };
+    const promptSharedStateEntry =
+      promptPayload.post_turn_self_performance?.current_turn_shared_state_entries?.[0];
+
+    expect(promptSharedStateEntry).toMatchObject({
+      text: sharedStateEntry.text,
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: expect.arrayContaining([sharedAudience, sharedOwner]),
+      }),
+    });
+    expect(promptSharedStateEntry?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(promptSharedStateEntry?.disclosure_label?.disclosure_class).not.toBe("public");
   });
 
   it("does not close a Borg self-performance action when the extractor finds no structural evidence", async () => {

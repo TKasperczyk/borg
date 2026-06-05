@@ -501,4 +501,152 @@ describe("heuristics guard", () => {
       rmSync(fixturePath, { force: true });
     }
   }, 30_000);
+
+  it("fails non-labeling raw record-copy passthroughs in model-facing payloads", async () => {
+    const fixturePath = join(repoRoot, "src/offline/raw-record-label-coverage-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        "function serializableRecord(value: unknown): unknown {",
+        "  return value;",
+        "}",
+        "export function buildTargetPrompt(loaded: { target: unknown }) {",
+        "  return JSON.stringify({",
+        "    target: serializableRecord(loaded.target),",
+        "  });",
+        "}",
+        "export function buildReviewPrompt(item: unknown, payload: unknown) {",
+        "  return JSON.stringify({",
+        "    review: serializableRecord(item),",
+        "    overseer_flag: serializableRecord(payload),",
+        "  });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await runHeuristicsGuardScript();
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("model-facing memory serializers missing disclosure labels");
+      expect(result.stderr).toContain("raw-record-label-coverage-fixture.ts");
+      expect(result.stderr).toContain("target");
+      expect(result.stderr).toContain("review");
+      expect(result.stderr).toContain("overseer_flag");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
+
+  it("allows labeled serializers, inline labeled objects, fallback record copies, and live-turn text", async () => {
+    const fixturePath = join(repoRoot, "src/offline/label-coverage-negative-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        "declare function serializableRecord(value: unknown): unknown;",
+        "declare function serializableRecordWithFallbackDisclosure(value: unknown): unknown;",
+        "declare function semanticNodePromptPayload(node: unknown, labels: unknown): unknown;",
+        "declare function memoryDisclosurePayloadFields(label: unknown): Record<string, unknown>;",
+        "declare function sharedStateMemoryDisclosureLabel(entry: unknown): unknown;",
+        "export function buildNodePrompt(nodes: unknown[], labels: unknown) {",
+        "  return JSON.stringify({",
+        "    nodes: nodes.map((node) => serializableRecord(semanticNodePromptPayload(node, labels))),",
+        "  });",
+        "}",
+        "export function buildInlinePrompt(id: string, source_episode_ids: string[], label: unknown) {",
+        "  return JSON.stringify({",
+        "    row: serializableRecord({",
+        "      id,",
+        "      source_episode_ids,",
+        "      ...memoryDisclosurePayloadFields(label),",
+        "    }),",
+        "  });",
+        "}",
+        "export function buildFallbackPrompt(input: { target: unknown }) {",
+        "  return JSON.stringify({",
+        "    target: serializableRecordWithFallbackDisclosure(input.target),",
+        "  });",
+        "}",
+        "export function buildLiveTurnPrompt(text: string, responseText: string, stream_entry_id: string) {",
+        "  return JSON.stringify({",
+        "    current_user_turn: { stream_entry_id, text },",
+        "    assistant_response: { stream_entry_id, text: responseText },",
+        "  });",
+        "}",
+        "export function toSharedStatePromptSummaryEntry(entry: {",
+        "  id: string;",
+        "  state_key: string;",
+        "  text: string;",
+        "}) {",
+        "  return {",
+        "    id: entry.id,",
+        "    state_key: entry.state_key,",
+        "    text: entry.text,",
+        "    canonicalizes_ids_count: 1,",
+        "    ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),",
+        "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await runHeuristicsGuardScript();
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
+
+  it("fails unlabeled shared-state text rows in prompt serializers", async () => {
+    const fixturePath = join(repoRoot, "src/cognition/shared-state-label-coverage-fixture.ts");
+    writeFileSync(
+      fixturePath,
+      [
+        "export function toSharedStatePromptSummaryEntry(entry: {",
+        "  id: string;",
+        "  state_key: string;",
+        "  text: string;",
+        "}) {",
+        "  return {",
+        "    id: entry.id,",
+        "    state_key: entry.state_key,",
+        "    text: entry.text,",
+        "    canonicalizes_ids_count: 1,",
+        "  };",
+        "}",
+        "export function compactSharedStateEntryForPrompt(entry: {",
+        "  id: string;",
+        "  kind: string;",
+        "  text: string;",
+        "  canonicalizes: unknown;",
+        "}) {",
+        "  return {",
+        "    id: entry.id,",
+        "    kind: entry.kind,",
+        "    text: entry.text,",
+        "    canonicalizes: entry.canonicalizes,",
+        "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    try {
+      const result = await runHeuristicsGuardScript();
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("model-facing memory serializers missing disclosure labels");
+      expect(result.stderr).toContain("shared-state-label-coverage-fixture.ts");
+      expect(result.stderr).toContain("text");
+    } finally {
+      rmSync(fixturePath, { force: true });
+    }
+  }, 30_000);
 });

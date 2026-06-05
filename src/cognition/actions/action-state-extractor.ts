@@ -41,6 +41,7 @@ import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import {
   actionMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
+  sharedStateMemoryDisclosureLabel,
 } from "../disclosure-labels.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
@@ -246,6 +247,7 @@ function compactSharedStateEntryForPrompt(entry: SharedStateEntry): Record<strin
     owner_entity_id: entry.owner_entity_id,
     last_updated_stream_entry_ids: entry.last_updated_stream_entry_ids,
     canonicalizes: entry.canonicalizes,
+    ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
   };
 }
 

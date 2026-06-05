@@ -11,6 +11,7 @@ import {
   semanticNodeMemoryDisclosureLabel,
 } from "../../cognition/disclosure-labels.js";
 import {
+  combineMemoryDisclosureLabels,
   resolveDisclosureLabelsByEpisodeId,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -28,6 +29,7 @@ import {
   type ReviewQueueItem,
   type ReviewResolution,
   type SemanticNodeCorrectionRef,
+  type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { markSemanticSuperseded } from "../../memory/lifecycle-ops/index.js";
@@ -40,8 +42,13 @@ import { positiveIntegerValue } from "../../util/parse.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { serializeDisclosureLabeledTargetPayload } from "../disclosure-target-serialization.js";
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
+import {
+  serializableRecord,
+  serializableRecordWithFallbackDisclosure,
+} from "../record-serialization.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -196,8 +203,23 @@ type ResolvedSourceEntry = {
     | "assistant_output_under_review"
     | "missing";
 };
+type LoadedReviewTarget =
+  | {
+      type: "episode";
+      content: Episode;
+    }
+  | {
+      type: "semantic_node";
+      content: SemanticNode;
+    }
+  | {
+      type: "semantic_edge";
+      content: SemanticEdge;
+    };
 type LoadedReviewContext = {
-  target: unknown;
+  targetPayload: unknown;
+  reviewPayload: unknown;
+  overseerFlagPayload: unknown;
   sourceEntries: ResolvedSourceEntry[];
   missingSourceIds: StreamEntryId[];
   taintedReviewedAssistantStreamIds: StreamEntryId[];
@@ -324,26 +346,6 @@ function configuredMaxItems(
   );
 }
 
-function sanitizeRecord(value: unknown): unknown {
-  if (value instanceof Float32Array) {
-    return {
-      embedding_dims: value.length,
-    };
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeRecord(entry));
-  }
-
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, sanitizeRecord(entry)]),
-    );
-  }
-
-  return value;
-}
-
 type SemanticNodePromptInput = Pick<
   SemanticNode,
   | "id"
@@ -454,12 +456,12 @@ function promptPayload(input: {
           "Default to this when in doubt.",
         ],
       },
-      review: sanitizeRecord(input.item),
-      target: sanitizeRecord(input.loaded.target),
+      review: input.loaded.reviewPayload,
+      target: input.loaded.targetPayload,
       source_bundle: {
-        overseer_flag: sanitizeRecord(input.loaded.payload),
+        overseer_flag: input.loaded.overseerFlagPayload,
         source_entries: input.loaded.sourceEntries.map((source) =>
-          sanitizeRecord(sourceEntryPromptPayload(source)),
+          serializableRecord(sourceEntryPromptPayload(source)),
         ),
         missing_source_ids: input.loaded.missingSourceIds,
         tainted_reviewed_assistant_stream_ids: input.loaded.taintedReviewedAssistantStreamIds,
@@ -497,10 +499,13 @@ function vectorDuplicatePromptPayload(input: {
         stream_citations:
           "Do not populate stream citations for this task. Vector-only duplicate merges are grounded in the two supplied semantic nodes and vector_match metadata, not in stream entries.",
       },
-      review: sanitizeRecord(input.item),
-      vector_match: sanitizeRecord(input.loaded.refs),
+      review: serializableRecordWithDisclosureLabel(
+        reviewQueueItemForPrompt(input.item),
+        disclosureLabelFromResolvedEpisodeLabels(input.loaded.labelsByEpisodeId),
+      ),
+      vector_match: serializableRecordWithFallbackDisclosure(input.loaded.refs),
       candidates: input.loaded.nodes.map((node) =>
-        sanitizeRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
+        serializableRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
       ),
     },
     null,
@@ -540,13 +545,16 @@ function semanticPairPromptPayload(input: {
         needs_manual:
           "Use only for genuine ambiguity or broken context that prevents a responsible decision. Bias toward deciding when the supplied context supports a clear disposition.",
       },
-      review: sanitizeRecord(input.item),
-      pair_refs: sanitizeRecord(input.loaded.refs),
+      review: serializableRecordWithDisclosureLabel(
+        reviewQueueItemForPrompt(input.item),
+        disclosureLabelFromResolvedEpisodeLabels(input.loaded.labelsByEpisodeId),
+      ),
+      pair_refs: serializableRecordWithFallbackDisclosure(input.loaded.refs),
       candidates: input.loaded.nodes.map((node) =>
-        sanitizeRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
+        serializableRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
       ),
       evidence_by_node: input.loaded.evidence.map((entry) =>
-        sanitizeRecord({
+        serializableRecord({
           node_id: entry.node_id,
           sampled_episode_ids: entry.sampled_episode_ids,
           total_source_episode_ids: entry.total_source_episode_ids,
@@ -653,7 +661,7 @@ function newInsightPromptPayload(input: {
         reason: input.item.reason,
         created_at: input.item.created_at,
       },
-      proposed_insight: sanitizeRecord(newInsightProposedPayload(input.loaded)),
+      proposed_insight: serializableRecord(newInsightProposedPayload(input.loaded)),
       evidence_cluster: {
         key: input.loaded.refs.evidence_cluster_key,
         declared_size: input.loaded.refs.evidence_cluster_size,
@@ -663,7 +671,7 @@ function newInsightPromptPayload(input: {
       },
       candidate_support_edges:
         input.loaded.refs.reflector_pending_insight.candidate_support_edges.map((edge) =>
-          sanitizeRecord({
+          serializableRecord({
             id: edge.id,
             insight_node_id: edge.insight_node_id,
             target_node_id: edge.target_node_id,
@@ -672,7 +680,7 @@ function newInsightPromptPayload(input: {
           }),
         ),
       evidence_episodes: input.loaded.evidenceEpisodes.map((episode) =>
-        sanitizeRecord(newInsightEpisodePayload(episode)),
+        serializableRecord(newInsightEpisodePayload(episode)),
       ),
     },
     null,
@@ -1099,26 +1107,116 @@ async function disclosureLabelsForSemanticNodes(
   );
 }
 
-async function loadTarget(ctx: OfflineContext, item: ReviewQueueItem): Promise<unknown | null> {
+async function loadTarget(
+  ctx: OfflineContext,
+  item: ReviewQueueItem,
+): Promise<LoadedReviewTarget | null> {
   const targetType = item.refs.target_type;
   const targetId = item.refs.target_id;
 
   if (targetType === "episode") {
     const parsed = episodeIdSchema.safeParse(targetId);
-    return parsed.success ? ctx.episodicRepository.get(parsed.data) : null;
+    if (!parsed.success) {
+      return null;
+    }
+
+    const content = await ctx.episodicRepository.get(parsed.data);
+    return content === null ? null : { type: targetType, content };
   }
 
   if (targetType === "semantic_node") {
     const parsed = semanticNodeIdSchema.safeParse(targetId);
-    return parsed.success ? ctx.semanticNodeRepository.get(parsed.data) : null;
+    if (!parsed.success) {
+      return null;
+    }
+
+    const content = await ctx.semanticNodeRepository.get(parsed.data);
+    return content === null ? null : { type: targetType, content };
   }
 
   if (targetType === "semantic_edge") {
     const parsed = semanticEdgeIdSchema.safeParse(targetId);
-    return parsed.success ? ctx.semanticEdgeRepository.getEdge(parsed.data) : null;
+    if (!parsed.success) {
+      return null;
+    }
+
+    const content = ctx.semanticEdgeRepository.getEdge(parsed.data);
+    return content === null ? null : { type: targetType, content };
   }
 
   return null;
+}
+
+async function disclosureLabelForOverseerFlagPayload(
+  ctx: OfflineContext,
+  payload: z.infer<typeof overseerFlagAuditPayloadSchema>,
+): Promise<MemoryDisclosureLabel> {
+  const episodeIds = dedupePreservingOrder(payload.source_episode_ids ?? []);
+
+  if (episodeIds.length === 0) {
+    return unknownMemoryDisclosureLabel();
+  }
+
+  const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(episodeIds, (ids) =>
+    ctx.episodicRepository.getMany(ids),
+  );
+
+  return combineMemoryDisclosureLabels(
+    episodeIds.map(
+      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+    ),
+  );
+}
+
+function disclosureLabelFromResolvedEpisodeLabels(
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): MemoryDisclosureLabel {
+  const labels = [...labelsByEpisodeId.values()];
+
+  return labels.length === 0
+    ? unknownMemoryDisclosureLabel()
+    : combineMemoryDisclosureLabels(labels);
+}
+
+function reviewQueueItemForPrompt(
+  item: ReviewQueueItem,
+): ReviewQueueItem | Record<string, unknown> {
+  const refs = item.refs;
+
+  if (refs === null || typeof refs !== "object" || Array.isArray(refs)) {
+    return item;
+  }
+
+  if (!Object.hasOwn(refs, "overseer_flag")) {
+    return item;
+  }
+
+  const strippedRefs = { ...(refs as Record<string, unknown>) };
+  delete strippedRefs.overseer_flag;
+
+  return {
+    ...item,
+    refs: strippedRefs,
+  };
+}
+
+function serializableRecordWithDisclosureLabel(
+  value: unknown,
+  label: MemoryDisclosureLabel,
+): Record<string, unknown> {
+  const serialized = serializableRecord(value);
+
+  if (serialized !== null && typeof serialized === "object" && !Array.isArray(serialized)) {
+    return {
+      ...(serialized as Record<string, unknown>),
+      ...memoryDisclosurePayloadFields(label),
+    };
+  }
+
+  return {
+    value: serialized,
+    ...memoryDisclosurePayloadFields(label),
+  };
 }
 
 async function loadReviewContext(
@@ -1136,6 +1234,7 @@ async function loadReviewContext(
   if (target === null) {
     return null;
   }
+  const flagDisclosureLabel = await disclosureLabelForOverseerFlagPayload(ctx, payload.data);
 
   const sourceIds = sourceStreamIdsForItem(item, payload.data);
   const taintedReviewedAssistantStreamIds = reviewedAssistantStreamIdsForItem(item, payload.data);
@@ -1155,7 +1254,12 @@ async function loadReviewContext(
   );
 
   return {
-    target,
+    targetPayload: await serializeDisclosureLabeledTargetPayload(ctx, target),
+    reviewPayload: serializableRecordWithDisclosureLabel(
+      reviewQueueItemForPrompt(item),
+      flagDisclosureLabel,
+    ),
+    overseerFlagPayload: serializableRecordWithDisclosureLabel(payload.data, flagDisclosureLabel),
     sourceEntries,
     missingSourceIds,
     taintedReviewedAssistantStreamIds,
