@@ -42,6 +42,9 @@ export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
   "Use labeled-private memories internally to inform judgment, empathy, caution, continuity, and uncertainty.",
   "Do not reveal labeled-private content, source details, or the existence of a private memory to the current audience unless the rendered disclosure policy, creator/operator context, or current audience authorization permits it.",
   "Operator or creator context may permit fuller discussion; use the rendered authority and disclosure context to decide how much can be discussed.",
+  "Disclosure permission and common-ground status are different: being allowed to say something does not mean the current audience already knows it.",
+  "A memory being recallable or discloseable does not make it common ground. Do not frame cross-session memory as already-shared knowledge unless the current audience is in its origin_audience, it is established as common ground for them, or there is evidence they have seen it.",
+  "When disclosure is permitted but the current audience likely does not know a memory, introduce it as new information rather than presuming it is shared.",
 ].join("\n");
 
 export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";
