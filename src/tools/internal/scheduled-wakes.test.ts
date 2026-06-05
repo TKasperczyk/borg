@@ -44,6 +44,13 @@ describe("scheduled wake tools", () => {
       { delaySeconds: 120, note: "revisit X", originSessionId: DEFAULT_SESSION_ID },
     ]);
     expect(result.scheduledWake.id).toBe(wake.id);
+    expect(result.scheduledWake).toMatchObject({
+      note: wake.note,
+      disclosure: expect.stringContaining("disclosure_class=self_private"),
+      disclosure_label: {
+        disclosure_class: "self_private",
+      },
+    });
     expect(tool.writeScope).toBe("write");
     expect(tool.allowedOrigins).toContain("deliberator");
   });
@@ -58,17 +65,29 @@ describe("scheduled wake tools", () => {
 
   it("list defaults to pending", async () => {
     const calls: unknown[] = [];
+    const wake = sampleWake();
     const tool = createScheduledWakesListTool({
       listScheduledWakes: (input) => {
         calls.push(input);
-        return [sampleWake()];
+        return [wake];
       },
     });
 
-    await tool.invoke({}, context);
+    const result = await tool.invoke({}, context);
 
     expect(calls).toEqual([{ status: "pending", limit: 20 }]);
     expect(tool.writeScope).toBe("read");
+    expect(result.scheduledWakes[0]).toMatchObject({
+      id: wake.id,
+      note: wake.note,
+      disclosure: expect.stringContaining("disclosure_class=self_private"),
+      disclosure_label: {
+        disclosure_class: "self_private",
+        origin_audience_entity_ids: [],
+        private_to_entity_ids: [],
+        public_to_entity_ids: [],
+      },
+    });
   });
 
   it("cancel parses the id and returns null when nothing pending", async () => {

@@ -7,6 +7,15 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import {
+  memoryDisclosurePayloadFields,
+  semanticNodeMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
+import {
+  resolveDisclosureLabelsByEpisodeId,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
+import {
   misattributionReviewRefsSchema,
   newInsightReviewRefsSchema,
   reviewQueueItemSchema,
@@ -31,6 +40,7 @@ import { positiveIntegerValue } from "../../util/parse.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -196,6 +206,7 @@ type LoadedReviewContext = {
 type LoadedVectorDuplicateContext = {
   refs: z.infer<typeof vectorOnlyDuplicateReviewRefsSchema>;
   nodes: [SemanticNode, SemanticNode];
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
 };
 type LoadedSemanticPairEvidence = {
   node_id: SemanticNode["id"];
@@ -207,11 +218,13 @@ type LoadedSemanticPairEvidence = {
 type LoadedSemanticPairContext = {
   refs: SemanticPairNodeReviewRefs;
   nodes: [SemanticNode, SemanticNode];
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
   evidence: [LoadedSemanticPairEvidence, LoadedSemanticPairEvidence];
 };
 type LoadedNewInsightContext = {
   refs: z.infer<typeof newInsightReviewRefsSchema>;
   currentNode: SemanticNode | null;
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
   sampledEvidenceEpisodeIds: Episode["id"][];
   evidenceEpisodes: Episode[];
   missingEvidenceEpisodeIds: Episode["id"][];
@@ -331,6 +344,59 @@ function sanitizeRecord(value: unknown): unknown {
   return value;
 }
 
+type SemanticNodePromptInput = Pick<
+  SemanticNode,
+  | "id"
+  | "kind"
+  | "label"
+  | "description"
+  | "domain"
+  | "aliases"
+  | "confidence"
+  | "source_episode_ids"
+  | "created_at"
+  | "updated_at"
+  | "last_verified_at"
+  | "archived"
+  | "status"
+  | "superseded_by"
+  | "superseded_at"
+> &
+  Partial<Pick<SemanticNode, "observation_metadata" | "corrected_by">>;
+
+function semanticNodePromptPayload(
+  node: SemanticNodePromptInput,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): Record<string, unknown> {
+  return {
+    id: node.id,
+    kind: node.kind,
+    label: node.label,
+    description: node.description,
+    aliases: node.aliases,
+    observation_metadata: node.observation_metadata ?? null,
+    domain: node.domain,
+    confidence: node.confidence,
+    source_episode_ids: node.source_episode_ids,
+    created_at: node.created_at,
+    updated_at: node.updated_at,
+    last_verified_at: node.last_verified_at,
+    archived: node.archived,
+    status: node.status,
+    superseded_by: node.superseded_by,
+    corrected_by: node.corrected_by ?? null,
+    superseded_at: node.superseded_at,
+    ...memoryDisclosurePayloadFields(semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, node)),
+  };
+}
+
+function sourceEntryPromptPayload(source: ResolvedSourceEntry): Record<string, unknown> {
+  return {
+    ...source,
+    ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+  };
+}
+
 function promptPayload(input: {
   item: ReviewQueueItem;
   loaded: LoadedReviewContext;
@@ -392,7 +458,9 @@ function promptPayload(input: {
       target: sanitizeRecord(input.loaded.target),
       source_bundle: {
         overseer_flag: sanitizeRecord(input.loaded.payload),
-        source_entries: sanitizeRecord(input.loaded.sourceEntries),
+        source_entries: input.loaded.sourceEntries.map((source) =>
+          sanitizeRecord(sourceEntryPromptPayload(source)),
+        ),
         missing_source_ids: input.loaded.missingSourceIds,
         tainted_reviewed_assistant_stream_ids: input.loaded.taintedReviewedAssistantStreamIds,
       },
@@ -432,23 +500,7 @@ function vectorDuplicatePromptPayload(input: {
       review: sanitizeRecord(input.item),
       vector_match: sanitizeRecord(input.loaded.refs),
       candidates: input.loaded.nodes.map((node) =>
-        sanitizeRecord({
-          id: node.id,
-          kind: node.kind,
-          label: node.label,
-          description: node.description,
-          aliases: node.aliases,
-          observation_metadata: node.observation_metadata,
-          domain: node.domain,
-          confidence: node.confidence,
-          source_episode_ids: node.source_episode_ids,
-          created_at: node.created_at,
-          updated_at: node.updated_at,
-          last_verified_at: node.last_verified_at,
-          archived: node.archived,
-          status: node.status,
-          superseded_by: node.superseded_by,
-        }),
+        sanitizeRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
       ),
     },
     null,
@@ -491,25 +543,7 @@ function semanticPairPromptPayload(input: {
       review: sanitizeRecord(input.item),
       pair_refs: sanitizeRecord(input.loaded.refs),
       candidates: input.loaded.nodes.map((node) =>
-        sanitizeRecord({
-          id: node.id,
-          kind: node.kind,
-          label: node.label,
-          description: node.description,
-          aliases: node.aliases,
-          observation_metadata: node.observation_metadata,
-          domain: node.domain,
-          confidence: node.confidence,
-          source_episode_ids: node.source_episode_ids,
-          created_at: node.created_at,
-          updated_at: node.updated_at,
-          last_verified_at: node.last_verified_at,
-          archived: node.archived,
-          status: node.status,
-          superseded_by: node.superseded_by,
-          corrected_by: node.corrected_by,
-          superseded_at: node.superseded_at,
-        }),
+        sanitizeRecord(semanticNodePromptPayload(node, input.loaded.labelsByEpisodeId)),
       ),
       evidence_by_node: input.loaded.evidence.map((entry) =>
         sanitizeRecord({
@@ -553,13 +587,7 @@ function newInsightProposedPayload(loaded: LoadedNewInsightContext): Record<stri
     return {
       mode: "insert",
       node_id: target.node.id,
-      kind: target.node.kind,
-      label: target.node.label,
-      description: target.node.description,
-      domain: target.node.domain,
-      aliases: target.node.aliases,
-      confidence: target.node.confidence,
-      source_episode_ids: target.node.source_episode_ids,
+      ...semanticNodePromptPayload(target.node, loaded.labelsByEpisodeId),
     };
   }
 
@@ -571,28 +599,20 @@ function newInsightProposedPayload(loaded: LoadedNewInsightContext): Record<stri
     description: target.patch.description,
     confidence: target.patch.confidence,
     source_episode_ids: target.patch.source_episode_ids,
+    ...memoryDisclosurePayloadFields(
+      semanticNodeMemoryDisclosureLabel(loaded.labelsByEpisodeId, target.patch),
+    ),
     current_node:
       loaded.currentNode === null
         ? null
         : {
-            id: loaded.currentNode.id,
-            kind: loaded.currentNode.kind,
-            label: loaded.currentNode.label,
-            description: loaded.currentNode.description,
-            confidence: loaded.currentNode.confidence,
-            source_episode_ids: loaded.currentNode.source_episode_ids,
-            archived: loaded.currentNode.archived,
-            status: loaded.currentNode.status,
-            superseded_by: loaded.currentNode.superseded_by,
+            ...semanticNodePromptPayload(loaded.currentNode, loaded.labelsByEpisodeId),
           },
   };
 }
 
 function newInsightEpisodePayload(episode: Episode): Record<string, unknown> {
-  return {
-    id: episode.id,
-    title: episode.title,
-    narrative: episode.narrative,
+  return episodeEvidencePromptRow(episode, {
     participants: episode.participants,
     location: episode.location,
     start_time: episode.start_time,
@@ -601,7 +621,7 @@ function newInsightEpisodePayload(episode: Episode): Record<string, unknown> {
     significance: episode.significance,
     confidence: episode.confidence,
     tags: episode.tags,
-  };
+  });
 }
 
 function newInsightPromptPayload(input: {
@@ -1060,6 +1080,25 @@ function evidenceRankForSourceEntry(input: {
   return "direct_user_or_source";
 }
 
+async function disclosureLabelsForEpisodeIds(
+  ctx: OfflineContext,
+  episodeIds: readonly Episode["id"][],
+): Promise<ReadonlyMap<string, MemoryDisclosureLabel>> {
+  return resolveDisclosureLabelsByEpisodeId(dedupePreservingOrder(episodeIds), (ids) =>
+    ctx.episodicRepository.getMany(ids),
+  );
+}
+
+async function disclosureLabelsForSemanticNodes(
+  ctx: OfflineContext,
+  nodes: readonly Pick<SemanticNode, "source_episode_ids">[],
+): Promise<ReadonlyMap<string, MemoryDisclosureLabel>> {
+  return disclosureLabelsForEpisodeIds(
+    ctx,
+    nodes.flatMap((node) => node.source_episode_ids),
+  );
+}
+
 async function loadTarget(ctx: OfflineContext, item: ReviewQueueItem): Promise<unknown | null> {
   const targetType = item.refs.target_type;
   const targetId = item.refs.target_id;
@@ -1147,6 +1186,7 @@ async function loadVectorDuplicateContext(
   return {
     refs: parsed.data,
     nodes: [first, second],
+    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, [first, second]),
   };
 }
 
@@ -1191,6 +1231,7 @@ async function loadSemanticPairContext(
   return {
     refs,
     nodes: [first, second],
+    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, [first, second]),
     evidence: [
       await loadSemanticPairEvidence(ctx, first),
       await loadSemanticPairEvidence(ctx, second),
@@ -1216,10 +1257,18 @@ async function loadNewInsightContext(
   const sampledEvidenceEpisodeIds = evidenceEpisodeIds.slice(0, NEW_INSIGHT_EVIDENCE_EPISODE_LIMIT);
   const evidenceEpisodes = await ctx.episodicRepository.getMany(sampledEvidenceEpisodeIds);
   const loadedEpisodeIds = new Set(evidenceEpisodes.map((episode) => episode.id));
+  const semanticSourceEpisodeIds =
+    target.mode === "insert"
+      ? target.node.source_episode_ids
+      : [
+          ...target.patch.source_episode_ids,
+          ...(currentNode === null ? [] : currentNode.source_episode_ids),
+        ];
 
   return {
     refs,
     currentNode,
+    labelsByEpisodeId: await disclosureLabelsForEpisodeIds(ctx, semanticSourceEpisodeIds),
     sampledEvidenceEpisodeIds,
     evidenceEpisodes,
     missingEvidenceEpisodeIds: sampledEvidenceEpisodeIds.filter((id) => !loadedEpisodeIds.has(id)),

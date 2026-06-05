@@ -113,6 +113,120 @@ const deletedDisclosureFirewallSymbols = [
 ] as const;
 const disclosureCalleePattern = /ForDisclosure$/;
 
+const labelCoverageGuardedPaths = [
+  "src/cognition",
+  "src/offline",
+  "src/autonomy",
+  "src/outbound",
+  "src/tools/internal",
+] as const;
+const privateBearingModelFieldNames = new Set([
+  "title",
+  "narrative",
+  "directive",
+  "question",
+  "description",
+  "approach",
+  "approach_summary",
+  "problem_text",
+  "value",
+  "note",
+  "content",
+]);
+const disclosureFieldNames = new Set(["disclosure", "disclosure_label"]);
+const serializerHelperNamePattern = /(Payload|Row|Preview|LlmRecord|PromptRow|Messages?|serialize)/i;
+const toSerializerHelperNamePattern = /to[A-Z]/;
+const knownSerializerHelperNames = new Set([
+  "episodeEvidencePromptRow",
+  "semanticNodeLlmRecord",
+  "semanticEdgeLlmRecord",
+  "newInsightEpisodePayload",
+  "newInsightProposedPayload",
+  "semanticNodePromptPayload",
+  "sourceEntryPromptPayload",
+  "directivePromptRow",
+  "directivePreview",
+  "toSkillToolOutput",
+]);
+
+type LabelCoverageAllowlistEntry = {
+  name: string;
+  reason: string;
+  matches: (input: {
+    filePath: string;
+    node: ts.ObjectLiteralExpression;
+    privateFields: readonly string[];
+  }) => boolean;
+};
+
+const labelCoverageAllowlist: readonly LabelCoverageAllowlistEntry[] = [
+  {
+    name: "llm-message-envelope-content",
+    reason:
+      "LLM message envelopes use `content` for the fully serialized prompt string; row labels live inside that prompt payload.",
+    matches: ({ node, privateFields }) =>
+      privateFields.length === 1 &&
+      privateFields[0] === "content" &&
+      objectLiteralPropertyNames(node).has("role"),
+  },
+  {
+    name: "stream-append-content-record",
+    reason:
+      "These objects append already-produced agent text to the stream; they are persistence writes, not model-facing serializers.",
+    matches: ({ filePath, node }) =>
+      (filePath === "src/outbound/delivery.ts" &&
+        enclosingFunctionName(node) === "appendAgentMessage") ||
+      (filePath === "src/cognition/lifecycle/turn-phase/post-generation-phase.ts" &&
+        enclosingFunctionName(node) === "persistMessageEmission"),
+  },
+  {
+    name: "action-record-persistence-mapper",
+    reason:
+      "toActionRecord builds an internal ActionRecord for storage; prompt-facing action rows are labeled elsewhere.",
+    matches: ({ filePath, node }) =>
+      filePath === "src/cognition/actions/action-state-extractor.ts" &&
+      enclosingFunctionName(node) === "toActionRecord",
+  },
+  {
+    name: "corrective-preference-candidate-result",
+    reason:
+      "toCandidate converts a parsed tool result into an internal candidate, not a prompt row.",
+    matches: ({ filePath, node }) =>
+      filePath === "src/cognition/commitments/corrective-preference-extractor.ts" &&
+      enclosingFunctionName(node) === "toCandidate",
+  },
+  {
+    name: "llm-tool-result-protocol-content",
+    reason:
+      "Tool-result blocks use `content` as the Anthropic protocol field; labels are inside serialized tool outputs when those outputs carry memory rows.",
+    matches: ({ filePath, node }) =>
+      filePath === "src/cognition/turn-action/tool-loop.ts" &&
+      [
+        "buildToolResultBlock",
+        "buildDroppedToolResultBlock",
+        "buildUnavailableToolResultBlock",
+      ].includes(enclosingFunctionName(node) ?? ""),
+  },
+  {
+    name: "skill-split-review-internal-payload",
+    reason:
+      "Skill split payload helpers build and consume internal review-queue refs; they are not LLM prompt serializers.",
+    matches: ({ filePath, node }) =>
+      (filePath === "src/offline/procedural-synthesizer/index.ts" &&
+        enclosingFunctionName(node) === "buildSkillSplitReviewPayload") ||
+      (filePath === "src/offline/procedural-synthesizer/skill-split-review.ts" &&
+        enclosingFunctionName(node) === "splitPartsFromPayload"),
+  },
+  {
+    name: "creator-directive-private-operation-check",
+    reason:
+      "This structural authorization check passes a directive object into disclosure policy code; it does not serialize directive text to a model.",
+    matches: ({ filePath, node }) =>
+      filePath === "src/cognition/lifecycle/turn-phase/retrieval-phase.ts" &&
+      enclosingFunctionName(node) === "canRenderCreatorDirectivePrivateOperation",
+  },
+];
+
 function rg(pattern: string, paths: readonly string[]): string {
   const result = spawnSync("rg", ["--line-number", pattern, ...paths], {
     encoding: "utf8",
@@ -216,6 +330,34 @@ function expressionSymbolName(node: ts.Expression): string | undefined {
   }
 
   return undefined;
+}
+
+function propertyNameText(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+
+  return undefined;
+}
+
+function objectLiteralPropertyNames(node: ts.ObjectLiteralExpression): Set<string> {
+  const names = new Set<string>();
+
+  for (const property of node.properties) {
+    if (ts.isPropertyAssignment(property)) {
+      const name = propertyNameText(property.name);
+
+      if (name !== undefined) {
+        names.add(name);
+      }
+    }
+
+    if (ts.isShorthandPropertyAssignment(property)) {
+      names.add(property.name.text);
+    }
+  }
+
+  return names;
 }
 
 function collectDisclosureAliases(sourceFile: ts.SourceFile): Map<string, string> {
@@ -388,6 +530,275 @@ function disclosureGuardFailures(): string[] {
   return matches;
 }
 
+function isStringLikeLiteral(node: ts.Expression): boolean {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
+}
+
+function isStaticPromptLiteral(node: ts.Expression): boolean {
+  if (
+    isStringLikeLiteral(node) ||
+    ts.isNumericLiteral(node) ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  ) {
+    return true;
+  }
+
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.every((element) => isStaticPromptLiteral(element));
+  }
+
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.every((property) => {
+      if (ts.isPropertyAssignment(property)) {
+        return isStaticPromptLiteral(property.initializer);
+      }
+
+      return false;
+    });
+  }
+
+  return false;
+}
+
+function hasMemoryDisclosurePayloadSpread(node: ts.ObjectLiteralExpression): boolean {
+  return node.properties.some(
+    (property) =>
+      ts.isSpreadAssignment(property) &&
+      ts.isCallExpression(property.expression) &&
+      expressionSymbolName(property.expression.expression) === "memoryDisclosurePayloadFields",
+  );
+}
+
+function objectLiteralHasDisclosureFields(node: ts.ObjectLiteralExpression): boolean {
+  const names = objectLiteralPropertyNames(node);
+
+  return (
+    [...disclosureFieldNames].some((fieldName) => names.has(fieldName)) ||
+    hasMemoryDisclosurePayloadSpread(node)
+  );
+}
+
+function privateDynamicFields(node: ts.ObjectLiteralExpression): string[] {
+  const fields: string[] = [];
+
+  for (const property of node.properties) {
+    if (ts.isPropertyAssignment(property)) {
+      const name = propertyNameText(property.name);
+
+      if (
+        name !== undefined &&
+        privateBearingModelFieldNames.has(name) &&
+        !isStaticPromptLiteral(property.initializer)
+      ) {
+        fields.push(name);
+      }
+    }
+
+    if (
+      ts.isShorthandPropertyAssignment(property) &&
+      privateBearingModelFieldNames.has(property.name.text)
+    ) {
+      fields.push(property.name.text);
+    }
+  }
+
+  return fields;
+}
+
+function nodeWithin(child: ts.Node, parent: ts.Node): boolean {
+  return child.getStart() >= parent.getStart() && child.getEnd() <= parent.getEnd();
+}
+
+function isJsonStringifyExpression(node: ts.Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "JSON" &&
+    node.name.text === "stringify"
+  );
+}
+
+function isInsideJsonStringify(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+
+  while (current !== undefined) {
+    if (
+      ts.isCallExpression(current) &&
+      isJsonStringifyExpression(current.expression) &&
+      current.arguments[0] !== undefined &&
+      nodeWithin(node, current.arguments[0])
+    ) {
+      return true;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+}
+
+function isInsideNamedObjectProperty(node: ts.Node, propertyName: string): boolean {
+  let current: ts.Node | undefined = node.parent;
+
+  while (current !== undefined) {
+    if (
+      ts.isPropertyAssignment(current) &&
+      propertyNameText(current.name) === propertyName &&
+      nodeWithin(node, current.initializer)
+    ) {
+      return true;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+}
+
+function isFunctionLikeBoundary(node: ts.Node): boolean {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node)
+  );
+}
+
+function isInsideReturnStatement(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+
+  while (current !== undefined) {
+    if (ts.isReturnStatement(current)) {
+      return true;
+    }
+
+    if (isFunctionLikeBoundary(current)) {
+      return false;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+}
+
+function isAutonomyPayloadSerializer(filePath: string, node: ts.ObjectLiteralExpression): boolean {
+  return filePath.startsWith("src/autonomy/") && isInsideNamedObjectProperty(node, "payload");
+}
+
+function isInternalToolInvokeSerializer(
+  filePath: string,
+  node: ts.ObjectLiteralExpression,
+): boolean {
+  return (
+    filePath.startsWith("src/tools/internal/") &&
+    enclosingFunctionName(node) === "invoke" &&
+    isInsideReturnStatement(node)
+  );
+}
+
+function isSerializerHelperName(name: string | undefined): boolean {
+  return (
+    name !== undefined &&
+    (serializerHelperNamePattern.test(name) ||
+      toSerializerHelperNamePattern.test(name) ||
+      knownSerializerHelperNames.has(name))
+  );
+}
+
+function isInsideArrowExpressionBody(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+
+  while (current !== undefined) {
+    if (ts.isArrowFunction(current)) {
+      return !ts.isBlock(current.body) && nodeWithin(node, current.body);
+    }
+
+    if (isFunctionLikeBoundary(current)) {
+      return false;
+    }
+
+    current = current.parent;
+  }
+
+  return false;
+}
+
+function isSerializerHelperReturn(node: ts.ObjectLiteralExpression): boolean {
+  return (
+    isSerializerHelperName(enclosingFunctionName(node)) &&
+    (isInsideReturnStatement(node) || isInsideArrowExpressionBody(node))
+  );
+}
+
+function isModelFacingSerializer(filePath: string, node: ts.ObjectLiteralExpression): boolean {
+  return (
+    isInsideJsonStringify(node) ||
+    isAutonomyPayloadSerializer(filePath, node) ||
+    isInternalToolInvokeSerializer(filePath, node) ||
+    isSerializerHelperReturn(node)
+  );
+}
+
+function isAllowedLabelCoverageOmission(
+  filePath: string,
+  node: ts.ObjectLiteralExpression,
+  privateFields: readonly string[],
+): boolean {
+  return labelCoverageAllowlist.some((entry) =>
+    entry.matches({
+      filePath,
+      node,
+      privateFields,
+    }),
+  );
+}
+
+function reportLabelCoverageFailure(
+  sourceFile: ts.SourceFile,
+  filePath: string,
+  node: ts.ObjectLiteralExpression,
+  privateFields: readonly string[],
+): string {
+  const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+  const functionName = enclosingFunctionName(node) ?? "<top-level>";
+  return `${filePath}:${position.line + 1}:${position.character + 1} ${privateFields.join(", ")} in ${functionName}`;
+}
+
+function labelCoverageGuardFailures(): string[] {
+  const sourceFiles = rgFiles(labelCoverageGuardedPaths).filter(
+    (file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.endsWith(".d.ts"),
+  );
+  const matches: string[] = [];
+
+  for (const filePath of sourceFiles) {
+    const source = readFileSync(filePath, "utf8");
+    const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+
+    function visit(node: ts.Node): void {
+      if (ts.isObjectLiteralExpression(node) && isModelFacingSerializer(filePath, node)) {
+        const privateFields = privateDynamicFields(node);
+
+        if (
+          privateFields.length > 0 &&
+          !objectLiteralHasDisclosureFields(node) &&
+          !isAllowedLabelCoverageOmission(filePath, node, privateFields)
+        ) {
+          matches.push(reportLabelCoverageFailure(sourceFile, filePath, node, privateFields));
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+  }
+
+  return matches;
+}
+
 const tokenizerRemoved =
   !existsSync("src/util/text/tokenize.ts") ||
   rg("^export function tokenizeText", ["src/util/text/tokenize.ts"]).length === 0;
@@ -418,6 +829,14 @@ const disclosureFailures = disclosureGuardFailures();
 if (disclosureFailures.length > 0) {
   failures.push(
     `disclosure search symbols in cognition/recall paths:\n${disclosureFailures.join("\n")}`,
+  );
+}
+
+const labelCoverageFailures = labelCoverageGuardFailures();
+
+if (labelCoverageFailures.length > 0) {
+  failures.push(
+    `model-facing memory serializers missing disclosure labels:\n${labelCoverageFailures.join("\n")}`,
   );
 }
 

@@ -6,6 +6,10 @@ import {
   type SharedStateCompilePass,
 } from "../prompts/shared-state.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
+import {
+  memoryDisclosurePayloadFields,
+  relationalSlotMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
 import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactAudienceContext,
@@ -113,19 +117,29 @@ export function buildSharedStateArtifactMessages(input: {
         existing_state_key_registry: input.existingStateKeyRegistry,
         previous_artifact_summary: input.previousArtifactSummary,
         canonicalization_candidates: canonicalizationCandidates,
-        relational_slots_context: (input.relationalSlotsContext ?? []).map((slot) => ({
-          id: slot.id,
-          subject_entity_id: slot.subject_entity_id,
-          slot_key: slot.slot_key,
-          value: slot.value,
-          state: slot.state,
-          evidence_stream_entry_ids: slot.evidence_stream_entry_ids,
-          contradicted_by_stream_entry_ids: slot.contradicted_by_stream_entry_ids,
-          alternate_values: slot.alternate_values.map((alternate) => ({
-            value: alternate.value,
-            evidence_stream_entry_ids: alternate.evidence_stream_entry_ids,
-          })),
-        })),
+        relational_slots_context: (input.relationalSlotsContext ?? []).map((slot) => {
+          const disclosureFields = memoryDisclosurePayloadFields(
+            relationalSlotMemoryDisclosureLabel(slot),
+          );
+
+          return {
+            id: slot.id,
+            subject_entity_id: slot.subject_entity_id,
+            slot_key: slot.slot_key,
+            value: slot.value,
+            state: slot.state,
+            evidence_stream_entry_ids: slot.evidence_stream_entry_ids,
+            contradicted_by_stream_entry_ids: slot.contradicted_by_stream_entry_ids,
+            alternate_values: slot.alternate_values.map((alternate) => ({
+              value: alternate.value,
+              evidence_stream_entry_ids: alternate.evidence_stream_entry_ids,
+              disclosure: disclosureFields.disclosure,
+              disclosure_label: disclosureFields.disclosure_label,
+            })),
+            disclosure: disclosureFields.disclosure,
+            disclosure_label: disclosureFields.disclosure_label,
+          };
+        }),
         prompt_visible_ledger: input.promptVisibleLedger,
       }),
     },

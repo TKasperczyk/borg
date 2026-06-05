@@ -459,7 +459,21 @@ describe("CorrectivePreferenceExtractor", () => {
         confidence: 0.92,
       },
     ]);
-    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain("relational_slots");
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      relational_slots: Array<{
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+    };
+    expect(prompt.relational_slots[0]).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [subject],
+      },
+    });
+    expect(prompt.relational_slots[0]?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
   });
 
   it("returns null for low-confidence corrective classifications", async () => {

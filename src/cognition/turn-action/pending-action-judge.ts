@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
+import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { IntentRecord } from "../types.js";
 
@@ -66,6 +68,7 @@ export class LLMPendingActionJudge implements PendingActionJudge {
             content: JSON.stringify({
               description: record.description,
               next_action: record.next_action,
+              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
             }),
           },
         ],

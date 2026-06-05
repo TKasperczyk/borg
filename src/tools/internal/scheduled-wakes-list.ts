@@ -6,6 +6,11 @@ import {
   type ScheduledWake,
   type ScheduledWakeStatus,
 } from "../../autonomy/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import {
+  memoryDisclosureLabelMetadataSchema,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const DEFAULT_LIST_LIMIT = 20;
@@ -16,7 +21,12 @@ const scheduledWakesListInputSchema = z.object({
 });
 
 const scheduledWakesListOutputSchema = z.object({
-  scheduledWakes: z.array(scheduledWakeSchema),
+  scheduledWakes: z.array(
+    scheduledWakeSchema.extend({
+      disclosure: z.string().min(1),
+      disclosure_label: memoryDisclosureLabelMetadataSchema,
+    }),
+  ),
 });
 
 export type ScheduledWakesListToolOptions = {
@@ -39,10 +49,15 @@ export function createScheduledWakesListTool(
     outputSchema: scheduledWakesListOutputSchema,
     async invoke(input) {
       return {
-        scheduledWakes: options.listScheduledWakes({
-          status: input.status ?? "pending",
-          limit: input.limit ?? DEFAULT_LIST_LIMIT,
-        }),
+        scheduledWakes: options
+          .listScheduledWakes({
+            status: input.status ?? "pending",
+            limit: input.limit ?? DEFAULT_LIST_LIMIT,
+          })
+          .map((wake) => ({
+            ...wake,
+            ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+          })),
       };
     },
   };

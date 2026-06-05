@@ -531,13 +531,14 @@ describe("overseer process", () => {
     cleanup.push(harness.cleanup);
 
     const source = await appendSourceEntry(harness, "Private audience source names Maya.");
+    const privateAudienceId = createEntityId();
     const privateEpisode = await harness.episodicRepository.insert(
       createEpisodeFixture(
         {
           title: "Private source episode",
           narrative: "Private source names Maya.",
           source_stream_ids: [source.id],
-          audience_entity_id: createEntityId(),
+          audience_entity_id: privateAudienceId,
           shared: false,
           created_at: nowMs - 3_000,
           updated_at: nowMs - 3_000,
@@ -571,6 +572,8 @@ describe("overseer process", () => {
     expect(prompt).toContain(`source_episode_ids: ${privateEpisode.id}`);
     expect(prompt).toContain(`stream_id=${source.id}`);
     expect(prompt).toContain("Private audience source names Maya.");
+    expect(prompt).toContain("disclosure_class=relationship_private");
+    expect(prompt).toContain(`"private_to_entity_ids":["${privateAudienceId}"]`);
   });
 
   it("includes audience entity metadata for audience-tagged semantic source episodes", async () => {

@@ -1,6 +1,13 @@
 import { z } from "zod";
 
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import { entityIdSchema } from "../../memory/commitments/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import {
   episodeIdSchema,
   normalizeEpisodeAccess,
@@ -385,6 +392,29 @@ function formatIdList(ids: readonly string[]): string {
   return ids.length === 0 ? "none" : ids.join(", ");
 }
 
+function sourceEpisodeLabels(
+  sourceEpisodes: readonly OverseerSourceEpisode[],
+): ReadonlyMap<EpisodeId, MemoryDisclosureLabel> {
+  return new Map(
+    sourceEpisodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+  );
+}
+
+function sourceEntryDisclosureLabel(
+  source: OverseerResolvedSourceEntry,
+  labelsByEpisodeId: ReadonlyMap<EpisodeId, MemoryDisclosureLabel>,
+): MemoryDisclosureLabel {
+  if (source.source_episode_ids.length === 0) {
+    return unknownMemoryDisclosureLabel();
+  }
+
+  return combineMemoryDisclosureLabels(
+    source.source_episode_ids.map(
+      (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+    ),
+  );
+}
+
 export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): string {
   const lines = [
     "Target source grounding:",
@@ -436,11 +466,16 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
   }
 
   lines.push("Resolved source entries:");
+  const labelsByEpisodeId = sourceEpisodeLabels(bundle.source_episodes);
 
   for (const [index, source] of bundle.entries.entries()) {
+    const disclosureFields = memoryDisclosurePayloadFields(
+      sourceEntryDisclosureLabel(source, labelsByEpisodeId),
+    );
+
     lines.push(
       [
-        `SOURCE[${index}] source_episode_ids=${formatIdList(source.source_episode_ids)} session_id=${source.entry.session_id} timestamp=${source.entry.timestamp} stream_id=${source.entry.id} kind=${source.entry.kind}`,
+        `SOURCE[${index}] source_episode_ids=${formatIdList(source.source_episode_ids)} session_id=${source.entry.session_id} timestamp=${source.entry.timestamp} stream_id=${source.entry.id} kind=${source.entry.kind} disclosure=${JSON.stringify(disclosureFields.disclosure)} disclosure_label=${JSON.stringify(disclosureFields.disclosure_label)}`,
         entryContent(source.entry),
       ].join("\n"),
     );

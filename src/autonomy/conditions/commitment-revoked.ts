@@ -1,4 +1,8 @@
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -12,7 +16,7 @@ export type CommitmentRevokedPayload = {
   directive: string;
   reason: string | null;
   revoked_at: number;
-};
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type CommitmentRevokedConditionOptions = {
   commitmentRepository: CommitmentRepository;
@@ -55,6 +59,7 @@ export function createCommitmentRevokedCondition(
               directive: commitment.directive,
               reason: commitment.revoked_reason,
               revoked_at: commitment.revoked_at,
+              ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
             },
           };
         })

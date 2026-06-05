@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { StreamWatermarkRepository } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { formatAutonomyTriggerContext } from "../../cognition/autonomy-trigger.js";
 
 import { createOpenQuestionUrgencyBumpCondition } from "./open-question-urgency-bump.js";
 
@@ -65,5 +66,44 @@ describe("open question urgency bump condition", () => {
     const secondScan = await condition.scan();
     expect(secondScan).toHaveLength(1);
     expect(secondScan[0]?.payload.urgency).toBeCloseTo(0.93, 2);
+  });
+
+  it("renders urgency-bump question disclosure labels in the autonomy payload", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const sam = harness.entityRepository.resolve("Sam");
+    const question = harness.openQuestionsRepository.add({
+      question: "How should Sam's planning thread be handled?",
+      urgency: 0.95,
+      provenance: { kind: "system" },
+      source: "user",
+      audience_entity_id: sam,
+    });
+    const condition = createOpenQuestionUrgencyBumpCondition({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      threshold: 0.9,
+      clock,
+    });
+
+    const events = await condition.scan();
+    const turn = condition.buildTurn(events[0]!);
+    const rendered = formatAutonomyTriggerContext(turn.autonomyTrigger!);
+
+    expect(events[0]?.payload).toMatchObject({
+      open_question_id: question.id,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [sam],
+      },
+    });
+    expect(rendered).toContain("disclosure_label");
+    expect(rendered).toContain("relationship_private");
+    expect(rendered).toContain(sam);
   });
 });

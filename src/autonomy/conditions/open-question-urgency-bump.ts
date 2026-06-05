@@ -1,4 +1,8 @@
 import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
+import {
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -11,7 +15,7 @@ export type OpenQuestionUrgencyBumpPayload = {
   open_question_id: OpenQuestion["id"];
   question: string;
   urgency: number;
-};
+} & ReturnType<typeof memoryDisclosurePayloadFields>;
 
 export type OpenQuestionUrgencyBumpConditionOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
@@ -58,6 +62,7 @@ export function createOpenQuestionUrgencyBumpCondition(
               open_question_id: question.id,
               question: question.question,
               urgency: question.urgency,
+              ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
             },
           };
         })

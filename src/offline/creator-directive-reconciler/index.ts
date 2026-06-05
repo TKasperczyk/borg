@@ -6,6 +6,13 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import {
+  publicMemoryDisclosureLabel,
+  relationshipPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import {
   activationPolicySchema,
   creatorDirectiveIdSchema,
@@ -253,6 +260,33 @@ function familyKeyString(key: CreatorDirectiveReconciliationFamilyKey): string {
   return JSON.stringify(key);
 }
 
+function creatorDirectiveMemoryDisclosureLabel(
+  directive: Pick<CreatorDirective, "disclosure_policy" | "subject_entity_id">,
+): MemoryDisclosureLabel {
+  const policy = directive.disclosure_policy;
+
+  switch (policy.content_scope) {
+    case "public":
+      return publicMemoryDisclosureLabel();
+    case "allow_list":
+      return relationshipPrivateMemoryDisclosureLabel(policy.allowed_entity_ids);
+    case "subject_only":
+      return directive.subject_entity_id === null
+        ? unknownMemoryDisclosureLabel()
+        : relationshipPrivateMemoryDisclosureLabel([directive.subject_entity_id]);
+    case "operator_only":
+    case "all_except":
+      return unknownMemoryDisclosureLabel();
+  }
+}
+
+function directivePromptRow(directive: CreatorDirective): Record<string, unknown> {
+  return {
+    ...directive,
+    ...memoryDisclosurePayloadFields(creatorDirectiveMemoryDisclosureLabel(directive)),
+  };
+}
+
 function scopeEquivalenceSnapshot(
   directive: CreatorDirective,
 ): CreatorDirectiveScopeEquivalenceSnapshot {
@@ -389,7 +423,7 @@ function buildPromptPayload(input: {
           "Do not decide whether same_intent records are safe to merge. Audience scope is checked after your tool call.",
       },
       structural_family_key: input.family.key,
-      directives: input.family.members,
+      directives: input.family.members.map((directive) => directivePromptRow(directive)),
       repair_instruction: input.repairInstruction,
     },
     null,

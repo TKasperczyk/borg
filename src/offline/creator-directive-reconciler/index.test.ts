@@ -508,8 +508,21 @@ describe("CreatorDirectiveReconcilerProcess", () => {
     );
 
     const result = await createProcess(harness).run(harness.createContext(), {});
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      directives: Array<{
+        id: string;
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string };
+      }>;
+    };
 
     expect(result.errors).toEqual([]);
+    expect(prompt.directives.find((directive) => directive.id === older.id)).toMatchObject({
+      disclosure: expect.stringContaining("disclosure_class=public"),
+      disclosure_label: {
+        disclosure_class: "public",
+      },
+    });
     expect(result.changes).toHaveLength(1);
     expect(result.changes[0]).toMatchObject({
       action: "creator_directive_merge",

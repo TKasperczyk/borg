@@ -235,7 +235,17 @@ function buildScorePayload(input: {
       priority: input.goal.priority,
       target_at: input.goal.target_at,
       last_progress_ts: input.goal.last_progress_ts,
-      ...input.disclosure,
+      disclosure: input.disclosure.disclosure,
+      disclosure_label: input.disclosure.disclosure_label,
+      goal_disclosure: input.disclosure.goal_disclosure,
+      goal_disclosure_label: input.disclosure.goal_disclosure_label,
+      ...(input.disclosure.source_disclosure === undefined ||
+      input.disclosure.source_disclosure_label === undefined
+        ? {}
+        : {
+            source_disclosure: input.disclosure.source_disclosure,
+            source_disclosure_label: input.disclosure.source_disclosure_label,
+          }),
     },
     selected_score: {
       score: input.score.score,

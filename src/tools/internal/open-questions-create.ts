@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
+import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
 import { type OpenQuestion, openQuestionSchema } from "../../memory/self/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema } from "../../memory/semantic/types.js";
@@ -14,7 +19,10 @@ const openQuestionsCreateInputSchema = z.object({
 });
 
 const openQuestionsCreateOutputSchema = z.object({
-  openQuestion: openQuestionSchema,
+  openQuestion: openQuestionSchema.extend({
+    disclosure: z.string().min(1),
+    disclosure_label: memoryDisclosureLabelMetadataSchema,
+  }),
 });
 
 export type OpenQuestionsCreateToolOptions = {
@@ -43,18 +51,23 @@ export function createOpenQuestionsCreateTool(
     inputSchema: openQuestionsCreateInputSchema,
     outputSchema: openQuestionsCreateOutputSchema,
     async invoke(input, context) {
+      const openQuestion = options.createOpenQuestion({
+        question: input.question,
+        urgency: input.urgency ?? 0.5,
+        related_episode_ids: input.related_episode_ids ?? [],
+        related_semantic_node_ids: input.related_semantic_node_ids ?? [],
+        audience_entity_id: context.audienceEntityId ?? null,
+        provenance: {
+          kind: "system",
+        },
+        source: context.origin === "deliberator" ? "deliberator" : "autonomy",
+      });
+
       return {
-        openQuestion: options.createOpenQuestion({
-          question: input.question,
-          urgency: input.urgency ?? 0.5,
-          related_episode_ids: input.related_episode_ids ?? [],
-          related_semantic_node_ids: input.related_semantic_node_ids ?? [],
-          audience_entity_id: context.audienceEntityId ?? null,
-          provenance: {
-            kind: "system",
-          },
-          source: context.origin === "deliberator" ? "deliberator" : "autonomy",
-        }),
+        openQuestion: {
+          ...openQuestion,
+          ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(openQuestion)),
+        },
       };
     },
   };

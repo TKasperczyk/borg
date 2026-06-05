@@ -480,6 +480,8 @@ describe("review resolver process", () => {
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(REVIEW_RESOLVER_TOOL_NAME);
     expect(prompt).toContain("vector_only_merge_candidate");
     expect(prompt).toContain("Do not populate stream citations");
+    expect(prompt).toContain('"disclosure_label"');
+    expect(prompt).toContain('"disclosure_class": "public"');
   });
 
   it("dismisses vector-only duplicate false positives without stream citations", async () => {
@@ -613,6 +615,8 @@ describe("review resolver process", () => {
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME);
     expect(prompt).toContain("evidence_by_node");
     expect(prompt).toContain("Atlas launch plan replaced");
+    expect(prompt).toContain('"disclosure_label"');
+    expect(prompt).toContain('"disclosure_class": "public"');
   });
 
   it("keeps invalid semantic-pair winners out of the handler and marks needs_manual", async () => {
@@ -832,6 +836,8 @@ describe("review resolver process", () => {
     });
     expect(prompt).toContain("evidence_fetch_bound");
     expect(prompt).toContain("Sol repeatedly asks for rollback plans");
+    expect(prompt).toContain('"disclosure_label"');
+    expect(prompt).toContain('"disclosure_class": "public"');
   });
 
   it("dismisses noisy new insight proposals without inserting the pending node", async () => {
@@ -1082,6 +1088,8 @@ describe("review resolver process", () => {
     expect(prompt).toContain("evidence_hierarchy");
     expect(prompt).toContain("assistant_output_under_review");
     expect(prompt).toContain("cannot independently support the claim");
+    expect(prompt).toContain('"disclosure_label"');
+    expect(prompt).toContain('"disclosure_class": "unknown"');
   });
 
   it("does not accept a zero-citation repair", async () => {

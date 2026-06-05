@@ -280,6 +280,8 @@ describe("RuminatorProcess", () => {
       expect(prompt).toContain("Alex private resolution evidence");
       expect(prompt).toContain("Public stale planning note 0");
       expect(prompt).toContain("Public stale planning note 1");
+      expect(prompt).toContain(`"id":"${question.id}"`);
+      expect(prompt).toContain("disclosure_class=self_private");
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,

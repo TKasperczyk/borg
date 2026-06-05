@@ -47,6 +47,7 @@ import {
   SHARED_STATE_SYSTEM_PROMPT,
   SHARED_STATE_TOOL_NAME,
 } from "./compiler.js";
+import { buildSharedStateArtifactMessages } from "./compiler-prompt.js";
 import { SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 import { sharedStatePatchSchema } from "./types.js";
@@ -280,6 +281,56 @@ describe("compileSharedStateArtifact", () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  it("labels relational slot context rows in the compiler prompt", () => {
+    const subject = createEntityId();
+    const source = createStreamEntryId();
+    const messages = buildSharedStateArtifactMessages({
+      audienceEntityId: audience,
+      selfEntityId: self,
+      speakerEntityId: subject,
+      participants: [{ entityId: audience, displayName: "Audience" }],
+      currentUserMessage: "Current turn",
+      currentUserStreamEntryId: createStreamEntryId(),
+      promptVisibleLedger: "Ledger",
+      existingStateKeyRegistry: [],
+      previousArtifactSummary: null,
+      canonicalizationCandidates: {},
+      relationalSlotsContext: [
+        {
+          id: createRelationalSlotId(),
+          subject_entity_id: subject,
+          slot_key: "partner.name",
+          value: "Sarah",
+          state: "established",
+          evidence_stream_entry_ids: [source],
+          contradicted_by_stream_entry_ids: [],
+          alternate_values: [
+            {
+              value: "Sara",
+              evidence_stream_entry_ids: [source],
+            },
+          ],
+        },
+      ],
+    });
+    const prompt = JSON.parse(String(messages[0]?.content ?? "{}")) as {
+      relational_slots_context: Array<{
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+    };
+
+    expect(prompt.relational_slots_context[0]).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [subject],
+      },
+    });
+    expect(prompt.relational_slots_context[0]?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
   });
 
   function baseInput(llmClient: FakeLLMClient) {

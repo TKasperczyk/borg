@@ -6,6 +6,11 @@ import {
   type SkillContextStatsRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import {
+  memoryDisclosureLabelMetadataSchema,
+  unknownMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const skillsListInputSchema = z
@@ -16,6 +21,10 @@ const skillsListInputSchema = z
 
 const skillToolSchema = skillSchema.omit({
   source_episode_ids: true,
+  disclosure_label: true,
+}).extend({
+  disclosure: z.string().min(1),
+  disclosure_label: memoryDisclosureLabelMetadataSchema,
 });
 
 const skillsListOutputSchema = z.object({
@@ -31,9 +40,16 @@ export type SkillsListToolOptions = {
 const DEFAULT_LIMIT = 20;
 
 function toSkillToolOutput(skill: SkillRecord): z.infer<typeof skillToolSchema> {
-  const { source_episode_ids: _sourceEpisodeIds, ...safeSkill } = skill;
+  const {
+    source_episode_ids: _sourceEpisodeIds,
+    disclosure_label: disclosureLabel,
+    ...safeSkill
+  } = skill;
 
-  return skillToolSchema.parse(safeSkill);
+  return skillToolSchema.parse({
+    ...safeSkill,
+    ...memoryDisclosurePayloadFields(disclosureLabel ?? unknownMemoryDisclosureLabel()),
+  });
 }
 
 export function createSkillsListTool(

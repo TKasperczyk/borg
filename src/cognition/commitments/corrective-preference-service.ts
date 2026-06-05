@@ -509,6 +509,8 @@ export class CorrectivePreferenceTurnService {
         closure_pressure_relevance: commitment.closure_pressure_relevance,
         directive: commitment.directive,
         priority: commitment.priority,
+        restricted_audience: commitment.restricted_audience,
+        made_to_entity: commitment.made_to_entity,
       })),
       relationalSlots: this.relationalSlotsForCorrectionExtractor(),
     });

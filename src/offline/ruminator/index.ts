@@ -24,6 +24,10 @@ import {
   type RetrievedEpisode,
 } from "../../retrieval/index.js";
 import {
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../../cognition/disclosure-labels.js";
+import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
 } from "../../memory/common/disclosure-label.js";
@@ -164,12 +168,19 @@ function reinsertOpenQuestion(
 }
 
 function buildResolutionPrompt(question: OpenQuestion, evidence: string): string {
+  const questionRow = {
+    id: question.id,
+    question: question.question,
+    source: question.source,
+    ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
+  };
+
   return [
     "Resolve the open question using only the evidence below.",
     `Emit your result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
     "Only include a growth_marker if the evidence clearly shows new understanding.",
-    `Question: ${question.question}`,
-    `Source: ${question.source}`,
+    "Open question:",
+    JSON.stringify(questionRow),
     "Evidence:",
     evidence,
   ].join("\n\n");

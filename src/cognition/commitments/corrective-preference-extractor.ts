@@ -30,6 +30,11 @@ import {
 import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+  relationalSlotMemoryDisclosureLabel,
+} from "../disclosure-labels.js";
 import { relationshipClaimSchema, type RelationshipClaim } from "../relationship-claims.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
@@ -241,6 +246,8 @@ export type ExtractCorrectivePreferenceInput = {
     directive_family?: string | null;
     closure_pressure_relevance?: z.infer<typeof closurePressureRelevanceSchema> | null;
     priority: number;
+    restricted_audience?: EntityId | null;
+    made_to_entity?: EntityId | null;
   }[];
   relationalSlots?: readonly {
     id?: string;
@@ -451,18 +458,34 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
             closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
             directive: commitment.directive,
             priority: commitment.priority,
+            ...memoryDisclosurePayloadFields(
+              commitmentMemoryDisclosureLabel({
+                restricted_audience: commitment.restricted_audience ?? null,
+                made_to_entity: commitment.made_to_entity ?? null,
+              }),
+            ),
           };
         }),
-        relational_slots: (input.relationalSlots ?? []).map((slot) => ({
-          id: slot.id ?? null,
-          subject_entity_id: slot.subject_entity_id,
-          slot_key: slot.slot_key,
-          value: slot.value,
-          state: slot.state,
-          alternate_values: slot.alternate_values.map((alternate) => ({
-            value: alternate.value,
-          })),
-        })),
+        relational_slots: (input.relationalSlots ?? []).map((slot) => {
+          const disclosureFields = memoryDisclosurePayloadFields(
+            relationalSlotMemoryDisclosureLabel(slot),
+          );
+
+          return {
+            id: slot.id ?? null,
+            subject_entity_id: slot.subject_entity_id,
+            slot_key: slot.slot_key,
+            value: slot.value,
+            state: slot.state,
+            alternate_values: slot.alternate_values.map((alternate) => ({
+              value: alternate.value,
+              disclosure: disclosureFields.disclosure,
+              disclosure_label: disclosureFields.disclosure_label,
+            })),
+            disclosure: disclosureFields.disclosure,
+            disclosure_label: disclosureFields.disclosure_label,
+          };
+        }),
       }),
     },
   ];

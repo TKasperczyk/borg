@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import { scheduledWakeSchema, type ScheduledWake } from "../../autonomy/index.js";
+import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import {
+  memoryDisclosureLabelMetadataSchema,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 // Cap the scheduling horizon at ~10 years: generous for any real use, and it
@@ -13,7 +18,10 @@ const scheduledWakesCreateInputSchema = z.object({
 });
 
 const scheduledWakesCreateOutputSchema = z.object({
-  scheduledWake: scheduledWakeSchema,
+  scheduledWake: scheduledWakeSchema.extend({
+    disclosure: z.string().min(1),
+    disclosure_label: memoryDisclosureLabelMetadataSchema,
+  }),
 });
 
 export type ScheduledWakesCreateToolOptions = {
@@ -39,12 +47,17 @@ export function createScheduledWakesCreateTool(
     inputSchema: scheduledWakesCreateInputSchema,
     outputSchema: scheduledWakesCreateOutputSchema,
     async invoke(input, context) {
+      const scheduledWake = options.scheduleWake({
+        delaySeconds: input.delay_seconds,
+        note: input.note,
+        originSessionId: context.sessionId,
+      });
+
       return {
-        scheduledWake: options.scheduleWake({
-          delaySeconds: input.delay_seconds,
-          note: input.note,
-          originSessionId: context.sessionId,
-        }),
+        scheduledWake: {
+          ...scheduledWake,
+          ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+        },
       };
     },
   };

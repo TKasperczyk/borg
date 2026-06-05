@@ -8,11 +8,13 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import type { BorgRole, EntityKind } from "../../memory/commitments/index.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { isPlainRecord } from "../../util/guards.js";
 import type { ActiveParticipant } from "../participants.js";
+import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -328,6 +330,7 @@ function buildFrameAnomalyMessages(input: ClassifyFrameAnomalyInput): LLMMessage
             content: message.content,
             stream_entry_id: message.stream_entry_id,
             ts: message.ts,
+            ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
           })),
       }),
     },

@@ -734,6 +734,12 @@ describe("internal tools", () => {
 
       expect(result.openQuestion.source).toBe("autonomy");
       expect(result.openQuestion.question).toContain("scheduler cadence");
+      expect(result.openQuestion).toMatchObject({
+        disclosure: expect.stringContaining("disclosure_class=self_private"),
+        disclosure_label: {
+          disclosure_class: "self_private",
+        },
+      });
     } finally {
       await borg.close();
     }
@@ -1137,6 +1143,15 @@ describe("internal tools", () => {
       expect(result.skills.find((item) => item.id === skill.id)).not.toHaveProperty(
         "source_episode_ids",
       );
+      expect(result.skills.find((item) => item.id === skill.id)).toMatchObject({
+        disclosure: expect.stringContaining("disclosure_class=unknown"),
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      });
       expect(result.context_stats_by_skill_id?.[skill.id]).toEqual([
         expect.objectContaining({
           context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
