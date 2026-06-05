@@ -1878,7 +1878,10 @@ function summarizeSelectedSkill(
     selectedSkill === undefined ||
     selectedSkill.evaluatedCandidates.length === 0
   ) {
-    return "No procedural skills matched this turn. Procedural skills are selected before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.";
+    return [
+      "No procedural skills matched this turn. Procedural skills are selected before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.",
+      SELF_IDENTITY_DISCLOSURE_LINE,
+    ].join("\n");
   }
 
   const winner = selectedSkill.evaluatedCandidates.find(
@@ -1901,6 +1904,7 @@ function summarizeSelectedSkill(
     ...displayedCandidates.map((candidate, index) =>
       summarizeSkillCandidate(candidate, index === 0 ? "winner" : "alternative"),
     ),
+    SELF_IDENTITY_DISCLOSURE_LINE,
   ].join("\n");
 }
 

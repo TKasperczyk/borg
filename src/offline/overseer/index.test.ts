@@ -380,6 +380,14 @@ describe("overseer process", () => {
       },
       timestamp: nowMs - 500,
     });
+    const period = harness.autobiographicalRepository.upsertPeriod({
+      label: "Grounded launch season",
+      start_ts: nowMs - 10_000,
+      narrative: "Sol is consolidating grounded launch habits.",
+      provenance: {
+        kind: "manual",
+      },
+    });
     const source = await appendSourceEntry(harness, "Maya is my partner.");
     await harness.episodicRepository.insert(
       createEpisodeFixture(
@@ -406,6 +414,9 @@ describe("overseer process", () => {
     const prompt = requestPrompt(llm);
     const valuesLine = prompt.split("\n").find((line) => line.startsWith("Values: "));
     const traitsLine = prompt.split("\n").find((line) => line.startsWith("Traits: "));
+    const currentPeriodLine = prompt
+      .split("\n")
+      .find((line) => line.startsWith("CurrentPeriod: "));
 
     expect(valuesLine).toContain(value.label);
     expect(valuesLine).toContain('"disclosure_label"');
@@ -413,6 +424,9 @@ describe("overseer process", () => {
     expect(traitsLine).toContain(trait.label);
     expect(traitsLine).toContain('"disclosure_label"');
     expect(traitsLine).toContain('"disclosure_class":"self_private"');
+    expect(currentPeriodLine).toContain(period.label);
+    expect(currentPeriodLine).toContain('"disclosure_label"');
+    expect(currentPeriodLine).toContain('"disclosure_class":"self_private"');
   });
 
   it("includes raw source entries for semantic node targets", async () => {

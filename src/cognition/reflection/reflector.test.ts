@@ -2252,6 +2252,13 @@ describe("reflector", () => {
       ownerEntityId: alice,
       provenance: { kind: "manual" },
     });
+    const nextStep = {
+      id: createExecutiveStepId(),
+      description: "Draft Alice's private launch follow-up",
+      status: "doing",
+      kind: "think",
+      due_at: null,
+    } as never;
     const question = harness.openQuestionsRepository.add({
       question: "What should Sol ask Alice about the private launch?",
       urgency: 0.7,
@@ -2276,6 +2283,13 @@ describe("reflector", () => {
         activeOpenQuestions: [question],
         retrievedEpisodes: [retrieved],
         audienceEntityId: bob,
+        executiveFocus: {
+          selected_goal: goal,
+          selected_score: null,
+          next_step: nextStep,
+          candidates: [],
+          threshold: 0.45,
+        },
       },
       harness.streamWriter,
     );
@@ -2292,6 +2306,16 @@ describe("reflector", () => {
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
+      executive_focus?: {
+        selected_goal?: {
+          disclosure?: string;
+          disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+        };
+        next_step?: {
+          disclosure?: string;
+          disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+        } | null;
+      };
     };
 
     expect(payload.active_goals?.[0]?.disclosure).toContain(
@@ -2315,6 +2339,14 @@ describe("reflector", () => {
     );
     expect(payload.available_evidence_episodes?.[0]?.disclosure).toContain(`private-to=${alice}`);
     expect(payload.available_evidence_episodes?.[0]?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [alice],
+    });
+    expect(payload.executive_focus?.selected_goal?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [alice],
+    });
+    expect(payload.executive_focus?.next_step?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [alice],
     });

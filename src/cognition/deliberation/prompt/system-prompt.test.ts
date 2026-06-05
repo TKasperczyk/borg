@@ -23,7 +23,11 @@ import {
   createRelationalSlotId,
   createStreamEntryId,
 } from "../../../util/ids.js";
-import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import {
+  relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureLabelForModel,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
 import type { EvidenceLedger } from "../../evidence-ledger/types.js";
 import { FixedClock } from "../../../util/clock.js";
 import { openDatabase } from "../../../storage/sqlite/index.js";
@@ -2513,6 +2517,9 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("Broad refactor");
     expect(block).not.toContain("Success rate");
     expect(block.indexOf("- winner:")).toBeLessThan(block.indexOf("- alternative: Trace"));
+    expect(block.trim().split("\n").at(-2)).toBe(
+      `disclosure: ${renderMemoryDisclosureLabelForModel(selfPrivateMemoryDisclosureLabel())}`,
+    );
   });
 
   it("renders contextual skill statistics when present", () => {

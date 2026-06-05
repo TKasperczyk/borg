@@ -241,13 +241,21 @@ function summarizeSelfState(ctx: OfflineContext): string {
       )
       .join(" | ") || "none";
   const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
+  const currentPeriodRow =
+    currentPeriod === null
+      ? "none"
+      : JSON.stringify({
+          id: currentPeriod.id,
+          label: currentPeriod.label,
+          ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+        });
 
   return [
     `Values: ${values}`,
     `Goals: ${goals}`,
     `Traits: ${traits}`,
     `Commitments: ${commitments}`,
-    `CurrentPeriod: ${currentPeriod === null ? "none" : `${currentPeriod.id}:${currentPeriod.label}`}`,
+    `CurrentPeriod: ${currentPeriodRow}`,
   ].join("\n");
 }
 

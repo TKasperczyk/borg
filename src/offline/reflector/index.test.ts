@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { type LLMCompleteOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { createEntityId } from "../../util/ids.js";
 
 import {
   createEpisodeFixture,
@@ -349,6 +350,71 @@ describe("reflector process", () => {
     expect(result.errors).toEqual([]);
     expect(result.changes).toHaveLength(1);
     expect(String(result.changes[0]?.targets.cluster)).toContain("deploy+部署");
+  });
+
+  it("labels active goals in the model-facing reflection prompt", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["goal-reflect", [1, 0, 0, 0]],
+          ["Goal reflection insight", [1, 0, 0, 0]],
+          ["Goal reflection insight\nGoal descriptions stay labeled.", [1, 0, 0, 0]],
+        ]),
+      ),
+    });
+    cleanup.push(harness.cleanup);
+    const audience = createEntityId();
+    const goal = harness.goalsRepository.add({
+      description: "Keep the private launch goal grounded",
+      priority: 7,
+      audienceEntityId: audience,
+      provenance: { kind: "manual" },
+    });
+    const episodes = [10_000, 20_000, 30_000].map((timestamp, index) =>
+      createEpisodeFixture(
+        {
+          title: `Goal reflect ${index}`,
+          narrative: `Goal reflection evidence ${index}.`,
+          tags: ["goal-reflect"],
+          created_at: timestamp,
+          updated_at: timestamp,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Goal reflection insight",
+        description: "Goal descriptions stay labeled.",
+        confidence: 0.6,
+        source_episode_ids: episodes.map((episode) => episode.id),
+      }),
+    );
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.plan(harness.createContext());
+
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const activeGoalsLine = prompt
+      .split("\n")
+      .find((line) => line.startsWith("Active goals: "));
+
+    expect(activeGoalsLine).toContain(goal.description);
+    expect(activeGoalsLine).toContain('"disclosure_label"');
+    expect(activeGoalsLine).toContain('"disclosure_class":"relationship_private"');
+    expect(activeGoalsLine).toContain(audience);
   });
 
   it("keeps existing insight updates pending until review acceptance and restores snapshots", async () => {

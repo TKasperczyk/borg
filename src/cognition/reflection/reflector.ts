@@ -459,12 +459,14 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
   }
 
   const nextStep = focus.next_step ?? null;
+  const selectedGoalDisclosureLabel = goalMemoryDisclosureLabel(focus.selected_goal);
 
   return {
     selected_goal: {
       goal_id: focus.selected_goal.id,
       description: focus.selected_goal.description,
       progress_notes: focus.selected_goal.progress_notes,
+      ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
     },
     next_step:
       nextStep === null
@@ -475,6 +477,7 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
             status: nextStep.status,
             kind: nextStep.kind,
             due_at: nextStep.due_at,
+            ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
           },
   };
 }

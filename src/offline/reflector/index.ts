@@ -7,8 +7,13 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import { OFFLINE_REFLECTOR_PROMPT_PREAMBLE } from "../../cognition/prompts/reflector.js";
+import {
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
+import type { GoalRecord } from "../../memory/self/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   semanticEdgeIdSchema,
@@ -183,11 +188,21 @@ function semanticNodeSnapshotMatches(
   return JSON.stringify(serializeSemanticNode(node)) === JSON.stringify(snapshot);
 }
 
-function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly string[]): string {
+function renderActiveGoalPromptRow(goal: GoalRecord): string {
+  return JSON.stringify({
+    id: goal.id,
+    description: goal.description,
+    ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+  });
+}
+
+function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecord[]): string {
+  const goals = activeGoals.map((goal) => renderActiveGoalPromptRow(goal)).join(" | ") || "none";
+
   return [
     OFFLINE_REFLECTOR_PROMPT_PREAMBLE,
     `Cluster key: ${cluster.key}`,
-    `Active goals: ${goalDescriptions.join(" | ") || "none"}`,
+    `Active goals: ${goals}`,
     "Episodes:",
     ...cluster.episodes.map((episode) =>
       JSON.stringify(
@@ -378,10 +393,7 @@ async function buildInsightCandidate(
       messages: [
         {
           role: "user",
-          content: buildPrompt(
-            cluster,
-            ctx.goalsRepository.list({ status: "active" }).map((goal) => goal.description),
-          ),
+          content: buildPrompt(cluster, ctx.goalsRepository.list({ status: "active" })),
         },
       ],
       tools: [REFLECTOR_TOOL],
