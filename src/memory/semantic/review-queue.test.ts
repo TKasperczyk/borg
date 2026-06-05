@@ -11,7 +11,10 @@ import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createAutobiographicalPeriodId,
+  createCommitmentId,
+  createEntityId,
   createSemanticNodeId,
+  createStreamEntryId,
   type EpisodeId,
   type SkillId,
 } from "../../util/ids.js";
@@ -162,6 +165,136 @@ describe("review queue", () => {
       target_type: "semantic_node",
     });
     reopened.close();
+  });
+
+  it("lists open cross-scope commitment reconciliations with most-restrictive disclosure labels", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    cleanup.push(async () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    const firstId = createCommitmentId();
+    const secondId = createCommitmentId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    const sortedAudienceIds = [alice, bob].sort();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(async () => {
+      db.close();
+    });
+
+    reviewQueue.enqueue({
+      kind: "commitment_reconciliation",
+      refs: {
+        target_type: "commitment_reconciliation",
+        subkind: "cross_scope_conflict",
+        commitment_ids: [firstId, secondId],
+        scope_key: {
+          kind: "participant_preference",
+          restricted_audience: null,
+          made_to_entity: null,
+          about_entity: null,
+        },
+        detection_key: {
+          kind: "participant_preference",
+          about_entity: null,
+          directive_family: "reply_style",
+        },
+        reason: "The cross-scope commitments conflict.",
+        members: [
+          {
+            id: firstId,
+            kind: "participant_preference",
+            type: "preference",
+            directive_family: "reply_style",
+            directive: "Keep Alice replies short.",
+            scope_key: {
+              kind: "participant_preference",
+              restricted_audience: alice,
+              made_to_entity: null,
+              about_entity: null,
+            },
+            source_stream_entry_ids: [firstEntryId],
+            disclosure_label: {
+              disclosureClass: "relationship_private",
+              originAudienceEntityIds: [alice],
+              privateToEntityIds: [alice],
+              publicToEntityIds: [],
+            },
+          },
+          {
+            id: secondId,
+            kind: "participant_preference",
+            type: "preference",
+            directive_family: "reply_style",
+            directive: "Give Bob detailed replies.",
+            scope_key: {
+              kind: "participant_preference",
+              restricted_audience: bob,
+              made_to_entity: null,
+              about_entity: null,
+            },
+            source_stream_entry_ids: [secondEntryId],
+            disclosure_label: {
+              disclosureClass: "relationship_private",
+              originAudienceEntityIds: [bob],
+              privateToEntityIds: [bob],
+              publicToEntityIds: [],
+            },
+          },
+        ],
+        judgment: {
+          commitment_ids: [firstId, secondId],
+          resolution: "conflict",
+          survivor_commitment_id: null,
+          superseded_commitment_ids: [],
+          reason: "The cross-scope commitments conflict.",
+        },
+        source_stream_entry_ids: [firstEntryId, secondEntryId],
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+      reason: "cross-scope commitment reconciliation",
+    });
+
+    const reviews = reviewQueue.listOpenCommitmentReconciliationsForCognition({
+      subkinds: ["cross_scope_conflict"],
+    });
+
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({
+      reason: "cross-scope commitment reconciliation",
+      subkind: "cross_scope_conflict",
+      commitment_ids: [firstId, secondId],
+      source_stream_entry_ids: [firstEntryId, secondEntryId],
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: sortedAudienceIds,
+        privateToEntityIds: sortedAudienceIds,
+        publicToEntityIds: [],
+      },
+    });
+    expect(reviews[0]?.refs.disclosure_label).toEqual({
+      disclosureClass: "public",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    });
+    expect(reviews[0]?.members.map((member) => member.directive)).toEqual([
+      "Keep Alice replies short.",
+      "Give Bob detailed replies.",
+    ]);
   });
 
   it("enqueues contradiction reviews on conflicting support paths and resolves them", async () => {
@@ -1104,9 +1237,11 @@ describe("review queue", () => {
 
     expect(stored?.kind).toBe(kind);
     expect(
-      (await harness.semanticNodeRepository.list({
-        kind,
-      })).map((node) => node.id),
+      (
+        await harness.semanticNodeRepository.list({
+          kind,
+        })
+      ).map((node) => node.id),
     ).toEqual([nodeId]);
     expect(harness.semanticNodeRepository.listDistinctKinds()).toContain(kind);
   });

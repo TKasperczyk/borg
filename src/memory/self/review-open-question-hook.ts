@@ -78,7 +78,8 @@ function isReviewKindWithOpenQuestion(item: ReviewQueueItem): boolean {
   return (
     item.kind === "contradiction" ||
     item.kind === "misattribution" ||
-    item.kind === "identity_inconsistency"
+    item.kind === "identity_inconsistency" ||
+    item.kind === "commitment_reconciliation"
   );
 }
 

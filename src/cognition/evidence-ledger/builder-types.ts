@@ -8,7 +8,10 @@ import type {
   OpenQuestion,
   OpenQuestionsRepository,
 } from "../../memory/self/index.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type {
+  OpenCommitmentReconciliationStatus,
+  ReviewQueueItem,
+} from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { StreamEntry, StreamReader } from "../../stream/index.js";
@@ -61,6 +64,7 @@ export type EvidenceLedgerBuildInput = {
   retrievedSemantic?: RetrievedSemantic | null;
   openQuestions: readonly OpenQuestion[];
   pendingCorrections: readonly ReviewQueueItem[];
+  pendingCommitmentReviews?: readonly OpenCommitmentReconciliationStatus[];
   frameAnomaly?: ActualFrameAnomalyClassification | null;
   activeParticipants?: readonly ActiveParticipant[];
   crossSessionSelfActivity?: readonly CrossSessionSelfActivityRow[];

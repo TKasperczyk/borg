@@ -25,6 +25,11 @@ import type { TraitsRepository } from "../self/traits-repository.js";
 import type { ValuesRepository } from "../self/values-repository.js";
 import { CommitmentRepository, entityIdSchema } from "../commitments/index.js";
 import { type EntityId } from "../../util/ids.js";
+import {
+  commitmentReconciliationReviewRefsSchema,
+  type CommitmentReconciliationReviewRefs,
+  type CommitmentReconciliationSubkind,
+} from "./review-handlers/commitment-reconciliation.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import {
   semanticEdgeIdSchema,
@@ -268,6 +273,17 @@ export type OpenBeliefRevisionStatus = BeliefRevisionTarget & {
   audience_entity_id: EntityId | null;
   disclosureLabel: MemoryDisclosureLabel;
 };
+export type OpenCommitmentReconciliationStatus = {
+  review_id: ReviewQueueItem["id"];
+  reason: string;
+  created_at: number;
+  subkind: CommitmentReconciliationSubkind;
+  commitment_ids: CommitmentReconciliationReviewRefs["commitment_ids"];
+  members: CommitmentReconciliationReviewRefs["members"];
+  source_stream_entry_ids: string[];
+  disclosureLabel: MemoryDisclosureLabel;
+  refs: CommitmentReconciliationReviewRefs;
+};
 export type BeliefRevisionVisibilityOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
@@ -308,6 +324,18 @@ function beliefRevisionReasonCode(refs: BeliefRevisionRefs): BeliefRevisionReaso
 
 function uniqueEpisodeIds(ids: readonly Episode["id"][]): Episode["id"][] {
   return [...new Set(ids)];
+}
+
+export function commitmentReconciliationReviewDisclosureLabel(
+  refs: CommitmentReconciliationReviewRefs,
+): MemoryDisclosureLabel {
+  const memberLabels = refs.members.map(
+    (member) => member.disclosure_label ?? unknownMemoryDisclosureLabel(),
+  );
+  const labels =
+    refs.disclosure_label === undefined ? memberLabels : [...memberLabels, refs.disclosure_label];
+
+  return combineMemoryDisclosureLabels(labels);
 }
 
 function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
@@ -572,6 +600,55 @@ export class ReviewQueueRepository {
       | undefined;
 
     return row === undefined ? null : mapReviewRow(row);
+  }
+
+  listOpenCommitmentReconciliationsForCognition(
+    options: { subkinds?: readonly CommitmentReconciliationSubkind[] } = {},
+  ): OpenCommitmentReconciliationStatus[] {
+    const allowedSubkinds =
+      options.subkinds === undefined
+        ? null
+        : new Set<CommitmentReconciliationSubkind>(options.subkinds);
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id, kind, refs, reason, created_at, resolved_at, resolution
+          FROM review_queue
+          WHERE kind = 'commitment_reconciliation'
+            AND resolved_at IS NULL
+          ORDER BY created_at DESC, id DESC
+        `,
+      )
+      .all() as Record<string, unknown>[];
+    const results: OpenCommitmentReconciliationStatus[] = [];
+
+    for (const item of rows.map((row) => mapReviewRow(row))) {
+      const parsed = commitmentReconciliationReviewRefsSchema.safeParse(item.refs);
+
+      if (!parsed.success) {
+        continue;
+      }
+
+      const refs = parsed.data;
+
+      if (allowedSubkinds !== null && !allowedSubkinds.has(refs.subkind)) {
+        continue;
+      }
+
+      results.push({
+        review_id: item.id,
+        reason: item.reason,
+        created_at: item.created_at,
+        subkind: refs.subkind,
+        commitment_ids: refs.commitment_ids,
+        members: refs.members,
+        source_stream_entry_ids: refs.source_stream_entry_ids ?? [],
+        disclosureLabel: commitmentReconciliationReviewDisclosureLabel(refs),
+        refs,
+      });
+    }
+
+    return results;
   }
 
   private beliefRevisionEvidenceEpisodeIds(refs: BeliefRevisionRefs): Episode["id"][] {

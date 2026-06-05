@@ -152,6 +152,9 @@ export type TurnRetrievalPhaseResult = {
   pendingCorrections: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["pendingCorrections"];
+  pendingCommitmentReviews: Awaited<
+    ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
+  >["pendingCommitmentReviews"];
   affectiveTrajectory: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["affectiveTrajectory"];
@@ -733,6 +736,7 @@ export async function runRetrievalPhase(input: {
     input.correctiveCommitment,
   );
   const pendingCorrections = retrievalContext.pendingCorrections;
+  const pendingCommitmentReviews = retrievalContext.pendingCommitmentReviews;
   const affectiveTrajectory = retrievalContext.affectiveTrajectory;
   const retrieval = retrievalContext.retrieval;
   const retrievedEpisodes = retrievalContext.retrievedEpisodes;
@@ -880,6 +884,7 @@ export async function runRetrievalPhase(input: {
       retrievedSemantic,
       openQuestions: retrieval.open_questions,
       pendingCorrections,
+      pendingCommitmentReviews,
       frameAnomaly: input.currentTurnFrameAnomaly,
       activeParticipants: input.activeParticipants,
       crossSessionSelfActivity,
@@ -908,6 +913,7 @@ export async function runRetrievalPhase(input: {
     retrievalContext,
     applicableCommitments,
     pendingCorrections,
+    pendingCommitmentReviews,
     affectiveTrajectory,
     retrieval,
     retrievedEpisodes,

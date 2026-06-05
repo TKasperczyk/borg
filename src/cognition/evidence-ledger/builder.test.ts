@@ -18,6 +18,7 @@ import {
   type GoalTreeNode,
   type OpenQuestion,
 } from "../../memory/self/index.js";
+import type { OpenCommitmentReconciliationStatus } from "../../memory/semantic/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
@@ -2069,6 +2070,170 @@ describe("EvidenceLedgerBuilder", () => {
         session_scope: "prior_session",
       }),
     ]);
+  });
+
+  it("renders open cross-scope commitment reviews as labeled contested cognition evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice privately requests short launch replies.",
+      sender_entity_id: null,
+    });
+    const bobEntry = await writer.append({
+      kind: "user_msg",
+      content: "Bob privately requests exhaustive launch replies.",
+      sender_entity_id: null,
+    });
+    const firstCommitmentId = createCommitmentId();
+    const secondCommitmentId = createCommitmentId();
+    const sortedAudienceIds = [alice, bob].sort();
+    const reviewMembers = [
+      {
+        id: firstCommitmentId,
+        kind: "participant_preference" as const,
+        type: "preference" as const,
+        directive_family: "launch_reply_style",
+        directive: "Keep Alice launch replies short.",
+        scope_key: {
+          kind: "participant_preference" as const,
+          restricted_audience: alice,
+          made_to_entity: null,
+          about_entity: null,
+        },
+        source_stream_entry_ids: [aliceEntry.id],
+        disclosure_label: {
+          disclosureClass: "relationship_private" as const,
+          originAudienceEntityIds: [alice],
+          privateToEntityIds: [alice],
+          publicToEntityIds: [],
+        },
+      },
+      {
+        id: secondCommitmentId,
+        kind: "participant_preference" as const,
+        type: "preference" as const,
+        directive_family: "launch_reply_style",
+        directive: "Give Bob exhaustive launch replies.",
+        scope_key: {
+          kind: "participant_preference" as const,
+          restricted_audience: bob,
+          made_to_entity: null,
+          about_entity: null,
+        },
+        source_stream_entry_ids: [bobEntry.id],
+        disclosure_label: {
+          disclosureClass: "relationship_private" as const,
+          originAudienceEntityIds: [bob],
+          privateToEntityIds: [bob],
+          publicToEntityIds: [],
+        },
+      },
+    ];
+    const review: OpenCommitmentReconciliationStatus = {
+      review_id: 41,
+      reason: "Cross-scope commitment conflict requires review.",
+      created_at: NOW_MS,
+      subkind: "cross_scope_conflict",
+      commitment_ids: [firstCommitmentId, secondCommitmentId],
+      source_stream_entry_ids: [aliceEntry.id, bobEntry.id],
+      disclosureLabel: {
+        disclosureClass: "public",
+        originAudienceEntityIds: [],
+        privateToEntityIds: [],
+        publicToEntityIds: [],
+      },
+      members: reviewMembers,
+      refs: {
+        target_type: "commitment_reconciliation",
+        subkind: "cross_scope_conflict",
+        commitment_ids: [firstCommitmentId, secondCommitmentId],
+        scope_key: {
+          kind: "participant_preference",
+          restricted_audience: null,
+          made_to_entity: null,
+          about_entity: null,
+        },
+        detection_key: {
+          kind: "participant_preference",
+          about_entity: null,
+          directive_family: "launch_reply_style",
+        },
+        reason: "Cross-scope commitment conflict requires review.",
+        members: reviewMembers,
+        judgment: {
+          commitment_ids: [firstCommitmentId, secondCommitmentId],
+          resolution: "conflict",
+          survivor_commitment_id: null,
+          superseded_commitment_ids: [],
+          reason: "Cross-scope commitment conflict requires review.",
+        },
+        source_stream_entry_ids: [aliceEntry.id, bobEntry.id],
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: bob,
+      currentUserMessage: "Bob asks how to handle launch replies.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      pendingCommitmentReviews: [review],
+      frameAnomaly: null,
+    });
+    const entry = ledger.sections
+      .find((section) => section.id === "contradictions_quarantines")
+      ?.entries.find((candidate) => candidate.id === "review_queue:41");
+
+    expect(entry).toMatchObject({
+      source_type: "system_metadata",
+      session_scope: "current_session",
+      state: expect.stringContaining("disclosure_class=relationship_private"),
+      taint: "contested",
+      state_metadata: expect.objectContaining({
+        review_kind: "commitment_reconciliation",
+        review_subkind: "cross_scope_conflict",
+        commitment_ids: [firstCommitmentId, secondCommitmentId],
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "relationship_private",
+          origin_audience_entity_ids: sortedAudienceIds,
+          private_to_entity_ids: sortedAudienceIds,
+        }),
+        disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+      }),
+    });
+    expect(entry?.text).toContain("Keep Alice launch replies short.");
+    expect(entry?.text).toContain("Give Bob exhaustive launch replies.");
+    expect(entry?.text).toContain(`private-to=${alice}`);
+    expect(entry?.text).toContain(`private-to=${bob}`);
   });
 
   it("renders disclosure labels on retrieved open-question evidence", async () => {

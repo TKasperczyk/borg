@@ -5,11 +5,18 @@ import {
   commitmentKindSchema,
   commitmentTypeSchema,
   entityIdSchema,
+  directiveFamilySchema,
+  streamEntryIdSchema,
 } from "../../commitments/index.js";
+import { memoryDisclosureLabelSchema } from "../../common/disclosure-label.js";
 import type { ReviewQueueHandler, ReviewResolution } from "../review-queue.js";
 
 export const COMMITMENT_RECONCILIATION_REVIEW_KIND = "commitment_reconciliation" as const;
-export const COMMITMENT_RECONCILIATION_REVIEW_SUBKINDS = ["conflict"] as const;
+export const COMMITMENT_RECONCILIATION_REVIEW_SUBKINDS = [
+  "conflict",
+  "cross_scope_conflict",
+  "cross_scope_redundancy",
+] as const;
 export const COMMITMENT_RECONCILIATION_RESOLUTIONS = [
   "supersede_to_survivor",
   "keep_independent",
@@ -39,6 +46,14 @@ export const commitmentReconciliationScopeKeySchema = z
   })
   .strict();
 
+export const commitmentReconciliationDetectionKeySchema = z
+  .object({
+    kind: commitmentKindSchema,
+    about_entity: entityIdSchema.nullable(),
+    directive_family: directiveFamilySchema,
+  })
+  .strict();
+
 export const commitmentReconciliationJudgmentSchema = z
   .object({
     commitment_ids: z.array(commitmentIdSchema).min(2),
@@ -52,14 +67,12 @@ export const commitmentReconciliationJudgmentSchema = z
     const commitmentIds = new Set(value.commitment_ids);
     const supersededIds = new Set(value.superseded_commitment_ids);
     const survivorIsMember =
-      value.survivor_commitment_id !== null &&
-      commitmentIds.has(value.survivor_commitment_id);
+      value.survivor_commitment_id !== null && commitmentIds.has(value.survivor_commitment_id);
     const supersededAreMembers = value.superseded_commitment_ids.every((id) =>
       commitmentIds.has(id),
     );
     const survivorIsSuperseded =
-      value.survivor_commitment_id !== null &&
-      supersededIds.has(value.survivor_commitment_id);
+      value.survivor_commitment_id !== null && supersededIds.has(value.survivor_commitment_id);
 
     if (commitmentIds.size !== value.commitment_ids.length) {
       ctx.addIssue({
@@ -156,12 +169,19 @@ export const commitmentReconciliationReviewRefsSchema = z
             id: commitmentIdSchema,
             kind: commitmentKindSchema,
             type: commitmentTypeSchema,
-            directive_family: z.string().min(1),
+            directive_family: directiveFamilySchema,
+            directive: z.string().min(1).optional(),
+            scope_key: commitmentReconciliationScopeKeySchema.optional(),
+            source_stream_entry_ids: z.array(streamEntryIdSchema).optional(),
+            disclosure_label: memoryDisclosureLabelSchema.optional(),
           })
           .strict(),
       )
       .min(2),
     judgment: commitmentReconciliationJudgmentSchema,
+    detection_key: commitmentReconciliationDetectionKeySchema.optional(),
+    source_stream_entry_ids: z.array(streamEntryIdSchema).optional(),
+    disclosure_label: memoryDisclosureLabelSchema.optional(),
   })
   .strict();
 
@@ -174,9 +194,10 @@ export type CommitmentReconciliationReviewRefs = z.infer<
 export type CommitmentReconciliationScopeKey = z.infer<
   typeof commitmentReconciliationScopeKeySchema
 >;
-export type CommitmentReconciliationSubkind = z.infer<
-  typeof commitmentReconciliationSubkindSchema
+export type CommitmentReconciliationDetectionKey = z.infer<
+  typeof commitmentReconciliationDetectionKeySchema
 >;
+export type CommitmentReconciliationSubkind = z.infer<typeof commitmentReconciliationSubkindSchema>;
 
 export function createCommitmentReconciliationReviewQueueHandler(): ReviewQueueHandler<
   typeof COMMITMENT_RECONCILIATION_REVIEW_KIND,

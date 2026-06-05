@@ -1,7 +1,12 @@
 import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
+import { commitmentReconciliationReviewDisclosureLabel } from "../../../memory/semantic/index.js";
 import { correctionMemoryDisclosureLabel } from "../../disclosure-labels.js";
-import type { MemoryDisclosureLabel } from "../../../retrieval/index.js";
+import {
+  renderMemoryDisclosureLabelForModel,
+  unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -12,7 +17,25 @@ import {
   persistenceClassFromProvenance,
   reviewQueueScope,
   reviewQueueStreamIds,
+  scopeFromStreamIds,
 } from "../scope-resolver.js";
+
+function commitmentReviewText(
+  review: NonNullable<BuilderSectionContext["input"]["pendingCommitmentReviews"]>[number],
+): string {
+  const lines = [review.reason];
+
+  for (const member of review.members) {
+    const disclosure = renderMemoryDisclosureLabelForModel(
+      member.disclosure_label ?? unknownMemoryDisclosureLabel(),
+    );
+    const directive = member.directive ?? member.directive_family;
+
+    lines.push(`- commitment ${member.id}: ${directive} (${disclosure})`);
+  }
+
+  return lines.join("\n");
+}
 
 export function addContradictionsAndQuarantinesSection(context: BuilderSectionContext): void {
   if (context.input.frameAnomaly?.status === "ok") {
@@ -73,6 +96,41 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
         taint: "contested",
         ...persistenceClassFromProvenance(
           { streamEntryIds: reviewQueueStreamIds(correction) },
+          context.resolver,
+        ),
+      }),
+    );
+  }
+
+  for (const review of context.input.pendingCommitmentReviews ?? []) {
+    const disclosureLabel = commitmentReconciliationReviewDisclosureLabel(review.refs);
+
+    addEntry(
+      context.buckets,
+      "contradictions_quarantines",
+      cappedTrustRank({
+        id: `review_queue:${review.review_id}`,
+        source_type: "system_metadata",
+        session_scope: scopeFromStreamIds(review.source_stream_entry_ids, context.resolver),
+        actor: "system",
+        trust_rank: QUARANTINE_TRUST_RANK,
+        text: commitmentReviewText(review),
+        value: `${review.refs.target_type}:${review.subkind}`,
+        state: appendMemoryDisclosureState({
+          state: "open",
+          disclosureLabel,
+        }),
+        state_metadata: appendMemoryDisclosureStateMetadata({
+          stateMetadata: {
+            review_kind: review.refs.target_type,
+            review_subkind: review.subkind,
+            commitment_ids: review.commitment_ids,
+          },
+          disclosureLabel,
+        }),
+        taint: "contested",
+        ...persistenceClassFromProvenance(
+          { streamEntryIds: review.source_stream_entry_ids },
           context.resolver,
         ),
       }),

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { LLMCompleteOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import type { CommitmentReconciliationReviewRefs } from "../../memory/semantic/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { createOfflineTestHarness, type OfflineTestHarness } from "../test-support.js";
@@ -232,38 +233,126 @@ describe("CommitmentReconcilerProcess", () => {
     expect(harness.auditLog.list({ process: "commitment-reconciler" })).toEqual([]);
   });
 
-  it("does not reconcile commitments in different audience scopes", async () => {
+  it("enqueues cross-scope awareness reviews without superseding different audience commitments", async () => {
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    const firstAudience = createEntityId();
+    const secondAudience = createEntityId();
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [
-          () => {
-            throw new Error("LLM should not be called for singleton scope groups");
+          (options: LLMCompleteOptions) => {
+            const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+              commitments: Array<{ id: string }>;
+              structural_detection_key?: unknown;
+              structural_scope_keys?: string[];
+            };
+            const [first, second] = payload.commitments;
+
+            expect(payload.structural_detection_key).toMatchObject({
+              kind: "participant_preference",
+              about_entity: null,
+              directive_family: "same_meaning",
+            });
+            expect(payload.structural_scope_keys).toHaveLength(2);
+
+            return reconciliationResponse([
+              {
+                commitment_ids: [first!.id, second!.id],
+                resolution: "conflict",
+                reason: "The audience-scoped commitments conflict and need human review.",
+              },
+            ]);
           },
         ],
       }),
     });
     cleanup.push(harness.cleanup);
     const process = createProcess(harness);
-    const firstAudience = createEntityId();
-    const secondAudience = createEntityId();
     const first = addCommitment(harness, {
-      directiveFamily: "same_meaning_a",
-      directive: "Use required handles.",
+      directiveFamily: "same_meaning",
+      directive: "Use Alice's required handles.",
       restrictedAudience: firstAudience,
+      sourceStreamEntryIds: [firstEntryId],
     });
     const second = addCommitment(harness, {
-      directiveFamily: "same_meaning_b",
-      directive: "Use required handles.",
+      directiveFamily: "same_meaning",
+      directive: "Use Bob's incompatible required handles.",
       restrictedAudience: secondAudience,
+      sourceStreamEntryIds: [secondEntryId],
     });
 
-    const plan = await process.plan(harness.createContext());
+    const result = await process.run(harness.createContext());
+    const reviews = harness.reviewQueueRepository.list({
+      kind: "commitment_reconciliation",
+      openOnly: true,
+    });
+    const refs = reviews[0]?.refs as CommitmentReconciliationReviewRefs;
+    const sortedAudienceIds = [firstAudience, secondAudience].sort();
 
-    expect(plan.group_count).toBe(0);
-    expect(plan.auto_supersedes).toEqual([]);
-    expect(plan.reviews).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]?.action).toBe("enqueue_commitment_reconciliation_review");
+    expect(result.changes[0]?.targets).toMatchObject({
+      subkind: "cross_scope_conflict",
+      commitment_ids: expect.arrayContaining([first.id, second.id]),
+    });
     expect(harness.commitmentRepository.get(first.id)?.superseded_by).toBeNull();
     expect(harness.commitmentRepository.get(second.id)?.superseded_by).toBeNull();
+    expect(reviews).toHaveLength(1);
+    expect(refs).toMatchObject({
+      target_type: "commitment_reconciliation",
+      subkind: "cross_scope_conflict",
+      commitment_ids: expect.arrayContaining([first.id, second.id]),
+      detection_key: {
+        kind: "participant_preference",
+        about_entity: null,
+        directive_family: "same_meaning",
+      },
+      source_stream_entry_ids: expect.arrayContaining([firstEntryId, secondEntryId]),
+      disclosure_label: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: sortedAudienceIds,
+        privateToEntityIds: sortedAudienceIds,
+        publicToEntityIds: [],
+      },
+    });
+    expect(refs.source_stream_entry_ids).toHaveLength(2);
+    expect(refs.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: first.id,
+          directive: "Use Alice's required handles.",
+          source_stream_entry_ids: [firstEntryId],
+          scope_key: expect.objectContaining({
+            restricted_audience: firstAudience,
+            made_to_entity: null,
+            about_entity: null,
+          }),
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [firstAudience],
+            privateToEntityIds: [firstAudience],
+            publicToEntityIds: [],
+          },
+        }),
+        expect.objectContaining({
+          id: second.id,
+          directive: "Use Bob's incompatible required handles.",
+          source_stream_entry_ids: [secondEntryId],
+          scope_key: expect.objectContaining({
+            restricted_audience: secondAudience,
+            made_to_entity: null,
+            about_entity: null,
+          }),
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [secondAudience],
+            privateToEntityIds: [secondAudience],
+            publicToEntityIds: [],
+          },
+        }),
+      ]),
+    );
   });
 
   it("caps groups per run", async () => {

@@ -6,7 +6,11 @@ import type {
   EntityRecord,
 } from "../../memory/commitments/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
-import type { ReviewQueueItem, ReviewQueueRepository } from "../../memory/semantic/index.js";
+import type {
+  OpenCommitmentReconciliationStatus,
+  ReviewQueueItem,
+  ReviewQueueRepository,
+} from "../../memory/semantic/index.js";
 import type {
   ProceduralContext,
   SkillSelectionResult,
@@ -98,7 +102,8 @@ function coordinatorContextFromRecallDisclosureContext(input: {
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
   entityRepository: Pick<EntityRepository, "getSelf">;
-  reviewQueueRepository: Pick<ReviewQueueRepository, "list">;
+  reviewQueueRepository: Pick<ReviewQueueRepository, "list"> &
+    Partial<Pick<ReviewQueueRepository, "listOpenCommitmentReconciliationsForCognition">>;
   moodRepository: Pick<MoodRepository, "current" | "history">;
   retrievalPipeline: Pick<RetrievalPipeline, "recallEpisodesForCognition">;
   skillSelector: Pick<SkillSelector, "select">;
@@ -131,6 +136,7 @@ export type TurnRetrievalCoordinatorInput = {
 export type TurnRetrievalCoordinatorResult = {
   applicableCommitments: CommitmentRecord[];
   pendingCorrections: ReviewQueueItem[];
+  pendingCommitmentReviews: OpenCommitmentReconciliationStatus[];
   affectiveTrajectory: ReturnType<MoodRepository["history"]>;
   retrieval: RetrievedContext;
   retrievedEpisodes: RetrievedContext["episodes"];
@@ -174,6 +180,10 @@ export class TurnRetrievalCoordinator {
         ...item,
         disclosureLabel: correctionMemoryDisclosureLabel(item.refs),
       }));
+    const pendingCommitmentReviews =
+      this.options.reviewQueueRepository.listOpenCommitmentReconciliationsForCognition?.({
+        subkinds: ["cross_scope_conflict", "cross_scope_redundancy"],
+      }) ?? [];
     const perceivedMood = input.workingMemory.mood ?? createNeutralAffectiveSignal();
     const perceivedMoodActive =
       Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;
@@ -273,6 +283,7 @@ export class TurnRetrievalCoordinator {
     return {
       applicableCommitments,
       pendingCorrections,
+      pendingCommitmentReviews,
       affectiveTrajectory,
       retrieval,
       retrievedEpisodes,

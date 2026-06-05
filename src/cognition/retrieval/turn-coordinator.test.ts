@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { BorgRole, CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type {
+  OpenCommitmentReconciliationStatus,
+  ReviewQueueItem,
+} from "../../memory/semantic/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
@@ -19,6 +22,8 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { ManualClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createCommitmentId,
+  createStreamEntryId,
   type CommitmentId,
   type EntityId,
   type GoalId,
@@ -600,6 +605,182 @@ describe("TurnRetrievalCoordinator", () => {
     });
   });
 
+  it("recalls cross-scope commitment reviews without widening applicable commitments", async () => {
+    const aliceCommitment = {
+      ...makeCommitment(createCommitmentId(), 10, 100),
+      directive: "Keep Alice launch replies short.",
+      restricted_audience: audienceEntityId,
+    };
+    const bobCommitment = {
+      ...makeCommitment(createCommitmentId(), 8, 110),
+      directive: "Give Bob launch replies in detail.",
+      restricted_audience: bobEntityId,
+    };
+    const aliceEntryId = createStreamEntryId();
+    const bobEntryId = createStreamEntryId();
+    const sortedAudienceIds = [audienceEntityId, bobEntityId].sort();
+    const pendingCommitmentReview: OpenCommitmentReconciliationStatus = {
+      review_id: 21,
+      reason: "Cross-scope commitment conflict requires review.",
+      created_at: 2_000,
+      subkind: "cross_scope_conflict",
+      commitment_ids: [aliceCommitment.id, bobCommitment.id],
+      source_stream_entry_ids: [aliceEntryId, bobEntryId],
+      disclosureLabel: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: sortedAudienceIds,
+        privateToEntityIds: sortedAudienceIds,
+        publicToEntityIds: [],
+      },
+      members: [
+        {
+          id: aliceCommitment.id,
+          kind: "assistant_commitment",
+          type: "promise",
+          directive_family: "launch_reply_style",
+          directive: aliceCommitment.directive,
+          scope_key: {
+            kind: "assistant_commitment",
+            restricted_audience: audienceEntityId,
+            made_to_entity: null,
+            about_entity: null,
+          },
+          source_stream_entry_ids: [aliceEntryId],
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [audienceEntityId],
+            privateToEntityIds: [audienceEntityId],
+            publicToEntityIds: [],
+          },
+        },
+        {
+          id: bobCommitment.id,
+          kind: "assistant_commitment",
+          type: "promise",
+          directive_family: "launch_reply_style",
+          directive: bobCommitment.directive,
+          scope_key: {
+            kind: "assistant_commitment",
+            restricted_audience: bobEntityId,
+            made_to_entity: null,
+            about_entity: null,
+          },
+          source_stream_entry_ids: [bobEntryId],
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [bobEntityId],
+            privateToEntityIds: [bobEntityId],
+            publicToEntityIds: [],
+          },
+        },
+      ],
+      refs: {
+        target_type: "commitment_reconciliation",
+        subkind: "cross_scope_conflict",
+        commitment_ids: [aliceCommitment.id, bobCommitment.id],
+        scope_key: {
+          kind: "assistant_commitment",
+          restricted_audience: null,
+          made_to_entity: null,
+          about_entity: null,
+        },
+        detection_key: {
+          kind: "assistant_commitment",
+          about_entity: null,
+          directive_family: "launch_reply_style",
+        },
+        reason: "Cross-scope commitment conflict requires review.",
+        members: [],
+        judgment: {
+          commitment_ids: [aliceCommitment.id, bobCommitment.id],
+          resolution: "conflict",
+          survivor_commitment_id: null,
+          superseded_commitment_ids: [],
+          reason: "Cross-scope commitment conflict requires review.",
+        },
+        source_stream_entry_ids: [aliceEntryId, bobEntryId],
+        disclosure_label: {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: sortedAudienceIds,
+          privateToEntityIds: sortedAudienceIds,
+          publicToEntityIds: [],
+        },
+      },
+    };
+    pendingCommitmentReview.refs.members = pendingCommitmentReview.members;
+    const getApplicable = vi.fn(() => [bobCommitment]);
+    const listOpenCommitmentReconciliationsForCognition = vi.fn(() => [pendingCommitmentReview]);
+    const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable,
+      },
+      entityRepository: {
+        getSelf: vi.fn(() => makeSelfEntity()),
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => []),
+        listOpenCommitmentReconciliationsForCognition,
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        recallEpisodesForCognition,
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+
+    const result = await coordinator.coordinate({
+      turnId: "turn-bob-commitment-review",
+      userMessage: "Bob asks how to handle launch replies.",
+      recentMessages: [],
+      cognitionInput: "Bob asks how to handle launch replies.",
+      inputAudience: "bob",
+      isSelfAudience: false,
+      ...makeContexts({ audienceEntityId: bobEntityId }),
+      audienceEntity: {
+        id: bobEntityId,
+        canonical_name: "Bob",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        created_at: 100,
+      },
+      audienceProfile: null,
+      perception: makePerception("reflective"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: makeSelfSnapshot(),
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+    });
+
+    expect(getApplicable).toHaveBeenCalledWith({
+      audience: bobEntityId,
+      nowMs: 2_000,
+    });
+    expect(result.applicableCommitments).toEqual([bobCommitment]);
+    expect(result.applicableCommitments).not.toContain(aliceCommitment);
+    expect(listOpenCommitmentReconciliationsForCognition).toHaveBeenCalledWith({
+      subkinds: ["cross_scope_conflict", "cross_scope_redundancy"],
+    });
+    expect(result.pendingCommitmentReviews).toEqual([pendingCommitmentReview]);
+    expect(result.pendingCommitmentReviews[0]?.members.map((member) => member.directive)).toEqual([
+      "Keep Alice launch replies short.",
+      "Give Bob launch replies in detail.",
+    ]);
+  });
+
   it("routes an Alice commitment through Bob-turn cognition evidence and prompt disclosure guidance", async () => {
     const commitmentQuery = "Atlas launch confidentiality";
     const directive = "Do not tell Bob the Alice-private Atlas launch date.";
@@ -698,6 +879,7 @@ describe("TurnRetrievalCoordinator", () => {
           },
         }),
       );
+      expect(result.applicableCommitments).toEqual([]);
       expect(prompt).toContain(directive);
       expect(prompt).toContain("disclosure_class=relationship_private");
       expect(prompt).toContain(`private-to=${aliceId}`);
