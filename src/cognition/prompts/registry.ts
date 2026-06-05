@@ -2,12 +2,14 @@ import {
   BASE_IDENTITY_PREAMBLE,
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
+  SELF_ARCHITECTURE_SECTION,
   VOICE_AND_POSTURE_SECTION,
 } from "./base-identity.js";
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "./host-capabilities.js";
 
 export const PROMPT_KEYS = [
   "base_identity_preamble",
+  "self_architecture",
   "voice_and_posture",
   "epistemic_posture",
   "identity_posture",
@@ -30,6 +32,13 @@ export const PROMPT_BLOCKS: readonly PromptBlockSpec[] = [
     description:
       "The opening 'you are an AI being...' framing block. Sets borg's substrate-first stance.",
     default: BASE_IDENTITY_PREAMBLE,
+  },
+  {
+    key: "self_architecture",
+    label: "Self architecture",
+    description:
+      "How Sol's own mind works: the turn loop, global recall / contextual disclosure, and the offline dream/reflection cycle.",
+    default: SELF_ARCHITECTURE_SECTION,
   },
   {
     key: "voice_and_posture",

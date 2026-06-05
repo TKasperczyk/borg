@@ -322,6 +322,18 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_creator_context>");
   });
 
+  it("includes the self-architecture self-model section in the cacheable static prefix", () => {
+    const context = makeContext({});
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+
+    expect(prompt).toContain("How your mind works:");
+    expect(prompt).toContain("recall broadly from your memory substrate");
+    expect(prompt).toContain("background reflection or 'dream' cycle");
+    expect(cacheable.staticPrefix).toContain("How your mind works:");
+    expect(cacheable.staticPrefixSections).toContain("self_architecture");
+  });
+
   it("collapses line feeds in creator identity display names before rendering", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

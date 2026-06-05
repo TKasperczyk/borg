@@ -194,6 +194,7 @@ describe("Borg", () => {
 
       expect(initial.sections).toEqual([
         "base_identity_preamble",
+        "self_architecture",
         "voice_and_posture",
         "epistemic_posture",
         "identity_posture",

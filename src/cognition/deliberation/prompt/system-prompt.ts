@@ -1110,6 +1110,7 @@ export function buildBaseSystemPrompt(
 
   return [
     sections.resolvedBlocks.base_identity_preamble,
+    sections.resolvedBlocks.self_architecture,
     sections.resolvedBlocks.voice_and_posture,
     sections.resolvedBlocks.epistemic_posture,
     sections.resolvedBlocks.identity_posture,
@@ -1138,6 +1139,10 @@ export function buildCacheableBaseSystemPromptParts(
     {
       label: "base_identity_preamble",
       content: sections.resolvedBlocks.base_identity_preamble,
+    },
+    {
+      label: "self_architecture",
+      content: sections.resolvedBlocks.self_architecture,
     },
     {
       label: "voice_and_posture",
