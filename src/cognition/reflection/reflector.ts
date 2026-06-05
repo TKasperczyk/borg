@@ -1,4 +1,9 @@
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromEpisodeAccess,
+  unknownMemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter, streamEntryIdSchema } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -1364,6 +1369,12 @@ export class Reflector {
       (context.activeOpenQuestions ?? []).map((question) => [question.id, question]),
     );
     const allowedEpisodeIds = new Set(context.retrievedEpisodes.map((result) => result.episode.id));
+    const labelByEpisodeId = new Map(
+      context.retrievedEpisodes.map((result) => [
+        result.episode.id,
+        result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
+      ]),
+    );
     const allowedStreamEntryIds = new Set(context.currentTurnStreamEntryIds ?? []);
 
     for (const resolution of resolutions) {
@@ -1373,17 +1384,6 @@ export class Reflector {
         this.emitOpenQuestionResolutionDegraded(context, {
           reason: "unknown_question",
           question_id: resolution.question_id,
-        });
-        continue;
-      }
-
-      // Resolution is a mutation authorization boundary, not recall filtering: reflection sees
-      // global questions in its payload, but may only resolve a current-audience-scope question.
-      if (!isOpenQuestionVisibleToReflectionAudience(activeQuestion, context.audienceEntityId)) {
-        this.emitOpenQuestionResolutionDegraded(context, {
-          reason: "audience_mismatch",
-          question_id: resolution.question_id,
-          audience_entity_id: context.audienceEntityId ?? null,
         });
         continue;
       }
@@ -1436,15 +1436,12 @@ export class Reflector {
         continue;
       }
 
-      // Re-check the live record under the same mutation authorization rule.
-      if (!isOpenQuestionVisibleToReflectionAudience(current, context.audienceEntityId)) {
-        this.emitOpenQuestionResolutionDegraded(context, {
-          reason: "audience_mismatch",
-          question_id: resolution.question_id,
-          audience_entity_id: context.audienceEntityId ?? null,
-        });
-        continue;
-      }
+      const resolutionDisclosureLabel = combineMemoryDisclosureLabels([
+        ...evidenceEpisodeIds.map(
+          (episodeId) => labelByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
+        ),
+        ...evidenceStreamEntryIds.map(() => unknownMemoryDisclosureLabel()),
+      ]);
 
       try {
         const result = resolveOpenQuestionThroughIdentityService({
@@ -1453,6 +1450,7 @@ export class Reflector {
           resolution: {
             resolution_evidence_episode_ids: evidenceEpisodeIds,
             resolution_evidence_stream_entry_ids: evidenceStreamEntryIds,
+            resolution_disclosure_label: resolutionDisclosureLabel,
             resolution_note: resolution.resolution_note.trim(),
           },
           provenance: {
@@ -1641,6 +1639,9 @@ export class Reflector {
               id: result.episode.id,
               title: result.episode.title,
               narrative: result.episode.narrative,
+              ...memoryDisclosurePayloadFields(
+                result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
+              ),
             })),
           }),
         },

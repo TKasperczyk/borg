@@ -2237,6 +2237,15 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
     const alice = createEntityId();
+    const bob = createEntityId();
+    const privateEpisode = createEpisodeFixture({
+      id: "ep_aliceprivate0001" as never,
+      title: "Alice private reflection evidence",
+      narrative: "Alice-only evidence is available for internal reflection.",
+      audience_entity_id: alice,
+      shared: false,
+    });
+    const retrieved = createRetrievedEpisode(privateEpisode);
     const goal = harness.goalsRepository.add({
       description: "Track Alice's private launch follow-up",
       priority: 8,
@@ -2265,6 +2274,8 @@ describe("reflector", () => {
           traits: [],
         },
         activeOpenQuestions: [question],
+        retrievedEpisodes: [retrieved],
+        audienceEntityId: bob,
       },
       harness.streamWriter,
     );
@@ -2274,6 +2285,10 @@ describe("reflector", () => {
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
       active_open_questions?: Array<{
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+      available_evidence_episodes?: Array<{
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -2292,6 +2307,14 @@ describe("reflector", () => {
     );
     expect(payload.active_open_questions?.[0]?.disclosure).toContain(`private-to=${alice}`);
     expect(payload.active_open_questions?.[0]?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [alice],
+    });
+    expect(payload.available_evidence_episodes?.[0]?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(payload.available_evidence_episodes?.[0]?.disclosure).toContain(`private-to=${alice}`);
+    expect(payload.available_evidence_episodes?.[0]?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [alice],
     });
@@ -2495,10 +2518,13 @@ describe("reflector", () => {
   });
 
   it("resolves active open questions with retrieved episode evidence", async () => {
+    const alice = createEntityId();
     const episode = createEpisodeFixture({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas rollback answer",
       narrative: "Atlas stabilized after rollback rehearsal.",
+      audience_entity_id: alice,
+      shared: false,
     });
     const retrieved = createRetrievedEpisode(episode);
     const llm = new FakeLLMClient();
@@ -2562,6 +2588,10 @@ describe("reflector", () => {
       status: "resolved",
       resolution_evidence_episode_ids: [episode.id],
       resolution_evidence_stream_entry_ids: [],
+      resolution_disclosure_label: expect.objectContaining({
+        disclosureClass: "relationship_private",
+        privateToEntityIds: [alice],
+      }),
       resolution_note: "Atlas recovered after rollback rehearsal.",
     });
     expect(harness.openQuestionsRepository.get(q2.id)?.status).toBe("open");
@@ -2638,6 +2668,182 @@ describe("reflector", () => {
       resolution_evidence_episode_ids: [],
       resolution_evidence_stream_entry_ids: [streamEntryId],
     });
+  });
+
+  it("fails closed when resolution evidence mixes public episodes with stream entries", async () => {
+    const publicEpisode = createEpisodeFixture({
+      id: "ep_publicresolve001" as never,
+      title: "Public resolution evidence",
+      narrative: "Public evidence partly resolves the question.",
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: true,
+    });
+    const retrieved = createRetrievedEpisode(publicEpisode);
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const streamEntryId = "strm_aaaaaaaaaaaaaaaa" as never;
+    const question = harness.openQuestionsRepository.add({
+      question: "What did the combined evidence clarify?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: question.id,
+            resolution_note: "The episode and current stream evidence together clarified it.",
+            evidence_episode_ids: [publicEpisode.id],
+            evidence_stream_entry_ids: [streamEntryId],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-6",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext({
+          retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [publicEpisode.id],
+        }),
+        activeOpenQuestions: [question],
+        currentTurnStreamEntryIds: [streamEntryId],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+      status: "resolved",
+      resolution_evidence_episode_ids: [publicEpisode.id],
+      resolution_evidence_stream_entry_ids: [streamEntryId],
+      resolution_disclosure_label: expect.objectContaining({
+        disclosureClass: "unknown",
+      }),
+    });
+  });
+
+  it("resolves cross-audience open questions directly with labels while same-audience stays direct", async () => {
+    const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceEpisode = createEpisodeFixture({
+      id: "ep_aliceresolve0001" as never,
+      title: "Alice private resolution evidence",
+      narrative: "Alice-only evidence resolves the private question.",
+      audience_entity_id: alice,
+      shared: false,
+    });
+    const retrievedAliceEpisode = createRetrievedEpisode(aliceEpisode);
+    const streamEntryId = "strm_aaaaaaaaaaaaaaaa" as never;
+    const aliceQuestion = harness.openQuestionsRepository.add({
+      question: "What private Alice question was clarified?",
+      urgency: 0.8,
+      audience_entity_id: alice,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const bobQuestion = harness.openQuestionsRepository.add({
+      question: "What Bob question was clarified?",
+      urgency: 0.7,
+      audience_entity_id: bob,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const resolveSpy = vi.spyOn(harness.identityService, "resolveOpenQuestion");
+
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: aliceQuestion.id,
+            resolution_note: "The Bob turn supplied enough evidence for Alice's question.",
+            evidence_episode_ids: [aliceEpisode.id],
+            evidence_stream_entry_ids: [],
+          },
+          {
+            question_id: bobQuestion.id,
+            resolution_note: "The Bob turn supplied enough evidence for Bob's question.",
+            evidence_episode_ids: [],
+            evidence_stream_entry_ids: [streamEntryId],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-6",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+      tracer,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext({
+          retrievedEpisodes: [retrievedAliceEpisode],
+          referencedEpisodeIds: [aliceEpisode.id],
+        }),
+        turnId: "turn_cross_audience_resolution",
+        audienceEntityId: bob,
+        activeOpenQuestions: [aliceQuestion, bobQuestion],
+        currentTurnStreamEntryIds: [streamEntryId],
+      },
+      harness.streamWriter,
+    );
+
+    const aliceCall = resolveSpy.mock.calls.find((call) => call[0] === aliceQuestion.id);
+    const bobCall = resolveSpy.mock.calls.find((call) => call[0] === bobQuestion.id);
+
+    expect(harness.openQuestionsRepository.get(aliceQuestion.id)?.status).toBe("resolved");
+    expect(harness.openQuestionsRepository.get(bobQuestion.id)?.status).toBe("resolved");
+    expect(harness.openQuestionsRepository.get(aliceQuestion.id)).toMatchObject({
+      resolution_disclosure_label: expect.objectContaining({
+        disclosureClass: "relationship_private",
+        privateToEntityIds: [alice],
+      }),
+    });
+    expect(aliceCall?.[3]).toBeUndefined();
+    expect(bobCall?.[3]).toBeUndefined();
+    expect(
+      tracer.events.some(
+        (entry) =>
+          entry.event === "open_question_resolution.degraded" &&
+          (entry.data as { reason?: string }).reason === "audience_mismatch",
+      ),
+    ).toBe(false);
   });
 
   it.each([

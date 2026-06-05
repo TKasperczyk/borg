@@ -127,7 +127,7 @@ function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
 }
 
 function lancePublicOriginSql(): string {
-  return "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL)";
+  return "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL AND (shared IS NULL OR shared = true))";
 }
 
 function lanceOriginContainsSql(audienceEntityId: EntityId): string {
@@ -522,9 +522,7 @@ export class EpisodicRepository {
       case "audience":
         return capability.audienceEntityId === null
           ? lancePublicOriginSql()
-          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(
-              capability.audienceEntityId,
-            )})`;
+          : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(capability.audienceEntityId)})`;
       default: {
         const exhaustive: never = capability;
         throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);

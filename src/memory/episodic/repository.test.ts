@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { makeArrowTable } from "@lancedb/lancedb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { selfMigrations } from "../self/migrations.js";
@@ -259,8 +260,79 @@ describe("episodic repository", () => {
 
     expect(defaultSearch.map((item) => item.episode.id)).toEqual([publicEpisode.id]);
     expect(searchSpy.mock.calls[0]?.[1]?.where).toBe(
-      "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL)",
+      "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL AND (shared IS NULL OR shared = true))",
     );
+  });
+
+  it("excludes unknown-origin shared-false rows from vector disclosure at the Lance predicate", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const audience = "ent_bbbbbbbbbbbbbbbb" as NonNullable<Episode["audience_entity_id"]>;
+    const publicShared = createEpisode("ep_vecpublictrue001", harness.clock.now(), {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: true,
+    });
+    const publicLegacyNull = createEpisode("ep_vecpublicnull001", harness.clock.now() + 1_000, {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: true,
+    });
+    const unknownOrigin = createEpisode("ep_vecunknownfalse1", harness.clock.now() + 2_000, {
+      source_stream_ids: [createStreamEntryId()],
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: false,
+    });
+
+    const rawTable = (
+      harness.table as unknown as {
+        table: {
+          add(rows: unknown): Promise<void>;
+          schema(): Promise<unknown>;
+        };
+      }
+    ).table;
+    await rawTable.add(
+      makeArrowTable(
+        [toRawEpisodeRow(publicShared), { ...toRawEpisodeRow(publicLegacyNull), shared: null }],
+        {
+          schema: (await rawTable.schema()) as never,
+        },
+      ),
+    );
+    await harness.table.checkoutLatest();
+    await harness.repo.insert(unknownOrigin);
+
+    const searchSpy = vi.spyOn(harness.table, "search");
+    const nullAudienceResults = await harness.repo.searchByVectorForDisclosure(
+      Float32Array.from([1, 0, 0, 0]),
+      {
+        limit: 10,
+        audienceEntityId: null,
+      },
+    );
+    const namedAudienceResults = await harness.repo.searchByVectorForDisclosure(
+      Float32Array.from([1, 0, 0, 0]),
+      {
+        limit: 10,
+        audienceEntityId: audience,
+      },
+    );
+
+    for (const results of [nullAudienceResults, namedAudienceResults]) {
+      const ids = results.map((item) => item.episode.id);
+      expect(ids).toContain(publicShared.id);
+      expect(ids).toContain(publicLegacyNull.id);
+      expect(ids).not.toContain(unknownOrigin.id);
+    }
+    expect(searchSpy.mock.calls[0]?.[1]?.where).toBe(
+      "((origin_audience_entity_ids IS NULL OR origin_audience_entity_ids = '[]') AND audience_entity_id IS NULL AND (shared IS NULL OR shared = true))",
+    );
+    expect(searchSpy.mock.calls[1]?.[1]?.where).toContain("(shared IS NULL OR shared = true)");
   });
 
   it("rejects inserts without citation anchors", async () => {

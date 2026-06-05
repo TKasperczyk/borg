@@ -9,8 +9,10 @@ import {
 import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
+  combineMemoryDisclosureLabels,
   memoryDisclosureLabelSchema,
   unknownMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import {
   GROWTH_MARKER_CATEGORIES,
@@ -119,6 +121,32 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function uniqueValues<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
+}
+
+function sortedStrings(values: readonly string[]): string[] {
+  return [...values].sort();
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return JSON.stringify(sortedStrings(left)) === JSON.stringify(sortedStrings(right));
+}
+
+function memoryDisclosureLabelsEqual(
+  left: MemoryDisclosureLabel | null | undefined,
+  right: MemoryDisclosureLabel | null | undefined,
+): boolean {
+  const normalizedLeft = left ?? unknownMemoryDisclosureLabel();
+  const normalizedRight = right ?? unknownMemoryDisclosureLabel();
+
+  return (
+    normalizedLeft.disclosureClass === normalizedRight.disclosureClass &&
+    stringArraysEqual(
+      normalizedLeft.originAudienceEntityIds,
+      normalizedRight.originAudienceEntityIds,
+    ) &&
+    stringArraysEqual(normalizedLeft.privateToEntityIds, normalizedRight.privateToEntityIds) &&
+    stringArraysEqual(normalizedLeft.publicToEntityIds, normalizedRight.publicToEntityIds)
+  );
 }
 
 function defaultQuarterLabel(nowMs: number): string {
@@ -419,10 +447,13 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const keyEpisodeIds = uniqueValues(
       markerCandidates.flatMap((marker) => marker.evidence_episode_ids),
     ).slice(0, 8);
-    const periodDisclosureLabel = await disclosureLabelForEpisodeIds(
-      ctx.episodicRepository,
-      keyEpisodeIds as Episode["id"][],
+    const markerDisclosureLabels = markerCandidates.map(
+      (marker) => marker.disclosure_label ?? unknownMemoryDisclosureLabel(),
     );
+    const periodDisclosureLabel =
+      markerCandidates.length === 0
+        ? unknownMemoryDisclosureLabel()
+        : combineMemoryDisclosureLabels(markerDisclosureLabels);
     const themes = uniqueStrings([
       ...markerCandidates.map((marker) => marker.category),
       ...markerThemes,
@@ -486,15 +517,16 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         ...currentPeriod.key_episode_ids,
         ...keyEpisodeIds,
       ]).slice(0, 8);
-      const nextDisclosureLabel = await disclosureLabelForEpisodeIds(
-        ctx.episodicRepository,
-        nextKeyEpisodes,
-      );
+      const nextDisclosureLabel = combineMemoryDisclosureLabels([
+        currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel(),
+        ...markerDisclosureLabels,
+      ]);
 
       if (
         (nextNarrative !== null && nextNarrative !== currentPeriod.narrative) ||
         JSON.stringify(nextThemes) !== JSON.stringify(currentPeriod.themes) ||
-        JSON.stringify(nextKeyEpisodes) !== JSON.stringify(currentPeriod.key_episode_ids)
+        JSON.stringify(nextKeyEpisodes) !== JSON.stringify(currentPeriod.key_episode_ids) ||
+        !memoryDisclosureLabelsEqual(nextDisclosureLabel, currentPeriod.disclosure_label)
       ) {
         items.push({
           action: "update_period_narrative",

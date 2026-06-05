@@ -238,34 +238,35 @@ describe("CommitmentReconcilerProcess", () => {
     const secondEntryId = createStreamEntryId();
     const firstAudience = createEntityId();
     const secondAudience = createEntityId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        (options: LLMCompleteOptions) => {
+          const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+            commitments: Array<{ id: string }>;
+            structural_detection_key?: unknown;
+            structural_scope_keys?: string[];
+          };
+          const [first, second] = payload.commitments;
+
+          expect(payload.structural_detection_key).toMatchObject({
+            kind: "participant_preference",
+            about_entity: null,
+            directive_family: "same_meaning",
+          });
+          expect(payload.structural_scope_keys).toHaveLength(2);
+
+          return reconciliationResponse([
+            {
+              commitment_ids: [first!.id, second!.id],
+              resolution: "conflict",
+              reason: "The audience-scoped commitments conflict and need human review.",
+            },
+          ]);
+        },
+      ],
+    });
     const harness = await createOfflineTestHarness({
-      llmClient: new FakeLLMClient({
-        responses: [
-          (options: LLMCompleteOptions) => {
-            const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
-              commitments: Array<{ id: string }>;
-              structural_detection_key?: unknown;
-              structural_scope_keys?: string[];
-            };
-            const [first, second] = payload.commitments;
-
-            expect(payload.structural_detection_key).toMatchObject({
-              kind: "participant_preference",
-              about_entity: null,
-              directive_family: "same_meaning",
-            });
-            expect(payload.structural_scope_keys).toHaveLength(2);
-
-            return reconciliationResponse([
-              {
-                commitment_ids: [first!.id, second!.id],
-                resolution: "conflict",
-                reason: "The audience-scoped commitments conflict and need human review.",
-              },
-            ]);
-          },
-        ],
-      }),
+      llmClient,
     });
     cleanup.push(harness.cleanup);
     const process = createProcess(harness);
@@ -289,8 +290,38 @@ describe("CommitmentReconcilerProcess", () => {
     });
     const refs = reviews[0]?.refs as CommitmentReconciliationReviewRefs;
     const sortedAudienceIds = [firstAudience, secondAudience].sort();
+    const promptPayload = JSON.parse(
+      String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
+    ) as {
+      commitments: Array<{
+        id: string;
+        disclosure?: string;
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      }>;
+    };
+    const promptFirst = promptPayload.commitments.find((commitment) => commitment.id === first.id);
+    const promptSecond = promptPayload.commitments.find(
+      (commitment) => commitment.id === second.id,
+    );
 
     expect(result.changes).toHaveLength(1);
+    expect(promptFirst).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [firstAudience],
+      },
+    });
+    expect(promptFirst?.disclosure).toContain("disclosure_class=relationship_private");
+    expect(promptSecond).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [secondAudience],
+      },
+    });
+    expect(promptSecond?.disclosure).toContain("disclosure_class=relationship_private");
     expect(result.changes[0]?.action).toBe("enqueue_commitment_reconciliation_review");
     expect(result.changes[0]?.targets).toMatchObject({
       subkind: "cross_scope_conflict",

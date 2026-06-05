@@ -25,7 +25,10 @@ import {
   type CommitmentReconciliationScopeKey,
   type CommitmentReconciliationSubkind,
 } from "../../memory/semantic/index.js";
-import { commitmentMemoryDisclosureLabel } from "../../cognition/disclosure-labels.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../cognition/disclosure-labels.js";
 import { combineMemoryDisclosureLabels } from "../../retrieval/recall-context.js";
 import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";
 import type { CommitmentId } from "../../util/ids.js";
@@ -361,6 +364,7 @@ function commitmentPreview(commitment: CommitmentRecord): Record<string, unknown
     expires_at: commitment.expires_at,
     superseded_by: commitment.superseded_by,
     last_reinforced_at: commitment.last_reinforced_at,
+    ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
   };
 }
 
