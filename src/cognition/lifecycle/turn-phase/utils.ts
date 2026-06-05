@@ -43,11 +43,13 @@ export async function persistCorrectiveCommitment(input: {
   sessionId: SessionId;
   commitment: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["commitment"];
   supersession: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["supersession"];
+  retirement: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["retirement"];
   appendHookFailureEvent: AppendHookFailureEvent;
 }): Promise<void> {
   await input.service.persistCommitment({
     commitment: input.commitment,
     supersession: input.supersession,
+    retirement: input.retirement,
     turnId: input.turnId,
     sessionId: input.sessionId,
     onHookFailure: (hook, error, details) =>

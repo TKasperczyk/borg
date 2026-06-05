@@ -389,6 +389,7 @@ describe("runPostGenerationPhase", () => {
       persistedUserEntryId: currentUserEntry.id,
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system_1",
         thoughts: [],
@@ -642,6 +643,7 @@ describe("runPostGenerationPhase", () => {
       persistedPerceptionEntry: null as never,
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system_1",
         thoughts: [],
@@ -767,6 +769,7 @@ describe("runPostGenerationPhase", () => {
       sourceUserEntryIds: sourceEntryIds,
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system_1",
         thoughts: [],
@@ -941,6 +944,7 @@ describe("runPostGenerationPhase", () => {
       persistedUserEntryId: createStreamEntryId(),
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system1",
         thoughts: [],
@@ -1112,6 +1116,7 @@ describe("runPostGenerationPhase", () => {
       persistedUserEntryId: createStreamEntryId(),
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system1",
         thoughts: [],
@@ -1282,6 +1287,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       persistedUserEntryId: createStreamEntryId(),
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       deliberation: {
         path: "system_1",
         thoughts: [],

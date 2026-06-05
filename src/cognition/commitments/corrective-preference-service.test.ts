@@ -11,6 +11,7 @@ import type { IdentityService } from "../../memory/identity/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
@@ -73,8 +74,46 @@ function correctivePreferenceResponse(
           reason: "The current speaker made a durable correction.",
           confidence: 0.91,
           supersedes_commitment_id: input.supersedesCommitmentId ?? null,
+          retires_commitment_id: null,
           applies_to_audience_entity_id: input.appliesToAudienceEntityId ?? null,
           relationship_claims: input.relationshipClaims ?? [],
+          slot_negations: [],
+        },
+      },
+    ],
+  };
+}
+
+function retireCommitmentResponse(input: {
+  commitmentId: CommitmentId;
+  reason?: string;
+  confidence?: number;
+}) {
+  return {
+    text: "",
+    input_tokens: 6,
+    output_tokens: 3,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_corrective_retire",
+        name: "EmitCorrectivePreference",
+        input: {
+          classification: "retire_commitment",
+          type: null,
+          kind: null,
+          enforcement_class: null,
+          critical_domain: null,
+          directive: null,
+          directive_family: null,
+          closure_pressure_relevance: null,
+          priority: null,
+          reason: input.reason ?? "The model judged the active commitment no longer applicable.",
+          confidence: input.confidence ?? 0.91,
+          supersedes_commitment_id: null,
+          retires_commitment_id: input.commitmentId,
+          applies_to_audience_entity_id: null,
+          relationship_claims: [],
           slot_negations: [],
         },
       },
@@ -145,6 +184,83 @@ function commitmentFixture(
   });
 }
 
+function createRetirementService(input: {
+  activeCommitments: readonly CommitmentRecord[];
+  getCommitment: CommitmentRecord | null;
+  revoke?: CommitmentRepository["revoke"];
+  addCommitment?: IdentityService["addCommitment"];
+  tracer?: TurnTracer;
+  clock?: FixedClock;
+}) {
+  const addCommitment = input.addCommitment ?? vi.fn<IdentityService["addCommitment"]>();
+  const revoke =
+    input.revoke ??
+    vi.fn<CommitmentRepository["revoke"]>((id, reason, provenance) =>
+      input.getCommitment === null
+        ? null
+        : commitmentFixture({
+            ...input.getCommitment,
+            id,
+            revoked_at: input.clock?.now() ?? 2_000,
+            revoked_reason: reason,
+            revoke_provenance: provenance,
+          }),
+    );
+  const service = new CorrectivePreferenceTurnService({
+    model: "haiku",
+    commitmentRepository: {
+      get: () => input.getCommitment,
+      getApplicable: () => [...input.activeCommitments],
+      revoke,
+      supersede: vi.fn(),
+    },
+    identityService: { addCommitment },
+    relationalSlotRepository: {
+      list: () => [],
+      applyNegation: vi.fn(),
+    },
+    workingMemoryStore: {
+      load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+      sanitizePendingActionsForRelationalSlot: vi.fn(),
+    },
+    clock: input.clock ?? new FixedClock(2_000),
+    tracer: input.tracer ?? { enabled: false, includePayloads: false, emit: vi.fn() },
+  });
+
+  return { service, addCommitment, revoke };
+}
+
+async function extractAndPersistRetirement(input: {
+  service: CorrectivePreferenceTurnService;
+  llm: FakeLLMClient;
+  turnId?: string;
+}) {
+  const turnId = input.turnId ?? "turn-retire-commitment";
+  const result = await input.service.extractAndApply({
+    llmClient: input.llm,
+    turnId,
+    ...defaultCorrectiveTurnContext,
+    userMessage: "That standing commitment can be stood down now.",
+    persistedUserEntryId: createStreamEntryId(),
+    recentHistory: [],
+    audienceEntityId: null,
+    sessionId: DEFAULT_SESSION_ID,
+    onHookFailure: vi.fn(),
+    trackAppliedSlotNegation: vi.fn(),
+  });
+
+  await input.service.persistCommitment({
+    commitment: result.commitment,
+    supersession: result.commitmentSupersession,
+    retirement: result.commitmentRetirement,
+    turnId,
+    sessionId: DEFAULT_SESSION_ID,
+    onHookFailure: vi.fn(),
+  });
+
+  return result;
+}
+
 describe("CorrectivePreferenceTurnService", () => {
   it("builds group-chat corrective commitments with the speaker as committer", async () => {
     const group = createEntityId();
@@ -159,6 +275,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment },
@@ -232,6 +349,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -445,6 +563,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -495,6 +614,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -559,6 +679,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -630,6 +751,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -698,6 +820,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -752,6 +875,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment: vi.fn() },
@@ -817,6 +941,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => target,
         getApplicable: () => [target],
+        revoke: vi.fn(),
         supersede,
       },
       identityService: { addCommitment },
@@ -881,6 +1006,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede,
       },
       identityService: { addCommitment },
@@ -948,6 +1074,7 @@ describe("CorrectivePreferenceTurnService", () => {
       commitmentRepository: {
         get: () => revokedTarget,
         getApplicable: () => [visibleTarget],
+        revoke: vi.fn(),
         supersede,
       },
       identityService: { addCommitment },
@@ -994,6 +1121,307 @@ describe("CorrectivePreferenceTurnService", () => {
       reason: "commitment_not_active",
     });
   });
+
+  it("retires an eligible active commitment with online corrective-preference provenance", async () => {
+    const retiredId = createCommitmentId();
+    const target = commitmentFixture({ id: retiredId });
+    const emit = vi.fn();
+    const tracer = { enabled: true, includePayloads: false, emit };
+    const llm = new FakeLLMClient({
+      responses: [
+        retireCommitmentResponse({
+          commitmentId: retiredId,
+          reason: "The temporary audience boundary is resolved.",
+        }),
+      ],
+    });
+    const { service, addCommitment, revoke } = createRetirementService({
+      activeCommitments: [target],
+      getCommitment: target,
+      tracer,
+    });
+
+    const result = await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-valid-retirement",
+    });
+
+    expect(result.commitment).toBeNull();
+    expect(result.commitmentSupersession).toBeNull();
+    expect(result.commitmentRetirement).toMatchObject({
+      retiredId,
+      allowedActiveCommitmentIds: [retiredId],
+      reason: "The temporary audience boundary is resolved.",
+      confidence: 0.91,
+    });
+    expect(addCommitment).not.toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledWith(
+      retiredId,
+      "The temporary audience boundary is resolved.",
+      {
+        kind: "online",
+        process: "corrective-preference-extractor",
+      },
+      undefined,
+      { expectedVersion: target.record_version },
+    );
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.transitioned", {
+      turnId: "turn-valid-retirement",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "accepted",
+      reason: "retired_by_corrective_preference",
+    });
+  });
+
+  it("rejects a retirement id outside the active visible allowed list", async () => {
+    const retiredId = createCommitmentId();
+    const target = commitmentFixture({ id: retiredId });
+    const emit = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service, revoke } = createRetirementService({
+      activeCommitments: [],
+      getCommitment: target,
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-out-of-allowed-set",
+    });
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+      turnId: "turn-retirement-out-of-allowed-set",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "rejected",
+      reason: "not_in_allowed_active_commitments",
+    });
+  });
+
+  it("traces a stale retirement target when revoke detects a version conflict", async () => {
+    const retiredId = createCommitmentId();
+    const target = commitmentFixture({ id: retiredId, record_version: 7 });
+    const emit = vi.fn();
+    const revoke = vi.fn<CommitmentRepository["revoke"]>(() => {
+      throw new IdentityCasMismatchError({
+        recordType: "commitment",
+        recordId: retiredId,
+        expectedVersion: target.record_version ?? -1,
+      });
+    });
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service } = createRetirementService({
+      activeCommitments: [target],
+      getCommitment: target,
+      revoke,
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-version-conflict",
+    });
+
+    expect(revoke).toHaveBeenCalledWith(
+      retiredId,
+      "The model judged the active commitment no longer applicable.",
+      {
+        kind: "online",
+        process: "corrective-preference-extractor",
+      },
+      undefined,
+      { expectedVersion: 7 },
+    );
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+      turnId: "turn-retirement-version-conflict",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "rejected",
+      reason: "commitment_version_conflict",
+    });
+  });
+
+  it("rejects a retirement id that no longer exists at persistence", async () => {
+    const retiredId = createCommitmentId();
+    const visibleTarget = commitmentFixture({ id: retiredId });
+    const emit = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service, revoke } = createRetirementService({
+      activeCommitments: [visibleTarget],
+      getCommitment: null,
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-unknown",
+    });
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+      turnId: "turn-retirement-unknown",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "rejected",
+      reason: "unknown_commitment_id",
+    });
+  });
+
+  it("rejects a visible retirement target that is no longer active at persistence", async () => {
+    const retiredId = createCommitmentId();
+    const visibleTarget = commitmentFixture({ id: retiredId });
+    const revokedTarget = commitmentFixture({
+      id: retiredId,
+      revoked_at: 2_100,
+      revoked_reason: "test revocation",
+      revoke_provenance: { kind: "manual" },
+    });
+    const emit = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service, revoke } = createRetirementService({
+      activeCommitments: [visibleTarget],
+      getCommitment: revokedTarget,
+      tracer: { enabled: true, includePayloads: false, emit },
+      clock: new FixedClock(2_200),
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-inactive",
+    });
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+      turnId: "turn-retirement-inactive",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "rejected",
+      reason: "commitment_not_active",
+    });
+  });
+
+  it.each(["privacy", "safety", "explicit_no_disclosure", "internal_tool_hygiene"] as const)(
+    "rejects retirement of critical %s commitments",
+    async (criticalDomain) => {
+      const retiredId = createCommitmentId();
+      const target = commitmentFixture({
+        id: retiredId,
+        type: "boundary",
+        kind: "boundary",
+        enforcement_class: "critical",
+        critical_domain: criticalDomain,
+      });
+      const emit = vi.fn();
+      const llm = new FakeLLMClient({
+        responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+      });
+      const { service, revoke } = createRetirementService({
+        activeCommitments: [target],
+        getCommitment: target,
+        tracer: { enabled: true, includePayloads: false, emit },
+      });
+
+      await extractAndPersistRetirement({
+        service,
+        llm,
+        turnId: `turn-retirement-ineligible-${criticalDomain}`,
+      });
+
+      expect(revoke).not.toHaveBeenCalled();
+      expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+        turnId: `turn-retirement-ineligible-${criticalDomain}`,
+        session_id: DEFAULT_SESSION_ID,
+        retiredId,
+        validationStatus: "rejected",
+        reason: "retirement_not_eligible",
+      });
+    },
+  );
+
+  it("rejects retirement of critical commitments with no explicit critical domain", async () => {
+    const retiredId = createCommitmentId();
+    const target = commitmentFixture({
+      id: retiredId,
+      type: "boundary",
+      kind: "audience_rule",
+      enforcement_class: "critical",
+      critical_domain: null,
+    });
+    const emit = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service, revoke } = createRetirementService({
+      activeCommitments: [target],
+      getCommitment: target,
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-critical-null-domain",
+    });
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith("extraction.commitments.rejected", {
+      turnId: "turn-retirement-critical-null-domain",
+      session_id: DEFAULT_SESSION_ID,
+      retiredId,
+      validationStatus: "rejected",
+      reason: "retirement_not_eligible",
+    });
+  });
+
+  it("allows retirement of critical audience-scope commitments", async () => {
+    const retiredId = createCommitmentId();
+    const target = commitmentFixture({
+      id: retiredId,
+      type: "boundary",
+      kind: "audience_rule",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+    });
+    const llm = new FakeLLMClient({
+      responses: [retireCommitmentResponse({ commitmentId: retiredId })],
+    });
+    const { service, revoke } = createRetirementService({
+      activeCommitments: [target],
+      getCommitment: target,
+    });
+
+    await extractAndPersistRetirement({
+      service,
+      llm,
+      turnId: "turn-retirement-audience-scope",
+    });
+
+    expect(revoke).toHaveBeenCalledWith(
+      retiredId,
+      "The model judged the active commitment no longer applicable.",
+      {
+        kind: "online",
+        process: "corrective-preference-extractor",
+      },
+      undefined,
+      { expectedVersion: target.record_version },
+    );
+  });
 });
 
 describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
@@ -1004,6 +1432,7 @@ describe("CorrectivePreferenceTurnService cross-audience scoping", () => {
       commitmentRepository: {
         get: () => null,
         getApplicable: () => [],
+        revoke: vi.fn(),
         supersede: vi.fn(),
       },
       identityService: { addCommitment },

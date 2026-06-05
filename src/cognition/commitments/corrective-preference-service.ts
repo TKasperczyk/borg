@@ -1,5 +1,6 @@
 import type { LLMClient } from "../../llm/index.js";
 import {
+  commitmentIdSchema,
   commitmentSchema,
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
@@ -17,6 +18,7 @@ import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/ind
 import type { StreamEntry } from "../../stream/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { Clock } from "../../util/clock.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 import {
   createCommitmentId,
   type EntityId,
@@ -31,6 +33,7 @@ import type { RelationshipClaim } from "../relationship-claims.js";
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
+  type CorrectivePreferenceRetirementCandidate,
   type ExtractCorrectivePreferenceInput,
 } from "./corrective-preference-extractor.js";
 
@@ -38,7 +41,10 @@ const CORRECTIVE_RELATIONAL_SLOT_LIMIT = 32;
 
 export type CorrectivePreferenceTurnServiceOptions = {
   model: string;
-  commitmentRepository: Pick<CommitmentRepository, "get" | "getApplicable" | "supersede">;
+  commitmentRepository: Pick<
+    CommitmentRepository,
+    "get" | "getApplicable" | "revoke" | "supersede"
+  >;
   identityService: Pick<IdentityService, "addCommitment">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list" | "applyNegation">;
   workingMemoryStore: Pick<WorkingMemoryStore, "load" | "sanitizePendingActionsForRelationalSlot">;
@@ -78,6 +84,7 @@ export type ExtractCorrectivePreferenceForTurnInput = {
 export type CorrectivePreferenceTurnResult = {
   commitment: CommitmentRecord | null;
   commitmentSupersession: CorrectivePreferenceSupersessionClaim | null;
+  commitmentRetirement: CorrectivePreferenceRetirementClaim | null;
   workingMemory: WorkingMemory;
 };
 
@@ -85,6 +92,24 @@ export type CorrectivePreferenceSupersessionClaim = {
   supersededId: CommitmentRecord["id"];
   allowedActiveCommitmentIds: readonly CommitmentRecord["id"][];
 };
+
+export type CorrectivePreferenceRetirementClaim = {
+  retiredId: CommitmentRecord["id"];
+  allowedActiveCommitmentIds: readonly CommitmentRecord["id"][];
+  reason: string;
+  confidence: number;
+};
+
+export function isCognitionRetireEligible(commitment: CommitmentRecord): boolean {
+  const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
+
+  // Cardinal-rule structural host boundary: cognition may stand down behavioral
+  // boundaries, but host-safety-critical domains remain operator/admin-owned.
+  // Use the raw domain for the critical branch: defaulting null critical
+  // boundaries to audience_scope would make malformed/legacy host boundaries
+  // retirable, so critical + null fails closed.
+  return enforcementClass !== "critical" || commitment.critical_domain === "audience_scope";
+}
 
 function buildCorrectivePreferenceCommitment(input: {
   candidate: CorrectivePreferenceCandidate;
@@ -123,6 +148,22 @@ function buildCorrectivePreferenceCommitment(input: {
     superseded_by: null,
     last_reinforced_at: input.nowMs,
   });
+}
+
+function buildCorrectivePreferenceRetirementClaim(input: {
+  retirement: CorrectivePreferenceRetirementCandidate | null;
+  activeCommitments: readonly CommitmentRecord[];
+}): CorrectivePreferenceRetirementClaim | null {
+  if (input.retirement === null) {
+    return null;
+  }
+
+  return {
+    retiredId: input.retirement.commitmentId,
+    allowedActiveCommitmentIds: input.activeCommitments.map((commitment) => commitment.id),
+    reason: input.retirement.reason,
+    confidence: input.retirement.confidence,
+  };
 }
 
 export function appendCommitmentIfMissing(
@@ -186,6 +227,47 @@ export class CorrectivePreferenceTurnService {
       supersededId: input.supersededId,
       newId: input.newId,
       validationStatus: "accepted",
+    });
+  }
+
+  private traceRetirementRejected(input: {
+    turnId?: string;
+    sessionId?: SessionId;
+    retiredId: CommitmentRecord["id"];
+    reason: string;
+    error?: unknown;
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("extraction.commitments.rejected", {
+      turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      retiredId: input.retiredId,
+      validationStatus: "rejected",
+      reason: input.reason,
+      ...(this.options.tracer.includePayloads && input.error !== undefined
+        ? { error: input.error instanceof Error ? input.error.message : String(input.error) }
+        : {}),
+    });
+  }
+
+  private traceRetiredViaExtractor(input: {
+    turnId?: string;
+    sessionId?: SessionId;
+    retiredId: CommitmentRecord["id"];
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("extraction.commitments.transitioned", {
+      turnId: input.turnId,
+      ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      retiredId: input.retiredId,
+      validationStatus: "accepted",
+      reason: "retired_by_corrective_preference",
     });
   }
 
@@ -285,6 +367,15 @@ export class CorrectivePreferenceTurnService {
     return false;
   }
 
+  private isActiveCommitment(record: CommitmentRecord, nowMs: number): boolean {
+    return (
+      record.revoked_at === null &&
+      record.superseded_by === null &&
+      record.expired_at === null &&
+      (record.expires_at === null || record.expires_at > nowMs)
+    );
+  }
+
   private validateSupersessionClaim(input: {
     claim: CorrectivePreferenceSupersessionClaim;
     newId: CommitmentRecord["id"];
@@ -315,13 +406,8 @@ export class CorrectivePreferenceTurnService {
     }
 
     const nowMs = this.options.clock.now();
-    const active =
-      current.revoked_at === null &&
-      current.superseded_by === null &&
-      current.expired_at === null &&
-      (current.expires_at === null || current.expires_at > nowMs);
 
-    if (!active) {
+    if (!this.isActiveCommitment(current, nowMs)) {
       return {
         accepted: false,
         reason: "commitment_not_active",
@@ -329,6 +415,60 @@ export class CorrectivePreferenceTurnService {
     }
 
     return { accepted: true };
+  }
+
+  private validateRetirementClaim(
+    claim: CorrectivePreferenceRetirementClaim,
+  ): { accepted: true; expectedVersion: number } | { accepted: false; reason: string } {
+    const parsedId = commitmentIdSchema.safeParse(claim.retiredId);
+
+    if (!parsedId.success) {
+      return {
+        accepted: false,
+        reason: "invalid_retirement_claim",
+      };
+    }
+
+    const allowedIds = new Set(claim.allowedActiveCommitmentIds);
+
+    if (!allowedIds.has(parsedId.data)) {
+      return {
+        accepted: false,
+        reason: "not_in_allowed_active_commitments",
+      };
+    }
+
+    const current = this.options.commitmentRepository.get(parsedId.data);
+
+    if (current === null) {
+      return {
+        accepted: false,
+        reason: "unknown_commitment_id",
+      };
+    }
+
+    if (!this.isActiveCommitment(current, this.options.clock.now())) {
+      return {
+        accepted: false,
+        reason: "commitment_not_active",
+      };
+    }
+
+    if (!isCognitionRetireEligible(current)) {
+      return {
+        accepted: false,
+        reason: "retirement_not_eligible",
+      };
+    }
+
+    if (current.record_version === undefined) {
+      return {
+        accepted: false,
+        reason: "commitment_version_unavailable",
+      };
+    }
+
+    return { accepted: true, expectedVersion: current.record_version };
   }
 
   private traceCrossAudienceScope(input: {
@@ -617,6 +757,10 @@ export class CorrectivePreferenceTurnService {
                 (commitment) => commitment.id,
               ),
             },
+      commitmentRetirement: buildCorrectivePreferenceRetirementClaim({
+        retirement: correctiveExtraction.retirement,
+        activeCommitments: activeCommitmentsForExtractor,
+      }),
       workingMemory: this.options.workingMemoryStore.load(input.sessionId),
     };
   }
@@ -624,6 +768,7 @@ export class CorrectivePreferenceTurnService {
   async persistCommitment(input: {
     commitment: CommitmentRecord | null;
     supersession?: CorrectivePreferenceSupersessionClaim | null;
+    retirement?: CorrectivePreferenceRetirementClaim | null;
     turnId?: string;
     sessionId?: SessionId;
     onHookFailure: (
@@ -633,107 +778,170 @@ export class CorrectivePreferenceTurnService {
     ) => Promise<void>;
   }): Promise<void> {
     const commitment = input.commitment;
+    const retirement = input.retirement ?? null;
 
-    if (commitment === null) {
+    if (commitment === null && retirement === null) {
       return;
     }
 
-    const supersession = input.supersession ?? null;
-    const validation =
-      supersession === null
-        ? null
-        : this.validateSupersessionClaim({
-            claim: supersession,
-            newId: commitment.id,
+    if (commitment !== null) {
+      const supersession = input.supersession ?? null;
+      const validation =
+        supersession === null
+          ? null
+          : this.validateSupersessionClaim({
+              claim: supersession,
+              newId: commitment.id,
+            });
+
+      if (supersession !== null && validation !== null && !validation.accepted) {
+        this.traceSupersessionRejected({
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          supersededId: supersession.supersededId,
+          reason: validation.reason,
+        });
+      }
+
+      let persisted: CommitmentRecord | null = null;
+
+      try {
+        persisted = this.options.identityService.addCommitment({
+          id: commitment.id,
+          type: commitment.type,
+          kind: commitment.kind,
+          enforcementClass: effectiveCommitmentEnforcementClass(commitment),
+          criticalDomain: effectiveCommitmentCriticalDomain(commitment),
+          directiveFamily: commitment.directive_family,
+          closurePressureRelevance: commitment.closure_pressure_relevance,
+          directive: commitment.directive,
+          priority: commitment.priority,
+          madeToEntity: commitment.made_to_entity,
+          restrictedAudience: commitment.restricted_audience,
+          aboutEntity: commitment.about_entity,
+          committedByEntityId: commitment.committed_by_entity_id,
+          provenance: commitment.provenance,
+          sourceStreamEntryIds: commitment.source_stream_entry_ids,
+          createdAt: commitment.created_at,
+          expiresAt: commitment.expires_at,
+          ...(validation?.accepted === true ? { skipDirectiveFamilyMerge: true } : {}),
+        });
+      } catch (error) {
+        await input.onHookFailure("corrective_preference_commitment_persist", error, {
+          commitmentId: commitment.id,
+        });
+      }
+
+      if (persisted !== null && supersession !== null && validation?.accepted === true) {
+        try {
+          const superseded = supersedeCommitment({
+            commitmentId: supersession.supersededId,
+            replacementCommitmentId: persisted.id,
+            repository: this.options.commitmentRepository,
           });
 
-    if (supersession !== null && validation !== null && !validation.accepted) {
-      this.traceSupersessionRejected({
-        turnId: input.turnId,
-        sessionId: input.sessionId,
-        supersededId: supersession.supersededId,
-        reason: validation.reason,
-      });
+          if (superseded.status === "no_op") {
+            this.traceSupersessionRejected({
+              turnId: input.turnId,
+              sessionId: input.sessionId,
+              supersededId: supersession.supersededId,
+              newId: persisted.id,
+              reason: "unknown_commitment_id",
+            });
+          } else if (superseded.status === "conflict") {
+            this.traceSupersessionRejected({
+              turnId: input.turnId,
+              sessionId: input.sessionId,
+              supersededId: supersession.supersededId,
+              newId: persisted.id,
+              reason: "supersede_failed",
+              error: superseded.error,
+            });
+          } else {
+            this.traceSupersededViaExtractor({
+              turnId: input.turnId,
+              sessionId: input.sessionId,
+              supersededId: supersession.supersededId,
+              newId: persisted.id,
+            });
+          }
+        } catch (error) {
+          this.traceSupersessionRejected({
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+            supersededId: supersession.supersededId,
+            newId: persisted.id,
+            reason: "supersede_failed",
+            error,
+          });
+        }
+      }
     }
 
-    let persisted: CommitmentRecord;
+    if (retirement === null) {
+      return;
+    }
 
-    try {
-      persisted = this.options.identityService.addCommitment({
-        id: commitment.id,
-        type: commitment.type,
-        kind: commitment.kind,
-        enforcementClass: effectiveCommitmentEnforcementClass(commitment),
-        criticalDomain: effectiveCommitmentCriticalDomain(commitment),
-        directiveFamily: commitment.directive_family,
-        closurePressureRelevance: commitment.closure_pressure_relevance,
-        directive: commitment.directive,
-        priority: commitment.priority,
-        madeToEntity: commitment.made_to_entity,
-        restrictedAudience: commitment.restricted_audience,
-        aboutEntity: commitment.about_entity,
-        committedByEntityId: commitment.committed_by_entity_id,
-        provenance: commitment.provenance,
-        sourceStreamEntryIds: commitment.source_stream_entry_ids,
-        createdAt: commitment.created_at,
-        expiresAt: commitment.expires_at,
-        ...(validation?.accepted === true ? { skipDirectiveFamilyMerge: true } : {}),
-      });
-    } catch (error) {
-      await input.onHookFailure("corrective_preference_commitment_persist", error, {
-        commitmentId: commitment.id,
+    const retirementValidation = this.validateRetirementClaim(retirement);
+
+    if (!retirementValidation.accepted) {
+      this.traceRetirementRejected({
+        turnId: input.turnId,
+        sessionId: input.sessionId,
+        retiredId: retirement.retiredId,
+        reason: retirementValidation.reason,
       });
       return;
     }
 
-    if (supersession === null || validation?.accepted !== true) {
-      return;
-    }
-
     try {
-      const superseded = supersedeCommitment({
-        commitmentId: supersession.supersededId,
-        replacementCommitmentId: persisted.id,
-        repository: this.options.commitmentRepository,
-      });
+      const retired = this.options.commitmentRepository.revoke(
+        retirement.retiredId,
+        retirement.reason,
+        {
+          kind: "online",
+          process: "corrective-preference-extractor",
+        },
+        undefined,
+        { expectedVersion: retirementValidation.expectedVersion },
+      );
 
-      if (superseded.status === "no_op") {
-        this.traceSupersessionRejected({
+      if (retired === null) {
+        this.traceRetirementRejected({
           turnId: input.turnId,
           sessionId: input.sessionId,
-          supersededId: supersession.supersededId,
-          newId: persisted.id,
-          reason: "unknown_commitment_id",
+          retiredId: retirement.retiredId,
+          reason: "commitment_version_conflict",
         });
         return;
       }
 
-      if (superseded.status === "conflict") {
-        this.traceSupersessionRejected({
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          supersededId: supersession.supersededId,
-          newId: persisted.id,
-          reason: "supersede_failed",
-          error: superseded.error,
-        });
-        return;
-      }
-
-      this.traceSupersededViaExtractor({
+      this.traceRetiredViaExtractor({
         turnId: input.turnId,
         sessionId: input.sessionId,
-        supersededId: supersession.supersededId,
-        newId: persisted.id,
+        retiredId: retirement.retiredId,
       });
     } catch (error) {
-      this.traceSupersessionRejected({
+      if (error instanceof IdentityCasMismatchError) {
+        this.traceRetirementRejected({
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          retiredId: retirement.retiredId,
+          reason: "commitment_version_conflict",
+          error,
+        });
+        return;
+      }
+
+      this.traceRetirementRejected({
         turnId: input.turnId,
         sessionId: input.sessionId,
-        supersededId: supersession.supersededId,
-        newId: persisted.id,
-        reason: "supersede_failed",
+        retiredId: retirement.retiredId,
+        reason: "revoke_failed",
         error,
+      });
+      await input.onHookFailure("corrective_preference_commitment_retire", error, {
+        commitmentId: retirement.retiredId,
       });
     }
   }

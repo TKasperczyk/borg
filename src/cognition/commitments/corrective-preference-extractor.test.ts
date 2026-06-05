@@ -3,14 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { createEntityId, createRelationalSlotId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createCommitmentId,
+  createEntityId,
+  createRelationalSlotId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RelationshipClaim } from "../relationship-claims.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
 function correctivePreferenceResponse(input: {
-  classification: "corrective_preference" | "none";
+  classification: "corrective_preference" | "retire_commitment" | "none";
   type?: "preference" | "rule" | "boundary" | null;
   kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
   enforcement_class?: "critical" | "advisory" | null;
@@ -27,6 +32,7 @@ function correctivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
+  retiresCommitmentId?: ReturnType<typeof createCommitmentId> | null;
   relationship_claims?: RelationshipClaim[];
   slot_negations?: unknown[];
 }): LLMCompleteResult {
@@ -58,6 +64,7 @@ function correctivePreferenceResponse(input: {
           reason: input.reason ?? "Classification reason.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
+          retires_commitment_id: input.retiresCommitmentId ?? null,
           relationship_claims: input.relationship_claims ?? [],
           slot_negations: input.slot_negations ?? [],
         },
@@ -124,6 +131,53 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: "EmitCorrectivePreference",
+    });
+  });
+
+  it("emits a high-confidence retire-only commitment result", async () => {
+    const commitmentId = createCommitmentId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "retire_commitment",
+          reason: "The model judged the supplied active commitment resolved.",
+          confidence: 0.91,
+          retiresCommitmentId: commitmentId,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    const result = await extractor.extractWithSlotNegations({
+      userMessage: "That standing boundary is resolved now.",
+      recentHistory: [],
+      audienceEntityId: createEntityId(),
+      activeCommitments: [
+        {
+          id: commitmentId,
+          type: "preference",
+          kind: "participant_preference",
+          enforcement_class: "advisory",
+          critical_domain: null,
+          directive: "Keep the temporary discussion constraint active.",
+          directive_family: "temporary_discussion_constraint",
+          closure_pressure_relevance: "neutral",
+          priority: 5,
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      preference: null,
+      retirement: {
+        commitmentId,
+        reason: "The model judged the supplied active commitment resolved.",
+        confidence: 0.91,
+      },
+      slot_negations: [],
     });
   });
 
@@ -504,6 +558,37 @@ describe("CorrectivePreferenceExtractor", () => {
         activeCommitments: [],
       }),
     ).resolves.toBeNull();
+  });
+
+  it("returns null retirement for low-confidence retire classifications", async () => {
+    const commitmentId = createCommitmentId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "retire_commitment",
+          reason: "The model was uncertain about retiring the commitment.",
+          confidence: 0.5,
+          retiresCommitmentId: commitmentId,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await expect(
+      extractor.extractWithSlotNegations({
+        userMessage: "Maybe that old rule is not needed now.",
+        recentHistory: [],
+        audienceEntityId: null,
+        activeCommitments: [],
+      }),
+    ).resolves.toMatchObject({
+      preference: null,
+      retirement: null,
+      slot_negations: [],
+    });
   });
 
   it("reports degraded extraction without throwing", async () => {

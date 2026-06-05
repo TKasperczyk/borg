@@ -44,6 +44,9 @@ export type TurnExtractionPhaseResult = {
   correctiveCommitmentSupersession: Parameters<
     CorrectivePreferenceTurnService["persistCommitment"]
   >[0]["supersession"];
+  correctiveCommitmentRetirement: Parameters<
+    CorrectivePreferenceTurnService["persistCommitment"]
+  >[0]["retirement"];
   workingMemory: WorkingMemory;
   createdActionIds: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnActionStateService"]["extract"]>
@@ -89,6 +92,7 @@ export async function runExtractionPhase(input: {
       actionLinkSelfContext: null,
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       workingMemory: input.workingMemory,
       createdActionIds: [],
       persistedPromotions: {
@@ -186,6 +190,7 @@ export async function runExtractionPhase(input: {
         : Promise.resolve({
             commitment: null,
             commitmentSupersession: null,
+            commitmentRetirement: null,
             workingMemory: input.workingMemory,
           }),
       input.options.turnActionStateService.extract({
@@ -250,6 +255,7 @@ export async function runExtractionPhase(input: {
     actionLinkSelfContext,
     correctiveCommitment: correctivePreferenceTurn.commitment,
     correctiveCommitmentSupersession: correctivePreferenceTurn.commitmentSupersession,
+    correctiveCommitmentRetirement: correctivePreferenceTurn.commitmentRetirement,
     workingMemory: correctivePreferenceTurn.workingMemory,
     createdActionIds,
     persistedPromotions,

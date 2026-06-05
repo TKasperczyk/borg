@@ -58,6 +58,9 @@ type CorrectiveCommitment = Parameters<
 type CorrectiveCommitmentSupersession = Parameters<
   CorrectivePreferenceTurnService["persistCommitment"]
 >[0]["supersession"];
+type CorrectiveCommitmentRetirement = Parameters<
+  CorrectivePreferenceTurnService["persistCommitment"]
+>[0]["retirement"];
 
 const DEFAULT_ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
 
@@ -282,10 +285,7 @@ async function compilePostResponseSharedState(input: {
   closureLoopAssessment?: ClosureLoopAssessment | null;
   activeParticipants?: readonly ActiveParticipant[];
 }): Promise<void> {
-  if (
-    input.audienceEntityId === null ||
-    !input.options.config.generation.evidenceLedger.enabled
-  ) {
+  if (input.audienceEntityId === null || !input.options.config.generation.evidenceLedger.enabled) {
     return;
   }
 
@@ -471,6 +471,7 @@ export async function runPostGenerationPhase(input: {
   responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
+  correctiveCommitmentRetirement: CorrectiveCommitmentRetirement;
   deliberation: TurnDeliberationPhaseResult["deliberation"];
   retrievalPhase: TurnRetrievalPhaseResult;
   origin: TurnPhaseInput["origin"];
@@ -633,6 +634,7 @@ export async function runPostGenerationPhase(input: {
       responseTo: input.responseTo,
       correctiveCommitment: input.correctiveCommitment,
       correctiveCommitmentSupersession: input.correctiveCommitmentSupersession,
+      correctiveCommitmentRetirement: input.correctiveCommitmentRetirement,
       perceptionMode: input.perception.mode,
       deliberation,
     });
@@ -828,6 +830,7 @@ export async function runPostGenerationPhase(input: {
     sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
+    retirement: input.correctiveCommitmentRetirement,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
   startTerminalLiveIngestion({
@@ -871,6 +874,7 @@ export async function suppressFromClosureLoopPhase(input: {
   responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
+  correctiveCommitmentRetirement: CorrectiveCommitmentRetirement;
   perceptionMode: CognitiveMode;
   reason: string;
 }): Promise<TurnPhaseResult> {
@@ -965,6 +969,7 @@ export async function suppressFromClosureLoopPhase(input: {
     sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
+    retirement: input.correctiveCommitmentRetirement,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
   archiveInactiveParticipantActions({
@@ -1013,6 +1018,7 @@ export async function suppressFromGenerationGatePhase(input: {
   gateResult: Awaited<ReturnType<GenerationGate["evaluate"]>>;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
+  correctiveCommitmentRetirement: CorrectiveCommitmentRetirement;
   perceptionMode: CognitiveMode;
 }): Promise<TurnPhaseResult> {
   let workingMemory = input.workingMemory;
@@ -1105,6 +1111,7 @@ export async function suppressFromGenerationGatePhase(input: {
     sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
+    retirement: input.correctiveCommitmentRetirement,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
   archiveInactiveParticipantActions({
@@ -1153,6 +1160,7 @@ async function suppressFromActionPhase(input: {
   responseTo?: StreamResponseTo;
   correctiveCommitment: CorrectiveCommitment;
   correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
+  correctiveCommitmentRetirement: CorrectiveCommitmentRetirement;
   perceptionMode: CognitiveMode;
   deliberation: Awaited<ReturnType<Deliberator["run"]>>;
 }): Promise<TurnPhaseResult> {
@@ -1229,6 +1237,7 @@ async function suppressFromActionPhase(input: {
     sessionId: input.sessionId,
     commitment: input.correctiveCommitment,
     supersession: input.correctiveCommitmentSupersession,
+    retirement: input.correctiveCommitmentRetirement,
     appendHookFailureEvent: input.appendHookFailureEvent,
   });
   archiveInactiveParticipantActions({

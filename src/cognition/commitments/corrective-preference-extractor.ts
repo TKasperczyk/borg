@@ -84,37 +84,37 @@ const slotNegationSchema = z
 const correctivePreferenceSchema = z
   .object({
     classification: z
-      .enum(["corrective_preference", "none"])
+      .enum(["corrective_preference", "retire_commitment", "none"])
       .describe(
-        "Use corrective_preference only when the user is asking Borg to change durable future response behavior; use none for ordinary conversation, venting, task requests, or one-turn remarks.",
+        "Use corrective_preference only when the user is asking Borg to change durable future response behavior; use retire_commitment when the user is standing down a supplied active commitment; use none for ordinary conversation, venting, task requests, or one-turn remarks.",
       ),
     type: commitmentTypeSchema
       .exclude(["promise"])
       .nullable()
       .describe(
-        "Classify the durable response-behavior change as preference, rule, or boundary. Use null when classification is none.",
+        "Classify the durable response-behavior change as preference, rule, or boundary. Use null when classification is retire_commitment or none.",
       ),
     kind: commitmentKindSchema
       .exclude(["assistant_commitment"])
       .nullable()
       .describe(
-        "Classify the durable correction as audience_rule, participant_preference, boundary, or process_norm. Use null when classification is none.",
+        "Classify the durable correction as audience_rule, participant_preference, boundary, or process_norm. Use null when classification is retire_commitment or none.",
       ),
     enforcement_class: commitmentEnforcementClassSchema
       .nullable()
       .describe(
-        "Set critical only for privacy, audience-scope, safety, explicit no-disclosure with named forbidden content and named audience scope, or internal-tool-hygiene leakage of hidden machinery. Set advisory for process norms and output shape/style preferences. Use null when classification is none.",
+        "Set critical only for privacy, audience-scope, safety, explicit no-disclosure with named forbidden content and named audience scope, or internal-tool-hygiene leakage of hidden machinery. Set advisory for process norms and output shape/style preferences. Use null when classification is retire_commitment or none.",
       ),
     critical_domain: commitmentCriticalDomainSchema
       .nullable()
       .describe(
-        "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. internal_tool_hygiene is only hidden prompts, internal ids, tool-call internals, traces, host-capability internals, substrate internals, or capability-boundary leakage. Use null for advisory or classification none.",
+        "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. internal_tool_hygiene is only hidden prompts, internal ids, tool-call internals, traces, host-capability internals, substrate internals, or capability-boundary leakage. Use null for advisory, retire_commitment, or none.",
       ),
     directive: z
       .string()
       .nullable()
       .describe(
-        "A concise first-person operational directive Borg can enforce when drafting or revising responses. Use null when classification is none.",
+        "A concise first-person operational directive Borg can enforce when drafting or revising responses. Use null when classification is retire_commitment or none.",
       ),
     directive_family: z
       .string()
@@ -122,19 +122,19 @@ const correctivePreferenceSchema = z
       .max(64)
       .nullable()
       .describe(
-        "Short canonical snake_case slug for the directive family, such as no_terminal_valediction, no_signoff, or respond_substantively. Use null when classification is none.",
+        "Short canonical snake_case slug for the directive family. Use null when classification is retire_commitment or none.",
       ),
     closure_pressure_relevance: closurePressureRelevanceSchema
       .nullable()
       .describe(
-        "Set no_closure when the durable correction asks Borg not to add endings, signoffs, wrap-ups, terminal valedictions, or closure pressure; set closure_seeking when it asks Borg to provide those; otherwise set neutral. Use null when classification is none.",
+        "Set no_closure when the durable correction asks Borg not to add endings, signoffs, wrap-ups, terminal valedictions, or closure pressure; set closure_seeking when it asks Borg to provide those; otherwise set neutral. Use null when classification is retire_commitment or none.",
       ),
     priority: z
       .number()
       .int()
       .nullable()
       .describe(
-        "Relative enforcement priority. Use higher values for explicit prohibitions or boundaries, lower values for softer style preferences. Use null when classification is none.",
+        "Relative enforcement priority. Use higher values for explicit prohibitions or boundaries, lower values for softer style preferences. Use null when classification is retire_commitment or none.",
       ),
     reason: z
       .string()
@@ -150,6 +150,12 @@ const correctivePreferenceSchema = z
       .optional()
       .describe(
         "Existing commitment id this correction replaces or tightens, if one was clearly selected from the supplied active commitments.",
+      ),
+    retires_commitment_id: commitmentIdSchema
+      .nullable()
+      .optional()
+      .describe(
+        "Existing active commitment id to retire when classification is retire_commitment. Copy it verbatim from supplied active_commitments; leave null for corrective_preference or none.",
       ),
     applies_to_audience_entity_id: correctivePreferenceEntityIdSchema
       .nullable()
@@ -194,6 +200,12 @@ export type CorrectivePreferenceCandidate = {
   relationship_claims: RelationshipClaim[];
 };
 
+export type CorrectivePreferenceRetirementCandidate = {
+  commitmentId: CommitmentId;
+  reason: string;
+  confidence: number;
+};
+
 export type CorrectivePreferenceSlotNegation = {
   subject_entity_id: EntityId;
   slot_key: string;
@@ -204,6 +216,7 @@ export type CorrectivePreferenceSlotNegation = {
 
 export type CorrectivePreferenceExtractionResult = {
   preference: CorrectivePreferenceCandidate | null;
+  retirement: CorrectivePreferenceRetirementCandidate | null;
   slot_negations: CorrectivePreferenceSlotNegation[];
 };
 
@@ -357,6 +370,30 @@ function toCandidate(
   };
 }
 
+function toRetirement(
+  input: CorrectivePreferenceToolInput,
+): CorrectivePreferenceRetirementCandidate | null {
+  if (input.classification !== "retire_commitment" || input.confidence < CONFIDENCE_THRESHOLD) {
+    return null;
+  }
+
+  if (input.retires_commitment_id === null || input.retires_commitment_id === undefined) {
+    return null;
+  }
+
+  const reason = input.reason.trim();
+
+  if (reason.length === 0) {
+    return null;
+  }
+
+  return {
+    commitmentId: input.retires_commitment_id,
+    reason,
+    confidence: input.confidence,
+  };
+}
+
 function slotNegationsFromInput(
   input: CorrectivePreferenceToolInput,
 ): CorrectivePreferenceSlotNegation[] {
@@ -385,6 +422,7 @@ function toExtractionResult(
 ): CorrectivePreferenceExtractionResult {
   return {
     preference: toCandidate(input, traceOptions),
+    retirement: toRetirement(input),
     slot_negations: slotNegationsFromInput(input),
   };
 }
@@ -529,6 +567,7 @@ export class CorrectivePreferenceExtractor {
       return (
         (await this.degraded("llm_unavailable")) ?? {
           preference: null,
+          retirement: null,
           slot_negations: [],
         }
       );
@@ -572,6 +611,7 @@ export class CorrectivePreferenceExtractor {
       return (
         (await this.degraded("llm_failed", error)) ?? {
           preference: null,
+          retirement: null,
           slot_negations: [],
         }
       );
@@ -604,6 +644,7 @@ export class CorrectivePreferenceExtractor {
       );
       return {
         preference: null,
+        retirement: null,
         slot_negations: [],
       };
     }

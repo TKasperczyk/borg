@@ -651,7 +651,7 @@ function createNoCreatorDirectiveResponse(): LLMCompleteResult {
 }
 
 function createCorrectivePreferenceResponse(input: {
-  classification: "corrective_preference" | "none";
+  classification: "corrective_preference" | "retire_commitment" | "none";
   type?: "preference" | "rule" | "boundary" | null;
   kind?: "audience_rule" | "participant_preference" | "boundary" | "process_norm" | null;
   enforcement_class?: "critical" | "advisory" | null;
@@ -669,6 +669,7 @@ function createCorrectivePreferenceResponse(input: {
   reason?: string;
   confidence?: number;
   supersedes_commitment_id?: string | null;
+  retires_commitment_id?: string | null;
   slot_negations?: unknown[];
 }) {
   return {
@@ -701,6 +702,7 @@ function createCorrectivePreferenceResponse(input: {
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: input.supersedes_commitment_id ?? null,
+          retires_commitment_id: input.retires_commitment_id ?? null,
           slot_negations: input.slot_negations ?? [],
         },
       },

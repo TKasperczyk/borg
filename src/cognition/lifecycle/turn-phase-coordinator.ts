@@ -1289,6 +1289,7 @@ export class TurnPhaseCoordinator {
     });
     const correctiveCommitment = extraction.correctiveCommitment;
     const correctiveCommitmentSupersession = extraction.correctiveCommitmentSupersession;
+    const correctiveCommitmentRetirement = extraction.correctiveCommitmentRetirement;
     workingMemory = extraction.workingMemory;
     participantRoster = buildParticipantRosterFromRepositories({
       activeParticipants,
@@ -1358,6 +1359,7 @@ export class TurnPhaseCoordinator {
         responseTo: currentTurnUserInput.responseTo,
         correctiveCommitment,
         correctiveCommitmentSupersession,
+        correctiveCommitmentRetirement,
         perceptionMode: perception.mode,
         reason: closureLoopAssessment.reason,
       });
@@ -1441,6 +1443,7 @@ export class TurnPhaseCoordinator {
         gateResult,
         correctiveCommitment,
         correctiveCommitmentSupersession,
+        correctiveCommitmentRetirement,
         perceptionMode: perception.mode,
       });
     }
@@ -1552,6 +1555,7 @@ export class TurnPhaseCoordinator {
       responseTo: currentTurnUserInput.responseTo,
       correctiveCommitment,
       correctiveCommitmentSupersession,
+      correctiveCommitmentRetirement,
       deliberation,
       origin: turnInput.origin,
       autonomyTrigger: turnInput.autonomyTrigger,

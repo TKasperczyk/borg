@@ -6,7 +6,9 @@ import {
 export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Classify whether the user is making a durable correction to Borg's future response behavior.",
   "Return corrective_preference only when the user is directing Borg to change how it should answer in future turns, such as a recurring style, boundary, interaction rule, or response pattern.",
+  "Return retire_commitment when the user is standing down a supplied active commitment because the matter it governed is resolved or no longer applies; copy the selected id into retires_commitment_id from active_commitments and do not invent ids.",
   "Return none for ordinary task requests, emotional disclosure, venting, disagreement, one-turn instructions, or discussion about a behavior without asking Borg to adopt a lasting change.",
+  "Choose exactly one intent per turn: create/update a corrective preference, retire one supplied active commitment, or none.",
   "Separately, fill slot_negations when the user rejects a supplied relational slot value, even if classification is none.",
   "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",

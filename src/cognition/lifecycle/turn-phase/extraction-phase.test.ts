@@ -77,6 +77,7 @@ describe("runExtractionPhase", () => {
       actionLinkSelfContext: null,
       correctiveCommitment: null,
       correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
       workingMemory,
       createdActionIds: [],
       persistedPromotions: {
@@ -98,6 +99,7 @@ describe("runExtractionPhase", () => {
     const extractAndApply = vi.fn(async () => ({
       commitment: null,
       commitmentSupersession: null,
+      commitmentRetirement: null,
       workingMemory,
     }));
     const extractActionState = vi.fn(async () => []);
@@ -194,6 +196,7 @@ describe("runExtractionPhase", () => {
     const extractAndApply = vi.fn(async () => ({
       commitment: null,
       commitmentSupersession: null,
+      commitmentRetirement: null,
       workingMemory,
     }));
     const extractActionState = vi.fn(async () => []);
