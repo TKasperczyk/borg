@@ -353,6 +353,68 @@ describe("overseer process", () => {
     expect(prompt).toContain("Maya is my partner.");
   });
 
+  it("labels self values and traits in the self-state prompt rows", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+    const value = harness.valuesRepository.add({
+      label: "groundedness",
+      description: "Stay grounded in evidence.",
+      priority: 5,
+      provenance: {
+        kind: "manual",
+      },
+    });
+    const trait = harness.traitsRepository.reinforce({
+      label: "patient",
+      delta: 0.8,
+      provenance: {
+        kind: "manual",
+      },
+      timestamp: nowMs - 500,
+    });
+    const source = await appendSourceEntry(harness, "Maya is my partner.");
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Self-state label target",
+          narrative: "The user said Maya is their partner.",
+          participants: ["user", "Maya"],
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    const valuesLine = prompt.split("\n").find((line) => line.startsWith("Values: "));
+    const traitsLine = prompt.split("\n").find((line) => line.startsWith("Traits: "));
+
+    expect(valuesLine).toContain(value.label);
+    expect(valuesLine).toContain('"disclosure_label"');
+    expect(valuesLine).toContain('"disclosure_class":"self_private"');
+    expect(traitsLine).toContain(trait.label);
+    expect(traitsLine).toContain('"disclosure_label"');
+    expect(traitsLine).toContain('"disclosure_class":"self_private"');
+  });
+
   it("includes raw source entries for semantic node targets", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({

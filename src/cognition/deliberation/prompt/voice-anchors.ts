@@ -1,4 +1,8 @@
 // Formats stable self-patterns into planner voice anchors.
+import {
+  renderMemoryDisclosureLabelForModel,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
 import type { SelfSnapshot } from "../types.js";
 
 export function summarizeVoiceAnchors(selfSnapshot: SelfSnapshot): string | null {
@@ -10,6 +14,7 @@ export function summarizeVoiceAnchors(selfSnapshot: SelfSnapshot): string | null
 
   return [
     `Active voice anchors (held values): ${heldValues.map((value) => value.label).join(", ")}.`,
+    `disclosure: ${renderMemoryDisclosureLabelForModel(selfPrivateMemoryDisclosureLabel())}`,
     "Let voice_note reflect these where the turn allows.",
   ].join("\n");
 }

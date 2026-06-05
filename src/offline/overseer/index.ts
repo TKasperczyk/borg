@@ -11,6 +11,7 @@ import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../cognition/disclosure-labels.js";
+import { selfPrivateMemoryDisclosureLabel } from "../../retrieval/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   semanticEdgeIdSchema,
@@ -197,8 +198,14 @@ function summarizeSelfState(ctx: OfflineContext): string {
   const values =
     ctx.valuesRepository
       .list()
-      .map((value) => `${value.id}:${value.label}`)
-      .join(", ") || "none";
+      .map((value) =>
+        JSON.stringify({
+          id: value.id,
+          label: value.label,
+          ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+        }),
+      )
+      .join(" | ") || "none";
   const goals =
     ctx.goalsRepository
       .list({ status: "active" })
@@ -213,8 +220,15 @@ function summarizeSelfState(ctx: OfflineContext): string {
   const traits =
     ctx.traitsRepository
       .list()
-      .map((trait) => `${trait.id}:${trait.label}:${trait.strength.toFixed(2)}`)
-      .join(", ") || "none";
+      .map((trait) =>
+        JSON.stringify({
+          id: trait.id,
+          label: trait.label,
+          strength: trait.strength,
+          ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+        }),
+      )
+      .join(" | ") || "none";
   const commitments =
     ctx.commitmentRepository
       .list({ activeOnly: true })
