@@ -30,26 +30,20 @@ emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
 is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
 Sol. Disclosure is contextual to the audience."
 
-The inversion is substantially complete across live-turn and second-order
-cognition as of v101.1 (GPT-Pro v102 audit: no longer fundamentally
-misaligned). The v102.1 and v103.1 passes then closed the audit's gaps
-(see `~/borg-v102-gpt-verdict.md`, `~/borg-v103-gpt-verdict.md`):
-disclosure-label coverage across every model-facing serializer and the
-cross-audience online open-question write gate are fixed, and a Patch 8
-label-coverage guard now enforces the contract. The recall inversion and
-the disclosure-label contract are both in place; only the final GPT
-"complete" re-confirmation remains.
-Turn retrieval is global across episodic, semantic, self/identity,
-goals/open-questions, social/observed-events, commitments, corrections,
-image-perception, autobiographical, and proactive-outbound paths. The same rule
-now governs second-order cognition -- autonomous triggers, offline self-narration,
+Recall is global across every cognition band -- live-turn retrieval (episodic,
+semantic, self/identity, goals/open-questions, social/observed-events,
+commitments, corrections, image-perception, autobiographical, proactive-outbound)
+and second-order cognition (autonomous triggers, offline self-narration,
 rumination/open-question resolution, procedural synthesis, belief revision,
 semantic extraction/review, cross-scope synthesis, action-state memory,
-commitment-reconciliation awareness, and internal model tools -- all recalling
-globally and rendering disclosure labels. The retrieval option types are split so
-cognition cannot carry an audience gate, and `pnpm heuristics:guard` fails the
-build if a disclosure-search symbol is called from a cognition/offline/autonomy/
-internal-tool path. Audience machinery remains for disclosure labeling, ranking,
+commitment-reconciliation awareness, internal model tools) -- all recalling
+globally and rendering disclosure labels rather than pre-filtering by audience.
+The retrieval option types are split so cognition cannot carry an audience gate
+(`CognitionRetrievalOptions` has no `audienceEntityId`/`crossAudience`). Two
+`pnpm heuristics:guard` passes fail the build on regression: one if a
+disclosure-search symbol is called from a cognition/offline/autonomy/outbound/
+internal-tool path, the other if a model-facing memory row is serialized without a
+disclosure label. Audience machinery remains for disclosure labeling, ranking,
 public/export search, admin reads, and action/tool/transport permission, not as a
 predicate on what Sol may internally remember. Per the LIVE SYSTEM regime in
 CLAUDE.md, a data reset is allowed after a verified backup, so future schema

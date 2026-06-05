@@ -2,31 +2,23 @@
 
 **Read this before changing anything in `src/memory/episodic/`, `src/memory/creator-directives/`, `src/retrieval/semantic-retrieval.ts`, or any audience/visibility code.**
 
-This file records the project's **memory/disclosure doctrine** and the v101.1
-**inversion** that brings the code into line with it. The doctrine is the Cardinal Memory
-Rule in `CLAUDE.md` (see it there for the full, authoritative statement): **recall is global
-to Sol; disclosure is contextual to the audience.** The inversion is SUBSTANTIALLY complete
-across live-turn and second-order cognition as of v101.1: the same rule now governs offline
-mind-maintenance, autonomy, action-state memory, cross-scope synthesis, internal model tooling,
-semantic review status, and commitment-reconciliation awareness. The v102.1 pass closed the
-GPT v102 audit's concrete gaps (`~/borg-v102-gpt-verdict.md`): disclosure-label coverage on the
-remaining model-facing prompt rows (reflection evidence, self-narrator period labels,
-commitment-reconciler rows) and the cross-audience online open-question write gate are fixed.
-The v103.1 pass closed the remaining label-coverage blocker across the rest of the model-facing
-serializers and added the Patch 8 label-coverage guard. The recall inversion and the
-disclosure-label contract are both in place; only the final GPT "complete" re-confirmation
-remains (`~/borg-v103-gpt-verdict.md`). Two structural guards
-(`pnpm heuristics:guard`) keep the firewall from being reintroduced under a new name (recall
-gates) and keep model-facing memory rows labeled (disclosure coverage). A human
-mind does not forget what it knows because the wrong person walked into the room -- it remembers,
-and chooses what to say. Sol works the same way.
+This file records the project's **memory/disclosure doctrine**. The authoritative statement is
+the Cardinal Memory Rule in `CLAUDE.md`: **recall is global to Sol; disclosure is contextual to
+the audience.** The same rule governs every cognition band -- live-turn retrieval, offline
+mind-maintenance, autonomy and action-state memory, cross-scope synthesis, internal model tools,
+semantic review status, and commitment-reconciliation awareness: each recalls globally and
+attaches disclosure labels rather than pre-filtering by audience. Two `heuristics:guard` passes
+keep this from being reintroduced under a new name -- one bans disclosure-search symbols from
+cognition paths (recall gates), the other requires a disclosure label on every model-facing
+memory row (disclosure coverage). A human mind does not forget what it knows because the wrong
+person walked into the room -- it remembers, and chooses what to say. Sol works the same way.
 
 > **Slogan:** "Memory is global to Sol. Disclosure is contextual to the audience."
 
 What this file now protects is the architecture target: broad recall for cognition, plus a
 post-recall disclosure-judgment layer. It used to defend the opposite -- an audience firewall
 that gated what Sol could recall. That firewall-as-cognition design is gone for both live-turn
-retrieval and second-order cognition as of v101.1. Audience machinery that
+retrieval and second-order cognition. Audience machinery that
 remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
 permission, not a predicate on what Sol may internally remember. If you are about to add or
 widen an audience/session gate on *recall*, stop and read -- the `heuristics:guard` will also
