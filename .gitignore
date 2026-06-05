@@ -17,3 +17,4 @@ tmp
 .mcp.json
 .design-dump/
 .tmp/
+.fallow/
