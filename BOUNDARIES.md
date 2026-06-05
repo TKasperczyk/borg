@@ -5,10 +5,12 @@
 This file records the project's **memory/disclosure doctrine** and the v101.1
 **inversion** that brings the code into line with it. The doctrine is the Cardinal Memory
 Rule in `CLAUDE.md` (see it there for the full, authoritative statement): **recall is global
-to Sol; disclosure is contextual to the audience.** Both the live-turn cognition inversion and
-the second-order inversion are complete as of v101.1: the same rule now governs offline
+to Sol; disclosure is contextual to the audience.** The inversion is SUBSTANTIALLY complete
+across live-turn and second-order cognition as of v101.1: the same rule now governs offline
 mind-maintenance, autonomy, action-state memory, cross-scope synthesis, internal model tooling,
-semantic review status, and commitment-reconciliation awareness. A structural guard
+semantic review status, and commitment-reconciliation awareness. Known remaining hardening work
+(v102.1, per `~/borg-v102-gpt-verdict.md`) is disclosure-label coverage on a few model-facing
+prompt rows and cross-audience online open-question resolution. A structural guard
 (`pnpm heuristics:guard`) keeps the firewall from being reintroduced under a new name. A human
 mind does not forget what it knows because the wrong person walked into the room -- it remembers,
 and chooses what to say. Sol works the same way.

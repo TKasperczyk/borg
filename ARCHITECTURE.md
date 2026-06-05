@@ -30,8 +30,12 @@ emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
 is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
 Sol. Disclosure is contextual to the audience."
 
-Both the live-turn and the second-order cognition inversions are complete as of
-v101.1. Turn retrieval is global across episodic, semantic, self/identity,
+The inversion is substantially complete across live-turn and second-order
+cognition as of v101.1 (GPT-Pro v102 audit: no longer fundamentally
+misaligned). Known remaining hardening work (v102.1, see
+`~/borg-v102-gpt-verdict.md`) is disclosure-label coverage on a few
+model-facing prompt rows and cross-audience online open-question resolution.
+Turn retrieval is global across episodic, semantic, self/identity,
 goals/open-questions, social/observed-events, commitments, corrections,
 image-perception, autobiographical, and proactive-outbound paths. The same rule
 now governs second-order cognition -- autonomous triggers, offline self-narration,
