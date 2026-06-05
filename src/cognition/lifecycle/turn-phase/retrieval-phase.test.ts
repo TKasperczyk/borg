@@ -2151,6 +2151,8 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const audienceEntityId = createEntityId();
     const selfEntityId = createEntityId();
     const actionId = createActionId();
+    const commitmentId = createCommitmentId();
+    const openQuestionId = createOpenQuestionId();
     const priorSourceEntryId = createStreamEntryId();
     const streamEntryId = createStreamEntryId();
     const currentUserContent = "The clinic callback follow-up is locked.";
@@ -2186,6 +2188,55 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       last_referenced_turn_counter: 2,
       last_referenced_turn_global: null,
     } as ActionRecord;
+    const privateCommitment = {
+      id: commitmentId,
+      kind: "assistant_commitment",
+      type: "promise",
+      enforcement_class: "advisory",
+      critical_domain: null,
+      directive_family: "clinic_callback",
+      closure_pressure_relevance: "neutral",
+      directive: "Keep the clinic callback detail private.",
+      priority: 1,
+      made_to_entity: audienceEntityId,
+      restricted_audience: audienceEntityId,
+      about_entity: null,
+      status: "active",
+      provenance: { kind: "online", process: "test" },
+      source_stream_entry_ids: [priorSourceEntryId],
+      created_at: 9_000,
+      updated_at: 9_000,
+      expires_at: null,
+      expired_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      revoke_provenance: null,
+      superseded_by: null,
+      canonicalized_by_artifact_entry_id: null,
+    } as never;
+    const privateOpenQuestion = {
+      id: openQuestionId,
+      question: "Should the clinic callback remain private?",
+      urgency: 0.5,
+      status: "open",
+      goal_id: null,
+      audience_entity_id: audienceEntityId,
+      related_episode_ids: [],
+      related_semantic_node_ids: [],
+      provenance: { kind: "online", process: "test" },
+      source: "user",
+      created_at: 9_000,
+      updated_at: 9_000,
+      last_touched: 9_000,
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [],
+      resolution_note: null,
+      resolved_at: null,
+      abandoned_reason: null,
+      abandoned_at: null,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
+    } as never;
     const update = vi.fn();
     const llmClient = new FakeLLMClient({
       responses: [
@@ -2257,10 +2308,10 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         list: () => [],
       },
       commitmentRepository: {
-        list: () => [],
+        list: () => [privateCommitment],
       },
       openQuestionsRepository: {
-        list: () => [],
+        list: () => [privateOpenQuestion],
       },
       createStreamReader: () =>
         ({
@@ -2337,6 +2388,55 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       },
       promptVisibleLedger: "Action candidate: Follow up with the clinic.",
     });
+    const requestPayload = JSON.parse(
+      String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
+    ) as {
+      canonicalization_candidates?: {
+        active_commitments?: Array<{
+          id: string;
+          disclosure?: string;
+          disclosure_label?: {
+            disclosure_class?: string;
+            private_to_entity_ids?: string[];
+          };
+        }>;
+        open_questions?: Array<{
+          id: string;
+          disclosure?: string;
+          disclosure_label?: {
+            disclosure_class?: string;
+            private_to_entity_ids?: string[];
+          };
+        }>;
+      };
+    };
+    const commitmentCandidate =
+      requestPayload.canonicalization_candidates?.active_commitments?.find(
+        (candidate) => candidate.id === commitmentId,
+      );
+    const openQuestionCandidate =
+      requestPayload.canonicalization_candidates?.open_questions?.find(
+        (candidate) => candidate.id === openQuestionId,
+      );
+
+    expect(commitmentCandidate).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [audienceEntityId],
+      },
+    });
+    expect(commitmentCandidate?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(openQuestionCandidate).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [audienceEntityId],
+      },
+    });
+    expect(openQuestionCandidate?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
 
     expect(update).toHaveBeenCalledWith(
       actionId,

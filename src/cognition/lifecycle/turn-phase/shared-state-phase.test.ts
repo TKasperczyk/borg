@@ -132,6 +132,23 @@ describe("shared-state action canonicalization candidates", () => {
       bobAudienceAction.id,
       globalAction.id,
     ]);
+    const candidateById = new Map(
+      (canonicalizationCandidates.candidates ?? []).map((candidate) => [candidate.id, candidate]),
+    );
+    expect(candidateById.get(bobAudienceAction.id)).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [bob],
+      },
+    });
+    expect(candidateById.get(bobAudienceAction.id)?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(candidateById.get(globalAction.id)).toMatchObject({
+      disclosure_label: {
+        disclosure_class: "self_private",
+      },
+    });
     expect(actionRepository.list).not.toHaveBeenCalledWith(
       expect.objectContaining({
         actor: alice as EntityId,

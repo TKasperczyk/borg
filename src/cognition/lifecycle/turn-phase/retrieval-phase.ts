@@ -22,6 +22,12 @@ import type { ActiveParticipant, ParticipantProfileContext } from "../../partici
 import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
 import {
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
+} from "../../disclosure-labels.js";
+import {
   compileSharedStateArtifact,
   findUnsettledSharedStateReconciliation,
   type SharedStateCanonicalizationCandidates,
@@ -1739,10 +1745,12 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     goals: activeGoals.map((goal) => ({
       id: goal.id,
       text: compactSharedStateArtifactCandidateText(goal.description),
+      ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
     })),
     commitments: activeCommitmentCanonicalizationRecords.map((commitment) => ({
       id: commitment.id,
       text: compactSharedStateArtifactCandidateText(commitment.directive),
+      ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
       kind: commitment.kind,
       type: commitment.type,
       directive_family: commitment.directive_family,
@@ -1752,6 +1760,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     openQuestions: activeOpenQuestions.map((question) => ({
       id: question.id,
       text: compactSharedStateArtifactCandidateText(question.question),
+      ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
     })),
   };
   if (input.options.tracer.enabled && input.input.turnId !== undefined) {

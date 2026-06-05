@@ -7,6 +7,10 @@ import type {
   TurnTraceEventName,
   TurnTracer,
 } from "../../cognition/tracing/tracer.js";
+import {
+  relationshipPrivateMemoryDisclosureLabel,
+  type MemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
 import {
@@ -142,6 +146,7 @@ function pendingNewInsightInsertRefs(input: {
   description?: string;
   confidence?: number;
   clusterKey?: string;
+  sourceDisclosureLabel?: MemoryDisclosureLabel;
 }) {
   const nodeId = input.nodeId ?? createSemanticNodeId();
   const clusterKey = input.clusterKey ?? "cluster:new-insight";
@@ -151,6 +156,9 @@ function pendingNewInsightInsertRefs(input: {
     episode_ids: input.episodeIds,
     evidence_cluster_key: clusterKey,
     evidence_cluster_size: input.episodeIds.length,
+    ...(input.sourceDisclosureLabel === undefined
+      ? {}
+      : { source_disclosure_label: input.sourceDisclosureLabel }),
     reflector_pending_insight: {
       target: {
         mode: "insert" as const,
@@ -267,7 +275,9 @@ async function enqueueSemanticMisattribution(
 }
 
 async function enqueueEpisodeMisattribution(harness: OfflineHarness) {
-  const source = await insertSource(harness, "Ben wrote the deployment helper.");
+  const source = await insertSource(harness, "Ben wrote the deployment helper.", {
+    shared: true,
+  });
   const targetAudienceId = createEntityId();
   const episode = await harness.episodicRepository.insert(
     createEpisodeFixture({
@@ -1016,9 +1026,14 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
+    const sourceAudienceId = createEntityId();
     const source = await insertSource(
       harness,
       "Sol repeatedly asks for rollback plans before risky release changes.",
+      {
+        audience_entity_id: sourceAudienceId,
+        shared: false,
+      },
     );
     const nodeId = createSemanticNodeId();
     const item = harness.reviewQueueRepository.enqueue({
@@ -1043,6 +1058,22 @@ describe("review resolver process", () => {
     const resolved = harness.reviewQueueRepository.get(item.id);
     const stored = await harness.semanticNodeRepository.get(nodeId);
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const promptPayload = JSON.parse(prompt) as {
+      review?: {
+        disclosure?: string;
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
+      evidence_cluster?: {
+        disclosure?: string;
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
+    };
 
     expect(result.errors).toEqual([]);
     expect(resolved).toMatchObject({
@@ -1061,8 +1092,22 @@ describe("review resolver process", () => {
     });
     expect(prompt).toContain("evidence_fetch_bound");
     expect(prompt).toContain("Sol repeatedly asks for rollback plans");
-    expect(prompt).toContain('"disclosure_label"');
-    expect(prompt).toContain('"disclosure_class": "public"');
+    expect(promptPayload.review).toMatchObject({
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [sourceAudienceId],
+      }),
+    });
+    expect(promptPayload.review?.disclosure).toContain("disclosure_class=relationship_private");
+    expect(promptPayload.evidence_cluster).toMatchObject({
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [sourceAudienceId],
+      }),
+    });
+    expect(promptPayload.evidence_cluster?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
   });
 
   it("dismisses noisy new insight proposals without inserting the pending node", async () => {
@@ -1102,6 +1147,64 @@ describe("review resolver process", () => {
       resolution: "dismiss",
     });
     expect(stored).toBeNull();
+  });
+
+  it("keeps persisted private source disclosure on new insight review metadata rows", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const persistedAudienceId = createEntityId();
+    const source = await insertSource(harness, "Public evidence mentioned rollback planning.", {
+      shared: true,
+    });
+    const nodeId = createSemanticNodeId();
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
+      reason: "New low-confidence insight extracted from cluster:persisted-private",
+      refs: pendingNewInsightInsertRefs({
+        nodeId,
+        episodeIds: [source.episode.id],
+        sourceDisclosureLabel: relationshipPrivateMemoryDisclosureLabel([persistedAudienceId]),
+      }),
+    });
+    llm.pushResponse(
+      newInsightResolverResponse({
+        decision: "dismiss",
+        confidence: "high",
+        rationale: "The supplied evidence does not ground the proposed self-memory.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const promptPayload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      review?: {
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
+      evidence_cluster?: {
+        disclosure_label?: {
+          disclosure_class?: string;
+          private_to_entity_ids?: string[];
+        };
+      };
+    };
+
+    expect(result.errors).toEqual([]);
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [persistedAudienceId],
+    });
+    expect(promptPayload.review?.disclosure_label?.disclosure_class).not.toBe("public");
+    expect(promptPayload.evidence_cluster?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+      private_to_entity_ids: [persistedAudienceId],
+    });
+    expect(promptPayload.evidence_cluster?.disclosure_label?.disclosure_class).not.toBe("public");
   });
 
   it("keeps ambiguous new insight proposals open with a resolver diagnostic", async () => {
@@ -1581,7 +1684,11 @@ describe("review resolver process", () => {
       };
       source_bundle?: {
         overseer_flag?: {
-          disclosure_label?: { disclosure_class?: string };
+          disclosure?: string;
+          disclosure_label?: {
+            disclosure_class?: string;
+            private_to_entity_ids?: string[];
+          };
         };
       };
     };
@@ -1600,8 +1707,22 @@ describe("review resolver process", () => {
       "disclosure_class=relationship_private",
     );
     expect(promptPayload.target?.content?.disclosure_label?.disclosure_class).not.toBe("public");
-    expect(promptPayload.source_bundle?.overseer_flag?.disclosure_label).toBeDefined();
-    expect(promptPayload.review?.disclosure_label).toBeDefined();
+    expect(promptPayload.source_bundle?.overseer_flag).toMatchObject({
+      disclosure_label: expect.objectContaining({
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [targetAudienceId],
+      }),
+    });
+    expect(promptPayload.source_bundle?.overseer_flag?.disclosure).toContain(
+      "disclosure_class=relationship_private",
+    );
+    expect(
+      promptPayload.source_bundle?.overseer_flag?.disclosure_label?.disclosure_class,
+    ).not.toBe("public");
+    expect(promptPayload.review?.disclosure_label).toMatchObject({
+      disclosure_class: "relationship_private",
+    });
+    expect(promptPayload.review?.disclosure_label?.disclosure_class).not.toBe("public");
   });
 
   it("labels semantic-edge targets and overseer flags in the generic resolver prompt", async () => {

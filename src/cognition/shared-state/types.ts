@@ -5,6 +5,7 @@ import type {
   SharedStateEntryKind,
   SharedStateSourceTrustRejectionReason,
 } from "../../memory/decision-artifacts/types.js";
+import type { MemoryDisclosureLabelMetadata } from "../../memory/common/disclosure-label.js";
 import type { RelationalSlot } from "../../memory/relational-slots/types.js";
 import type {
   ActionId,
@@ -150,6 +151,8 @@ export type SharedStateArtifactAudienceContext = {
 export type SharedStateCanonicalizationCandidate = {
   id: string;
   text: string;
+  disclosure: string;
+  disclosure_label: MemoryDisclosureLabelMetadata;
 };
 
 export type SharedStateActionCanonicalizationCandidate = SharedStateCanonicalizationCandidate & {

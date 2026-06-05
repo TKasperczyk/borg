@@ -42,7 +42,10 @@ import { positiveIntegerValue } from "../../util/parse.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { serializeDisclosureLabeledTargetPayload } from "../disclosure-target-serialization.js";
+import {
+  disclosureLabelForLoadedReviewTarget,
+  serializeDisclosureLabeledTargetPayload,
+} from "../disclosure-target-serialization.js";
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import {
@@ -632,10 +635,27 @@ function newInsightEpisodePayload(episode: Episode): Record<string, unknown> {
   });
 }
 
+function newInsightSourceDisclosureLabel(loaded: LoadedNewInsightContext): MemoryDisclosureLabel {
+  const labels = [
+    disclosureLabelFromResolvedEpisodeLabels(loaded.labelsByEpisodeId),
+    ...(loaded.refs.source_disclosure_label === undefined
+      ? []
+      : [loaded.refs.source_disclosure_label]),
+  ];
+
+  return labels.length === 0
+    ? unknownMemoryDisclosureLabel()
+    : combineMemoryDisclosureLabels(labels);
+}
+
 function newInsightPromptPayload(input: {
   item: ReviewQueueItem;
   loaded: LoadedNewInsightContext;
 }): string {
+  const sourceDisclosureFields = memoryDisclosurePayloadFields(
+    newInsightSourceDisclosureLabel(input.loaded),
+  );
+
   return JSON.stringify(
     {
       task: "Resolve exactly one pending reflector new_insight review item. Judge whether the proposed semantic insight should enter Borg's self-memory.",
@@ -660,6 +680,7 @@ function newInsightPromptPayload(input: {
         kind: input.item.kind,
         reason: input.item.reason,
         created_at: input.item.created_at,
+        ...sourceDisclosureFields,
       },
       proposed_insight: serializableRecord(newInsightProposedPayload(input.loaded)),
       evidence_cluster: {
@@ -668,6 +689,7 @@ function newInsightPromptPayload(input: {
         sampled_episode_ids: input.loaded.sampledEvidenceEpisodeIds,
         total_known_episode_ids: input.loaded.totalEvidenceEpisodeIds,
         missing_sampled_episode_ids: input.loaded.missingEvidenceEpisodeIds,
+        ...sourceDisclosureFields,
       },
       candidate_support_edges:
         input.loaded.refs.reflector_pending_insight.candidate_support_edges.map((edge) =>
@@ -1234,7 +1256,12 @@ async function loadReviewContext(
   if (target === null) {
     return null;
   }
-  const flagDisclosureLabel = await disclosureLabelForOverseerFlagPayload(ctx, payload.data);
+  const targetDisclosureLabel = await disclosureLabelForLoadedReviewTarget(ctx, target);
+  const flagSourceDisclosureLabel = await disclosureLabelForOverseerFlagPayload(ctx, payload.data);
+  const reviewCarrierDisclosureLabel = combineMemoryDisclosureLabels([
+    targetDisclosureLabel,
+    flagSourceDisclosureLabel,
+  ]);
 
   const sourceIds = sourceStreamIdsForItem(item, payload.data);
   const taintedReviewedAssistantStreamIds = reviewedAssistantStreamIdsForItem(item, payload.data);
@@ -1257,9 +1284,12 @@ async function loadReviewContext(
     targetPayload: await serializeDisclosureLabeledTargetPayload(ctx, target),
     reviewPayload: serializableRecordWithDisclosureLabel(
       reviewQueueItemForPrompt(item),
-      flagDisclosureLabel,
+      reviewCarrierDisclosureLabel,
     ),
-    overseerFlagPayload: serializableRecordWithDisclosureLabel(payload.data, flagDisclosureLabel),
+    overseerFlagPayload: serializableRecordWithDisclosureLabel(
+      payload.data,
+      reviewCarrierDisclosureLabel,
+    ),
     sourceEntries,
     missingSourceIds,
     taintedReviewedAssistantStreamIds,

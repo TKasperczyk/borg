@@ -18,6 +18,10 @@ import {
   type SharedStateUnsettledReconciliationSummary,
 } from "../../shared-state/index.js";
 import {
+  actionMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../disclosure-labels.js";
+import {
   ACTIVE_ACTION_STATES,
   type ActionRecord,
   type ActionRepository,
@@ -316,6 +320,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
       actor: action.actor,
       state: action.state,
       session_scope: action.session_scope,
+      ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(action)),
     })),
     countByScope,
   };

@@ -13,7 +13,9 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { RelationshipClaim } from "../relationship-claims.js";
+import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
 
@@ -117,6 +119,15 @@ function normalizeKeyedPatch(input: {
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: 2,
   });
+}
+
+function canonicalizationCandidate<T extends { id: string; text: string }>(
+  candidate: T,
+): T & ReturnType<typeof memoryDisclosurePayloadFields> {
+  return {
+    ...candidate,
+    ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+  };
 }
 
 function addOperation(input: {
@@ -395,7 +406,7 @@ describe("normalizePatch empty update no-op handling", () => {
       audienceEntityId,
       sourceStreamEntryId,
       canonicalizationCandidates: {
-        goals: [{ id: goalId, text: "Route goal" }],
+        goals: [canonicalizationCandidate({ id: goalId, text: "Route goal" })],
       },
     });
 
@@ -445,7 +456,7 @@ describe("normalizePatch empty update no-op handling", () => {
       audienceEntityId,
       sourceStreamEntryId,
       canonicalizationCandidates: {
-        goals: [{ id: goalId, text: "Route goal" }],
+        goals: [canonicalizationCandidate({ id: goalId, text: "Route goal" })],
       },
     });
 

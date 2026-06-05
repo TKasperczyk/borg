@@ -6,6 +6,7 @@ import {
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   resolveDisclosureLabelsByEpisodeId,
+  type MemoryDisclosureLabel,
 } from "../memory/common/disclosure-label.js";
 import type { Episode } from "../memory/episodic/index.js";
 import type { SemanticEdge, SemanticNode } from "../memory/semantic/index.js";
@@ -33,13 +34,38 @@ export type DisclosureLabeledTargetPayload = MemoryDisclosurePromptFields & {
   content: Record<string, unknown>;
 };
 
+export async function disclosureLabelForLoadedReviewTarget(
+  ctx: Pick<OfflineContext, "episodicRepository">,
+  target: DisclosureLabeledTarget,
+): Promise<MemoryDisclosureLabel> {
+  if (target.type === "episode") {
+    return memoryDisclosureLabelFromEpisodeAccess(target.content);
+  }
+
+  if (target.type === "semantic_node") {
+    const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
+      target.content.source_episode_ids,
+      (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
+    );
+
+    return semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, target.content);
+  }
+
+  const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
+    target.content.evidence_episode_ids,
+    (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
+  );
+
+  return semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, target.content);
+}
+
 export async function serializeDisclosureLabeledTargetPayload(
   ctx: Pick<OfflineContext, "episodicRepository">,
   target: DisclosureLabeledTarget,
 ): Promise<DisclosureLabeledTargetPayload> {
-  if (target.type === "episode") {
-    const disclosureLabel = memoryDisclosureLabelFromEpisodeAccess(target.content);
+  const disclosureLabel = await disclosureLabelForLoadedReviewTarget(ctx, target);
 
+  if (target.type === "episode") {
     return {
       type: target.type,
       content: episodeEvidencePromptRow(target.content, {
@@ -58,12 +84,6 @@ export async function serializeDisclosureLabeledTargetPayload(
   }
 
   if (target.type === "semantic_node") {
-    const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
-      target.content.source_episode_ids,
-      (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
-    );
-    const disclosureLabel = semanticNodeMemoryDisclosureLabel(labelsByEpisodeId, target.content);
-
     return {
       type: target.type,
       content: {
@@ -81,12 +101,6 @@ export async function serializeDisclosureLabeledTargetPayload(
       ...memoryDisclosurePayloadFields(disclosureLabel),
     };
   }
-
-  const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
-    target.content.evidence_episode_ids,
-    (episodeIds) => ctx.episodicRepository.getMany(episodeIds),
-  );
-  const disclosureLabel = semanticEdgeMemoryDisclosureLabel(labelsByEpisodeId, target.content);
 
   return {
     type: target.type,

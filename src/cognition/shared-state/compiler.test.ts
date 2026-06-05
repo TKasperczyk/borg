@@ -21,6 +21,7 @@ import {
 } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import {
   createActionId,
   createCommitmentId,
@@ -35,6 +36,7 @@ import {
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
+import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import type { RelationshipClaim } from "../relationship-claims.js";
 import {
   advanceSharedStateCompileSkipAnchor,
@@ -228,6 +230,15 @@ function evidenceLedger(entries: readonly EvidenceLedgerEntry[]): EvidenceLedger
         entries: [...entries],
       },
     ],
+  };
+}
+
+function canonicalizationCandidate<T extends { id: string; text: string }>(
+  candidate: T,
+): T & ReturnType<typeof memoryDisclosurePayloadFields> {
+  return {
+    ...candidate,
+    ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
   };
 }
 
@@ -672,19 +683,21 @@ describe("compileSharedStateArtifact", () => {
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
       canonicalizationCandidates: {
-        goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
+        goals: [canonicalizationCandidate({ id: goalId, text: "Lock Granada for 3 nights" })],
         commitments: [
-          {
+          canonicalizationCandidate({
             id: commitmentId,
             text: "Keep the release window locked.",
             kind: "assistant_commitment",
             type: "promise",
             directive_family: "release_window",
             enforcement_class: "advisory",
-          },
+          }),
         ],
-        actions: [{ id: actionId, text: "Track Granada decision" }],
-        openQuestions: [{ id: openQuestionId, text: "Is Granada final?" }],
+        actions: [canonicalizationCandidate({ id: actionId, text: "Track Granada decision" })],
+        openQuestions: [
+          canonicalizationCandidate({ id: openQuestionId, text: "Is Granada final?" }),
+        ],
       },
     });
 
@@ -800,7 +813,7 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
-        goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
+        goals: [canonicalizationCandidate({ id: goalId, text: "Lock Granada for 3 nights" })],
       },
     });
 
@@ -874,7 +887,7 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
-        goals: [{ id: goal.id, text: goal.description }],
+        goals: [canonicalizationCandidate({ id: goal.id, text: goal.description })],
       },
       reconciliation: {
         goalsRepository,
@@ -943,7 +956,7 @@ describe("compileSharedStateArtifact", () => {
     await compileSharedStateArtifact({
       ...baseInput(llmClient),
       canonicalizationCandidates: {
-        goals: [{ id: goal.id, text: goal.description }],
+        goals: [canonicalizationCandidate({ id: goal.id, text: goal.description })],
       },
       reconciliation: {
         goalsRepository,
@@ -1015,7 +1028,7 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       turnCounter: 42,
       canonicalizationCandidates: {
-        actions: [{ id: actionId, text: "Follow up with the clinic" }],
+        actions: [canonicalizationCandidate({ id: actionId, text: "Follow up with the clinic" })],
       },
       reconciliation: {
         actionRepository,
@@ -1465,7 +1478,7 @@ describe("compileSharedStateArtifact", () => {
       tracer: trace,
       allowedSourceStreamEntryIds: [strandedSource, priorAllowedStreamEntryId],
       canonicalizationCandidates: {
-        goals: [{ id: newGoal.id, text: newGoal.description }],
+        goals: [canonicalizationCandidate({ id: newGoal.id, text: newGoal.description })],
       },
       reconciliation: {
         goalsRepository,
@@ -1529,7 +1542,7 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       tracer: trace,
       canonicalizationCandidates: {
-        goals: [{ id: goal.id, text: goal.description }],
+        goals: [canonicalizationCandidate({ id: goal.id, text: goal.description })],
       },
       reconciliation: {
         goalsRepository,

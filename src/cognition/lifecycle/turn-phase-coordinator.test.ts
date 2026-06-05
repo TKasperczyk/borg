@@ -1790,22 +1790,30 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       ]),
     );
     expect(requestPayload.canonicalization_candidates?.active_commitments).toEqual([
-      {
+      expect.objectContaining({
         id: promiseCommitment.id,
         text: "Keep the deployment window locked at 16:00 UTC.",
         kind: "assistant_commitment",
         type: PROMISE_COMMITMENT_TYPE,
         directive_family: DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY,
         enforcement_class: "advisory",
-      },
-      {
+        disclosure: expect.any(String),
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "unknown",
+        }),
+      }),
+      expect.objectContaining({
         id: ruleCommitment.id,
         text: "Treat the release branch freeze as final.",
         kind: "assistant_commitment",
         type: RULE_COMMITMENT_TYPE,
         directive_family: RELEASE_FREEZE_DIRECTIVE_FAMILY,
         enforcement_class: "advisory",
-      },
+        disclosure: expect.any(String),
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "unknown",
+        }),
+      }),
     ]);
     expect(events).toContainEqual({
       event: "shared_state.canonicalization.completed",
