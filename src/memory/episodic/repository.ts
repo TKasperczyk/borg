@@ -25,6 +25,7 @@ import {
   parseConsolidationFamilyId,
   parseEntityId,
   parseEpisodeId,
+  parseStreamEntryId,
   type ConsolidationFamilyId,
   type EntityId,
   type EpisodeId,
@@ -112,11 +113,49 @@ type EpisodeEffectiveVisibilityRow = {
   episode_id: string;
 };
 
+type ConsolidationFamilyRow = {
+  family_id: string;
+  current_version_episode_id: string;
+  coverage_hash: string;
+  policy_version: number;
+  created_at: number;
+  updated_at: number;
+};
+
+type ConsolidationMemberRow = {
+  family_id: string;
+  raw_episode_id: string;
+  source_stream_ids_json: string;
+  added_by_version_episode_id: string;
+};
+
 export type EpisodeLifecycleAuditInput = {
   caller: string;
   reason: string;
   process: string;
   runId?: MaintenanceRunId;
+};
+
+export type ConsolidationFamilyRecord = {
+  family_id: ConsolidationFamilyId;
+  current_version_episode_id: EpisodeId;
+  coverage_hash: string;
+  policy_version: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ConsolidationMemberRecord = {
+  family_id: ConsolidationFamilyId;
+  raw_episode_id: EpisodeId;
+  source_stream_ids: Episode["source_stream_ids"];
+  added_by_version_episode_id: EpisodeId;
+};
+
+export type ConsolidationMemberInput = {
+  raw_episode_id: EpisodeId;
+  source_stream_ids: Episode["source_stream_ids"];
+  added_by_version_episode_id: EpisodeId;
 };
 
 type EpisodeStatsPatchKey = keyof EpisodeStatsPatch;
@@ -203,6 +242,30 @@ function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
 
 export function buildConsolidationCoverageHash(sourceStreamIds: readonly string[]): string {
   return buildSourceFingerprint(sourceStreamIds);
+}
+
+function fromConsolidationFamilyRow(row: ConsolidationFamilyRow): ConsolidationFamilyRecord {
+  return {
+    family_id: parseConsolidationFamilyId(row.family_id),
+    current_version_episode_id: parseEpisodeId(row.current_version_episode_id),
+    coverage_hash: row.coverage_hash,
+    policy_version: Number(row.policy_version),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+function fromConsolidationMemberRow(row: ConsolidationMemberRow): ConsolidationMemberRecord {
+  return {
+    family_id: parseConsolidationFamilyId(row.family_id),
+    raw_episode_id: parseEpisodeId(row.raw_episode_id),
+    source_stream_ids: parseJsonArray<string>(
+      row.source_stream_ids_json,
+      "consolidation member source stream ids",
+      EPISODE_JSON_ARRAY_CODEC,
+    ).map((sourceStreamId) => parseStreamEntryId(sourceStreamId)) as Episode["source_stream_ids"],
+    added_by_version_episode_id: parseEpisodeId(row.added_by_version_episode_id),
+  };
 }
 
 function lancePublicOriginSql(): string {
@@ -2225,6 +2288,243 @@ export class EpisodicRepository {
     );
 
     return episodes.filter((episode) => effectivelyVisibleEpisodeIds.has(episode.id));
+  }
+
+  listConsolidationFamilies(): ConsolidationFamilyRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            family_id, current_version_episode_id, coverage_hash, policy_version,
+            created_at, updated_at
+          FROM consolidation_families
+          ORDER BY updated_at DESC, family_id ASC
+        `,
+      )
+      .all() as ConsolidationFamilyRow[];
+
+    return rows.map(fromConsolidationFamilyRow);
+  }
+
+  getConsolidationFamily(familyId: ConsolidationFamilyId): ConsolidationFamilyRecord | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            family_id, current_version_episode_id, coverage_hash, policy_version,
+            created_at, updated_at
+          FROM consolidation_families
+          WHERE family_id = ?
+        `,
+      )
+      .get(familyId) as ConsolidationFamilyRow | undefined;
+
+    return row === undefined ? null : fromConsolidationFamilyRow(row);
+  }
+
+  listConsolidationMembers(familyId?: ConsolidationFamilyId): ConsolidationMemberRecord[] {
+    const rows =
+      familyId === undefined
+        ? (this.db
+            .prepare(
+              `
+                SELECT
+                  family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+                FROM consolidation_members
+                ORDER BY family_id ASC, raw_episode_id ASC
+              `,
+            )
+            .all() as ConsolidationMemberRow[])
+        : (this.db
+            .prepare(
+              `
+                SELECT
+                  family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+                FROM consolidation_members
+                WHERE family_id = ?
+                ORDER BY raw_episode_id ASC
+              `,
+            )
+            .all(familyId) as ConsolidationMemberRow[]);
+
+    return rows.map(fromConsolidationMemberRow);
+  }
+
+  createConsolidationFamily(input: {
+    familyId: ConsolidationFamilyId;
+    currentVersionEpisodeId: EpisodeId;
+    coverageHash: string;
+    policyVersion: number;
+    members: readonly ConsolidationMemberInput[];
+  }): void {
+    const nowMs = this.clock.now();
+    const insertFamily = this.db.prepare(
+      `
+        INSERT INTO consolidation_families (
+          family_id, current_version_episode_id, coverage_hash, policy_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+    );
+    const insertMember = this.db.prepare(
+      `
+        INSERT OR IGNORE INTO consolidation_members (
+          family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+        ) VALUES (?, ?, ?, ?)
+      `,
+    );
+    const apply = this.db.transaction(() => {
+      insertFamily.run(
+        input.familyId,
+        input.currentVersionEpisodeId,
+        input.coverageHash,
+        input.policyVersion,
+        nowMs,
+        nowMs,
+      );
+
+      for (const member of input.members) {
+        insertMember.run(
+          input.familyId,
+          member.raw_episode_id,
+          serializeJsonValue(member.source_stream_ids),
+          member.added_by_version_episode_id,
+        );
+      }
+    });
+
+    apply();
+  }
+
+  extendConsolidationFamily(input: {
+    familyId: ConsolidationFamilyId;
+    expectedCurrentVersionEpisodeId: EpisodeId;
+    nextVersionEpisodeId: EpisodeId;
+    coverageHash: string;
+    policyVersion: number;
+    members: readonly ConsolidationMemberInput[];
+  }): void {
+    const nowMs = this.clock.now();
+    const insertMember = this.db.prepare(
+      `
+        INSERT OR IGNORE INTO consolidation_members (
+          family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+        ) VALUES (?, ?, ?, ?)
+      `,
+    );
+    const updateFamily = this.db.prepare(
+      `
+        UPDATE consolidation_families
+        SET current_version_episode_id = ?,
+            coverage_hash = ?,
+            policy_version = ?,
+            updated_at = ?
+        WHERE family_id = ?
+          AND current_version_episode_id = ?
+      `,
+    );
+    const apply = this.db.transaction(() => {
+      for (const member of input.members) {
+        insertMember.run(
+          input.familyId,
+          member.raw_episode_id,
+          serializeJsonValue(member.source_stream_ids),
+          member.added_by_version_episode_id,
+        );
+      }
+
+      const result = updateFamily.run(
+        input.nextVersionEpisodeId,
+        input.coverageHash,
+        input.policyVersion,
+        nowMs,
+        input.familyId,
+        input.expectedCurrentVersionEpisodeId,
+      );
+
+      if (result.changes !== 1) {
+        throw new StorageError(`Stale consolidation family update for ${input.familyId}`, {
+          code: "CONSOLIDATION_FAMILY_STALE",
+        });
+      }
+    });
+
+    apply();
+  }
+
+  async revertConsolidationVersion(input: {
+    familyId: ConsolidationFamilyId;
+    versionEpisodeId: EpisodeId;
+    previousCurrentVersionEpisodeId: EpisodeId | null;
+    previousCoverageHash: string | null;
+    previousPolicyVersion: number | null;
+  }): Promise<void> {
+    const nowMs = this.clock.now();
+    const deleteVersionMembers = this.db.prepare(
+      `
+        DELETE FROM consolidation_members
+        WHERE family_id = ?
+          AND added_by_version_episode_id = ?
+      `,
+    );
+    const restoreFamily = this.db.prepare(
+      `
+        UPDATE consolidation_families
+        SET current_version_episode_id = ?,
+            coverage_hash = ?,
+            policy_version = ?,
+            updated_at = ?
+        WHERE family_id = ?
+          AND current_version_episode_id = ?
+      `,
+    );
+    const deleteFamily = this.db.prepare(
+      `
+        DELETE FROM consolidation_families
+        WHERE family_id = ?
+          AND current_version_episode_id = ?
+      `,
+    );
+    const apply = this.db.transaction(() => {
+      deleteVersionMembers.run(input.familyId, input.versionEpisodeId);
+
+      if (input.previousCurrentVersionEpisodeId === null) {
+        const result = deleteFamily.run(input.familyId, input.versionEpisodeId);
+
+        if (result.changes !== 1) {
+          throw new StorageError(`Stale consolidation family deletion for ${input.familyId}`, {
+            code: "CONSOLIDATION_FAMILY_STALE",
+          });
+        }
+        return;
+      }
+
+      if (input.previousCoverageHash === null || input.previousPolicyVersion === null) {
+        throw new StorageError(
+          `Missing previous consolidation family metadata for ${input.familyId}`,
+          {
+            code: "CONSOLIDATION_FAMILY_STALE",
+          },
+        );
+      }
+
+      const result = restoreFamily.run(
+        input.previousCurrentVersionEpisodeId,
+        input.previousCoverageHash,
+        input.previousPolicyVersion,
+        nowMs,
+        input.familyId,
+        input.versionEpisodeId,
+      );
+
+      if (result.changes !== 1) {
+        throw new StorageError(`Stale consolidation family restore for ${input.familyId}`, {
+          code: "CONSOLIDATION_FAMILY_STALE",
+        });
+      }
+    });
+
+    apply();
+    await this.delete(input.versionEpisodeId);
   }
 
   recordRetrieval(episodeId: EpisodeId, timestamp: number, score: number): void {

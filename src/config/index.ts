@@ -368,8 +368,21 @@ const configBaseSchema = z.object({
       consolidator: z
         .object({
           similarityThreshold: z.number().positive().default(0.82),
+          maxClusterDiameter: z.number().min(0).max(2).default(0.18),
+          temporalProximityMs: z
+            .number()
+            .int()
+            .nonnegative()
+            .default(30 * 24 * 60 * 60 * 1_000),
+          highSimilarityTemporalBypassThreshold: z.number().min(0).max(1).default(0.97),
+          highSimilarityTemporalBypassMaxGapMs: z
+            .number()
+            .int()
+            .nonnegative()
+            .default(180 * 24 * 60 * 60 * 1_000),
           minClusterSize: z.number().int().positive().default(2),
           maxClustersPerRun: z.number().int().positive().default(2),
+          maxFamilyRawMembers: z.number().int().positive().default(64),
           budget: z.number().int().positive().default(60_000),
         })
         .prefault({}),

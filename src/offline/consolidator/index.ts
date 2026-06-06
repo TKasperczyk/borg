@@ -8,14 +8,18 @@ import {
 } from "../../llm/index.js";
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
+  buildConsolidationCoverageHash,
+  consolidationFamilyIdSchema,
   normalizeEpisodeAccess,
   episodeIdSchema,
+  episodeKindSchema,
   episodeLineageSchema,
-  episodeStatsSchema,
   episodeTierSchema,
+  type ConsolidationFamilyRecord,
+  type ConsolidationMemberInput,
+  type ConsolidationMemberRecord,
   type Episode,
   type EpisodeStats,
-  type EpisodeStatsPatch,
   type EpisodeTier,
 } from "../../memory/episodic/index.js";
 import type { EntityRecord } from "../../memory/commitments/index.js";
@@ -25,7 +29,12 @@ import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
 } from "../../retrieval/index.js";
-import { createEpisodeId } from "../../util/ids.js";
+import {
+  createConsolidationFamilyId,
+  createEpisodeId,
+  type ConsolidationFamilyId,
+  type EpisodeId,
+} from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
@@ -69,13 +78,20 @@ const serializableEpisodeSchema = z.object({
   audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
   origin_audience_entity_ids: z.array(episodeAudienceEntityIdSchema).optional(),
   shared: z.boolean().optional(),
+  episode_kind: episodeKindSchema.optional(),
+  consolidation_family_id: consolidationFamilyIdSchema.nullable().optional(),
+  consolidation_coverage_hash: z.string().min(1).nullable().optional(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
 });
 
 const consolidatorPlanItemSchema = z.object({
-  source_episode_ids: z.array(episodeIdSchema).min(2),
+  family_id: consolidationFamilyIdSchema,
+  previous_current_version_episode_id: episodeIdSchema.nullable(),
+  source_episode_ids: z.array(episodeIdSchema).min(1),
+  new_raw_episode_ids: z.array(episodeIdSchema).min(1),
+  coverage_hash: z.string().min(1),
   merged_episode: serializableEpisodeSchema,
   inherited_tier: episodeTierSchema,
 });
@@ -98,9 +114,15 @@ export const consolidatorPlanSchema = z.object({
 
 export type ConsolidatorPlan = z.infer<typeof consolidatorPlanSchema>;
 
-const HOUR_MS = 60 * 60 * 1_000;
-const CONSOLIDATION_TEMPORAL_PROXIMITY_MS = 30 * 24 * HOUR_MS;
-const CONSOLIDATION_HIGH_SIMILARITY_BYPASS = 0.97;
+const consolidationReversalSchema = z.object({
+  familyId: consolidationFamilyIdSchema,
+  versionEpisodeId: episodeIdSchema,
+  previousCurrentVersionEpisodeId: episodeIdSchema.nullable(),
+  previousCoverageHash: z.string().min(1).nullable(),
+  previousPolicyVersion: z.number().int().positive().nullable(),
+});
+
+const CONSOLIDATION_POLICY_VERSION = 1;
 const TIER_ORDER: Record<EpisodeTier, number> = {
   T1: 1,
   T2: 2,
@@ -108,36 +130,47 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
   T4: 4,
 };
 
-type EpisodeCluster = {
-  episodes: Episode[];
-  stats: EpisodeStats[];
+type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
+type ConsolidatorConfig = OfflineContext["config"]["offline"]["consolidator"];
+
+type RawEpisodeWithStats = {
+  episode: Episode;
+  stats: EpisodeStats;
 };
 
-function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
-  return {
-    retrieval_count: stats.retrieval_count,
-    use_count: stats.use_count,
-    last_retrieved: stats.last_retrieved,
-    win_rate: stats.win_rate,
-    tier: stats.tier,
-    promoted_at: stats.promoted_at,
-    promoted_from: stats.promoted_from,
-    gist: stats.gist,
-    gist_generated_at: stats.gist_generated_at,
-    last_decayed_at: stats.last_decayed_at,
-    heat_multiplier: stats.heat_multiplier,
-    valence_mean: stats.valence_mean,
-  };
-}
-type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
+type ActiveFamilyAnchor = {
+  family: ConsolidationFamilyRecord;
+  currentVersion: Episode;
+  members: ConsolidationMemberRecord[];
+  rawEpisodes: Episode[];
+  rawEpisodeIds: EpisodeId[];
+  rawEpisodeIdSet: ReadonlySet<EpisodeId>;
+};
 
-type ConsolidationReversal = {
-  newEpisodeId: string;
-  sourceStats: EpisodeStats[];
+type ConsolidationCandidate = {
+  familyId: ConsolidationFamilyId;
+  previousCurrentVersionEpisodeId: EpisodeId | null;
+  previousCurrentVersion: Episode | null;
+  rawEpisodes: Episode[];
+  newRawEpisodes: Episode[];
+  stats: EpisodeStats[];
+  coverageHash: string;
 };
 
 function compareTier(left: EpisodeTier, right: EpisodeTier): number {
   return TIER_ORDER[left] - TIER_ORDER[right];
+}
+
+function compareEpisodesOldestFirst(left: Episode, right: Episode): number {
+  return left.created_at - right.created_at || left.id.localeCompare(right.id);
+}
+
+function compareRawRowsNewestFirst(left: RawEpisodeWithStats, right: RawEpisodeWithStats): number {
+  return (
+    right.episode.updated_at - left.episode.updated_at ||
+    right.episode.created_at - left.episode.created_at ||
+    left.episode.id.localeCompare(right.episode.id)
+  );
 }
 
 function temporalGapMs(left: Episode, right: Episode): number {
@@ -153,11 +186,39 @@ function temporalGapMs(left: Episode, right: Episode): number {
   return Math.min(Math.abs(leftStart - rightEnd), Math.abs(rightStart - leftEnd));
 }
 
-function passesTemporalSoftGuard(left: Episode, right: Episode, similarity: number): boolean {
+function passesTemporalSoftGuard(
+  left: Episode,
+  right: Episode,
+  similarity: number,
+  config: ConsolidatorConfig,
+): boolean {
+  const gapMs = temporalGapMs(left, right);
+
   return (
-    temporalGapMs(left, right) <= CONSOLIDATION_TEMPORAL_PROXIMITY_MS ||
-    similarity >= CONSOLIDATION_HIGH_SIMILARITY_BYPASS
+    gapMs <= config.temporalProximityMs ||
+    (similarity >= config.highSimilarityTemporalBypassThreshold &&
+      gapMs <= config.highSimilarityTemporalBypassMaxGapMs)
   );
+}
+
+function pairCohesion(
+  left: Episode,
+  right: Episode,
+  config: ConsolidatorConfig,
+): {
+  eligible: boolean;
+  similarity: number;
+} {
+  const similarity = cosineSimilarity(left.embedding, right.embedding);
+  const diameter = Math.max(0, 1 - similarity);
+
+  return {
+    eligible:
+      similarity >= config.similarityThreshold &&
+      diameter <= config.maxClusterDiameter &&
+      passesTemporalSoftGuard(left, right, similarity, config),
+    similarity,
+  };
 }
 
 function maxTier(stats: readonly EpisodeStats[]): EpisodeTier {
@@ -169,6 +230,44 @@ function maxTier(stats: readonly EpisodeStats[]): EpisodeTier {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function uniqueEpisodeIds(ids: readonly EpisodeId[]): EpisodeId[] {
+  return [...new Set(ids)];
+}
+
+function uniqueEpisodesById(episodes: readonly Episode[]): Episode[] {
+  const byId = new Map<EpisodeId, Episode>();
+
+  for (const episode of episodes) {
+    byId.set(episode.id, episode);
+  }
+
+  return [...byId.values()].sort(compareEpisodesOldestFirst);
+}
+
+function sourceStreamIdsForEpisodes(episodes: readonly Episode[]): Episode["source_stream_ids"] {
+  return uniqueStrings(
+    episodes.flatMap((episode) => episode.source_stream_ids),
+  ) as Episode["source_stream_ids"];
+}
+
+function coverageHashForSourceStreamIds(sourceStreamIds: readonly string[]): string {
+  return buildConsolidationCoverageHash([
+    ...sourceStreamIds,
+    `consolidation_policy_version:${CONSOLIDATION_POLICY_VERSION}`,
+  ]);
+}
+
+function coverageHashForEpisodes(episodes: readonly Episode[]): string {
+  return coverageHashForSourceStreamIds(sourceStreamIdsForEpisodes(episodes));
+}
+
+function sameEpisodeIdSet(left: readonly EpisodeId[], right: readonly EpisodeId[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+
+  return leftSet.size === rightSet.size && [...leftSet].every((id) => rightSet.has(id));
 }
 
 function episodeAccessFromCombinedDisclosureLabel(
@@ -192,20 +291,41 @@ function parseMergeResponse(result: LLMCompleteResult) {
   return mergeResponseSchema.parse(call.input);
 }
 
-function buildMergePrompt(cluster: EpisodeCluster, selfEntity: MergeSelfEntity | null): string {
+function buildMergePrompt(
+  candidate: ConsolidationCandidate,
+  selfEntity: MergeSelfEntity | null,
+): string {
   const selfEntityGuidance =
     selfEntity === null
       ? null
       : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); content grounded in your own agent-authored source messages is self-owned. Use first person only for your own actions, statements, and decisions; keep every other participant named and world facts in third person.`;
+  const previousContext =
+    candidate.previousCurrentVersion === null
+      ? []
+      : [
+          "Previous current consolidation context:",
+          JSON.stringify(
+            episodeEvidencePromptRow(candidate.previousCurrentVersion, {
+              participants: candidate.previousCurrentVersion.participants,
+              location: candidate.previousCurrentVersion.location,
+              start_time: candidate.previousCurrentVersion.start_time,
+              end_time: candidate.previousCurrentVersion.end_time,
+              tags: candidate.previousCurrentVersion.tags,
+              source_stream_ids: candidate.previousCurrentVersion.source_stream_ids,
+            }),
+          ),
+          "Use the previous consolidation as context only. The new version lineage and coverage must remain grounded in raw leaf episodes.",
+        ];
 
   return [
-    "Merge the redundant episodes into one grounded episode.",
+    "Merge the redundant raw episodes into one grounded consolidation version.",
     `Emit your result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
-    "Preserve facts from all inputs. Keep the narrative to 2-5 sentences.",
+    "Preserve facts from all raw inputs. Keep the narrative to 2-5 sentences.",
     ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the merged narrative. Keep the title topic-neutral and scannable rather than first-person narration.`,
-    "Episodes:",
-    ...cluster.episodes.map((episode) =>
+    ...previousContext,
+    "New raw evidence:",
+    ...candidate.newRawEpisodes.map((episode) =>
       JSON.stringify(
         episodeEvidencePromptRow(episode, {
           participants: episode.participants,
@@ -220,119 +340,328 @@ function buildMergePrompt(cluster: EpisodeCluster, selfEntity: MergeSelfEntity |
   ].join("\n");
 }
 
-function buildClusters(
-  episodes: readonly Episode[],
-  statsById: ReadonlyMap<string, EpisodeStats>,
-  similarityThreshold: number,
-  minClusterSize: number,
-  maxClusters: number,
-): EpisodeCluster[] {
-  const adjacency = new Map<Episode["id"], Set<Episode["id"]>>();
+function buildCompleteLinkClusters(
+  rows: readonly RawEpisodeWithStats[],
+  config: ConsolidatorConfig,
+): Array<{
+  rows: RawEpisodeWithStats[];
+}> {
+  const sorted = [...rows].sort(compareRawRowsNewestFirst);
+  const consumed = new Set<EpisodeId>();
+  const clusters: Array<{ rows: RawEpisodeWithStats[] }> = [];
 
-  for (const episode of episodes) {
-    adjacency.set(episode.id, new Set());
-  }
-
-  for (let leftIndex = 0; leftIndex < episodes.length; leftIndex += 1) {
-    const left = episodes[leftIndex];
-
-    if (left === undefined) {
+  for (const seed of sorted) {
+    if (consumed.has(seed.episode.id)) {
       continue;
     }
 
-    for (let rightIndex = leftIndex + 1; rightIndex < episodes.length; rightIndex += 1) {
-      const right = episodes[rightIndex];
+    const candidates = sorted
+      .filter(
+        (candidate) =>
+          candidate.episode.id !== seed.episode.id && !consumed.has(candidate.episode.id),
+      )
+      .map((candidate) => ({
+        candidate,
+        cohesion: pairCohesion(seed.episode, candidate.episode, config),
+      }))
+      .filter((candidate) => candidate.cohesion.eligible)
+      .sort((left, right) => right.cohesion.similarity - left.cohesion.similarity);
+    const cluster = [seed];
 
-      if (right === undefined) {
-        continue;
+    for (const { candidate } of candidates) {
+      if (cluster.length >= config.maxFamilyRawMembers) {
+        break;
       }
 
-      const similarity = cosineSimilarity(left.embedding, right.embedding);
-
-      if (similarity < similarityThreshold || !passesTemporalSoftGuard(left, right, similarity)) {
-        continue;
+      if (
+        cluster.every((member) => pairCohesion(member.episode, candidate.episode, config).eligible)
+      ) {
+        cluster.push(candidate);
       }
-
-      adjacency.get(left.id)?.add(right.id);
-      adjacency.get(right.id)?.add(left.id);
     }
-  }
 
-  const byId = new Map(episodes.map((episode) => [episode.id, episode]));
-  const visited = new Set<string>();
-  const clusters: EpisodeCluster[] = [];
-
-  for (const episode of episodes) {
-    if (visited.has(episode.id)) {
+    if (cluster.length < config.minClusterSize) {
       continue;
     }
 
-    const queue = [episode.id];
-    const component: Episode[] = [];
-
-    while (queue.length > 0) {
-      const nextId = queue.shift();
-
-      if (nextId === undefined || visited.has(nextId)) {
-        continue;
-      }
-
-      visited.add(nextId);
-      const next = byId.get(nextId);
-
-      if (next !== undefined) {
-        component.push(next);
-      }
-
-      for (const neighbor of adjacency.get(nextId) ?? []) {
-        if (!visited.has(neighbor)) {
-          queue.push(neighbor);
-        }
-      }
-    }
-
-    if (component.length < minClusterSize) {
-      continue;
-    }
-
-    const stats = component
-      .map((item) => statsById.get(item.id))
-      .filter((item): item is EpisodeStats => item !== undefined);
-
-    if (stats.length !== component.length) {
-      continue;
+    for (const member of cluster) {
+      consumed.add(member.episode.id);
     }
 
     clusters.push({
-      episodes: component.sort((left, right) => left.created_at - right.created_at),
-      stats,
+      rows: [...cluster].sort((left, right) =>
+        compareEpisodesOldestFirst(left.episode, right.episode),
+      ),
     });
   }
 
-  return clusters
+  return clusters.sort(
+    (left, right) =>
+      right.rows.length - left.rows.length ||
+      (right.rows[0]?.episode.updated_at ?? 0) - (left.rows[0]?.episode.updated_at ?? 0),
+  );
+}
+
+function familyCoversRawEpisodeIds(
+  family: ActiveFamilyAnchor,
+  rawEpisodeIds: readonly EpisodeId[],
+): boolean {
+  return (
+    family.family.policy_version === CONSOLIDATION_POLICY_VERSION &&
+    rawEpisodeIds.every((episodeId) => family.rawEpisodeIdSet.has(episodeId))
+  );
+}
+
+function findCoveringFamily(
+  families: readonly ActiveFamilyAnchor[],
+  rawEpisodeIds: readonly EpisodeId[],
+): ActiveFamilyAnchor | undefined {
+  const uniqueRawEpisodeIds = uniqueEpisodeIds(rawEpisodeIds);
+  return families.find((family) => familyCoversRawEpisodeIds(family, uniqueRawEpisodeIds));
+}
+
+function attachmentCohesionAgainstRawMembers(
+  episode: Episode,
+  family: ActiveFamilyAnchor,
+  config: ConsolidatorConfig,
+): number | null {
+  if (
+    family.rawEpisodeIdSet.has(episode.id) ||
+    family.rawEpisodes.length === 0 ||
+    family.rawEpisodes.length >= config.maxFamilyRawMembers
+  ) {
+    return null;
+  }
+
+  let weakestSimilarity = Number.POSITIVE_INFINITY;
+
+  for (const rawMember of family.rawEpisodes) {
+    const cohesion = pairCohesion(episode, rawMember, config);
+
+    if (!cohesion.eligible) {
+      return null;
+    }
+
+    weakestSimilarity = Math.min(weakestSimilarity, cohesion.similarity);
+  }
+
+  return Number.isFinite(weakestSimilarity) ? weakestSimilarity : null;
+}
+
+function attachmentAnchorsForRow(
+  row: RawEpisodeWithStats,
+  families: readonly ActiveFamilyAnchor[],
+  config: ConsolidatorConfig,
+): ActiveFamilyAnchor[] {
+  return families
+    .map((family) => ({
+      family,
+      similarity: attachmentCohesionAgainstRawMembers(row.episode, family, config),
+    }))
+    .filter(
+      (candidate): candidate is { family: ActiveFamilyAnchor; similarity: number } =>
+        candidate.similarity !== null,
+    )
     .sort(
       (left, right) =>
-        right.episodes.length - left.episodes.length ||
-        (right.episodes[0]?.updated_at ?? 0) - (left.episodes[0]?.updated_at ?? 0),
+        right.similarity - left.similarity ||
+        right.family.family.updated_at - left.family.family.updated_at,
     )
-    .slice(0, maxClusters);
+    .map((candidate) => candidate.family);
+}
+
+function attachmentGroupAcceptsRow(
+  group: {
+    anchor: ActiveFamilyAnchor;
+    rows: RawEpisodeWithStats[];
+  },
+  row: RawEpisodeWithStats,
+  config: ConsolidatorConfig,
+): boolean {
+  if (group.anchor.rawEpisodes.length + group.rows.length >= config.maxFamilyRawMembers) {
+    return false;
+  }
+
+  return group.rows.every((member) => pairCohesion(member.episode, row.episode, config).eligible);
+}
+
+async function loadActiveFamilyAnchors(ctx: OfflineContext): Promise<ActiveFamilyAnchor[]> {
+  const families = ctx.episodicRepository.listConsolidationFamilies();
+
+  if (families.length === 0) {
+    return [];
+  }
+
+  const members = ctx.episodicRepository.listConsolidationMembers();
+  const membersByFamilyId = new Map<ConsolidationFamilyId, ConsolidationMemberRecord[]>();
+
+  for (const member of members) {
+    const list = membersByFamilyId.get(member.family_id) ?? [];
+    list.push(member);
+    membersByFamilyId.set(member.family_id, list);
+  }
+
+  const currentVersions = await ctx.episodicRepository.getMany(
+    families.map((family) => family.current_version_episode_id),
+  );
+  const currentVersionById = new Map(currentVersions.map((episode) => [episode.id, episode]));
+  const rawEpisodeIds = uniqueEpisodeIds(members.map((member) => member.raw_episode_id));
+  const rawEpisodes = await ctx.episodicRepository.getMany(rawEpisodeIds);
+  const rawEpisodeById = new Map(rawEpisodes.map((episode) => [episode.id, episode]));
+  const anchors: ActiveFamilyAnchor[] = [];
+
+  for (const family of families) {
+    const currentVersion = currentVersionById.get(family.current_version_episode_id);
+
+    if (
+      currentVersion === undefined ||
+      currentVersion.episode_kind !== "consolidation_version" ||
+      currentVersion.consolidation_family_id !== family.family_id ||
+      !ctx.episodicRepository.isEpisodeEffectivelyVisible(currentVersion.id)
+    ) {
+      continue;
+    }
+
+    const familyMembers = membersByFamilyId.get(family.family_id) ?? [];
+    const familyRawEpisodeIds = uniqueEpisodeIds(
+      familyMembers.map((member) => member.raw_episode_id),
+    );
+    const familyRawEpisodes = familyRawEpisodeIds
+      .map((episodeId) => rawEpisodeById.get(episodeId))
+      .filter((episode): episode is Episode => episode !== undefined)
+      .sort(compareEpisodesOldestFirst);
+
+    if (familyRawEpisodes.length !== familyRawEpisodeIds.length) {
+      continue;
+    }
+
+    anchors.push({
+      family,
+      currentVersion,
+      members: familyMembers,
+      rawEpisodes: familyRawEpisodes,
+      rawEpisodeIds: familyRawEpisodeIds,
+      rawEpisodeIdSet: new Set(familyRawEpisodeIds),
+    });
+  }
+
+  return anchors;
+}
+
+async function collectConsolidationCandidates(
+  ctx: OfflineContext,
+  statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
+): Promise<ConsolidationCandidate[]> {
+  const config = ctx.config.offline.consolidator;
+  const activeFamilies = await loadActiveFamilyAnchors(ctx);
+  const visibleRawRows = (await ctx.episodicRepository.listEffectivelyVisible())
+    .filter((episode) => (episode.episode_kind ?? "raw") === "raw")
+    .map((episode) => {
+      const stats = statsById.get(episode.id);
+      return stats === undefined ? null : { episode, stats };
+    })
+    .filter((row): row is RawEpisodeWithStats => row !== null)
+    .sort(compareRawRowsNewestFirst);
+  const attachedIds = new Set<EpisodeId>();
+  const attachmentsByFamilyId = new Map<
+    ConsolidationFamilyId,
+    {
+      anchor: ActiveFamilyAnchor;
+      rows: RawEpisodeWithStats[];
+    }
+  >();
+
+  for (const row of visibleRawRows) {
+    for (const anchor of attachmentAnchorsForRow(row, activeFamilies, config)) {
+      const group = attachmentsByFamilyId.get(anchor.family.family_id) ?? {
+        anchor,
+        rows: [],
+      };
+
+      if (!attachmentGroupAcceptsRow(group, row, config)) {
+        continue;
+      }
+
+      group.rows.push(row);
+      attachmentsByFamilyId.set(anchor.family.family_id, group);
+      attachedIds.add(row.episode.id);
+      break;
+    }
+  }
+
+  const candidates: ConsolidationCandidate[] = [];
+
+  for (const { anchor, rows } of attachmentsByFamilyId.values()) {
+    const newRawEpisodes = rows.map((row) => row.episode).sort(compareEpisodesOldestFirst);
+    const rawEpisodes = uniqueEpisodesById([...anchor.rawEpisodes, ...newRawEpisodes]);
+    const stats = rawEpisodes
+      .map((episode) => statsById.get(episode.id))
+      .filter((statsItem): statsItem is EpisodeStats => statsItem !== undefined);
+
+    if (stats.length !== rawEpisodes.length) {
+      continue;
+    }
+
+    candidates.push({
+      familyId: anchor.family.family_id,
+      previousCurrentVersionEpisodeId: anchor.currentVersion.id,
+      previousCurrentVersion: anchor.currentVersion,
+      rawEpisodes,
+      newRawEpisodes,
+      stats,
+      coverageHash: coverageHashForEpisodes(rawEpisodes),
+    });
+  }
+
+  const clusterRows = visibleRawRows.filter((row) => !attachedIds.has(row.episode.id));
+
+  for (const cluster of buildCompleteLinkClusters(clusterRows, config)) {
+    const rawEpisodes = cluster.rows.map((row) => row.episode).sort(compareEpisodesOldestFirst);
+
+    candidates.push({
+      familyId: createConsolidationFamilyId(),
+      previousCurrentVersionEpisodeId: null,
+      previousCurrentVersion: null,
+      rawEpisodes,
+      newRawEpisodes: rawEpisodes,
+      stats: cluster.rows.map((row) => row.stats),
+      coverageHash: coverageHashForEpisodes(rawEpisodes),
+    });
+  }
+
+  return candidates
+    .filter(
+      (candidate) =>
+        findCoveringFamily(
+          activeFamilies,
+          candidate.rawEpisodes.map((episode) => episode.id),
+        ) === undefined,
+    )
+    .sort(
+      (left, right) =>
+        Number(left.previousCurrentVersionEpisodeId === null) -
+          Number(right.previousCurrentVersionEpisodeId === null) ||
+        right.newRawEpisodes.length - left.newRawEpisodes.length ||
+        (right.newRawEpisodes[0]?.updated_at ?? 0) - (left.newRawEpisodes[0]?.updated_at ?? 0),
+    )
+    .slice(0, config.maxClustersPerRun);
 }
 
 async function buildMergedEpisode(
   ctx: OfflineContext,
   llmClient: LLMClient,
-  cluster: EpisodeCluster,
+  candidate: ConsolidationCandidate,
 ): Promise<{ episode: Episode; inheritedTier: EpisodeTier }> {
   const selfEntity = ctx.entityRepository.getSelf();
   const merged = parseMergeResponse(
     await llmClient.complete({
       model: ctx.config.anthropic.models.background,
       system:
-        "You merge overlapping autobiographical episodes. Keep only grounded facts from the inputs.",
+        "You merge overlapping autobiographical episodes. Keep only grounded facts from the raw inputs.",
       messages: [
         {
           role: "user",
-          content: buildMergePrompt(cluster, selfEntity),
+          content: buildMergePrompt(candidate, selfEntity),
         },
       ],
       tools: [MERGE_TOOL],
@@ -341,25 +670,25 @@ async function buildMergedEpisode(
       budget: "offline-consolidator",
     }),
   );
-  const participants = uniqueStrings(cluster.episodes.flatMap((episode) => episode.participants));
-  const sourceStreamIds = uniqueStrings(
-    cluster.episodes.flatMap((episode) => episode.source_stream_ids),
-  ) as Episode["source_stream_ids"];
-  const tags = uniqueStrings(cluster.episodes.flatMap((episode) => episode.tags));
-  const startTime = Math.min(...cluster.episodes.map((episode) => episode.start_time));
-  const endTime = Math.max(...cluster.episodes.map((episode) => episode.end_time));
-  const significance = Math.max(...cluster.episodes.map((episode) => episode.significance));
-  const confidence = Math.min(...cluster.episodes.map((episode) => episode.confidence));
+  const rawEpisodes = [...candidate.rawEpisodes].sort(compareEpisodesOldestFirst);
+  const participants = uniqueStrings(rawEpisodes.flatMap((episode) => episode.participants));
+  const sourceStreamIds = sourceStreamIdsForEpisodes(rawEpisodes);
+  const tags = uniqueStrings(rawEpisodes.flatMap((episode) => episode.tags));
+  const startTime = Math.min(...rawEpisodes.map((episode) => episode.start_time));
+  const endTime = Math.max(...rawEpisodes.map((episode) => episode.end_time));
+  const significance = Math.max(...rawEpisodes.map((episode) => episode.significance));
+  const confidence = Math.min(...rawEpisodes.map((episode) => episode.confidence));
   const locationValues = uniqueStrings(
-    cluster.episodes.flatMap((episode) => (episode.location === null ? [] : [episode.location])),
+    rawEpisodes.flatMap((episode) => (episode.location === null ? [] : [episode.location])),
   );
   const nowMs = ctx.clock.now();
   const embedding = await ctx.embeddingClient.embed(
     `${merged.title}\n${merged.narrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
   );
   const access = episodeAccessFromCombinedDisclosureLabel(
-    combineMemoryDisclosureLabels(cluster.episodes.map(memoryDisclosureLabelFromEpisodeAccess)),
+    combineMemoryDisclosureLabels(rawEpisodes.map(memoryDisclosureLabelFromEpisodeAccess)),
   );
+  const rawEpisodeIds = rawEpisodes.map((episode) => episode.id);
 
   return {
     episode: normalizeEpisodeAccess({
@@ -375,19 +704,22 @@ async function buildMergedEpisode(
       tags,
       confidence,
       lineage: {
-        derived_from: cluster.episodes.map((episode) => episode.id),
-        supersedes: cluster.episodes.map((episode) => episode.id),
+        derived_from: rawEpisodeIds,
+        supersedes: rawEpisodeIds,
       },
       emotional_arc:
-        cluster.episodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
+        rawEpisodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
       audience_entity_id: access.audience_entity_id,
       origin_audience_entity_ids: access.origin_audience_entity_ids,
       shared: access.shared,
+      episode_kind: "consolidation_version",
+      consolidation_family_id: candidate.familyId,
+      consolidation_coverage_hash: candidate.coverageHash,
       embedding,
       created_at: nowMs,
       updated_at: nowMs,
     }),
-    inheritedTier: maxTier(cluster.stats),
+    inheritedTier: maxTier(candidate.stats),
   };
 }
 
@@ -410,14 +742,56 @@ function buildChange(item: ConsolidatorPlan["items"][number]): OfflineChange {
     process: "consolidator",
     action: "consolidate",
     targets: {
+      family_id: item.family_id,
+      new_version_episode_id: item.merged_episode.id,
+      previous_current_version_episode_id: item.previous_current_version_episode_id,
       source_ids: item.source_episode_ids,
+      new_raw_episode_ids: item.new_raw_episode_ids,
+      coverage_hash: item.coverage_hash,
     },
     preview: {
       title: item.merged_episode.title,
       narrative: item.merged_episode.narrative,
+      family_id: item.family_id,
       source_ids: item.source_episode_ids,
+      new_raw_episode_ids: item.new_raw_episode_ids,
     },
   };
+}
+
+function assertPlanItemMatchesSources(
+  item: ConsolidatorPlan["items"][number],
+  rawEpisodes: readonly Episode[],
+): void {
+  const rawEpisodeIds = rawEpisodes.map((episode) => episode.id);
+
+  if (!sameEpisodeIdSet(item.source_episode_ids, rawEpisodeIds)) {
+    throw new StorageError("Consolidator plan source ids no longer match raw episode rows", {
+      code: "CONSOLIDATOR_PLAN_INVALID",
+    });
+  }
+
+  if (item.coverage_hash !== coverageHashForEpisodes(rawEpisodes)) {
+    throw new StorageError("Consolidator plan coverage hash is stale", {
+      code: "CONSOLIDATOR_PLAN_INVALID",
+    });
+  }
+
+  if (!sameEpisodeIdSet(item.source_episode_ids, item.merged_episode.lineage.derived_from)) {
+    throw new StorageError("Consolidator version lineage must reference raw leaf episodes", {
+      code: "CONSOLIDATOR_PLAN_INVALID",
+    });
+  }
+
+  if (
+    item.merged_episode.episode_kind !== "consolidation_version" ||
+    item.merged_episode.consolidation_family_id !== item.family_id ||
+    item.merged_episode.consolidation_coverage_hash !== item.coverage_hash
+  ) {
+    throw new StorageError("Consolidator plan version metadata is invalid", {
+      code: "CONSOLIDATOR_PLAN_INVALID",
+    });
+  }
 }
 
 export type ConsolidatorProcessOptions = {
@@ -430,25 +804,23 @@ export class ConsolidatorProcess implements OfflineProcess {
 
   constructor(private readonly options: ConsolidatorProcessOptions) {
     this.options.registry.register(this.name, "consolidate", async ({ reversal }) => {
-      const parsed = reversal as Partial<ConsolidationReversal>;
+      const parsed = consolidationReversalSchema.safeParse(reversal);
 
-      if (typeof parsed.newEpisodeId === "string") {
-        await this.options.episodicRepository.delete(parsed.newEpisodeId as Episode["id"]);
+      if (parsed.success) {
+        await this.options.episodicRepository.revertConsolidationVersion({
+          familyId: parsed.data.familyId,
+          versionEpisodeId: parsed.data.versionEpisodeId,
+          previousCurrentVersionEpisodeId: parsed.data.previousCurrentVersionEpisodeId,
+          previousCoverageHash: parsed.data.previousCoverageHash,
+          previousPolicyVersion: parsed.data.previousPolicyVersion,
+        });
+        return;
       }
 
-      if (Array.isArray(parsed.sourceStats)) {
-        for (const stats of parsed.sourceStats) {
-          const parsedStats = episodeStatsSchema.safeParse(stats);
+      const legacy = reversal as Partial<{ newEpisodeId: string }>;
 
-          if (!parsedStats.success) {
-            continue;
-          }
-
-          this.options.episodicRepository.updateStats(
-            parsedStats.data.episode_id,
-            episodeStatsRestorePatch(parsedStats.data),
-          );
-        }
+      if (typeof legacy.newEpisodeId === "string") {
+        await this.options.episodicRepository.delete(legacy.newEpisodeId as EpisodeId);
       }
     });
   }
@@ -457,17 +829,10 @@ export class ConsolidatorProcess implements OfflineProcess {
     const errors: OfflineProcessError[] = [];
     const items: ConsolidatorPlan["items"] = [];
     const budget = opts.budget ?? ctx.config.offline.consolidator.budget;
-    const episodes = await ctx.episodicRepository.listEffectivelyVisible();
     const statsById = new Map(
       ctx.episodicRepository.listStats().map((stats) => [stats.episode_id, stats] as const),
     );
-    const clusters = buildClusters(
-      episodes,
-      statsById,
-      ctx.config.offline.consolidator.similarityThreshold,
-      ctx.config.offline.consolidator.minClusterSize,
-      ctx.config.offline.consolidator.maxClustersPerRun,
-    );
+    const candidates = await collectConsolidationCandidates(ctx, statsById);
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -475,11 +840,15 @@ export class ConsolidatorProcess implements OfflineProcess {
       const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
         const llmClient = wrapClient(ctx.llm.background);
 
-        for (const cluster of clusters) {
+        for (const candidate of candidates) {
           try {
-            const merged = await buildMergedEpisode(ctx, llmClient, cluster);
+            const merged = await buildMergedEpisode(ctx, llmClient, candidate);
             items.push({
-              source_episode_ids: cluster.episodes.map((episode) => episode.id),
+              family_id: candidate.familyId,
+              previous_current_version_episode_id: candidate.previousCurrentVersionEpisodeId,
+              source_episode_ids: candidate.rawEpisodes.map((episode) => episode.id),
+              new_raw_episode_ids: candidate.newRawEpisodes.map((episode) => episode.id),
+              coverage_hash: candidate.coverageHash,
               merged_episode: serializeEpisode(merged.episode),
               inherited_tier: merged.inheritedTier,
             });
@@ -532,47 +901,100 @@ export class ConsolidatorProcess implements OfflineProcess {
     const changes: OfflineChange[] = [];
 
     for (const item of plan.items) {
-      const mergedEpisode = deserializeEpisode(item.merged_episode);
-      const sourceEpisodes = await ctx.episodicRepository.getMany(item.source_episode_ids);
-      const sourceStats = item.source_episode_ids
-        .map((episodeId) => ctx.episodicRepository.getStats(episodeId))
-        .filter((stats): stats is EpisodeStats => stats !== null);
+      const rawEpisodes = await ctx.episodicRepository.getMany(item.source_episode_ids);
 
-      if (
-        sourceEpisodes.length !== item.source_episode_ids.length ||
-        sourceStats.length !== item.source_episode_ids.length
-      ) {
-        throw new StorageError("Consolidator plan references missing source episodes", {
+      if (rawEpisodes.length !== uniqueEpisodeIds(item.source_episode_ids).length) {
+        throw new StorageError("Consolidator plan references missing raw episodes", {
           code: "CONSOLIDATOR_PLAN_INVALID",
         });
       }
 
-      const previousSourceStats = sourceStats.map((stats) => ({ ...stats }));
+      if (rawEpisodes.some((episode) => (episode.episode_kind ?? "raw") !== "raw")) {
+        throw new StorageError("Consolidator plan source ids must be raw episodes", {
+          code: "CONSOLIDATOR_PLAN_INVALID",
+        });
+      }
+
+      assertPlanItemMatchesSources(item, rawEpisodes);
+
+      const newRawEpisodeIds = uniqueEpisodeIds(item.new_raw_episode_ids);
+      const newRawEpisodes = rawEpisodes.filter((episode) => newRawEpisodeIds.includes(episode.id));
+
+      if (newRawEpisodes.length !== newRawEpisodeIds.length) {
+        throw new StorageError("Consolidator plan references missing new raw episodes", {
+          code: "CONSOLIDATOR_PLAN_INVALID",
+        });
+      }
+
+      if (
+        newRawEpisodeIds.some(
+          (episodeId) => !ctx.episodicRepository.isEpisodeEffectivelyVisible(episodeId),
+        )
+      ) {
+        continue;
+      }
+
+      const activeFamilies = await loadActiveFamilyAnchors(ctx);
+
+      if (findCoveringFamily(activeFamilies, item.source_episode_ids) !== undefined) {
+        continue;
+      }
+
+      const family = ctx.episodicRepository.getConsolidationFamily(item.family_id);
+
+      if (item.previous_current_version_episode_id === null) {
+        if (family !== null) {
+          continue;
+        }
+      } else if (family?.current_version_episode_id !== item.previous_current_version_episode_id) {
+        continue;
+      }
+
+      const previousCoverageHash = family?.coverage_hash ?? null;
+      const previousPolicyVersion = family?.policy_version ?? null;
+
+      const mergedEpisode = deserializeEpisode(item.merged_episode);
+      const members: ConsolidationMemberInput[] = newRawEpisodes.map((episode) => ({
+        raw_episode_id: episode.id,
+        source_stream_ids: episode.source_stream_ids,
+        added_by_version_episode_id: mergedEpisode.id,
+      }));
+      let createdVersion = false;
 
       try {
         await ctx.episodicRepository.createEpisode(mergedEpisode);
+        createdVersion = true;
         ctx.episodicRepository.updateStats(mergedEpisode.id, {
           tier: item.inherited_tier,
           promoted_at: ctx.clock.now(),
           promoted_from: "consolidator",
         });
 
-        for (const sourceStat of sourceStats) {
-          ctx.episodicRepository.archiveEpisode(sourceStat.episode_id, {
-            caller: "consolidator.apply",
-            reason: "source episode superseded by consolidation",
-            process: this.name,
-            runId: ctx.runId,
+        if (item.previous_current_version_episode_id === null) {
+          ctx.episodicRepository.createConsolidationFamily({
+            familyId: item.family_id,
+            currentVersionEpisodeId: mergedEpisode.id,
+            coverageHash: item.coverage_hash,
+            policyVersion: CONSOLIDATION_POLICY_VERSION,
+            members,
+          });
+        } else {
+          ctx.episodicRepository.extendConsolidationFamily({
+            familyId: item.family_id,
+            expectedCurrentVersionEpisodeId: item.previous_current_version_episode_id,
+            nextVersionEpisodeId: mergedEpisode.id,
+            coverageHash: item.coverage_hash,
+            policyVersion: CONSOLIDATION_POLICY_VERSION,
+            members,
           });
         }
       } catch (error) {
-        await ctx.episodicRepository.delete(mergedEpisode.id);
+        if (createdVersion) {
+          await ctx.episodicRepository.delete(mergedEpisode.id);
+        }
 
-        for (const sourceStat of previousSourceStats) {
-          ctx.episodicRepository.updateStats(
-            sourceStat.episode_id,
-            episodeStatsRestorePatch(sourceStat),
-          );
+        if (error instanceof StorageError && error.code === "CONSOLIDATION_FAMILY_STALE") {
+          continue;
         }
 
         throw error;
@@ -583,13 +1005,22 @@ export class ConsolidatorProcess implements OfflineProcess {
         process: this.name,
         action: "consolidate",
         targets: {
-          newEpisodeId: mergedEpisode.id,
+          familyId: item.family_id,
+          versionEpisodeId: mergedEpisode.id,
+          previousCurrentVersionEpisodeId: item.previous_current_version_episode_id,
           sourceIds: item.source_episode_ids,
+          newRawEpisodeIds: item.new_raw_episode_ids,
+          coverageHash: item.coverage_hash,
+          previousCoverageHash,
+          previousPolicyVersion,
         },
         reversal: {
-          newEpisodeId: mergedEpisode.id,
-          sourceStats: previousSourceStats,
-        } satisfies ConsolidationReversal,
+          familyId: item.family_id,
+          versionEpisodeId: mergedEpisode.id,
+          previousCurrentVersionEpisodeId: item.previous_current_version_episode_id,
+          previousCoverageHash,
+          previousPolicyVersion,
+        },
       });
       changes.push(buildChange(item));
     }

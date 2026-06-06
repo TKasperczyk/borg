@@ -22,7 +22,11 @@ export { computeEpisodeHeat } from "./heat.js";
 export { episodicMigrations } from "./migrations.js";
 export {
   EpisodicRepository,
+  buildConsolidationCoverageHash,
   createEpisodesTableSchema,
+  type ConsolidationFamilyRecord,
+  type ConsolidationMemberInput,
+  type ConsolidationMemberRecord,
   type EpisodeGetOptions,
   type EpisodicRepositoryOptions,
   type ReconciliationReport,
