@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -136,6 +137,7 @@ describe("GoalPromotionExtractor", () => {
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
+    expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
   it("emits extractor completion traces with session scope", async () => {

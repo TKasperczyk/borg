@@ -1,3 +1,5 @@
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+
 export const CREATOR_DIRECTIVE_SYSTEM_PROMPT = [
   "Classify explicit durable creator directives from the current user turn.",
   "Emit creator directives only when the current creator turn explicitly authorizes, limits, or defines durable future disclosure, durable future behavior, or a durable asserted fact Borg should carry forward.",
@@ -38,6 +40,7 @@ export const CREATOR_DIRECTIVE_SYSTEM_PROMPT = [
   "Use canonical_fact only for content that may be rendered to an allowed audience. Keep it concise and declarative.",
   "In canonical_fact, preserve the agent or origin the source expresses; do not flatten an agentive statement into an agentless one. When the creator authorizes disclosure of something Borg itself did, chose, or owns, attribute it to Borg, not left agentless (which reads as the creator's own act).",
   "Use operational_directive for Borg's internal durable handling rule. It must be enforceable later without relying on the current wording. For fact-only subject_fact records, set operational_directive=null. For response_policy and routing_instruction records, operational_directive is required.",
+  `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this only to operational_directive when subject_kind=borg_self. Leave canonical_fact and directives for any other subject_kind in their natural third-person form.`,
   "The input may include known_entities with entity_id/display_name. Prefer entity ids from that list when a named person is clearly referenced.",
   "If an entity is not in known_entities, provide the label in *_entity_labels or subject_label so the caller can resolve it.",
   "The caller supplies source stream ids. Do not emit or invent source stream ids.",

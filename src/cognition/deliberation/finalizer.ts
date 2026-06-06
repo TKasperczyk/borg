@@ -10,6 +10,7 @@ import {
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type { TurnOrigin } from "../types.js";
 import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
@@ -138,8 +139,8 @@ const EMIT_ANSWER_FINALIZER_INSTRUCTION =
   "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.";
 const EMIT_OBSERVE_FINALIZER_INSTRUCTION =
   "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal.";
-const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION =
-  "Use EmitNoOutput to produce no assistant message for this turn. Put a concise reason in reason.";
+const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput to produce no assistant message for this turn. Put a concise reason in reason. ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to reason, which is persisted as decision_rationale.`;
+const DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason. ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to reason, which is persisted as decision_rationale.`;
 const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
 const EMIT_DISCOURSE_CONTROL_INSTRUCTION =
@@ -219,7 +220,7 @@ function buildEmissionToolInstructions(
       EMIT_ANSWER_FINALIZER_INSTRUCTION,
       EMIT_DISCOURSE_CONTROL_INSTRUCTION,
       `${EMIT_OBSERVE_FINALIZER_INSTRUCTION} In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.`,
-      "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
+      DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION,
       ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
       EMIT_SELF_REPORT_FINALIZER_INSTRUCTION,
     ].join("\n");

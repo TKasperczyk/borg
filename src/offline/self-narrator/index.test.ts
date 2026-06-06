@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { SelfNarratorProcess } from "./index.js";
@@ -107,6 +108,10 @@ describe("SelfNarratorProcess", () => {
         type: "tool",
         name: SELF_NARRATOR_TOOL_NAME,
       });
+      expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+        SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+      );
       expect(plan.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

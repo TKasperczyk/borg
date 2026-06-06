@@ -22,6 +22,7 @@ import {
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import {
   DEFAULT_SESSION_ID,
   createEntityId,
@@ -1388,6 +1389,7 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain(
       "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
     );
+    expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
   it("ignores autonomous-turn advanced goal output", async () => {
@@ -2226,6 +2228,7 @@ describe("reflector", () => {
       "the answer should be able to land within a few days of additional context",
     );
     expect(llm.requests[0]?.system).toContain("not predictions about long-arc behavior");
+    expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
   it("passes disclosure labels for active goals and open questions into reflection payloads", async () => {
@@ -2299,6 +2302,7 @@ describe("reflector", () => {
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
       active_open_questions?: Array<{
+        source?: string;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -2329,6 +2333,7 @@ describe("reflector", () => {
     expect(payload.active_open_questions?.[0]?.disclosure).toContain(
       "disclosure_class=relationship_private",
     );
+    expect(payload.active_open_questions?.[0]?.source).toBe("reflection");
     expect(payload.active_open_questions?.[0]?.disclosure).toContain(`private-to=${alice}`);
     expect(payload.active_open_questions?.[0]?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",

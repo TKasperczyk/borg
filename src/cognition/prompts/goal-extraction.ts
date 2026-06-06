@@ -1,4 +1,5 @@
 import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "./host-capabilities.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Classify goal-like candidates from the current user turn by memory kind.",
@@ -9,6 +10,7 @@ export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "If a supplied active goal already covers the request, classify as already_represented and set duplicate_of_goal_id.",
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
   "Borg-owned durable goals must stay inside the host capability boundary below.",
+  `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to durable_borg_goal descriptions. For goals or tasks belonging to other participants, name those participants rather than using deictic placeholders.`,
   BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,
   "",
   "Classifications:",

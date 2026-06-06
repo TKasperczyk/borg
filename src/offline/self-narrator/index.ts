@@ -23,6 +23,7 @@ import {
 } from "../../memory/self/index.js";
 import { createAutobiographicalPeriodId, createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -166,6 +167,7 @@ function buildObservationPrompt(
     "Identify thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `Emit your result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "Return an empty observations array if there is no grounded growth signal.",
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to growth marker what_changed, before_description, and after_description fields; autobiographical period narrative text inherits from those observations.`,
     "Set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; your open_new decision is ignored when cadence has not elapsed.",
     "Only cite evidence_episode_ids from the provided episodes.",
     `Each observation must cite at least ${minSupportEpisodes} episodes.`,
@@ -362,8 +364,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
             const response = parseObservationResponse(
               await llmClient.complete({
                 model: ctx.config.anthropic.models.background,
-                system:
+                system: [
                   "You identify grounded autobiographical growth markers by clustering candidate episodes thematically. Return no observations when the evidence is weak.",
+                  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+                ].join("\n"),
                 messages: [
                   {
                     role: "user",

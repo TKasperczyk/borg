@@ -974,6 +974,7 @@ describe("StreamIngestionCoordinator", () => {
         episodicMigrations,
         selfMigrations,
         retrievalMigrations,
+        commitmentMigrations,
         streamWatermarkMigrations,
       ),
     });

@@ -25,6 +25,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { normalizeEpisodeAccess } from "./access.js";
@@ -79,6 +80,10 @@ type RelationalSlotSubject = {
   entity_id: EntityId;
   label: string;
   source: "default_user" | "audience" | "sender";
+};
+type SelfPromptEntity = {
+  id: EntityId;
+  canonical_name: string;
 };
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_CONTEXT_STREAM_KINDS = [
@@ -371,6 +376,7 @@ function buildExtractorPrompt(
   chunk: readonly StreamEntry[],
   perceptionContextEntries: readonly StreamEntry[],
   relationalSlotSubjects: readonly RelationalSlotSubject[],
+  selfEntity: SelfPromptEntity | null,
 ): string {
   const lines = chunk.map((entry) =>
     JSON.stringify({
@@ -388,6 +394,10 @@ function buildExtractorPrompt(
 
     return line === null ? [] : [line];
   });
+  const selfEntityGuidance =
+    selfEntity === null
+      ? null
+      : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); messages with kind "agent_msg" are your own. Write your own actions, statements, and decisions in the first person; refer to every other sender by their name or stable handle.`;
 
   const promptLines = [
     "You extract episodic memories from a stream chunk.",
@@ -395,6 +405,8 @@ function buildExtractorPrompt(
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
     "Narrative should be 2-5 concise sentences.",
+    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",
@@ -981,6 +993,7 @@ export class EpisodicExtractor {
     let updated = 0;
     let skipped = 0;
     const chunks = chunkEntries(extractableStreamEntries, this.chunkTokenLimit);
+    const selfEntity = this.options.entityRepository.getSelf();
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
@@ -995,7 +1008,12 @@ export class EpisodicExtractor {
         messages: [
           {
             role: "user",
-            content: buildExtractorPrompt(chunk, perceptionContextEntries, relationalSlotSubjects),
+            content: buildExtractorPrompt(
+              chunk,
+              perceptionContextEntries,
+              relationalSlotSubjects,
+              selfEntity,
+            ),
           },
         ],
         tools: [EXTRACT_EPISODES_TOOL],

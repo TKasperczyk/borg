@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { CREATOR_DIRECTIVE_SYSTEM_PROMPT } from "../prompts/creator-directive.js";
 import {
@@ -458,12 +459,14 @@ describe("CREATOR_DIRECTIVE_SYSTEM_PROMPT", () => {
   // this only ensures the instruction is not silently removed.
   it("instructs the extractor to attribute Borg-originated facts to Borg", () => {
     expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain("attribute it to Borg");
+    expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain(
+      "Apply this only to operational_directive when subject_kind=borg_self",
+    );
   });
 
   it("guards activation and disclosure separation guidance", () => {
-    expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain(
-      "Keep activation and disclosure separate",
-    );
+    expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain("Keep activation and disclosure separate");
     expect(CREATOR_DIRECTIVE_SYSTEM_PROMPT).toContain(
       "content_scope is disclosure permission only",
     );

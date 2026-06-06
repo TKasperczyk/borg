@@ -17,6 +17,7 @@ import {
   createStreamEntryId,
   type EpisodeId,
 } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type { ParticipantRoster } from "../../cognition/perception/index.js";
 import type { RelationshipClaim } from "../../cognition/relationship-claims.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
@@ -198,6 +199,7 @@ describe("semantic extractor", () => {
       episodicRepository: createEpisodeLookup([episode]),
       llmClient: llm,
       model: "haiku",
+      selfEntityId: "ent_selfaaaaaaaaaaa" as never,
       participantRoster: {
         participants: [
           {
@@ -207,6 +209,14 @@ describe("semantic extractor", () => {
             known_relationships: ["spouse:Priya"],
             audience_role: "speaker",
             relationship_source: "relational_slot:rslot_grounded",
+          },
+          {
+            entity_id:
+              "ent_selfaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+            display_name: "self",
+            known_relationships: [],
+            audience_role: "active_participant",
+            relationship_source: null,
           },
         ],
         non_chat_subjects: [],
@@ -234,6 +244,11 @@ describe("semantic extractor", () => {
     );
     expect(prompt).toContain("Thread roster:");
     expect(prompt).toContain("relational_slot:rslot_grounded");
+    expect(prompt).toContain("- self (id: ent_selfaaaaaaaaaaa");
+    expect(prompt).toContain(
+      "Entity ent_selfaaaaaaaaaaa is yourself; refer to all entities by name, including yourself.",
+    );
+    expect(prompt).not.toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("disclosure_class=relationship_private");
     expect(prompt).toContain("usable internally");
     expect(prompt).toContain(privateAudience);

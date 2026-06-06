@@ -11,6 +11,7 @@ import {
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -76,7 +77,9 @@ const goalPromotionSchema = z
       .string()
       .trim()
       .min(1)
-      .describe("Concise description of the candidate memory item."),
+      .describe(
+        `Concise description of the candidate memory item. For durable_borg_goal, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
+      ),
     priority: z
       .number()
       .finite()

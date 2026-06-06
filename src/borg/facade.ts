@@ -625,6 +625,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         return Promise.all(steps.map((step) => semanticWalkStepWithDisclosure(deps, step)));
       },
       extract: async (episodes) => {
+        const selfEntity = deps.entityRepository.getSelf();
         const extractor = new SemanticExtractor({
           nodeRepository: deps.semanticNodeRepository,
           edgeRepository: deps.semanticEdgeRepository,
@@ -639,6 +640,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
             entityRepository: deps.entityRepository,
             relationalSlotRepository: deps.relationalSlotRepository,
           }),
+          selfEntityId: selfEntity?.id ?? null,
           relationshipEvidenceStreamEntryTrust:
             createUserStreamEntryRelationshipEvidenceTrustValidator({
               entryIndex: deps.entryIndex,

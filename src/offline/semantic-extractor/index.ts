@@ -473,6 +473,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
 
     try {
       const budgeted = await withBudget(this.name, plan.budget, async ({ wrapClient }) => {
+        const selfEntity = ctx.entityRepository.getSelf();
         const extractor = new SemanticExtractor({
           nodeRepository: ctx.semanticNodeRepository,
           edgeRepository: ctx.semanticEdgeRepository,
@@ -481,10 +482,20 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           llmClient: wrapClient(ctx.llm.extraction),
           model: ctx.config.anthropic.models.extraction,
           participantRoster: buildParticipantRosterFromRepositories({
-            activeParticipants: [],
+            activeParticipants:
+              selfEntity === null
+                ? []
+                : [
+                    {
+                      entityId: selfEntity.id,
+                      displayName: selfEntity.canonical_name,
+                      role: "participant",
+                    },
+                  ],
             entityRepository: ctx.entityRepository,
             relationalSlotRepository: ctx.relationalSlotRepository,
           }),
+          selfEntityId: selfEntity?.id ?? null,
           relationshipEvidenceStreamEntryTrust:
             createUserStreamEntryRelationshipEvidenceTrustValidator({
               entryIndex: ctx.entryIndex,

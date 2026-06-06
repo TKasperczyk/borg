@@ -19,10 +19,7 @@ import {
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
-import {
-  computeRetrievalConfidence,
-  type RetrievedEpisode,
-} from "../../retrieval/index.js";
+import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import {
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
@@ -34,6 +31,7 @@ import {
 import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -179,6 +177,7 @@ function buildResolutionPrompt(question: OpenQuestion, evidence: string): string
     "Resolve the open question using only the evidence below.",
     `Emit your result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
     "Only include a growth_marker if the evidence clearly shows new understanding.",
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to resolution_note and any growth_marker text fields.`,
     "Open question:",
     JSON.stringify(questionRow),
     "Evidence:",

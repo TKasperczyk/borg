@@ -7,6 +7,7 @@ import {
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter, streamEntryIdSchema } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type {
   ExecutiveFocus,
   ExecutiveStep,
@@ -178,7 +179,7 @@ const strictReflectionOutputSchema = z.object({
       }),
     )
     .describe(
-      "Goals advanced by this turn. Mark only if the turn took a concrete step toward the goal, not just discussed it.",
+      `Goals advanced by this turn. Mark only if the turn took a concrete step toward the goal, not just discussed it. The evidence is appended to goal progress_notes; for Borg-owned goals, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
   procedural_outcomes: z
@@ -237,14 +238,14 @@ const strictReflectionOutputSchema = z.object({
     .array(reflectionOpenQuestionSchema)
     .max(5)
     .describe(
-      "Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related episode ids present in the reflection input.",
+      `Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related episode ids present in the reflection input. For self-clause questions, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Preserve verbatim user-sourced questions exactly in the user's words and language; use source fields supplied for existing questions.`,
     )
     .default([]),
   resolved_open_questions: z
     .array(resolvedOpenQuestionSchema)
     .max(5)
     .describe(
-      "Previously active open questions clearly answered by the completed turn. Use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence.",
+      `Previously active open questions clearly answered by the completed turn. Use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence. Apply this voice guidance to resolution_note unless resolving a verbatim user-sourced question whose exact wording must be preserved: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
 });
@@ -1631,6 +1632,7 @@ export class Reflector {
             active_open_questions: activeOpenQuestions.map((question) => ({
               id: question.id,
               question: question.question,
+              source: question.source,
               urgency: question.urgency,
               related_episode_ids: question.related_episode_ids,
               related_semantic_node_ids: question.related_semantic_node_ids,

@@ -1,6 +1,9 @@
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+
 export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
   "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+  `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to Borg-owned goal progress evidence, resolved_open_questions resolution notes, and self-clause open questions.`,
   "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
   "For step_outcomes, update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",
   "A queued step may be marked doing or abandoned, but not done. Mark done only for a step that is already doing and whose completed turn directly finished it.",
@@ -14,7 +17,7 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
   "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
   "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Set actor=user when the action was for the user to do, and actor=borg when it was for Borg to do. Otherwise omit them.",
-  "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
+  "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text. When a question is verbatim user-sourced, preserve the user's exact words and language; use the question source field for existing questions.",
   "Open questions should be answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
   "For resolved_open_questions, resolve only active open questions that the just-completed turn clearly answered. Do not speculate. Cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. Use question_id only from active_open_questions, and include at least one evidence id.",
 ].join("\n");

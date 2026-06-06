@@ -169,6 +169,10 @@ describe("semantic extractor process", () => {
       tracer,
     });
     cleanup.push(harness.cleanup);
+    const selfEntityId = harness.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
     await harness.episodicRepository.insert(episode);
     const process = createProcess(harness);
     const queueDuplicateReview = vi.fn();
@@ -189,6 +193,11 @@ describe("semantic extractor process", () => {
       accepted: 1,
       rejected: 0,
     });
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    expect(prompt).toContain(`- self (id: ${selfEntityId}`);
+    expect(prompt).toContain(
+      `Entity ${selfEntityId} is yourself; refer to all entities by name, including yourself.`,
+    );
     await expect(harness.semanticNodeRepository.list()).resolves.toEqual([
       expect.objectContaining({
         label: "Anarres-Urras contrast",

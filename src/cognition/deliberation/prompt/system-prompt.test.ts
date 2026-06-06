@@ -330,6 +330,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("How your mind works:");
     expect(prompt).toContain("recall broadly from your memory substrate");
     expect(prompt).toContain("background reflection or 'dream' cycle");
+    expect(prompt).toContain("older self-memory records may refer to Sol, Borg, or the assistant");
     expect(cacheable.staticPrefix).toContain("How your mind works:");
     expect(cacheable.staticPrefixSections).toContain("self_architecture");
   });

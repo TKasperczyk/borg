@@ -6,6 +6,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import {
   createActionId,
   DEFAULT_SESSION_ID,
@@ -60,7 +61,10 @@ function createRuminatorResponse(input: {
   };
 }
 
-function retrievedEpisode(episode: ReturnType<typeof createEpisodeFixture>, score: number): RetrievedEpisode {
+function retrievedEpisode(
+  episode: ReturnType<typeof createEpisodeFixture>,
+  score: number,
+): RetrievedEpisode {
   return {
     episode,
     score,
@@ -282,6 +286,7 @@ describe("RuminatorProcess", () => {
       expect(prompt).toContain("Public stale planning note 1");
       expect(prompt).toContain(`"id":"${question.id}"`);
       expect(prompt).toContain("disclosure_class=self_private");
+      expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,

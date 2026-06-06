@@ -25,7 +25,7 @@ import {
 } from "../../llm/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
-import { createSemanticNodeId, type StreamEntryId } from "../../util/ids.js";
+import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
 import {
@@ -119,6 +119,7 @@ export type SemanticExtractorOptions = {
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
   participantRoster?: ParticipantRoster | null;
+  selfEntityId?: EntityId | null;
   relationshipEvidenceStreamEntryTrust?: RelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -154,9 +155,14 @@ type SemanticInsertSkipReason =
 function buildPrompt(input: {
   episodes: readonly Episode[];
   participantRoster?: ParticipantRoster | null;
+  selfEntityId?: EntityId | null;
   knownNodeKinds: readonly SemanticNodeKind[];
 }): string {
   const roster = renderParticipantRoster(input.participantRoster);
+  const selfEntityGuidance =
+    input.selfEntityId === undefined || input.selfEntityId === null
+      ? null
+      : `Entity ${input.selfEntityId} is yourself; refer to all entities by name, including yourself.`;
   const knownNodeKindGuidance =
     input.knownNodeKinds.length === 0
       ? "Known semantic node kinds already in graph: none."
@@ -185,6 +191,7 @@ function buildPrompt(input: {
     HEADCOUNT_SET_GROUNDING_PROMPT,
     "When a node label or description asserts a sensitive interpersonal relationship, emit relationship_claims with supporting evidence ids. Do not cite assistant output as relationship evidence. If no accepted evidence grounds the claim, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
+    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...input.episodes.map((episode) => {
@@ -785,6 +792,7 @@ export class SemanticExtractor {
             content: buildPrompt({
               episodes,
               participantRoster: this.options.participantRoster ?? null,
+              selfEntityId: this.options.selfEntityId ?? null,
               knownNodeKinds,
             }),
           },

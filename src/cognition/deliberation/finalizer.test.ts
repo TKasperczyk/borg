@@ -9,6 +9,7 @@ import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
 
 function createDispatcher(tempDirs: string[]): ToolDispatcher {
@@ -140,6 +141,9 @@ describe("runFinalizer emission tools", () => {
       "EmitSelfReport",
     ]);
     expect(llm.requests[0]?.tools?.some((tool) => "cache_control" in tool)).toBe(false);
+    const system = requestSystemText(llm.requests[0]?.system);
+    expect(system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(system).toContain("persisted as decision_rationale");
     expect(llm.requests[0]?.system).toEqual([
       expect.objectContaining({
         type: "text",
@@ -269,6 +273,8 @@ describe("runFinalizer emission tools", () => {
     expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
     const system = requestSystemText(llm.requests[0]?.system);
     expect(system).toContain("Your only available terminal tool is EmitNoOutput.");
+    expect(system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(system).toContain("persisted as decision_rationale");
     expect(system).not.toContain("EmitAnswer");
     expect(system).not.toContain("EmitObserve");
     expect(system).not.toContain("EmitSelfReport");

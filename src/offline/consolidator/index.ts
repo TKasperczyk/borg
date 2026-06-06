@@ -17,6 +17,7 @@ import {
   type EpisodeStats,
   type EpisodeTier,
 } from "../../memory/episodic/index.js";
+import type { EntityRecord } from "../../memory/commitments/index.js";
 import { episodeAudienceEntityIdSchema, streamEntryIdSchema } from "../../memory/episodic/types.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../../retrieval/index.js";
 import { createEpisodeId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -109,6 +111,7 @@ type EpisodeCluster = {
   episodes: Episode[];
   stats: EpisodeStats[];
 };
+type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
 
 type ConsolidationReversal = {
   newEpisodeId: string;
@@ -171,11 +174,18 @@ function parseMergeResponse(result: LLMCompleteResult) {
   return mergeResponseSchema.parse(call.input);
 }
 
-function buildMergePrompt(cluster: EpisodeCluster): string {
+function buildMergePrompt(cluster: EpisodeCluster, selfEntity: MergeSelfEntity | null): string {
+  const selfEntityGuidance =
+    selfEntity === null
+      ? null
+      : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); content grounded in your own agent-authored source messages is self-owned. Use first person only for your own actions, statements, and decisions; keep every other participant named and world facts in third person.`;
+
   return [
     "Merge the redundant episodes into one grounded episode.",
     `Emit your result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "Preserve facts from all inputs. Keep the narrative to 2-5 sentences.",
+    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the merged narrative. Keep the title topic-neutral and scannable rather than first-person narration.`,
     "Episodes:",
     ...cluster.episodes.map((episode) =>
       JSON.stringify(
@@ -295,6 +305,7 @@ async function buildMergedEpisode(
   llmClient: LLMClient,
   cluster: EpisodeCluster,
 ): Promise<{ episode: Episode; inheritedTier: EpisodeTier }> {
+  const selfEntity = ctx.entityRepository.getSelf();
   const merged = parseMergeResponse(
     await llmClient.complete({
       model: ctx.config.anthropic.models.background,
@@ -303,7 +314,7 @@ async function buildMergedEpisode(
       messages: [
         {
           role: "user",
-          content: buildMergePrompt(cluster),
+          content: buildMergePrompt(cluster, selfEntity),
         },
       ],
       tools: [MERGE_TOOL],

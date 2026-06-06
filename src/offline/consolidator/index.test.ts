@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { ConsolidatorProcess } from "./index.js";
@@ -244,6 +245,10 @@ describe("consolidator process", () => {
     cleanup.push(harness.cleanup);
     const alice = harness.entityRepository.resolve("Alice");
     const bob = harness.entityRepository.resolve("Bob");
+    const selfEntityId = harness.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
     const sourceEpisodes = [
       createEpisodeFixture(
         {
@@ -311,6 +316,9 @@ describe("consolidator process", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     expect(prompt).toContain("disclosure_class=relationship_private");
     expect(prompt).toContain("usable internally");
+    expect(prompt).toContain(`You are entity ${selfEntityId} (self);`);
+    expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(prompt).toContain("Keep the title topic-neutral and scannable");
     expect(prompt).toContain(alice);
     expect(prompt).toContain(bob);
   });

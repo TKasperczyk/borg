@@ -14,6 +14,7 @@ import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError, LLMError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { commitmentMigrations, EntityRepository } from "../commitments/index.js";
 import { RelationalSlotRepository, relationalSlotMigrations } from "../relational-slots/index.js";
@@ -152,7 +153,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -265,7 +271,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -389,6 +400,10 @@ describe("episodic extractor", () => {
 
   it("includes secondary-thread coverage guidance in the extraction prompt", async () => {
     const harness = await createRelationalExtractorHarness();
+    const selfEntityId = harness.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
     await harness.writer.append({
       kind: "user_msg",
       content:
@@ -418,6 +433,11 @@ describe("episodic extractor", () => {
     expect(prompt).toContain("multiple substantive threads");
     expect(prompt).toContain("not only the headline topic");
     expect(prompt).toContain("prioritize coverage over length");
+    expect(prompt).toContain(
+      `You are entity ${selfEntityId} (self); messages with kind "agent_msg" are your own.`,
+    );
+    expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(prompt).toContain("Keep the title topic-neutral and scannable");
   });
 
   it("applies relational slot updates emitted with episodic extraction", async () => {
@@ -1702,7 +1722,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1793,7 +1818,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1871,7 +1901,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1932,7 +1967,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1993,7 +2033,12 @@ describe("episodic extractor", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
