@@ -297,8 +297,10 @@ describe("review queue revalidation", () => {
       source_episode_ids: [liveEpisode.id],
       replace_source_episode_ids: true,
     });
-    harness.episodicRepository.updateStats(persistedEpisode.id, {
-      archived: true,
+    harness.episodicRepository.archiveEpisode(persistedEpisode.id, {
+      caller: "revalidate.test",
+      reason: "seed an archived episode",
+      process: "curator",
     });
 
     const result = await revalidateReviewQueue(harness.createContext(), {

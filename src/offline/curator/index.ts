@@ -352,6 +352,7 @@ function buildEpisodeItems(
 
     if (
       !stats.archived &&
+      (episode.episode_kind ?? "raw") === "raw" &&
       extractedEpisodes.has(episode.id) &&
       compareTiers(stats.tier, "T2") <= 0 &&
       heat < ctx.config.offline.curator.archiveMinHeat &&

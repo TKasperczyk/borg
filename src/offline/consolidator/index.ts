@@ -926,6 +926,25 @@ export class ConsolidatorProcess implements OfflineProcess {
         });
       }
 
+      const existingMemberRawIds =
+        item.previous_current_version_episode_id === null
+          ? []
+          : ctx.episodicRepository
+              .listConsolidationMembers(item.family_id)
+              .map((member) => member.raw_episode_id);
+      const expectedNewRawEpisodeIds = uniqueEpisodeIds(item.source_episode_ids).filter(
+        (episodeId) => !existingMemberRawIds.includes(episodeId),
+      );
+
+      if (!sameEpisodeIdSet(newRawEpisodeIds, expectedNewRawEpisodeIds)) {
+        throw new StorageError(
+          "Consolidator plan new raw episode ids must equal source ids minus existing family members",
+          {
+            code: "CONSOLIDATOR_PLAN_INVALID",
+          },
+        );
+      }
+
       if (
         newRawEpisodeIds.some(
           (episodeId) => !ctx.episodicRepository.isEpisodeEffectivelyVisible(episodeId),

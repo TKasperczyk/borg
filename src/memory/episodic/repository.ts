@@ -1703,6 +1703,25 @@ export class EpisodicRepository {
         return current;
       }
 
+      const owningFamily = this.db
+        .prepare(
+          `
+            SELECT family_id
+            FROM consolidation_families
+            WHERE current_version_episode_id = ?
+          `,
+        )
+        .get(episodeId) as { family_id: string } | undefined;
+
+      if (owningFamily !== undefined) {
+        throw new StorageError(
+          `Episode ${episodeId} is the current version of consolidation family ${owningFamily.family_id}; tear down via revertConsolidationVersion, do not archive it directly`,
+          {
+            code: "EPISODE_ARCHIVE_CURRENT_CONSOLIDATION_VERSION",
+          },
+        );
+      }
+
       const result = this.db
         .prepare(
           `
@@ -1815,11 +1834,11 @@ export class EpisodicRepository {
       });
     }
 
-    if (current.archived && parsedPatch.data.archived === false) {
+    if (parsedPatch.data.archived !== undefined) {
       throw new StorageError(
-        `Episode ${episodeId} reactivation requires reactivateEpisode lifecycle audit`,
+        `Episode ${episodeId} archive state must change via archiveEpisode/reactivateEpisode, not updateStats`,
         {
-          code: "EPISODE_REACTIVATE_REQUIRES_AUDIT",
+          code: "EPISODE_ARCHIVED_REQUIRES_LIFECYCLE_API",
         },
       );
     }

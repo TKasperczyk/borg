@@ -1220,9 +1220,10 @@ describe("retrieval pipeline", () => {
       [1, 0, 0, 0],
     );
     await repo.createEpisode(episode);
-    repo.updateStats(episode.id, {
-      archived: true,
-    });
+    // This minimal harness omits the offline migrations that create
+    // maintenance_audit, so archive directly rather than via archiveEpisode.
+    db.prepare("UPDATE episode_stats SET archived = 1 WHERE episode_id = ?").run(episode.id);
+    db.prepare("UPDATE episode_index SET archived = 1 WHERE episode_id = ?").run(episode.id);
     const pipeline = new RetrievalPipeline({
       embeddingClient: new ScriptedEmbeddingClient(),
       episodicRepository: repo,
@@ -1568,9 +1569,10 @@ describe("retrieval pipeline", () => {
 
     const episode = createEpisode("ep_aaaaaaaaaaaaaaaa", "strm_aaaaaaaaaaaaaaaa", [1, 0, 0, 0]);
     await repo.createEpisode(episode);
-    repo.updateStats(episode.id, {
-      archived: true,
-    });
+    // This minimal harness omits the offline migrations that create
+    // maintenance_audit, so archive directly rather than via archiveEpisode.
+    db.prepare("UPDATE episode_stats SET archived = 1 WHERE episode_id = ?").run(episode.id);
+    db.prepare("UPDATE episode_index SET archived = 1 WHERE episode_id = ?").run(episode.id);
     const atlas = await semanticNodeRepository.insert({
       id: "semn_aaaaaaaaaaaaaaaa" as never,
       kind: "entity",

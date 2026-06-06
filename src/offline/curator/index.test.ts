@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { buildConsolidationCoverageHash } from "../../memory/episodic/index.js";
 import { IdentityEventRepository } from "../../memory/identity/index.js";
 import { TraitsRepository } from "../../memory/self/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { createConsolidationFamilyId } from "../../util/ids.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { CuratorProcess } from "./index.js";
@@ -142,6 +144,77 @@ describe("curator process", () => {
         .map((row) => row.action)
         .sort(),
     ).toEqual(["archive", "archive_episode", "decay", "demote", "promote"]);
+  });
+
+  it("does not heat-archive a current consolidation version even when it meets archive criteria", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+
+    const familyId = createConsolidationFamilyId();
+    const raw = createEpisodeFixture(
+      {
+        title: "Covered raw leaf",
+        created_at: nowMs - 60 * DAY_MS,
+        updated_at: nowMs - 60 * DAY_MS,
+      },
+      [0, 1, 0, 0],
+    );
+    const coverageHash = buildConsolidationCoverageHash(raw.source_stream_ids);
+    // createEpisodeFixture does not carry episode_kind/consolidation_* overrides,
+    // so set them on the object directly to persist a real consolidation version.
+    const version = {
+      ...createEpisodeFixture(
+        {
+          title: "Consolidation summary",
+          created_at: nowMs - 50 * DAY_MS,
+          updated_at: nowMs - 50 * DAY_MS,
+          lineage: { derived_from: [raw.id], supersedes: [raw.id] },
+        },
+        [0, 1, 0, 0],
+      ),
+      episode_kind: "consolidation_version" as const,
+      consolidation_family_id: familyId,
+      consolidation_coverage_hash: coverageHash,
+    };
+
+    await harness.episodicRepository.createEpisode(raw);
+    await harness.episodicRepository.createEpisode(version);
+    harness.episodicRepository.createConsolidationFamily({
+      familyId,
+      currentVersionEpisodeId: version.id,
+      coverageHash,
+      policyVersion: 1,
+      members: [
+        {
+          raw_episode_id: raw.id,
+          source_stream_ids: raw.source_stream_ids,
+          added_by_version_episode_id: version.id,
+        },
+      ],
+    });
+    // The current version meets every archive criterion (tier <= T2, extracted,
+    // old, cold) -- only its episode_kind should keep the curator from archiving it.
+    harness.episodicRepository.updateStats(version.id, { tier: "T1" });
+    recordSemanticExtractionAudit(harness, [version.id]);
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes.some((change) => change.action === "archive")).toBe(false);
+    expect(harness.episodicRepository.getStats(version.id)?.archived).toBe(false);
   });
 
   it("does not archive unextracted episodes but archives extracted ones", async () => {

@@ -206,8 +206,10 @@ describe("episodic repository", () => {
 
     const episode = createEpisode("ep_archivedgetxxxxx", harness.clock.now());
     await harness.repo.createEpisode(episode);
-    harness.repo.updateStats(episode.id, {
-      archived: true,
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise archived-get filtering",
+      process: "curator",
     });
 
     expect(await harness.repo.get(episode.id)).toBeNull();
@@ -227,7 +229,11 @@ describe("episodic repository", () => {
     harness.repo.updateStats(episode.id, {
       heat_multiplier: 0.5,
       valence_mean: 0.4,
-      archived: true,
+    });
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise patch-only stats retention",
+      process: "curator",
     });
 
     const patched = harness.repo.updateStats(episode.id, {
@@ -419,8 +425,12 @@ describe("episodic repository", () => {
 
     await harness.repo.createEpisode(episode);
     harness.repo.updateStats(episode.id, {
-      archived: true,
       use_count: 3,
+    });
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise duplicate-create stats retention",
+      process: "curator",
     });
 
     await expect(
@@ -443,21 +453,30 @@ describe("episodic repository", () => {
     );
   });
 
-  it("requires the audited lifecycle API for archived true-to-false transitions", async () => {
+  it("requires the audited lifecycle API for archived transitions in both directions", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
     const episode = createEpisode(createEpisodeId(), harness.clock.now());
 
     await harness.repo.createEpisode(episode);
-    harness.repo.updateStats(episode.id, {
-      archived: true,
+
+    expect(() =>
+      harness.repo.updateStats(episode.id, {
+        archived: true,
+      }),
+    ).toThrow(/archive state must change via archiveEpisode/);
+
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise audited archival",
+      process: "curator",
     });
 
     expect(() =>
       harness.repo.updateStats(episode.id, {
         archived: false,
       }),
-    ).toThrow(/reactivation requires reactivateEpisode/);
+    ).toThrow(/archive state must change via archiveEpisode/);
 
     const reactivated = harness.repo.reactivateEpisode(episode.id, {
       caller: "repository.test",
@@ -588,12 +607,18 @@ describe("episodic repository", () => {
       currentVersion.id,
     ]);
 
-    harness.repo.updateStats(currentVersion.id, {
-      archived: true,
-    });
+    expect(() =>
+      harness.repo.archiveEpisode(currentVersion.id, {
+        caller: "repository.test",
+        reason: "must not heat-archive a current consolidation version",
+        process: "curator",
+      }),
+    ).toThrow(/current version of consolidation family/);
 
-    expect((await harness.repo.get(raw.id))?.id).toBe(raw.id);
-    expect(await harness.repo.get(currentVersion.id)).toBeNull();
+    // The current version cannot be archived out from under its family, so
+    // coverage stays intact and the raw leaves remain hidden behind it.
+    expect(await harness.repo.get(raw.id)).toBeNull();
+    expect((await harness.repo.get(currentVersion.id))?.id).toBe(currentVersion.id);
   });
 
   it("hides effectively visible rows when stats and index archived flags diverge", async () => {

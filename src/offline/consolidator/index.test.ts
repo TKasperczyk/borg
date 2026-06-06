@@ -315,6 +315,64 @@ describe("consolidator process", () => {
     expect(harness.episodicRepository.listConsolidationMembers()).toHaveLength(memberCount);
   });
 
+  it("rejects an apply plan whose new-raw set omits a covered source episode", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createConsolidationResponse(
+          "Merged coverage gap",
+          "Two overlapping raws were merged into one grounded episode.",
+        ),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const first = createEpisodeFixture(
+      {
+        title: "Coverage raw one",
+        created_at: 10_000,
+        updated_at: 10_000,
+      },
+      [1, 0, 0, 0],
+    );
+    const second = createEpisodeFixture(
+      {
+        title: "Coverage raw two",
+        created_at: 20_000,
+        updated_at: 20_000,
+      },
+      [0.99, 0, 0, 0],
+    );
+
+    await harness.episodicRepository.createEpisode(first);
+    await harness.episodicRepository.createEpisode(second);
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0]!.new_raw_episode_ids).toHaveLength(2);
+
+    // Tamper a saved plan so one source raw is dropped from the new-raw set.
+    // Applying it would leave that raw with no consolidation_members row while
+    // the version's coverage still claims it -- the double-count gap.
+    const tampered = {
+      ...plan,
+      items: [
+        {
+          ...plan.items[0]!,
+          new_raw_episode_ids: [plan.items[0]!.new_raw_episode_ids[0]!],
+        },
+      ],
+    };
+
+    await expect(process.apply(harness.createContext(), tampered)).rejects.toMatchObject({
+      code: "CONSOLIDATOR_PLAN_INVALID",
+    });
+    expect(harness.episodicRepository.listConsolidationFamilies()).toHaveLength(0);
+  });
+
   it("keeps complete-link cohesion bounded so transitive chains do not percolate", async () => {
     const llm = new FakeLLMClient({
       responses: [

@@ -294,7 +294,11 @@ describe("semantic extractor process", () => {
       await harness.episodicRepository.createEpisode(episode);
     }
 
-    harness.episodicRepository.updateStats(archivedEpisode.id, { archived: true });
+    harness.episodicRepository.archiveEpisode(archivedEpisode.id, {
+      caller: "semantic-extractor.test",
+      reason: "seed an archived episode",
+      process: "curator",
+    });
     await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
         source_episode_ids: [processedEpisode.id],
@@ -823,8 +827,10 @@ describe("semantic extractor process", () => {
     const semanticProcess = createProcess(harness);
     const processRegistry = createProcessRegistry({
       consolidator: fakeProcess("consolidator", (ctx) => {
-        ctx.episodicRepository.updateStats(episode.id, {
-          archived: true,
+        ctx.episodicRepository.archiveEpisode(episode.id, {
+          caller: "semantic-extractor.test",
+          reason: "archive an episode mid-cycle",
+          process: "consolidator",
         });
       }),
       "semantic-extractor": semanticProcess,
