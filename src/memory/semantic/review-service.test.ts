@@ -171,7 +171,7 @@ describe("semantic review service", () => {
 
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Python runtime correction",
         narrative: "The project runtime note was corrected from Python 3.11 to Python 3.12.",

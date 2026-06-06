@@ -188,11 +188,11 @@ async function resolveEvidenceEpisodeIds(
     evidence.pending_attempt_snapshot.source_stream_ids,
   );
 
-  if (exact !== null) {
+  if (exact !== null && ctx.episodicRepository.isEpisodeEffectivelyVisible(exact.id)) {
     resolved.push(exact.id);
   } else {
     const sourceIds = evidence.pending_attempt_snapshot.source_stream_ids;
-    const episodes = await ctx.episodicRepository.listAll();
+    const episodes = await ctx.episodicRepository.listEffectivelyVisible();
     const matchingEpisode = episodes.find((episode) =>
       sourceIds.every((streamId) => episode.source_stream_ids.includes(streamId)),
     );

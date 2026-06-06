@@ -105,4 +105,66 @@ export const episodicMigrations = [
       }
     },
   },
+  {
+    id: 3,
+    name: "episode_consolidation_families",
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_index", "episode_kind")) {
+        db.exec(`
+          ALTER TABLE episode_index
+          ADD COLUMN episode_kind TEXT NOT NULL DEFAULT 'raw'
+            CHECK (episode_kind IN ('raw', 'consolidation_version'));
+        `);
+      }
+
+      if (!tableHasColumn(db, "episode_index", "consolidation_family_id")) {
+        db.exec(`
+          ALTER TABLE episode_index
+          ADD COLUMN consolidation_family_id TEXT;
+        `);
+      }
+
+      if (!tableHasColumn(db, "episode_index", "consolidation_coverage_hash")) {
+        db.exec(`
+          ALTER TABLE episode_index
+          ADD COLUMN consolidation_coverage_hash TEXT;
+        `);
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS consolidation_families (
+          family_id TEXT PRIMARY KEY,
+          current_version_episode_id TEXT NOT NULL,
+          coverage_hash TEXT NOT NULL,
+          policy_version INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (current_version_episode_id)
+            REFERENCES episode_stats(episode_id)
+            ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_consolidation_families_current_version
+          ON consolidation_families (current_version_episode_id);
+
+        CREATE TABLE IF NOT EXISTS consolidation_members (
+          family_id TEXT NOT NULL,
+          raw_episode_id TEXT NOT NULL,
+          source_stream_ids_json TEXT NOT NULL,
+          added_by_version_episode_id TEXT NOT NULL,
+          UNIQUE (family_id, raw_episode_id),
+          FOREIGN KEY (family_id)
+            REFERENCES consolidation_families(family_id)
+            ON DELETE CASCADE,
+          FOREIGN KEY (raw_episode_id)
+            REFERENCES episode_stats(episode_id)
+            ON DELETE CASCADE,
+          FOREIGN KEY (added_by_version_episode_id)
+            REFERENCES episode_stats(episode_id)
+            ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_consolidation_members_raw_episode
+          ON consolidation_members (raw_episode_id);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

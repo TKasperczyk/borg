@@ -227,7 +227,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas release incident",
       narrative: "Atlas release hit a pnpm failure during deploy.",
@@ -589,7 +589,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas and Borealis status",
       narrative: "Atlas and Borealis updates were discussed together.",
@@ -731,7 +731,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status",
       narrative: "Atlas status was discussed.",
@@ -927,7 +927,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas deploy fix",
       narrative: "Rerun pnpm install to recover the Atlas deploy.",
@@ -948,7 +948,7 @@ describe("Borg", () => {
       created_at: 0,
       updated_at: 0,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_bbbbbbbbbbbbbbbb" as never,
       title: "Fallback checklist",
       narrative: "Use the backup recovery checklist if the first fix fails.",

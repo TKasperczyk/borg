@@ -55,7 +55,7 @@ describe("Borg", () => {
     });
     const alice = entities.resolve("Alice");
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_publicpublicpub1" as never,
       title: "Public planning note",
       narrative: "A public planning note.",
@@ -78,7 +78,7 @@ describe("Borg", () => {
       created_at: 1,
       updated_at: 1,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_privateprivate01" as never,
       title: "Alice planning note",
       narrative: "A planning note only for Alice.",
@@ -156,7 +156,7 @@ describe("Borg", () => {
     });
 
     for (let index = 0; index < 12; index += 1) {
-      await repo.insert({
+      await repo.createEpisode({
         id: `ep_publicentity${String(index).padStart(4, "0")}` as never,
         title: `Decoy ${index}`,
         narrative: "A strong semantic match that lacks the entity cue.",
@@ -182,7 +182,7 @@ describe("Borg", () => {
     }
 
     const rescuedId = "ep_entityrescue0001" as never;
-    await repo.insert({
+    await repo.createEpisode({
       id: rescuedId,
       title: "Atlas entity rescue",
       narrative: "A hot Atlas note that should be rescued by explicit entity terms.",
@@ -253,7 +253,7 @@ describe("Borg", () => {
     });
 
     const hotOutOfRangeId = createEpisodeId();
-    await repo.insert({
+    await repo.createEpisode({
       id: hotOutOfRangeId,
       title: "Hot out-of-range deploy note",
       narrative: "A recent hot semantic match outside the requested time window.",
@@ -283,7 +283,7 @@ describe("Borg", () => {
     });
 
     const inRangeId = createEpisodeId();
-    await repo.insert({
+    await repo.createEpisode({
       id: inRangeId,
       title: "In-range deploy incident",
       narrative: "An older in-range note that should survive the strict time filter.",

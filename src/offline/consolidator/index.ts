@@ -15,6 +15,7 @@ import {
   episodeTierSchema,
   type Episode,
   type EpisodeStats,
+  type EpisodeStatsPatch,
   type EpisodeTier,
 } from "../../memory/episodic/index.js";
 import type { EntityRecord } from "../../memory/commitments/index.js";
@@ -111,6 +112,23 @@ type EpisodeCluster = {
   episodes: Episode[];
   stats: EpisodeStats[];
 };
+
+function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
+  return {
+    retrieval_count: stats.retrieval_count,
+    use_count: stats.use_count,
+    last_retrieved: stats.last_retrieved,
+    win_rate: stats.win_rate,
+    tier: stats.tier,
+    promoted_at: stats.promoted_at,
+    promoted_from: stats.promoted_from,
+    gist: stats.gist,
+    gist_generated_at: stats.gist_generated_at,
+    last_decayed_at: stats.last_decayed_at,
+    heat_multiplier: stats.heat_multiplier,
+    valence_mean: stats.valence_mean,
+  };
+}
 type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
 
 type ConsolidationReversal = {
@@ -428,7 +446,7 @@ export class ConsolidatorProcess implements OfflineProcess {
 
           this.options.episodicRepository.updateStats(
             parsedStats.data.episode_id,
-            parsedStats.data,
+            episodeStatsRestorePatch(parsedStats.data),
           );
         }
       }
@@ -439,12 +457,12 @@ export class ConsolidatorProcess implements OfflineProcess {
     const errors: OfflineProcessError[] = [];
     const items: ConsolidatorPlan["items"] = [];
     const budget = opts.budget ?? ctx.config.offline.consolidator.budget;
-    const episodes = await ctx.episodicRepository.listAll();
+    const episodes = await ctx.episodicRepository.listEffectivelyVisible();
     const statsById = new Map(
       ctx.episodicRepository.listStats().map((stats) => [stats.episode_id, stats] as const),
     );
     const clusters = buildClusters(
-      episodes.filter((episode) => !(statsById.get(episode.id)?.archived ?? false)),
+      episodes,
       statsById,
       ctx.config.offline.consolidator.similarityThreshold,
       ctx.config.offline.consolidator.minClusterSize,
@@ -532,24 +550,29 @@ export class ConsolidatorProcess implements OfflineProcess {
       const previousSourceStats = sourceStats.map((stats) => ({ ...stats }));
 
       try {
-        await ctx.episodicRepository.insert(mergedEpisode);
+        await ctx.episodicRepository.createEpisode(mergedEpisode);
         ctx.episodicRepository.updateStats(mergedEpisode.id, {
           tier: item.inherited_tier,
           promoted_at: ctx.clock.now(),
           promoted_from: "consolidator",
-          archived: false,
         });
 
         for (const sourceStat of sourceStats) {
-          ctx.episodicRepository.updateStats(sourceStat.episode_id, {
-            archived: true,
+          ctx.episodicRepository.archiveEpisode(sourceStat.episode_id, {
+            caller: "consolidator.apply",
+            reason: "source episode superseded by consolidation",
+            process: this.name,
+            runId: ctx.runId,
           });
         }
       } catch (error) {
         await ctx.episodicRepository.delete(mergedEpisode.id);
 
         for (const sourceStat of previousSourceStats) {
-          ctx.episodicRepository.updateStats(sourceStat.episode_id, sourceStat);
+          ctx.episodicRepository.updateStats(
+            sourceStat.episode_id,
+            episodeStatsRestorePatch(sourceStat),
+          );
         }
 
         throw error;

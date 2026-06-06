@@ -173,7 +173,7 @@ describe("semantic extractor process", () => {
       kind: "self",
       provenance: "assistant_seeded",
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const process = createProcess(harness);
     const queueDuplicateReview = vi.fn();
     const ctx = {
@@ -242,7 +242,7 @@ describe("semantic extractor process", () => {
       llmClient: llm,
     });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const process = createProcess(harness);
     const ctx = harness.createContext();
 
@@ -291,7 +291,7 @@ describe("semantic extractor process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of [processedEpisode, archivedEpisode, ...candidateEpisodes]) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     harness.episodicRepository.updateStats(archivedEpisode.id, { archived: true });
@@ -345,7 +345,7 @@ describe("semantic extractor process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = createProcess(harness);
@@ -389,7 +389,7 @@ describe("semantic extractor process", () => {
     );
 
     for (const episode of tokenBoundedEpisodes) {
-      await tokenBoundedHarness.episodicRepository.insert(episode);
+      await tokenBoundedHarness.episodicRepository.createEpisode(episode);
     }
 
     const tokenBoundedProcess = createProcess(tokenBoundedHarness);
@@ -425,8 +425,8 @@ describe("semantic extractor process", () => {
       updated_at: 2_000,
     });
 
-    await oversizedHarness.episodicRepository.insert(oversizedEpisode);
-    await oversizedHarness.episodicRepository.insert(followingEpisode);
+    await oversizedHarness.episodicRepository.createEpisode(oversizedEpisode);
+    await oversizedHarness.episodicRepository.createEpisode(followingEpisode);
 
     const oversizedProcess = createProcess(oversizedHarness);
     const oversizedPlan = await oversizedProcess.plan(oversizedHarness.createContext());
@@ -493,7 +493,7 @@ describe("semantic extractor process", () => {
       tracer,
     });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const process = createProcess(harness);
     const queueDuplicateReview = vi.fn();
     const ctx = {
@@ -593,8 +593,8 @@ describe("semantic extractor process", () => {
     });
     const harness = await createOfflineTestHarness({ llmClient: llm });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(priorEpisode);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(priorEpisode);
+    await harness.episodicRepository.createEpisode(episode);
     await harness.semanticNodeRepository.insert(fromNode);
     await harness.semanticNodeRepository.insert(toNode);
     const originalEdge = harness.semanticEdgeRepository.addEdge(
@@ -680,8 +680,8 @@ describe("semantic extractor process", () => {
       tracer,
     });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(priorEpisode);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(priorEpisode);
+    await harness.episodicRepository.createEpisode(episode);
     await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -761,8 +761,8 @@ describe("semantic extractor process", () => {
       tracer,
     });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(priorEpisode);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(priorEpisode);
+    await harness.episodicRepository.createEpisode(episode);
     const existing = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -819,7 +819,7 @@ describe("semantic extractor process", () => {
       tracer,
     });
     cleanup.push(harness.cleanup);
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const semanticProcess = createProcess(harness);
     const processRegistry = createProcessRegistry({
       consolidator: fakeProcess("consolidator", (ctx) => {

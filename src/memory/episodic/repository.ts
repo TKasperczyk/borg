@@ -20,7 +20,16 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "../../util/ids.js";
+import {
+  createMaintenanceRunId,
+  parseConsolidationFamilyId,
+  parseEntityId,
+  parseEpisodeId,
+  type ConsolidationFamilyId,
+  type EntityId,
+  type EpisodeId,
+  type MaintenanceRunId,
+} from "../../util/ids.js";
 import { emotionalArcSchema } from "../affective/types.js";
 import { computeEpisodeHeat, computeEpisodeHeatForTimestamp } from "./heat.js";
 import {
@@ -41,6 +50,7 @@ import {
   type EpisodeStats,
   type EpisodeStatsPatch,
   type EpisodeVisibilityOptions,
+  type EpisodeKind,
   episodeInsertSchema,
   episodePatchSchema,
   episodeSchema,
@@ -67,6 +77,9 @@ type EpisodeRow = {
   origin_audience_entity_ids: string | null;
   shared: boolean | number | null;
   emotional_arc: string | null;
+  episode_kind: string | null;
+  consolidation_family_id: string | null;
+  consolidation_coverage_hash: string | null;
   embedding: number[];
   created_at: number;
   updated_at: number;
@@ -95,6 +108,19 @@ type IndexedEpisodeStatsProjectionRow = {
   updated_at: number;
 };
 
+type EpisodeEffectiveVisibilityRow = {
+  episode_id: string;
+};
+
+export type EpisodeLifecycleAuditInput = {
+  caller: string;
+  reason: string;
+  process: string;
+  runId?: MaintenanceRunId;
+};
+
+type EpisodeStatsPatchKey = keyof EpisodeStatsPatch;
+
 export const HOT_LANE_RETRIEVAL_COOLDOWN_MS = 5 * 60 * 1000;
 export const HOT_LANE_RETRIEVAL_CANDIDATE_BUFFER = 20;
 export const HOT_LANE_RETRIEVAL_CANDIDATE_MULTIPLIER = 5;
@@ -102,6 +128,41 @@ export const HOT_LANE_RETRIEVAL_CANDIDATE_MULTIPLIER = 5;
 const DEFAULT_LIST_LIMIT = 20;
 const DEFAULT_SEARCH_LIMIT = 10;
 const EPISODE_INDEX_BACKFILLED_KEY = "lance_backfilled_at";
+const EPISODE_STATS_PATCH_COLUMNS = {
+  retrieval_count: "retrieval_count",
+  use_count: "use_count",
+  last_retrieved: "last_retrieved",
+  win_rate: "win_rate",
+  tier: "tier",
+  promoted_at: "promoted_at",
+  promoted_from: "promoted_from",
+  gist: "gist",
+  gist_generated_at: "gist_generated_at",
+  last_decayed_at: "last_decayed_at",
+  heat_multiplier: "heat_multiplier",
+  valence_mean: "valence_mean",
+  archived: "archived",
+} satisfies Record<EpisodeStatsPatchKey, string>;
+const EPISODE_LIFECYCLE_AUDIT_PROCESSES = [
+  "consolidator",
+  "reflector",
+  "semantic-extractor",
+  "curator",
+  "overseer",
+  "review-resolver",
+  "ruminator",
+  "self-narrator",
+  "procedural-synthesizer",
+  "belief-reviser",
+  "creator-directive-reconciler",
+  "commitment-reconciler",
+  "episodic-repository",
+  "correction",
+] as const;
+const EPISODE_LIFECYCLE_AUDIT_PROCESS_SET: ReadonlySet<string> = new Set(
+  EPISODE_LIFECYCLE_AUDIT_PROCESSES,
+);
+type EpisodeLifecycleAuditProcess = (typeof EPISODE_LIFECYCLE_AUDIT_PROCESSES)[number];
 const EPISODE_JSON_ARRAY_CODEC = {
   errorCode: "EPISODE_ROW_INVALID",
   errorMessage: (label: string) => `Failed to decode episode ${label}`,
@@ -111,6 +172,16 @@ const EPISODE_VECTOR_CODEC = {
   nonFiniteErrorMessage: "Episode row embedding contains a non-finite value",
   errorCode: "EPISODE_ROW_INVALID",
 } satisfies Float32ArrayCodecOptions;
+
+function encodeEpisodeStatsPatchValue(key: EpisodeStatsPatchKey, value: unknown): unknown {
+  return key === "archived" ? ((value as boolean) ? 1 : 0) : value;
+}
+
+function resolveEpisodeLifecycleAuditProcess(process: string): EpisodeLifecycleAuditProcess {
+  return EPISODE_LIFECYCLE_AUDIT_PROCESS_SET.has(process)
+    ? (process as EpisodeLifecycleAuditProcess)
+    : "episodic-repository";
+}
 
 function assertPositiveLimit(limit: number | undefined, label: string): number {
   const resolved = limit ?? DEFAULT_LIST_LIMIT;
@@ -128,6 +199,10 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
   return [...new Set(sourceStreamIds)].sort().join("\n");
+}
+
+export function buildConsolidationCoverageHash(sourceStreamIds: readonly string[]): string {
+  return buildSourceFingerprint(sourceStreamIds);
 }
 
 function lancePublicOriginSql(): string {
@@ -231,6 +306,18 @@ function indexedOriginContainsSql(alias: string): string {
   return `(EXISTS (SELECT 1 FROM json_each(${indexedOriginColumn(alias)}) WHERE value = ?) OR ${alias}.audience_entity_id = ?)`;
 }
 
+function normalizedEpisodeKind(episode: Episode): EpisodeKind {
+  return episode.episode_kind ?? "raw";
+}
+
+function normalizedConsolidationFamilyId(episode: Episode): ConsolidationFamilyId | null {
+  return episode.consolidation_family_id ?? null;
+}
+
+function normalizedConsolidationCoverageHash(episode: Episode): string | null {
+  return episode.consolidation_coverage_hash ?? null;
+}
+
 function toEpisodeRow(episode: Episode): EpisodeRow {
   const normalized = normalizeEpisodeAccess(episode);
 
@@ -254,10 +341,49 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
     shared: normalized.shared,
     emotional_arc:
       normalized.emotional_arc === null ? null : serializeJsonValue(normalized.emotional_arc),
+    episode_kind: normalizedEpisodeKind(normalized),
+    consolidation_family_id: normalizedConsolidationFamilyId(normalized),
+    consolidation_coverage_hash: normalizedConsolidationCoverageHash(normalized),
     embedding: Array.from(normalized.embedding),
     created_at: normalized.created_at,
     updated_at: normalized.updated_at,
   };
+}
+
+function episodeKindFromRow(row: Record<string, unknown>): EpisodeKind {
+  if (
+    row.episode_kind === null ||
+    row.episode_kind === undefined ||
+    String(row.episode_kind) === ""
+  ) {
+    return "raw";
+  }
+
+  return String(row.episode_kind) as EpisodeKind;
+}
+
+function consolidationFamilyIdFromRow(row: Record<string, unknown>): ConsolidationFamilyId | null {
+  if (
+    row.consolidation_family_id === null ||
+    row.consolidation_family_id === undefined ||
+    String(row.consolidation_family_id) === ""
+  ) {
+    return null;
+  }
+
+  return parseConsolidationFamilyId(String(row.consolidation_family_id));
+}
+
+function consolidationCoverageHashFromRow(row: Record<string, unknown>): string | null {
+  if (
+    row.consolidation_coverage_hash === null ||
+    row.consolidation_coverage_hash === undefined ||
+    String(row.consolidation_coverage_hash) === ""
+  ) {
+    return null;
+  }
+
+  return String(row.consolidation_coverage_hash);
 }
 
 function originAudienceEntityIdsFromRow(row: Record<string, unknown>): EntityId[] {
@@ -345,6 +471,9 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
       row.shared === null || row.shared === undefined
         ? originAudienceEntityIds.length === 0
         : row.shared === true || Number(row.shared) === 1,
+    episode_kind: episodeKindFromRow(row),
+    consolidation_family_id: consolidationFamilyIdFromRow(row),
+    consolidation_coverage_hash: consolidationCoverageHashFromRow(row),
     embedding: toFloat32Array(row.embedding, EPISODE_VECTOR_CODEC),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
@@ -487,6 +616,9 @@ export function createEpisodesTableSchema(dimensions: number) {
     utf8Field("origin_audience_entity_ids", true),
     booleanField("shared", true),
     utf8Field("emotional_arc", true),
+    utf8Field("episode_kind", true),
+    utf8Field("consolidation_family_id", true),
+    utf8Field("consolidation_coverage_hash", true),
     vectorField("embedding", dimensions),
     float64Field("created_at"),
     float64Field("updated_at"),
@@ -600,6 +732,66 @@ export class EpisodicRepository {
     }
   }
 
+  private buildEffectiveVisibilityWhereClause(alias: string): string {
+    return [
+      `${alias}.archived = 0`,
+      `AND EXISTS (`,
+      `  SELECT 1`,
+      `  FROM episode_stats AS effective_stats`,
+      `  WHERE effective_stats.episode_id = ${alias}.episode_id`,
+      `    AND effective_stats.archived = 0`,
+      `)`,
+      `AND ((`,
+      `  ${alias}.episode_kind = 'raw'`,
+      `  AND NOT EXISTS (`,
+      `    SELECT 1`,
+      `    FROM consolidation_members AS cm`,
+      `    JOIN consolidation_families AS cf ON cf.family_id = cm.family_id`,
+      `    JOIN episode_index AS current_version`,
+      `      ON current_version.episode_id = cf.current_version_episode_id`,
+      `    JOIN episode_stats AS current_version_stats`,
+      `      ON current_version_stats.episode_id = current_version.episode_id`,
+      `    WHERE cm.raw_episode_id = ${alias}.episode_id`,
+      `      AND current_version.archived = 0`,
+      `      AND current_version_stats.archived = 0`,
+      `  )`,
+      `) OR (`,
+      `  ${alias}.episode_kind = 'consolidation_version'`,
+      `  AND EXISTS (`,
+      `    SELECT 1`,
+      `    FROM consolidation_families AS cf`,
+      `    WHERE cf.family_id = ${alias}.consolidation_family_id`,
+      `      AND cf.current_version_episode_id = ${alias}.episode_id`,
+      `  )`,
+      `))`,
+    ].join("\n");
+  }
+
+  private queryEffectivelyVisibleEpisodeIdSet(ids: readonly EpisodeId[]): Set<EpisodeId> {
+    const uniqueIds = [...new Set(ids)];
+
+    if (uniqueIds.length === 0) {
+      return new Set();
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT ei.episode_id
+          FROM episode_index AS ei
+          WHERE ei.episode_id IN (${sqlPlaceholders(uniqueIds.length)})
+            AND ${this.buildEffectiveVisibilityWhereClause("ei")}
+        `,
+      )
+      .all(...uniqueIds) as EpisodeEffectiveVisibilityRow[];
+
+    return new Set(rows.map((row) => parseEpisodeId(row.episode_id)));
+  }
+
+  isEpisodeEffectivelyVisible(episodeId: EpisodeId): boolean {
+    return this.queryEffectivelyVisibleEpisodeIdSet([episodeId]).has(episodeId);
+  }
+
   private buildIndexedVisibilityBranches(
     capability: ViewerCapability,
     order: IndexedEpisodeOrder,
@@ -607,10 +799,11 @@ export class EpisodicRepository {
     const globalIndexName =
       order === "heat" ? "idx_episode_index_heat" : "idx_episode_index_recent";
     const visibility = this.buildIndexedVisibilityWhereClause(capability, "episode_index");
+    const effectiveVisibility = this.buildEffectiveVisibilityWhereClause("episode_index");
 
     return [
       {
-        where: `archived = 0 AND ${visibility.sql}`,
+        where: `${effectiveVisibility} AND ${visibility.sql}`,
         params: visibility.params,
         indexName: globalIndexName,
       },
@@ -630,8 +823,16 @@ export class EpisodicRepository {
     const episodes = await this.listEpisodesWhere(
       combineWhereClauses(this.buildOptionsVisibilityWhereClause(options), extraWhere),
     );
+    await this.ensureEpisodeIndexBackfilled();
+    const effectivelyVisibleEpisodeIds = this.queryEffectivelyVisibleEpisodeIdSet(
+      episodes.map((episode) => episode.id),
+    );
 
-    return episodes.filter((episode) => isEpisodeVisibleToCapability(episode, viewer));
+    return episodes.filter(
+      (episode) =>
+        effectivelyVisibleEpisodeIds.has(episode.id) &&
+        isEpisodeVisibleToCapability(episode, viewer),
+    );
   }
 
   private computeEpisodeIndexHeatScore(updatedAt: number, stats: EpisodeStats): number {
@@ -682,14 +883,18 @@ export class EpisodicRepository {
       .prepare(
         `
           INSERT INTO episode_index (
-            episode_id, audience_entity_id, origin_audience_entity_ids, shared, start_time,
-            end_time, created_at, updated_at, retrieval_count, win_rate, last_retrieved, tier,
-            archived, heat_multiplier, heat_score
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            episode_id, audience_entity_id, origin_audience_entity_ids, shared, episode_kind,
+            consolidation_family_id, consolidation_coverage_hash, start_time, end_time, created_at,
+            updated_at, retrieval_count, win_rate, last_retrieved, tier, archived, heat_multiplier,
+            heat_score
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             audience_entity_id = excluded.audience_entity_id,
             origin_audience_entity_ids = excluded.origin_audience_entity_ids,
             shared = excluded.shared,
+            episode_kind = excluded.episode_kind,
+            consolidation_family_id = excluded.consolidation_family_id,
+            consolidation_coverage_hash = excluded.consolidation_coverage_hash,
             start_time = excluded.start_time,
             end_time = excluded.end_time,
             created_at = excluded.created_at,
@@ -708,6 +913,9 @@ export class EpisodicRepository {
         normalized.audience_entity_id,
         serializeJsonValue(normalized.origin_audience_entity_ids),
         normalized.shared ? 1 : 0,
+        normalizedEpisodeKind(normalized),
+        normalizedConsolidationFamilyId(normalized),
+        normalizedConsolidationCoverageHash(normalized),
         normalized.start_time,
         normalized.end_time,
         normalized.created_at,
@@ -842,7 +1050,7 @@ export class EpisodicRepository {
         `
           SELECT episode_id
           FROM episode_index INDEXED BY ${indexName}
-          WHERE archived = 0
+          WHERE ${this.buildEffectiveVisibilityWhereClause("episode_index")}
           ORDER BY ${orderBy}
           LIMIT ?
         `,
@@ -865,21 +1073,30 @@ export class EpisodicRepository {
       .map((id) => episodeById.get(id))
       .filter((episode): episode is Episode => episode !== undefined);
     const statsById = this.getStatsMany(orderedEpisodes.map((episode) => episode.id));
+    const effectivelyVisibleEpisodeIds = this.queryEffectivelyVisibleEpisodeIdSet(
+      orderedEpisodes.map((episode) => episode.id),
+    );
 
-    return this.hydrateSearchCandidates(orderedEpisodes, statsById);
+    return this.hydrateSearchCandidates(
+      orderedEpisodes,
+      statsById,
+      undefined,
+      effectivelyVisibleEpisodeIds,
+    );
   }
 
   private hydrateSearchCandidates(
     episodes: readonly Episode[],
     statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
     similarityById?: ReadonlyMap<EpisodeId, number>,
+    effectivelyVisibleEpisodeIds?: ReadonlySet<EpisodeId>,
   ): EpisodeSearchCandidate[] {
     const results: EpisodeSearchCandidate[] = [];
 
     for (const episode of episodes) {
       const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
 
-      if (stats.archived) {
+      if (effectivelyVisibleEpisodeIds?.has(episode.id) === false || stats.archived) {
         continue;
       }
 
@@ -940,13 +1157,13 @@ export class EpisodicRepository {
     this.syncEpisodeIndexStats(parsed);
   }
 
-  async insert(episode: Episode): Promise<Episode> {
+  private validateEpisodeForWrite(episode: Episode, errorCode: string): Episode {
     const parsed = episodeInsertSchema.safeParse(normalizeEpisodeAccess(episode));
 
     if (!parsed.success) {
       throw new StorageError("Invalid episode payload", {
         cause: parsed.error,
-        code: "EPISODE_INVALID",
+        code: errorCode,
       });
     }
 
@@ -956,27 +1173,95 @@ export class EpisodicRepository {
       });
     }
 
+    return parsed.data;
+  }
+
+  async createEpisode(episode: Episode): Promise<Episode> {
+    const parsed = this.validateEpisodeForWrite(episode, "EPISODE_INVALID");
+    const existing = await this.get(parsed.id, { includeArchived: true });
+
+    if (existing !== null) {
+      throw new StorageError(`Episode ${parsed.id} already exists`, {
+        code: "EPISODE_ALREADY_EXISTS",
+      });
+    }
+
     try {
-      await this.table.upsert([toEpisodeRow(parsed.data)], { on: "id" });
+      await this.table.upsert([toEpisodeRow(parsed)], { on: "id" });
 
       try {
         const apply = this.db.transaction(() => {
-          const stats = defaultEpisodeStats(parsed.data);
+          const stats = defaultEpisodeStats(parsed);
 
           this.upsertStats(stats);
-          this.upsertEpisodeIndex(parsed.data, stats);
+          this.upsertEpisodeIndex(parsed, stats);
         });
         apply();
       } catch (error) {
-        await this.table.remove(`id = ${quoteSqlString(parsed.data.id)}`);
+        const currentAfterFailure = await this.get(parsed.id, { includeArchived: true });
+
+        if (currentAfterFailure?.updated_at === parsed.updated_at) {
+          await this.table.remove(`id = ${quoteSqlString(parsed.id)}`);
+        } else {
+          console.warn("Skipped episode create rollback because newer Lance state exists.", {
+            episodeId: parsed.id,
+            attemptedUpdatedAt: parsed.updated_at,
+            currentUpdatedAt: currentAfterFailure?.updated_at ?? null,
+          });
+        }
         throw error;
       }
 
-      return parsed.data;
+      return parsed;
     } catch (error) {
-      throw new StorageError(`Failed to insert episode ${parsed.data.id}`, {
+      throw new StorageError(`Failed to create episode ${parsed.id}`, {
         cause: error,
         code: "EPISODE_INSERT_FAILED",
+      });
+    }
+  }
+
+  async upsertEpisodeBodyPreservingStats(episode: Episode): Promise<Episode> {
+    const parsed = this.validateEpisodeForWrite(episode, "EPISODE_INVALID");
+    const current = await this.get(parsed.id, { includeArchived: true });
+    const stats = this.getStats(parsed.id);
+
+    if (current === null || stats === null) {
+      throw new StorageError(`Missing episode row for ${parsed.id}`, {
+        code: "EPISODE_MISSING",
+      });
+    }
+
+    const previousRow = toEpisodeRow(current);
+
+    try {
+      await this.table.upsert([toEpisodeRow(parsed)], { on: "id" });
+
+      try {
+        const apply = this.db.transaction(() => {
+          this.upsertEpisodeIndex(parsed, stats);
+        });
+        apply();
+      } catch (error) {
+        const currentAfterFailure = await this.get(parsed.id, { includeArchived: true });
+
+        if (currentAfterFailure?.updated_at === parsed.updated_at) {
+          await this.table.upsert([previousRow], { on: "id" });
+        } else {
+          console.warn("Skipped episode body rollback because newer Lance state exists.", {
+            episodeId: parsed.id,
+            attemptedUpdatedAt: parsed.updated_at,
+            currentUpdatedAt: currentAfterFailure?.updated_at ?? null,
+          });
+        }
+        throw error;
+      }
+
+      return parsed;
+    } catch (error) {
+      throw new StorageError(`Failed to upsert episode body ${parsed.id}`, {
+        cause: error,
+        code: "EPISODE_UPDATE_FAILED",
       });
     }
   }
@@ -995,7 +1280,10 @@ export class EpisodicRepository {
     const episode = fromEpisodeRow(row);
     const stats = this.getStats(id);
 
-    if (options.includeArchived !== true && (stats?.archived ?? false)) {
+    if (
+      options.includeArchived !== true &&
+      ((stats?.archived ?? false) || !this.isEpisodeEffectivelyVisible(id))
+    ) {
       return null;
     }
 
@@ -1266,6 +1554,186 @@ export class EpisodicRepository {
     );
   }
 
+  private validateLifecycleAuditInput(
+    input: EpisodeLifecycleAuditInput,
+  ): EpisodeLifecycleAuditInput {
+    const caller = input.caller.trim();
+    const reason = input.reason.trim();
+    const process = input.process.trim();
+
+    if (caller.length === 0) {
+      throw new StorageError("Episode lifecycle audit caller is required", {
+        code: "EPISODE_LIFECYCLE_AUDIT_INVALID",
+      });
+    }
+
+    if (reason.length === 0) {
+      throw new StorageError("Episode lifecycle audit reason is required", {
+        code: "EPISODE_LIFECYCLE_AUDIT_INVALID",
+      });
+    }
+
+    if (process.length === 0) {
+      throw new StorageError("Episode lifecycle audit process is required", {
+        code: "EPISODE_LIFECYCLE_AUDIT_INVALID",
+      });
+    }
+
+    return {
+      ...input,
+      caller,
+      reason,
+      process,
+    };
+  }
+
+  private recordEpisodeLifecycleAudit(input: {
+    action: "archive_episode" | "reactivate_episode";
+    episodeId: EpisodeId;
+    previousArchived: boolean;
+    nextArchived: boolean;
+    audit: EpisodeLifecycleAuditInput;
+  }): void {
+    const audit = this.validateLifecycleAuditInput(input.audit);
+    const auditProcess = resolveEpisodeLifecycleAuditProcess(audit.process);
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO maintenance_audit (
+            run_id, process, action, targets, reversal, applied_at, reverted_at, reverted_by
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+        `,
+      )
+      .run(
+        audit.runId ?? createMaintenanceRunId(),
+        auditProcess,
+        input.action,
+        serializeJsonValue({
+          episode_id: input.episodeId,
+          caller: audit.caller,
+          reason: audit.reason,
+          initiating_process: audit.process,
+          lifecycle_owner: "episodic-repository",
+          previous_archived: input.previousArchived,
+          next_archived: input.nextArchived,
+        }),
+        serializeJsonValue({
+          episode_id: input.episodeId,
+          archived: input.previousArchived,
+        }),
+        this.clock.now(),
+      );
+  }
+
+  archiveEpisode(episodeId: EpisodeId, audit: EpisodeLifecycleAuditInput): EpisodeStats {
+    const apply = this.db.transaction(() => {
+      const current = this.getStats(episodeId);
+
+      if (current === null) {
+        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+          code: "EPISODE_STATS_MISSING",
+        });
+      }
+
+      if (current.archived) {
+        return current;
+      }
+
+      const result = this.db
+        .prepare(
+          `
+            UPDATE episode_stats
+            SET archived = 1
+            WHERE episode_id = ?
+              AND archived = 0
+          `,
+        )
+        .run(episodeId);
+
+      if (result.changes !== 1) {
+        throw new StorageError(`Stale episode archive transition for ${episodeId}`, {
+          code: "EPISODE_ARCHIVE_STALE",
+        });
+      }
+
+      const next = this.getStats(episodeId);
+
+      if (next === null) {
+        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+          code: "EPISODE_STATS_MISSING",
+        });
+      }
+
+      this.syncEpisodeIndexStats(next);
+      this.recordEpisodeLifecycleAudit({
+        action: "archive_episode",
+        episodeId,
+        previousArchived: false,
+        nextArchived: true,
+        audit,
+      });
+
+      return next;
+    });
+
+    return apply() as EpisodeStats;
+  }
+
+  reactivateEpisode(episodeId: EpisodeId, audit: EpisodeLifecycleAuditInput): EpisodeStats {
+    const apply = this.db.transaction(() => {
+      const current = this.getStats(episodeId);
+
+      if (current === null) {
+        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+          code: "EPISODE_STATS_MISSING",
+        });
+      }
+
+      if (!current.archived) {
+        return current;
+      }
+
+      const result = this.db
+        .prepare(
+          `
+            UPDATE episode_stats
+            SET archived = 0
+            WHERE episode_id = ?
+              AND archived = 1
+          `,
+        )
+        .run(episodeId);
+
+      if (result.changes !== 1) {
+        throw new StorageError(`Stale episode reactivation transition for ${episodeId}`, {
+          code: "EPISODE_REACTIVATE_STALE",
+        });
+      }
+
+      const next = this.getStats(episodeId);
+
+      if (next === null) {
+        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+          code: "EPISODE_STATS_MISSING",
+        });
+      }
+
+      this.syncEpisodeIndexStats(next);
+      this.recordEpisodeLifecycleAudit({
+        action: "reactivate_episode",
+        episodeId,
+        previousArchived: true,
+        nextArchived: false,
+        audit,
+      });
+
+      return next;
+    });
+
+    return apply() as EpisodeStats;
+  }
+
   updateStats(episodeId: EpisodeId, patch: EpisodeStatsPatch): EpisodeStats {
     const current = this.getStats(episodeId);
 
@@ -1284,13 +1752,54 @@ export class EpisodicRepository {
       });
     }
 
-    const next = {
+    if (current.archived && parsedPatch.data.archived === false) {
+      throw new StorageError(
+        `Episode ${episodeId} reactivation requires reactivateEpisode lifecycle audit`,
+        {
+          code: "EPISODE_REACTIVATE_REQUIRES_AUDIT",
+        },
+      );
+    }
+
+    const patchEntries: Array<[EpisodeStatsPatchKey, unknown]> = [];
+
+    for (const [rawKey, value] of Object.entries(parsedPatch.data)) {
+      if (value !== undefined) {
+        patchEntries.push([rawKey as EpisodeStatsPatchKey, value]);
+      }
+    }
+
+    if (patchEntries.length === 0) {
+      return current;
+    }
+
+    episodeStatsSchema.parse({
       ...current,
       ...parsedPatch.data,
-    };
-    const parsed = episodeStatsSchema.parse(next);
-    this.upsertStats(parsed);
-    return parsed;
+    });
+    const assignments = patchEntries.map(([key]) => `${EPISODE_STATS_PATCH_COLUMNS[key]} = ?`);
+    const values = patchEntries.map(([key, value]) => encodeEpisodeStatsPatchValue(key, value));
+
+    this.db
+      .prepare(
+        `
+          UPDATE episode_stats
+          SET ${assignments.join(", ")}
+          WHERE episode_id = ?
+        `,
+      )
+      .run(...values, episodeId);
+
+    const updated = this.getStats(episodeId);
+
+    if (updated === null) {
+      throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+        code: "EPISODE_STATS_MISSING",
+      });
+    }
+
+    this.syncEpisodeIndexStats(updated);
+    return updated;
   }
 
   listStats(): EpisodeStats[] {
@@ -1361,6 +1870,10 @@ export class EpisodicRepository {
       };
     });
     const statsById = this.getStatsMany(ranked.map((item) => item.episode.id));
+    await this.ensureEpisodeIndexBackfilled();
+    const effectivelyVisibleEpisodeIds = this.queryEffectivelyVisibleEpisodeIdSet(
+      ranked.map((item) => item.episode.id),
+    );
     const results: EpisodeSearchCandidate[] = [];
     const viewer =
       visibilityMode === "disclosure"
@@ -1396,7 +1909,7 @@ export class EpisodicRepository {
         continue;
       }
 
-      if (stats.archived) {
+      if (!effectivelyVisibleEpisodeIds.has(episode.id) || stats.archived) {
         continue;
       }
 
@@ -1461,7 +1974,7 @@ export class EpisodicRepository {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
     await this.ensureEpisodeIndexBackfilled();
 
-    const clauses = ["ei.archived = 0"];
+    const clauses = [this.buildEffectiveVisibilityWhereClause("ei")];
     const params: unknown[] = [];
 
     if (visibilityMode === "disclosure") {
@@ -1519,7 +2032,8 @@ export class EpisodicRepository {
         `
           SELECT episode_id
           FROM episode_index INDEXED BY ${indexName}
-          WHERE archived = 0 AND ${indexedOriginContainsSql("episode_index")}
+          WHERE ${this.buildEffectiveVisibilityWhereClause("episode_index")}
+            AND ${indexedOriginContainsSql("episode_index")}
           ORDER BY ${orderBy}
           LIMIT ?
         `,
@@ -1590,14 +2104,14 @@ export class EpisodicRepository {
             FROM episode_participants AS ep INDEXED BY idx_episode_participants_term
             JOIN episode_index AS ei ON ei.episode_id = ep.episode_id
             WHERE ep.term IN (${termPlaceholders})
-              AND ei.archived = 0
+              AND ${this.buildEffectiveVisibilityWhereClause("ei")}
               AND ${visibility.sql}
             UNION
             SELECT ei.episode_id, ei.updated_at
             FROM episode_tags AS et INDEXED BY idx_episode_tags_term
             JOIN episode_index AS ei ON ei.episode_id = et.episode_id
             WHERE et.term IN (${termPlaceholders})
-              AND ei.archived = 0
+              AND ${this.buildEffectiveVisibilityWhereClause("ei")}
               AND ${visibility.sql}
           )
           ORDER BY updated_at DESC, episode_id DESC
@@ -1701,6 +2215,16 @@ export class EpisodicRepository {
   async listAll(): Promise<Episode[]> {
     const rows = await this.table.list();
     return rows.map((row) => fromEpisodeRow(row)).sort(compareEpisodes);
+  }
+
+  async listEffectivelyVisible(): Promise<Episode[]> {
+    const episodes = await this.listAll();
+    await this.ensureEpisodeIndexBackfilled();
+    const effectivelyVisibleEpisodeIds = this.queryEffectivelyVisibleEpisodeIdSet(
+      episodes.map((episode) => episode.id),
+    );
+
+    return episodes.filter((episode) => effectivelyVisibleEpisodeIds.has(episode.id));
   }
 
   recordRetrieval(episodeId: EpisodeId, timestamp: number, score: number): void {

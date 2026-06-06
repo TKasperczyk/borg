@@ -96,7 +96,7 @@ async function insertHotVectorDecoys(
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     markHot(harness, episode.id);
   }
 }
@@ -109,7 +109,7 @@ async function insertColdVectorDecoys(
   for (let index = 0; index < count; index += 1) {
     const updatedAt = overrides.updated_at ?? 1_000 + index;
     const createdAt = overrides.created_at ?? updatedAt;
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: `Cold vector decoy ${index}`,
@@ -156,7 +156,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(rescued);
+    await harness.episodicRepository.createEpisode(rescued);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
     const timeRange = {
@@ -202,7 +202,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(rescued);
+    await harness.episodicRepository.createEpisode(rescued);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
     const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
@@ -244,7 +244,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(rescued);
+    await harness.episodicRepository.createEpisode(rescued);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
     const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
@@ -282,7 +282,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(rescued);
+    await harness.episodicRepository.createEpisode(rescued);
     markHot(harness, rescued.id);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
@@ -316,7 +316,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(shared);
+    await harness.episodicRepository.createEpisode(shared);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
     const vectorCandidate = (
@@ -385,7 +385,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(inRange);
+    await harness.episodicRepository.createEpisode(inRange);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
@@ -427,7 +427,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(inRange);
+    await harness.episodicRepository.createEpisode(inRange);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 10,
@@ -482,8 +482,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(mayaEpisode);
-    await harness.episodicRepository.insert(designReviewEpisode);
+    await harness.episodicRepository.createEpisode(mayaEpisode);
+    await harness.episodicRepository.createEpisode(designReviewEpisode);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(
       MAYA_CORRECTION_QUERY,
@@ -525,7 +525,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(inRange);
+    await harness.episodicRepository.createEpisode(inRange);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 10,
@@ -576,8 +576,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(cueOnly);
-    await harness.episodicRepository.insert(explicit);
+    await harness.episodicRepository.createEpisode(cueOnly);
+    await harness.episodicRepository.createEpisode(explicit);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
       limit: 3,
@@ -641,7 +641,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       created_at: NOW_MS,
       updated_at: NOW_MS,
     });
-    await harness.episodicRepository.insert(scanned);
+    await harness.episodicRepository.createEpisode(scanned);
     markHot(harness, scanned.id);
 
     const visibleSpy = vi.spyOn(harness.episodicRepository, "listVisibleEpisodes");
@@ -682,7 +682,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(hidden);
+    await harness.episodicRepository.createEpisode(hidden);
     markHot(harness, hidden.id);
 
     const temporal = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
@@ -738,7 +738,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(privateEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisode);
 
     const result = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
       ...cognitionRecallOptions(bob),
@@ -792,9 +792,9 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(primary);
-    await harness.episodicRepository.insert(duplicate);
-    await harness.episodicRepository.insert(rescued);
+    await harness.episodicRepository.createEpisode(primary);
+    await harness.episodicRepository.createEpisode(duplicate);
+    await harness.episodicRepository.createEpisode(rescued);
     markHot(harness, rescued.id);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {

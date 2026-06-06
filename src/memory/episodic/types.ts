@@ -3,8 +3,10 @@ import { z } from "zod";
 import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
 import { streamEntryIdSchema } from "../../util/id-schemas.js";
 import {
+  consolidationFamilyIdHelpers,
   entityIdHelpers,
   episodeIdHelpers,
+  type ConsolidationFamilyId,
   type EpisodeId,
   type EntityId,
 } from "../../util/ids.js";
@@ -12,6 +14,7 @@ import {
 export { streamEntryIdSchema };
 
 export const EPISODE_TIERS = ["T1", "T2", "T3", "T4"] as const;
+export const EPISODE_KINDS = ["raw", "consolidation_version"] as const;
 
 export const episodeIdSchema = z
   .string()
@@ -28,6 +31,14 @@ export const episodeAudienceEntityIdSchema = z
   .transform((value) => value as EntityId);
 
 export const episodeTierSchema = z.enum(EPISODE_TIERS);
+export const episodeKindSchema = z.enum(EPISODE_KINDS);
+
+export const consolidationFamilyIdSchema = z
+  .string()
+  .refine((value) => consolidationFamilyIdHelpers.is(value), {
+    message: "Invalid consolidation family id",
+  })
+  .transform((value) => value as ConsolidationFamilyId);
 
 const float32ArraySchema = z.custom<Float32Array>((value) => value instanceof Float32Array, {
   message: "Expected Float32Array embedding",
@@ -55,6 +66,9 @@ const episodeShape = z.object({
   audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
   origin_audience_entity_ids: z.array(episodeAudienceEntityIdSchema).optional(),
   shared: z.boolean().optional(),
+  episode_kind: episodeKindSchema.optional(),
+  consolidation_family_id: consolidationFamilyIdSchema.nullable().optional(),
+  consolidation_coverage_hash: z.string().min(1).nullable().optional(),
   embedding: float32ArraySchema,
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -113,6 +127,7 @@ export const episodeStatsPatchSchema = z.object({
 });
 
 export type Episode = z.infer<typeof episodeSchema>;
+export type EpisodeKind = z.infer<typeof episodeKindSchema>;
 export type EpisodePatch = z.infer<typeof episodePatchSchema>;
 export type EpisodeTier = z.infer<typeof episodeTierSchema>;
 export type EpisodeStats = z.infer<typeof episodeStatsSchema>;

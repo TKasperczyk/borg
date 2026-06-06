@@ -113,7 +113,7 @@ async function insertSource(
     kind: "user_msg",
     content,
   });
-  const episode = await harness.episodicRepository.insert(
+  const episode = await harness.episodicRepository.createEpisode(
     createEpisodeFixture({
       narrative: content,
       source_stream_ids: [entry.id],
@@ -129,7 +129,7 @@ async function insertAssistantSource(harness: OfflineHarness, content: string) {
     kind: "agent_msg",
     content,
   });
-  const episode = await harness.episodicRepository.insert(
+  const episode = await harness.episodicRepository.createEpisode(
     createEpisodeFixture({
       narrative: content,
       source_stream_ids: [entry.id],
@@ -279,7 +279,7 @@ async function enqueueEpisodeMisattribution(harness: OfflineHarness) {
     shared: true,
   });
   const targetAudienceId = createEntityId();
-  const episode = await harness.episodicRepository.insert(
+  const episode = await harness.episodicRepository.createEpisode(
     createEpisodeFixture({
       title: "Deployment helper authorship",
       narrative: "Alice wrote the deployment helper.",
@@ -386,14 +386,16 @@ describe("review resolver process", () => {
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
-    const { item, nodeId, sourceEntryId, sourceEpisodeId } =
-      await enqueueSemanticMisattribution(harness, {
+    const { item, nodeId, sourceEntryId, sourceEpisodeId } = await enqueueSemanticMisattribution(
+      harness,
+      {
         descriptionPatch: "Ben wrote the deployment script.",
         sourceEpisodeOverrides: {
           audience_entity_id: createEntityId(),
           shared: false,
         },
-      });
+      },
+    );
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
@@ -1809,9 +1811,9 @@ describe("review resolver process", () => {
     expect(promptPayload.source_bundle?.overseer_flag?.disclosure).toContain(
       "disclosure_class=relationship_private",
     );
-    expect(
-      promptPayload.source_bundle?.overseer_flag?.disclosure_label?.disclosure_class,
-    ).not.toBe("public");
+    expect(promptPayload.source_bundle?.overseer_flag?.disclosure_label?.disclosure_class).not.toBe(
+      "public",
+    );
     expect(promptPayload.review?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
     });
@@ -2034,7 +2036,7 @@ describe("review resolver process", () => {
         harness,
         `Ben wrote deployment helper ${index}; Alice reviewed it.`,
       );
-      const episode = await harness.episodicRepository.insert(
+      const episode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           title: `Deployment helper ${index}`,
           narrative: `Alice wrote deployment helper ${index}.`,

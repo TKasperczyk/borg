@@ -58,7 +58,7 @@ export async function seedStreamBackedEpisode(
     source_stream_ids: appendedEntries.map((entry) => entry.id),
     embedding,
   });
-  await deps.episodicRepository.insert(episode);
+  await deps.episodicRepository.createEpisode(episode);
   return episode;
 }
 

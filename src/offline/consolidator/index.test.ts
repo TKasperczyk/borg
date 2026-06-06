@@ -103,8 +103,8 @@ describe("consolidator process", () => {
       [0, 0.99, 0, 0],
     );
 
-    await harness.episodicRepository.insert(first);
-    await harness.episodicRepository.insert(second);
+    await harness.episodicRepository.createEpisode(first);
+    await harness.episodicRepository.createEpisode(second);
     harness.episodicRepository.updateStats(first.id, {
       tier: "T2",
     });
@@ -155,8 +155,8 @@ describe("consolidator process", () => {
     await harness.auditLog.revert(auditEntry!.id, "test");
 
     expect(await harness.episodicRepository.get(merged!.id)).toBeNull();
-    expect(harness.episodicRepository.getStats(first.id)?.archived).toBe(false);
-    expect(harness.episodicRepository.getStats(second.id)?.archived).toBe(false);
+    expect(harness.episodicRepository.getStats(first.id)?.archived).toBe(true);
+    expect(harness.episodicRepository.getStats(second.id)?.archived).toBe(true);
   });
 
   it("applies a saved plan without additional llm calls and matches a direct run", async () => {
@@ -192,8 +192,8 @@ describe("consolidator process", () => {
       [0.99, 0, 0, 0],
     );
 
-    await planHarness.episodicRepository.insert(first);
-    await planHarness.episodicRepository.insert(second);
+    await planHarness.episodicRepository.createEpisode(first);
+    await planHarness.episodicRepository.createEpisode(second);
 
     const plannedProcess = new ConsolidatorProcess({
       episodicRepository: planHarness.episodicRepository,
@@ -215,8 +215,8 @@ describe("consolidator process", () => {
     });
     cleanup.push(directHarness.cleanup);
 
-    await directHarness.episodicRepository.insert(first);
-    await directHarness.episodicRepository.insert(second);
+    await directHarness.episodicRepository.createEpisode(first);
+    await directHarness.episodicRepository.createEpisode(second);
 
     const directProcess = new ConsolidatorProcess({
       episodicRepository: directHarness.episodicRepository,
@@ -286,7 +286,7 @@ describe("consolidator process", () => {
     ];
 
     for (const episode of sourceEpisodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ConsolidatorProcess({
@@ -406,7 +406,7 @@ describe("consolidator process", () => {
     ];
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ConsolidatorProcess({

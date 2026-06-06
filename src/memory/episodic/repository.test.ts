@@ -6,16 +6,22 @@ import { makeArrowTable } from "@lancedb/lancedb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { selfMigrations } from "../self/migrations.js";
+import { offlineMigrations } from "../../offline/migrations.js";
 import { LanceDbTable, LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
-import { createEpisodeId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createConsolidationFamilyId,
+  createEpisodeId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { episodicMigrations } from "./migrations.js";
 import {
   EpisodicRepository,
   HOT_LANE_RETRIEVAL_COOLDOWN_MS,
+  buildConsolidationCoverageHash,
   createEpisodesTableSchema,
 } from "./repository.js";
 import type { Episode } from "./types.js";
@@ -99,7 +105,12 @@ async function createHarness(): Promise<Harness> {
     uri: join(tempDir, "lancedb"),
   });
   const db = openDatabase(join(tempDir, "borg.db"), {
-    migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+    migrations: composeMigrations(
+      episodicMigrations,
+      selfMigrations,
+      retrievalMigrations,
+      offlineMigrations,
+    ),
   });
   const table = await store.openTable({
     name: "episodes",
@@ -148,8 +159,8 @@ describe("episodic repository", () => {
       source_stream_ids: ["strm_bbbbbbbbbbbbbbbb" as Episode["source_stream_ids"][number]],
     });
 
-    await harness.repo.insert(first);
-    await harness.repo.insert(second);
+    await harness.repo.createEpisode(first);
+    await harness.repo.createEpisode(second);
     harness.clock.advance(10_000);
 
     const updated = await harness.repo.update(first.id, {
@@ -194,7 +205,7 @@ describe("episodic repository", () => {
     closers.push(harness.close);
 
     const episode = createEpisode("ep_archivedgetxxxxx", harness.clock.now());
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
     harness.repo.updateStats(episode.id, {
       archived: true,
     });
@@ -212,7 +223,7 @@ describe("episodic repository", () => {
     closers.push(harness.close);
 
     const episode = createEpisode("ep_statsdefaults001", harness.clock.now());
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
     harness.repo.updateStats(episode.id, {
       heat_multiplier: 0.5,
       valence_mean: 0.4,
@@ -245,7 +256,7 @@ describe("episodic repository", () => {
       source_stream_ids: [createStreamEntryId()],
     });
 
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
 
     expect(harness.repo.getStats(episode.id)).toMatchObject({
       heat_multiplier: 1,
@@ -269,8 +280,8 @@ describe("episodic repository", () => {
       shared: false,
     });
 
-    await harness.repo.insert(publicEpisode);
-    await harness.repo.insert(scopedEpisode);
+    await harness.repo.createEpisode(publicEpisode);
+    await harness.repo.createEpisode(scopedEpisode);
 
     const defaultSearch = await harness.repo.searchByVector(Float32Array.from([1, 0, 0, 0]), {
       limit: 5,
@@ -303,8 +314,8 @@ describe("episodic repository", () => {
       shared: false,
     });
 
-    await harness.repo.insert(publicEpisode);
-    await harness.repo.insert(multiOrigin);
+    await harness.repo.createEpisode(publicEpisode);
+    await harness.repo.createEpisode(multiOrigin);
 
     const searchSpy = vi.spyOn(harness.table, "search");
     const defaultSearch = await harness.repo.searchByVector(Float32Array.from([1, 0, 0, 0]), {
@@ -358,7 +369,7 @@ describe("episodic repository", () => {
       ),
     );
     await harness.table.checkoutLatest();
-    await harness.repo.insert(unknownOrigin);
+    await harness.repo.createEpisode(unknownOrigin);
 
     const searchSpy = vi.spyOn(harness.table, "search");
     const nullAudienceResults = await harness.repo.searchByVectorForDisclosure(
@@ -393,12 +404,216 @@ describe("episodic repository", () => {
     closers.push(harness.close);
 
     await expect(
-      harness.repo.insert(
+      harness.repo.createEpisode(
         createEpisode("ep_aaaaaaaaaaaaaaaa", harness.clock.now(), {
           source_stream_ids: [],
         }),
       ),
     ).rejects.toBeInstanceOf(StorageError);
+  });
+
+  it("refuses duplicate creates without resetting existing stats", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.repo.createEpisode(episode);
+    harness.repo.updateStats(episode.id, {
+      archived: true,
+      use_count: 3,
+    });
+
+    await expect(
+      harness.repo.createEpisode({
+        ...episode,
+        narrative: "replacement body should not be written",
+      }),
+    ).rejects.toMatchObject({
+      code: "EPISODE_ALREADY_EXISTS",
+    });
+
+    expect(harness.repo.getStats(episode.id)).toEqual(
+      expect.objectContaining({
+        archived: true,
+        use_count: 3,
+      }),
+    );
+    expect((await harness.repo.get(episode.id, { includeArchived: true }))?.narrative).toBe(
+      episode.narrative,
+    );
+  });
+
+  it("requires the audited lifecycle API for archived true-to-false transitions", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.repo.createEpisode(episode);
+    harness.repo.updateStats(episode.id, {
+      archived: true,
+    });
+
+    expect(() =>
+      harness.repo.updateStats(episode.id, {
+        archived: false,
+      }),
+    ).toThrow(/reactivation requires reactivateEpisode/);
+
+    const reactivated = harness.repo.reactivateEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise audited reactivation",
+      process: "curator",
+    });
+    const auditRows = harness.db
+      .prepare(
+        `
+          SELECT process, action, targets
+          FROM maintenance_audit
+          WHERE action = 'reactivate_episode'
+        `,
+      )
+      .all() as Array<{ process: string; action: string; targets: string }>;
+
+    expect(reactivated.archived).toBe(false);
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      process: "curator",
+      action: "reactivate_episode",
+    });
+    expect(JSON.parse(auditRows[0]!.targets)).toMatchObject({
+      episode_id: episode.id,
+      caller: "repository.test",
+      reason: "exercise audited reactivation",
+      initiating_process: "curator",
+      lifecycle_owner: "episodic-repository",
+      previous_archived: true,
+      next_archived: false,
+    });
+  });
+
+  it("does not restore archived from a stale stats snapshot when patch omits it", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.repo.createEpisode(episode);
+    const staleStats = harness.repo.getStats(episode.id);
+
+    expect(staleStats).toMatchObject({
+      archived: false,
+    });
+
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise stale patch-only stats update",
+      process: "curator",
+    });
+
+    const getStats = harness.repo.getStats.bind(harness.repo);
+    const getStatsSpy = vi
+      .spyOn(harness.repo, "getStats")
+      .mockImplementationOnce(() => staleStats)
+      .mockImplementation((episodeId) => getStats(episodeId));
+
+    const updated = harness.repo.updateStats(episode.id, {
+      use_count: 7,
+    });
+
+    expect(getStatsSpy).toHaveBeenCalled();
+    expect(updated).toMatchObject({
+      archived: true,
+      use_count: 7,
+    });
+    expect(harness.repo.getStats(episode.id)).toMatchObject({
+      archived: true,
+      use_count: 7,
+    });
+    expect(await harness.repo.get(episode.id)).toBeNull();
+  });
+
+  it("applies effective visibility from consolidation family pointers", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const familyId = createConsolidationFamilyId();
+    const raw = createEpisode(createEpisodeId(), nowMs, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const currentVersion = createEpisode(createEpisodeId(), nowMs + 1_000, {
+      episode_kind: "consolidation_version",
+      consolidation_family_id: familyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash(raw.source_stream_ids),
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const oldVersion = createEpisode(createEpisodeId(), nowMs + 2_000, {
+      episode_kind: "consolidation_version",
+      consolidation_family_id: familyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash(raw.source_stream_ids),
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.createEpisode(raw);
+    await harness.repo.createEpisode(currentVersion);
+    await harness.repo.createEpisode(oldVersion);
+    harness.db
+      .prepare(
+        `
+          INSERT INTO consolidation_families (
+            family_id, current_version_episode_id, coverage_hash, policy_version, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        familyId,
+        currentVersion.id,
+        buildConsolidationCoverageHash(raw.source_stream_ids),
+        1,
+        nowMs,
+        nowMs,
+      );
+    harness.db
+      .prepare(
+        `
+          INSERT INTO consolidation_members (
+            family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+          ) VALUES (?, ?, ?, ?)
+        `,
+      )
+      .run(familyId, raw.id, JSON.stringify(raw.source_stream_ids), currentVersion.id);
+
+    expect(await harness.repo.get(raw.id)).toBeNull();
+    expect((await harness.repo.get(currentVersion.id))?.id).toBe(currentVersion.id);
+    expect(await harness.repo.get(oldVersion.id)).toBeNull();
+    expect((await harness.repo.listEffectivelyVisible()).map((episode) => episode.id)).toEqual([
+      currentVersion.id,
+    ]);
+
+    harness.repo.updateStats(currentVersion.id, {
+      archived: true,
+    });
+
+    expect((await harness.repo.get(raw.id))?.id).toBe(raw.id);
+    expect(await harness.repo.get(currentVersion.id)).toBeNull();
+  });
+
+  it("hides effectively visible rows when stats and index archived flags diverge", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.repo.createEpisode(episode);
+    harness.db
+      .prepare(
+        `
+          UPDATE episode_stats
+          SET archived = 1
+          WHERE episode_id = ?
+        `,
+      )
+      .run(episode.id);
+
+    expect(harness.repo.isEpisodeEffectivelyVisible(episode.id)).toBe(false);
+    expect((await harness.repo.listEffectivelyVisible()).map((item) => item.id)).toEqual([]);
   });
 
   it("keeps missing emotional arcs unknown on read", async () => {
@@ -409,7 +624,7 @@ describe("episodic repository", () => {
       emotional_arc: null,
     });
 
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
 
     expect((await harness.repo.get(episode.id))?.emotional_arc).toBeNull();
   });
@@ -423,7 +638,7 @@ describe("episodic repository", () => {
     const episode = createEpisode(createEpisodeId(), harness.clock.now(), {
       source_stream_ids: [userStreamId, agentStreamId, toolCallStreamId],
     });
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
 
     const matched = await harness.repo.findBySourceStreamIdsContaining([
       userStreamId,
@@ -445,7 +660,7 @@ describe("episodic repository", () => {
         dominant_emotion: "curiosity",
       },
     });
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
     harness.clock.advance(1_000);
 
     const updated = await harness.repo.update(episode.id, {
@@ -466,7 +681,7 @@ describe("episodic repository", () => {
         throw new Error("sqlite failed");
       });
 
-    await expect(harness.repo.insert(episode)).rejects.toMatchObject({
+    await expect(harness.repo.createEpisode(episode)).rejects.toMatchObject({
       code: "EPISODE_INSERT_FAILED",
     });
     expect(await harness.repo.get(episode.id)).toBeNull();
@@ -702,10 +917,10 @@ describe("episodic repository", () => {
       participants: ["ops"],
     });
 
-    await harness.repo.insert(older);
-    await harness.repo.insert(scoped);
-    await harness.repo.insert(entity);
-    await harness.repo.insert(hot);
+    await harness.repo.createEpisode(older);
+    await harness.repo.createEpisode(scoped);
+    await harness.repo.createEpisode(entity);
+    await harness.repo.createEpisode(hot);
     harness.repo.updateStats(hot.id, {
       retrieval_count: 20,
       win_rate: 1,
@@ -748,8 +963,8 @@ describe("episodic repository", () => {
       source_stream_ids: [createStreamEntryId()],
     });
 
-    await harness.repo.insert(cooledHigherHeat);
-    await harness.repo.insert(uncooledLowerHeat);
+    await harness.repo.createEpisode(cooledHigherHeat);
+    await harness.repo.createEpisode(uncooledLowerHeat);
     harness.repo.updateStats(cooledHigherHeat.id, {
       retrieval_count: 40,
       last_retrieved: nowMs - 1,
@@ -789,9 +1004,9 @@ describe("episodic repository", () => {
       source_stream_ids: [createStreamEntryId()],
     });
 
-    await harness.repo.insert(hottest);
-    await harness.repo.insert(secondHottest);
-    await harness.repo.insert(thirdHottest);
+    await harness.repo.createEpisode(hottest);
+    await harness.repo.createEpisode(secondHottest);
+    await harness.repo.createEpisode(thirdHottest);
     for (const [episode, retrievalCount] of [
       [hottest, 40],
       [secondHottest, 35],
@@ -823,7 +1038,7 @@ describe("episodic repository", () => {
       tags: ["multi-origin"],
     });
 
-    await harness.repo.insert(multiOrigin);
+    await harness.repo.createEpisode(multiOrigin);
 
     const samRecent = await harness.repo.listRecentForDisclosure({
       audienceEntityId: sam,
@@ -879,8 +1094,8 @@ describe("episodic repository", () => {
       tags: ["indexed-public"],
     });
 
-    await harness.repo.insert(publicEpisode);
-    await harness.repo.insert(unknownOrigin);
+    await harness.repo.createEpisode(publicEpisode);
+    await harness.repo.createEpisode(unknownOrigin);
     harness.repo.updateStats(publicEpisode.id, {
       retrieval_count: 10,
       win_rate: 1,
@@ -989,7 +1204,7 @@ describe("episodic repository", () => {
     const episode = createEpisode(createEpisodeId(), harness.clock.now(), {
       tags: ["initial"],
     });
-    await harness.repo.insert(episode);
+    await harness.repo.createEpisode(episode);
     harness.clock.advance(1_000);
     const originalGet = harness.repo.get.bind(harness.repo);
     const getSpy = vi

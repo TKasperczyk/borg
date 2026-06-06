@@ -433,8 +433,10 @@ export class CorrectionService {
         }
 
         const previousStats = this.options.episodicRepository.getStats(target.id);
-        const nextStats = this.options.episodicRepository.updateStats(target.id, {
-          archived: true,
+        const nextStats = this.options.episodicRepository.archiveEpisode(target.id, {
+          caller: "correction.forget",
+          reason,
+          process: "correction",
         });
         this.options.identityEventRepository.record({
           record_type: "episode",

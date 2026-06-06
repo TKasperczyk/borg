@@ -4111,7 +4111,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const publicEpisodeId = createEpisodeId();
       const now = clock.now();
 
-      await internal.deps.episodicRepository.insert(
+      await internal.deps.episodicRepository.createEpisode(
         makeEpisode({
           id: alicePrivateEpisodeId,
           now,
@@ -4120,7 +4120,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           title: "Alice private identity evidence",
         }),
       );
-      await internal.deps.episodicRepository.insert(
+      await internal.deps.episodicRepository.createEpisode(
         makeEpisode({
           id: publicEpisodeId,
           now,
@@ -4423,7 +4423,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const singlePassValueLabel = "single-pass-value";
       const now = clock.now();
 
-      await internal.deps.episodicRepository.insert(
+      await internal.deps.episodicRepository.createEpisode(
         makeEpisode({
           id: publicEpisodeId,
           now,
@@ -4503,7 +4503,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           title: "Public snapshot evidence",
         }),
       ]) {
-        await internal.deps.episodicRepository.insert(episode);
+        await internal.deps.episodicRepository.createEpisode(episode);
       }
 
       borg.self.goals.add({

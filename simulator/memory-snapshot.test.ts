@@ -245,7 +245,7 @@ describe("simulator memory snapshot", () => {
         kind: "agent_msg",
         content: "I will remember Maya as your partner.",
       });
-      const episode = await internal.deps.episodicRepository.insert({
+      const episode = await internal.deps.episodicRepository.createEpisode({
         id: createEpisodeId(),
         title: "Maya relationship note",
         narrative: "The user said Maya is their partner.",

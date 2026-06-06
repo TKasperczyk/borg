@@ -10,6 +10,7 @@ import {
   episodeTierSchema,
   type Episode,
   type EpisodeStats,
+  type EpisodeStatsPatch,
   type EpisodeTier,
 } from "../../memory/episodic/types.js";
 import { traitIdSchema, traitSchema } from "../../memory/self/index.js";
@@ -35,6 +36,23 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
   T3: 3,
   T4: 4,
 };
+
+function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
+  return {
+    retrieval_count: stats.retrieval_count,
+    use_count: stats.use_count,
+    last_retrieved: stats.last_retrieved,
+    win_rate: stats.win_rate,
+    tier: stats.tier,
+    promoted_at: stats.promoted_at,
+    promoted_from: stats.promoted_from,
+    gist: stats.gist,
+    gist_generated_at: stats.gist_generated_at,
+    last_decayed_at: stats.last_decayed_at,
+    heat_multiplier: stats.heat_multiplier,
+    valence_mean: stats.valence_mean,
+  };
+}
 
 const episodeSaliencePatchSchema = z.object({
   significance: z.number().min(0).max(1),
@@ -504,7 +522,10 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
         const parsed = episodeStatsSchema.safeParse(item);
 
         if (parsed.success) {
-          this.options.episodicRepository.updateStats(parsed.data.episode_id, parsed.data);
+          this.options.episodicRepository.updateStats(
+            parsed.data.episode_id,
+            episodeStatsRestorePatch(parsed.data),
+          );
         }
       }
     };
@@ -556,7 +577,7 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
   }
 
   async plan(ctx: OfflineContext, _opts: { budget?: number } = {}): Promise<CuratorPlan> {
-    const episodes = await ctx.episodicRepository.listAll();
+    const episodes = await ctx.episodicRepository.listEffectivelyVisible();
 
     return curatorPlanSchema.parse({
       process: this.name,
@@ -596,7 +617,16 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
           );
         }
 
-        ctx.episodicRepository.updateStats(item.episode_id, item.patch);
+        if (item.action === "archive") {
+          ctx.episodicRepository.archiveEpisode(item.episode_id, {
+            caller: "curator.apply",
+            reason: "curator archived a low-heat extracted episode",
+            process: this.name,
+            runId: ctx.runId,
+          });
+        } else {
+          ctx.episodicRepository.updateStats(item.episode_id, item.patch);
+        }
         previousByAction.set(item.action, [
           ...(previousByAction.get(item.action) ?? []),
           item.previous,

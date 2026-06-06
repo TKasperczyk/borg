@@ -312,7 +312,7 @@ describe("cli", () => {
       db,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Planning sync",
       narrative: "A short planning episode.",
@@ -451,7 +451,7 @@ describe("cli", () => {
     });
     const sam = entities.resolve("Sam");
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_publicepisode001" as never,
       title: "Public planning note",
       narrative: "A public planning note.",
@@ -474,7 +474,7 @@ describe("cli", () => {
       created_at: 1,
       updated_at: 1,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_scopedepisode001" as never,
       title: "Sam planning note",
       narrative: "A scoped planning note.",
@@ -584,7 +584,7 @@ describe("cli", () => {
     });
 
     for (let index = 0; index < 12; index += 1) {
-      await repo.insert({
+      await repo.createEpisode({
         id: `ep_clientity${String(index).padStart(7, "0")}` as never,
         title: `Decoy ${index}`,
         narrative: "A strong vector match without the entity tag.",
@@ -609,7 +609,7 @@ describe("cli", () => {
       });
     }
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_clientityrescue1" as never,
       title: "Atlas CLI rescue",
       narrative: "This Atlas note should be reachable from the CLI entity filter.",
@@ -690,7 +690,7 @@ describe("cli", () => {
       table,
       db,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_cccccccccccccccc" as never,
       title: "Atlas note",
       narrative: "A short Atlas episode.",
@@ -801,7 +801,7 @@ describe("cli", () => {
       table,
       db,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas rehearsal",
       narrative: "Atlas stabilized after rehearsal.",
@@ -822,7 +822,7 @@ describe("cli", () => {
       created_at: 1,
       updated_at: 1,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_bbbbbbbbbbbbbbbb" as never,
       title: "Atlas follow-up",
       narrative: "Atlas debugging became clearer.",
@@ -982,7 +982,7 @@ describe("cli", () => {
       clock: new FixedClock(100 * 24 * 60 * 60 * 1_000),
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_dddddddddddddddd" as never,
       title: "Archive candidate",
       narrative: "A stale memory with low heat.",
@@ -1063,7 +1063,7 @@ describe("cli", () => {
       clock: new FixedClock(10_000),
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Deploy prep one",
       narrative: "Atlas deploy prep documented the rollback steps.",
@@ -1084,7 +1084,7 @@ describe("cli", () => {
       created_at: 1,
       updated_at: 1,
     });
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_bbbbbbbbbbbbbbbb" as never,
       title: "Deploy prep two",
       narrative: "The Atlas deploy checklist repeated the rollback prep.",
@@ -1203,7 +1203,7 @@ describe("cli", () => {
       clock: new FixedClock(1_000),
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas deploy fix",
       narrative: "Atlas deploys recovered after rerunning pnpm install.",

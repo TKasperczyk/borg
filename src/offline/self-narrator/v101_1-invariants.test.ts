@@ -94,7 +94,7 @@ describe("v101.1 offline self-narrator cognition invariants", () => {
 
     try {
       for (const episode of aliceEpisodes) {
-        await harness.episodicRepository.insert(episode);
+        await harness.episodicRepository.createEpisode(episode);
       }
 
       const plan = await process.plan(harness.createContext(), {});
@@ -162,7 +162,7 @@ describe("v101.1 offline self-narrator cognition invariants", () => {
 
     try {
       for (const episode of allEpisodes) {
-        await harness.episodicRepository.insert(episode);
+        await harness.episodicRepository.createEpisode(episode);
       }
 
       const plan = await process.plan(harness.createContext(), {});
@@ -235,7 +235,7 @@ describe("v101.1 offline self-narrator cognition invariants", () => {
         provenance: { kind: "offline", process: "self-narrator" },
       });
       for (const episode of publicEpisodes) {
-        await harness.episodicRepository.insert(episode);
+        await harness.episodicRepository.createEpisode(episode);
       }
 
       const plan = await process.plan(harness.createContext(), {});
@@ -329,7 +329,7 @@ describe("v101.1 offline self-narrator cognition invariants", () => {
         provenance: { kind: "offline", process: "self-narrator" },
       });
       for (const episode of privateEpisodes) {
-        await harness.episodicRepository.insert(episode);
+        await harness.episodicRepository.createEpisode(episode);
       }
 
       const plan = await process.plan(harness.createContext(), {});

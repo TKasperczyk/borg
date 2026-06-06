@@ -271,7 +271,7 @@ describe("internal tools", () => {
     try {
       const alice = harness.entityRepository.resolve("Alice");
       const bob = harness.entityRepository.resolve("Bob");
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           title: "Alice private planning",
           narrative: "Alice discussed a private roadmap planning note.",
@@ -281,7 +281,7 @@ describe("internal tools", () => {
           shared: false,
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           title: "Bob private planning",
           narrative: "Bob discussed a private roadmap planning note.",
@@ -474,14 +474,14 @@ describe("internal tools", () => {
     try {
       const alice = harness.entityRepository.resolve("Alice");
       const bob = harness.entityRepository.resolve("Bob");
-      const publicEpisode = await harness.episodicRepository.insert(
+      const publicEpisode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Public semantic root",
           narrative: "Public evidence anchors the root node.",
         }),
       );
-      const aliceEpisode = await harness.episodicRepository.insert(
+      const aliceEpisode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Alice semantic support",
@@ -490,7 +490,7 @@ describe("internal tools", () => {
           shared: false,
         }),
       );
-      const bobEpisode = await harness.episodicRepository.insert(
+      const bobEpisode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_cccccccccccccccc" as never,
           title: "Bob semantic support",
@@ -886,7 +886,7 @@ describe("internal tools", () => {
         origin_audience_entity_ids: [sam],
         shared: false,
       });
-      await harness.episodicRepository.insert(privateEpisode);
+      await harness.episodicRepository.createEpisode(privateEpisode);
       const missingEpisodeId = createEpisodeId();
 
       harness.identityEventRepository.record({

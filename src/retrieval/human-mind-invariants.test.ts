@@ -71,7 +71,7 @@ describe("human-mind memory invariants", () => {
       },
       MATCH_VECTOR,
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const recallContext: CognitionRecallContext = {
       reader: "sol",
@@ -123,7 +123,7 @@ describe("human-mind memory invariants", () => {
       },
       MATCH_VECTOR,
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const result = await harness.retrievalPipeline.recallEpisodesForCognition(BOB_RECALL_QUERY, {
       limit: 3,
@@ -170,7 +170,7 @@ describe("human-mind memory invariants", () => {
       },
       MATCH_VECTOR,
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const result = await harness.retrievalPipeline.recallEpisodesForCognition(
       OPERATOR_RECALL_QUERY,
@@ -257,7 +257,7 @@ describe("human-mind memory invariants", () => {
       },
       MATCH_VECTOR,
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {

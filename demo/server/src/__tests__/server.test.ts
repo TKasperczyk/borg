@@ -382,7 +382,7 @@ async function seedCorrectionEpisode(
   });
   const now = clock.now();
 
-  return internal.deps.episodicRepository.insert({
+  return internal.deps.episodicRepository.createEpisode({
     id: createEpisodeId(),
     title: input.title ?? "Correction seed episode",
     narrative: input.narrative ?? "A correction endpoint seed episode.",

@@ -157,8 +157,8 @@ async function insertMayaAndDesignReview(harness: OfflineTestHarness) {
     [1, 0, 0, 0],
   );
 
-  await harness.episodicRepository.insert(mayaEpisode);
-  await harness.episodicRepository.insert(designReviewEpisode);
+  await harness.episodicRepository.createEpisode(mayaEpisode);
+  await harness.episodicRepository.createEpisode(designReviewEpisode);
 
   return {
     mayaEpisode,
@@ -484,7 +484,7 @@ describe("Recall Core", () => {
       created_at: NOW_MS,
       updated_at: NOW_MS,
     });
-    await harness.episodicRepository.insert(recentEpisode);
+    await harness.episodicRepository.createEpisode(recentEpisode);
 
     const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "unrelated turn",
@@ -552,7 +552,7 @@ describe("Recall Core", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const result = await harness.retrievalPipeline.searchWithContextForDisclosure("Maya", {
       limit: 1,
@@ -757,7 +757,7 @@ describe("Recall Core", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     clock.set(NOW_MS);
     const recent = await harness.streamWriter.append({
       kind: "user_msg",
@@ -853,7 +853,7 @@ describe("Recall Core", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const atlas = await harness.semanticNodeRepository.insert({
       id: "semn_aaaaaaaaaaaaaaaa" as never,
       kind: "entity",
@@ -968,7 +968,7 @@ describe("Recall Core", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const result = await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas dedupe", {
       limit: 5,
@@ -998,7 +998,7 @@ describe("Recall Core", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const atlas = await harness.semanticNodeRepository.insert({
       id: "semn_cccccccccccccccc" as never,
       kind: "entity",
@@ -1080,7 +1080,7 @@ describe("Recall Core", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const atlas = await harness.semanticNodeRepository.insert({
       id: "semn_eeeeeeeeeeeeeeee" as never,
       kind: "entity",
@@ -1157,8 +1157,8 @@ describe("Recall Core", () => {
       },
       [0.8, 0.2, 0, 0],
     );
-    await harness.episodicRepository.insert(primary);
-    await harness.episodicRepository.insert(secondary);
+    await harness.episodicRepository.createEpisode(primary);
+    await harness.episodicRepository.createEpisode(secondary);
 
     const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
       "Atlas MMR drop",

@@ -52,7 +52,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",
@@ -193,7 +193,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",
@@ -314,7 +314,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",
@@ -444,7 +444,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",
@@ -633,7 +633,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",
@@ -765,7 +765,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas status update",
       narrative: "Atlas needed a warmer explanation.",

@@ -883,7 +883,7 @@ export class EpisodicExtractor {
       embedding,
       nowMs,
     );
-    await this.options.episodicRepository.insert(nextEpisode);
+    await this.options.episodicRepository.createEpisode(nextEpisode);
     return "inserted";
   }
 

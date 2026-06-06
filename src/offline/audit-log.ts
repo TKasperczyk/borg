@@ -12,9 +12,16 @@ import {
   type MaintenanceRunId,
 } from "../util/ids.js";
 
-import { OFFLINE_PROCESS_NAMES, type OfflineProcessName } from "./types.js";
+import { OFFLINE_PROCESS_NAMES } from "./types.js";
 
-const offlineProcessNameSchema = z.enum(OFFLINE_PROCESS_NAMES);
+const MAINTENANCE_AUDIT_PROCESS_NAMES = [
+  ...OFFLINE_PROCESS_NAMES,
+  "episodic-repository",
+  "correction",
+] as const;
+const maintenanceAuditProcessNameSchema = z.enum(MAINTENANCE_AUDIT_PROCESS_NAMES);
+
+export type MaintenanceAuditProcessName = (typeof MAINTENANCE_AUDIT_PROCESS_NAMES)[number];
 
 export const maintenanceAuditSchema = z.object({
   id: z
@@ -28,7 +35,7 @@ export const maintenanceAuditSchema = z.object({
       message: "Invalid maintenance run id",
     })
     .transform((value) => parseMaintenanceRunId(value)),
-  process: offlineProcessNameSchema,
+  process: maintenanceAuditProcessNameSchema,
   action: z.string().min(1),
   targets: z.record(z.string(), z.unknown()),
   reversal: z.record(z.string(), z.unknown()),
@@ -41,7 +48,7 @@ export type MaintenanceAuditRecord = z.infer<typeof maintenanceAuditSchema>;
 
 export type MaintenanceAuditRecordInput = {
   run_id: MaintenanceRunId;
-  process: OfflineProcessName;
+  process: MaintenanceAuditProcessName;
   action: string;
   targets: Record<string, unknown>;
   reversal: Record<string, unknown>;
@@ -98,11 +105,11 @@ function mapAuditRow(row: Record<string, unknown>): MaintenanceAuditRecord {
 export class ReverserRegistry {
   private readonly reversers = new Map<string, Reverser>();
 
-  register(process: OfflineProcessName, action: string, reverser: Reverser): void {
+  register(process: MaintenanceAuditProcessName, action: string, reverser: Reverser): void {
     this.reversers.set(`${process}:${action}`, reverser);
   }
 
-  get(process: OfflineProcessName, action: string): Reverser | undefined {
+  get(process: MaintenanceAuditProcessName, action: string): Reverser | undefined {
     return this.reversers.get(`${process}:${action}`);
   }
 }
@@ -127,7 +134,7 @@ export class AuditLog {
   }
 
   record(input: MaintenanceAuditRecordInput): MaintenanceAuditRecord {
-    const process = offlineProcessNameSchema.parse(input.process);
+    const process = maintenanceAuditProcessNameSchema.parse(input.process);
     const appliedAt = this.clock.now();
     const result = this.db
       .prepare(
@@ -162,7 +169,7 @@ export class AuditLog {
   list(
     options: {
       run_id?: MaintenanceRunId;
-      process?: OfflineProcessName;
+      process?: MaintenanceAuditProcessName;
       reverted?: boolean;
     } = {},
   ): MaintenanceAuditRecord[] {
@@ -176,7 +183,7 @@ export class AuditLog {
 
     if (options.process !== undefined) {
       filters.push("process = ?");
-      values.push(offlineProcessNameSchema.parse(options.process));
+      values.push(maintenanceAuditProcessNameSchema.parse(options.process));
     }
 
     if (options.reverted === true) {

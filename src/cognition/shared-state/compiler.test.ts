@@ -244,12 +244,7 @@ function canonicalizationCandidate<T extends { id: string; text: string }>(
 
 describe("compileSharedStateArtifact", () => {
   it("keeps pending out of the EmitSharedStatePatch tool schema", () => {
-    expect(SHARED_STATE_TOOL_ENTRY_KINDS).toEqual([
-      "locked",
-      "live",
-      "tentative",
-      "invalidated",
-    ]);
+    expect(SHARED_STATE_TOOL_ENTRY_KINDS).toEqual(["locked", "live", "tentative", "invalidated"]);
     expect(
       sharedStatePatchSchema.safeParse({
         operations: [
@@ -1063,7 +1058,7 @@ describe("compileSharedStateArtifact", () => {
         audience_entity_id: audience,
         shared: false,
       });
-      await harness.episodicRepository.insert(sourceEpisode);
+      await harness.episodicRepository.createEpisode(sourceEpisode);
       const staleNode = await harness.semanticNodeRepository.insert(
         createSemanticNodeFixture(
           {
@@ -1175,7 +1170,7 @@ describe("compileSharedStateArtifact", () => {
           audience_entity_id: audience,
           shared: false,
         });
-        await harness.episodicRepository.insert(sourceEpisode);
+        await harness.episodicRepository.createEpisode(sourceEpisode);
         const staleNode = await harness.semanticNodeRepository.insert(
           createSemanticNodeFixture(
             {
@@ -1275,7 +1270,7 @@ describe("compileSharedStateArtifact", () => {
         audience_entity_id: audience,
         shared: false,
       });
-      await harness.episodicRepository.insert(sourceEpisode);
+      await harness.episodicRepository.createEpisode(sourceEpisode);
       await harness.semanticNodeRepository.insert(
         createSemanticNodeFixture(
           {

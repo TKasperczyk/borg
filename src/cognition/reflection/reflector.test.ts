@@ -1118,7 +1118,7 @@ describe("reflector", () => {
       priority: 5,
       provenance: { kind: "manual" },
     });
-    const episode = await episodicRepository.insert({
+    const episode = await episodicRepository.createEpisode({
       id: "ep_aaaaaaaaaaaaaaaa" as never,
       title: "Atlas incident",
       narrative: "Atlas deployment failed.",
@@ -1990,7 +1990,7 @@ describe("reflector", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    const episode = await episodicRepository.insert({
+    const episode = await episodicRepository.createEpisode({
       id: "ep_bbbbbbbbbbbbbbbb" as never,
       title: "Unexpected rollback plan",
       narrative: "Database migration blocked the release and required a rollback.",
@@ -2110,7 +2110,7 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Atlas uncertainty",
         narrative: "The logs were incomplete and the root cause stayed unclear.",
@@ -3146,7 +3146,7 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Atlas settled cause",
         narrative: "Atlas failures were traced to a known rollback gap.",
@@ -3511,7 +3511,7 @@ describe("reflector", () => {
       });
       cleanup.push(harness.cleanup);
 
-      const episode = await harness.episodicRepository.insert(
+      const episode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           title: "Rust lifetime attempt",
           source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
@@ -3687,7 +3687,7 @@ describe("reflector", () => {
     cleanup.push(harness.cleanup);
 
     const sourceStreamIds = ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never;
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Rust lifetime workaround",
         source_stream_ids: sourceStreamIds,
@@ -3937,7 +3937,7 @@ describe("reflector", () => {
       narrative: "Rust lifetime errors kept blocking progress.",
       tags: ["rust", "lifetimes"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const skill = await harness.skillRepository.add({
       applies_when: "Rust lifetime debugging",
@@ -4176,13 +4176,13 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const episodeA = await harness.episodicRepository.insert(
+    const episodeA = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         id: "ep_aaaaaaaaaaaaaaaa" as never,
         title: "Planning sync A",
       }),
     );
-    const episodeB = await harness.episodicRepository.insert(
+    const episodeB = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         id: "ep_bbbbbbbbbbbbbbbb" as never,
         title: "Planning sync B",
@@ -4306,7 +4306,7 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(createEpisodeFixture());
+    const episode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
     const retrieved = createRetrievedEpisode(episode);
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
@@ -4414,7 +4414,7 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         id: "ep_aaaaaaaaaaaaaaaa" as never,
       }),
@@ -4627,7 +4627,7 @@ describe("reflector", () => {
       narrative: "A slow reflective walk helped untangle a hard feeling.",
       tags: ["reflection"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
@@ -4761,7 +4761,7 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Internal reflective note",
         narrative: "A private autonomous reflection about an earlier feeling.",

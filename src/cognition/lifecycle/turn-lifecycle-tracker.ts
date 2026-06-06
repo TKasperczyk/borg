@@ -1,6 +1,10 @@
 import type { ExecutiveStep, ExecutiveStepsRepository } from "../../executive/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
-import type { EpisodicRepository, EpisodeStats } from "../../memory/episodic/index.js";
+import type {
+  EpisodicRepository,
+  EpisodeStats,
+  EpisodeStatsPatch,
+} from "../../memory/episodic/index.js";
 import type {
   RelationalSlot,
   RelationalSlotRepository,
@@ -24,6 +28,23 @@ export type TurnLifecycleTrackerOptions = {
   episodicRepository: Pick<EpisodicRepository, "updateStats">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "restore">;
 };
+
+function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
+  return {
+    retrieval_count: stats.retrieval_count,
+    use_count: stats.use_count,
+    last_retrieved: stats.last_retrieved,
+    win_rate: stats.win_rate,
+    tier: stats.tier,
+    promoted_at: stats.promoted_at,
+    promoted_from: stats.promoted_from,
+    gist: stats.gist,
+    gist_generated_at: stats.gist_generated_at,
+    last_decayed_at: stats.last_decayed_at,
+    heat_multiplier: stats.heat_multiplier,
+    valence_mean: stats.valence_mean,
+  };
+}
 
 export class TurnLifecycleTracker {
   private initialWorkingMemory: WorkingMemory | null = null;
@@ -143,7 +164,10 @@ export class TurnLifecycleTracker {
 
     for (const stats of [...this.updatedEpisodeStats].reverse()) {
       try {
-        this.options.episodicRepository.updateStats(stats.episode_id, stats);
+        this.options.episodicRepository.updateStats(
+          stats.episode_id,
+          episodeStatsRestorePatch(stats),
+        );
       } catch {
         // Best effort.
       }

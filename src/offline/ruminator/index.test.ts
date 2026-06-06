@@ -120,7 +120,7 @@ describe("RuminatorProcess", () => {
         },
         [1, 0, 0, 0],
       );
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
       const question = harness.openQuestionsRepository.add({
         question: "Why does Atlas deploy fail?",
         urgency: 0.7,
@@ -502,7 +502,7 @@ describe("RuminatorProcess", () => {
         },
         [1, 0, 0, 0],
       );
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
       const question = harness.openQuestionsRepository.add({
         question: "Why does Atlas deploy fail?",
         urgency: 0.7,
@@ -602,8 +602,8 @@ describe("RuminatorProcess", () => {
         },
         [0, 1, 0, 0],
       );
-      await harness.episodicRepository.insert(oldGlobalEpisode);
-      await harness.episodicRepository.insert(weakAudienceEpisode);
+      await harness.episodicRepository.createEpisode(oldGlobalEpisode);
+      await harness.episodicRepository.createEpisode(weakAudienceEpisode);
       const question = harness.openQuestionsRepository.add({
         question: questionText,
         urgency: 0.7,
@@ -952,7 +952,7 @@ describe("RuminatorProcess", () => {
         },
         [1, 0, 0, 0],
       );
-      await harness.episodicRepository.insert(resolutionEpisode);
+      await harness.episodicRepository.createEpisode(resolutionEpisode);
 
       const resolutionPlan = await process.plan(harness.createContext(), {});
 
@@ -1439,9 +1439,9 @@ describe("RuminatorProcess", () => {
         },
         [0, 1, 0, 0],
       );
-      await harness.episodicRepository.insert(publicEpisode);
-      await harness.episodicRepository.insert(samEpisode);
-      await harness.episodicRepository.insert(alexEpisode);
+      await harness.episodicRepository.createEpisode(publicEpisode);
+      await harness.episodicRepository.createEpisode(samEpisode);
+      await harness.episodicRepository.createEpisode(alexEpisode);
       const question = harness.openQuestionsRepository.add({
         question: "What resolved the planning uncertainty?",
         urgency: 0.7,
@@ -1527,8 +1527,8 @@ describe("RuminatorProcess", () => {
         },
         [0, 1, 0, 0],
       );
-      await harness.episodicRepository.insert(samEpisode);
-      await harness.episodicRepository.insert(alexEpisode);
+      await harness.episodicRepository.createEpisode(samEpisode);
+      await harness.episodicRepository.createEpisode(alexEpisode);
       const question = harness.openQuestionsRepository.add({
         question: questionText,
         urgency: 0.7,
@@ -1608,8 +1608,8 @@ describe("RuminatorProcess", () => {
         },
         [1, 0, 0, 0],
       );
-      await harness.episodicRepository.insert(firstEpisode);
-      await harness.episodicRepository.insert(secondEpisode);
+      await harness.episodicRepository.createEpisode(firstEpisode);
+      await harness.episodicRepository.createEpisode(secondEpisode);
       harness.openQuestionsRepository.add({
         question: "Why does Atlas deploy fail?",
         urgency: 0.7,

@@ -68,8 +68,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
         dominant_emotion: "joy",
       },
     });
-    await harness.episodicRepository.insert(negativeEpisode);
-    await harness.episodicRepository.insert(positiveEpisode);
+    await harness.episodicRepository.createEpisode(negativeEpisode);
+    await harness.episodicRepository.createEpisode(positiveEpisode);
 
     const withoutMood = await harness.retrievalPipeline.searchEpisodesForDisclosure(
       "Rust lifetime debugging",
@@ -118,8 +118,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       participants: ["team"],
       tags: ["architecture"],
     });
-    await harness.episodicRepository.insert(withAudience);
-    await harness.episodicRepository.insert(withoutAudience);
+    await harness.episodicRepository.createEpisode(withAudience);
+    await harness.episodicRepository.createEpisode(withoutAudience);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 2,
@@ -144,7 +144,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(withAudience);
+    await harness.episodicRepository.createEpisode(withAudience);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
@@ -168,7 +168,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(withFreeFormAudience);
+    await harness.episodicRepository.createEpisode(withFreeFormAudience);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
@@ -192,7 +192,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(unrelated);
+    await harness.episodicRepository.createEpisode(unrelated);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
@@ -218,7 +218,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(withOtherEntity);
+    await harness.episodicRepository.createEpisode(withOtherEntity);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
@@ -243,7 +243,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const lowTrust = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 1,
@@ -287,8 +287,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(first);
-    await harness.episodicRepository.insert(second);
+    await harness.episodicRepository.createEpisode(first);
+    await harness.episodicRepository.createEpisode(second);
     const findSpy = vi.spyOn(harness.entityRepository, "findByName");
 
     await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
@@ -321,7 +321,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: sam,
       shared: false,
     });
-    await harness.episodicRepository.insert(privateEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisode);
 
     const results = await harness.retrievalPipeline.recallEpisodesForCognition("architecture", {
       ...cognitionRecallOptions(alex),
@@ -345,7 +345,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: null,
       shared: true,
     });
-    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
 
     const results = await harness.retrievalPipeline.searchEpisodesForDisclosure("architecture", {
       limit: 3,
@@ -375,8 +375,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: otherEntityId,
       shared: false,
     });
-    await harness.episodicRepository.insert(selfScopedEpisode);
-    await harness.episodicRepository.insert(otherPrivateEpisode);
+    await harness.episodicRepository.createEpisode(selfScopedEpisode);
+    await harness.episodicRepository.createEpisode(otherPrivateEpisode);
 
     const cognition = await harness.retrievalPipeline.recallEpisodesForCognition("architecture", {
       ...cognitionRecallOptions(audienceEntityId),
@@ -421,8 +421,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: otherAudience,
       shared: false,
     });
-    await harness.episodicRepository.insert(currentPrivateEpisode);
-    await harness.episodicRepository.insert(otherPrivateEpisode);
+    await harness.episodicRepository.createEpisode(currentPrivateEpisode);
+    await harness.episodicRepository.createEpisode(otherPrivateEpisode);
     const currentNode = createSemanticNodeFixture(
       {
         kind: "entity",
@@ -485,8 +485,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: alice,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(privateEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -555,8 +555,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: sam,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(hiddenEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(hiddenEpisode);
     const mixedNode = createSemanticNodeFixture({
       kind: "entity",
       label: "Atlas Audience Scoped",
@@ -629,10 +629,10 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       audience_entity_id: null,
       shared: true,
     });
-    await harness.episodicRepository.insert(rootEpisode);
-    await harness.episodicRepository.insert(visibleSupportEpisode);
-    await harness.episodicRepository.insert(hiddenSupportEpisode);
-    await harness.episodicRepository.insert(edgeEpisode);
+    await harness.episodicRepository.createEpisode(rootEpisode);
+    await harness.episodicRepository.createEpisode(visibleSupportEpisode);
+    await harness.episodicRepository.createEpisode(hiddenSupportEpisode);
+    await harness.episodicRepository.createEpisode(edgeEpisode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {

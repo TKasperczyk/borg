@@ -108,8 +108,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: otherEntityId,
       shared: false,
     });
-    await harness.episodicRepository.insert(selfScopedEpisode);
-    await harness.episodicRepository.insert(otherPrivateEpisode);
+    await harness.episodicRepository.createEpisode(selfScopedEpisode);
+    await harness.episodicRepository.createEpisode(otherPrivateEpisode);
     const selfNode = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -166,7 +166,7 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: aliceEntityId,
       shared: false,
     });
-    await harness.episodicRepository.insert(sourceEpisode);
+    await harness.episodicRepository.createEpisode(sourceEpisode);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -192,7 +192,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas deployment note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const atlas = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -279,7 +279,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas install note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const proposition = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -369,7 +369,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas causal note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const cause = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -455,7 +455,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas reflection support",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const support = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -529,7 +529,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas review note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const normal = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -605,7 +605,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas itinerary note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const active = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -662,7 +662,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "San Sebastian itinerary note",
       tags: ["itinerary"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const active = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -760,7 +760,7 @@ describe("resolveSemanticContext temporal validity", () => {
       title: "Atlas graph note",
       tags: ["atlas"],
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -832,8 +832,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(sharedEpisode);
-    await harness.episodicRepository.insert(privateEpisodeB);
+    await harness.episodicRepository.createEpisode(sharedEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisodeB);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -946,8 +946,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(privateEpisodeB);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisodeB);
     const source = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1088,8 +1088,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceA,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(privateEpisodeA);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisodeA);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1131,8 +1131,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(hiddenEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(hiddenEpisode);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1175,8 +1175,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(hiddenEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(hiddenEpisode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1239,8 +1239,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(firstHiddenEpisode);
-    await harness.episodicRepository.insert(secondHiddenEpisode);
+    await harness.episodicRepository.createEpisode(firstHiddenEpisode);
+    await harness.episodicRepository.createEpisode(secondHiddenEpisode);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1274,7 +1274,7 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: null,
       shared: true,
     });
-    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1309,7 +1309,7 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(hiddenEpisode);
+    await harness.episodicRepository.createEpisode(hiddenEpisode);
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1345,8 +1345,8 @@ describe("resolveSemanticContext temporal validity", () => {
       audience_entity_id: audienceB,
       shared: false,
     });
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(hiddenEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(hiddenEpisode);
     const mixedNode = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {

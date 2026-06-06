@@ -103,7 +103,7 @@ describe("maintenance orchestrator", () => {
       created_at: 1_000_000 - 50 * 24 * 60 * 60 * 1_000,
       updated_at: 1_000_000 - 50 * 24 * 60 * 60 * 1_000,
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: harness.traitsRepository,

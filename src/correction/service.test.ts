@@ -244,7 +244,7 @@ describe("correction service", () => {
         identityService: harness.identityService,
         identityEventRepository: harness.identityEventRepository,
       });
-      const episode = await harness.episodicRepository.insert(
+      const episode = await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           title: "Planning sync",
           narrative: "Original narrative.",

@@ -83,7 +83,7 @@ describe("SelfNarratorProcess", () => {
     });
 
     try {
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Deploy rehearsal",
@@ -91,7 +91,7 @@ describe("SelfNarratorProcess", () => {
           tags: ["deploy"],
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Deploy review",
@@ -219,7 +219,7 @@ describe("SelfNarratorProcess", () => {
         themes: ["planning"],
         provenance: { kind: "offline", process: "self-narrator" },
       });
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Deploy rehearsal",
@@ -229,7 +229,7 @@ describe("SelfNarratorProcess", () => {
           updated_at: Date.UTC(2026, 6, 10),
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Deploy follow-up",
@@ -295,7 +295,7 @@ describe("SelfNarratorProcess", () => {
         themes: ["planning"],
         provenance: { kind: "offline", process: "self-narrator" },
       });
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           tags: ["ops"],
@@ -303,7 +303,7 @@ describe("SelfNarratorProcess", () => {
           updated_at: now,
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           tags: ["ops"],
@@ -357,7 +357,7 @@ describe("SelfNarratorProcess", () => {
         themes: ["planning"],
         provenance: { kind: "offline", process: "self-narrator" },
       });
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Atlas incident",
@@ -367,7 +367,7 @@ describe("SelfNarratorProcess", () => {
           updated_at: Date.UTC(2026, 6, 10),
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Atlas follow-up",
@@ -455,7 +455,7 @@ describe("SelfNarratorProcess", () => {
           episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never, "ep_bbbbbbbbbbbbbbbb" as never],
         },
       });
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Atlas incident",
@@ -465,7 +465,7 @@ describe("SelfNarratorProcess", () => {
           updated_at: Date.UTC(2026, 6, 10),
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Atlas follow-up",
@@ -541,7 +541,7 @@ describe("SelfNarratorProcess", () => {
 
     try {
       const sam = harness.entityRepository.resolve("Sam");
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           title: "Public planning start",
@@ -549,7 +549,7 @@ describe("SelfNarratorProcess", () => {
           tags: ["planning"],
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Public planning follow-up",
@@ -559,7 +559,7 @@ describe("SelfNarratorProcess", () => {
           updated_at: 2_000_000,
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_cccccccccccccccc" as never,
           title: "Sam private planning",
@@ -613,13 +613,13 @@ describe("SelfNarratorProcess", () => {
     });
 
     try {
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           tags: ["atlas"],
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           tags: ["atlas"],
@@ -666,13 +666,13 @@ describe("SelfNarratorProcess", () => {
     });
 
     try {
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_aaaaaaaaaaaaaaaa" as never,
           tags: ["atlas"],
         }),
       );
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           tags: ["atlas"],

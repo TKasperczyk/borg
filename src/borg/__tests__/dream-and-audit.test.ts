@@ -52,7 +52,7 @@ describe("Borg", () => {
       clock,
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       id: "ep_cccccccccccccccc" as never,
       title: "Old quiet note",
       narrative: "A stale note that should be archived by the curator.",
@@ -159,9 +159,7 @@ describe("Borg", () => {
 
       const reverted = await borg.audit.revert(archiveAudit!.id);
       expect(reverted?.reverted_at).not.toBeNull();
-      expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBe(
-        "ep_cccccccccccccccc",
-      );
+      expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBeUndefined();
     } finally {
       await borg.close();
     }

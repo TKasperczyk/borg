@@ -29,8 +29,11 @@ export {
 } from "./repository.js";
 export {
   EPISODE_TIERS,
+  EPISODE_KINDS,
+  consolidationFamilyIdSchema,
   episodeIdSchema,
   episodeInsertSchema,
+  episodeKindSchema,
   episodeLineageSchema,
   episodePatchSchema,
   episodeSchema,
@@ -38,6 +41,7 @@ export {
   episodeStatsSchema,
   episodeTierSchema,
   type Episode,
+  type EpisodeKind,
   type EpisodeListOptions,
   type EpisodeListResult,
   type EpisodePatch,

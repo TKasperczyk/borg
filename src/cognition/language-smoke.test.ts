@@ -108,7 +108,7 @@ describe("cross-language cognition smoke", () => {
         },
         [...vector],
       );
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
       const semanticNode = await harness.semanticNodeRepository.insert(
         createSemanticNodeFixture(
           {

@@ -113,7 +113,7 @@ describe("reflector process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const evidenceAnchor = await harness.semanticNodeRepository.insert(
@@ -333,7 +333,7 @@ describe("reflector process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ReflectorProcess({
@@ -395,7 +395,7 @@ describe("reflector process", () => {
     );
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ReflectorProcess({
@@ -407,9 +407,7 @@ describe("reflector process", () => {
     await process.plan(harness.createContext());
 
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
-    const activeGoalsLine = prompt
-      .split("\n")
-      .find((line) => line.startsWith("Active goals: "));
+    const activeGoalsLine = prompt.split("\n").find((line) => line.startsWith("Active goals: "));
 
     expect(activeGoalsLine).toContain(goal.description);
     expect(activeGoalsLine).toContain('"disclosure_label"');
@@ -501,7 +499,7 @@ describe("reflector process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of [...previousEpisodes, ...updateEpisodes]) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const existingNode = await harness.semanticNodeRepository.insert(
@@ -676,7 +674,7 @@ describe("reflector process", () => {
     });
     cleanup.push(harness.cleanup);
 
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Only one note",
@@ -731,7 +729,7 @@ describe("reflector process", () => {
     ];
 
     for (const episode of supportedEpisodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const hallucinated = await process.run(harness.createContext(), {
@@ -837,7 +835,7 @@ describe("reflector process", () => {
     );
 
     for (const episode of allEpisodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ReflectorProcess({
@@ -952,7 +950,7 @@ describe("reflector process", () => {
     );
 
     for (const episode of allEpisodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ReflectorProcess({
@@ -1084,7 +1082,7 @@ describe("reflector process", () => {
     const allEpisodes = [...publicEpisodes, ...scopedEpisodes];
 
     for (const episode of allEpisodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const existingNode = await harness.semanticNodeRepository.insert(
@@ -1194,7 +1192,7 @@ describe("reflector process", () => {
     );
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const existingNode = await harness.semanticNodeRepository.insert(
@@ -1289,7 +1287,7 @@ describe("reflector process", () => {
     );
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     await harness.semanticNodeRepository.insert(
@@ -1521,7 +1519,7 @@ describe("reflector process", () => {
     ];
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const process = new ReflectorProcess({
@@ -1595,7 +1593,7 @@ describe("reflector process", () => {
     cleanup.push(harness.cleanup);
 
     for (const episode of episodes) {
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
     }
 
     const archived = await harness.semanticNodeRepository.insert(

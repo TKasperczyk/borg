@@ -174,7 +174,7 @@ async function addSuccessEvidence(
   } = {},
 ) {
   const sourceStreamIds = [createStreamEntryId(), createStreamEntryId()];
-  const episode = await harness.episodicRepository.insert(
+  const episode = await harness.episodicRepository.createEpisode(
     createEpisodeFixture(
       {
         title: input.problemText ?? "Atlas deploy failure",
@@ -225,7 +225,7 @@ async function addSkillWithContextStats(
     }>;
   } = {},
 ) {
-  const episode = await harness.episodicRepository.insert(createEpisodeFixture());
+  const episode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
   const skill = await harness.skillRepository.add({
     applies_when: "reuse the comparison approach across work",
     approach: "Compare the current failed state with the last known-good state.",
@@ -446,7 +446,7 @@ describe("ProceduralSynthesizerProcess", () => {
         ],
       }),
     });
-    const sourceEpisode = await harness.episodicRepository.insert(createEpisodeFixture());
+    const sourceEpisode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
     const existing = await harness.skillRepository.add({
       applies_when: "deployment rollback comparison",
       approach: "Existing approach.",
@@ -562,7 +562,7 @@ describe("ProceduralSynthesizerProcess", () => {
           ],
         }),
       });
-      const sourceEpisode = await harness.episodicRepository.insert(createEpisodeFixture());
+      const sourceEpisode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
       const existing = await harness.skillRepository.add({
         applies_when: "existing boundary skill",
         approach: "Existing approach.",
@@ -712,6 +712,86 @@ describe("ProceduralSynthesizerProcess", () => {
         publicToEntityIds: [],
       },
     });
+  });
+
+  it("does not use archived exact episode matches as procedural sources", async () => {
+    const problem = "Archived exact source evidence";
+    const approach = "Compare the source rows against the active evidence.";
+    const archivedSourceIds = [createStreamEntryId(), createStreamEntryId()];
+    const visibleSourceIds = [createStreamEntryId(), createStreamEntryId()];
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillCandidateResponse({
+          applies_when: "active evidence comparison",
+          approach,
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      embeddingClient: new TestEmbeddingClient(
+        new Map([[evidenceEmbeddingText(problem, approach), [1, 0, 0, 0]]]),
+      ),
+      llmClient: llm,
+    });
+    const archivedEpisode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture({
+        title: problem,
+        source_stream_ids: archivedSourceIds,
+      }),
+    );
+    harness.episodicRepository.archiveEpisode(archivedEpisode.id, {
+      caller: "procedural-synthesizer.test",
+      reason: "exercise exact-match visibility gate",
+      process: "procedural-synthesizer",
+    });
+    const visibleEpisode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture({
+        title: problem,
+        source_stream_ids: visibleSourceIds,
+      }),
+    );
+
+    harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: {
+        problem_text: problem,
+        approach_summary: approach,
+        selected_skill_id: null,
+        source_stream_ids: archivedSourceIds,
+        turn_counter: 1,
+        audience_entity_id: null,
+      },
+      classification: "success",
+      evidenceText: "The archived exact source should not be reused.",
+      grounded: true,
+      skillActuallyApplied: true,
+      resolvedEpisodeIds: [],
+      audienceEntityId: null,
+    });
+    harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: {
+        problem_text: problem,
+        approach_summary: approach,
+        selected_skill_id: null,
+        source_stream_ids: visibleSourceIds,
+        turn_counter: 2,
+        audience_entity_id: null,
+      },
+      classification: "success",
+      evidenceText: "The visible exact source should remain available.",
+      grounded: true,
+      skillActuallyApplied: true,
+      resolvedEpisodeIds: [],
+      audienceEntityId: null,
+    });
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(plan.items[0]?.source_episode_ids).toEqual([visibleEpisode.id]);
+    expect(prompt).not.toContain(archivedEpisode.id);
+    expect(prompt).toContain(visibleEpisode.id);
   });
 
   it("queues and accepts an LLM skill split, then migrates context stats to the new skills", async () => {
@@ -1415,14 +1495,14 @@ describe("ProceduralSynthesizerProcess", () => {
       }),
       llmClient: llm,
     });
-    const episodeA = await harness.episodicRepository.insert(
+    const episodeA = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Audience A private skill evidence",
         audience_entity_id: audienceA,
         shared: false,
       }),
     );
-    const episodeB = await harness.episodicRepository.insert(
+    const episodeB = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Audience B private skill evidence",
         audience_entity_id: audienceB,
@@ -1857,7 +1937,7 @@ describe("ProceduralSynthesizerProcess", () => {
       }),
     });
     const sourceStreamIds = [createStreamEntryId(), createStreamEntryId()];
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Late superseded skill outcome",
         source_stream_ids: sourceStreamIds,
@@ -1998,7 +2078,7 @@ describe("ProceduralSynthesizerProcess", () => {
     });
     const firstSourceIds = [createStreamEntryId(), createStreamEntryId()];
     const secondSourceIds = [createStreamEntryId(), createStreamEntryId()];
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Atlas rollback fix",
@@ -2007,7 +2087,7 @@ describe("ProceduralSynthesizerProcess", () => {
         [1, 0, 0, 0],
       ),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Atlas rollback fix again",

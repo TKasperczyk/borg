@@ -73,7 +73,7 @@ async function insertDistractors(harness: OfflineTestHarness, options: { prefix?
   const prefix = options.prefix ?? "Noise";
 
   for (let index = 0; index < DISTRACTOR_COUNT; index += 1) {
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: `${prefix} distractor ${index}`,
@@ -231,7 +231,7 @@ async function insertMatchingEpisodes(input: {
       [1, 0, 0, 0],
     );
 
-    await input.harness.episodicRepository.insert(episode);
+    await input.harness.episodicRepository.createEpisode(episode);
     episodes.push(episode);
   }
 
@@ -276,7 +276,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await insertDistractors(harness);
 
     const staleEvidenceId = `evidence_episode_${episode.id}_recall_known_term_0`;
@@ -314,7 +314,7 @@ describe("retrieval recall_state", () => {
       created_at: 1_000,
       updated_at: 1_000,
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     seedEpisodeHandle(harness, sessionId, episode.id);
 
     const state = loadSerializedState(harness, sessionId);
@@ -351,7 +351,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     seedEpisodeHandle(harness, sessionId, episode.id);
 
     await harness.episodicRepository.update(episode.id, {
@@ -415,8 +415,8 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(cachedEpisode);
-    await harness.episodicRepository.insert(freshEpisode);
+    await harness.episodicRepository.createEpisode(cachedEpisode);
+    await harness.episodicRepository.createEpisode(freshEpisode);
     await insertDistractors(harness);
     seedRawStreamHandle({
       harness,
@@ -498,7 +498,7 @@ describe("retrieval recall_state", () => {
       created_at: 1_000,
       updated_at: 1_000,
     });
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await insertDistractors(harness);
 
     await harness.retrievalPipeline.searchWithContextForDisclosure("Atlas", {
@@ -542,7 +542,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await insertDistractors(harness);
     seedRecallHandles({
       harness,
@@ -901,7 +901,7 @@ describe("retrieval recall_state", () => {
           },
           [1, 0, 0, 0],
         );
-        await harness!.episodicRepository.insert(episode);
+        await harness!.episodicRepository.createEpisode(episode);
         return episode;
       }),
     );
@@ -1085,7 +1085,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(privateEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisode);
     seedEpisodeHandle(harness, COGNITION_RECALL_SCOPE_KEY, privateEpisode.id);
 
     const audienceBResult = await harness.retrievalPipeline.recallEpisodesForCognition(
@@ -1133,7 +1133,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
     seedEpisodeHandle(harness, COGNITION_RECALL_SCOPE_KEY, publicEpisode.id);
     await harness.episodicRepository.update(publicEpisode.id, {
       audience_entity_id: audienceA,
@@ -1188,8 +1188,8 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(publicEpisode);
-    await harness.episodicRepository.insert(privateEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+    await harness.episodicRepository.createEpisode(privateEpisode);
     const root = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture(
         {
@@ -1286,7 +1286,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await insertDistractors(harness);
     seedEpisodeHandle(harness, audienceA, episode.id);
 
@@ -1331,7 +1331,7 @@ describe("retrieval recall_state", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const first = await harness.retrievalPipeline.searchWithContextForDisclosure(mayaTurn, {
       audienceEntityId: tomAudience,

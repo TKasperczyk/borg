@@ -68,7 +68,7 @@ describe("v101.1 ruminator cognition invariants", () => {
     });
 
     try {
-      await harness.episodicRepository.insert(bobEpisode);
+      await harness.episodicRepository.createEpisode(bobEpisode);
       const question = harness.openQuestionsRepository.add({
         question: questionText,
         urgency: 0.8,

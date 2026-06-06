@@ -78,10 +78,10 @@ describe("curator process", () => {
       [0, 1, 0, 0],
     );
 
-    await harness.episodicRepository.insert(promoteT1);
-    await harness.episodicRepository.insert(promoteT2);
-    await harness.episodicRepository.insert(demoteT3);
-    await harness.episodicRepository.insert(archiveEpisode);
+    await harness.episodicRepository.createEpisode(promoteT1);
+    await harness.episodicRepository.createEpisode(promoteT2);
+    await harness.episodicRepository.createEpisode(demoteT3);
+    await harness.episodicRepository.createEpisode(archiveEpisode);
 
     harness.episodicRepository.updateStats(promoteT1.id, {
       retrieval_count: 6,
@@ -141,7 +141,7 @@ describe("curator process", () => {
         .list({ process: "curator" })
         .map((row) => row.action)
         .sort(),
-    ).toEqual(["archive", "decay", "demote", "promote"]);
+    ).toEqual(["archive", "archive_episode", "decay", "demote", "promote"]);
   });
 
   it("does not archive unextracted episodes but archives extracted ones", async () => {
@@ -168,8 +168,8 @@ describe("curator process", () => {
       [0, 1, 0, 0],
     );
 
-    await harness.episodicRepository.insert(unextractedEpisode);
-    await harness.episodicRepository.insert(extractedEpisode);
+    await harness.episodicRepository.createEpisode(unextractedEpisode);
+    await harness.episodicRepository.createEpisode(extractedEpisode);
     harness.episodicRepository.updateStats(unextractedEpisode.id, {
       tier: "T1",
     });
@@ -266,7 +266,7 @@ describe("curator process", () => {
       },
       [0, 1, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     harness.episodicRepository.updateStats(episode.id, {
       tier: "T2",
       retrieval_count: 10,
@@ -330,7 +330,7 @@ describe("curator process", () => {
         },
         [0, 1, 0, 0],
       );
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
       harness.episodicRepository.updateStats(episode.id, {
         tier: "T2",
         retrieval_count: 10,

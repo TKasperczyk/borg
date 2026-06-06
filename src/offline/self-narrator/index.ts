@@ -339,7 +339,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
-    const sourceEpisodes = (await ctx.episodicRepository.listAll())
+    const sourceEpisodes = (await ctx.episodicRepository.listEffectivelyVisible())
       .filter(
         (episode) =>
           currentPeriod === null ||

@@ -11,9 +11,7 @@ import { ReflectorProcess } from "./index.js";
 
 const REFLECTOR_TOOL_NAME = "EmitReflectorInsights";
 
-function createReflectorResponse(input: {
-  sourceEpisodeIds: string[];
-}) {
+function createReflectorResponse(input: { sourceEpisodeIds: string[] }) {
   return {
     text: "",
     input_tokens: 18,
@@ -110,7 +108,7 @@ describe("v101.1 cross-audience synthesis invariants", () => {
 
     try {
       for (const episode of episodes) {
-        await harness.episodicRepository.insert(episode);
+        await harness.episodicRepository.createEpisode(episode);
       }
 
       const plan = await process.plan(harness.createContext(), {});

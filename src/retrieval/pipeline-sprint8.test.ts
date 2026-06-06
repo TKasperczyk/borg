@@ -61,10 +61,10 @@ describe("RetrievalPipeline Sprint 8 preference formation", () => {
       },
       [0, 0, 0, 1],
     );
-    await harness.episodicRepository.insert(aligned);
+    await harness.episodicRepository.createEpisode(aligned);
 
     for (let index = 0; index < 4; index += 1) {
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture(
           {
             title: `Architecture decoy ${index}`,

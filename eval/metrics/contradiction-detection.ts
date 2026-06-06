@@ -86,7 +86,7 @@ async function seedFixture(
   harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
 ): Promise<void> {
   for (const episode of fixture.episodes) {
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         id: episode.id as never,
         title: episode.title,

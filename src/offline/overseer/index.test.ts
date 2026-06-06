@@ -146,7 +146,7 @@ describe("overseer process", () => {
       ]),
     );
 
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Misattributed meeting",
@@ -281,7 +281,7 @@ describe("overseer process", () => {
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
 
     const process = new OverseerProcess({
       reviewQueueRepository: harness.reviewQueueRepository,
@@ -323,7 +323,7 @@ describe("overseer process", () => {
       "I will remember Maya as your partner.",
       "agent_msg",
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya partner source",
@@ -389,7 +389,7 @@ describe("overseer process", () => {
       },
     });
     const source = await appendSourceEntry(harness, "Maya is my partner.");
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Self-state label target",
@@ -414,9 +414,7 @@ describe("overseer process", () => {
     const prompt = requestPrompt(llm);
     const valuesLine = prompt.split("\n").find((line) => line.startsWith("Values: "));
     const traitsLine = prompt.split("\n").find((line) => line.startsWith("Traits: "));
-    const currentPeriodLine = prompt
-      .split("\n")
-      .find((line) => line.startsWith("CurrentPeriod: "));
+    const currentPeriodLine = prompt.split("\n").find((line) => line.startsWith("CurrentPeriod: "));
 
     expect(valuesLine).toContain(value.label);
     expect(valuesLine).toContain('"disclosure_label"');
@@ -442,7 +440,7 @@ describe("overseer process", () => {
     cleanup.push(harness.cleanup);
 
     const source = await appendSourceEntry(harness, "The user said Maya is my partner.");
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya source episode",
@@ -495,7 +493,7 @@ describe("overseer process", () => {
     cleanup.push(harness.cleanup);
 
     const source = await appendSourceEntry(harness, "Maya supports the user's household planning.");
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya edge evidence",
@@ -569,7 +567,7 @@ describe("overseer process", () => {
     cleanup.push(harness.cleanup);
 
     const missingStreamId = createStreamEntryId();
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Missing source episode",
@@ -608,7 +606,7 @@ describe("overseer process", () => {
 
     const source = await appendSourceEntry(harness, "Private audience source names Maya.");
     const privateAudienceId = createEntityId();
-    const privateEpisode = await harness.episodicRepository.insert(
+    const privateEpisode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Private source episode",
@@ -668,7 +666,7 @@ describe("overseer process", () => {
       provenance: "transport_audience_label",
     });
     const source = await appendSourceEntry(harness, "Otto is my dog.");
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Otto source episode",
@@ -734,7 +732,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya source",
@@ -795,7 +793,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Otto audience source",
@@ -868,7 +866,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya source",
@@ -927,7 +925,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Unrelated Riley source",
@@ -938,7 +936,7 @@ describe("overseer process", () => {
         [0, 1, 0, 0],
       ),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Maya source",
@@ -998,7 +996,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Partner source",
@@ -1056,7 +1054,7 @@ describe("overseer process", () => {
         }),
       ]),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Assistant sibling label",
@@ -1267,7 +1265,7 @@ describe("overseer process", () => {
     });
     cleanup.push(harness.cleanup);
 
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Target one",
@@ -1277,7 +1275,7 @@ describe("overseer process", () => {
         [1, 0, 0, 0],
       ),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Target two",
@@ -1287,7 +1285,7 @@ describe("overseer process", () => {
         [1, 0, 0, 0],
       ),
     );
-    await harness.episodicRepository.insert(
+    await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Target three",
@@ -1369,8 +1367,8 @@ describe("overseer process", () => {
     });
     clock.set(nowMs);
 
-    await harness.episodicRepository.insert(oldEpisode);
-    await harness.episodicRepository.insert(recentEpisode);
+    await harness.episodicRepository.createEpisode(oldEpisode);
+    await harness.episodicRepository.createEpisode(recentEpisode);
 
     const process = new OverseerProcess({
       reviewQueueRepository: harness.reviewQueueRepository,
@@ -1421,7 +1419,7 @@ describe("overseer process", () => {
         ]),
       );
 
-      await harness.episodicRepository.insert(
+      await harness.episodicRepository.createEpisode(
         createEpisodeFixture(
           {
             title: "Misattributed meeting",

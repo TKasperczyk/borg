@@ -28,7 +28,7 @@ describe("SkillRepository", () => {
   it("adds, gets, deletes, and updates outcome statistics", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "Rust lifetimes throw borrow checker errors",
       approach: "Reduce borrow scope and clone only at boundaries.",
@@ -57,7 +57,7 @@ describe("SkillRepository", () => {
   it("selects stronger skills more often and breaks ties toward fewer attempts", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const strong = await harness.skillRepository.add({
       id: createSkillId(),
       applies_when: "Rust lifetime debugging",
@@ -114,7 +114,7 @@ describe("SkillRepository", () => {
   it("updates outcome counters atomically under parallel writers", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "Shared concurrent skill",
       approach: "Use atomic counters in SQL.",
@@ -251,7 +251,7 @@ describe("SkillRepository", () => {
   it("records global-only outcomes when no procedural context is present", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "TypeScript generic inference fails",
       approach: "Reduce the generic to a smaller reproduction.",
@@ -272,7 +272,7 @@ describe("SkillRepository", () => {
   it("records global and context outcomes together when context is present", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "TypeScript generic inference fails",
       approach: "Reduce the generic to a smaller reproduction.",
@@ -313,7 +313,7 @@ describe("SkillRepository", () => {
   it("does not mutate superseded skills when recording late outcomes", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const replacementId = createSkillId();
     const skill = await harness.skillRepository.add({
       applies_when: "Late procedural feedback",
@@ -351,7 +351,7 @@ describe("SkillRepository", () => {
   it("atomically claims and clears skill split work", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "Divergent split candidate",
       approach: "Claim before planning the split.",
@@ -395,7 +395,7 @@ describe("SkillRepository", () => {
   it("does not return superseded skill vectors after split overfetch filtering", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "Rust lifetime debugging",
       approach: "Compare the borrow checker failure against a known-good ownership pattern.",
@@ -487,7 +487,7 @@ describe("SkillRepository", () => {
       embeddingClient: new TestEmbeddingClient(vectors),
     });
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const rustContext = deriveProceduralContextKey({
       problem_kind: "code_debugging",
       domain_tags: ["rust"],
@@ -549,7 +549,7 @@ describe("SkillRepository", () => {
   it("samples global skill posteriors when context has no stats yet", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "Atlas deployment debugging",
       approach: "Compare deploy logs.",
@@ -585,7 +585,7 @@ describe("SkillRepository", () => {
   it("preserves no-context sampler order when a context stats repository is configured", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await harness.skillRepository.add({
       applies_when: "Rust lifetime debugging",
       approach: "Reduce the borrow scope.",
@@ -654,7 +654,7 @@ describe("SkillRepository", () => {
   it("uses context-weighted posteriors when context stats exist", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const globalStrong = await harness.skillRepository.add({
       applies_when: "Atlas deployment debugging",
       approach: "Use the globally common deployment fix.",
@@ -734,7 +734,7 @@ describe("SkillRepository", () => {
   it("rolls back global skill counters when contextual stats recording fails", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     const skill = await harness.skillRepository.add({
       applies_when: "TypeScript generic inference fails",
       approach: "Reduce the generic to a smaller reproduction.",
@@ -975,7 +975,7 @@ describe("SkillRepository", () => {
       ),
     });
     const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
+    await harness.episodicRepository.createEpisode(episode);
     await harness.skillRepository.add({
       applies_when: "Atlas deployment rollback",
       approach: "Compare deploy logs and rollback state.",

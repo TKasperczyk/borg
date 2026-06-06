@@ -720,7 +720,7 @@ describe("review queue", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Misattributed review",
@@ -1270,7 +1270,7 @@ describe("review queue", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(createEpisodeFixture());
+    const episode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
     const goal = harness.goalsRepository.add({
       description: "Stabilize Atlas",
       priority: 8,
@@ -1592,7 +1592,7 @@ describe("review queue", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture({
         title: "Correction target episode",
         narrative: "Original narrative.",

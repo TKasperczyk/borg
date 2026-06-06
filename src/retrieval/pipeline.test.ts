@@ -195,8 +195,8 @@ describe("retrieval pipeline", () => {
       content: "retrospective note",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
-    await repo.insert(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0, 1, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0, 1, 0, 0]));
 
     const pipeline = new RetrievalPipeline({
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -266,8 +266,8 @@ describe("retrieval pipeline", () => {
       content: "retrospective note",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
-    await repo.insert(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0, 1, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0, 1, 0, 0]));
     const episodeIds = ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"] as const;
     type EpisodeIndexProbeRow = {
       episode_id: string;
@@ -438,7 +438,7 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    await fixture.episodicRepository.insert(
+    await fixture.episodicRepository.createEpisode(
       createEpisode(createEpisodeId(), createStreamEntryId(), [1, 0, 0, 0]),
     );
 
@@ -823,7 +823,7 @@ describe("retrieval pipeline", () => {
     });
     const missingId = "strm_cccccccccccccccc" as Episode["source_stream_ids"][number];
 
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_aaaaaaaaaaaaaaaa", resolvedEntry.id, [1, 0, 0, 0]),
       source_stream_ids: [resolvedEntry.id, missingId],
     });
@@ -879,10 +879,10 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    await repo.insert(
+    await repo.createEpisode(
       createEpisode("ep_publicvisible000", "strm_publicvisible000" as never, [1, 0, 0, 0]),
     );
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_scopehidden00001", "strm_scopehidden00001" as never, [1, 0, 0, 0]),
       audience_entity_id: "ent_bbbbbbbbbbbbbbbb" as never,
       shared: false,
@@ -948,8 +948,10 @@ describe("retrieval pipeline", () => {
       content: "planning follow-up",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
-    await repo.insert(createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0.9, 0.1, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]));
+    await repo.createEpisode(
+      createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [0.9, 0.1, 0, 0]),
+    );
 
     const iterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
     const pipeline = new RetrievalPipeline({
@@ -988,7 +990,7 @@ describe("retrieval pipeline", () => {
       content: "planning kickoff",
     });
     const episodeId = "ep_aaaaaaaaaaaaaaa1";
-    await episodicRepository.insert(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
+    await episodicRepository.createEpisode(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
 
     const indexedIterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
     const indexedPipeline = new RetrievalPipeline({
@@ -1039,7 +1041,7 @@ describe("retrieval pipeline", () => {
       content: "planning kickoff",
     });
     const episodeId = "ep_bbbbbbbbbbbbbbb2";
-    await episodicRepository.insert(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
+    await episodicRepository.createEpisode(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
     db.prepare("DELETE FROM stream_entry_index WHERE entry_id = ?").run(entry.id);
 
     const iterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
@@ -1106,10 +1108,10 @@ describe("retrieval pipeline", () => {
       content: "not cited",
     });
 
-    await episodicRepository.insert(
+    await episodicRepository.createEpisode(
       createEpisode("ep_multisession0001", defaultEntry.id, [1, 0, 0, 0]),
     );
-    await episodicRepository.insert(
+    await episodicRepository.createEpisode(
       createEpisode("ep_multisession0002", secondaryEntry.id, [0.9, 0.1, 0, 0]),
     );
 
@@ -1158,7 +1160,7 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_privateepisode01", "strm_privateepisode01" as never, [1, 0, 0, 0]),
       audience_entity_id: "ent_cccccccccccccccc" as never,
       shared: false,
@@ -1217,7 +1219,7 @@ describe("retrieval pipeline", () => {
       "strm_archivedlookup01" as never,
       [1, 0, 0, 0],
     );
-    await repo.insert(episode);
+    await repo.createEpisode(episode);
     repo.updateStats(episode.id, {
       archived: true,
     });
@@ -1274,12 +1276,12 @@ describe("retrieval pipeline", () => {
       content: "release planning followup",
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]),
       title: "release goal",
       narrative: "release goal context",
     });
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [1, 0, 0, 0]),
       title: "generic note",
     });
@@ -1380,7 +1382,7 @@ describe("retrieval pipeline", () => {
       content: "Atlas deploy failure",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
     const atlas = await semanticNodeRepository.insert({
       id: "semn_aaaaaaaaaaaaaaaa" as never,
       kind: "entity",
@@ -1565,7 +1567,7 @@ describe("retrieval pipeline", () => {
     });
 
     const episode = createEpisode("ep_aaaaaaaaaaaaaaaa", "strm_aaaaaaaaaaaaaaaa", [1, 0, 0, 0]);
-    await repo.insert(episode);
+    await repo.createEpisode(episode);
     repo.updateStats(episode.id, {
       archived: true,
     });
@@ -1688,7 +1690,7 @@ describe("retrieval pipeline", () => {
       content: "Atlas deploy note",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
+    await repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
     const atlas = await semanticNodeRepository.insert({
       id: "semn_aaaaaaaaaaaaaaaa" as never,
       kind: "entity",
@@ -1816,7 +1818,7 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_aaaaaaaaaaaaaaaa", "strm_aaaaaaaaaaaaaaaa", [1, 0, 0, 0]),
       title: "Atlas deployment note",
     });
@@ -1907,7 +1909,7 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
-    await repo.insert({
+    await repo.createEpisode({
       ...createEpisode("ep_groupvisibility0", "strm_groupvisible0000" as never, [1, 0, 0, 0]),
       title: "Atlas deployment note",
     });

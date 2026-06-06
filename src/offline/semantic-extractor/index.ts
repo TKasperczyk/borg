@@ -227,17 +227,15 @@ async function selectEpisodesForExtraction(
   const maxEpisodesPerRun = ctx.config.offline.semanticExtractor.maxEpisodesPerRun;
   const maxInputTokensPerRun = ctx.config.offline.semanticExtractor.maxInputTokensPerRun;
   const processed = await processedEpisodeIds(ctx);
-  const episodes = (await ctx.episodicRepository.listAll()).sort(compareEpisodesOldestFirst);
+  const episodes = (await ctx.episodicRepository.listEffectivelyVisible()).sort(
+    compareEpisodesOldestFirst,
+  );
   const selected: Episode[] = [];
   let selectedInputTokens = 0;
   let eligibleCount = 0;
   let selectionClosed = false;
 
   for (const episode of episodes) {
-    if (ctx.episodicRepository.getStats(episode.id)?.archived === true) {
-      continue;
-    }
-
     if (processed.has(episode.id)) {
       continue;
     }

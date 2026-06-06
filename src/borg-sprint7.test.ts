@@ -185,8 +185,8 @@ describe("Borg Sprint 7", () => {
         dominant_emotion: "joy",
       },
     });
-    await episodicRepository.insert(negativeEpisode);
-    await episodicRepository.insert(positiveEpisode);
+    await episodicRepository.createEpisode(negativeEpisode);
+    await episodicRepository.createEpisode(positiveEpisode);
     sqlite.close();
     await lance.close();
 

@@ -66,7 +66,7 @@ describe("review queue revalidation", () => {
       provenance: "transport_audience_label",
     });
     const audienceSource = await appendSourceEntry(harness, "Otto is my dog.");
-    const audienceEpisode = await harness.episodicRepository.insert(
+    const audienceEpisode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Audience source",
@@ -95,7 +95,7 @@ describe("review queue revalidation", () => {
     );
 
     const realSource = await appendSourceEntry(harness, "Riley led the workshop, not Tom.");
-    const realEpisode = await harness.episodicRepository.insert(
+    const realEpisode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Real misattribution source",
@@ -226,7 +226,7 @@ describe("review queue revalidation", () => {
       provenance: "transport_audience_label",
     });
     const persistedSource = await appendSourceEntry(harness, "Otto is my dog.");
-    const persistedEpisode = await harness.episodicRepository.insert(
+    const persistedEpisode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Persisted enqueue source",
@@ -254,7 +254,7 @@ describe("review queue revalidation", () => {
       ),
     );
     const liveSource = await appendSourceEntry(harness, "Riley led the workshop, not Tom.");
-    const liveEpisode = await harness.episodicRepository.insert(
+    const liveEpisode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Changed live source",
@@ -347,7 +347,7 @@ describe("review queue revalidation", () => {
       provenance: "transport_audience_label",
     });
     const source = await appendSourceEntry(harness, "Otto is my dog.");
-    const episode = await harness.episodicRepository.insert(
+    const episode = await harness.episodicRepository.createEpisode(
       createEpisodeFixture(
         {
           title: "Audience source",

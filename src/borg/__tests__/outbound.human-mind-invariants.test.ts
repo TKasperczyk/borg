@@ -156,11 +156,11 @@ describe("proactive outbound human-mind invariants", () => {
 
       const internal = borgInternals<{
         deps: {
-          episodicRepository: Pick<EpisodicRepository, "insert">;
+          episodicRepository: Pick<EpisodicRepository, "createEpisode">;
           createStreamWriter: (sessionId: SessionId) => StreamWriter;
         };
       }>(borg);
-      await internal.deps.episodicRepository.insert(
+      await internal.deps.episodicRepository.createEpisode(
         createEpisodeFixture(
           {
             title: "Durable operator-only launch memory",

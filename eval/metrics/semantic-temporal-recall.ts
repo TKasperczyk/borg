@@ -77,8 +77,8 @@ export const semanticTemporalRecallMetric = {
         embedding: await embeddingClient.embed("Atlas deployment status stable"),
       });
 
-      await harness.episodicRepository.insert(historicalEpisode);
-      await harness.episodicRepository.insert(currentEpisode);
+      await harness.episodicRepository.createEpisode(historicalEpisode);
+      await harness.episodicRepository.createEpisode(currentEpisode);
 
       await harness.semanticNodeRepository.insert({
         id: ROOT_NODE_ID as never,

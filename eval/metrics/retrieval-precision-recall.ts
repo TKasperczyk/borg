@@ -81,7 +81,7 @@ export const retrievalPrecisionRecallMetric = {
 
       try {
         for (const episode of fixture.data.episodes) {
-          await harness.episodicRepository.insert(
+          await harness.episodicRepository.createEpisode(
             createEpisodeFixture({
               id: episode.id as never,
               title: episode.title,

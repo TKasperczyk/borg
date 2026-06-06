@@ -716,7 +716,7 @@ describe("belief reviser process", () => {
         title: "Target support evidence",
         tags: ["target"],
       });
-      await harness.episodicRepository.insert(episode);
+      await harness.episodicRepository.createEpisode(episode);
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [FRESH_EPISODE_ID]);
       const target = await insertNode(harness, "Target belief", [0, 1, 0, 0], [FRESH_EPISODE_ID]);
       const support = addEdge(harness, anchor, target, "supports", [FRESH_EPISODE_ID]);
@@ -1151,8 +1151,8 @@ describe("belief reviser process", () => {
         audience_entity_id: audienceB,
         shared: false,
       });
-      await harness.episodicRepository.insert(privateA);
-      await harness.episodicRepository.insert(privateB);
+      await harness.episodicRepository.createEpisode(privateA);
+      await harness.episodicRepository.createEpisode(privateB);
       const target = await insertNode(harness, "Audience target", [0, 1, 0, 0], [privateA.id]);
 
       enqueueNodeBeliefRevision(harness, target, {
@@ -1202,8 +1202,8 @@ describe("belief reviser process", () => {
         audience_entity_id: audienceB,
         shared: false,
       });
-      await harness.episodicRepository.insert(visible);
-      await harness.episodicRepository.insert(hidden);
+      await harness.episodicRepository.createEpisode(visible);
+      await harness.episodicRepository.createEpisode(hidden);
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [visible.id, hidden.id]);
       const survivor = await insertNode(harness, "Survivor", [0, 0, 1, 0], [visible.id]);
       const target = await insertNode(

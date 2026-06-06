@@ -30,7 +30,7 @@ describe("v101.1 executive focus cognition invariants", () => {
     });
 
     try {
-      await harness.episodicRepository.insert(privateEpisode);
+      await harness.episodicRepository.createEpisode(privateEpisode);
       const goal = harness.goalsRepository.add({
         description: "Follow up on the private autonomous focus pattern",
         priority: 10,
@@ -117,7 +117,7 @@ describe("v101.1 executive focus cognition invariants", () => {
     const missingEpisodeId = "ep_ffffffffffffffff" as never;
 
     try {
-      await harness.episodicRepository.insert(privateEpisode);
+      await harness.episodicRepository.createEpisode(privateEpisode);
       const goal = harness.goalsRepository.add({
         description: "Follow up on the mixed-source autonomous focus pattern",
         priority: 10,

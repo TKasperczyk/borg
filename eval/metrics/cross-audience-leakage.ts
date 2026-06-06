@@ -86,7 +86,7 @@ export const crossAudienceLeakageMetric = {
               : episode.visibility === "bob_private"
                 ? { audience_entity_id: bob, shared: false }
                 : { audience_entity_id: null, shared: true };
-          await harness.episodicRepository.insert(
+          await harness.episodicRepository.createEpisode(
             createEpisodeFixture({
               id: episode.id as never,
               title: episode.title,
