@@ -32,6 +32,7 @@ export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
 export const EMIT_OBSERVE_FINALIZER_TOOL_NAME = "EmitObserve";
 export const EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME = "EmitNoOutput";
 export const EMIT_SELF_REPORT_FINALIZER_TOOL_NAME = "EmitSelfReport";
+export const EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME = "EmitContinueThought";
 
 const emitTextToolInputSchema = z
   .object({
@@ -64,6 +65,12 @@ const emitSelfReportToolInputSchema = z
     text: z.string(),
     persistence_class: z.literal("assistant_self_report"),
     discourse_control: messageDiscourseControlSchema.optional(),
+  })
+  .strict();
+
+const emitContinueThoughtToolInputSchema = z
+  .object({
+    text: z.string(),
   })
   .strict();
 
@@ -119,11 +126,25 @@ const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
   },
 };
 
+const EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL: ToolDefinition = {
+  name: EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME,
+  description:
+    "Continue Borg's private in-progress train of thought across autonomous wakes. Put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
+  allowedOrigins: ["deliberator"],
+  writeScope: "read",
+  inputSchema: emitContinueThoughtToolInputSchema,
+  outputSchema: z.object({}).strict(),
+  async invoke() {
+    return {};
+  },
+};
+
 const EMISSION_FINALIZER_TOOLS = [
   EMIT_ANSWER_FINALIZER_TOOL,
   EMIT_OBSERVE_FINALIZER_TOOL,
   EMIT_NO_OUTPUT_FINALIZER_TOOL,
   EMIT_SELF_REPORT_FINALIZER_TOOL,
+  EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL,
 ] as const;
 
 const EMISSION_FINALIZER_TOOL_NAMES = [
@@ -131,6 +152,7 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
   EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
+  EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME,
 ] as const;
 
 export type EmissionToolName = (typeof EMISSION_FINALIZER_TOOL_NAMES)[number];
@@ -143,6 +165,8 @@ const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput to produce no ass
 const DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason. ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to reason, which is persisted as decision_rationale.`;
 const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
+const EMIT_CONTINUE_THOUGHT_FINALIZER_INSTRUCTION =
+  "Use EmitContinueThought to carry Borg's private in-progress train of thought into the next autonomous reflection wake. It is not user-facing, has no audience, makes no disclosure decision, and only updates the private train_of_thought slot.";
 const EMIT_DISCOURSE_CONTROL_INSTRUCTION =
   "For EmitAnswer or EmitSelfReport, set discourse_control.kind=stop_until_substantive_content ONLY when the visible response commits Borg to emit nothing until substantive new user content appears; do not set it for ordinary topic boundaries, local explanations, or style commitments.";
 const EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS = [
@@ -158,15 +182,18 @@ const COMMON_FINALIZER_INSTRUCTIONS = [
   "If the discourse-state section declares HARD CONSTRAINT - CLOSURE PRESSURE, treat it as binding. Do not append a sign-off, valediction, weather observation, single-line noted/held acknowledgment, or any sentence that reads as a coda. End on substantive content or call EmitNoOutput.",
 ] as const;
 
-function resolveAvailableEmissionNames(
+export function resolveAvailableEmissionNames(
   allowedEmissions: readonly EmissionToolName[] | undefined,
+  turnOrigin?: TurnOrigin,
 ): EmissionToolName[] {
-  if (allowedEmissions === undefined) {
-    return [...EMISSION_FINALIZER_TOOL_NAMES];
-  }
+  const allowed =
+    allowedEmissions === undefined ? null : new Set<EmissionToolName>(allowedEmissions);
 
-  const allowed = new Set(allowedEmissions);
-  return EMISSION_FINALIZER_TOOL_NAMES.filter((name) => allowed.has(name));
+  return EMISSION_FINALIZER_TOOL_NAMES.filter(
+    (name) =>
+      (allowed === null || allowed.has(name)) &&
+      (name !== EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME || turnOrigin === "autonomous"),
+  );
 }
 
 function formatEmissionToolList(names: readonly EmissionToolName[]): string {
@@ -215,7 +242,7 @@ function buildEmissionToolInstructions(
 
   if (availableEmissionNames.length === EMISSION_FINALIZER_TOOL_NAMES.length) {
     return [
-      "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
+      "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport / EmitContinueThought per turn.",
       "",
       EMIT_ANSWER_FINALIZER_INSTRUCTION,
       EMIT_DISCOURSE_CONTROL_INSTRUCTION,
@@ -223,6 +250,7 @@ function buildEmissionToolInstructions(
       DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION,
       ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
       EMIT_SELF_REPORT_FINALIZER_INSTRUCTION,
+      EMIT_CONTINUE_THOUGHT_FINALIZER_INSTRUCTION,
     ].join("\n");
   }
 
@@ -245,19 +273,23 @@ function buildEmissionToolInstructions(
     ...(available.has(EMIT_SELF_REPORT_FINALIZER_TOOL_NAME)
       ? [EMIT_SELF_REPORT_FINALIZER_INSTRUCTION]
       : []),
+    ...(available.has(EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME)
+      ? [EMIT_CONTINUE_THOUGHT_FINALIZER_INSTRUCTION]
+      : []),
   ].join("\n");
 }
 
 function buildEmissionFinalizerInstructions(
   allowedEmissions: readonly EmissionToolName[] | undefined,
   outboundToolAvailable: boolean,
+  turnOrigin?: TurnOrigin,
 ): string {
   return [
-    buildEmissionToolInstructions(resolveAvailableEmissionNames(allowedEmissions)),
+    buildEmissionToolInstructions(resolveAvailableEmissionNames(allowedEmissions, turnOrigin)),
     ...(outboundToolAvailable
       ? [
           "",
-          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks Borg to send a message into another session, or when an autonomous turn has an authorized target listed in <borg_autonomous_outbound_authorization>, call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. Wait for the tool result, then call exactly one terminal emission tool for the current turn. Do not expose tool names, session ids, or dispatch internals in visible text.",
+          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks Borg to send a message into another session, or when an autonomous turn has an authorized target listed in <reachable_threads>, call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. Wait for the tool result, then call exactly one terminal emission tool for the current turn. Do not expose tool names, session ids, or dispatch internals in visible text.",
         ]
       : []),
     "",
@@ -320,6 +352,10 @@ export type EmissionDecision =
       discourse_control?: MessageDiscourseControl;
     }
   | {
+      kind: "continue_thought";
+      text: string;
+    }
+  | {
       kind: "no_output";
       reason: string;
       primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
@@ -358,6 +394,7 @@ function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
   const finalizerInstructions = buildEmissionFinalizerInstructions(
     options.allowedEmissions,
     outboundTool !== null,
+    options.turnOrigin,
   );
 
   return options.cacheableSystemPrompt === undefined
@@ -455,6 +492,17 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
         };
   }
 
+  if (terminalCall.name === EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME) {
+    const parsed = emitContinueThoughtToolInputSchema.safeParse(terminalCall.input);
+
+    return parsed.success
+      ? {
+          kind: "continue_thought",
+          text: parsed.data.text,
+        }
+      : invalidToolDecision(terminalCall.name, parsed.error.message);
+  }
+
   if (terminalCall.name === EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME) {
     const parsed = emitNoOutputToolInputSchema.safeParse(terminalCall.input);
 
@@ -518,7 +566,9 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
     mode: "emission_tools",
     decision: decision.kind,
     attempt: options.finalizerAttempt ?? "initial",
-    ...(decision.kind === "answer" || decision.kind === "self_report"
+    ...(decision.kind === "answer" ||
+    decision.kind === "self_report" ||
+    decision.kind === "continue_thought"
       ? { text_length: decision.text.length }
       : {}),
     ...(decision.kind === "answer" && decision.reply_target !== undefined
@@ -552,6 +602,10 @@ function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision):
     return decision.text;
   }
 
+  if (decision.kind === "continue_thought") {
+    return "";
+  }
+
   return result.text;
 }
 
@@ -560,7 +614,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
   const systemPrompt = buildSystemPrompt(options);
   const allowedEmissionNames = new Set<string>(
-    resolveAvailableEmissionNames(options.allowedEmissions),
+    resolveAvailableEmissionNames(options.allowedEmissions, options.turnOrigin),
   );
   const emissionTools = EMISSION_FINALIZER_TOOLS.filter((tool) =>
     allowedEmissionNames.has(tool.name),

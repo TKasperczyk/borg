@@ -1,7 +1,8 @@
 import type { IdentityEvent } from "../../memory/identity/index.js";
+import type { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "scheduled_reflection" as const;
@@ -10,6 +11,11 @@ const WATERMARK_PROCESS_NAME = "autonomy:scheduled-reflection";
 type ScheduledReflectionPayload = {
   interval_ms: number;
   recent_identity_events?: IdentityEvent[];
+  prior_self_thought?: {
+    text: string;
+    updated_at: number;
+    self_entity_id: EntityId;
+  } & ReturnType<typeof memoryDisclosurePayloadFields>;
 };
 
 export type ScheduledReflectionTriggerOptions = {
@@ -29,6 +35,7 @@ export function createScheduledReflectionTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "contemplative",
     async scan() {
       const nowMs = clock.now();
       const watermark = options.watermarkRepository.get(WATERMARK_PROCESS_NAME, sessionId);

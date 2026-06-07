@@ -33,6 +33,7 @@ export function createCommitmentRevokedCondition(
   return {
     name: CONDITION_NAME,
     type: "condition",
+    sourceCategory: "operational",
     async scan() {
       return options.commitmentRepository
         .list()

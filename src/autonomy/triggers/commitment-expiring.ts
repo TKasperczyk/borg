@@ -37,6 +37,7 @@ export function createCommitmentExpiringTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "operational",
     async scan() {
       const nowMs = clock.now();
       const dueEvents = options.commitmentRepository

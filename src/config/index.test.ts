@@ -88,6 +88,7 @@ describe("config", () => {
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
     expect(config.autonomy.proactiveOutbound).toEqual({
       enabled: false,
       maxPostsPerWindow: 2,
@@ -266,11 +267,13 @@ describe("config", () => {
       env: {
         BORG_AUTONOMY_MAX_WAKES_PER_WINDOW: "9",
         BORG_AUTONOMY_BUDGET_WINDOW_MS: "7200000",
+        BORG_AUTONOMY_RESERVED_CONTEMPLATIVE_WAKES_PER_WINDOW: "2",
       },
     });
 
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
+    expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {

@@ -64,6 +64,7 @@ import {
   type GoalRecord,
 } from "../memory/self/index.js";
 import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
+import { trainOfThoughtMigrations } from "../memory/train-of-thought/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
@@ -543,6 +544,7 @@ export async function createOfflineTestHarness(
       streamWatermarkMigrations,
       streamEntryIndexMigrations,
       selfDecisionMigrations,
+      trainOfThoughtMigrations,
     ),
   });
   const episodesTable = await lance.openTable({

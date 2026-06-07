@@ -2898,28 +2898,37 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     ],
   };
 
-  it("returns null when there is nothing reachable", () => {
+  it("returns null outside autonomous turns", () => {
     expect(buildAutonomousOutboundAuthorizationSection(null)).toBeNull();
-    expect(
-      buildAutonomousOutboundAuthorizationSection({ ...baseContext, targets: [] }),
-    ).toBeNull();
+    expect(buildAutonomousOutboundAuthorizationSection(baseContext, "user")).toBeNull();
+  });
+
+  it("renders open-interval framing for autonomous turns without reachable targets", () => {
+    const section = buildAutonomousOutboundAuthorizationSection(null, "autonomous") ?? "";
+
+    expect(section).toContain("<borg_autonomous_reflection>");
+    expect(section).toContain("<reflection_posture>");
+    expect(section).toContain("open interval alone with your own thoughts");
+    expect(section).toContain("<action_menu>");
+    expect(section).toContain("EmitContinueThought");
+    expect(section).not.toContain("<reachable_threads");
   });
 
   it("frames the section as solitude and not a task queue", () => {
-    const section = buildAutonomousOutboundAuthorizationSection(baseContext) ?? "";
+    const section = buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous") ?? "";
 
     expect(section).toContain("<reflection_posture>");
     expect(section).toContain("self-directed reflection");
     // Non-coercive: silence is validated, posting is never instructed.
     expect(section).toContain("Silence is a complete and ordinary outcome");
-    expect(section).toContain("under no obligation");
+    expect(section).toContain("tool.outbound.post only when reachable_threads");
     expect(section.toLowerCase()).not.toContain("you should post");
   });
 
   it("binds a reachable thread to a legible label and its origin audience", () => {
-    const section = buildAutonomousOutboundAuthorizationSection(baseContext) ?? "";
+    const section = buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous") ?? "";
 
-    expect(section).toContain("<reachable_threads>");
+    expect(section).toContain("<reachable_threads ");
     expect(section).toContain(`session_id="${DEFAULT_SESSION_ID}"`);
     expect(section).toContain("<label>philosophy debate</label>");
     // audience_entity_id is the join to the origin_audience recall already carries.
@@ -2927,11 +2936,15 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
   });
 
   it("omits audience_entity_id when the thread has no audience entity", () => {
+    const target = baseContext.targets[0]!;
     const section =
-      buildAutonomousOutboundAuthorizationSection({
-        ...baseContext,
-        targets: [{ ...baseContext.targets[0], audience_entity_id: null }],
-      }) ?? "";
+      buildAutonomousOutboundAuthorizationSection(
+        {
+          ...baseContext,
+          targets: [{ ...target, audience_entity_id: null }],
+        },
+        "autonomous",
+      ) ?? "";
 
     expect(section).toContain("<label>philosophy debate</label>");
     expect(section).not.toContain("<audience_entity_id>");

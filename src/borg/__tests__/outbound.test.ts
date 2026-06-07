@@ -639,7 +639,7 @@ describe("proactive outbound", () => {
       expect(targetMessages).toHaveLength(1);
       expect(
         llm.requests.some((request) =>
-          requestText(request).includes("borg_autonomous_outbound_authorization"),
+          requestText(request).includes("borg_autonomous_reflection"),
         ),
       ).toBe(true);
 

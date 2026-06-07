@@ -796,10 +796,12 @@ describe("deliberator", () => {
       cache_control?: unknown;
     }[];
     const system = systemBlocks.map((block) => block.text).join("\n\n");
+    const finalizerInstructions = finalizerInstructionPrefix(llm.requests[0]?.system);
     expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-    expect(system).toContain(
-      "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
+    expect(finalizerInstructions).toContain(
+      "Your available terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport.",
     );
+    expect(finalizerInstructions).not.toContain("EmitContinueThought");
     expect(system).toContain("<borg_evidence_ledger>");
     expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
     const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer.completed");
@@ -808,6 +810,37 @@ describe("deliberator", () => {
       mode: "emission_tools",
       decision: "answer",
       text_length: "Tool-backed answer.".length,
+    });
+  });
+
+  it("exposes EmitContinueThought only on autonomous turns", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_continue_thought",
+          name: "EmitContinueThought",
+          input: { text: "Keep the private reflection alive." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnOrigin: "autonomous",
+      }),
+    );
+
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+      "EmitContinueThought",
+    ]);
+    expect(result.emission).toEqual({
+      kind: "continue_thought",
+      text: "Keep the private reflection alive.",
     });
   });
 
@@ -1145,6 +1178,36 @@ describe("deliberator", () => {
     });
   });
 
+  it("maps EmitContinueThought to a non-message private thought emission", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_continue_thought",
+          name: "EmitContinueThought",
+          input: {
+            text: "Keep following the question about whether the next wake should start here.",
+          },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-continue-thought",
+        turnOrigin: "autonomous",
+      }),
+    );
+
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toContain("EmitContinueThought");
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "continue_thought",
+      text: "Keep following the question about whether the next wake should start here.",
+    });
+  });
+
   it("suppresses EmitNoOutput responses with finalizer_no_output", async () => {
     const currentUserEntryId = createStreamEntryId();
     const audienceEntityId = createEntityId();
@@ -1394,7 +1457,7 @@ describe("deliberator", () => {
       "You emitted 0 terminal emission tool calls; emit exactly one.",
     );
     expect(requestSystemText(llm.requests[1]?.system)).toContain(
-      "Emit exactly one of EmitAnswer / EmitSelfReport / EmitNoOutput / EmitObserve with valid input.",
+      "Emit exactly one of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport with valid input.",
     );
     expect(
       tracer.events
@@ -1506,7 +1569,7 @@ describe("deliberator", () => {
               expect(retrySystem).toContain(expectedPromptFragment);
             }
             expect(retrySystem).toContain(
-              "Emit exactly one of EmitAnswer / EmitSelfReport / EmitNoOutput / EmitObserve with valid input.",
+              "Emit exactly one of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport with valid input.",
             );
 
             return emitFinalizerToolResponse({

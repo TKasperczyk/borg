@@ -5,7 +5,10 @@ import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
+import { memoryDisclosurePayloadFields } from "../cognition/disclosure-labels.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
+import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
+import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 
 import type {
   AutonomyConditionName,
@@ -40,12 +43,14 @@ export type AutonomySchedulerOptions = {
   intervalMs: number;
   maxWakesPerWindow: number;
   budgetWindowMs: number;
+  reservedContemplativeWakesPerWindow?: number;
   sessionId?: SessionId;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   watermarkRepository: StreamWatermarkRepository;
   wakeRepository: AutonomyWakesRepository;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "record">;
+  trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "get">;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   toolDispatcher: ToolDispatcher;
   sources: readonly AutonomyWakeSource[];
@@ -77,6 +82,10 @@ function summarizeAutonomousDecision(turnResult: TurnResult): string {
     ).replaceAll("_", " ");
 
     return summarizeOutcome(`Stayed silent (${outcomeClass}): ${detail}`);
+  }
+
+  if (turnResult.emission.kind === "continue_thought") {
+    return "Continued private train of thought.";
   }
 
   return "";
@@ -202,16 +211,33 @@ export class AutonomyScheduler {
       try {
         for (const scannedEvent of dueEvents) {
           const dueEvent = scannedEvent.event;
+          const sourceCategory = scannedEvent.source.sourceCategory;
           const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
+          const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff);
+          const reservedContemplativeWakes = Math.min(
+            this.options.maxWakesPerWindow,
+            Math.max(0, Math.floor(this.options.reservedContemplativeWakesPerWindow ?? 0)),
+          );
+          const contemplativeWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
+            sourceCategory: "contemplative",
+          });
+          const reservedContemplativeSlotsRemaining = Math.max(
+            0,
+            reservedContemplativeWakes - contemplativeWakesInWindow,
+          );
+          const operationalWakeLimit =
+            this.options.maxWakesPerWindow - reservedContemplativeSlotsRemaining;
 
           if (
-            this.options.wakeRepository.countSince(budgetCutoff) >= this.options.maxWakesPerWindow
+            totalWakesInWindow >= this.options.maxWakesPerWindow ||
+            (sourceCategory !== "contemplative" && totalWakesInWindow >= operationalWakeLimit)
           ) {
             budgetSkipped += 1;
             eventResults.push({
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
               sourceType: dueEvent.sourceType,
+              sourceCategory,
               status: "budget_skipped",
               payload: dueEvent.payload,
               outcomeSummary: "Skipped because autonomy wake budget was exhausted.",
@@ -225,6 +251,7 @@ export class AutonomyScheduler {
               kind: "autonomous_wake",
               trigger_type: dueEvent.sourceType,
               source_name: dueEvent.sourceName,
+              source_category: sourceCategory,
               payload: dueEvent.payload,
               ts: this.clock.now(),
             },
@@ -237,6 +264,7 @@ export class AutonomyScheduler {
                 : null,
             session_id: this.sessionId,
             wake_source_type: dueEvent.sourceType,
+            source_category: sourceCategory,
           });
 
           const preparedEvent = await this.prepareEvent(dueEvent);
@@ -259,6 +287,7 @@ export class AutonomyScheduler {
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
               sourceType: dueEvent.sourceType,
+              sourceCategory,
               status: "error",
               payload: dueEvent.payload,
               error: preparedEvent.toolError,
@@ -323,6 +352,7 @@ export class AutonomyScheduler {
                 id: dueEvent.id,
                 sourceName: dueEvent.sourceName,
                 sourceType: dueEvent.sourceType,
+                sourceCategory,
                 status: "fired",
                 payload: preparedEvent.event.payload,
                 outcomeSummary,
@@ -335,6 +365,7 @@ export class AutonomyScheduler {
                 id: dueEvent.id,
                 sourceName: dueEvent.sourceName,
                 sourceType: dueEvent.sourceType,
+                sourceCategory,
                 status: "error",
                 payload: preparedEvent.event.payload,
                 outcomeSummary: `Autonomous turn succeeded but watermark commit failed: ${formatError(error)}`,
@@ -371,6 +402,7 @@ export class AutonomyScheduler {
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
               sourceType: dueEvent.sourceType,
+              sourceCategory,
               status: busy ? "busy_skipped" : "error",
               payload: preparedEvent.event.payload,
               outcomeSummary,
@@ -574,6 +606,7 @@ export class AutonomyScheduler {
         const output = result.output as {
           events: unknown[];
         };
+        const priorSelfThought = this.options.trainOfThoughtRepository?.get() ?? null;
 
         return {
           source,
@@ -582,6 +615,16 @@ export class AutonomyScheduler {
             payload: {
               ...dueEvent.payload,
               recent_identity_events: output.events,
+              ...(priorSelfThought === null
+                ? {}
+                : {
+                    prior_self_thought: {
+                      text: priorSelfThought.text,
+                      updated_at: priorSelfThought.updated_at,
+                      self_entity_id: priorSelfThought.self_entity_id,
+                      ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+                    },
+                  }),
             },
           },
         };

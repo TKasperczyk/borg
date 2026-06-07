@@ -42,6 +42,7 @@ import type {
 } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
+import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -119,6 +120,7 @@ export type BorgDependencies = {
   sharedStateRepository: SharedStateRepository;
   activityRepository: ActivityRepository;
   selfDecisionRepository: SelfDecisionRepository;
+  trainOfThoughtRepository: TrainOfThoughtRepository;
   observedEventRepository: ObservedEventRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;

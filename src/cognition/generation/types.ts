@@ -157,6 +157,11 @@ export type PendingTurnEmission =
       markerEntryId?: StreamEntryId;
     }
   | {
+      kind: "continue_thought";
+      text: string;
+      markerEntryId?: StreamEntryId;
+    }
+  | {
       kind: "suppressed";
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
@@ -180,6 +185,10 @@ export type TurnEmission =
   | {
       kind: "observed";
       reason: string;
+      markerEntryId?: StreamEntryId;
+    }
+  | {
+      kind: "continue_thought";
       markerEntryId?: StreamEntryId;
     }
   | {

@@ -189,6 +189,44 @@ async function persistMessageEmission(input: {
   };
 }
 
+async function persistContinueThoughtEmission(input: {
+  options: TurnPhaseCoordinatorOptions;
+  turnId: string;
+  turnInput: TurnPhaseInput;
+  streamWriter: StreamWriter;
+  actionEmission: Extract<PendingTurnEmission, { kind: "continue_thought" }>;
+  responseTo?: StreamResponseTo;
+}): Promise<PersistedMessageEmission> {
+  if (input.options.trainOfThoughtRepository === undefined) {
+    throw new CognitionError("Train of thought repository is not configured");
+  }
+
+  const selfEntityId = input.options.entityRepository.resolve("self", {
+    kind: "self",
+    provenance: "assistant_seeded",
+  });
+  const stored = input.options.trainOfThoughtRepository.upsert({
+    text: input.actionEmission.text,
+    selfEntityId,
+  });
+  const entry = await input.streamWriter.append({
+    kind: "internal_event",
+    turn_id: input.turnId,
+    turn_status: ACTIVE_TURN_STATUS,
+    content: {
+      kind: "train_of_thought_continued",
+      turn_id: input.turnId,
+      self_entity_id: stored.self_entity_id,
+      updated_at: stored.updated_at,
+      text_length: stored.text.length,
+    },
+    ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
+    audience: input.turnInput.audience,
+  });
+
+  return { entry };
+}
+
 function advanceChatResponseWatermark(input: {
   options: TurnPhaseCoordinatorOptions;
   sessionId: SessionId;
@@ -541,6 +579,15 @@ export async function runPostGenerationPhase(input: {
             actionEmission,
             responseTo: input.responseTo,
           })
+        : actionEmission.kind === "continue_thought"
+          ? await persistContinueThoughtEmission({
+              options: input.options,
+              turnId: input.turnId,
+              turnInput: input.turnInput,
+              streamWriter: input.streamWriter,
+              actionEmission,
+              responseTo: input.responseTo,
+            })
         : actionEmission.kind === "observed"
           ? {
               entry: await input.options.discourseStateService.appendObservationMarker({
@@ -647,6 +694,11 @@ export async function runPostGenerationPhase(input: {
           reason: actionEmission.reason,
           markerEntryId: persistedAgentEntry.id,
         }
+      : actionEmission.kind === "continue_thought"
+        ? {
+            kind: "continue_thought",
+            markerEntryId: persistedAgentEntry.id,
+          }
       : {
           kind: "message",
           content: actionResult.response,

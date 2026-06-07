@@ -36,6 +36,7 @@ export function createScheduledWakeTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "contemplative",
     async scan() {
       const nowMs = clock.now();
       const duePending = options.scheduledWakesRepository.listDuePending(nowMs);

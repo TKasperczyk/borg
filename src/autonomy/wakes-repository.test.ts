@@ -25,6 +25,7 @@ describe("AutonomyWakesRepository", () => {
         condition_name: null,
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
+        source_category: "contemplative",
       });
       clock.set(2_000);
       repository.record({
@@ -36,6 +37,9 @@ describe("AutonomyWakesRepository", () => {
 
       expect(repository.countSince(1_000)).toBe(2);
       expect(repository.countSince(1_500)).toBe(1);
+      expect(repository.countSince(0, { sourceCategory: "contemplative" })).toBe(1);
+      expect(repository.countSince(0, { sourceCategory: "operational" })).toBe(1);
+      expect(repository.listSince(0, 10)[1]?.source_category).toBe("contemplative");
       expect(repository.listSince(0, 10).map((wake) => wake.trigger_name)).toEqual([
         "commitment_revoked",
         "scheduled_reflection",

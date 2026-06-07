@@ -26,6 +26,7 @@ export const AUTONOMY_WAKE_SOURCE_NAMES = [
 
 export type AutonomyWakeSourceName = (typeof AUTONOMY_WAKE_SOURCE_NAMES)[number];
 export type AutonomyWakeSourceType = "trigger" | "condition";
+export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 
 export type DueEvent<Payload extends Record<string, unknown> = Record<string, unknown>> = {
   id: string;
@@ -40,6 +41,7 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
   {
     name: AutonomyWakeSourceName;
     type: AutonomyWakeSourceType;
+    sourceCategory: AutonomyWakeSourceCategory;
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
     // Optional lifecycle hook invoked by the scheduler immediately after a wake
@@ -60,6 +62,7 @@ export type AutonomyTickEventResult = {
   id: string;
   sourceName: AutonomyWakeSourceName;
   sourceType: AutonomyWakeSourceType;
+  sourceCategory: AutonomyWakeSourceCategory;
   status: "fired" | "budget_skipped" | "busy_skipped" | "error";
   payload: Record<string, unknown>;
   outcomeSummary?: string;

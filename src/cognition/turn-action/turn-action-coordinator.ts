@@ -284,7 +284,9 @@ export class TurnActionCoordinator {
                 regeneration: commitmentCheck.emission.regeneration,
                 commitments: input.applicableCommitments,
                 regeneratedEmissionKind: regeneratedEmission.kind,
-                regeneratedEmissionReason: regeneratedEmission.reason,
+                ...("reason" in regeneratedEmission
+                  ? { regeneratedEmissionReason: regeneratedEmission.reason }
+                  : {}),
               });
 
               return {

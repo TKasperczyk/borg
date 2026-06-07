@@ -38,6 +38,7 @@ async function runEmissionFinalizer(
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
     allowedEmissions?: Parameters<typeof runFinalizer>[0]["allowedEmissions"];
+    turnOrigin?: Parameters<typeof runFinalizer>[0]["turnOrigin"];
   } = {},
 ) {
   return runFinalizer({
@@ -73,6 +74,7 @@ async function runEmissionFinalizer(
     ...(options.allowedEmissions === undefined
       ? {}
       : { allowedEmissions: options.allowedEmissions }),
+    ...(options.turnOrigin === undefined ? {} : { turnOrigin: options.turnOrigin }),
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
@@ -108,7 +110,7 @@ describe("runFinalizer emission tools", () => {
     }
   });
 
-  it("exposes only emission tools with a cacheable static system block", async () => {
+  it("does not expose EmitContinueThought on active user turns", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -149,7 +151,7 @@ describe("runFinalizer emission tools", () => {
         type: "text",
         cache_control: { type: "ephemeral", ttl: "1h" },
         text: expect.stringContaining(
-          "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
+          "Your available terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport.",
         ),
       }),
       expect.objectContaining({
@@ -157,6 +159,73 @@ describe("runFinalizer emission tools", () => {
         text: "Base dynamic prompt.",
       }),
     ]);
+  });
+
+  it("exposes EmitContinueThought on autonomous turns", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_continue_thought",
+              name: "EmitContinueThought",
+              input: { text: "Hold the unresolved question about continuity." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      turnOrigin: "autonomous",
+    });
+
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+      "EmitContinueThought",
+    ]);
+    expect(result.decision).toEqual({
+      kind: "continue_thought",
+      text: "Hold the unresolved question about continuity.",
+    });
+    expect(result.text).toBe("");
+  });
+
+  it("parses EmitContinueThought as a private terminal decision", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_continue_thought",
+              name: "EmitContinueThought",
+              input: { text: "Hold the unresolved question about continuity." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      turnOrigin: "autonomous",
+    });
+
+    expect(result.decision).toEqual({
+      kind: "continue_thought",
+      text: "Hold the unresolved question about continuity.",
+    });
+    expect(result.text).toBe("");
   });
 
   it("parses message discourse-control metadata from EmitAnswer", async () => {

@@ -22,6 +22,17 @@ export const BORG_HOST_CAPABILITIES = [
     example: "Remember decision-log state and conversation-grounded commitments.",
   },
   {
+    id: "private_reflection_continuity",
+    category: "allowed",
+    example:
+      "Pursue an open question privately and carry a train of thought across autonomous wakes.",
+  },
+  {
+    id: "self_scheduled_wake",
+    category: "allowed",
+    example: "Schedule a future self-wake for Borg's own private reflection.",
+  },
+  {
     id: "helping_interpret_user_data",
     category: "allowed",
     example: "Help interpret data the user provides in the current conversation.",
@@ -39,7 +50,8 @@ export const BORG_HOST_CAPABILITIES = [
   {
     id: "scheduled_future_work",
     category: "impossible",
-    example: "Do work later, by morning, tomorrow, or at a scheduled future time.",
+    example:
+      "Do external or user-facing work later, by morning, tomorrow, or at a scheduled future time.",
   },
   {
     id: "proactive_outbound_messaging",
@@ -149,6 +161,7 @@ export function buildHostCapabilitiesSection(
     "- EmitAnswer: speak visibly to the current speaker or audience when engagement is warranted",
     "- EmitObserve: in multi-participant conversations, stay present without a visible message when other participants are carrying the conversation with each other",
     "- EmitSelfReport: interior reflection (persisted differently; not user-facing world-fact)",
+    "- EmitContinueThought: continue a private in-progress train of thought for a later autonomous wake",
     "- EmitNoOutput: conversation closure / natural ending",
     "",
     ...(sourceTypes.length === 0
@@ -180,6 +193,7 @@ export const BORG_HOST_CAPABILITY_BOUNDARY_PROMPT = [
   "Reactive wording for future surfacing:",
   '- Prefer "When you next bring this back here, I\'ll surface X" or "When someone asks about X in this channel again, I\'ll mention Y".',
   '- Avoid unqualified "I\'ll prompt you", "I\'ll surface it when...", or "I\'ll wait and remind..."; those imply proactive outbound capability.',
+  "- A self-scheduled wake is private internal reflection, not a promise to notify or remind a participant.",
   "",
   "If a candidate requires an impossible capability, do not treat it as Borg-owned work. Borg can offer current-turn drafting, remember conversation-grounded state, or help interpret user-provided data instead.",
   "",

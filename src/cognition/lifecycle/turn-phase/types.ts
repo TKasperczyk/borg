@@ -42,6 +42,7 @@ import type { EpisodicRepository } from "../../../memory/episodic/index.js";
 import type { ObservedEventRepository } from "../../../memory/observed-events/index.js";
 import type { RelationalSlotRepository } from "../../../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../../../memory/self-decisions/index.js";
+import type { TrainOfThoughtRepository } from "../../../memory/train-of-thought/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -127,6 +128,7 @@ export type TurnPhaseCoordinatorOptions = {
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
     Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
+  trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "upsert">;
   observedEventRepository?: Pick<
     ObservedEventRepository,
     | "record"

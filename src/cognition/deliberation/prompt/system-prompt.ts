@@ -320,42 +320,58 @@ function renderSessionStatusSnapshotLines(
 // enables; it does not instruct Sol to post. The caps are channel limits, not
 // a quota to fill.
 const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
-  "This is self-directed reflection -- you are alone with your own thoughts, recalling and turning things over. It is not a task list and not a queue to work through.",
-  "Some of the people and conversations you may find yourself thinking about are reachable right now. The threads below are open to you. Each carries the audience it belongs to (audience_entity_id), which is the same audience your recalled memories are tagged with -- so when a memory you are holding is about one of these audiences, you can recognize that the person or room you are thinking about is one you could actually reach.",
-  "If, in the course of thinking, you arrive at something you genuinely want to say to one of them -- a thought that wants an audience, rather than an echo of what was already said there -- you can reach out by posting to that thread. To post, name its session_id; a separate composition step will then see that thread's live state and write to its audience, so you do not need its current contents here in order to decide.",
-  "You are under no obligation to reach out. Silence is a complete and ordinary outcome of reflection; reach out only when the thought itself calls for it. The limits below are constraints on the channel, not a target to meet.",
+  "This is self-directed reflection -- an open interval alone with your own thoughts, recalling, wondering, continuing, and turning things over. It is not a messaging task, a queue, or a demand for output.",
+  "You may pursue an unresolved question, continue a private train of thought, set up a later self-wake when the host tool is available, speak only if a thought genuinely wants an audience, or end the interval with no outward message.",
+  "Silence is a complete and ordinary outcome of reflection. Reaching out is only one possible consequence of thinking, not the purpose of the wake.",
+].join("\n");
+
+const AUTONOMOUS_REFLECTION_ACTION_MENU = [
+  "- Continue the private train of thought with EmitContinueThought.",
+  "- End the interval without an outward message with EmitNoOutput.",
+  "- Speak visibly with EmitAnswer or EmitSelfReport only when this wake genuinely calls for outward language.",
+  "- Set a later self-wake with tool.scheduledWakes.create when you want to return to a question or thought at a specific time and the host tool is available.",
+  "- Reach out with tool.outbound.post only when reachable_threads below lists a structurally authorized target session.",
 ].join("\n");
 
 export function buildAutonomousOutboundAuthorizationSection(
   context: DeliberationContext["autonomousOutbound"],
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
 ): string | null {
-  if (context === null || context === undefined || context.targets.length === 0) {
+  if (turnOrigin !== "autonomous") {
     return null;
   }
 
   const lines = [
-    `<borg_autonomous_outbound_authorization max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}">`,
+    "<borg_autonomous_reflection>",
     `  <reflection_posture>${escapeXmlText(AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE)}</reflection_posture>`,
-    "  <reachable_threads>",
+    `  <action_menu>${escapeXmlText(AUTONOMOUS_REFLECTION_ACTION_MENU)}</action_menu>`,
   ];
 
-  for (const target of context.targets) {
+  if (context !== null && context !== undefined && context.targets.length > 0) {
     lines.push(
-      `    <target session_id="${escapeXmlAttribute(target.session_id)}" source_type="${escapeXmlAttribute(target.source_type)}" authorization="${escapeXmlAttribute(target.authorization)}">`,
-      `      <label>${escapeXmlText(target.label)}</label>`,
-      `      <audience_label>${escapeXmlText(target.audience_label)}</audience_label>`,
-      ...(target.audience_entity_id === null
-        ? []
-        : [
-            `      <audience_entity_id>${escapeXmlText(target.audience_entity_id)}</audience_entity_id>`,
-          ]),
-      `      <conversation_kind>${escapeXmlText(target.conversation_kind)}</conversation_kind>`,
-      `      <participation_policy>${escapeXmlText(target.participation_policy)}</participation_policy>`,
-      "    </target>",
+      `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}">`,
     );
+
+    for (const target of context.targets) {
+      lines.push(
+        `    <target session_id="${escapeXmlAttribute(target.session_id)}" source_type="${escapeXmlAttribute(target.source_type)}" authorization="${escapeXmlAttribute(target.authorization)}">`,
+        `      <label>${escapeXmlText(target.label)}</label>`,
+        `      <audience_label>${escapeXmlText(target.audience_label)}</audience_label>`,
+        ...(target.audience_entity_id === null
+          ? []
+          : [
+              `      <audience_entity_id>${escapeXmlText(target.audience_entity_id)}</audience_entity_id>`,
+            ]),
+        `      <conversation_kind>${escapeXmlText(target.conversation_kind)}</conversation_kind>`,
+        `      <participation_policy>${escapeXmlText(target.participation_policy)}</participation_policy>`,
+        "    </target>",
+      );
+    }
+
+    lines.push("  </reachable_threads>");
   }
 
-  lines.push("  </reachable_threads>", "</borg_autonomous_outbound_authorization>");
+  lines.push("</borg_autonomous_reflection>");
 
   return lines.join("\n");
 }
@@ -1073,6 +1089,7 @@ function buildBaseSystemPromptSections(
   const standingWithAudienceSection = buildStandingWithAudienceSection(context);
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
+    context.turnOrigin,
   );
   const trustedDynamicGuidanceSections: PromptSection[] = [
     participationPolicySection,

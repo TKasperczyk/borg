@@ -17,11 +17,13 @@ import {
   AUTONOMY_CONDITION_NAMES,
   AUTONOMY_WAKE_SOURCE_NAMES,
   type AutonomyConditionName,
+  type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
 } from "./types.js";
 
 const autonomyWakeSourceTypeSchema = z.enum(["trigger", "condition"]);
+const autonomyWakeSourceCategorySchema = z.enum(["contemplative", "operational"]);
 const autonomyWakeSourceNameSchema = z.enum(AUTONOMY_WAKE_SOURCE_NAMES);
 const autonomyConditionNameSchema = z.enum(AUTONOMY_CONDITION_NAMES);
 
@@ -37,6 +39,7 @@ const autonomyWakeInputSchema = z.object({
     .nullable()
     .optional(),
   wake_source_type: autonomyWakeSourceTypeSchema,
+  source_category: autonomyWakeSourceCategorySchema.optional().default("operational"),
 });
 
 const autonomyWakeRowSchema = z.object({
@@ -57,6 +60,7 @@ const autonomyWakeRowSchema = z.object({
     .transform((value) => parseSessionId(value))
     .nullable(),
   wake_source_type: autonomyWakeSourceTypeSchema,
+  source_category: autonomyWakeSourceCategorySchema,
 });
 
 export type AutonomyWakeRecord = {
@@ -66,6 +70,7 @@ export type AutonomyWakeRecord = {
   condition_name: AutonomyConditionName | null;
   session_id: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
+  source_category: AutonomyWakeSourceCategory;
 };
 
 export type AutonomyWakeRecordInput = {
@@ -73,6 +78,7 @@ export type AutonomyWakeRecordInput = {
   condition_name?: AutonomyConditionName | null;
   session_id?: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
+  source_category?: AutonomyWakeSourceCategory;
 };
 
 export type AutonomyWakesRepositoryOptions = {
@@ -89,6 +95,7 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
       row.condition_name === null || row.condition_name === undefined ? null : row.condition_name,
     session_id: row.session_id === null || row.session_id === undefined ? null : row.session_id,
     wake_source_type: row.wake_source_type,
+    source_category: row.source_category ?? "operational",
   });
 
   if (!parsed.success) {
@@ -121,14 +128,15 @@ export class AutonomyWakesRepository {
       condition_name: parsed.condition_name ?? null,
       session_id: parsed.session_id ?? null,
       wake_source_type: parsed.wake_source_type,
+      source_category: parsed.source_category,
     };
 
     this.db
       .prepare(
         `
           INSERT INTO autonomy_wakes (
-            id, ts, trigger_name, condition_name, session_id, wake_source_type
-          ) VALUES (?, ?, ?, ?, ?, ?)
+            id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -138,15 +146,28 @@ export class AutonomyWakesRepository {
         record.condition_name,
         record.session_id,
         record.wake_source_type,
+        record.source_category,
       );
 
     return record;
   }
 
-  countSince(ts: number): number {
+  countSince(
+    ts: number,
+    options: {
+      sourceCategory?: AutonomyWakeSourceCategory;
+    } = {},
+  ): number {
+    const categoryFilter = options.sourceCategory;
     const row = this.db
-      .prepare("SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ts >= ?")
-      .get(ts) as { count: number } | undefined;
+      .prepare(
+        categoryFilter === undefined
+          ? "SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ts >= ?"
+          : "SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ts >= ? AND source_category = ?",
+      )
+      .get(...(categoryFilter === undefined ? [ts] : [ts, categoryFilter])) as
+      | { count: number }
+      | undefined;
 
     return Number(row?.count ?? 0);
   }
@@ -156,7 +177,7 @@ export class AutonomyWakesRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type
+          SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category
           FROM autonomy_wakes
           WHERE ts >= ?
           ORDER BY ts DESC, id DESC

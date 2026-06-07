@@ -12,6 +12,7 @@ export {
   type AutonomyConditionName,
   type AutonomyTickEventResult,
   type AutonomyWakeSource,
+  type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
   type AutonomyTrigger,

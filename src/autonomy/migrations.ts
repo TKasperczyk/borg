@@ -52,4 +52,16 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "autonomy_wakes_source_category",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN source_category TEXT NOT NULL DEFAULT 'operational' CHECK (
+          source_category IN ('contemplative', 'operational')
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

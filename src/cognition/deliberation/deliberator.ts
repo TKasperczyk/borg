@@ -23,6 +23,7 @@ import {
   EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
+  resolveAvailableEmissionNames,
   runFinalizer,
   type EmissionDecision,
   type EmissionToolName,
@@ -64,7 +65,7 @@ import type {
 } from "./types.js";
 import type { SessionParticipationPolicy } from "../../sessions/index.js";
 import { isCreatorInOperatorContext } from "../authority.js";
-import { exposesOutboundTool } from "../types.js";
+import { exposesOutboundTool, type TurnOrigin } from "../types.js";
 
 export type {
   DeliberationContext,
@@ -165,13 +166,6 @@ type FinalizerEmission = {
 
 type InvalidToolDecision = Extract<EmissionDecision, { kind: "invalid_tool" }>;
 
-const INVALID_TOOL_RETRY_TERMINAL_TOOL_LIST = [
-  EMIT_ANSWER_FINALIZER_TOOL_NAME,
-  EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
-  EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
-  EMIT_OBSERVE_FINALIZER_TOOL_NAME,
-].join(" / ");
-
 function appendFinalizerPromptSections(
   base: readonly (string | null)[] | null,
   extra: readonly (string | null)[],
@@ -202,6 +196,7 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
     case "invalid_tool":
       return "finalizer_failed";
     case "answer":
+    case "continue_thought":
     case "observe":
     case "self_report":
       return null;
@@ -235,16 +230,20 @@ function invalidToolRetryCause(decision: InvalidToolDecision): string {
   return `${decision.toolName} input was invalid: ${decision.reason}`;
 }
 
-export function buildInvalidToolFinalizerRetryPromptSection(decision: InvalidToolDecision): string {
+export function buildInvalidToolFinalizerRetryPromptSection(
+  decision: InvalidToolDecision,
+  availableEmissionNames: readonly EmissionToolName[] = resolveAvailableEmissionNames(undefined),
+): string {
   return [
     "Your previous turn did not emit a valid final response.",
     invalidToolRetryCause(decision),
-    `Emit exactly one of ${INVALID_TOOL_RETRY_TERMINAL_TOOL_LIST} with valid input.`,
+    `Emit exactly one of ${availableEmissionNames.join(" / ")} with valid input.`,
   ].join(" ");
 }
 
 async function retryInvalidToolFinalizer(input: {
   initial: FinalizerResult;
+  availableEmissionNames: readonly EmissionToolName[];
   runRetry: (retryPromptSection: string) => Promise<FinalizerResult>;
 }): Promise<{
   result: FinalizerResult;
@@ -254,7 +253,10 @@ async function retryInvalidToolFinalizer(input: {
     return { result: input.initial };
   }
 
-  const retryPromptSection = buildInvalidToolFinalizerRetryPromptSection(input.initial.decision);
+  const retryPromptSection = buildInvalidToolFinalizerRetryPromptSection(
+    input.initial.decision,
+    input.availableEmissionNames,
+  );
   const retry = await input.runRetry(retryPromptSection);
 
   return retry.decision.kind === "invalid_tool"
@@ -410,6 +412,17 @@ function buildFinalizerEmission(
     };
   }
 
+  if (result.decision.kind === "continue_thought") {
+    return {
+      response: "",
+      emitted: false,
+      emission: {
+        kind: "continue_thought",
+        text: result.decision.text,
+      },
+    };
+  }
+
   if (result.decision.kind !== "answer") {
     return {
       response: "",
@@ -452,10 +465,18 @@ function cognitionThinkingOption(
 
 function allowedEmissionsForParticipationPolicy(
   policy: SessionParticipationPolicy | undefined,
+  turnOrigin: TurnOrigin | undefined,
 ): readonly EmissionToolName[] | undefined {
   switch (policy ?? "active") {
     case "active":
-      return undefined;
+      return turnOrigin === "autonomous"
+        ? undefined
+        : [
+            EMIT_ANSWER_FINALIZER_TOOL_NAME,
+            EMIT_OBSERVE_FINALIZER_TOOL_NAME,
+            EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
+            EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
+          ];
     case "paused":
     case "muted":
       return [EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME];
@@ -601,6 +622,11 @@ export class Deliberator {
     const thinking = cognitionThinkingOption(this.options);
     const allowedEmissions = allowedEmissionsForParticipationPolicy(
       effectiveContext.participationPolicy,
+      effectiveContext.turnOrigin,
+    );
+    const availableEmissionNames = resolveAvailableEmissionNames(
+      allowedEmissions,
+      effectiveContext.turnOrigin,
     );
     const manualOutboundAuthorized =
       isCreatorInOperatorContext({
@@ -648,6 +674,7 @@ export class Deliberator {
       });
       const finalizerRetry = await retryInvalidToolFinalizer({
         initial: response,
+        availableEmissionNames,
         runRetry: (retryPromptSection) =>
           this.runFinalizerPhase(context.turnId, {
             llmClient: this.options.llmClient,
@@ -902,6 +929,7 @@ export class Deliberator {
     });
     const finalizerRetry = await retryInvalidToolFinalizer({
       initial: finalResponse,
+      availableEmissionNames,
       runRetry: (retryPromptSection) =>
         this.runFinalizerPhase(context.turnId, {
           llmClient: this.options.llmClient,

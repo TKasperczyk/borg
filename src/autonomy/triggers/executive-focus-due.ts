@@ -353,6 +353,7 @@ export function createExecutiveFocusDueTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "operational",
     async scan() {
       if (!options.enabled) {
         return [];

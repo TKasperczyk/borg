@@ -821,7 +821,7 @@ export class SimulatorRunner {
         turnId: string;
         response: string;
         emitted: boolean;
-        emissionKind: "message" | "observed" | "suppressed";
+        emissionKind: "message" | "observed" | "suppressed" | "continue_thought";
         suppressionReason?: GenerationSuppressionReason;
       }> => {
         const result = await transport.chat(draft.message, {
@@ -874,7 +874,7 @@ export class SimulatorRunner {
           turnId: string;
           response: string;
           emitted: boolean;
-          emissionKind: "message" | "observed" | "suppressed";
+          emissionKind: "message" | "observed" | "suppressed" | "continue_thought";
           suppressionReason?: GenerationSuppressionReason;
           transportChatAttempts: number;
         } | null = null;

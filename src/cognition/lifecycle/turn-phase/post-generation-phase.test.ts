@@ -7,6 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../../../config/index.js";
 import { sharedStateMigrations } from "../../../memory/decision-artifacts/index.js";
 import { SharedStateRepository } from "../../../memory/decision-artifacts/repository.js";
+import {
+  TrainOfThoughtRepository,
+  trainOfThoughtMigrations,
+} from "../../../memory/train-of-thought/index.js";
 import type {
   ActionRecord,
   ActionRecordListFilter,
@@ -97,6 +101,195 @@ describe("runPostGenerationPhase", () => {
     while (cleanup.length > 0) {
       cleanup.pop()?.();
     }
+  });
+
+  it("upserts EmitContinueThought into the singleton and appends only a minimal marker", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-post-generation-continue-thought-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: trainOfThoughtMigrations,
+    });
+    cleanup.push(() => db.close());
+    const sessionId = createSessionId();
+    const turnId = "turn-continue-thought";
+    const clock = new FixedClock(50_000);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId,
+      clock,
+    });
+    cleanup.push(() => writer.close());
+    const trainOfThoughtRepository = new TrainOfThoughtRepository({ db, clock });
+    const selfEntityId = createEntityId();
+    const carriedText = "I should resume with the unresolved continuity question.";
+    const actionRepository = makeActionRepository([]);
+    const options = {
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+      },
+      clock,
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit: vi.fn(),
+      },
+      entityRepository: {
+        resolve: () => selfEntityId,
+        get: () => null,
+      },
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository,
+      goalsRepository: {
+        list: () => [],
+      },
+      commitmentRepository: {
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        list: () => [],
+        findByHandles: () => [],
+      },
+      attachmentRepository: {
+        isActiveForStreamEntry: () => true,
+      },
+      sharedStateRepository: {
+        get: () => null,
+      },
+      trainOfThoughtRepository,
+      createStreamReader: (readerSessionId: SessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+      turnActionCoordinator: {
+        run: vi.fn(async () => ({
+          actionResult: {
+            response: "",
+            tool_calls: [],
+            intents: [],
+            workingMemory: createWorkingMemory(sessionId, 50_000),
+            pending_action_merge_count: 0,
+          },
+          actionEmission: {
+            kind: "continue_thought",
+            text: carriedText,
+          },
+          deliberation: {
+            path: "system_1",
+            thoughts: [],
+            usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+            retrievedEpisodes: [],
+            referencedEpisodeIds: [],
+          },
+        })),
+      },
+      discourseStateService: {
+        appendClosurePressureHistory: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+        setStopState: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+        markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+      },
+      turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
+      turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+      correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
+      streamIngestionCoordinator: undefined,
+    } as unknown as TurnPhaseCoordinatorOptions;
+    const perception = {
+      entities: [],
+      mode: "idle",
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    } satisfies PerceptionResult;
+
+    const result = await runPostGenerationPhase({
+      options,
+      appendHookFailureEvent: vi.fn(async () => undefined),
+      llmClient: new FakeLLMClient({ responses: [] }),
+      sessionId,
+      turnId,
+      turnInput: {
+        userMessage: "",
+        audience: "self",
+        origin: "autonomous",
+      },
+      streamWriter: writer,
+      lifecycleTracker: {
+        trackPendingActionMerges: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      } as never,
+      cognitionInput: carriedText,
+      perception,
+      workingMemory: createWorkingMemory(sessionId, 50_000),
+      workingMood: null as never,
+      persistedPerceptionEntry: null as never,
+      persistedUserEntry: undefined,
+      persistedUserEntryId: undefined,
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
+      deliberation: {
+        path: "system_1",
+        thoughts: [],
+        usage: null,
+        retrievedEpisodes: [],
+        referencedEpisodeIds: [],
+      } as never,
+      retrievalPhase: {
+        applicableCommitments: [],
+        retrievedEpisodes: [],
+        selfSnapshot: null,
+        retrieval: { confidence: 1 },
+        executiveFocusWithStep: null,
+        selectedSkill: null,
+        proceduralContext: null,
+        evidenceLedgerContext: { ledger: null },
+      } as never,
+      origin: "autonomous",
+      autonomyTrigger: undefined,
+      closureLoopCurrentUserAct: null,
+      audienceEntityId: null,
+      audienceIsGroup: false,
+      senderEntityId: null,
+      socialInteractionEntityId: null,
+      pendingSocialAttribution: null,
+      suppressionSet: null as never,
+      isUserTurn: false,
+      currentTurnFrameAnomaly: null,
+      closureLoopAssessment: null,
+      activeParticipants: [],
+    });
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toMatchObject({
+      kind: "continue_thought",
+      markerEntryId: expect.any(String),
+    });
+    expect(trainOfThoughtRepository.get()).toMatchObject({
+      text: carriedText,
+      self_entity_id: selfEntityId,
+      disclosure_class: "self_private",
+    });
+    const marker = new StreamReader({ dataDir: tempDir, sessionId })
+      .tail(5)
+      .find(
+        (entry) =>
+          entry.kind === "internal_event" &&
+          typeof entry.content === "object" &&
+          entry.content !== null &&
+          "kind" in entry.content &&
+          entry.content.kind === "train_of_thought_continued",
+      );
+
+    expect(marker?.content).toMatchObject({
+      kind: "train_of_thought_continued",
+      self_entity_id: selfEntityId,
+      text_length: carriedText.length,
+    });
+    expect(JSON.stringify(marker?.content)).not.toContain(carriedText);
   });
 
   it("compiles shared state from the persisted assistant response before reflection", async () => {

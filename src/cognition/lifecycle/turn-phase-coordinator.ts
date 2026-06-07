@@ -1,5 +1,5 @@
 import { SuppressionSet } from "../attention/index.js";
-import { formatAutonomyTriggerContext } from "../autonomy-trigger.js";
+import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "../autonomy-trigger.js";
 import { ContradictionRoutingCooldown } from "../deliberation/contradiction-routing-cooldown.js";
 import {
   GenerationGate,
@@ -92,6 +92,27 @@ const ZEROED_SIGNALS: GenerationGateStructuralSignals = {
   hardCapDue: false,
   hardCapActiveTurns: 0,
 };
+
+function priorSelfThoughtText(context: AutonomyTriggerContext | null | undefined): string | null {
+  const value = context?.payload.prior_self_thought;
+
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const text = (value as { text?: unknown }).text;
+
+  return typeof text === "string" && text.trim().length > 0 ? text : null;
+}
+
+export function cognitionInputForTurnInput(
+  turnInput: Pick<TurnPhaseInput, "autonomyTrigger" | "userMessage">,
+): string {
+  return turnInput.autonomyTrigger === null || turnInput.autonomyTrigger === undefined
+    ? turnInput.userMessage
+    : (priorSelfThoughtText(turnInput.autonomyTrigger) ??
+        formatAutonomyTriggerContext(turnInput.autonomyTrigger));
+}
 
 function previewItems(items: readonly string[], limit = 4): string {
   const head = items.slice(0, limit).join(",");
@@ -906,10 +927,7 @@ export class TurnPhaseCoordinator {
         appendHookFailure(streamWriter, hook, error, details),
     });
     const llmClient = this.options.llmFactory();
-    const cognitionInput =
-      turnInput.autonomyTrigger === null || turnInput.autonomyTrigger === undefined
-        ? turnInput.userMessage
-        : formatAutonomyTriggerContext(turnInput.autonomyTrigger);
+    const cognitionInput = cognitionInputForTurnInput(turnInput);
     const audienceResolution = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,

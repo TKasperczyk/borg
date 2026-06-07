@@ -58,6 +58,7 @@ export function createGoalFollowupDueTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "operational",
     async scan() {
       const nowMs = clock.now();
       const goals = flattenGoals(options.goalsRepository.list({ status: "active" }));

@@ -25,6 +25,9 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
       "When someone asks about X in this channel again, I'll mention Y",
     );
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain('Avoid unqualified "I\'ll prompt you"');
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
+      "A self-scheduled wake is private internal reflection",
+    );
   });
 
   it("includes relationship-claim grounding guidance", () => {
@@ -57,6 +60,9 @@ describe("buildHostCapabilitiesSection", () => {
   it("keeps proactive outbound unavailable without wired connectors", () => {
     const section = buildHostCapabilitiesSection();
 
+    expect(section).toContain("EmitContinueThought");
+    expect(section).toContain("Pursue an open question privately");
+    expect(section).toContain("Schedule a future self-wake");
     expect(section).toContain(
       "Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
     );

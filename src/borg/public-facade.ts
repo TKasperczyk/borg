@@ -3,6 +3,7 @@
 
 import type {
   AutonomyConditionName,
+  AutonomyWakeSourceCategory,
   AutonomyWakeSourceName,
   AutonomyWakeSourceType,
   TickResult,
@@ -1093,6 +1094,7 @@ export type BorgAutonomyWakeRecord = {
   condition_name: AutonomyConditionName | null;
   session_id: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
+  source_category: AutonomyWakeSourceCategory;
 };
 
 export type BorgAutonomyWakeRecordInput = {
@@ -1100,11 +1102,12 @@ export type BorgAutonomyWakeRecordInput = {
   condition_name?: AutonomyConditionName | null;
   session_id?: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
+  source_category?: AutonomyWakeSourceCategory;
 };
 
 export type BorgAutonomyWakesFacade = {
   record(input: BorgAutonomyWakeRecordInput): BorgAutonomyWakeRecord;
-  countSince(ts: number): number;
+  countSince(ts: number, options?: { sourceCategory?: AutonomyWakeSourceCategory }): number;
   listSince(ts: number, limit: number): BorgAutonomyWakeRecord[];
   prune(olderThan: number): number;
 };

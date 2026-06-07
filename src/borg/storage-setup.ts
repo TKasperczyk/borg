@@ -23,6 +23,7 @@ import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedu
 import { relationalSlotMigrations } from "../memory/relational-slots/index.js";
 import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/index.js";
 import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
+import { trainOfThoughtMigrations } from "../memory/train-of-thought/index.js";
 import {
   createObservedEventsTableSchema,
   observedEventMigrations,
@@ -242,6 +243,7 @@ export function createMigrations(): Migration[] {
     activityMigrations,
     selfDecisionMigrations,
     observedEventMigrations,
+    trainOfThoughtMigrations,
   );
 }
 

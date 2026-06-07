@@ -23,6 +23,7 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
+import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { StreamWatermarkRepository } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
@@ -42,6 +43,7 @@ export type BuildAutonomySchedulerOptions = {
   autonomyWakesRepository: AutonomyWakesRepository;
   scheduledWakesRepository: ScheduledWakesRepository;
   selfDecisionRepository: SelfDecisionRepository;
+  trainOfThoughtRepository: TrainOfThoughtRepository;
   turnOrchestrator: TurnOrchestrator;
   toolDispatcher: ToolDispatcher;
   createStreamWriter: BorgStreamWriterFactory;
@@ -163,11 +165,14 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     intervalMs: options.config.autonomy.intervalMs,
     maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,
+    reservedContemplativeWakesPerWindow:
+      options.config.autonomy.reservedContemplativeWakesPerWindow,
     clock: options.clock,
     createStreamWriter: options.createStreamWriter,
     watermarkRepository: options.streamWatermarkRepository,
     wakeRepository: options.autonomyWakesRepository,
     selfDecisionRepository: options.selfDecisionRepository,
+    trainOfThoughtRepository: options.trainOfThoughtRepository,
     turnOrchestrator: options.turnOrchestrator,
     toolDispatcher: options.toolDispatcher,
     sources: autonomySources,

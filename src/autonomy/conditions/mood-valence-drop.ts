@@ -36,6 +36,7 @@ export function createMoodValenceDropCondition(
   return {
     name: CONDITION_NAME,
     type: "condition",
+    sourceCategory: "operational",
     async scan() {
       const history = options.moodRepository.history(sessionId, {
         limit: options.windowN,

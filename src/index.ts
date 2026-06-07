@@ -214,6 +214,7 @@ export {
   type AutonomyTickEventResult,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,
+  type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
   type DueEvent,

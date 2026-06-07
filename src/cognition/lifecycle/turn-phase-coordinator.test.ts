@@ -43,6 +43,7 @@ import type { ClosureLoopAssessment } from "../generation/closure-loop.js";
 import {
   buildSharedStateLedgerPromptContext,
   buildContradictionRoutingOverride,
+  cognitionInputForTurnInput,
   shouldSkipSharedStateCompile,
   TurnPhaseCoordinator,
 } from "./turn-phase-coordinator.js";
@@ -55,6 +56,54 @@ const PREFERENCE_COMMITMENT_TYPE = "preference" as const;
 const BOUNDARY_COMMITMENT_TYPE = "boundary" as const;
 const DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY = "deployment_window";
 const RELEASE_FREEZE_DIRECTIVE_FAMILY = "release_freeze";
+
+describe("cognitionInputForTurnInput", () => {
+  it("anchors autonomous cognition on structured prior self thought when present", () => {
+    expect(
+      cognitionInputForTurnInput({
+        userMessage: "",
+        autonomyTrigger: {
+          source_name: "scheduled_reflection",
+          source_type: "trigger",
+          event_id: "scheduled-reflection:1000",
+          sort_ts: 1_000,
+          payload: {
+            prior_self_thought: {
+              text: "Continue from the private question about continuity.",
+              disclosure: "self-private",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                origin_audience_entity_ids: [],
+                private_to_entity_ids: [],
+                public_to_entity_ids: [],
+              },
+            },
+          },
+        },
+      }),
+    ).toBe("Continue from the private question about continuity.");
+  });
+
+  it("falls back to formatted trigger context when prior self thought is absent or empty", () => {
+    const input = {
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "scheduled_reflection",
+        source_type: "trigger" as const,
+        event_id: "scheduled-reflection:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "",
+          },
+        },
+      },
+    };
+
+    expect(cognitionInputForTurnInput(input)).toContain("Autonomous wake context:");
+    expect(cognitionInputForTurnInput(input)).toContain("source_name: scheduled_reflection");
+  });
+});
 
 function sharedStateEntry(input: {
   audience: SharedStateArtifact["audience_entity_id"];

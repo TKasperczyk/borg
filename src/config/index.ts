@@ -541,6 +541,7 @@ const configBaseSchema = z.object({
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
+      reservedContemplativeWakesPerWindow: z.number().int().nonnegative().default(1),
       proactiveOutbound: z
         .object({
           enabled: z.boolean().default(false),
@@ -1382,6 +1383,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "budgetWindowMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "reservedContemplativeWakesPerWindow"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_RESERVED_CONTEMPLATIVE_WAKES_PER_WINDOW"),
   );
   setConfigOverride(
     overrides,

@@ -42,6 +42,7 @@ export function createOpenQuestionDormantTrigger(
   return {
     name: TRIGGER_NAME,
     type: "trigger",
+    sourceCategory: "operational",
     async scan() {
       const nowMs = clock.now();
       const openQuestions = options.openQuestionsRepository

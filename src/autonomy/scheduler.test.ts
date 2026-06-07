@@ -15,6 +15,7 @@ import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import { selectSelfDecisionIntrospection } from "../memory/self-decisions/projection.js";
+import { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
@@ -45,10 +46,12 @@ function createScheduler(
 function createTestDueSource(
   eventId = "goal_aaaaaaaaaaaaaaaa:no-target:1000",
   sourceName: AutonomyWakeSource["name"] = "goal_followup_due",
+  sourceCategory: AutonomyWakeSource["sourceCategory"] = "operational",
 ): AutonomyWakeSource {
   return {
     name: sourceName,
     type: "trigger",
+    sourceCategory,
     async scan() {
       return [
         {
@@ -169,6 +172,100 @@ describe("AutonomyScheduler", () => {
       .tail(4)
       .map((entry) => entry.kind);
     expect(kinds).toEqual(["internal_event", "tool_call", "tool_result", "internal_event"]);
+  });
+
+  it("merges prior self thought into scheduled reflection payload with self-private labels", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const trainOfThoughtRepository = new TrainOfThoughtRepository({
+      db: harness.db,
+      clock,
+    });
+    const selfEntityId = harness.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    trainOfThoughtRepository.upsert({
+      text: "I am still circling the open question.",
+      selfEntityId,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListForCognitionTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 10_000,
+      clock,
+    });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue({
+        mode: "idle",
+        path: "system_1",
+        response: "Reflected.",
+        thoughts: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+        },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        agentMessageId: "strm_agent_prior_thought",
+      }),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      trainOfThoughtRepository,
+      sources: [trigger],
+    });
+
+    await scheduler.tick();
+
+    const turnInput = turnRunner.run.mock.calls[0]?.[0];
+    expect(turnInput?.autonomyTrigger?.payload).toMatchObject({
+      prior_self_thought: {
+        text: "I am still circling the open question.",
+        self_entity_id: selfEntityId,
+        disclosure_label: {
+          disclosure_class: "self_private",
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
+    });
   });
 
   it("records a self decision only after a successful autonomous turn", async () => {
@@ -675,6 +772,76 @@ describe("AutonomyScheduler", () => {
     expect(result.budgetSkipped).toBe(1);
   });
 
+  it("reserves configured budget slots for contemplative wake sources", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue({
+        mode: "idle",
+        path: "system_1",
+        response: "Handled wake.",
+        thoughts: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+        },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        agentMessageId: "strm_reserved_budget",
+      }),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 2,
+      reservedContemplativeWakesPerWindow: 1,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [
+        createTestDueSource("a-operational", "goal_followup_due", "operational"),
+        createTestDueSource("b-operational", "goal_followup_due", "operational"),
+        createTestDueSource("c-contemplative", "scheduled_wake", "contemplative"),
+      ],
+    });
+
+    const result = await scheduler.tick();
+
+    expect(result.firedEvents).toBe(2);
+    expect(result.budgetSkipped).toBe(1);
+    expect(result.events.map((event) => [event.id, event.status, event.sourceCategory])).toEqual([
+      ["a-operational", "fired", "operational"],
+      ["b-operational", "budget_skipped", "operational"],
+      ["c-contemplative", "fired", "contemplative"],
+    ]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+  });
+
   it("checks persisted wake history when a fresh scheduler enforces budget", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
@@ -744,6 +911,7 @@ describe("AutonomyScheduler", () => {
         {
           name: "scheduled_reflection",
           type: "trigger",
+          sourceCategory: "contemplative",
           async scan() {
             return [
               {
@@ -840,6 +1008,7 @@ describe("AutonomyScheduler", () => {
           {
             name: "goal_followup_due",
             type: "trigger",
+            sourceCategory: "operational",
             async scan() {
               return [
                 {
@@ -905,6 +1074,7 @@ describe("AutonomyScheduler", () => {
           {
             name: "goal_followup_due",
             type: "trigger",
+            sourceCategory: "operational",
             async scan() {
               return [
                 {
@@ -1716,6 +1886,7 @@ describe("AutonomyScheduler", () => {
         {
           name: "goal_followup_due",
           type: "trigger",
+          sourceCategory: "operational",
           async scan() {
             const watermark = watermarkRepository.get(
               "autonomy:test:shared-cursor",
@@ -1819,6 +1990,7 @@ describe("AutonomyScheduler", () => {
         {
           name: "goal_followup_due",
           type: "trigger",
+          sourceCategory: "operational",
           async scan() {
             return [
               {
@@ -1844,6 +2016,7 @@ describe("AutonomyScheduler", () => {
         {
           name: "commitment_revoked",
           type: "condition",
+          sourceCategory: "operational",
           async scan() {
             return [
               {
@@ -1943,6 +2116,7 @@ describe("AutonomyScheduler", () => {
         {
           name: "scheduled_reflection",
           type: "trigger",
+          sourceCategory: "contemplative",
           scan: vi.fn().mockImplementation(async () => {
             scanCount += 1;
 
