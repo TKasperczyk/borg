@@ -351,6 +351,15 @@ const configBaseSchema = z.object({
     .prefault({}),
   streamIngestion: z
     .object({
+      settle: z
+        .object({
+          // Default off: set settleMs around 3000 and maxSettleMs around
+          // 30000 in busy multi-participant chats to coalesce reply bursts.
+          settleMs: z.number().int().nonnegative().default(0),
+          maxSettleMs: z.number().int().nonnegative().default(30_000),
+        })
+        .strict()
+        .prefault({}),
       preTurnCatchup: z
         .object({
           maxEntries: z.number().int().positive().default(100),
@@ -1065,6 +1074,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["streamIngestion", "settle", "settleMs"],
+    readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_SETTLE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["streamIngestion", "settle", "maxSettleMs"],
+    readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_MAX_SETTLE_MS"),
+  );
+  setConfigOverride(
+    overrides,
     ["executive", "goalFocusThreshold"],
     readOptionalEnvUnitInterval(env, "BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD"),
   );
@@ -1615,6 +1634,9 @@ export function redactConfig(config: Config): Config {
       },
     },
     streamIngestion: {
+      settle: {
+        ...config.streamIngestion.settle,
+      },
       preTurnCatchup: {
         ...config.streamIngestion.preTurnCatchup,
       },

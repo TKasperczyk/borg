@@ -100,6 +100,10 @@ export function resolveBorgConfig(options: {
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,
       ...(rawConfig as Partial<Config>).streamIngestion,
+      settle: {
+        ...DEFAULT_CONFIG.streamIngestion.settle,
+        ...(rawConfig as Partial<Config>).streamIngestion?.settle,
+      },
       preTurnCatchup: {
         ...DEFAULT_CONFIG.streamIngestion.preTurnCatchup,
         ...(rawConfig as Partial<Config>).streamIngestion?.preTurnCatchup,

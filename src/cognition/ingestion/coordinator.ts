@@ -12,6 +12,9 @@ import type { SessionId } from "../../util/ids.js";
 import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type SetTimeoutFn = (callback: () => void, delayMs: number) => TimeoutHandle;
+type ClearTimeoutFn = (handle: TimeoutHandle) => void;
 
 function isFileMissingError(error: unknown): boolean {
   if (error instanceof BorgError && error.cause !== undefined) {
@@ -43,7 +46,16 @@ export type StreamIngestionCoordinatorOptions = {
    * the coordinator no-ops and waits for the next turn.
    */
   minEntriesThreshold?: number;
+  /**
+   * Optional debounce before a live ingestion pass starts. Defaults to 0,
+   * which preserves immediate pass starts. Suggested busy-chat values are
+   * settleMs ~= 3000 and maxSettleMs ~= 30000.
+   */
+  settleMs?: number;
+  maxSettleMs?: number;
   clock?: Clock;
+  setTimeoutFn?: SetTimeoutFn;
+  clearTimeoutFn?: ClearTimeoutFn;
   /**
    * Called when extraction fails. Default is to swallow (live extraction
    * runs after the turn's response is returned -- failure should not
@@ -125,10 +137,16 @@ type PendingIngestion = {
   maxEntries?: number;
   clampToChatResponseWatermark?: boolean;
   answeredWindow?: AnsweredStreamWindow;
+  firstPendingAt: number;
+  lastTriggerAt: number;
   waiters: PendingIngestionWaiter[];
 };
 
 type IngestionMode = "normal" | "clamped-catch-up" | "answered-window";
+
+type SettlingIngestion = PendingIngestion & {
+  timer: TimeoutHandle | null;
+};
 
 function mergeMaxEntries(left: number | undefined, right: number | undefined): number | undefined {
   if (left === undefined || right === undefined) {
@@ -223,16 +241,26 @@ function mergeCompatibleIngestOptions(
  */
 export class StreamIngestionCoordinator {
   private readonly clock: Clock;
+  private readonly setTimeoutFn: SetTimeoutFn;
+  private readonly clearTimeoutFn: ClearTimeoutFn;
   private readonly minEntriesThreshold: number;
+  private readonly settleMs: number;
+  private readonly maxSettleMs: number;
   private readonly inFlight = new Map<SessionId, InFlightIngestion>();
   private readonly pending = new Map<SessionId, PendingIngestion[]>();
+  private readonly settling = new Map<SessionId, SettlingIngestion>();
   private readonly trackedSessions = new Set<SessionId>();
   private readonly shutdownPendingDrain = new Set<SessionId>();
   private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: StreamIngestionCoordinatorOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.setTimeoutFn =
+      options.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+    this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle));
     this.minEntriesThreshold = options.minEntriesThreshold ?? 2;
+    this.settleMs = Math.max(0, options.settleMs ?? 0);
+    this.maxSettleMs = Math.max(0, options.maxSettleMs ?? 30_000);
   }
 
   /**
@@ -256,8 +284,9 @@ export class StreamIngestionCoordinator {
         : { answeredWindow: ingestOptions.answeredWindow }),
     };
     const existing = this.inFlight.get(sessionId);
+    const settling = this.settling.get(sessionId);
 
-    if (this.closePromise !== null && existing === undefined) {
+    if (this.closePromise !== null && existing === undefined && settling === undefined) {
       return this.closePromise.then(() => ({
         ran: false,
         processedEntries: 0,
@@ -270,7 +299,11 @@ export class StreamIngestionCoordinator {
       return this.enqueueFollowUp(sessionId, resolvedOptions);
     }
 
-    return this.startPass(sessionId, resolvedOptions);
+    if (settling !== undefined) {
+      return this.enqueueSettling(sessionId, resolvedOptions);
+    }
+
+    return this.startPassAfterSettle(sessionId, resolvedOptions);
   }
 
   async hasBacklog(sessionId: SessionId): Promise<boolean> {
@@ -295,6 +328,26 @@ export class StreamIngestionCoordinator {
       };
     }
 
+    const catchUpOptions = {
+      minEntriesThreshold: 1,
+      maxEntries: options.maxEntries,
+      ...(options.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
+    };
+    const settling = this.settling.get(sessionId);
+    const settlingPass =
+      settling === undefined
+        ? undefined
+        : this.flushSettlingPass(
+            sessionId,
+            settling.answeredWindow === undefined ? catchUpOptions : undefined,
+          );
+
+    if (settlingPass !== undefined) {
+      return settlingPass;
+    }
+
     if (!(await this.hasBacklog(sessionId))) {
       return {
         ran: false,
@@ -303,13 +356,7 @@ export class StreamIngestionCoordinator {
     }
 
     this.trackedSessions.add(sessionId);
-    return this.startPass(sessionId, {
-      minEntriesThreshold: 1,
-      maxEntries: options.maxEntries,
-      ...(options.clampToChatResponseWatermark === true
-        ? { clampToChatResponseWatermark: true }
-        : {}),
-    });
+    return this.startPass(sessionId, catchUpOptions);
   }
 
   private enqueueFollowUp(
@@ -319,6 +366,7 @@ export class StreamIngestionCoordinator {
     return new Promise<IngestionResult>((resolve, reject) => {
       const pendingQueue = this.pending.get(sessionId) ?? [];
       const waiter = { resolve, reject };
+      const now = this.clock.now();
       const lastPending = pendingQueue.at(-1);
 
       if (lastPending !== undefined) {
@@ -327,6 +375,8 @@ export class StreamIngestionCoordinator {
         if (merged !== null) {
           pendingQueue[pendingQueue.length - 1] = {
             ...merged,
+            firstPendingAt: lastPending.firstPendingAt,
+            lastTriggerAt: now,
             waiters: [...lastPending.waiters, waiter],
           };
           this.pending.set(sessionId, pendingQueue);
@@ -336,10 +386,77 @@ export class StreamIngestionCoordinator {
 
       pendingQueue.push({
         ...ingestOptions,
+        firstPendingAt: now,
+        lastTriggerAt: now,
         waiters: [waiter],
       });
       this.pending.set(sessionId, pendingQueue);
     });
+  }
+
+  private enqueueSettling(
+    sessionId: SessionId,
+    ingestOptions: ResolvedIngestOptions,
+  ): Promise<IngestionResult> {
+    return new Promise<IngestionResult>((resolve, reject) => {
+      const settling = this.settling.get(sessionId);
+
+      if (settling === undefined) {
+        this.startPassAfterSettle(sessionId, ingestOptions).then(resolve, reject);
+        return;
+      }
+
+      const waiter = { resolve, reject };
+      const now = this.clock.now();
+      const merged = mergeCompatibleIngestOptions(settling, ingestOptions);
+
+      if (merged === null) {
+        this.enqueueFollowUpWithWaiter(sessionId, ingestOptions, waiter, now);
+        return;
+      }
+
+      this.settling.set(sessionId, {
+        ...settling,
+        ...merged,
+        firstPendingAt: settling.firstPendingAt,
+        lastTriggerAt: now,
+        waiters: [...settling.waiters, waiter],
+      });
+      this.scheduleSettleTimer(sessionId);
+    });
+  }
+
+  private enqueueFollowUpWithWaiter(
+    sessionId: SessionId,
+    ingestOptions: ResolvedIngestOptions,
+    waiter: PendingIngestionWaiter,
+    pendingAt: number,
+  ): void {
+    const pendingQueue = this.pending.get(sessionId) ?? [];
+    const lastPending = pendingQueue.at(-1);
+
+    if (lastPending !== undefined) {
+      const merged = mergeCompatibleIngestOptions(lastPending, ingestOptions);
+
+      if (merged !== null) {
+        pendingQueue[pendingQueue.length - 1] = {
+          ...merged,
+          firstPendingAt: lastPending.firstPendingAt,
+          lastTriggerAt: pendingAt,
+          waiters: [...lastPending.waiters, waiter],
+        };
+        this.pending.set(sessionId, pendingQueue);
+        return;
+      }
+    }
+
+    pendingQueue.push({
+      ...ingestOptions,
+      firstPendingAt: pendingAt,
+      lastTriggerAt: pendingAt,
+      waiters: [waiter],
+    });
+    this.pending.set(sessionId, pendingQueue);
   }
 
   private dequeueFollowUp(sessionId: SessionId): PendingIngestion | undefined {
@@ -359,14 +476,14 @@ export class StreamIngestionCoordinator {
   }
 
   private startPendingPass(sessionId: SessionId, pending: PendingIngestion): void {
-    const followUp = this.startPass(sessionId, {
-      minEntriesThreshold: pending.minEntriesThreshold,
-      ...(pending.maxEntries === undefined ? {} : { maxEntries: pending.maxEntries }),
-      ...(pending.clampToChatResponseWatermark === true
-        ? { clampToChatResponseWatermark: true }
-        : {}),
-      ...(pending.answeredWindow === undefined ? {} : { answeredWindow: pending.answeredWindow }),
-    });
+    const followUp = this.startPassAfterSettle(
+      sessionId,
+      this.resolvedOptionsFromPending(pending),
+      {
+        firstPendingAt: pending.firstPendingAt,
+        lastTriggerAt: pending.lastTriggerAt,
+      },
+    );
 
     void followUp.then(
       (followUpResult) => {
@@ -380,6 +497,109 @@ export class StreamIngestionCoordinator {
         }
       },
     );
+  }
+
+  private resolvedOptionsFromPending(pending: PendingIngestion): ResolvedIngestOptions {
+    return {
+      minEntriesThreshold: pending.minEntriesThreshold,
+      ...(pending.maxEntries === undefined ? {} : { maxEntries: pending.maxEntries }),
+      ...(pending.clampToChatResponseWatermark === true
+        ? { clampToChatResponseWatermark: true }
+        : {}),
+      ...(pending.answeredWindow === undefined ? {} : { answeredWindow: pending.answeredWindow }),
+    };
+  }
+
+  private startPassAfterSettle(
+    sessionId: SessionId,
+    ingestOptions: ResolvedIngestOptions,
+    timing?: { firstPendingAt: number; lastTriggerAt: number },
+  ): Promise<IngestionResult> {
+    if (this.settleMs === 0 || this.closePromise !== null) {
+      return this.startPass(sessionId, ingestOptions);
+    }
+
+    const existing = this.settling.get(sessionId);
+
+    if (existing !== undefined) {
+      return this.enqueueSettling(sessionId, ingestOptions);
+    }
+
+    return new Promise<IngestionResult>((resolve, reject) => {
+      const now = this.clock.now();
+      this.settling.set(sessionId, {
+        ...ingestOptions,
+        firstPendingAt: timing?.firstPendingAt ?? now,
+        lastTriggerAt: timing?.lastTriggerAt ?? now,
+        timer: null,
+        waiters: [{ resolve, reject }],
+      });
+      this.scheduleSettleTimer(sessionId);
+    });
+  }
+
+  private scheduleSettleTimer(sessionId: SessionId): void {
+    const settling = this.settling.get(sessionId);
+
+    if (settling === undefined) {
+      return;
+    }
+
+    if (settling.timer !== null) {
+      this.clearTimeoutFn(settling.timer);
+      settling.timer = null;
+    }
+
+    const now = this.clock.now();
+    const quietDueAt = settling.lastTriggerAt + this.settleMs;
+    const maxSettleDueAt = settling.firstPendingAt + this.maxSettleMs;
+    const delayMs = Math.max(0, Math.min(quietDueAt, maxSettleDueAt) - now);
+
+    settling.timer = this.setTimeoutFn(() => {
+      const current = this.settling.get(sessionId);
+
+      if (current !== undefined) {
+        current.timer = null;
+      }
+
+      this.flushSettlingPass(sessionId);
+    }, delayMs);
+  }
+
+  private flushSettlingPass(
+    sessionId: SessionId,
+    overrideOptions?: ResolvedIngestOptions,
+  ): Promise<IngestionResult> | undefined {
+    const settling = this.settling.get(sessionId);
+
+    if (settling === undefined) {
+      return undefined;
+    }
+
+    if (settling.timer !== null) {
+      this.clearTimeoutFn(settling.timer);
+    }
+
+    this.settling.delete(sessionId);
+    const pass = this.startPass(
+      sessionId,
+      overrideOptions ?? this.resolvedOptionsFromPending(settling),
+    );
+
+    void pass.then(
+      (result) => {
+        for (const waiter of settling.waiters) {
+          waiter.resolve(result);
+        }
+      },
+      (error) => {
+        for (const waiter of settling.waiters) {
+          waiter.reject(error);
+        }
+      },
+    );
+
+    return pass;
   }
 
   private startPass(
@@ -424,6 +644,7 @@ export class StreamIngestionCoordinator {
           canStopTracking &&
           !this.inFlight.has(sessionId) &&
           !this.pending.has(sessionId) &&
+          !this.settling.has(sessionId) &&
           !this.shutdownPendingDrain.has(sessionId)
         ) {
           this.trackedSessions.delete(sessionId);
@@ -796,6 +1017,7 @@ export class StreamIngestionCoordinator {
           ...this.shutdownPendingDrain,
           ...this.inFlight.keys(),
           ...this.pending.keys(),
+          ...this.settling.keys(),
         ]);
 
         if (sessionIds.size === 0) {
@@ -805,8 +1027,11 @@ export class StreamIngestionCoordinator {
         await Promise.all(
           [...sessionIds].map((sessionId) => {
             const active = this.inFlight.get(sessionId);
+            const settlingPass =
+              active === undefined ? this.flushSettlingPass(sessionId) : undefined;
             return (
               active?.promise ??
+              settlingPass ??
               this.startPass(sessionId, {
                 minEntriesThreshold: 1,
               })
@@ -818,7 +1043,8 @@ export class StreamIngestionCoordinator {
           (sessionId) =>
             this.shutdownPendingDrain.has(sessionId) ||
             this.inFlight.has(sessionId) ||
-            this.pending.has(sessionId),
+            this.pending.has(sessionId) ||
+            this.settling.has(sessionId),
         );
 
         if (!hasOutstanding) {

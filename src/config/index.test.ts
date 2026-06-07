@@ -79,9 +79,9 @@ describe("config", () => {
       "creator-directive-reconciler",
       "commitment-reconciler",
     ]);
-    expect(
-      [...new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses])],
-    ).toEqual(expect.arrayContaining([...OFFLINE_PROCESS_NAMES]));
+    expect([
+      ...new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses]),
+    ]).toEqual(expect.arrayContaining([...OFFLINE_PROCESS_NAMES]));
     expect(
       new Set([...config.maintenance.lightProcesses, ...config.maintenance.heavyProcesses]).size,
     ).toBe(OFFLINE_PROCESS_NAMES.length);
@@ -102,6 +102,10 @@ describe("config", () => {
       },
     });
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
+    expect(config.streamIngestion.settle).toEqual({
+      settleMs: 0,
+      maxSettleMs: 30_000,
+    });
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
     expect(config.retrieval.semanticOverfetchMultiplier).toBe(3);
     expect(config.deliberation.contradictionRouting).toEqual({
@@ -378,6 +382,10 @@ describe("config", () => {
         goalFocusThreshold: 0.4,
       },
       streamIngestion: {
+        settle: {
+          settleMs: 1_000,
+          maxSettleMs: 10_000,
+        },
         preTurnCatchup: {
           maxEntries: 12,
         },
@@ -434,6 +442,8 @@ describe("config", () => {
         BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS: "18",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED: "false",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS: "3",
+        BORG_STREAM_INGESTION_SETTLE_MS: "3000",
+        BORG_STREAM_INGESTION_MAX_SETTLE_MS: "30000",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
@@ -449,6 +459,10 @@ describe("config", () => {
     expect(config.anthropic.models.cognition).toBe("file-cognition");
     expect(config.anthropic.models.recallExpansion).toBe("env-recall");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
+    expect(config.streamIngestion.settle).toEqual({
+      settleMs: 3000,
+      maxSettleMs: 30000,
+    });
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
     expect(config.deliberation.contradictionRouting).toEqual({
       enabled: false,

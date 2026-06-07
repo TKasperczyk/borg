@@ -51,12 +51,10 @@ import { buildTurnOrchestrator } from "./turn-setup.js";
 import type { BorgDependencies, BorgOpenOptions } from "./types.js";
 import type { SessionId } from "../util/ids.js";
 
-const CHAT_RESPONSE_CATCH_UP_CONFIG = {
-  quietWindowMs: 1_000,
-  maxWaitMs: 5_000,
+const CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG = {
   backoffBaseMs: 1_000,
   maxBackoffMs: 60_000,
-} satisfies ChatResponseCatchUpWorkerConfig;
+} satisfies Pick<ChatResponseCatchUpWorkerConfig, "backoffBaseMs" | "maxBackoffMs">;
 
 export async function openBorgDependencies(
   options: BorgOpenOptions = {},
@@ -388,7 +386,11 @@ export async function openBorgDependencies(
       turnOrchestrator,
       sessionsRepository: repositories.sessionsRepository,
       clock,
-      config: CHAT_RESPONSE_CATCH_UP_CONFIG,
+      config: {
+        quietWindowMs: config.streamIngestion.settle.settleMs,
+        maxWaitMs: config.streamIngestion.settle.maxSettleMs,
+        ...CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG,
+      },
     });
     const autonomyScheduler = buildAutonomyScheduler({
       config,

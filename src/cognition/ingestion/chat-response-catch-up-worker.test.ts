@@ -293,6 +293,23 @@ describe("ChatResponseCatchUpWorker", () => {
     expect(harness.turnOrchestrator.run).not.toHaveBeenCalled();
   });
 
+  it("drains append-triggered backlog immediately when quietWindowMs is zero", async () => {
+    const harness = createHarness({
+      config: {
+        quietWindowMs: 0,
+      },
+      prefixes: [prefix()],
+    });
+
+    harness.worker.start();
+    await flushAsync();
+    harness.worker.onAppend([entry({ kind: "user_msg" })]);
+    await advance(harness.clock, 0);
+
+    expect(harness.prefixBuilder.build).toHaveBeenCalledTimes(1);
+    expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+  });
+
   it("startup scan finds backlog and drains immediately", async () => {
     const harness = createHarness({
       sessions: [DEFAULT_SESSION_ID],

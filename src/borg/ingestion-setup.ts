@@ -56,6 +56,8 @@ export function buildStreamIngestionCoordinator(
     watermarkRepository: options.streamWatermarkRepository,
     chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
     dataDir: options.config.dataDir,
+    settleMs: options.config.streamIngestion.settle.settleMs,
+    maxSettleMs: options.config.streamIngestion.settle.maxSettleMs,
     clock: options.clock,
     onError: (error, sessionId) => {
       // Use a fresh writer: the turn's writer closes before ingestion

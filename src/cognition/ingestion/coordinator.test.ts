@@ -124,6 +124,17 @@ describe("StreamIngestionCoordinator", () => {
     }
   }
 
+  async function flushAsync(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  async function advanceCoordinatorTimers(clock: ManualClock, ms: number): Promise<void> {
+    clock.advance(ms);
+    await vi.advanceTimersByTimeAsync(ms);
+    await flushAsync();
+  }
+
   function openRepo(): {
     repo: StreamWatermarkRepository;
     close: () => void;
@@ -1079,6 +1090,286 @@ describe("StreamIngestionCoordinator", () => {
     } finally {
       db.close();
       await store.close();
+    }
+  });
+
+  it("starts immediately when settleMs is zero", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "now", ts: 100 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+      settleMs: 0,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(vi.getTimerCount()).toBe(0);
+      expect(result.ran).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(110);
+    } finally {
+      vi.useRealTimers();
+      close();
+    }
+  });
+
+  it("settles a burst of triggering ingests into one pass", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    const clock = new ManualClock(0);
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 1,
+      settleMs: 50,
+      maxSettleMs: 500,
+      clock,
+    });
+
+    try {
+      await seedStream(dataDir, [{ kind: "user_msg", content: "one", ts: 100 }]);
+      const first = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 20);
+
+      await seedStream(dataDir, [{ kind: "agent_msg", content: "two", ts: 110 }]);
+      const second = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 20);
+
+      await seedStream(dataDir, [{ kind: "user_msg", content: "three", ts: 120 }]);
+      const third = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 49);
+
+      expect(calls).toHaveLength(0);
+
+      await advanceCoordinatorTimers(clock, 1);
+      const results = await Promise.all([first, second, third]);
+
+      expect(calls).toHaveLength(1);
+      expect(results.every((result) => result.ran && result.processedEntries === 3)).toBe(true);
+      expect(calls[0]?.untilCursor).toEqual({
+        ts: 120,
+        entryId: expect.any(String),
+      });
+    } finally {
+      vi.useRealTimers();
+      close();
+    }
+  });
+
+  it("resets the settle timer on late arrivals but honors maxSettleMs", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    const clock = new ManualClock(0);
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 1,
+      settleMs: 50,
+      maxSettleMs: 120,
+      clock,
+    });
+
+    try {
+      await seedStream(dataDir, [{ kind: "user_msg", content: "one", ts: 100 }]);
+      const first = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 40);
+
+      await seedStream(dataDir, [{ kind: "agent_msg", content: "two", ts: 110 }]);
+      const second = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 40);
+
+      await seedStream(dataDir, [{ kind: "user_msg", content: "three", ts: 120 }]);
+      const third = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 39);
+
+      await seedStream(dataDir, [{ kind: "agent_msg", content: "four", ts: 130 }]);
+      const fourth = coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(calls).toHaveLength(0);
+
+      await advanceCoordinatorTimers(clock, 1);
+      const results = await Promise.all([first, second, third, fourth]);
+
+      expect(calls).toHaveLength(1);
+      expect(results.every((result) => result.ran && result.processedEntries === 4)).toBe(true);
+      expect(calls[0]?.untilCursor).toEqual({
+        ts: 130,
+        entryId: expect.any(String),
+      });
+    } finally {
+      vi.useRealTimers();
+      close();
+    }
+  });
+
+  it("processes a lone message after the settle window", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    const clock = new ManualClock(0);
+    await seedStream(dataDir, [{ kind: "user_msg", content: "single", ts: 100 }]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 1,
+      settleMs: 50,
+      maxSettleMs: 500,
+      clock,
+    });
+
+    try {
+      const resultPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 49);
+
+      expect(calls).toHaveLength(0);
+
+      await advanceCoordinatorTimers(clock, 1);
+      const result = await resultPromise;
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(1);
+      expect(calls).toHaveLength(1);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(100);
+    } finally {
+      vi.useRealTimers();
+      close();
+    }
+  });
+
+  it("applies settle before a queued follow-up pass", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    const clock = new ManualClock(0);
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 100 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    let releaseFirstPass: (() => void) | undefined;
+    let notifyFirstPassStarted: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+
+          if (calls.length === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+      settleMs: 50,
+      maxSettleMs: 500,
+      clock,
+    });
+
+    try {
+      const first = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 50);
+      await firstPassStarted;
+
+      await seedStream(dataDir, [{ kind: "user_msg", content: "followup", ts: 200 }]);
+      const second = coordinator.ingest(DEFAULT_SESSION_ID);
+      await advanceCoordinatorTimers(clock, 20);
+
+      await seedStream(dataDir, [{ kind: "agent_msg", content: "second reply", ts: 210 }]);
+      const third = coordinator.ingest(DEFAULT_SESSION_ID);
+
+      releaseFirstPass?.();
+      await flushAsync();
+      await advanceCoordinatorTimers(clock, 49);
+
+      expect(calls).toHaveLength(1);
+
+      await advanceCoordinatorTimers(clock, 1);
+      const results = await Promise.all([first, second, third]);
+
+      expect(results.map((result) => result.ran)).toEqual([true, true, true]);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.untilCursor).toEqual({
+        ts: 210,
+        entryId: expect.any(String),
+      });
+    } finally {
+      vi.useRealTimers();
+      close();
+    }
+  });
+
+  it("flushes a pending settle timer during close", async () => {
+    vi.useFakeTimers();
+    const dataDir = createTempDir();
+    const clock = new ManualClock(0);
+    await seedStream(dataDir, [{ kind: "user_msg", content: "close me", ts: 100 }]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 1,
+      settleMs: 1_000,
+      maxSettleMs: 5_000,
+      clock,
+    });
+
+    try {
+      const ingest = coordinator.ingest(DEFAULT_SESSION_ID);
+      await flushAsync();
+
+      expect(calls).toHaveLength(0);
+
+      await coordinator.close();
+      const result = await ingest;
+
+      expect(result.ran).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(100);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      close();
     }
   });
 

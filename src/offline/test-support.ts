@@ -323,6 +323,10 @@ export function createTestConfig(
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,
       ...overrides.streamIngestion,
+      settle: {
+        ...DEFAULT_CONFIG.streamIngestion.settle,
+        ...overrides.streamIngestion?.settle,
+      },
       preTurnCatchup: {
         ...DEFAULT_CONFIG.streamIngestion.preTurnCatchup,
         ...overrides.streamIngestion?.preTurnCatchup,
