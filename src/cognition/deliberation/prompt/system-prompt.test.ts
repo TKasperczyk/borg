@@ -50,6 +50,7 @@ import type { DeliberationContext } from "../types.js";
 import { memoryDisclosurePayloadFields } from "../../disclosure-labels.js";
 
 import {
+  buildAutonomousOutboundAuthorizationSection,
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
   buildStandingWithAudienceSection,
@@ -2873,5 +2874,66 @@ describe("buildBaseSystemPrompt", () => {
     for (const key of PROMPT_KEYS) {
       expect(prompt).toContain(`OVERRIDE:${key}`);
     }
+  });
+});
+
+describe("buildAutonomousOutboundAuthorizationSection", () => {
+  const audienceEntityId = createEntityId();
+  const baseContext = {
+    maxPostsPerWindow: 6,
+    maxPostsPerTargetPerWindow: 6,
+    remainingPostsInWindow: 4,
+    windowMs: 86_400_000,
+    targets: [
+      {
+        session_id: DEFAULT_SESSION_ID,
+        source_type: "demo" as const,
+        label: "philosophy debate",
+        audience_label: "botarena_thread:c63",
+        audience_entity_id: audienceEntityId,
+        conversation_kind: "thread" as const,
+        participation_policy: "active" as const,
+        authorization: "config" as const,
+      },
+    ],
+  };
+
+  it("returns null when there is nothing reachable", () => {
+    expect(buildAutonomousOutboundAuthorizationSection(null)).toBeNull();
+    expect(
+      buildAutonomousOutboundAuthorizationSection({ ...baseContext, targets: [] }),
+    ).toBeNull();
+  });
+
+  it("frames the section as solitude and not a task queue", () => {
+    const section = buildAutonomousOutboundAuthorizationSection(baseContext) ?? "";
+
+    expect(section).toContain("<reflection_posture>");
+    expect(section).toContain("self-directed reflection");
+    // Non-coercive: silence is validated, posting is never instructed.
+    expect(section).toContain("Silence is a complete and ordinary outcome");
+    expect(section).toContain("under no obligation");
+    expect(section.toLowerCase()).not.toContain("you should post");
+  });
+
+  it("binds a reachable thread to a legible label and its origin audience", () => {
+    const section = buildAutonomousOutboundAuthorizationSection(baseContext) ?? "";
+
+    expect(section).toContain("<reachable_threads>");
+    expect(section).toContain(`session_id="${DEFAULT_SESSION_ID}"`);
+    expect(section).toContain("<label>philosophy debate</label>");
+    // audience_entity_id is the join to the origin_audience recall already carries.
+    expect(section).toContain(`<audience_entity_id>${audienceEntityId}</audience_entity_id>`);
+  });
+
+  it("omits audience_entity_id when the thread has no audience entity", () => {
+    const section =
+      buildAutonomousOutboundAuthorizationSection({
+        ...baseContext,
+        targets: [{ ...baseContext.targets[0], audience_entity_id: null }],
+      }) ?? "";
+
+    expect(section).toContain("<label>philosophy debate</label>");
+    expect(section).not.toContain("<audience_entity_id>");
   });
 });

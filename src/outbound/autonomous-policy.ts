@@ -14,7 +14,7 @@ import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js
 import type { Clock } from "../util/clock.js";
 import { ToolError } from "../util/errors.js";
 import { isPlainRecord } from "../util/guards.js";
-import type { SessionId } from "../util/ids.js";
+import type { EntityId, SessionId } from "../util/ids.js";
 
 const AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_ENTRIES = 4_096;
 const AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_BYTES = 8 * 1024 * 1024;
@@ -26,7 +26,16 @@ export type AutonomousOutboundAuthorizationKind = "config" | "creator_directive"
 export type AutonomousOutboundPromptTarget = {
   session_id: SessionId;
   source_type: SessionRecord["source_type"];
+  // Human-readable thread/conversation name (the connector's captured label),
+  // and the audience entity this thread belongs to. Together these let a
+  // recalled thought ("the debate, what Lunaria argued") bind to a reachable
+  // route: the label makes the target legible, and audience_entity_id matches
+  // the origin_audience provenance that recalled memories already carry, so
+  // thinking-about-someone and being-able-to-reach-them are one object rather
+  // than two disconnected lists. Reachability surfacing, not a recall gate.
+  label: string;
   audience_label: string;
+  audience_entity_id: EntityId | null;
   conversation_kind: SessionRecord["conversation_kind"];
   participation_policy: SessionRecord["participation_policy"];
   authorization: AutonomousOutboundAuthorizationKind;
@@ -119,7 +128,9 @@ function promptTarget(
   return {
     session_id: session.session_id,
     source_type: session.source_type,
+    label: session.label,
     audience_label: session.audience_label,
+    audience_entity_id: session.audience_entity_id,
     conversation_kind: session.conversation_kind,
     participation_policy: session.participation_policy,
     authorization,
