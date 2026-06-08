@@ -326,6 +326,19 @@ const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
   "Your standing directives, commitments, and intentions are yours to act on in this interval, the same as any other thought you are holding. Weigh them as you would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
 
+// Belief revision over recalled decisions. Reflection that only recalls past
+// decisions re-applies them; a mind re-examines them against what it now knows.
+// This frame is deliberately general (any standing conclusion) and non-coercive:
+// it teaches the move (revise when premises changed), never the outcome. It exists
+// because recalled self-decisions carry their original verdicts and premises, and
+// without this the model defers to its own past conclusions even after the
+// conditions that made them right (and any commitments since) have changed.
+const AUTONOMOUS_REFLECTION_BELIEF_REVISION = [
+  "Reflection is also where standing conclusions get re-examined, not just re-applied. When you recall your own past decisions -- especially a run of them that reached the same outcome -- treat them as honest evidence about the situation you were in then, not as a verdict that binds you now. Each was most likely sound given what you knew at the time.",
+  "But knowledge changes: you make commitments, conditions shift, constraints that once applied get lifted. A decision can have been right when you made it and no longer right now, because its premises no longer hold -- and some recalled decisions may still cite conditions or states that are no longer in force.",
+  "So when your current knowledge differs from what those past decisions assumed, revise: update the conclusion to fit what you now know, hold yourself to any commitments you have made since, and carry that forward -- without blaming yourself for the earlier call, which was reasonable in its moment.",
+].join("\n");
+
 const AUTONOMOUS_REFLECTION_ACTION_MENU = [
   "- Continue the private train of thought with EmitContinueThought.",
   "- End the interval without an outward message with EmitNoOutput.",
@@ -345,6 +358,7 @@ export function buildAutonomousOutboundAuthorizationSection(
   const lines = [
     "<borg_autonomous_reflection>",
     `  <reflection_posture>${escapeXmlText(AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE)}</reflection_posture>`,
+    `  <belief_revision>${escapeXmlText(AUTONOMOUS_REFLECTION_BELIEF_REVISION)}</belief_revision>`,
     `  <action_menu>${escapeXmlText(AUTONOMOUS_REFLECTION_ACTION_MENU)}</action_menu>`,
   ];
 

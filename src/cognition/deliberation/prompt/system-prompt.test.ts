@@ -2942,6 +2942,11 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(section).toContain("<borg_autonomous_reflection>");
     expect(section).toContain("<reflection_posture>");
     expect(section).toContain("open interval alone with your own thoughts");
+    // Belief-revision frame: recalled past decisions are re-examined against
+    // current knowledge, not re-applied; non-coercive (teaches the move).
+    expect(section).toContain("<belief_revision>");
+    expect(section).toContain("re-examined, not just re-applied");
+    expect(section).toContain("revise");
     expect(section).toContain("<action_menu>");
     expect(section).toContain("EmitContinueThought");
     expect(section).not.toContain("<reachable_threads");
