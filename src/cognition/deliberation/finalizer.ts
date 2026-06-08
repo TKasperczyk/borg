@@ -2,6 +2,7 @@
 import { z } from "zod";
 
 import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
+import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
 import {
   OUTBOUND_POST_TOOL_NAME,
   type ToolDefinition,
@@ -323,6 +324,7 @@ export type RunFinalizerOptions = {
   userEntryId: string | undefined;
   maxTokens: number;
   thinking?: LLMConverseOptions["thinking"];
+  effort?: LLMConverseOptions["effort"];
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
@@ -602,11 +604,10 @@ function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision):
     return decision.text;
   }
 
-  if (decision.kind === "continue_thought") {
-    return "";
-  }
-
-  return result.text;
+  // For no_output / observe / continue_thought / invalid, there is no user-facing
+  // visible text. result.text may hold loose model prose emitted alongside the
+  // tool under auto tool_choice -- never flush it as the turn's visible output.
+  return "";
 }
 
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
@@ -622,6 +623,10 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   const outboundTool = getOutboundTool(options);
   const availableTools = outboundTool === null ? emissionTools : [...emissionTools, outboundTool];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
+  // Auto tool_choice iff thinking will actually reach the model -- otherwise force
+  // an emission tool so a structured emission stays guaranteed (e.g. manual
+  // thinking on Opus is omitted by the client, so forcing is correct there).
+  const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, options.thinking);
   let tokenSequence = 0;
 
   const result = await executeToolLoop({
@@ -640,7 +645,19 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    ...(emissionTools.length === 0 ? {} : { toolChoice: { type: "any" as const } }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    // Emission-tool protocol: the answer lives in the terminal tool input, so any
+    // loose text the model emits under auto tool_choice must not reach the stream.
+    suppressRawTextStream: true,
+    // Thinking requires auto tool_choice -- the API rejects forced tool use with
+    // thinking active. When thinking will be sent, omit toolChoice (auto): the
+    // model thinks, then calls exactly one emission tool. The emission is read
+    // from the terminal tool (loose text never leaks), and the invalid-tool retry
+    // net covers the rare turn that emits no terminal tool. Otherwise force a tool
+    // ("any") so an emission is guaranteed.
+    ...(useAutoToolChoice || emissionTools.length === 0
+      ? {}
+      : { toolChoice: { type: "any" as const } }),
     budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
     tracer: options.tracer,
     turnId: options.turnId,

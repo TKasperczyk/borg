@@ -353,6 +353,10 @@ function flattenMessageBlocksForCompatibility(blocks: readonly LLMContentBlock[]
         return `[image_ref ${block.attachment_id}]`;
       }
 
+      if (block.type === "thinking" || block.type === "redacted_thinking") {
+        return "";
+      }
+
       return flattenBlockContentForCompatibility(block.content);
     })
     .join("");

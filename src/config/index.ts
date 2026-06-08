@@ -192,6 +192,16 @@ const evidenceLedgerConfigSchema = z
 const cognitionThinkingConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
+    // "adaptive" (Opus 4.6+/Sonnet 4.6; the only supported mode on Opus 4.7/4.8)
+    // lets the model decide thinking depth and uses `effort`; "enabled" is the
+    // deprecated manual budget_tokens mode for older models.
+    mode: z.enum(["adaptive", "enabled"]).default("adaptive"),
+    // Adaptive-thinking effort -- soft depth guidance. Default "high" (the API's
+    // adaptive default: deep reasoning, bounded). NOTE: "max" is intentionally NOT
+    // the default -- empirically it thinks without bound and exhausts max_tokens
+    // before emitting a tool, stalling the turn; use "high"/"xhigh" for deep
+    // thinking that still emits.
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
     budget_tokens: z.number().int().positive().default(4096),
   })
   .prefault({});
@@ -1015,6 +1025,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "cognition", "thinking", "enabled"],
     readOptionalEnvBoolean(env, "BORG_GENERATION_COGNITION_THINKING_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "cognition", "thinking", "mode"],
+    readOptionalEnvString(env, "BORG_GENERATION_COGNITION_THINKING_MODE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "cognition", "thinking", "effort"],
+    readOptionalEnvString(env, "BORG_GENERATION_COGNITION_THINKING_EFFORT"),
   );
   setConfigOverride(
     overrides,

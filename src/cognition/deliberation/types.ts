@@ -304,6 +304,8 @@ export type DeliberationRegenerationInput = {
 
 export type CognitionThinkingConfig = {
   enabled: boolean;
+  mode: "adaptive" | "enabled";
+  effort: "low" | "medium" | "high" | "xhigh" | "max";
   budget_tokens: number;
 };
 

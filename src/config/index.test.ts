@@ -174,6 +174,8 @@ describe("config", () => {
     expect(config.generation.cognition).toEqual({
       thinking: {
         enabled: false,
+        mode: "adaptive",
+        effort: "high",
         budget_tokens: 4096,
       },
     });
@@ -499,6 +501,8 @@ describe("config", () => {
     });
     expect(config.generation.cognition.thinking).toEqual({
       enabled: true,
+      mode: "adaptive",
+      effort: "high",
       budget_tokens: 8192,
     });
     expect(config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns).toBe(18);

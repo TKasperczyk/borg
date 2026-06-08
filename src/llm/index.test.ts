@@ -799,6 +799,123 @@ describe("llm", () => {
     });
   });
 
+  it("sends adaptive thinking and effort for Opus with auto tool_choice", async () => {
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+        // Adaptive thinking flows through on Opus (only manual budget_tokens is
+        // omitted there); effort rides in output_config.
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        expect(body.output_config).toEqual({ effort: "max" });
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-opus-4-8",
+        system: "be concise",
+        messages: [{ role: "user", content: "hello" }],
+        thinking: { type: "adaptive" },
+        effort: "max",
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+  });
+
+  it("omits thinking and effort when tool_choice forces tool use", async () => {
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+        // The API rejects thinking under forced tool use, so both thinking and the
+        // effort that rides with it are dropped.
+        expect(body.thinking).toBeUndefined();
+        expect(body.output_config).toBeUndefined();
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-opus-4-8",
+        system: "be concise",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [{ name: "EmitX", inputSchema: { type: "object" } }],
+        tool_choice: { type: "any" },
+        thinking: { type: "adaptive" },
+        effort: "max",
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+  });
+
+  it("captures thinking blocks from converse responses so they can round-trip", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(
+        createMessageBody({
+          content: [
+            {
+              type: "thinking",
+              thinking: "step-by-step reasoning",
+              signature: "sig-abc",
+            },
+            {
+              type: "text",
+              text: "done",
+              citations: null,
+            },
+          ],
+        } as unknown as Partial<Message>),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    const result = await client.converse({
+      model: "claude-opus-4-8",
+      system: "be concise",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      thinking: { type: "adaptive" },
+      effort: "max",
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    expect(result.messageBlocks).toEqual([
+      { type: "thinking", thinking: "step-by-step reasoning", signature: "sig-abc" },
+      { type: "text", text: "done" },
+    ]);
+  });
+
   it("preserves non-Opus temperature settings", async () => {
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

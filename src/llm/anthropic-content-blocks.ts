@@ -1,7 +1,9 @@
 import type {
   ContentBlockParam,
   MessageParam,
+  RedactedThinkingBlockParam,
   TextBlockParam,
+  ThinkingBlockParam,
   ToolResultBlockParam,
   ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
@@ -69,6 +71,24 @@ export function toAnthropicContentBlock(
       name: block.name,
       input: block.input,
     } satisfies ToolUseBlockParam;
+  }
+
+  // Round-trip thinking blocks verbatim so a tool-loop iteration can replay the
+  // assistant turn unchanged (the API decrypts the signature to reconstruct the
+  // full reasoning; the thinking text may be empty under display:"omitted").
+  if (block.type === "thinking") {
+    return {
+      type: "thinking",
+      thinking: block.thinking,
+      signature: block.signature,
+    } satisfies ThinkingBlockParam;
+  }
+
+  if (block.type === "redacted_thinking") {
+    return {
+      type: "redacted_thinking",
+      data: block.data,
+    } satisfies RedactedThinkingBlockParam;
   }
 
   return {

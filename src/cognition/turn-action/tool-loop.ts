@@ -62,6 +62,8 @@ export type ExecuteToolLoopOptions = {
   maxTokens?: number;
   temperature?: number;
   thinking?: LLMConverseOptions["thinking"];
+  effort?: LLMConverseOptions["effort"];
+  suppressRawTextStream?: LLMConverseOptions["suppressRawTextStream"];
   toolChoice?: LLMConverseOptions["tool_choice"];
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
@@ -283,6 +285,10 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       max_tokens: options.maxTokens,
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+      ...(options.effort === undefined ? {} : { effort: options.effort }),
+      ...(options.suppressRawTextStream === undefined
+        ? {}
+        : { suppressRawTextStream: options.suppressRawTextStream }),
       budget: options.budget,
     } satisfies LLMConverseOptions;
     const response =
@@ -492,6 +498,14 @@ function countBlockChars(block: LLMContentBlock): number {
 
   if (block.type === "image_ref") {
     return block.attachment_id.length;
+  }
+
+  if (block.type === "thinking") {
+    return block.thinking.length + block.signature.length;
+  }
+
+  if (block.type === "redacted_thinking") {
+    return block.data.length;
   }
 
   const content =

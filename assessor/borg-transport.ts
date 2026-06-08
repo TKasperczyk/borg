@@ -225,6 +225,10 @@ function contentBlockText(block: LLMContentBlock): string {
     return block.attachment_id;
   }
 
+  if (block.type === "thinking" || block.type === "redacted_thinking") {
+    return "";
+  }
+
   return typeof block.content === "string"
     ? block.content
     : block.content.map((entry) => entry.text).join("\n");

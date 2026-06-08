@@ -8,6 +8,7 @@ import {
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
   DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
   DEFAULT_SEMANTIC_CONTEXT_BUDGET,
+  THINKING_DELIBERATION_MAX_TOKENS,
 } from "./constants.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import {
@@ -457,10 +458,30 @@ function cognitionThinkingOption(
     return undefined;
   }
 
+  // Adaptive is the supported mode on Opus 4.6+/Sonnet 4.6 (the only mode on
+  // 4.7/4.8). It pairs with `effort` (see cognitionEffortOption) and uses
+  // tool_choice:auto at the call sites so the model may think before emitting.
+  if (options.cognitionThinking.mode === "adaptive") {
+    return { type: "adaptive" };
+  }
+
   return {
     type: "enabled",
     budget_tokens: options.cognitionThinking.budget_tokens,
   };
+}
+
+function cognitionEffortOption(
+  options: DeliberatorOptions,
+): LLMCompleteOptions["effort"] | undefined {
+  if (
+    options.cognitionThinking?.enabled !== true ||
+    options.cognitionThinking.mode !== "adaptive"
+  ) {
+    return undefined;
+  }
+
+  return options.cognitionThinking.effort;
 }
 
 function allowedEmissionsForParticipationPolicy(
@@ -516,12 +537,23 @@ export class Deliberator {
     streamWriter?: StreamWriter,
   ): Promise<DeliberationResult> {
     const stakes = context.options?.stakes ?? "low";
+    const cognitionThinkingEnabled = this.options.cognitionThinking?.enabled === true;
     const planningMaxTokens =
       context.options?.maxThinkingTokens ?? DEFAULT_DELIBERATION_PLAN_MAX_TOKENS;
     const semanticContextBudget = Math.max(DEFAULT_SEMANTIC_CONTEXT_BUDGET, planningMaxTokens * 4);
     const retrievalContextBudget = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET;
-    const systemOneMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
-    const systemTwoMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
+    // Adaptive thinking spends output tokens; the per-call budget must hold the
+    // thinking AND the emission or the model exhausts max_tokens mid-thought and
+    // never emits a tool. Raise the output budget when thinking is on. The context
+    // budget above stays keyed to planningMaxTokens (unchanged).
+    const responseMaxTokens = cognitionThinkingEnabled
+      ? THINKING_DELIBERATION_MAX_TOKENS
+      : DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
+    const plannerCallMaxTokens = cognitionThinkingEnabled
+      ? THINKING_DELIBERATION_MAX_TOKENS
+      : planningMaxTokens;
+    const systemOneMaxTokens = responseMaxTokens;
+    const systemTwoMaxTokens = responseMaxTokens;
     const trace =
       this.tracer.enabled && context.turnId !== undefined
         ? {
@@ -620,6 +652,14 @@ export class Deliberator {
       { maxImagesPerLlmCall: this.options.maxImagesPerLlmCall },
     );
     const thinking = cognitionThinkingOption(this.options);
+    const effort = cognitionEffortOption(this.options);
+    // Spread into every Sol-cognition LLM call (finalizer + s2 planner). Thinking
+    // and effort travel together; those call sites use tool_choice:auto when
+    // thinking is active, since the API rejects thinking under forced tool use.
+    const reasoningCallOptions = {
+      ...(thinking === undefined ? {} : { thinking }),
+      ...(effort === undefined ? {} : { effort }),
+    };
     const allowedEmissions = allowedEmissionsForParticipationPolicy(
       effectiveContext.participationPolicy,
       effectiveContext.turnOrigin,
@@ -657,7 +697,7 @@ export class Deliberator {
         initialMessages: dialogueBlockMessages,
         userEntryId: context.userEntryId,
         maxTokens: systemOneMaxTokens,
-        ...(thinking === undefined ? {} : { thinking }),
+        ...reasoningCallOptions,
         path: "system_1",
         ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
         outboundToolAvailable,
@@ -687,7 +727,7 @@ export class Deliberator {
             initialMessages: dialogueBlockMessages,
             userEntryId: context.userEntryId,
             maxTokens: systemOneMaxTokens,
-            ...(thinking === undefined ? {} : { thinking }),
+            ...reasoningCallOptions,
             path: "system_1",
             ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
             outboundToolAvailable,
@@ -748,7 +788,7 @@ export class Deliberator {
           initialMessages: dialogueBlockMessages,
           userEntryId: context.userEntryId,
           maxTokens: systemOneMaxTokens,
-          ...(thinking === undefined ? {} : { thinking }),
+          ...reasoningCallOptions,
           path: "system_1",
           ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
           outboundToolAvailable,
@@ -831,8 +871,8 @@ export class Deliberator {
       dialogueMessages,
       selfSnapshot: context.selfSnapshot,
       additionalPromptSections: plannerAdditionalPromptSections,
-      maxTokens: planningMaxTokens,
-      ...(thinking === undefined ? {} : { thinking }),
+      maxTokens: plannerCallMaxTokens,
+      ...reasoningCallOptions,
       tracer: this.tracer,
       turnId: context.turnId,
       sessionId: context.sessionId,
@@ -914,7 +954,7 @@ export class Deliberator {
       initialMessages: dialogueBlockMessages,
       userEntryId: context.userEntryId,
       maxTokens: systemTwoMaxTokens,
-      ...(thinking === undefined ? {} : { thinking }),
+      ...reasoningCallOptions,
       path: "system_2",
       ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
       outboundToolAvailable,
@@ -942,7 +982,7 @@ export class Deliberator {
           initialMessages: dialogueBlockMessages,
           userEntryId: context.userEntryId,
           maxTokens: systemTwoMaxTokens,
-          ...(thinking === undefined ? {} : { thinking }),
+          ...reasoningCallOptions,
           path: "system_2",
           ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
           outboundToolAvailable,
@@ -1005,7 +1045,7 @@ export class Deliberator {
         initialMessages: dialogueBlockMessages,
         userEntryId: context.userEntryId,
         maxTokens: systemTwoMaxTokens,
-        ...(thinking === undefined ? {} : { thinking }),
+        ...reasoningCallOptions,
         path: "system_2",
         ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
         outboundToolAvailable,

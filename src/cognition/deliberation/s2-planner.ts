@@ -8,6 +8,7 @@ import {
   type LLMToolCall,
   type LLMToolDefinition,
   toToolInputSchema,
+  willSendThinkingUnderAutoToolChoice,
 } from "../../llm/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -91,6 +92,7 @@ export type RunS2PlannerOptions = {
   additionalPromptSections?: readonly (string | null)[];
   maxTokens: number;
   thinking?: LLMCompleteOptions["thinking"];
+  effort?: LLMCompleteOptions["effort"];
   tracer?: TurnTracer;
   turnId?: string;
   sessionId?: SessionId;
@@ -144,8 +146,10 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   let usage = result.usage;
 
   if (result.extraction.plan === null) {
+    // Retry forces the plan tool (which precludes thinking) so a plan is
+    // guaranteed even when the thinking-mode first attempt emitted no tool call.
     result = await callPlannerAttempt(
-      options,
+      { ...options, thinking: undefined, effort: undefined },
       systemPrompt,
       tools,
       [
@@ -261,9 +265,17 @@ async function callPlannerAttempt(
     system: systemPrompt,
     messages,
     tools,
-    tool_choice: { type: "tool", name: TURN_PLAN_TOOL_NAME },
+    // Thinking requires auto tool_choice (the API rejects forced tool use with
+    // thinking). When thinking will actually be sent, omit tool_choice so the
+    // model may think before emitting EmitTurnPlan; a missing plan tool-call is
+    // already handled (retry hint forces the tool, then degraded plan=null).
+    // Otherwise force the plan tool.
+    ...(willSendThinkingUnderAutoToolChoice(options.model, options.thinking)
+      ? {}
+      : { tool_choice: { type: "tool" as const, name: TURN_PLAN_TOOL_NAME } }),
     max_tokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
     budget: "cognition-plan",
   } satisfies LLMCompleteOptions;
   const planner =

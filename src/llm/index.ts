@@ -59,11 +59,29 @@ export type LLMImageRefBlock = {
   attachment_id: AttachmentId;
 };
 
+// Extended/adaptive thinking blocks. We carry them verbatim (text may be empty
+// under display:"omitted"; the signature holds the encrypted full reasoning) so
+// they can be round-tripped unchanged in a multi-iteration tool loop -- the API
+// requires the preceding thinking block to accompany a tool_use turn when
+// thinking is active.
+export type LLMThinkingBlock = {
+  type: "thinking";
+  thinking: string;
+  signature: string;
+};
+
+export type LLMRedactedThinkingBlock = {
+  type: "redacted_thinking";
+  data: string;
+};
+
 export type LLMContentBlock =
   | LLMTextBlock
   | LLMImageRefBlock
   | LLMToolUseBlock
-  | LLMToolResultBlock;
+  | LLMToolResultBlock
+  | LLMThinkingBlock
+  | LLMRedactedThinkingBlock;
 
 export type LLMContentBlockMessage = {
   role: "user" | "assistant";
@@ -189,6 +207,14 @@ type LLMCallOptions = {
   max_tokens?: number;
   temperature?: number;
   thinking?: ThinkingConfigParam;
+  // Adaptive-thinking effort guidance (output_config.effort). Only meaningful
+  // when thinking is sent; ignored otherwise.
+  effort?: OutputConfig["effort"];
+  // When streaming, suppress forwarding of visible text deltas to onTextDelta.
+  // Used by the emission-tool protocol (finalizer): the user-facing content lives
+  // in the terminal tool's input (streamed via the tool-field extraction), so any
+  // loose text the model emits alongside the tool must not reach the live stream.
+  suppressRawTextStream?: boolean;
   budget: string;
 };
 
@@ -463,6 +489,26 @@ function extractMessageBlocks(message: Message): LLMContentBlock[] {
   const blocks: LLMContentBlock[] = [];
 
   for (const block of message.content) {
+    // Thinking/redacted_thinking are preserved verbatim (incl. signature/data)
+    // so a tool-loop iteration can pass the assistant turn back unchanged, as
+    // the API requires when thinking is active and the turn contains tool_use.
+    if (block.type === "thinking") {
+      blocks.push({
+        type: "thinking",
+        thinking: block.thinking,
+        signature: block.signature,
+      });
+      continue;
+    }
+
+    if (block.type === "redacted_thinking") {
+      blocks.push({
+        type: "redacted_thinking",
+        data: block.data,
+      });
+      continue;
+    }
+
     if (isTextBlock(block)) {
       blocks.push({
         type: "text",
@@ -969,14 +1015,61 @@ function shouldOmitTemperature(model: string): boolean {
 }
 
 function shouldOmitThinking(
-  auth: ResolvedAnthropicAuth | undefined,
-  options: Pick<LLMCallOptions, "model" | "tool_choice">,
+  options: Pick<LLMCallOptions, "model" | "tool_choice" | "thinking">,
 ): boolean {
-  if (isOpusModel(options.model)) {
+  if (options.thinking === undefined) {
+    return false;
+  }
+
+  // The API rejects thinking when tool_choice forces tool use ("Thinking may not
+  // be enabled when tool_choice forces tool use") -- holds for any auth and for
+  // both forced shapes. Thinking-active calls must use auto/none tool_choice.
+  if (options.tool_choice?.type === "tool" || options.tool_choice?.type === "any") {
     return true;
   }
 
-  return auth?.kind === "oauth" && options.tool_choice?.type === "tool";
+  // Manual (budget_tokens) thinking is rejected on Opus 4.7/4.8 and deprecated on
+  // older Opus; adaptive thinking is the supported mode on Opus 4.6+. Omit only
+  // the manual shape on Opus -- adaptive flows through.
+  if (options.thinking.type === "enabled" && isOpusModel(options.model)) {
+    return true;
+  }
+
+  return false;
+}
+
+// Whether thinking will actually be sent when a call uses auto/none tool_choice.
+// Call sites use this to choose tool_choice: when thinking WILL be sent they must
+// use auto (the API rejects forced tool use with thinking active); when it will
+// NOT (no thinking / disabled / manual-on-Opus, all of which the client omits),
+// they should force the emission tool so a structured emission stays guaranteed.
+export function willSendThinkingUnderAutoToolChoice(
+  model: string,
+  thinking: ThinkingConfigParam | undefined,
+): boolean {
+  if (thinking === undefined || thinking.type === "disabled") {
+    return false;
+  }
+
+  if (thinking.type === "enabled" && isOpusModel(model)) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildOutputConfig(
+  base: LLMOutputConfig | undefined,
+  effort: OutputConfig["effort"] | undefined,
+): OutputConfig | undefined {
+  if (base === undefined && (effort === undefined || effort === null)) {
+    return undefined;
+  }
+
+  return {
+    ...(base ?? {}),
+    ...(effort === undefined || effort === null ? {} : { effort }),
+  };
 }
 
 function isAuthenticationFailure(error: unknown): boolean {
@@ -1124,20 +1217,27 @@ export class AnthropicLLMClient implements LLMClient {
     temperature?: number;
     thinking?: ThinkingConfigParam;
   } {
+    const omitThinking = shouldOmitThinking(options);
+    // effort guides adaptive-thinking depth; it only rides when thinking is
+    // actually sent, so drop it whenever thinking is absent or omitted.
+    const sendThinking = options.thinking !== undefined && !omitThinking;
+    const outputConfig = buildOutputConfig(
+      options.output_config,
+      sendThinking ? options.effort : undefined,
+    );
+
     return {
       model: options.model,
       system: this.resolveSystemPrompt(options.system),
       messages,
       tools: toAnthropicTools(options.tools),
       tool_choice: toAnthropicToolChoice(options.tool_choice),
-      ...(options.output_config === undefined ? {} : { output_config: options.output_config }),
+      ...(outputConfig === undefined ? {} : { output_config: outputConfig }),
       max_tokens: resolveMaxTokens(options),
       ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
         ? { temperature: options.temperature }
         : {}),
-      ...(options.thinking !== undefined && !shouldOmitThinking(this.auth, options)
-        ? { thinking: options.thinking }
-        : {}),
+      ...(sendThinking ? { thinking: options.thinking } : {}),
     };
   }
 
@@ -1263,7 +1363,12 @@ export class AnthropicLLMClient implements LLMClient {
 
         if (event.type === "content_block_delta") {
           if (event.delta.type === "text_delta") {
-            onTextDelta?.(event.delta.text);
+            // Under the emission-tool protocol, loose text emitted alongside the
+            // tool is not user-facing (the answer rides in the tool input); skip it
+            // so it never reaches the live stream.
+            if (options.suppressRawTextStream !== true) {
+              onTextDelta?.(event.delta.text);
+            }
             continue;
           }
 

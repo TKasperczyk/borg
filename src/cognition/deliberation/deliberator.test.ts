@@ -34,6 +34,7 @@ import type {
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
+import type { CognitionThinkingConfig } from "./types.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { buildInvalidToolFinalizerRetryPromptSection, Deliberator } from "./deliberator.js";
 
@@ -173,7 +174,7 @@ function createDeliberator(
   llm: FakeLLMClient,
   tempDirs: string[],
   options: {
-    cognitionThinking?: { enabled: boolean; budget_tokens: number };
+    cognitionThinking?: CognitionThinkingConfig;
     tracer?: TurnTracer;
   } = {},
 ): Deliberator {
@@ -615,6 +616,8 @@ describe("deliberator", () => {
     const deliberator = createDeliberator(llm, tempDirs, {
       cognitionThinking: {
         enabled: true,
+        mode: "adaptive",
+        effort: "max",
         budget_tokens: 2048,
       },
     });
@@ -666,10 +669,11 @@ describe("deliberator", () => {
 
     expect(result.response).toBe("Answer after seeing prior turns");
     expect(llm.converseRequests).toHaveLength(1);
-    expect(llm.converseRequests[0]?.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 2048,
-    });
+    // Adaptive thinking + max effort, and auto tool_choice (omitted) so the model
+    // may think before emitting -- forced tool_choice is incompatible with thinking.
+    expect(llm.converseRequests[0]?.thinking).toEqual({ type: "adaptive" });
+    expect(llm.converseRequests[0]?.effort).toBe("max");
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
     const messages = llm.requests[0]?.messages;
     expect(messages).toEqual([
       { role: "user", content: "What's the plan?" },
@@ -731,6 +735,8 @@ describe("deliberator", () => {
     const deliberator = createDeliberator(llm, tempDirs, {
       cognitionThinking: {
         enabled: true,
+        mode: "enabled",
+        effort: "max",
         budget_tokens: 3072,
       },
       tracer,
@@ -779,11 +785,15 @@ describe("deliberator", () => {
     });
     expect(result.tool_calls).toEqual([]);
     expect(llm.converseRequests).toHaveLength(1);
-    expect(llm.requests[0]?.tool_choice).toEqual({ type: "any" });
+    // Manual ("enabled") thinking still requires auto tool_choice (any thinking is
+    // incompatible with forced tool use); effort is adaptive-only, so it is omitted
+    // in manual mode.
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
     expect(llm.converseRequests[0]?.thinking).toEqual({
       type: "enabled",
       budget_tokens: 3072,
     });
+    expect(llm.converseRequests[0]?.effort).toBeUndefined();
     expect(llm.requests[0]?.output_config).toBeUndefined();
     expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
       "EmitAnswer",
@@ -1939,6 +1949,8 @@ describe("deliberator", () => {
     const deliberator = createDeliberator(llm, tempDirs, {
       cognitionThinking: {
         enabled: true,
+        mode: "adaptive",
+        effort: "max",
         budget_tokens: 4096,
       },
     });
@@ -2000,18 +2012,15 @@ describe("deliberator", () => {
     expect(llm.requests[0]?.messages).toEqual(expectedDialogue);
     expect(llm.requests[1]?.messages).toEqual(expectedDialogue);
 
-    // Planner pins tool_choice to EmitTurnPlan so the call produces a
-    // structured plan. Finalizer requires exactly one emission tool.
-    expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
-    expect(llm.requests[1]?.tool_choice).toEqual({ type: "any" });
-    expect(llm.requests[0]?.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 4096,
-    });
-    expect(llm.requests[1]?.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 4096,
-    });
+    // With adaptive thinking active, both the planner and the finalizer use auto
+    // tool_choice (omitted): forced tool use is incompatible with thinking, so the
+    // model thinks first, then calls the plan / emission tool.
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
+    expect(llm.requests[1]?.tool_choice).toBeUndefined();
+    expect(llm.requests[0]?.thinking).toEqual({ type: "adaptive" });
+    expect(llm.requests[1]?.thinking).toEqual({ type: "adaptive" });
+    expect(llm.requests[0]?.effort).toBe("max");
+    expect(llm.requests[1]?.effort).toBe("max");
 
     // Both calls share the identity/voice framing so voice lands
     // consistently across plan and response.
