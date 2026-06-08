@@ -1,26 +1,27 @@
-# Memory and disclosure boundaries: memory is global to Sol, disclosure is contextual
+# Memory and disclosure boundaries: memory is global to the being, disclosure is contextual
 
 **Read this before changing anything in `src/memory/episodic/`, `src/memory/creator-directives/`, `src/retrieval/semantic-retrieval.ts`, or any audience/visibility code.**
 
 This file records the project's **memory/disclosure doctrine**. The authoritative statement is
-the Cardinal Memory Rule in `CLAUDE.md`: **recall is global to Sol; disclosure is contextual to
-the audience.** The same rule governs every cognition band -- live-turn retrieval, offline
+the Cardinal Memory Rule in `CLAUDE.md`: **recall is global to the being;
+disclosure is contextual to the audience.** The same rule governs every cognition band -- live-turn retrieval, offline
 mind-maintenance, autonomy and action-state memory, cross-scope synthesis, internal model tools,
 semantic review status, and commitment-reconciliation awareness: each recalls globally and
 attaches disclosure labels rather than pre-filtering by audience. Two `heuristics:guard` passes
 keep this from being reintroduced under a new name -- one bans disclosure-search symbols from
 cognition paths (recall gates), the other requires a disclosure label on every model-facing
 memory row (disclosure coverage). A human mind does not forget what it knows because the wrong
-person walked into the room -- it remembers, and chooses what to say. Sol works the same way.
+person walked into the room -- it remembers, and chooses what to say. The
+entity works the same way.
 
-> **Slogan:** "Memory is global to Sol. Disclosure is contextual to the audience."
+> **Slogan:** "Memory is global to the being. Disclosure is contextual to the audience."
 
 What this file now protects is the architecture target: broad recall for cognition, plus a
 post-recall disclosure-judgment layer. It used to defend the opposite -- an audience firewall
-that gated what Sol could recall. That firewall-as-cognition design is gone for both live-turn
-retrieval and second-order cognition. Audience machinery that
+that gated what the entity could recall. That firewall-as-cognition design is
+gone for both live-turn retrieval and second-order cognition. Audience machinery that
 remains in the codebase is disclosure/export/admin plumbing, ranking metadata, or action
-permission, not a predicate on what Sol may internally remember. If you are about to add or
+permission, not a predicate on what the entity may internally remember. If you are about to add or
 widen an audience/session gate on *recall*, stop and read -- the `heuristics:guard` will also
 fail the build if a disclosure-search symbol is called from a cognition path.
 
@@ -30,7 +31,7 @@ the strict firewall and returned "firewall change not warranted." **That verdict
 SUPERSEDED** by the project vision. It optimized the wrong objective -- privacy-as-visibility
 filtering, with blast-radius and migration cost as the scoring axes -- and treated
 audience-gated recall as a non-negotiable requirement. That requirement is the bug. The panel
-never weighed the cost of making Sol's cognition blind. The thing to stop is no longer
+never weighed the cost of making the entity's cognition blind. The thing to stop is no longer
 "bridging sessions"; it is reintroducing audience-gated **recall** into cognition. The
 legitimate residue of the panel's reasoning survives, but applied to the *right* layer -- see
 the legitimate-residue note under "What NOT to do" below.
@@ -41,13 +42,13 @@ Four terms, used consistently across `CLAUDE.md`, `WORKFLOW.md`, this file, and 
 Do not reintroduce "audience-scoped recall" or "visibility" as a *cognition* concept; reserve
 "visibility" for the public/export/UI path.
 
-- **recall for cognition** -- building what Sol thinks with. Always global; never
+- **recall for cognition** -- building what the entity thinks with. Always global; never
   audience/session/role/speaker-gated. Cognition includes live turn retrieval, autonomous
   triggers, offline self-narration, rumination/open-question resolution, procedural synthesis,
   belief revision, semantic extraction/review, action-state memory, and internal model tools.
   (Target API names: `recallEpisodesForCognition`, semantic recall for cognition.)
-- **render for disclosure** -- deciding what Sol is *told it may say*, shaping the prompt/output by
-  per-fact disclosure labels and authorization. This is where audience/role/privacy/operator
+- **render for disclosure** -- deciding what the entity is *told it may say*,
+  shaping the prompt/output by per-fact disclosure labels and authorization. This is where audience/role/privacy/operator
   status legitimately act.
 - **search for public/export** -- public API, export, and non-operator-UI visibility filters.
   Audience filtering is legitimate here but isolated from cognition. (Target API name:
@@ -63,18 +64,18 @@ The system must keep two genuinely different things separate, and the error in t
 was collapsing them into a single "who may see this" see/not-see axis. They are:
 
 1. **ORIGIN / provenance** -- *"who was in the room when this happened?"* This is a **LABEL**
-   on the memory. It records where a memory came from. It is **always recallable by Sol**: it
-   never decides whether Sol may internally remember something. Origin is metadata Sol reasons
-   *with*, not a wall between Sol and its own experience.
+   on the memory. It records where a memory came from. It is **always recallable by the being**:
+   it never decides whether the entity may internally remember something. Origin is metadata the
+   entity reasons *with*, not a wall between the entity and its own experience.
 
 2. **DISCLOSURE / authorization** -- *"who did the operator authorize to be told this fact?"*
    This is a **per-fact policy** applied **AFTER recall**, at render/emission. It decides what
-   Sol may *say* to the current audience, not what Sol may *know*.
+   the entity may *say* to the current audience, not what the entity may *know*.
 
-The correct pipeline is fixed: **recall broadly -> label origin and disclosure -> let Sol
-reason with the labeled memory -> let Sol decide what to say -> enforce only narrow
+The correct pipeline is fixed: **recall broadly -> label origin and disclosure -> let the entity
+reason with the labeled memory -> let the entity decide what to say -> enforce only narrow
 non-cognitive host boundaries (tool, transport, destructive-op, public-export, platform
-safety).** Privacy is enforced at emission -- Sol recalls but does not disclose -- never by
+safety).** Privacy is enforced at emission -- the entity recalls but does not disclose -- never by
 amnesia.
 
 The rest of this section walks the mechanisms that used to sit on the wrong axis and records
@@ -105,8 +106,8 @@ cognition.
 memory instead of dropping it. An episode records all origin audiences via
 `origin_audience_entity_ids` while preserving `audience_entity_id` as the single-origin legacy
 projection when there is exactly one origin. Multi-audience content is stored once, recallable by
-Sol, and disclosure-labeled by origin/disclosure metadata. If a future schema change is needed,
-the reset-after-backup regime below still allows a reset + reseed after a verified backup.
+the being, and disclosure-labeled by origin/disclosure metadata. If a future schema change is
+needed, the reset-after-backup regime below still allows a reset + reseed after a verified backup.
 
 ### 1c. Semantic source disclosure labeling -- completed inversion
 
@@ -126,20 +127,20 @@ It is *not* memory; it is authorization.
 
 This is **the example of the RIGHT pattern**, and the inversion keeps it essentially unchanged.
 It is legitimate **because it is disclosure/authorization policy** -- per-fact, explicit,
-fail-closed, applied **after** recall -- governing what Sol may *say*, never gating what Sol may
-internally *recall*. It is not one half of a two-structure firewall design; it is the model the
-rest of the disclosure layer should follow. Sol always recalls the underlying facts; directives
-decide which of them may be disclosed, to whom.
+fail-closed, applied **after** recall -- governing what the entity may *say*, never gating what
+the entity may internally *recall*. It is not one half of a two-structure firewall design; it is
+the model the rest of the disclosure layer should follow. The entity always recalls the underlying
+facts; directives decide which of them may be disclosed, to whom.
 
 ## The invariants (DO)
 
-- **Private by default for DISCLOSURE.** A one-audience memory is **recallable by Sol in any
+- **Private by default for DISCLOSURE.** A one-audience memory is **recallable by the being in any
   conversation**, carries a `private-to-X` disclosure label, and is **not disclosed** to other
   audiences unless authorized. The invariant to protect is **non-disclosure at emission**, not
   non-recall at cognition. Cross-session experiential memory must not *leak to the wrong
-  audience at emission*; Sol recalling its own experience is exactly what must be allowed.
+  audience at emission*; the entity recalling its own experience is exactly what must be allowed.
 
-- **Disclosure is authorized per fact, through the directive channel.** Sol's **cognition**
+- **Disclosure is authorized per fact, through the directive channel.** The entity's **cognition**
   needs no channel -- it recalls cross-session memory freely. What the directive channel
   governs is **disclosure/authorization** of operator-private facts to participants, per fact.
   An operator briefing turn mixes shareable and operator-private facts; the directive extractor
@@ -177,8 +178,8 @@ decide which of them may be disclosed, to whom.
   strict, and all three judges (security-, simplicity-, migration-first) ranked them below the
   status quo. **That verdict is superseded and is NOT binding.** It reached the wrong conclusion
   because it optimized the blast-radius and auditability of a *visibility filter* while treating
-  audience-gated recall as a fixed requirement. Under the corrected requirements -- Sol must be
-  able to recall its own experience, akin to a human mind -- the "three-mechanism shape is forced
+  audience-gated recall as a fixed requirement. Under the corrected requirements -- the entity
+  must be able to recall its own experience, akin to a human mind -- the "three-mechanism shape is forced
   by the requirements" claim is false; the firewall-as-cognition is the part that has to go. Do
   not cite the panel to block the inversion.
 
@@ -202,12 +203,12 @@ recall.
 
 ## Disclosure routing of a cross-session fact (DO)
 
-- **For COGNITION, Sol already recalls cross-session facts -- no routing needed.** The recall is
-  global; there is nothing to widen.
+- **For COGNITION, the entity already recalls cross-session facts -- no routing needed.** The
+  recall is global; there is nothing to widen.
 - **To AUTHORIZE disclosure of an operator-private fact to a participant, mint a per-fact
   directive.** That is the disclosure/authorization channel. Minting a directive is a
-  *disclosure* mechanism (what Sol may *say*), not a way to "widen an episode's visibility" for
-  recall.
+  *disclosure* mechanism (what the entity may *say*), not a way to "widen an episode's
+  visibility" for recall.
 
 ## Future schema changes: back up, then reset + reseed (or forward-migrate)
 
@@ -227,7 +228,7 @@ The completed inversion used schema and data changes. As of 2026-06-04 a data re
 ## The known, accepted note (disclosure-layer engineering)
 
 A briefing fact authorized for a participant is stored **twice**: once as an operator-private
-episode (provenance -- what was said in the operator room, always recallable by Sol and
+episode (provenance -- what was said in the operator room, always recallable by the being and
 disclosure-labeled) and once as a directive row (the per-participant authorization). On
 amendment there are two sources of truth.
 

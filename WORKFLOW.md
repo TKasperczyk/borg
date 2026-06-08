@@ -1,6 +1,6 @@
 # Workflow
 
-How Tom and Claude actually run sprints on borg. Read this after CLAUDE.md / AGENTS.md when you (Claude) come back from a context compaction.
+How the operator and Claude actually run sprints on borg. Read this after CLAUDE.md / AGENTS.md when you (Claude) come back from a context compaction.
 
 CLAUDE.md / AGENTS.md tell you what NOT to do in the codebase (scope, guardrails, taste). This file tells you what TO do in the dev loop.
 
@@ -8,7 +8,7 @@ CLAUDE.md / AGENTS.md tell you what NOT to do in the codebase (scope, guardrails
 
 ## LIVE SYSTEM -- reset is allowed after a backup (as of 2026-06-04)
 
-Borg holds real memory ("Sol" in the BotArena arena, on `demo/server/.borg-data/demo`). It is valuable but **not sacred**: a data reset is allowed as long as you back up first. The 2026-05-31 "NEVER RESET" regime is **lifted** -- it was over-strict for an experimental system, and resetting genuinely simplifies schema/data work.
+Borg holds real memory (the AI being in the BotArena arena, on `demo/server/.borg-data/demo`). It is valuable but **not sacred**: a data reset is allowed as long as you back up first. The 2026-05-31 "NEVER RESET" regime is **lifted** -- it was over-strict for an experimental system, and resetting genuinely simplifies schema/data work.
 
 The rules that now apply:
 
@@ -29,7 +29,7 @@ The rules that now apply:
 
 ### History
 
-Earlier, borg had no real data and the rule was "edit the baseline in place, then reset." When Sol went live (2026-05-31) that was replaced by a strict NEVER-RESET regime. As of 2026-06-04 the strict regime is **lifted**: reset is allowed again, gated only on a verified backup. "Edit the baseline + reset" is a legitimate path once more -- just back up first. Older commit messages referencing either regime still make sense in their own time.
+Earlier, borg had no real data and the rule was "edit the baseline in place, then reset." When the being went live (2026-05-31) that was replaced by a strict NEVER-RESET regime. As of 2026-06-04 the strict regime is **lifted**: reset is allowed again, gated only on a verified backup. "Edit the baseline + reset" is a legitimate path once more -- just back up first. Older commit messages referencing either regime still make sense in their own time.
 
 ## Project goal (the only one that matters)
 
@@ -39,7 +39,7 @@ A cognitive memory architecture for an LLM that is:
 2. **Clean code** -- no overengineering, no duplication, no dead paths, well organized.
 3. **Simple flow** -- minimal paths. Every additional check or branch must be worth the complexity it adds. If you can't defend it, delete it.
 
-Behavioral correctness across the sim suite looked good as of v83.1, but that is no longer the headline. The durable memory-architecture doctrine is global internal recall with disclosure labels: Sol remembers broadly, the harness labels origin/privacy/trust/disclosure constraints, and Sol decides what to say within those constraints. `BOUNDARIES.md` is the source of truth for the implemented recall/disclosure boundary; do not reintroduce audience/session recall gates in cognition.
+Behavioral correctness across the sim suite looked good as of v83.1, but that is no longer the headline. The durable memory-architecture doctrine is global internal recall with disclosure labels: the being remembers broadly, the harness labels origin/privacy/trust/disclosure constraints, and the being decides what to say within those constraints. `BOUNDARIES.md` is the source of truth for the implemented recall/disclosure boundary; do not reintroduce audience/session recall gates in cognition.
 
 **Stop at diminishing returns.** These signs apply to incremental quality work after the recall/disclosure boundary in `BOUNDARIES.md` remains intact:
 
@@ -49,20 +49,20 @@ Behavioral correctness across the sim suite looked good as of v83.1, but that is
 - You're proposing observability layers on observability layers.
 - Coverage pressure exceeds correctness pressure.
 
-When you notice these, raise it with Tom and stop the cycle.
+When you notice these, raise it with the operator and stop the cycle.
 
 ---
 
 ## The standard sprint cycle
 
-Tom runs this with a GPT Pro Extended reviewer (ChatGPT in Chromium) as the architectural second opinion. Claude drives codex, sims, commits, and the submission.
+The operator runs this with a GPT Pro Extended reviewer (ChatGPT in Chromium) as the architectural second opinion. Claude drives codex, sims, commits, and the submission.
 
 ```
 GPT review arrives in chat
   ↓
 1.  Cross-verify reviewer claims with codex (don't trust blindly)
   ↓
-2.  Triage by severity: P0 / P1 / P2. Pause at P3 for Tom.
+2.  Triage by severity: P0 / P1 / P2. Pause at P3 for the operator.
   ↓
 3.  For each priority, separate committable sprint:
       a. codex exploration (find existing utilities, peer files)
@@ -87,7 +87,7 @@ GPT review arrives in chat
 Loop.
 ```
 
-Stop and discuss with Tom when:
+Stop and discuss with the operator when:
 - The reviewer claims something you can't reproduce in codex cross-verification.
 - A proposed sprint fails the Opus 5.0 test (see CLAUDE.md).
 - You're tempted to add an in-flight LLM judge of semantic output (see CLAUDE.md production-policing section).
@@ -102,7 +102,7 @@ GPT Pro Extended is a strong reviewer but not infallible. Filter every recommend
 - **Opus 5.0 test** -- mandatory before any harness work. See CLAUDE.md.
 - **Production-policing boundary** -- never add in-flight LLM/regex judges of non-critical semantic output. See CLAUDE.md.
 - **Code hygiene rules** -- grep before adding a helper; extract repeated values; mimic existing patterns; read a peer file first. See user CLAUDE.md.
-- **Defend sound positions** -- if Tom or the reviewer push back on a recommendation that was actually right, explain the trade-off rather than folding.
+- **Defend sound positions** -- if the operator or the reviewer push back on a recommendation that was actually right, explain the trade-off rather than folding.
 - **Honest negative findings** -- if a sim shows nothing changed, say so. Don't dress it up.
 
 When you decline a recommendation, say why and offer the counter.
@@ -128,7 +128,7 @@ cd /home/luth/Programming && rm -f ~/borgvN.zip && \
 
 Why this shape: the simple `zip -r borg/ -x '*/node_modules/*'` recipe blows up on pnpm's symlink-heavy `node_modules/.pnpm/` layout once the demo workspace (with multiple nested `node_modules/`) is present -- zip consumes >9 GB of memory and effectively hangs. `git ls-files` excludes everything `.gitignore` already excludes (node_modules, dist, .borg-data, etc.) with no fnmatch ambiguity, and the `find` line explicitly adds back the three useful gitignored trees: `.git` for commit history, `.design-dump` for design references (if present), `simulator-runs` for sim artifacts.
 
-**INCLUDE** `simulator-runs/`, `.git/`, sim artifacts. GPT runs a sandbox and uses git history + sim outputs. Do not over-exclude. Tom corrected this once already; don't repeat it.
+**INCLUDE** `simulator-runs/`, `.git/`, sim artifacts. GPT runs a sandbox and uses git history + sim outputs. Do not over-exclude. The operator corrected this once already; don't repeat it.
 
 Size will land in the 150-200M range when `simulator-runs/` is populated. Demo-only / code-review zips without sim artifacts land closer to 10-15M.
 
@@ -160,7 +160,7 @@ GPT Pro Extended usually finishes in 20-40 min, sometimes 2-3 hours. Use a backg
 sleep 1500; date  # 25 min, run_in_background=true
 ```
 
-The harness notifies you when the sleep ends. Take a screenshot, check for the stop button (still thinking) vs the response actually rendered. If still thinking, schedule another 15-20 min and repeat. If 3+ hours with no progress, flag Tom.
+The harness notifies you when the sleep ends. Take a screenshot, check for the stop button (still thinking) vs the response actually rendered. If still thinking, schedule another 15-20 min and repeat. If 3+ hours with no progress, flag the operator.
 
 ### 6. Ingest the response
 
@@ -191,11 +191,11 @@ Sims write to `simulator-runs/` with the prefix. The overseer audit jsonl and th
 
 ### LM Studio outages
 
-LM Studio at `localhost:1234` provides embeddings. If Tom restarts it mid-sim, you'll see one or more `borg_hard_aborted_turn` events with ECONNREFUSED in logs. The aborted_turn mechanism (Sprint 6d-7) absorbs single outages; the sim continues. If 5+ consecutive turns fail, compaction will abort itself. Stop the sim, wait for Tom's all-clear, relaunch.
+LM Studio at `localhost:1234` provides embeddings. If the operator restarts it mid-sim, you'll see one or more `borg_hard_aborted_turn` events with ECONNREFUSED in logs. The aborted_turn mechanism (Sprint 6d-7) absorbs single outages; the sim continues. If 5+ consecutive turns fail, compaction will abort itself. Stop the sim, wait for the operator's all-clear, relaunch.
 
 ### Host switch
 
-If Tom has been working on a different machine, the repo on ivory may be behind. Always check `git log --oneline -5` at the start of a session against what you expect. If commits you wrote in a previous session are missing, do `git pull --ff-only` before doing anything else. Tom caught this once; saved a wasted sprint.
+If the operator has been working on a different machine, the repo on ivory may be behind. Always check `git log --oneline -5` at the start of a session against what you expect. If commits you wrote in a previous session are missing, do `git pull --ff-only` before doing anything else. The operator caught this once; saved a wasted sprint.
 
 ---
 
@@ -210,9 +210,9 @@ If Tom has been working on a different machine, the repo on ivory may be behind.
 
 ## What "done" looks like
 
-The codebase Tom wants to look at and find:
+The codebase the operator wants to look at and find:
 
-0. **The memory-architecture inversion is complete** -- Sol's internal recall is global (never audience/session-gated for cognition); audience, session, role, and privacy are disclosure metadata and action-policy inputs only; and privacy is enforced as a post-recall disclosure judgment, not by hiding memories from Sol. The human-mind invariant tests pass. **Until this holds, the project is NOT done no matter how favorable the GPT review tone.** See the Cardinal Memory Rule in CLAUDE.md and BOUNDARIES.md. The criteria below are subordinate to this gate.
+0. **The memory-architecture inversion is complete** -- the entity's internal recall is global (never audience/session-gated for cognition); audience, session, role, and privacy are disclosure metadata and action-policy inputs only; and privacy is enforced as a post-recall disclosure judgment, not by hiding memories from the entity. The human-mind invariant tests pass. **Until this holds, the project is NOT done no matter how favorable the GPT review tone.** See the Cardinal Memory Rule in CLAUDE.md and BOUNDARIES.md. The criteria below are subordinate to this gate.
 1. Works well across diverse scenarios (group chat, single-user dev, relationships, etc.).
 2. Clean, not overengineered, no duplication, well organized.
 3. Each mechanism justified by something concrete it prevents or enables.

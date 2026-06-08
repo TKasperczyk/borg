@@ -16,19 +16,19 @@ judgment of what to disclose.
 
 ### Memory And Disclosure
 
-Sol's internal recall is never audience-gated or session-gated. Audience,
+The entity's internal recall is never audience-gated or session-gated. Audience,
 session, role, privacy, trust, and provenance are disclosure metadata and
-action-policy inputs, not predicates that decide whether Sol may internally
-remember something. A memory may be private-to-Alice for disclosure while still
-visible-to-Sol for cognition. The harness may rank, label, budget, and cite
-memories; it must not make Sol unaware of one because the current audience may
-not hear it. The pipeline is fixed: recall broadly -> label
+action-policy inputs, not predicates that decide whether the entity may
+internally remember something. A memory may be private to one participant for
+disclosure while still visible to the entity for cognition. The harness may
+rank, label, budget, and cite memories; it must not make the entity unaware of
+one because the current audience may not hear it. The pipeline is fixed: recall broadly -> label
 origin/privacy/trust/disclosure -> reason with the labeled memory -> decide
 disclosure -> enforce only narrow non-cognitive boundaries (tools, transport,
 destructive actions, public exports, platform safety). Privacy is enforced at
-emission -- Sol recalls but does not disclose -- not by amnesia. The full rule
-is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is global to
-Sol. Disclosure is contextual to the audience."
+emission -- the entity recalls but does not disclose -- not by amnesia. The
+full rule is the Cardinal Memory Rule in CLAUDE.md; its slogan is "Memory is
+global to the being. Disclosure is contextual to the audience."
 
 Recall is global across every cognition band -- live-turn retrieval (episodic,
 semantic, self/identity, goals/open-questions, social/observed-events,
@@ -55,13 +55,13 @@ path) and a label-coverage pass (a model-facing object literal or
 serializer-helper return that emits a private-bearing key without a same-object
 disclosure label). Audience machinery remains for disclosure labeling, ranking,
 public/export search, admin reads, and action/tool/transport permission, not as a
-predicate on what Sol may internally remember. Per the LIVE SYSTEM regime in
-CLAUDE.md, a data reset is allowed after a verified backup, so future schema
+predicate on what the entity may internally remember. Per the LIVE SYSTEM
+regime in CLAUDE.md, a data reset is allowed after a verified backup, so future schema
 changes may reset and reseed rather than carry every change through a
 data-preserving migration.
 
-A third axis rides alongside recall (global to Sol) and disclosure (contextual
-to the audience): common ground -- what the current audience already knows.
+A third axis rides alongside recall (global to the being) and disclosure
+(contextual to the audience): common ground -- what the current audience already knows.
 Being permitted to disclose a memory does not make it shared knowledge. Common
 ground is enforced as a prompt rule, not a data structure -- there is no
 `known_to` store. The always-rendered `borg_memory_disclosure_guidance` block
@@ -191,7 +191,7 @@ paused group thread and a dedicated operator channel with its creator. Making
 each locus its own governed record is what lets audience-aware disclosure,
 operator awareness, and participation control act on one conversation without
 disturbing the others. (Audience here shapes disclosure and ranking, not what
-Sol may recall -- see Audience And Disclosure Scoping.)
+the entity may recall -- see Audience And Disclosure Scoping.)
 
 A session record carries identity (source type, label, and the audience entity
 it addresses), liveness (last activity, message count, last turn, and an
@@ -203,9 +203,9 @@ active, idle, or archived status), and three orthogonal control dimensions:
   silence. This is tool-shape gating, not output policing; the harness removes
   tools rather than judging what the model wrote.
 - Audience role is participant or operator. An operator session is the entity's
-  supervisory channel. Operator status does not unlock memory Sol could not
-  otherwise recall -- Sol always recalls its own cross-session activity and
-  self-state. What it authorizes is broader disclosure and broader action: an
+  supervisory channel. Operator status does not unlock memory that the entity
+  could not otherwise recall -- the entity always recalls its own cross-session
+  activity and self-state. What it authorizes is broader disclosure and broader action: an
   aliased, PII-light snapshot of the entity's other active sessions, and, when
   the sender is also the creator, cross-session activity rendered as disclosable
   into the prompt, creator directives, and proactive outbound into those
@@ -272,10 +272,10 @@ that remains useful can outrank a newer memory with little demonstrated value.
 
 Audience metadata is intrinsic to episodes. Borg records not only what
 happened, but who was present and who may later be told the memory. That
-metadata is a disclosure label and a ranking signal, not a recall gate: Sol can
-internally recall an episode regardless of the current audience, then decide
-what to disclose. "Who was in the room" is an origin label; "who may be told"
-is a per-fact disclosure policy applied after recall. `isEpisodeAccessVisible`
+metadata is a disclosure label and a ranking signal, not a recall gate: the
+entity can internally recall an episode regardless of the current audience,
+then decide what to disclose. "Who was in the room" is an origin label; "who
+may be told" is a per-fact disclosure policy applied after recall. `isEpisodeAccessVisible`
 in `src/memory/episodic/audience-filter.ts` serves disclosure/export/admin
 visibility only. `deriveEpisodeAccess` in `src/memory/episodic/extractor.ts`
 stores multi-audience memories with origin labels instead of dropping them.
@@ -446,12 +446,12 @@ not to the abstract group entity. That is separate from audience-aware ranking
 and reply targeting: the audience can be the group while the speaker whose
 trust or interaction history changes is a person.
 
-Social and observed-events recall is global to Sol. Sol recalls a relevant
-social event by topic, salience, and person regardless of who is currently
+Social and observed-events recall is global to the being. The entity recalls a
+relevant social event by topic, salience, and person regardless of who is currently
 present -- the present speaker is a ranking boost, not a recall gate. The
 present-speaker-keyed observed-events projection
 (`src/memory/observed-events/projection.ts`) is now a disclosure/ranking
-projection. It must not make Sol unaware of social events for cognition; it
+projection. It must not make the entity unaware of social events for cognition; it
 labels and prioritizes what may be relevant or discloseable to the current
 audience. See the Cardinal Memory Rule in CLAUDE.md.
 
@@ -468,9 +468,9 @@ contradicting evidence, alternate values, and a state such as established,
 contested, quarantined, or revoked.
 
 Relational Slot Memory exists because relationship facts are not the same as
-general social trust. "Maya is Tom's daughter" or "Sam prefers this name" must
-be retrievable as a scoped fact with provenance, not inferred from broad
-sentiment or a whole episode.
+general social trust. A fact like "a participant is the operator's child" or
+"someone prefers a particular name" must be retrievable as a scoped fact with
+provenance, not inferred from broad sentiment or a whole episode.
 
 Writes come from episodic and semantic extraction, corrective preference
 negations, and review flows. Reads feed participant rosters, retrieval, active
@@ -705,7 +705,7 @@ Audience resolution affects nearly every later phase: entity resolution,
 commitment applicability, social profile lookup, episode and semantic
 disclosure labeling and ranking, shared-state relevance, and final reply
 target. It shapes how memories are labeled and ranked for the current audience,
-not whether Sol may recall them.
+not whether the entity may recall them.
 
 Participant context for group turns is built from recent speakers and
 established, contested, or quarantined relational slots. That gives Borg a
@@ -799,7 +799,7 @@ turn should surface Open Questions more readily than an idle turn.
 Semantic retrieval recalls nodes regardless of the current audience and
 attaches the disclosure status of their source episodes. A node supported only
 by private source episodes is still recalled for cognition, labeled as
-privately sourced so Sol can reason with it internally without disclosing
+privately sourced so the entity can reason with it internally without disclosing
 source details to the current audience unless permitted. The transitive
 source-visibility machinery in `src/retrieval/semantic-retrieval.ts` now serves
 disclosure/export source filtering and disclosure-label attachment, not
@@ -817,7 +817,7 @@ latency and prompt size. This per-audience/session keying is a ranking and
 repetition-cooling signal, not a recall gate: it biases ordering and bounds
 repeats, but never makes a memory unrecallable to cognition. Per the Cardinal
 Memory Rule in CLAUDE.md, current audience may bias ranking, never decide
-whether Sol may recall something.
+whether the entity may recall something.
 
 Recall expansion is an LLM-backed fanout task. It can emit named terms and
 facet intents that retrieval uses as source handles. Deterministic code may
@@ -905,9 +905,9 @@ group. A group decision is not automatically a personal preference. The
 audience scope is a disclosure label and a ranking signal -- it shapes which
 shared-state entry is most relevant and what may be disclosed, and it feeds
 ledger rendering and identity-sensitive responses. It is not a predicate that
-hides other relationships' shared state from Sol's cognition or prunes semantic
-recall. Sol can recall a private understanding with one person while talking to
-a group; it simply does not disclose it. Concretely, beyond the current
+hides other relationships' shared state from the entity's cognition or prunes
+semantic recall. The entity can recall a private understanding with one person
+while talking to a group; it simply does not disclose it. Concretely, beyond the current
 audience's Shared State artifact, the turn recalls other audiences' active
 shared-state entries globally for cognition via
 `sharedStateRepository.listRecentEntriesForCognition({ excludeAudienceEntityId:
@@ -1098,9 +1098,9 @@ These guards are not production semantic policers. They do not decide whether
 ordinary factual claims are well grounded. That responsibility belongs
 upstream: better extraction, retrieval, ledger rendering, prompt copy, and
 model reasoning with visible evidence. These emission guards constrain what is
-said at output time; they never gate what Sol may recall, and together with the
-closure-pressure, internal-ID, and safety guards they are the only sanctioned
-production output-policing exception.
+said at output time; they never gate what the entity may recall, and together
+with the closure-pressure, internal-ID, and safety guards they are the only
+sanctioned production output-policing exception.
 
 ### Persistence, Ingestion, And Reflection
 
@@ -1174,11 +1174,11 @@ important contradictory evidence.
 Audience scope is a disclosure label and a ranking signal, not a pre-cognition
 recall gate. All relevant episodes and semantic sources are recalled for
 cognition regardless of the current audience, each carrying its origin and
-disclosure constraints; Sol then decides what to disclose. Cross-audience
+disclosure constraints; the entity then decides what to disclose. Cross-audience
 recall is the default for cognition, not an administrative bypass. For group
 audiences, a group turn surfaces participant roster context and constrained
 relational slots as disclosure-labeled context; participant-private memory
-remains recallable to Sol but is labeled not-for-this-audience rather than
+remains recallable to the being but is labeled not-for-this-audience rather than
 hidden from cognition. Broad recall is the cognition default; explicit
 cross-audience administrative paths are disclosure/export/admin reads only.
 Audience constraints become disclosure labels and render guidance, not memory
@@ -1236,9 +1236,10 @@ which fact, and how. They are a third authority pillar alongside Commitments and
 Identity Governance, and they replaced the earlier operator-advice mechanism.
 
 Creator directives exist because authority over disclosure is not the same as a
-behavioral commitment or a self-model record. "This fact may be told to Alice,
-shown as a confidentiality boundary to Bob, and hidden from everyone else" is a
-durable, audience-scoped rule the harness must resolve before the model speaks,
+behavioral commitment or a self-model record. "This fact may be told to one
+participant, shown as a confidentiality boundary to another participant, and
+hidden from everyone else" is a durable, audience-scoped rule the harness must
+resolve before the model speaks,
 so a fact authorized for one audience never enters another audience's prompt.
 
 A directive pairs a durable internal handling rule with a structured disclosure
@@ -1358,8 +1359,8 @@ be different from the audience in group contexts. The reply target can be a
 specific entity within a group. These distinctions propagate as labels and
 ranking boosts into Stream entries, Social Memory, Commitments,
 creator-directive disclosure, Shared State, retrieval ranking, the cross-session
-activity projection, and the Evidence Ledger. They do not make Sol unaware of
-episodes or semantic sources. `isEpisodeAccessVisible`
+activity projection, and the Evidence Ledger. They do not make the entity
+unaware of episodes or semantic sources. `isEpisodeAccessVisible`
 (`src/memory/episodic/audience-filter.ts`) and the disclosure-mode
 source-visibility helpers in `src/retrieval/semantic-retrieval.ts` (e.g.
 `resolveSemanticSourceEpisodeIdsForDisclosure`; the cognition path
@@ -1370,14 +1371,15 @@ and admin episodic reads route through `ViewerCapability`
 `unrestricted` (reserved for admin/correction/export); `resolveViewerCapability`
 is fail-closed to `audience`, and cognition recall never routes through it.
 
-Group audience scope does not change what Sol may recall. A group turn includes
-participant roster context and constrained relational slots; participant-private
-memory remains recallable to Sol, labeled not-for-this-audience, and Sol decides
-disclosure rather than the harness blinding the recall.
+Group audience scope does not change what the entity may recall. A group turn
+includes participant roster context and constrained relational slots;
+participant-private memory remains recallable to the being, labeled
+not-for-this-audience, and the entity decides disclosure rather than the
+harness blinding the recall.
 
 Treating audience as a disclosure dimension prevents several classes of failure
--- by Sol recalling broadly and then declining to disclose, not by being made
-amnesic:
+-- by the entity recalling broadly and then declining to disclose, not by being
+made amnesic:
 
 - leaking private context from one person into a different audience,
 - attributing a group statement to a single participant,
@@ -1386,11 +1388,12 @@ amnesic:
 - assuming that a memory shared with Borg is shared with everyone.
 
 Identity records can be ABOUT a particular relationship -- an Open Question,
-commitment, or shared state specific to one audience -- but being about Bob is
-not the same as being hidden from Sol unless Bob is present. Sol always recalls
-its full self-model (values, traits, goals, Open Questions, decisions); the
+commitment, or shared state specific to one audience -- but being about a
+participant is not the same as being hidden from the entity unless that
+participant is present. The entity always recalls its full self-model (values,
+traits, goals, Open Questions, decisions); the
 audience a record concerns is its target/disclosure scope, used for ranking and
-disclosure, not a predicate on whether Sol may recall it. The `audience_entity_id`
+disclosure, not a predicate on whether the entity may recall it. The `audience_entity_id`
 on a self record means target_audience, not visible_only_when_present.
 Self-context construction recalls globally for cognition and uses audience
 metadata only as disclosure/ranking context.
@@ -1407,15 +1410,15 @@ Ledger section.
 It exists so the entity can answer "what have you been doing elsewhere, and who
 else have you been talking to" for its operator, without disclosing other
 audiences' private interactions into every session. Activity is recorded
-globally and disclosed narrowly. The recall is autobiographical: Sol can always
-recall what it did across its own sessions -- this is its own life, not another
-audience's secret. What is narrow is the disclosure.
+globally and disclosed narrowly. The recall is autobiographical: the entity can
+always recall what it did across its own sessions -- this is its own life, not
+another audience's secret. What is narrow is the disclosure.
 
 Two of the three operations here are authorization-gated ACTIONS, correctly
 gated on the same creator-in-an-operator-session shape: scoping a commitment to
 another channel (see Commitments) and sending a proactive message into another
-session (see Proactive Outbound). Reading Sol's own recent activity is not a
-crossing into another audience's secrets -- it is autobiographical recall -- so
+session (see Proactive Outbound). Reading the entity's own recent activity is
+not a crossing into another audience's secrets -- it is autobiographical recall -- so
 it is recalled globally for cognition (`selectCrossSessionSelfActivity` selects
 by current-session, recency window, and cap only, with no role check) and
 surfaced into the Evidence Ledger as `self_private` memory via
@@ -1461,10 +1464,10 @@ not assumed, and activity is recorded only when delivery transports -- an
 undelivered attempt never counts as a reply.
 
 The message is composed by a dedicated directed-outbound turn that plans with
-Sol's full internal memory -- goals, recent autobiographical and social recall,
-the operator's rationale -- together with the target audience's disclosure
-constraints, then composes a target-safe message. Disclosure is enforced at
-composition: Sol does not reveal private operator-only rationale or
+the entity's full internal memory -- goals, recent autobiographical and social
+recall, the operator's rationale -- together with the target audience's
+disclosure constraints, then composes a target-safe message. Disclosure is enforced at
+composition: the entity does not reveal private operator-only rationale or
 other-audience context unless permitted, rather than being kept unaware of that
 context. That turn is a distinct origin -- it carries the dispatch instruction
 as its input but skips extraction, perception persistence, and reflection
@@ -1501,7 +1504,7 @@ it came from.
 Second, it supports disclosure labeling. A semantic node may be globally
 meaningful but supported only by a source episode private to another audience;
 provenance lets the harness recall it for cognition while labeling it privately
-sourced, so Sol may reason with it but not disclose source details to the
+sourced, so the entity may reason with it but not disclose source details to the
 current audience unless permitted. Rendering uses private-source disclosure
 labels instead of withholding cognition evidence based on source audience.
 
@@ -1724,8 +1727,8 @@ turn.
 ### Self-Narrator
 
 The Self-Narrator consumes the full episode history within the current
-autobiographical period -- recall is global to Sol; it does not audience-gate or
-visibility-gate which episodes it reads (`listAll()`, temporal filter only) --
+autobiographical period -- recall is global to the being; it does not
+audience-gate or visibility-gate which episodes it reads (`listAll()`, temporal filter only) --
 plus current autobiographical state. It produces growth markers, period
 openings, period closures, and period narrative updates, each carrying a
 disclosure label combined from its source episodes.
@@ -1786,8 +1789,8 @@ remain active without queueing.
 ### Commitment Reconciler
 
 The Commitment Reconciler consumes active commitments in the same audience
-scope during maintenance sleep. It is harness memory hygiene for Sol's own
-stored commitments: the live extractor can choose inconsistent
+scope during maintenance sleep. It is harness memory hygiene for the entity's
+own stored commitments: the live extractor can choose inconsistent
 `directive_family` slugs for the same rule, so exact-key ingest deduplication
 cannot catch every redundant commitment.
 
@@ -1803,8 +1806,8 @@ widens disclosure.
 
 This is distinct from the Creator-Directive Reconciler. Creator directives
 maintain operator authority and disclosure policy; commitment reconciliation
-maintains Sol's own scoped promises and rules, with no disclosure-widening
-dimension.
+maintains the entity's own scoped promises and rules, with no
+disclosure-widening dimension.
 
 ## Belief Revision
 
@@ -2026,8 +2029,8 @@ because "what happened," "what I know," "what I should do," "what I feel,"
 relationship facts are established" are not the same data. The live turn needs
 one grounding artifact, so Borg has the
 Evidence Ledger. Shared understanding is relationship-specific, so Borg has
-Shared State; recall is global to Sol while disclosure is audience-specific, so
-Borg labels and ranks memories by audience rather than hiding them from
+Shared State; recall is global to the being while disclosure is
+audience-specific, so Borg labels and ranks memories by audience rather than hiding them from
 cognition. Identity must evolve without
 silent overwrite, so Borg has Identity Governance, provenance, Open Questions,
 growth markers, and review. Maintenance must happen outside the response path,

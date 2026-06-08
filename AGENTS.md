@@ -89,13 +89,13 @@ cost is acceptable under our OAuth subscription. Failure modes are
 explicit (degrade-with-observability via `onDegraded` hooks) rather than
 silent wrong answers for half the user population.
 
-The Maya gaslight scenario surfaced this concretely: perception's LLM-only
-entity extractor missed "Maya" in a multi-topic message, and Borg
-capitulated. The fix was a second LLM call (recall expansion) that emits
-explicit `named_terms`, plus a deterministic union with the perception
+A named-person gaslight scenario surfaced this concretely: perception's
+LLM-only entity extractor missed the person named in a multi-topic message,
+and Borg capitulated. The fix was a second LLM call (recall expansion) that
+emits explicit `named_terms`, plus a deterministic union with the perception
 output -- moving already-LLM-identified handles around, not interpreting
-language deterministically. Reaching for regex would have just shifted the
-bug from English to non-English users.
+language deterministically. Reaching for regex would have just shifted the bug
+from English to non-English users.
 
 ## Production posture (post v82-v87 arc)
 

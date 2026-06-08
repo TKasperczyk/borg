@@ -127,7 +127,7 @@ const borg = await Borg.open();
 
 const { text } = await borg.turn({
   userMessage: "I take my coffee black -- remember that.",
-  audience: "alice",
+  audience: "participant",
 });
 
 await borg.close();
@@ -135,7 +135,7 @@ await borg.close();
 
 That single call perceives the message, retrieves what's relevant, deliberates,
 emits one reply, and reflects -- writing back whatever it learned. Next time
-Alice asks, the preference is already in episodic and semantic memory.
+that participant asks, the preference is already in episodic and semantic memory.
 
 <details>
 <summary><b>More of the library surface</b></summary>
@@ -159,7 +159,7 @@ await borg.self.goals.add({
 });
 await borg.skills.select("debugging pgvector similarity");
 await borg.mood.current(sessionId);
-await borg.social.getProfile("alice");
+await borg.social.getProfile("participant");
 
 // offline maintenance (the dream runner is itself callable; .plan / .apply /
 // per-process helpers hang off it)
@@ -174,7 +174,7 @@ The same surface is available from the command line -- stream, memory bands,
 retrieval, the dream cycle, autonomy, and more.
 
 ```bash
-borg turn "what did I tell you about my coffee?" --audience alice
+borg turn "what did I tell you about my coffee?" --audience participant
 borg episode search "coffee" --since 1h
 borg dream --dry-run
 ```
