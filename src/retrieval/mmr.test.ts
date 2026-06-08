@@ -46,4 +46,26 @@ describe("mmr", () => {
       ),
     ).toEqual([]);
   });
+
+  it("uses canonical embedding similarity dimension checks", () => {
+    expect(() =>
+      applyMmr(
+        [
+          {
+            item: "alpha",
+            vector: Float32Array.from([1, 0]),
+            relevanceScore: 1,
+          },
+          {
+            item: "beta",
+            vector: Float32Array.from([0]),
+            relevanceScore: 0.5,
+          },
+        ],
+        {
+          limit: 2,
+        },
+      ),
+    ).toThrow(/different dimensions/);
+  });
 });

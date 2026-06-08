@@ -330,23 +330,39 @@ export class LanceDbStore {
   async openTable(options: LanceDbOpenTableOptions): Promise<LanceDbTable> {
     const connection = await this.getConnection();
 
-    try {
-      const tableNames = await connection.tableNames();
-
-      if (tableNames.includes(options.name)) {
-        const table = await connection.openTable(options.name);
+    const verifyAndReopenTable = async (table: Table): Promise<LanceDbTable> => {
+      try {
         await ensureSchemaCompatibility(table, options.schema, options.name);
         await table.checkoutLatest();
         table.close();
         const reopenedTable = await connection.openTable(options.name);
         await reopenedTable.checkoutLatest();
         return new LanceDbTable(reopenedTable);
+      } catch (error) {
+        if (error instanceof StorageError) {
+          throw error;
+        }
+
+        throw new StorageError(`Failed to open LanceDB table ${options.name}`, {
+          cause: error,
+        });
+      }
+    };
+
+    const openCompatibleTable = async (): Promise<LanceDbTable> =>
+      verifyAndReopenTable(await connection.openTable(options.name));
+
+    try {
+      const tableNames = await connection.tableNames();
+
+      if (tableNames.includes(options.name)) {
+        return await openCompatibleTable();
       }
 
-      return new LanceDbTable(
+      return await verifyAndReopenTable(
         await connection.createEmptyTable(options.name, options.schema, {
           mode: "create",
-          existOk: true,
+          existOk: false,
         }),
       );
     } catch (error) {
@@ -355,10 +371,14 @@ export class LanceDbStore {
       }
 
       try {
-        return new LanceDbTable(await connection.openTable(options.name));
-      } catch {
+        return await openCompatibleTable();
+      } catch (fallbackError) {
+        if (fallbackError instanceof StorageError) {
+          throw fallbackError;
+        }
+
         throw new StorageError(`Failed to open LanceDB table ${options.name}`, {
-          cause: error,
+          cause: fallbackError,
         });
       }
     }

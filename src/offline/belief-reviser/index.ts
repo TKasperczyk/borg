@@ -20,6 +20,12 @@ import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
+  optionalPositiveIntegerOption,
+  positiveIntegerOptionOrFallback,
+  positiveIntegerRecordParamOrFallback,
+  unitIntervalOptionOrFallback,
+} from "../../util/math.js";
+import {
   memoryDisclosurePayloadFields,
   semanticEdgeMemoryDisclosureLabel,
   semanticNodeMemoryDisclosureLabel,
@@ -306,73 +312,6 @@ function nullableSemanticEdgeLlmRecord(
   return edge === null ? null : semanticEdgeLlmRecord(edge, labelsByEpisodeId);
 }
 
-function normalizeMaxReviewsPerEvent(value: number | undefined): number {
-  if (value === undefined) {
-    return DEFAULT_MAX_REVIEWS_PER_EVENT;
-  }
-
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
-    throw new TypeError("maxReviewsPerEvent must be a positive integer");
-  }
-
-  return value;
-}
-
-function normalizeRegradeBatchSize(value: number | undefined): number {
-  if (value === undefined) {
-    return DEFAULT_REGRADE_BATCH_SIZE;
-  }
-
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
-    throw new TypeError("regradeBatchSize must be a positive integer");
-  }
-
-  return value;
-}
-
-function normalizePositiveIntegerOption(
-  value: number | undefined,
-  fallback: number,
-  label: string,
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
-    throw new TypeError(`${label} must be a positive integer`);
-  }
-
-  return value;
-}
-
-function normalizeOptionalPositiveIntegerOption(
-  value: number | undefined,
-  label: string,
-): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
-    throw new TypeError(`${label} must be a positive integer`);
-  }
-
-  return value;
-}
-
-function readPositiveIntegerParam(
-  params: Record<string, unknown> | undefined,
-  key: string,
-  fallback: number,
-): number {
-  const value = params?.[key];
-
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0
-    ? value
-    : fallback;
-}
-
 function normalizePositiveNumberOption(
   value: number | undefined,
   fallback: number,
@@ -384,22 +323,6 @@ function normalizePositiveNumberOption(
 
   if (!Number.isFinite(value) || value <= 0) {
     throw new TypeError(`${label} must be a positive number`);
-  }
-
-  return value;
-}
-
-function normalizeUnitIntervalOption(
-  value: number | undefined,
-  fallback: number,
-  label: string,
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
-    throw new TypeError(`${label} must be between 0 and 1`);
   }
 
   return value;
@@ -842,14 +765,22 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
   private readonly consecutiveParseFailureLimit: number;
 
   constructor(private readonly options: BeliefReviserProcessOptions) {
-    this.maxReviewsPerEvent = normalizeMaxReviewsPerEvent(options.maxReviewsPerEvent);
-    this.regradeBatchSize = normalizeRegradeBatchSize(options.regradeBatchSize);
-    this.maxEventsPerRun = normalizePositiveIntegerOption(
+    this.maxReviewsPerEvent = positiveIntegerOptionOrFallback(
+      options.maxReviewsPerEvent,
+      DEFAULT_MAX_REVIEWS_PER_EVENT,
+      "maxReviewsPerEvent",
+    );
+    this.regradeBatchSize = positiveIntegerOptionOrFallback(
+      options.regradeBatchSize,
+      DEFAULT_REGRADE_BATCH_SIZE,
+      "regradeBatchSize",
+    );
+    this.maxEventsPerRun = positiveIntegerOptionOrFallback(
       options.maxEventsPerRun,
       DEFAULT_MAX_EVENTS_PER_RUN,
       "maxEventsPerRun",
     );
-    this.maxReviewsPerRun = normalizePositiveIntegerOption(
+    this.maxReviewsPerRun = positiveIntegerOptionOrFallback(
       options.maxReviewsPerRun,
       DEFAULT_MAX_REVIEWS_PER_RUN,
       "maxReviewsPerRun",
@@ -859,27 +790,27 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       DEFAULT_CLAIM_STALE_SEC,
       "claimStaleSec",
     );
-    this.maxParseFailures = normalizePositiveIntegerOption(
+    this.maxParseFailures = positiveIntegerOptionOrFallback(
       options.maxParseFailures,
       DEFAULT_MAX_PARSE_FAILURES,
       "maxParseFailures",
     );
-    this.maxLlmCalls = normalizePositiveIntegerOption(
+    this.maxLlmCalls = positiveIntegerOptionOrFallback(
       options.maxLlmCalls,
       DEFAULT_MAX_LLM_CALLS,
       "maxLlmCalls",
     );
-    this.consecutiveParseFailureLimit = normalizePositiveIntegerOption(
+    this.consecutiveParseFailureLimit = positiveIntegerOptionOrFallback(
       options.consecutiveParseFailureLimit,
       DEFAULT_CONSECUTIVE_PARSE_FAILURE_LIMIT,
       "consecutiveParseFailureLimit",
     );
-    this.confidenceDropMultiplier = normalizeUnitIntervalOption(
+    this.confidenceDropMultiplier = unitIntervalOptionOrFallback(
       options.confidenceDropMultiplier,
       DEFAULT_CONFIDENCE_DROP_MULTIPLIER,
       "confidenceDropMultiplier",
     );
-    this.confidenceFloor = normalizeUnitIntervalOption(
+    this.confidenceFloor = unitIntervalOptionOrFallback(
       options.confidenceFloor,
       DEFAULT_CONFIDENCE_FLOOR,
       "confidenceFloor",
@@ -1756,23 +1687,27 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
   async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}): Promise<BeliefReviserPlan> {
     const items: BeliefReviserPlan["items"] = [];
-    const maxEventsPerRun = readPositiveIntegerParam(
+    const maxEventsPerRun = positiveIntegerRecordParamOrFallback(
       opts.params,
       "maxEventsPerRun",
       this.maxEventsPerRun,
     );
-    const maxReviewsPerRun = readPositiveIntegerParam(
+    const maxReviewsPerRun = positiveIntegerRecordParamOrFallback(
       opts.params,
       "maxReviewsPerRun",
       this.maxReviewsPerRun,
     );
-    const regradeBatchSize = readPositiveIntegerParam(
+    const regradeBatchSize = positiveIntegerRecordParamOrFallback(
       opts.params,
       "regradeBatchSize",
       this.regradeBatchSize,
     );
-    const maxLlmCalls = readPositiveIntegerParam(opts.params, "maxLlmCalls", this.maxLlmCalls);
-    const tokenBudget = normalizeOptionalPositiveIntegerOption(opts.budget, "budget");
+    const maxLlmCalls = positiveIntegerRecordParamOrFallback(
+      opts.params,
+      "maxLlmCalls",
+      this.maxLlmCalls,
+    );
+    const tokenBudget = optionalPositiveIntegerOption(opts.budget, "budget");
     const events = listUnprocessedEvents(this.options.db);
     let plannedReviews = 0;
     let runCapped = false;

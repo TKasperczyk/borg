@@ -1,5 +1,6 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
-import { allSectionIds, emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
+import { coercePositiveIntegerOrFallback } from "../../util/math.js";
+import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
 import { renderSection } from "./section-rendering.js";
@@ -265,8 +266,8 @@ function fullLedgerSectionOptions(
   const overrides = options.sectionOptions?.[sectionId];
 
   return {
-    maxEntries: normalizePositiveInteger(overrides?.maxEntries, defaults.maxEntries),
-    maxTokens: normalizePositiveInteger(overrides?.maxTokens, defaults.maxTokens),
+    maxEntries: coercePositiveIntegerOrFallback(overrides?.maxEntries, defaults.maxEntries),
+    maxTokens: coercePositiveIntegerOrFallback(overrides?.maxTokens, defaults.maxTokens),
   };
 }
 
@@ -376,7 +377,7 @@ function compactFullLedgerSections(
   ledger: EvidenceLedger,
   options: EvidenceLedgerCompactionOptions,
 ): FullLedgerSectionState[] {
-  const maxEntryTextTokens = normalizePositiveInteger(
+  const maxEntryTextTokens = coercePositiveIntegerOrFallback(
     options.maxEntryTextTokens,
     DEFAULT_FULL_LEDGER_ENTRY_TEXT_TOKEN_CAP,
   );
@@ -455,11 +456,11 @@ export function compactEvidenceLedger(
   ledger: EvidenceLedger,
   options: EvidenceLedgerCompactionOptions = {},
 ): CompactedEvidenceLedger {
-  const targetTokens = normalizePositiveInteger(
+  const targetTokens = coercePositiveIntegerOrFallback(
     options.targetTokens,
     DEFAULT_FULL_LEDGER_TARGET_TOKENS,
   );
-  const hardCapTokens = normalizePositiveInteger(
+  const hardCapTokens = coercePositiveIntegerOrFallback(
     options.hardCapTokens,
     DEFAULT_FULL_LEDGER_HARD_CAP_TOKENS,
   );

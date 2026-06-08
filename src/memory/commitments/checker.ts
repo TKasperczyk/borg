@@ -19,7 +19,6 @@ export type CommitmentViolation = {
 };
 
 export type CommitmentCheckResult = {
-  passed: boolean;
   violations: CommitmentViolation[];
   revised: boolean;
   emission:
@@ -279,7 +278,6 @@ export class CommitmentChecker {
 
     if (violations.length === 0) {
       return {
-        passed: true,
         violations: [],
         revised: false,
         emission: {
@@ -291,7 +289,6 @@ export class CommitmentChecker {
 
     if (input.rewriteOnViolation !== true) {
       return {
-        passed: true,
         violations,
         revised: false,
         emission: {
@@ -326,7 +323,6 @@ export class CommitmentChecker {
 
     if (revisedResponse.length === 0) {
       return {
-        passed: true,
         violations,
         revised: true,
         emission: {
@@ -345,7 +341,6 @@ export class CommitmentChecker {
 
     if (revisedViolations.length === 0) {
       return {
-        passed: true,
         violations,
         revised: true,
         emission: {
@@ -356,7 +351,6 @@ export class CommitmentChecker {
     }
 
     return {
-      passed: true,
       violations,
       revised: true,
       emission: {

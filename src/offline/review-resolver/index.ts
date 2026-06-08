@@ -333,17 +333,13 @@ function uniqueStreamIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
   return dedupePreservingOrder(ids);
 }
 
-function parsePositiveInteger(value: unknown): number | null {
-  return positiveIntegerValue(value);
-}
-
 function configuredMaxItems(
   ctx: OfflineContext,
   opts: OfflineProcessRunOptions,
   fallback?: number,
 ): number {
   return (
-    parsePositiveInteger(opts.params?.maxItemsPerPass) ??
+    positiveIntegerValue(opts.params?.maxItemsPerPass) ??
     fallback ??
     ctx.config.offline.reviewResolver.maxItemsPerPass
   );

@@ -67,7 +67,6 @@ function passedResponse(
   violations: CommitmentCheckResult["violations"] = [],
 ): CommitmentGuardResult {
   return {
-    passed: true,
     violations,
     revised: false,
     emission: {

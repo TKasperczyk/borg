@@ -1,4 +1,10 @@
-import { LanceDbTable, schema, utf8Field, vectorField } from "../../storage/lancedb/index.js";
+import {
+  LanceDbTable,
+  schema,
+  utf8Field,
+  vectorField,
+  type LanceDbRow,
+} from "../../storage/lancedb/index.js";
 import {
   parseJsonArray,
   quoteSqlString,
@@ -71,6 +77,17 @@ type SkillSqlRow = {
   last_successful: number | null;
   created_at: number;
   updated_at: number;
+};
+
+type SkillVectorRow = {
+  id: string;
+  applies_when: string;
+  embedding: number[];
+};
+
+type VectorLike = {
+  length: number;
+  get(index: number): unknown;
 };
 
 const SKILL_JSON_ARRAY_CODEC = {
@@ -177,6 +194,54 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
   }
 
   return parsed.data;
+}
+
+function isVectorLike(value: unknown): value is VectorLike {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { length?: unknown }).length === "number" &&
+    typeof (value as { get?: unknown }).get === "function"
+  );
+}
+
+function numericEmbeddingValues(value: unknown): number[] | null {
+  if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+    return Array.from(value as ArrayLike<number>, (item) => Number(item));
+  }
+
+  if (isVectorLike(value)) {
+    return Array.from({ length: value.length }, (_, index) => Number(value.get(index)));
+  }
+
+  return null;
+}
+
+function skillVectorRowFromLanceRow(row: LanceDbRow | undefined): SkillVectorRow | undefined {
+  if (row === undefined) {
+    return undefined;
+  }
+
+  if (typeof row.id !== "string" || typeof row.applies_when !== "string") {
+    throw new StorageError("Skill vector row failed validation", {
+      code: "SKILL_VECTOR_ROW_INVALID",
+    });
+  }
+
+  const rawEmbedding = row.embedding;
+  const embedding = numericEmbeddingValues(rawEmbedding);
+
+  if (embedding === null) {
+    throw new StorageError("Skill vector row failed validation", {
+      code: "SKILL_VECTOR_ROW_INVALID",
+    });
+  }
+
+  return {
+    id: row.id,
+    applies_when: row.applies_when,
+    embedding,
+  };
 }
 
 function parsePendingAttemptSnapshot(value: string): PendingProceduralAttemptValue {
@@ -550,6 +615,12 @@ export class SkillRepository {
   async replace(skill: SkillRecord): Promise<SkillRecord> {
     const parsed = skillSchema.parse(skill);
     const embedding = await this.options.embeddingClient.embed(parsed.applies_when);
+    await this.table.checkoutLatest();
+    const previousRows = (await this.table.list({
+      where: `id = ${quoteSqlString(parsed.id)}`,
+      limit: 1,
+    })) as LanceDbRow[];
+    const previousRow = skillVectorRowFromLanceRow(previousRows[0]);
 
     try {
       await this.table.upsert(
@@ -563,9 +634,20 @@ export class SkillRepository {
         { on: "id" },
       );
 
-      this.db.transaction(() => {
-        this.upsertSqlRow(parsed);
-      })();
+      try {
+        this.db.transaction(() => {
+          this.upsertSqlRow(parsed);
+        })();
+      } catch (error) {
+        if (previousRow !== undefined) {
+          await this.table.upsert([previousRow], {
+            on: "id",
+          });
+        } else {
+          await this.table.remove(`id = ${quoteSqlString(parsed.id)}`);
+        }
+        throw error;
+      }
 
       return parsed;
     } catch (error) {

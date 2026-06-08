@@ -1,4 +1,5 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
+import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
 import {
   renderSharedStateArtifact,
@@ -8,7 +9,7 @@ import {
 import type { SharedStateKindCounts } from "../shared-state/selection.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
-import { emptySectionCountRecord, normalizePositiveInteger } from "./budget.js";
+import { emptySectionCountRecord } from "./budget.js";
 import { renderSection } from "./section-rendering.js";
 import type {
   EvidenceLedger,
@@ -258,15 +259,15 @@ export function buildCompactPlannerLedgerPrompt(
   ledger: EvidenceLedger,
   options: CompactPlannerLedgerOptions = {},
 ): CompactPlannerLedgerPrompt {
-  const targetTokens = normalizePositiveInteger(
+  const targetTokens = coercePositiveIntegerOrFallback(
     options.targetTokens,
     DEFAULT_COMPACT_PLANNER_TARGET_TOKENS,
   );
   const hardCapTokens = Math.max(
     targetTokens,
-    normalizePositiveInteger(options.hardCapTokens, DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS),
+    coercePositiveIntegerOrFallback(options.hardCapTokens, DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS),
   );
-  const maxEntryTextTokens = normalizePositiveInteger(
+  const maxEntryTextTokens = coercePositiveIntegerOrFallback(
     options.maxEntryTextTokens,
     DEFAULT_COMPACT_ENTRY_TEXT_TOKEN_CAP,
   );

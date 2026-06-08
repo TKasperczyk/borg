@@ -1680,16 +1680,10 @@ export class RetrievalPipeline {
 
     return buildRetrievedEpisode(
       candidate,
-      scored.decayedSalience,
-      scored.heat,
-      scored.goalRelevance,
-      scored.valueAlignment,
-      scored.timeRelevance,
-      scored.moodBoost,
-      scored.socialRelevance,
-      scored.entityRelevance,
-      scored.suppressionPenalty,
-      1,
+      {
+        ...scored,
+        score: 1,
+      },
       citationChain,
     );
   }

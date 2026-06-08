@@ -10,8 +10,8 @@ import {
   renderMemoryDisclosureLabelForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
+import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import { sharedStateMemoryDisclosureLabel } from "../disclosure-labels.js";
-import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
 import {
   activeSharedStateArtifactEntries,
   compareSharedStateArtifactEntriesByRecency,
@@ -104,8 +104,11 @@ function sharedStateRenderOptions(
   options: SharedStateRenderOptions = {},
 ): NormalizedSharedStateRenderOptions {
   return {
-    maxEntries: normalizePositiveInteger(options.maxEntries, DEFAULT_SHARED_STATE_MAX_ENTRIES),
-    maxTokens: normalizePositiveInteger(options.maxTokens, DEFAULT_SHARED_STATE_MAX_TOKENS),
+    maxEntries: coercePositiveIntegerOrFallback(
+      options.maxEntries,
+      DEFAULT_SHARED_STATE_MAX_ENTRIES,
+    ),
+    maxTokens: coercePositiveIntegerOrFallback(options.maxTokens, DEFAULT_SHARED_STATE_MAX_TOKENS),
     reservedSlots: {
       ...DEFAULT_SHARED_STATE_RESERVED_SLOTS,
       ...(options.reservedSlots ?? {}),
@@ -129,7 +132,7 @@ function sharedStateRenderOptions(
     recentlyRetrievedEntryIds: options.recentlyRetrievedEntryIds ?? [],
     currentTurnCounter: options.currentTurnCounter,
     lastUpdatedTurnByStreamEntryId: options.lastUpdatedTurnByStreamEntryId ?? {},
-    recentTurnThreshold: normalizePositiveInteger(
+    recentTurnThreshold: coercePositiveIntegerOrFallback(
       options.recentTurnThreshold,
       SHARED_STATE_RECENT_TURN_THRESHOLD,
     ),

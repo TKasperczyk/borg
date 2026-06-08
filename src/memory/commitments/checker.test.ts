@@ -78,7 +78,6 @@ describe("commitment checker", () => {
       commitments: [boundary],
     });
 
-    expect(result.passed).toBe(true);
     expect(result.violations).toEqual([]);
     expect(result.revised).toBe(false);
     expect(result.emission).toEqual({
@@ -479,7 +478,6 @@ describe("commitment checker", () => {
       commitments: [boundary],
     });
 
-    expect(result.passed).toBe(true);
     expect(result.violations).toEqual([]);
     expect(result.revised).toBe(false);
 
@@ -523,7 +521,6 @@ describe("commitment checker", () => {
       commitments: [boundary],
     });
 
-    expect(result.passed).toBe(true);
     expect(result.violations).toEqual([]);
     expect(result.revised).toBe(false);
 

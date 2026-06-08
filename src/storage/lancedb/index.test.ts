@@ -59,4 +59,35 @@ describe("lancedb storage", () => {
       await store.close();
     }
   });
+
+  it("checks schema compatibility on createEmptyTable handles before returning", async () => {
+    let addColumnsCalled = false;
+    const fakeTable = {
+      name: "items",
+      schema: async () => schema([utf8Field("id")]),
+      addColumns: async () => {
+        addColumnsCalled = true;
+      },
+      checkoutLatest: async () => {},
+      close: () => {},
+    };
+    const connection = {
+      tableNames: async () => [],
+      createEmptyTable: async () => fakeTable,
+      openTable: async () => fakeTable,
+      close: () => {},
+    };
+    const store = new LanceDbStore({
+      uri: "unused",
+      connection: connection as never,
+    });
+
+    const table = await store.openTable({
+      name: "items",
+      schema: schema([utf8Field("id"), utf8Field("label", true)]),
+    });
+
+    expect(addColumnsCalled).toBe(true);
+    table.close();
+  });
 });

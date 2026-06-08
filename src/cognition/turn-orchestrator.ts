@@ -68,7 +68,10 @@ import type {
   ChatResponseWatermarkCoordinator,
   StreamIngestionCoordinator,
 } from "./ingestion/index.js";
-import { TurnLifecycleTracker } from "./lifecycle/turn-lifecycle-tracker.js";
+import {
+  TurnLifecycleTracker,
+  type AbortCleanupFailure,
+} from "./lifecycle/turn-lifecycle-tracker.js";
 import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
 import type { TurnPhaseCoordinatorInput } from "./lifecycle/turn-phase/types.js";
 import type { PromptOverrideRepository } from "./prompts/override-repository.js";
@@ -403,6 +406,7 @@ export class TurnOrchestrator {
     error: unknown,
     sessionId: SessionId,
     turnId: string,
+    rollbackFailures: readonly AbortCleanupFailure[] = [],
   ): Promise<void> {
     const message =
       error instanceof Error
@@ -419,6 +423,17 @@ export class TurnOrchestrator {
           turn_id: turnId,
           session_id: sessionId,
           reason: message,
+          ...(rollbackFailures.length === 0
+            ? {}
+            : {
+                rollback_incomplete: true,
+                rollback_failure_count: rollbackFailures.length,
+                rollback_failures: rollbackFailures.map((failure) => ({
+                  operation: failure.operation,
+                  id: failure.id,
+                  error: failure.error,
+                })),
+              }),
         },
       });
     } catch {
@@ -426,11 +441,15 @@ export class TurnOrchestrator {
     }
 
     if (this.tracer.enabled) {
-      this.tracer.emit("turn.rejected", {
-        turnId,
-        reason: message,
-        session_id: sessionId,
-      });
+      try {
+        this.tracer.emit("turn.rejected", {
+          turnId,
+          reason: message,
+          session_id: sessionId,
+        });
+      } catch {
+        // Best-effort logging only; a tracer failure must not mask the turn error.
+      }
     }
   }
 
@@ -489,6 +508,7 @@ export class TurnOrchestrator {
       openQuestionsRepository: this.options.openQuestionsRepository,
       episodicRepository: this.options.episodicRepository,
       relationalSlotRepository: this.options.relationalSlotRepository,
+      tracer: this.tracer,
     });
 
     try {
@@ -507,8 +527,11 @@ export class TurnOrchestrator {
           (result.path === "suppressed" ? "suppressed_action" : "reflected");
         return result;
       } catch (error) {
-        await lifecycleTracker.cleanupAbortedTurnState();
-        await this.appendFailureEvent(streamWriter, error, sessionId, turnId);
+        const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
+          turnId,
+          sessionId,
+        });
+        await this.appendFailureEvent(streamWriter, error, sessionId, turnId, rollbackFailures);
         terminalOutcome = "aborted";
         throw error;
       } finally {

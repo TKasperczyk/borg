@@ -74,16 +74,10 @@ export function projectEpisodes(
     episodes: selected.map(({ source }) =>
       buildRetrievedEpisode(
         source.candidate,
-        source.score.decayedSalience,
-        source.score.heat,
-        source.score.goalRelevance,
-        source.score.valueAlignment,
-        source.score.timeRelevance,
-        source.score.moodBoost,
-        source.score.socialRelevance,
-        source.score.entityRelevance,
-        source.score.suppressionPenalty,
-        clamp(source.score.score, 0, 1),
+        {
+          ...source.score,
+          score: clamp(source.score.score, 0, 1),
+        },
         source.citationChain(),
       ),
     ),

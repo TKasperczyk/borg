@@ -9,12 +9,14 @@ import {
   actionThreadStateMetadata,
   buildActionThreads,
   listActionCandidatesForCognition,
-  normalizePositiveInteger,
-  normalizeUnitInterval,
   orderActionThreadsBySalience,
   renderActionThreadText,
   renderOlderActionThreadsSummary,
 } from "../action-threads.js";
+import {
+  clampPositiveIntegerOrFallback,
+  coerceUnitIntervalOrFallback,
+} from "../../../util/math.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -26,15 +28,15 @@ import { combineMemoryDisclosureLabels } from "../../../retrieval/index.js";
 import { actionMemoryDisclosureLabel } from "../../disclosure-labels.js";
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
-  const sourceRecordLimit = normalizePositiveInteger(
+  const sourceRecordLimit = clampPositiveIntegerOrFallback(
     context.options.actionThreadSourceRecordLimit,
     DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
   );
-  const renderLimit = normalizePositiveInteger(
+  const renderLimit = clampPositiveIntegerOrFallback(
     context.options.actionThreadRenderLimit,
     DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   );
-  const similarityThreshold = normalizeUnitInterval(
+  const similarityThreshold = coerceUnitIntervalOrFallback(
     context.options.actionThreadSimilarityThreshold,
     DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   );

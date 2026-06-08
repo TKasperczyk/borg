@@ -17,6 +17,24 @@ function parseProceduralContext(input: Parameters<typeof deriveProceduralContext
   });
 }
 
+function skillVectorTable(repository: unknown): {
+  checkoutLatest: () => Promise<void>;
+  list: (options?: { limit?: number }) => Promise<Array<Record<string, unknown>>>;
+  remove: (where: string) => Promise<void>;
+} {
+  return (
+    repository as {
+      options: {
+        table: {
+          checkoutLatest: () => Promise<void>;
+          list: (options?: { limit?: number }) => Promise<Array<Record<string, unknown>>>;
+          remove: (where: string) => Promise<void>;
+        };
+      };
+    }
+  ).options.table;
+}
+
 describe("SkillRepository", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
@@ -346,6 +364,96 @@ describe("SkillRepository", () => {
       failures: superseded.failures,
     });
     expect(harness.proceduralContextStatsRepository.listForSkill(superseded.id)).toEqual([]);
+  });
+
+  it("restores the previous skill vector when replace SQL persistence fails", async () => {
+    const oldContext = "Atlas rollback debugging";
+    const newContext = "Roadmap planning review";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [oldContext, [1, 0, 0, 0]],
+          [newContext, [0, 1, 0, 0]],
+        ]),
+      ),
+    });
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.createEpisode(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: oldContext,
+      approach: "Compare against the last stable deploy.",
+      sourceEpisodes: [episode.id],
+    });
+
+    harness.db.exec(`
+      CREATE TRIGGER fail_skill_replace_update
+      BEFORE UPDATE ON skills
+      WHEN NEW.id = '${skill.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected skill replace failure');
+      END;
+    `);
+
+    await expect(
+      harness.skillRepository.replace({
+        ...skill,
+        applies_when: newContext,
+        updated_at: skill.updated_at + 1,
+      }),
+    ).rejects.toThrow(/Failed to replace skill/);
+
+    expect(harness.skillRepository.get(skill.id)?.applies_when).toBe(oldContext);
+    const skillsTable = skillVectorTable(harness.skillRepository);
+    await skillsTable.checkoutLatest();
+    const lanceRows = await skillsTable.list({ limit: 10 });
+
+    expect(lanceRows.find((row) => row.id === skill.id)?.applies_when).toBe(oldContext);
+  });
+
+  it("removes the new skill vector when replace SQL fails without a prior Lance row", async () => {
+    const oldContext = "Atlas rollback debugging";
+    const newContext = "Roadmap planning review";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [oldContext, [1, 0, 0, 0]],
+          [newContext, [0, 1, 0, 0]],
+        ]),
+      ),
+    });
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.createEpisode(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: oldContext,
+      approach: "Compare against the last stable deploy.",
+      sourceEpisodes: [episode.id],
+    });
+    const skillsTable = skillVectorTable(harness.skillRepository);
+
+    await skillsTable.remove(`id = '${skill.id}'`);
+    await skillsTable.checkoutLatest();
+    expect((await skillsTable.list({ limit: 10 })).some((row) => row.id === skill.id)).toBe(false);
+
+    harness.db.exec(`
+      CREATE TRIGGER fail_skill_replace_update
+      BEFORE UPDATE ON skills
+      WHEN NEW.id = '${skill.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected skill replace failure');
+      END;
+    `);
+
+    await expect(
+      harness.skillRepository.replace({
+        ...skill,
+        applies_when: newContext,
+        updated_at: skill.updated_at + 1,
+      }),
+    ).rejects.toThrow(/Failed to replace skill/);
+
+    expect(harness.skillRepository.get(skill.id)?.applies_when).toBe(oldContext);
+    await skillsTable.checkoutLatest();
+    expect((await skillsTable.list({ limit: 10 })).some((row) => row.id === skill.id)).toBe(false);
   });
 
   it("atomically claims and clears skill split work", async () => {

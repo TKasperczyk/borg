@@ -61,18 +61,6 @@ export type ActionPromptSalienceSummary = {
   staleActionsOmittedFromPrompt: number;
 };
 
-export function normalizePositiveInteger(value: number | undefined, fallback: number): number {
-  return value === undefined ? fallback : Math.max(1, Math.floor(value));
-}
-
-export function normalizeUnitInterval(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.max(0, Math.min(1, value));
-}
-
 function uniqueEntityIds(entityIds: readonly (EntityId | null | undefined)[]): EntityId[] {
   return [...new Set(entityIds.filter((entityId): entityId is EntityId => entityId != null))];
 }

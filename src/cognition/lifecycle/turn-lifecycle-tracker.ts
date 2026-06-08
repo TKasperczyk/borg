@@ -16,8 +16,15 @@ import type {
   OpenQuestionsRepository,
 } from "../../memory/self/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
-import type { ActionId, ExecutiveStepId, GoalId, OpenQuestionId } from "../../util/ids.js";
+import type {
+  ActionId,
+  ExecutiveStepId,
+  GoalId,
+  OpenQuestionId,
+  SessionId,
+} from "../../util/ids.js";
 import type { ReflectionEffects } from "../reflection/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 export type TurnLifecycleTrackerOptions = {
   workingMemoryStore: Pick<WorkingMemoryStore, "recordPendingActionMerges" | "save">;
@@ -27,6 +34,7 @@ export type TurnLifecycleTrackerOptions = {
   openQuestionsRepository: Pick<OpenQuestionsRepository, "delete" | "restore">;
   episodicRepository: Pick<EpisodicRepository, "updateStats">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "restore">;
+  tracer?: TurnTracer;
 };
 
 function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
@@ -44,6 +52,20 @@ function episodeStatsRestorePatch(stats: EpisodeStats): EpisodeStatsPatch {
     heat_multiplier: stats.heat_multiplier,
     valence_mean: stats.valence_mean,
   };
+}
+
+export type AbortCleanupFailure = {
+  operation: string;
+  id: string;
+  error: string;
+};
+
+function formatCleanupError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return String(error);
 }
 
 export class TurnLifecycleTracker {
@@ -99,87 +121,151 @@ export class TurnLifecycleTracker {
     this.updatedEpisodeStats.push(...effects.updatedEpisodeStats);
   }
 
-  async cleanupAbortedTurnState(): Promise<void> {
-    if (this.initialWorkingMemory !== null) {
-      this.options.workingMemoryStore.save(this.initialWorkingMemory);
-    }
-
-    for (const actionId of this.createdActionIds) {
+  private async bestEffort<T>(
+    failures: AbortCleanupFailure[],
+    operation: string,
+    items: readonly T[],
+    idForItem: (item: T) => string,
+    run: (item: T) => unknown | Promise<unknown>,
+  ): Promise<void> {
+    for (const item of items) {
       try {
-        await this.options.actionRepository.delete(actionId);
-      } catch {
-        // Best effort; the abort marker still prevents stream-derived state reuse.
+        await run(item);
+      } catch (error) {
+        failures.push({
+          operation,
+          id: idForItem(item),
+          error: formatCleanupError(error),
+        });
       }
     }
+  }
 
-    for (const stepId of this.createdExecutiveStepIds) {
-      try {
-        this.options.executiveStepsRepository.delete(stepId);
-      } catch {
-        // Best effort.
-      }
+  private traceAbortCleanupFailures(input: {
+    turnId: string;
+    sessionId?: SessionId;
+    failures: readonly AbortCleanupFailure[];
+  }): void {
+    if (this.options.tracer?.enabled !== true || input.failures.length === 0) {
+      return;
     }
+
+    try {
+      this.options.tracer.emit("turn.rollback_incomplete", {
+        turnId: input.turnId,
+        turn_id: input.turnId,
+        ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
+        failure_count: input.failures.length,
+        failures: input.failures.map((failure) => ({
+          operation: failure.operation,
+          id: failure.id,
+          error: failure.error,
+        })),
+      });
+    } catch {
+      // Best-effort observability must never mask the original turn failure.
+    }
+  }
+
+  async cleanupAbortedTurnState(input: {
+    turnId: string;
+    sessionId?: SessionId;
+  }): Promise<AbortCleanupFailure[]> {
+    const failures: AbortCleanupFailure[] = [];
+
+    await this.bestEffort(
+      failures,
+      "restore_working_memory",
+      this.initialWorkingMemory === null ? [] : [this.initialWorkingMemory],
+      (workingMemory) => input.sessionId ?? workingMemory.session_id,
+      (workingMemory) => this.options.workingMemoryStore.save(workingMemory),
+    );
+
+    await this.bestEffort(
+      failures,
+      "delete_action",
+      this.createdActionIds,
+      (actionId) => actionId,
+      (actionId) => this.options.actionRepository.delete(actionId),
+    );
+
+    await this.bestEffort(
+      failures,
+      "delete_executive_step",
+      this.createdExecutiveStepIds,
+      (stepId) => stepId,
+      (stepId) => this.options.executiveStepsRepository.delete(stepId),
+    );
 
     // Abort cleanup only touches goals created during the turn being rolled
     // back; no committed caller has observed a stable version to race here.
-    for (const goalId of this.createdGoalIds) {
-      try {
-        this.options.goalsRepository.remove(goalId);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "remove_goal",
+      this.createdGoalIds,
+      (goalId) => goalId,
+      (goalId) => this.options.goalsRepository.remove(goalId),
+    );
 
-    for (const openQuestionId of this.createdOpenQuestionIds) {
-      try {
-        await this.options.openQuestionsRepository.delete(openQuestionId);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "delete_open_question",
+      this.createdOpenQuestionIds,
+      (openQuestionId) => openQuestionId,
+      (openQuestionId) => this.options.openQuestionsRepository.delete(openQuestionId),
+    );
 
-    for (const step of [...this.updatedExecutiveSteps].reverse()) {
-      try {
-        this.options.executiveStepsRepository.restore(step);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "restore_executive_step",
+      [...this.updatedExecutiveSteps].reverse(),
+      (step) => step.id,
+      (step) => this.options.executiveStepsRepository.restore(step),
+    );
 
-    for (const goal of [...this.updatedGoals].reverse()) {
-      try {
-        this.options.goalsRepository.restore(goal);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "restore_goal",
+      [...this.updatedGoals].reverse(),
+      (goal) => goal.id,
+      (goal) => this.options.goalsRepository.restore(goal),
+    );
 
-    for (const question of [...this.resolvedOpenQuestions].reverse()) {
-      try {
-        this.options.openQuestionsRepository.restore(question);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "restore_open_question",
+      [...this.resolvedOpenQuestions].reverse(),
+      (question) => question.id,
+      (question) => this.options.openQuestionsRepository.restore(question),
+    );
 
-    for (const stats of [...this.updatedEpisodeStats].reverse()) {
-      try {
+    await this.bestEffort(
+      failures,
+      "restore_episode_stats",
+      [...this.updatedEpisodeStats].reverse(),
+      (stats) => stats.episode_id,
+      (stats) =>
         this.options.episodicRepository.updateStats(
           stats.episode_id,
           episodeStatsRestorePatch(stats),
-        );
-      } catch {
-        // Best effort.
-      }
-    }
+        ),
+    );
 
-    for (const slot of [...this.appliedSlotNegations].reverse()) {
-      try {
-        this.options.relationalSlotRepository.restore(slot);
-      } catch {
-        // Best effort.
-      }
-    }
+    await this.bestEffort(
+      failures,
+      "restore_relational_slot",
+      [...this.appliedSlotNegations].reverse(),
+      (slot) => slot.id,
+      (slot) => this.options.relationalSlotRepository.restore(slot),
+    );
+
+    this.traceAbortCleanupFailures({
+      turnId: input.turnId,
+      sessionId: input.sessionId,
+      failures,
+    });
+
+    return failures;
   }
 
   commitTurnState(): void {

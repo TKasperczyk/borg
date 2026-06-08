@@ -9,7 +9,7 @@ import {
   memoryDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
 } from "../disclosure-labels.js";
-import { normalizePositiveInteger } from "../evidence-ledger/budget.js";
+import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import {
   activeSharedStateArtifactEntries,
   compareSharedStateArtifactEntriesByRecency,
@@ -111,11 +111,11 @@ function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOption
 
   return {
     maxEntries,
-    summaryTokenBudget: normalizePositiveInteger(
+    summaryTokenBudget: coercePositiveIntegerOrFallback(
       options.summaryTokenBudget,
       DEFAULT_SHARED_STATE_PROMPT_SUMMARY_TOKEN_BUDGET,
     ),
-    maxEntryTextTokens: normalizePositiveInteger(
+    maxEntryTextTokens: coercePositiveIntegerOrFallback(
       options.maxEntryTextTokens,
       DEFAULT_SHARED_STATE_PROMPT_SUMMARY_ENTRY_TEXT_TOKENS,
     ),

@@ -159,6 +159,7 @@ export type TurnTraceEventName =
   | "closure_pressure_audit.degraded"
   | "reflection.completed"
   | "session.completed"
+  | "turn.rollback_incomplete"
   | "turn.rejected";
 
 export type TurnTraceData = {
