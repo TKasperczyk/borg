@@ -468,6 +468,12 @@ export type SkillSplitApplyResult = {
   created: SkillRecord[];
 };
 
+function normalizeSkillSplitTargetContexts(targetContexts: readonly string[]): string[] {
+  return [...new Set(targetContexts.map((contextKey) => contextKey.trim()))]
+    .filter((contextKey) => contextKey.length > 0)
+    .sort();
+}
+
 export class SkillRepository {
   private readonly clock: Clock;
 
@@ -950,11 +956,7 @@ export class SkillRepository {
     const assignedContexts = new Set<string>();
     const nowMs = input.supersededAt ?? this.clock.now();
     const newSkills = input.parts.map((part) => {
-      const targetContexts = [
-        ...new Set(part.target_contexts.map((contextKey) => contextKey.trim())),
-      ]
-        .filter((contextKey) => contextKey.length > 0)
-        .sort();
+      const targetContexts = normalizeSkillSplitTargetContexts(part.target_contexts);
 
       if (targetContexts.length === 0) {
         throw new StorageError("Skill split part must target at least one context", {
@@ -1062,11 +1064,7 @@ export class SkillRepository {
 
           for (const [partIndex, part] of input.parts.entries()) {
             const newSkill = newSkills[partIndex]!;
-            const targetContexts = [
-              ...new Set(part.target_contexts.map((contextKey) => contextKey.trim())),
-            ]
-              .filter((contextKey) => contextKey.length > 0)
-              .sort();
+            const targetContexts = normalizeSkillSplitTargetContexts(part.target_contexts);
 
             for (const contextKey of targetContexts) {
               const stats = contextRowsByKey.get(contextKey)!;

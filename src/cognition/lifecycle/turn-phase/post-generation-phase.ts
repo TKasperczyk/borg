@@ -6,6 +6,7 @@ import type { GenerationGate } from "../../generation/generation-gate.js";
 import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "../../generation/canonical-stop-phrase.js";
 import {
   replyTargetEntityId,
+  type GenerationSuppressionReason,
   type PendingTurnEmission,
   type TurnEmission,
 } from "../../generation/types.js";
@@ -588,33 +589,33 @@ export async function runPostGenerationPhase(input: {
               actionEmission,
               responseTo: input.responseTo,
             })
-        : actionEmission.kind === "observed"
-          ? {
-              entry: await input.options.discourseStateService.appendObservationMarker({
-                streamWriter: input.streamWriter,
-                reason: actionEmission.reason,
-                userEntryId: input.persistedUserEntryId,
-                userEntryIds: input.sourceUserEntryIds,
-                responseTo: input.responseTo,
-                turnId: input.turnId,
-                audience: input.turnInput.audience,
-              }),
-            }
-          : {
-              entry: await input.options.discourseStateService.appendSuppressionMarker({
-                streamWriter: input.streamWriter,
-                reason: actionEmission.reason,
-                userEntryId: input.persistedUserEntryId,
-                userEntryIds: input.sourceUserEntryIds,
-                responseTo: input.responseTo,
-                turnId: input.turnId,
-                audience: input.turnInput.audience,
-                noOutputCategories: actionEmission.no_output_categories,
-                primaryNoOutputReason: actionEmission.primary_no_output_reason,
-                structuralNoOutputFlags: actionEmission.structural_no_output_flags,
-                finalizerInvalidTool: actionEmission.finalizer_invalid_tool,
-              }),
-            },
+          : actionEmission.kind === "observed"
+            ? {
+                entry: await input.options.discourseStateService.appendObservationMarker({
+                  streamWriter: input.streamWriter,
+                  reason: actionEmission.reason,
+                  userEntryId: input.persistedUserEntryId,
+                  userEntryIds: input.sourceUserEntryIds,
+                  responseTo: input.responseTo,
+                  turnId: input.turnId,
+                  audience: input.turnInput.audience,
+                }),
+              }
+            : {
+                entry: await input.options.discourseStateService.appendSuppressionMarker({
+                  streamWriter: input.streamWriter,
+                  reason: actionEmission.reason,
+                  userEntryId: input.persistedUserEntryId,
+                  userEntryIds: input.sourceUserEntryIds,
+                  responseTo: input.responseTo,
+                  turnId: input.turnId,
+                  audience: input.turnInput.audience,
+                  noOutputCategories: actionEmission.no_output_categories,
+                  primaryNoOutputReason: actionEmission.primary_no_output_reason,
+                  structuralNoOutputFlags: actionEmission.structural_no_output_flags,
+                  finalizerInvalidTool: actionEmission.finalizer_invalid_tool,
+                }),
+              },
     completedSub: (result) => `entry=${result.entry.kind}`,
   });
   const persistedAgentEntry = persistedEmission.entry;
@@ -699,20 +700,20 @@ export async function runPostGenerationPhase(input: {
             kind: "continue_thought",
             markerEntryId: persistedAgentEntry.id,
           }
-      : {
-          kind: "message",
-          content: actionResult.response,
-          agentMessageId: persistedAgentEntry.id,
-          ...(actionEmission.reply_target === undefined
-            ? {}
-            : { reply_target: actionEmission.reply_target }),
-          ...(actionEmission.persistence_class === undefined
-            ? {}
-            : { persistence_class: actionEmission.persistence_class }),
-          ...(actionEmission.discourse_control === undefined
-            ? {}
-            : { discourse_control: actionEmission.discourse_control }),
-        };
+        : {
+            kind: "message",
+            content: actionResult.response,
+            agentMessageId: persistedAgentEntry.id,
+            ...(actionEmission.reply_target === undefined
+              ? {}
+              : { reply_target: actionEmission.reply_target }),
+            ...(actionEmission.persistence_class === undefined
+              ? {}
+              : { persistence_class: actionEmission.persistence_class }),
+            ...(actionEmission.discourse_control === undefined
+              ? {}
+              : { discourse_control: actionEmission.discourse_control }),
+          };
   let postActionWorkingMemory = actionResult.workingMemory;
   if (
     actionEmission.kind === "message" &&
@@ -913,6 +914,95 @@ export async function runPostGenerationPhase(input: {
   };
 }
 
+async function finalizeSuppressedTurn(input: {
+  options: TurnPhaseCoordinatorOptions;
+  streamWriter: StreamWriter;
+  appendHookFailureEvent: AppendHookFailureEvent;
+  turnId: string;
+  sessionId: SessionId;
+  turnInput: TurnPhaseInput;
+  archiveWorkingMemory: WorkingMemory;
+  sourceUserEntryIds: readonly StreamEntryId[] | undefined;
+  responseTo: StreamResponseTo | undefined;
+  correctiveCommitment: CorrectiveCommitment;
+  correctiveCommitmentSupersession: CorrectiveCommitmentSupersession;
+  correctiveCommitmentRetirement: CorrectiveCommitmentRetirement;
+  perceptionMode: CognitiveMode;
+  suppressionReason: GenerationSuppressionReason;
+  suppressionActionResult: Pick<ActionResult, "workingMemory">;
+  suppressionMarker: StreamEntry;
+  suppressionEmission: TurnEmission;
+  traceSource: "closure_loop" | "generation_gate";
+  classified: boolean;
+  terminalOutcome: TurnPhaseResult["terminalOutcome"];
+}): Promise<TurnPhaseResult> {
+  const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
+    workingMemory: input.suppressionActionResult.workingMemory,
+    reason: input.suppressionReason,
+    origin: input.turnInput.origin,
+    sourceStreamEntryId: input.suppressionMarker.id,
+    sourceStreamEntryIds: input.sourceUserEntryIds,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+  });
+
+  if (input.options.tracer.enabled) {
+    input.options.tracer.emit("post_generation.rejected", {
+      turnId: input.turnId,
+      session_id: input.sessionId,
+      reason: input.suppressionReason,
+      streamEntryId: input.suppressionMarker.id,
+      source: input.traceSource,
+      classified: input.classified,
+    });
+  }
+
+  input.options.workingMemoryStore.save({
+    ...suppressedWorkingMemory,
+    updated_at: input.options.clock.now(),
+  });
+  await persistCorrectiveCommitment({
+    service: input.options.correctivePreferenceTurnService,
+    streamWriter: input.streamWriter,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+    commitment: input.correctiveCommitment,
+    supersession: input.correctiveCommitmentSupersession,
+    retirement: input.correctiveCommitmentRetirement,
+    appendHookFailureEvent: input.appendHookFailureEvent,
+  });
+  archiveInactiveParticipantActions({
+    options: input.options,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+    turnCounter: actionLifecycleTurnCounter(input.turnInput, input.archiveWorkingMemory),
+  });
+  if (input.responseTo !== undefined) {
+    startTerminalLiveIngestion({
+      options: input.options,
+      sessionId: input.sessionId,
+      responseTo: input.responseTo,
+      terminalEntry: input.suppressionMarker,
+    });
+  }
+
+  return suppressedTurnPhaseResult({
+    turnId: input.turnId,
+    mode: input.perceptionMode,
+    emission: input.suppressionEmission,
+    thoughts: [],
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: "suppressed",
+    },
+    referencedEpisodeIds: [],
+    retrievedEpisodeIds: [],
+    toolCalls: [],
+    terminalOutcome: input.terminalOutcome,
+  });
+}
+
 export async function suppressFromClosureLoopPhase(input: {
   options: TurnPhaseCoordinatorOptions;
   streamWriter: StreamWriter;
@@ -989,69 +1079,27 @@ export async function suppressFromClosureLoopPhase(input: {
     sessionId: input.sessionId,
     responseTo: input.responseTo,
   });
-  const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
-    workingMemory: suppressionActionResult.workingMemory,
-    reason: "finalizer_no_output",
-    origin: input.turnInput.origin,
-    sourceStreamEntryId: suppressionMarker.id,
-    sourceStreamEntryIds: input.sourceUserEntryIds,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-  });
 
-  if (input.options.tracer.enabled) {
-    input.options.tracer.emit("post_generation.rejected", {
-      turnId: input.turnId,
-      session_id: input.sessionId,
-      reason: "finalizer_no_output",
-      streamEntryId: suppressionMarker.id,
-      source: "closure_loop",
-      classified: true,
-    });
-  }
-
-  input.options.workingMemoryStore.save({
-    ...suppressedWorkingMemory,
-    updated_at: input.options.clock.now(),
-  });
-  await persistCorrectiveCommitment({
-    service: input.options.correctivePreferenceTurnService,
-    streamWriter: input.streamWriter,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-    commitment: input.correctiveCommitment,
-    supersession: input.correctiveCommitmentSupersession,
-    retirement: input.correctiveCommitmentRetirement,
-    appendHookFailureEvent: input.appendHookFailureEvent,
-  });
-  archiveInactiveParticipantActions({
+  return finalizeSuppressedTurn({
     options: input.options,
+    streamWriter: input.streamWriter,
+    appendHookFailureEvent: input.appendHookFailureEvent,
     turnId: input.turnId,
     sessionId: input.sessionId,
-    turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
-  });
-  if (input.responseTo !== undefined) {
-    startTerminalLiveIngestion({
-      options: input.options,
-      sessionId: input.sessionId,
-      responseTo: input.responseTo,
-      terminalEntry: suppressionMarker,
-    });
-  }
-
-  return suppressedTurnPhaseResult({
-    turnId: input.turnId,
-    mode: input.perceptionMode,
-    emission: suppressionEmission,
-    thoughts: [],
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      stop_reason: "suppressed",
-    },
-    referencedEpisodeIds: [],
-    retrievedEpisodeIds: [],
-    toolCalls: [],
+    turnInput: input.turnInput,
+    archiveWorkingMemory: input.workingMemory,
+    sourceUserEntryIds: input.sourceUserEntryIds,
+    responseTo: input.responseTo,
+    correctiveCommitment: input.correctiveCommitment,
+    correctiveCommitmentSupersession: input.correctiveCommitmentSupersession,
+    correctiveCommitmentRetirement: input.correctiveCommitmentRetirement,
+    perceptionMode: input.perceptionMode,
+    suppressionReason: "finalizer_no_output",
+    suppressionActionResult,
+    suppressionMarker,
+    suppressionEmission,
+    traceSource: "closure_loop",
+    classified: true,
     terminalOutcome: "suppressed_closure",
   });
 }
@@ -1131,69 +1179,27 @@ export async function suppressFromGenerationGatePhase(input: {
     sessionId: input.sessionId,
     responseTo: input.responseTo,
   });
-  const suppressedWorkingMemory = input.options.discourseStateService.applySuppressedEmissionState({
-    workingMemory: suppressionActionResult.workingMemory,
-    reason: suppressionReason,
-    origin: input.turnInput.origin,
-    sourceStreamEntryId: suppressionMarker.id,
-    sourceStreamEntryIds: input.sourceUserEntryIds,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-  });
 
-  if (input.options.tracer.enabled) {
-    input.options.tracer.emit("post_generation.rejected", {
-      turnId: input.turnId,
-      session_id: input.sessionId,
-      reason: suppressionReason,
-      streamEntryId: suppressionMarker.id,
-      source: "generation_gate",
-      classified: input.gateResult.classified,
-    });
-  }
-
-  input.options.workingMemoryStore.save({
-    ...suppressedWorkingMemory,
-    updated_at: input.options.clock.now(),
-  });
-  await persistCorrectiveCommitment({
-    service: input.options.correctivePreferenceTurnService,
-    streamWriter: input.streamWriter,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-    commitment: input.correctiveCommitment,
-    supersession: input.correctiveCommitmentSupersession,
-    retirement: input.correctiveCommitmentRetirement,
-    appendHookFailureEvent: input.appendHookFailureEvent,
-  });
-  archiveInactiveParticipantActions({
+  return finalizeSuppressedTurn({
     options: input.options,
+    streamWriter: input.streamWriter,
+    appendHookFailureEvent: input.appendHookFailureEvent,
     turnId: input.turnId,
     sessionId: input.sessionId,
-    turnCounter: actionLifecycleTurnCounter(input.turnInput, input.workingMemory),
-  });
-  if (input.responseTo !== undefined) {
-    startTerminalLiveIngestion({
-      options: input.options,
-      sessionId: input.sessionId,
-      responseTo: input.responseTo,
-      terminalEntry: suppressionMarker,
-    });
-  }
-
-  return suppressedTurnPhaseResult({
-    turnId: input.turnId,
-    mode: input.perceptionMode,
-    emission: suppressionEmission,
-    thoughts: [],
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      stop_reason: "suppressed",
-    },
-    referencedEpisodeIds: [],
-    retrievedEpisodeIds: [],
-    toolCalls: [],
+    turnInput: input.turnInput,
+    archiveWorkingMemory: input.workingMemory,
+    sourceUserEntryIds: input.sourceUserEntryIds,
+    responseTo: input.responseTo,
+    correctiveCommitment: input.correctiveCommitment,
+    correctiveCommitmentSupersession: input.correctiveCommitmentSupersession,
+    correctiveCommitmentRetirement: input.correctiveCommitmentRetirement,
+    perceptionMode: input.perceptionMode,
+    suppressionReason,
+    suppressionActionResult,
+    suppressionMarker,
+    suppressionEmission,
+    traceSource: "generation_gate",
+    classified: input.gateResult.classified,
     terminalOutcome: "suppressed_generation_gate",
   });
 }

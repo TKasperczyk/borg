@@ -133,6 +133,92 @@ type FinalizerEmission = {
 };
 
 type InvalidToolDecision = Extract<EmissionDecision, { kind: "invalid_tool" }>;
+type FinalizerCallOptionsContext = {
+  context: DeliberationContext;
+  effectiveContext: DeliberationContext;
+  baseSystemPrompt: string;
+  cacheableSystemPrompt: RunFinalizerOptions["cacheableSystemPrompt"];
+  initialMessages: RunFinalizerOptions["initialMessages"];
+  maxTokens: number;
+  reasoningCallOptions: Partial<Pick<RunFinalizerOptions, "thinking" | "effort">>;
+  allowedEmissions: readonly EmissionToolName[] | undefined;
+  outboundToolAvailable: boolean;
+  structuralNoOutputFlags: readonly FinalizerNoOutputStructuralFlag[];
+  tracer: TurnTracer;
+};
+type FinalizerCallVariableOptions = {
+  path: RunFinalizerOptions["path"];
+  additionalPromptSections?: RunFinalizerOptions["additionalPromptSections"];
+  finalizerAttempt: NonNullable<RunFinalizerOptions["finalizerAttempt"]>;
+};
+type FinalizerTriadResultInput = {
+  finalized: FinalizerEmission;
+  responseForResult: FinalizerResult;
+  usage: DeliberationUsage;
+};
+type RunFinalizerTriadInput = {
+  callContext: FinalizerCallOptionsContext;
+  path: RunFinalizerOptions["path"];
+  additionalPromptSections: readonly (string | null)[] | null;
+  availableEmissionNames: readonly EmissionToolName[];
+  priorUsage?: DeliberationUsage;
+  buildResult: (input: FinalizerTriadResultInput) => DeliberationResult;
+};
+
+function buildFinalizerCallOptions(
+  context: FinalizerCallOptionsContext,
+  options: DeliberatorOptions,
+  variable: FinalizerCallVariableOptions,
+): RunFinalizerOptions {
+  return {
+    llmClient: options.llmClient,
+    dispatcher: options.toolDispatcher,
+    sessionId: context.context.sessionId,
+    audienceEntityId: context.context.audienceEntityId,
+    model: options.cognitionModel,
+    baseSystemPrompt: context.baseSystemPrompt,
+    cacheableSystemPrompt: context.cacheableSystemPrompt,
+    initialMessages: context.initialMessages,
+    userEntryId: context.context.userEntryId,
+    maxTokens: context.maxTokens,
+    ...context.reasoningCallOptions,
+    path: variable.path,
+    ...(context.allowedEmissions === undefined
+      ? {}
+      : { allowedEmissions: context.allowedEmissions }),
+    outboundToolAvailable: context.outboundToolAvailable,
+    turnOrigin: context.effectiveContext.turnOrigin,
+    currentSenderBorgRole: context.effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+    sessionAudienceRole: context.effectiveContext.creatorContext?.sessionAudienceRole,
+    ...(variable.additionalPromptSections === undefined
+      ? {}
+      : { additionalPromptSections: variable.additionalPromptSections }),
+    structuralNoOutputFlags: context.structuralNoOutputFlags,
+    tracer: context.tracer,
+    turnId: context.context.turnId,
+    finalizerAttempt: variable.finalizerAttempt,
+  };
+}
+
+function mergeFinalizerTriadUsage(input: {
+  priorUsage?: DeliberationUsage;
+  initial: FinalizerResult;
+  result: FinalizerResult;
+}): DeliberationUsage {
+  if (input.priorUsage === undefined) {
+    return input.result === input.initial
+      ? input.initial.usage
+      : mergeDeliberationUsage(input.initial.usage, input.result.usage);
+  }
+
+  let usage = mergeDeliberationUsage(input.priorUsage, input.initial.usage);
+
+  if (input.result !== input.initial) {
+    usage = mergeDeliberationUsage(usage, input.result.usage);
+  }
+
+  return usage;
+}
 
 function appendFinalizerPromptSections(
   base: readonly (string | null)[] | null,
@@ -499,6 +585,95 @@ export class Deliberator {
     });
   }
 
+  private async runFinalizerTriad(input: RunFinalizerTriadInput): Promise<DeliberationResult> {
+    const response = await this.runFinalizerPhase(
+      input.callContext.context.turnId,
+      buildFinalizerCallOptions(input.callContext, this.options, {
+        path: input.path,
+        ...(input.additionalPromptSections === null
+          ? {}
+          : { additionalPromptSections: input.additionalPromptSections }),
+        finalizerAttempt: "initial",
+      }),
+    );
+    const finalizerRetry = await retryInvalidToolFinalizer({
+      initial: response,
+      availableEmissionNames: input.availableEmissionNames,
+      runRetry: (retryPromptSection) =>
+        this.runFinalizerPhase(
+          input.callContext.context.turnId,
+          buildFinalizerCallOptions(input.callContext, this.options, {
+            path: input.path,
+            additionalPromptSections: appendFinalizerPromptSections(
+              input.additionalPromptSections,
+              [retryPromptSection],
+            ),
+            finalizerAttempt: "regenerate",
+          }),
+        ),
+    });
+    const responseForResult = finalizerRetry.result;
+    let usage =
+      input.priorUsage === undefined
+        ? undefined
+        : mergeFinalizerTriadUsage({
+            priorUsage: input.priorUsage,
+            initial: response,
+            result: responseForResult,
+          });
+    const finalized = buildFinalizerEmission(
+      responseForResult,
+      input.callContext.structuralNoOutputFlags,
+      {
+        ...(finalizerRetry.invalidToolAfterRegenerate === undefined
+          ? {}
+          : {
+              invalidToolSuppressionReason: "invalid_tool_after_regenerate",
+              invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
+            }),
+      },
+    );
+    usage =
+      usage ??
+      mergeFinalizerTriadUsage({
+        initial: response,
+        result: responseForResult,
+      });
+    const result = input.buildResult({
+      finalized,
+      responseForResult,
+      usage,
+    });
+
+    return attachRegenerator(result, async (regeneration) => {
+      const regeneratedResponse = await this.runFinalizerPhase(
+        input.callContext.context.turnId,
+        buildFinalizerCallOptions(input.callContext, this.options, {
+          path: input.path,
+          additionalPromptSections: appendFinalizerPromptSections(
+            input.additionalPromptSections,
+            regeneration.additionalPromptSections,
+          ),
+          finalizerAttempt: "regenerate",
+        }),
+      );
+      const regeneratedFinalized = buildFinalizerEmission(
+        regeneratedResponse,
+        input.callContext.structuralNoOutputFlags,
+        { invalidToolDiagnosticAttempt: "regenerate" },
+      );
+
+      return {
+        ...result,
+        response: regeneratedFinalized.response,
+        emitted: regeneratedFinalized.emitted,
+        emission: regeneratedFinalized.emission,
+        tool_calls: regeneratedResponse.toolCallsMade,
+        usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
+      };
+    });
+  }
+
   async run(
     context: DeliberationContext,
     streamWriter?: StreamWriter,
@@ -650,141 +825,47 @@ export class Deliberator {
     const outboundToolAvailable =
       exposesOutboundTool(effectiveContext.turnOrigin) &&
       (manualOutboundAuthorized || autonomousOutboundAuthorized);
+    const baseFinalizerCallContext = {
+      context,
+      effectiveContext,
+      baseSystemPrompt,
+      cacheableSystemPrompt: cacheableBaseSystemPrompt,
+      initialMessages: dialogueBlockMessages,
+      reasoningCallOptions,
+      allowedEmissions,
+      outboundToolAvailable,
+      tracer: this.tracer,
+    } satisfies Omit<FinalizerCallOptionsContext, "maxTokens" | "structuralNoOutputFlags">;
 
     if (decision.path === "system_1") {
       const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext);
-      const response = await this.runFinalizerPhase(context.turnId, {
-        llmClient: this.options.llmClient,
-        dispatcher: this.options.toolDispatcher,
-        sessionId: context.sessionId,
-        audienceEntityId: context.audienceEntityId,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        cacheableSystemPrompt: cacheableBaseSystemPrompt,
-        initialMessages: dialogueBlockMessages,
-        userEntryId: context.userEntryId,
-        maxTokens: systemOneMaxTokens,
-        ...reasoningCallOptions,
-        path: "system_1",
-        ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-        outboundToolAvailable,
-        turnOrigin: effectiveContext.turnOrigin,
-        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-        ...(finalizerGroundingPromptSections.length === 0
-          ? {}
-          : { additionalPromptSections: finalizerGroundingPromptSections }),
-        structuralNoOutputFlags: finalizerStructuralFlags,
-        tracer: this.tracer,
-        turnId: context.turnId,
-        finalizerAttempt: "initial",
-      });
-      const finalizerRetry = await retryInvalidToolFinalizer({
-        initial: response,
-        availableEmissionNames,
-        runRetry: (retryPromptSection) =>
-          this.runFinalizerPhase(context.turnId, {
-            llmClient: this.options.llmClient,
-            dispatcher: this.options.toolDispatcher,
-            sessionId: context.sessionId,
-            audienceEntityId: context.audienceEntityId,
-            model: this.options.cognitionModel,
-            baseSystemPrompt,
-            cacheableSystemPrompt: cacheableBaseSystemPrompt,
-            initialMessages: dialogueBlockMessages,
-            userEntryId: context.userEntryId,
-            maxTokens: systemOneMaxTokens,
-            ...reasoningCallOptions,
-            path: "system_1",
-            ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-            outboundToolAvailable,
-            turnOrigin: effectiveContext.turnOrigin,
-            currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-            sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-            additionalPromptSections: appendFinalizerPromptSections(
-              finalizerGroundingPromptSections.length === 0
-                ? null
-                : finalizerGroundingPromptSections,
-              [retryPromptSection],
-            ),
-            structuralNoOutputFlags: finalizerStructuralFlags,
-            tracer: this.tracer,
-            turnId: context.turnId,
-            finalizerAttempt: "regenerate",
-          }),
-      });
-      const responseForResult = finalizerRetry.result;
-      const finalized = buildFinalizerEmission(responseForResult, finalizerStructuralFlags, {
-        ...(finalizerRetry.invalidToolAfterRegenerate === undefined
-          ? {}
-          : {
-              invalidToolSuppressionReason: "invalid_tool_after_regenerate",
-              invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
-            }),
-      });
 
-      const result: DeliberationResult = {
-        path: "system_1",
-        response: finalized.response,
-        emitted: finalized.emitted,
-        emission: finalized.emission,
-        emissionRecommendation: "emit",
-        thoughtStreamEntryIds: [],
-        thoughts: [],
-        tool_calls: responseForResult.toolCallsMade,
-        usage:
-          responseForResult === response
-            ? response.usage
-            : mergeDeliberationUsage(response.usage, responseForResult.usage),
-        decision_reason: decision.reason,
-        retrievedEpisodes: [...context.retrievalResult],
-        referencedEpisodeIds: null,
-        intents: [],
-        thoughtsPersisted: false,
-      };
-
-      return attachRegenerator(result, async (regeneration) => {
-        const regeneratedResponse = await this.runFinalizerPhase(context.turnId, {
-          llmClient: this.options.llmClient,
-          dispatcher: this.options.toolDispatcher,
-          sessionId: context.sessionId,
-          audienceEntityId: context.audienceEntityId,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          cacheableSystemPrompt: cacheableBaseSystemPrompt,
-          initialMessages: dialogueBlockMessages,
-          userEntryId: context.userEntryId,
+      return this.runFinalizerTriad({
+        callContext: {
+          ...baseFinalizerCallContext,
           maxTokens: systemOneMaxTokens,
-          ...reasoningCallOptions,
-          path: "system_1",
-          ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-          outboundToolAvailable,
-          turnOrigin: effectiveContext.turnOrigin,
-          currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-          sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-          additionalPromptSections: appendFinalizerPromptSections(
-            finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
-            regeneration.additionalPromptSections,
-          ),
           structuralNoOutputFlags: finalizerStructuralFlags,
-          tracer: this.tracer,
-          turnId: context.turnId,
-          finalizerAttempt: "regenerate",
-        });
-        const regeneratedFinalized = buildFinalizerEmission(
-          regeneratedResponse,
-          finalizerStructuralFlags,
-          { invalidToolDiagnosticAttempt: "regenerate" },
-        );
-
-        return {
-          ...result,
-          response: regeneratedFinalized.response,
-          emitted: regeneratedFinalized.emitted,
-          emission: regeneratedFinalized.emission,
-          tool_calls: regeneratedResponse.toolCallsMade,
-          usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
-        };
+        },
+        path: "system_1",
+        additionalPromptSections:
+          finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
+        availableEmissionNames,
+        buildResult: ({ finalized, responseForResult, usage }) => ({
+          path: "system_1",
+          response: finalized.response,
+          emitted: finalized.emitted,
+          emission: finalized.emission,
+          emissionRecommendation: "emit",
+          thoughtStreamEntryIds: [],
+          thoughts: [],
+          tool_calls: responseForResult.toolCallsMade,
+          usage,
+          decision_reason: decision.reason,
+          retrievedEpisodes: [...context.retrievalResult],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        }),
       });
     }
 
@@ -903,145 +984,41 @@ export class Deliberator {
       finalizerGroundingPromptSections.length === 0
         ? [additionalRetrievalBlock, planSection]
         : [...finalizerGroundingPromptSections, additionalRetrievalBlock, planSection];
-    let usage = planner.usage;
-    let finalized: FinalizerEmission;
-    let finalToolCallsMade: FinalizerResult["toolCallsMade"] = [];
     const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext, {
       additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
     });
 
-    const finalResponse = await this.runFinalizerPhase(context.turnId, {
-      llmClient: this.options.llmClient,
-      dispatcher: this.options.toolDispatcher,
-      sessionId: context.sessionId,
-      audienceEntityId: context.audienceEntityId,
-      model: this.options.cognitionModel,
-      baseSystemPrompt,
-      cacheableSystemPrompt: cacheableBaseSystemPrompt,
-      initialMessages: dialogueBlockMessages,
-      userEntryId: context.userEntryId,
-      maxTokens: systemTwoMaxTokens,
-      ...reasoningCallOptions,
-      path: "system_2",
-      ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-      outboundToolAvailable,
-      turnOrigin: effectiveContext.turnOrigin,
-      currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-      sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-      additionalPromptSections,
-      structuralNoOutputFlags: finalizerStructuralFlags,
-      tracer: this.tracer,
-      turnId: context.turnId,
-      finalizerAttempt: "initial",
-    });
-    const finalizerRetry = await retryInvalidToolFinalizer({
-      initial: finalResponse,
-      availableEmissionNames,
-      runRetry: (retryPromptSection) =>
-        this.runFinalizerPhase(context.turnId, {
-          llmClient: this.options.llmClient,
-          dispatcher: this.options.toolDispatcher,
-          sessionId: context.sessionId,
-          audienceEntityId: context.audienceEntityId,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          cacheableSystemPrompt: cacheableBaseSystemPrompt,
-          initialMessages: dialogueBlockMessages,
-          userEntryId: context.userEntryId,
-          maxTokens: systemTwoMaxTokens,
-          ...reasoningCallOptions,
-          path: "system_2",
-          ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-          outboundToolAvailable,
-          turnOrigin: effectiveContext.turnOrigin,
-          currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-          sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-          additionalPromptSections: appendFinalizerPromptSections(additionalPromptSections, [
-            retryPromptSection,
-          ]),
-          structuralNoOutputFlags: finalizerStructuralFlags,
-          tracer: this.tracer,
-          turnId: context.turnId,
-          finalizerAttempt: "regenerate",
-        }),
-    });
-    const finalResponseForResult = finalizerRetry.result;
-    usage = mergeDeliberationUsage(usage, finalResponse.usage);
-    if (finalResponseForResult !== finalResponse) {
-      usage = mergeDeliberationUsage(usage, finalResponseForResult.usage);
-    }
-    finalized = buildFinalizerEmission(finalResponseForResult, finalizerStructuralFlags, {
-      ...(finalizerRetry.invalidToolAfterRegenerate === undefined
-        ? {}
-        : {
-            invalidToolSuppressionReason: "invalid_tool_after_regenerate",
-            invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
-          }),
-    });
-    finalToolCallsMade = finalResponseForResult.toolCallsMade;
-
-    const result: DeliberationResult = {
-      path: "system_2",
-      response: finalized.response,
-      emitted: finalized.emitted,
-      emission: finalized.emission,
-      emissionRecommendation: "emit",
-      thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
-      thoughts,
-      tool_calls: finalToolCallsMade,
-      usage,
-      decision_reason: decision.reason,
-      retrievedEpisodes: dedupeRetrievedEpisodes([
-        ...context.retrievalResult,
-        ...(secondaryRetrieval?.episodes ?? []),
-      ]),
-      referencedEpisodeIds: null,
-      intents: plan === null ? [] : [...plan.intents],
-      thoughtsPersisted,
-    };
-
-    return attachRegenerator(result, async (regeneration) => {
-      const regeneratedResponse = await this.runFinalizerPhase(context.turnId, {
-        llmClient: this.options.llmClient,
-        dispatcher: this.options.toolDispatcher,
-        sessionId: context.sessionId,
-        audienceEntityId: context.audienceEntityId,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        cacheableSystemPrompt: cacheableBaseSystemPrompt,
-        initialMessages: dialogueBlockMessages,
-        userEntryId: context.userEntryId,
+    return this.runFinalizerTriad({
+      callContext: {
+        ...baseFinalizerCallContext,
         maxTokens: systemTwoMaxTokens,
-        ...reasoningCallOptions,
-        path: "system_2",
-        ...(allowedEmissions === undefined ? {} : { allowedEmissions }),
-        outboundToolAvailable,
-        turnOrigin: effectiveContext.turnOrigin,
-        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole,
-        additionalPromptSections: appendFinalizerPromptSections(
-          additionalPromptSections,
-          regeneration.additionalPromptSections,
-        ),
         structuralNoOutputFlags: finalizerStructuralFlags,
-        tracer: this.tracer,
-        turnId: context.turnId,
-        finalizerAttempt: "regenerate",
-      });
-      const regeneratedFinalized = buildFinalizerEmission(
-        regeneratedResponse,
-        finalizerStructuralFlags,
-        { invalidToolDiagnosticAttempt: "regenerate" },
-      );
-
-      return {
-        ...result,
-        response: regeneratedFinalized.response,
-        emitted: regeneratedFinalized.emitted,
-        emission: regeneratedFinalized.emission,
-        tool_calls: regeneratedResponse.toolCallsMade,
-        usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
-      };
+      },
+      path: "system_2",
+      additionalPromptSections,
+      availableEmissionNames,
+      priorUsage: planner.usage,
+      buildResult: ({ finalized, responseForResult, usage }) => {
+        return {
+          path: "system_2",
+          response: finalized.response,
+          emitted: finalized.emitted,
+          emission: finalized.emission,
+          emissionRecommendation: "emit",
+          thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
+          thoughts,
+          tool_calls: responseForResult.toolCallsMade,
+          usage,
+          decision_reason: decision.reason,
+          retrievedEpisodes: dedupeRetrievedEpisodes([
+            ...context.retrievalResult,
+            ...(secondaryRetrieval?.episodes ?? []),
+          ]),
+          referencedEpisodeIds: null,
+          intents: plan === null ? [] : [...plan.intents],
+          thoughtsPersisted,
+        };
+      },
     });
   }
 }

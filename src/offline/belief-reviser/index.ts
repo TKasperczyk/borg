@@ -234,6 +234,14 @@ type ApplyRegradeResult = {
   nodeSyncs: NodeVectorSync[];
   change: OfflineChange | null;
 };
+type RegradeParseFailureEffect = "unchanged" | "reset" | "increment";
+type RegradeOneResult = {
+  llmCalls: number;
+  parseFailureEffect: RegradeParseFailureEffect;
+};
+type RegradeSyncState = {
+  nodeSyncCompleted: boolean;
+};
 
 function uniqueEpisodeIds(ids: readonly z.infer<typeof episodeIdSchema>[]) {
   return dedupePreservingOrder(ids);
@@ -402,19 +410,37 @@ async function appendClaimOwnershipMismatchEvent(
   input: { reviewId: number; action: string },
   errors: OfflineResult["errors"],
 ): Promise<void> {
+  await logHook(
+    ctx,
+    errors,
+    "claim_ownership_mismatch_dropped",
+    {
+      review_id: input.reviewId,
+      action: input.action,
+    },
+    "belief_reviser_claim_mismatch_log_failed",
+  );
+}
+
+async function logHook(
+  ctx: OfflineContext,
+  errors: OfflineResult["errors"],
+  hook: string,
+  content: Record<string, unknown>,
+  failureCode: string,
+): Promise<void> {
   try {
     await ctx.streamWriter.append({
       kind: "internal_event",
       content: {
-        hook: "claim_ownership_mismatch_dropped",
-        review_id: input.reviewId,
-        action: input.action,
+        hook,
+        ...content,
       },
     });
   } catch (error) {
     errors.push(
       offlineProcessError("belief-reviser", error, {
-        code: "belief_reviser_claim_mismatch_log_failed",
+        code: failureCode,
       }),
     );
   }
@@ -1685,6 +1711,277 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     return transaction();
   }
 
+  private async syncAndApplyVerdict(input: {
+    ctx: OfflineContext;
+    regradeItem: z.infer<typeof beliefRevisionRegradeItemSchema>;
+    claimed: ReviewQueueItem;
+    prepared: PreparedVerdict;
+    expectedClaim: BeliefRevisionClaim;
+    changes: OfflineChange[];
+    errors: OfflineResult["errors"];
+    syncState: RegradeSyncState;
+  }): Promise<{ ownershipLostDuringSync: boolean }> {
+    let ownershipLostDuringSync = false;
+
+    for (const sync of input.prepared.nodeSyncs) {
+      try {
+        const synced = await this.syncNodeToVectorStore(input.ctx, sync, input.errors);
+        if (!synced) {
+          ownershipLostDuringSync = true;
+          break;
+        }
+        input.syncState.nodeSyncCompleted = true;
+      } catch (error) {
+        input.errors.push(
+          offlineProcessError(this.name, error, {
+            code: "belief_reviser_regrade_vector_sync_failed",
+          }),
+        );
+        throw error;
+      }
+    }
+
+    if (ownershipLostDuringSync) {
+      return { ownershipLostDuringSync };
+    }
+
+    const applied = this.applyVerdict(
+      input.ctx,
+      input.claimed,
+      input.prepared.verdict,
+      input.expectedClaim,
+    );
+
+    if (applied.change !== null) {
+      input.changes.push(applied.change);
+    }
+    if (!applied.applied) {
+      await appendClaimOwnershipMismatchEvent(
+        input.ctx,
+        {
+          reviewId: input.regradeItem.review_id,
+          action: "apply_verdict",
+        },
+        input.errors,
+      );
+    }
+
+    return { ownershipLostDuringSync };
+  }
+
+  private async handleRegradeError(input: {
+    ctx: OfflineContext;
+    regradeItem: z.infer<typeof beliefRevisionRegradeItemSchema>;
+    expectedClaim: BeliefRevisionClaim;
+    error: unknown;
+    nodeSyncCompleted: boolean;
+    errors: OfflineResult["errors"];
+  }): Promise<Omit<RegradeOneResult, "llmCalls">> {
+    if (input.error instanceof BudgetExceededError) {
+      const cleared = this.clearReviewClaim(
+        input.ctx,
+        input.regradeItem.review_id,
+        input.expectedClaim,
+        {
+          clearApplying: !input.nodeSyncCompleted,
+        },
+      );
+      if (!cleared) {
+        await appendClaimOwnershipMismatchEvent(
+          input.ctx,
+          {
+            reviewId: input.regradeItem.review_id,
+            action: "clear_claim",
+          },
+          input.errors,
+        );
+      }
+      throw input.error;
+    }
+
+    const parseFailure =
+      input.error instanceof BeliefRevisionParseError
+        ? this.recordParseFailure(
+            input.ctx,
+            input.regradeItem.review_id,
+            input.expectedClaim,
+            input.error.message,
+          )
+        : null;
+
+    if (parseFailure === null) {
+      const cleared = this.clearReviewClaim(
+        input.ctx,
+        input.regradeItem.review_id,
+        input.expectedClaim,
+        {
+          clearApplying: !input.nodeSyncCompleted,
+        },
+      );
+      if (!cleared) {
+        await appendClaimOwnershipMismatchEvent(
+          input.ctx,
+          {
+            reviewId: input.regradeItem.review_id,
+            action:
+              input.error instanceof BeliefRevisionParseError
+                ? "record_parse_failure"
+                : "clear_claim",
+          },
+          input.errors,
+        );
+      }
+    }
+    const message = input.error instanceof Error ? input.error.message : String(input.error);
+    input.errors.push(
+      offlineProcessError(this.name, input.error, {
+        code: "belief_reviser_regrade_failed",
+      }),
+    );
+
+    await logHook(
+      input.ctx,
+      input.errors,
+      "belief_reviser_regrade_failed",
+      {
+        review_id: input.regradeItem.review_id,
+        error: message,
+      },
+      "belief_reviser_regrade_failure_log_failed",
+    );
+
+    return {
+      parseFailureEffect: parseFailure === null ? "reset" : "increment",
+    };
+  }
+
+  private async claimAndRegradeOne(input: {
+    ctx: OfflineContext;
+    regradeItem: z.infer<typeof beliefRevisionRegradeItemSchema>;
+    llm: OfflineContext["llm"]["background"];
+    recordTokens: (tokens: number) => void;
+    changes: OfflineChange[];
+    errors: OfflineResult["errors"];
+  }): Promise<RegradeOneResult> {
+    const claimed = this.claimReview(input.ctx, input.regradeItem.review_id);
+
+    if (claimed === null) {
+      return {
+        llmCalls: 0,
+        parseFailureEffect: "unchanged",
+      };
+    }
+    const expectedClaim = claimFromReviewItem(claimed);
+
+    if (expectedClaim === null) {
+      return {
+        llmCalls: 0,
+        parseFailureEffect: "unchanged",
+      };
+    }
+    const syncState: RegradeSyncState = {
+      nodeSyncCompleted: false,
+    };
+    let llmCalls = 0;
+
+    try {
+      const llmInput = await this.buildLlmInput(input.ctx, claimed);
+      llmCalls += 1;
+      const result = await evaluateBeliefRevision({
+        llm: input.llm,
+        model: input.ctx.config.anthropic.models.background,
+        input: llmInput,
+        timeoutMs: this.options.llmTimeoutMs,
+      });
+      input.recordTokens(result.tokensUsed);
+      const prepared = this.prepareNodeVectorSync(
+        input.ctx,
+        claimed,
+        result.verdict,
+        expectedClaim,
+      );
+      const synced = await this.syncAndApplyVerdict({
+        ctx: input.ctx,
+        regradeItem: input.regradeItem,
+        claimed,
+        prepared,
+        expectedClaim,
+        changes: input.changes,
+        errors: input.errors,
+        syncState,
+      });
+
+      if (synced.ownershipLostDuringSync) {
+        return {
+          llmCalls,
+          parseFailureEffect: "reset",
+        };
+      }
+
+      return {
+        llmCalls,
+        parseFailureEffect: "reset",
+      };
+    } catch (error) {
+      const handled = await this.handleRegradeError({
+        ctx: input.ctx,
+        regradeItem: input.regradeItem,
+        expectedClaim,
+        error,
+        nodeSyncCompleted: syncState.nodeSyncCompleted,
+        errors: input.errors,
+      });
+
+      return {
+        llmCalls,
+        parseFailureEffect: handled.parseFailureEffect,
+      };
+    }
+  }
+
+  private async runRegrades(input: {
+    ctx: OfflineContext;
+    plan: BeliefReviserPlan;
+    changes: OfflineChange[];
+    errors: OfflineResult["errors"];
+    llm: OfflineContext["llm"]["background"];
+    recordTokens: (tokens: number) => void;
+  }): Promise<void> {
+    let llmCalls = 0;
+    let consecutiveParseFailures = 0;
+
+    for (const regradeItem of input.plan.regrade_items) {
+      if (llmCalls >= input.plan.max_llm_calls) {
+        break;
+      }
+
+      if (consecutiveParseFailures >= this.consecutiveParseFailureLimit) {
+        input.errors.push({
+          process: this.name,
+          message: "belief revision parse-failure circuit breaker opened",
+          code: "belief_reviser_parse_failure_circuit_breaker",
+        });
+        break;
+      }
+
+      const result = await this.claimAndRegradeOne({
+        ctx: input.ctx,
+        regradeItem,
+        llm: input.llm,
+        recordTokens: input.recordTokens,
+        changes: input.changes,
+        errors: input.errors,
+      });
+      llmCalls += result.llmCalls;
+
+      if (result.parseFailureEffect === "reset") {
+        consecutiveParseFailures = 0;
+      } else if (result.parseFailureEffect === "increment") {
+        consecutiveParseFailures += 1;
+      }
+    }
+  }
+
   async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}): Promise<BeliefReviserPlan> {
     const items: BeliefReviserPlan["items"] = [];
     const maxEventsPerRun = positiveIntegerRecordParamOrFallback(
@@ -1875,237 +2172,78 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         for (const drop of result.confidenceDrops) {
           changes.push(buildConfidenceDropChange(drop, item.event_id));
 
-          try {
-            await ctx.streamWriter.append({
-              kind: "internal_event",
-              content: {
-                hook: "belief_reviser_confidence_dropped",
-                event_id: item.event_id,
-                target_type: "semantic_node",
-                target_id: drop.targetId,
-                previous_confidence: drop.previousConfidence,
-                next_confidence: drop.nextConfidence,
-              },
-            });
-          } catch (error) {
-            errors.push(
-              offlineProcessError(this.name, error, {
-                code: "belief_reviser_confidence_drop_log_failed",
-              }),
-            );
-          }
+          await logHook(
+            ctx,
+            errors,
+            "belief_reviser_confidence_dropped",
+            {
+              event_id: item.event_id,
+              target_type: "semantic_node",
+              target_id: drop.targetId,
+              previous_confidence: drop.previousConfidence,
+              next_confidence: drop.nextConfidence,
+            },
+            "belief_reviser_confidence_drop_log_failed",
+          );
         }
       }
 
       if (result.processed && item.fanout_capped) {
-        try {
-          await ctx.streamWriter.append({
-            kind: "internal_event",
-            content: {
-              hook: "belief_reviser_fanout_capped",
-              event_id: item.event_id,
-              invalidated_edge_id: item.invalidated_edge_id,
-              review_cap: item.review_cap,
-              planned_reviews: item.reviews.length,
-            },
-          });
-        } catch (error) {
-          errors.push(
-            offlineProcessError(this.name, error, {
-              code: "belief_reviser_fanout_cap_log_failed",
-            }),
-          );
-        }
-      }
-    }
-
-    if (plan.run_capped) {
-      try {
-        await ctx.streamWriter.append({
-          kind: "internal_event",
-          content: {
-            hook: "belief_reviser_run_capped",
-            planned_events: plan.items.length,
-            planned_reviews: plan.items.reduce((sum, item) => sum + item.reviews.length, 0),
-            pending_event_count: plan.pending_event_count,
-            event_cap: plan.event_cap,
-            review_run_cap: plan.review_run_cap,
+        await logHook(
+          ctx,
+          errors,
+          "belief_reviser_fanout_capped",
+          {
+            event_id: item.event_id,
+            invalidated_edge_id: item.invalidated_edge_id,
+            review_cap: item.review_cap,
+            planned_reviews: item.reviews.length,
           },
-        });
-      } catch (error) {
-        errors.push(
-          offlineProcessError(this.name, error, {
-            code: "belief_reviser_run_cap_log_failed",
-          }),
+          "belief_reviser_fanout_cap_log_failed",
         );
       }
     }
 
+    if (plan.run_capped) {
+      await logHook(
+        ctx,
+        errors,
+        "belief_reviser_run_capped",
+        {
+          planned_events: plan.items.length,
+          planned_reviews: plan.items.reduce((sum, item) => sum + item.reviews.length, 0),
+          pending_event_count: plan.pending_event_count,
+          event_cap: plan.event_cap,
+          review_run_cap: plan.review_run_cap,
+        },
+        "belief_reviser_run_cap_log_failed",
+      );
+    }
+
     let budgetExhausted = plan.budget_exhausted;
-    const runRegrades = async (
-      llm: OfflineContext["llm"]["background"],
-      recordTokens: (tokens: number) => void,
-    ) => {
-      let llmCalls = 0;
-      let consecutiveParseFailures = 0;
-
-      for (const regradeItem of plan.regrade_items) {
-        if (llmCalls >= plan.max_llm_calls) {
-          break;
-        }
-
-        if (consecutiveParseFailures >= this.consecutiveParseFailureLimit) {
-          errors.push({
-            process: this.name,
-            message: "belief revision parse-failure circuit breaker opened",
-            code: "belief_reviser_parse_failure_circuit_breaker",
-          });
-          break;
-        }
-
-        const claimed = this.claimReview(ctx, regradeItem.review_id);
-
-        if (claimed === null) {
-          continue;
-        }
-        const expectedClaim = claimFromReviewItem(claimed);
-
-        if (expectedClaim === null) {
-          continue;
-        }
-        let nodeSyncCompleted = false;
-        let ownershipLostDuringSync = false;
-
-        try {
-          const input = await this.buildLlmInput(ctx, claimed);
-          llmCalls += 1;
-          const result = await evaluateBeliefRevision({
-            llm,
-            model: ctx.config.anthropic.models.background,
-            input,
-            timeoutMs: this.options.llmTimeoutMs,
-          });
-          recordTokens(result.tokensUsed);
-          const prepared = this.prepareNodeVectorSync(ctx, claimed, result.verdict, expectedClaim);
-
-          for (const sync of prepared.nodeSyncs) {
-            try {
-              const synced = await this.syncNodeToVectorStore(ctx, sync, errors);
-              if (!synced) {
-                ownershipLostDuringSync = true;
-                break;
-              }
-              nodeSyncCompleted = true;
-            } catch (error) {
-              errors.push(
-                offlineProcessError(this.name, error, {
-                  code: "belief_reviser_regrade_vector_sync_failed",
-                }),
-              );
-              throw error;
-            }
-          }
-
-          if (ownershipLostDuringSync) {
-            consecutiveParseFailures = 0;
-            continue;
-          }
-
-          const applied = this.applyVerdict(ctx, claimed, prepared.verdict, expectedClaim);
-
-          if (applied.change !== null) {
-            changes.push(applied.change);
-          }
-          if (!applied.applied) {
-            await appendClaimOwnershipMismatchEvent(
-              ctx,
-              {
-                reviewId: regradeItem.review_id,
-                action: "apply_verdict",
-              },
-              errors,
-            );
-          }
-          consecutiveParseFailures = 0;
-        } catch (error) {
-          if (error instanceof BudgetExceededError) {
-            const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
-              clearApplying: !nodeSyncCompleted,
-            });
-            if (!cleared) {
-              await appendClaimOwnershipMismatchEvent(
-                ctx,
-                {
-                  reviewId: regradeItem.review_id,
-                  action: "clear_claim",
-                },
-                errors,
-              );
-            }
-            throw error;
-          }
-
-          const parseFailure =
-            error instanceof BeliefRevisionParseError
-              ? this.recordParseFailure(ctx, regradeItem.review_id, expectedClaim, error.message)
-              : null;
-
-          if (parseFailure === null) {
-            const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
-              clearApplying: !nodeSyncCompleted,
-            });
-            if (!cleared) {
-              await appendClaimOwnershipMismatchEvent(
-                ctx,
-                {
-                  reviewId: regradeItem.review_id,
-                  action:
-                    error instanceof BeliefRevisionParseError
-                      ? "record_parse_failure"
-                      : "clear_claim",
-                },
-                errors,
-              );
-            }
-            consecutiveParseFailures = 0;
-          } else {
-            consecutiveParseFailures += 1;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          errors.push(
-            offlineProcessError(this.name, error, {
-              code: "belief_reviser_regrade_failed",
-            }),
-          );
-
-          try {
-            await ctx.streamWriter.append({
-              kind: "internal_event",
-              content: {
-                hook: "belief_reviser_regrade_failed",
-                review_id: regradeItem.review_id,
-                error: message,
-              },
-            });
-          } catch (logError) {
-            errors.push(
-              offlineProcessError(this.name, logError, {
-                code: "belief_reviser_regrade_failure_log_failed",
-              }),
-            );
-          }
-        }
-      }
-    };
 
     if (plan.token_budget === undefined) {
-      await runRegrades(ctx.llm.background, (used) => {
-        tokensUsed += used;
+      await this.runRegrades({
+        ctx,
+        plan,
+        changes,
+        errors,
+        llm: ctx.llm.background,
+        recordTokens: (used) => {
+          tokensUsed += used;
+        },
       });
     } else {
       try {
         const budgeted = await withBudget(this.name, plan.token_budget, async ({ wrapClient }) => {
-          await runRegrades(wrapClient(ctx.llm.background), () => {});
+          await this.runRegrades({
+            ctx,
+            plan,
+            changes,
+            errors,
+            llm: wrapClient(ctx.llm.background),
+            recordTokens: () => {},
+          });
         });
         tokensUsed += budgeted.tokens_used;
       } catch (error) {

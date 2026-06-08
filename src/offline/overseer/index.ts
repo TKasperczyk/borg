@@ -128,6 +128,11 @@ export const overseerPlanSchema = z.object({
 });
 
 export type OverseerPlan = z.infer<typeof overseerPlanSchema>;
+type OverseerPlanItem = OverseerPlan["items"][number];
+type OverseerProposedProvenance = {
+  kind: "offline";
+  process: "overseer";
+};
 
 type OverseerTarget =
   | {
@@ -380,6 +385,100 @@ function candidateStatsForPlan(
   );
 }
 
+function buildIdentityRepairRefs(
+  item: OverseerPlanItem,
+  proposedProvenance: OverseerProposedProvenance,
+): Record<string, unknown> {
+  return item.target_type === "semantic_edge"
+    ? {
+        target_type: "semantic_edge",
+        target_kind: "semantic_edge",
+        target_id: item.target_id,
+        ...(item.suggested_valid_to === undefined
+          ? {}
+          : { suggested_valid_to: item.suggested_valid_to }),
+        ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+        reason: item.reason,
+        proposed_provenance: proposedProvenance,
+        source_target_type: item.target_type,
+        source_target_id: item.target_id,
+      }
+    : {
+        target_type: item.repair_target_type ?? item.target_type,
+        target_id: item.repair_target_id ?? item.target_id,
+        repair_op: item.repair_op ?? "patch",
+        ...(item.patch === undefined ? {} : { patch: item.patch }),
+        ...(item.evidence_episode_ids === undefined
+          ? {}
+          : { evidence_episode_ids: item.evidence_episode_ids }),
+        proposed_provenance: proposedProvenance,
+        source_target_type: item.target_type,
+        source_target_id: item.target_id,
+      };
+}
+
+function buildMisattributionRepairRefs(input: {
+  item: OverseerPlanItem;
+  proposedProvenance: OverseerProposedProvenance;
+  reviewedAssistantStreamEntryIds: readonly StreamEntry["id"][];
+}): Record<string, unknown> {
+  return {
+    target_type: input.item.target_type,
+    target_id: input.item.target_id,
+    ...(input.item.patch === undefined ? {} : { patch: input.item.patch }),
+    ...(input.item.cited_stream_ids === undefined
+      ? {}
+      : { evidence_stream_ids: input.item.cited_stream_ids }),
+    ...(input.reviewedAssistantStreamEntryIds.length === 0
+      ? {}
+      : { reviewed_assistant_stream_entry_ids: input.reviewedAssistantStreamEntryIds }),
+    proposed_provenance: input.proposedProvenance,
+  };
+}
+
+function buildTemporalDriftRepairRefs(
+  item: OverseerPlanItem,
+  proposedProvenance: OverseerProposedProvenance,
+): Record<string, unknown> {
+  return {
+    target_type: item.target_type,
+    target_id: item.target_id,
+    ...(item.corrected_start_time === undefined
+      ? {}
+      : { corrected_start_time: item.corrected_start_time }),
+    ...(item.corrected_end_time === undefined
+      ? {}
+      : { corrected_end_time: item.corrected_end_time }),
+    ...(item.patch_description === undefined ? {} : { patch_description: item.patch_description }),
+    ...(item.target_type === "semantic_edge"
+      ? {
+          target_kind: "semantic_edge",
+          reason: item.reason,
+        }
+      : {}),
+    ...(item.suggested_valid_to === undefined
+      ? {}
+      : { suggested_valid_to: item.suggested_valid_to }),
+    ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+    proposed_provenance: proposedProvenance,
+  };
+}
+
+function buildRepairRefs(input: {
+  item: OverseerPlanItem;
+  proposedProvenance: OverseerProposedProvenance;
+  reviewedAssistantStreamEntryIds: readonly StreamEntry["id"][];
+}): Record<string, unknown> {
+  switch (input.item.kind) {
+    case "identity_inconsistency":
+      return buildIdentityRepairRefs(input.item, input.proposedProvenance);
+    case "misattribution":
+      return buildMisattributionRepairRefs(input);
+    case "temporal_drift":
+      return buildTemporalDriftRepairRefs(input.item, input.proposedProvenance);
+  }
+}
+
 export type OverseerProcessOptions = {
   reviewQueueRepository: OfflineContext["reviewQueueRepository"];
   registry: ReverserRegistry;
@@ -587,76 +686,11 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
         item.kind === "misattribution"
           ? await assistantAuthoredCitedStreamEntryIds(ctx, item.cited_stream_ids)
           : [];
-      const repairRefs =
-        item.kind === "identity_inconsistency"
-          ? item.target_type === "semantic_edge"
-            ? {
-                target_type: "semantic_edge",
-                target_kind: "semantic_edge",
-                target_id: item.target_id,
-                ...(item.suggested_valid_to === undefined
-                  ? {}
-                  : { suggested_valid_to: item.suggested_valid_to }),
-                ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
-                reason: item.reason,
-                proposed_provenance: proposedProvenance,
-                source_target_type: item.target_type,
-                source_target_id: item.target_id,
-              }
-            : {
-                target_type: item.repair_target_type ?? item.target_type,
-                target_id: item.repair_target_id ?? item.target_id,
-                repair_op: item.repair_op ?? "patch",
-                ...(item.patch === undefined ? {} : { patch: item.patch }),
-                ...(item.evidence_episode_ids === undefined
-                  ? {}
-                  : { evidence_episode_ids: item.evidence_episode_ids }),
-                proposed_provenance: proposedProvenance,
-                source_target_type: item.target_type,
-                source_target_id: item.target_id,
-              }
-          : item.kind === "misattribution"
-            ? {
-                target_type: item.target_type,
-                target_id: item.target_id,
-                ...(item.patch === undefined ? {} : { patch: item.patch }),
-                ...(item.cited_stream_ids === undefined
-                  ? {}
-                  : { evidence_stream_ids: item.cited_stream_ids }),
-                ...(reviewedAssistantStreamEntryIds.length === 0
-                  ? {}
-                  : { reviewed_assistant_stream_entry_ids: reviewedAssistantStreamEntryIds }),
-                proposed_provenance: proposedProvenance,
-              }
-            : item.kind === "temporal_drift"
-              ? {
-                  target_type: item.target_type,
-                  target_id: item.target_id,
-                  ...(item.corrected_start_time === undefined
-                    ? {}
-                    : { corrected_start_time: item.corrected_start_time }),
-                  ...(item.corrected_end_time === undefined
-                    ? {}
-                    : { corrected_end_time: item.corrected_end_time }),
-                  ...(item.patch_description === undefined
-                    ? {}
-                    : { patch_description: item.patch_description }),
-                  ...(item.target_type === "semantic_edge"
-                    ? {
-                        target_kind: "semantic_edge",
-                        reason: item.reason,
-                      }
-                    : {}),
-                  ...(item.suggested_valid_to === undefined
-                    ? {}
-                    : { suggested_valid_to: item.suggested_valid_to }),
-                  ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
-                  proposed_provenance: proposedProvenance,
-                }
-              : {
-                  target_type: item.target_type,
-                  target_id: item.target_id,
-                };
+      const repairRefs = buildRepairRefs({
+        item,
+        proposedProvenance,
+        reviewedAssistantStreamEntryIds,
+      });
       const refs = {
         ...repairRefs,
         overseer_flag: item.overseer_flag,
