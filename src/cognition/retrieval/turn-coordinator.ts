@@ -100,7 +100,7 @@ function coordinatorContextFromRecallDisclosureContext(input: {
 }
 
 export type TurnRetrievalCoordinatorOptions = {
-  commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
+  commitmentRepository: Pick<CommitmentRepository, "getApplicable" | "list">;
   entityRepository: Pick<EntityRepository, "getSelf">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list"> &
     Partial<Pick<ReviewQueueRepository, "listOpenCommitmentReconciliationsForCognition">>;
@@ -135,6 +135,7 @@ export type TurnRetrievalCoordinatorInput = {
 
 export type TurnRetrievalCoordinatorResult = {
   applicableCommitments: CommitmentRecord[];
+  actionApplicableCommitments: CommitmentRecord[];
   pendingCorrections: ReviewQueueItem[];
   pendingCommitmentReviews: OpenCommitmentReconciliationStatus[];
   affectiveTrajectory: ReturnType<MoodRepository["history"]>;
@@ -157,19 +158,42 @@ export class TurnRetrievalCoordinator {
     this.tracer = options.tracer ?? NOOP_TRACER;
   }
 
-  private collectApplicableCommitments(audienceEntityId: EntityId | null): CommitmentRecord[] {
+  private sortCommitmentsForCognition(
+    commitments: readonly CommitmentRecord[],
+  ): CommitmentRecord[] {
+    return [...commitments].sort(
+      (left, right) => right.priority - left.priority || left.created_at - right.created_at,
+    );
+  }
+
+  private recallActiveCommitmentsForCognition(nowMs: number): CommitmentRecord[] {
+    return this.sortCommitmentsForCognition(
+      this.options.commitmentRepository.list({
+        activeOnly: true,
+        nowMs,
+      }),
+    );
+  }
+
+  private collectApplicableCommitmentsForActionAuthorization(
+    audienceEntityId: EntityId | null,
+    nowMs: number,
+  ): CommitmentRecord[] {
     return this.options.commitmentRepository
       .getApplicable({
         audience: audienceEntityId,
-        nowMs: this.options.clock.now(),
+        nowMs,
       })
       .sort((left, right) => right.priority - left.priority || left.created_at - right.created_at);
   }
 
   async coordinate(input: TurnRetrievalCoordinatorInput): Promise<TurnRetrievalCoordinatorResult> {
     const coordinatorContext = coordinatorContextFromRecallDisclosureContext(input);
-    const applicableCommitments = this.collectApplicableCommitments(
+    const nowMs = this.options.clock.now();
+    const applicableCommitments = this.recallActiveCommitmentsForCognition(nowMs);
+    const actionApplicableCommitments = this.collectApplicableCommitmentsForActionAuthorization(
       coordinatorContext.audienceEntityId,
+      nowMs,
     );
     const pendingCorrections = this.options.reviewQueueRepository
       .list({
@@ -282,6 +306,7 @@ export class TurnRetrievalCoordinator {
 
     return {
       applicableCommitments,
+      actionApplicableCommitments,
       pendingCorrections,
       pendingCommitmentReviews,
       affectiveTrajectory,

@@ -4,8 +4,15 @@ import {
   appendMemoryDisclosureState,
   appendMemoryDisclosureStateMetadata,
 } from "../entry-metadata.js";
-import { addEntry, AUTOBIOGRAPHICAL_RECALL_TRUST_RANK } from "../section-buckets.js";
+import {
+  addEntry,
+  AUTOBIOGRAPHICAL_RECALL_TRUST_RANK,
+  setSectionFraming,
+} from "../section-buckets.js";
 import type { EvidenceLedgerSourceType } from "../types.js";
+
+const AUTOBIOGRAPHICAL_RECALL_FRAMING =
+  "Autobiographical recall entries are past evidence for Sol to re-examine during this turn. Treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; revise them when current evidence warrants.";
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,
@@ -37,6 +44,13 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
   if (recall === null || recall === undefined || recall.evidence.length === 0) {
     return;
   }
+
+  setSectionFraming(context.buckets, "autobiographical_recall", {
+    text: AUTOBIOGRAPHICAL_RECALL_FRAMING,
+    counts: {
+      self_decision: recall.evidence.filter((item) => item.kind === "self_decision").length,
+    },
+  });
 
   for (const item of recall.evidence) {
     const stateMetadata = appendMemoryDisclosureStateMetadata({

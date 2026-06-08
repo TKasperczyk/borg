@@ -178,6 +178,7 @@ function makeRetrievalOptions(input: {
     turnRetrievalCoordinator: {
       coordinate: vi.fn(async () => ({
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         pendingCorrections: [],
         affectiveTrajectory: [],
         retrieval,

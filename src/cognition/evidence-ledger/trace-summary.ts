@@ -26,14 +26,35 @@ function entryFlatText(section: EvidenceLedgerSection, entry: EvidenceLedgerEntr
   ].join("\n");
 }
 
+function sectionFramingFlatText(section: EvidenceLedgerSection): string {
+  if (section.framing === undefined) {
+    return "";
+  }
+
+  return [
+    section.label,
+    section.framing.text,
+    section.framing.counts === undefined ? "" : JSON.stringify(section.framing.counts),
+  ].join("\n");
+}
+
 function estimateSectionTokens(section: EvidenceLedgerSection): number {
-  const text = section.entries.map((entry) => entryFlatText(section, entry)).join("\n");
+  const text = [
+    sectionFramingFlatText(section),
+    ...section.entries.map((entry) => entryFlatText(section, entry)),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
   return text.length === 0 ? 0 : estimatePromptTokens(text);
 }
 
 export function estimateLedgerTokens(sections: readonly EvidenceLedgerSection[]): number {
   const text = sections
-    .flatMap((section) => section.entries.map((entry) => entryFlatText(section, entry)))
+    .flatMap((section) => [
+      sectionFramingFlatText(section),
+      ...section.entries.map((entry) => entryFlatText(section, entry)),
+    ])
+    .filter((part) => part.length > 0)
     .join("\n");
 
   return text.length === 0 ? 0 : estimatePromptTokens(text);

@@ -239,6 +239,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },
@@ -592,6 +593,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },
@@ -846,6 +848,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1, evidence: [], open_questions: [] },
@@ -972,6 +975,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },
@@ -1147,6 +1151,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },
@@ -1323,6 +1328,7 @@ describe("runPostGenerationPhase", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },
@@ -1490,6 +1496,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       } as never,
       retrievalPhase: {
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
         retrieval: { confidence: 1 },

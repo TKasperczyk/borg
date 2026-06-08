@@ -130,9 +130,15 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
 
 export type EvidenceLedgerSectionId = (typeof EVIDENCE_LEDGER_SECTION_DEFINITIONS)[number]["id"];
 
+export type EvidenceLedgerSectionFraming = {
+  text: string;
+  counts?: Record<string, number>;
+};
+
 export type EvidenceLedgerSection = {
   id: EvidenceLedgerSectionId;
   label: string;
+  framing?: EvidenceLedgerSectionFraming;
   entries: EvidenceLedgerEntry[];
 };
 

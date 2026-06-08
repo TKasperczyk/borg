@@ -1239,6 +1239,70 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_session_status_snapshot");
   });
 
+  it("renders made-to commitments in self-audience cognition with disclosure scope", () => {
+    const madeToEntityId = createEntityId();
+    const commitmentId = createCommitmentId();
+    const commitment = {
+      id: commitmentId,
+      type: "promise",
+      kind: "assistant_commitment",
+      enforcement_class: "advisory",
+      critical_domain: null,
+      directive_family: "atlas_followup",
+      closure_pressure_relevance: "neutral",
+      directive: "Follow up with Sam about the Atlas rollout.",
+      priority: 9,
+      made_to_entity: madeToEntityId,
+      restricted_audience: null,
+      about_entity: null,
+      committed_by_entity_id: null,
+      provenance: { kind: "manual" },
+      source_stream_entry_ids: [createStreamEntryId()],
+      created_at: NOW_MS,
+      expires_at: null,
+      expired_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      revoke_provenance: null,
+      superseded_by: null,
+      canonicalized_by_artifact_entry_id: null,
+      last_reinforced_at: NOW_MS,
+    } satisfies CommitmentRecord;
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        audienceEntityId: null,
+        isSelfAudience: true,
+        applicableCommitments: [commitment],
+        entityRepository: {
+          get: (id: typeof madeToEntityId) =>
+            id === madeToEntityId
+              ? {
+                  id: madeToEntityId,
+                  canonical_name: "Sam",
+                  aliases: [],
+                  kind: "person",
+                  borg_role: null,
+                  name_provenance: "user_declared",
+                  created_at: NOW_MS,
+                }
+              : null,
+        } as never,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "commitment_scope_details");
+
+    expect(block).toContain(`id="${commitmentId}"`);
+    expect(block).toContain("<made_to");
+    expect(block).toContain("Sam</made_to>");
+    expect(block).toContain("disclosure_class=relationship_private");
+    expect(block).toContain(`private-to=${madeToEntityId}`);
+    expect(block).not.toContain("No active commitments apply to this turn.");
+
+    const conductBlock = extractBlock(prompt, "commitments_and_conduct");
+    expect(conductBlock).toContain("recalled globally across every audience");
+  });
+
   it("renders self-decision introspection entries returned by projection", () => {
     const decisionSummary = "Decidí revisar objetivos pendientes sin contactar a nadie.";
     const evidenceLedger = {

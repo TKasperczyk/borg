@@ -297,6 +297,7 @@ describe("TurnRetrievalCoordinator", () => {
     const high = makeCommitment("cmt_high", 10, 200);
     const low = makeCommitment("cmt_low", 1, 100);
     const getApplicable = vi.fn(() => [low, high]);
+    const list = vi.fn(() => [low, high]);
     const pendingCorrections = [
       makeReviewItem(1, {}),
       makeReviewItem(2, { audience_entity_id: audienceEntityId }),
@@ -385,6 +386,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable,
+        list,
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -454,6 +456,11 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     expect(result.applicableCommitments).toEqual([high, low]);
+    expect(result.actionApplicableCommitments).toEqual([high, low]);
+    expect(list).toHaveBeenCalledWith({
+      activeOnly: true,
+      nowMs: 2_000,
+    });
     expect(getApplicable).toHaveBeenCalledWith({
       audience: audienceEntityId,
       nowMs: 2_000,
@@ -543,6 +550,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -605,7 +613,7 @@ describe("TurnRetrievalCoordinator", () => {
     });
   });
 
-  it("recalls cross-scope commitment reviews without widening applicable commitments", async () => {
+  it("recalls cross-scope commitment reviews while keeping action commitments scoped", async () => {
     const aliceCommitment = {
       ...makeCommitment(createCommitmentId(), 10, 100),
       directive: "Keep Alice launch replies short.",
@@ -709,11 +717,13 @@ describe("TurnRetrievalCoordinator", () => {
     };
     pendingCommitmentReview.refs.members = pendingCommitmentReview.members;
     const getApplicable = vi.fn(() => [bobCommitment]);
+    const list = vi.fn(() => [aliceCommitment, bobCommitment]);
     const listOpenCommitmentReconciliationsForCognition = vi.fn(() => [pendingCommitmentReview]);
     const recallEpisodesForCognition = vi.fn(async () => makeRetrievedContext());
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable,
+        list,
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -769,8 +779,12 @@ describe("TurnRetrievalCoordinator", () => {
       audience: bobEntityId,
       nowMs: 2_000,
     });
-    expect(result.applicableCommitments).toEqual([bobCommitment]);
-    expect(result.applicableCommitments).not.toContain(aliceCommitment);
+    expect(list).toHaveBeenCalledWith({
+      activeOnly: true,
+      nowMs: 2_000,
+    });
+    expect(result.applicableCommitments).toEqual([aliceCommitment, bobCommitment]);
+    expect(result.actionApplicableCommitments).toEqual([bobCommitment]);
     expect(listOpenCommitmentReconciliationsForCognition).toHaveBeenCalledWith({
       subkinds: ["cross_scope_conflict", "cross_scope_redundancy"],
     });
@@ -879,7 +893,8 @@ describe("TurnRetrievalCoordinator", () => {
           },
         }),
       );
-      expect(result.applicableCommitments).toEqual([]);
+      expect(result.applicableCommitments).toEqual([commitment]);
+      expect(result.actionApplicableCommitments).toEqual([]);
       expect(prompt).toContain(directive);
       expect(prompt).toContain("disclosure_class=relationship_private");
       expect(prompt).toContain(`private-to=${aliceId}`);
@@ -897,6 +912,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -954,6 +970,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -1013,6 +1030,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
@@ -1107,6 +1125,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf,
@@ -1175,6 +1194,7 @@ describe("TurnRetrievalCoordinator", () => {
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable: vi.fn(() => []),
+        list: vi.fn(() => []),
       },
       entityRepository: {
         getSelf,

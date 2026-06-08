@@ -1,6 +1,7 @@
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerEntry,
+  type EvidenceLedgerSectionFraming,
   type EvidenceLedgerSection,
   type EvidenceLedgerSectionId,
 } from "./types.js";
@@ -30,6 +31,7 @@ const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>(["prio
 
 export type SectionBucket = {
   entries: EvidenceLedgerEntry[];
+  framing?: EvidenceLedgerSectionFraming;
   seenEntryIds: Set<string>;
 };
 
@@ -65,16 +67,10 @@ function sectionBucket(
   return next;
 }
 
-function sectionEntries(
-  sections: SectionBuckets,
-  sectionId: EvidenceLedgerSectionId,
-): EvidenceLedgerEntry[] {
-  return sectionBucket(sections, sectionId).entries;
-}
-
 export function finalSections(sections: SectionBuckets): EvidenceLedgerSection[] {
   return EVIDENCE_LEDGER_SECTION_DEFINITIONS.flatMap((definition) => {
-    const entries = sectionEntries(sections, definition.id);
+    const bucket = sectionBucket(sections, definition.id);
+    const entries = bucket.entries;
 
     if ("optional" in definition && definition.optional === true && entries.length === 0) {
       return [];
@@ -84,10 +80,19 @@ export function finalSections(sections: SectionBuckets): EvidenceLedgerSection[]
       {
         id: definition.id,
         label: definition.label,
+        ...(bucket.framing === undefined ? {} : { framing: bucket.framing }),
         entries,
       },
     ];
   });
+}
+
+export function setSectionFraming(
+  sections: SectionBuckets,
+  sectionId: EvidenceLedgerSectionId,
+  framing: EvidenceLedgerSectionFraming,
+): void {
+  sectionBucket(sections, sectionId).framing = framing;
 }
 
 export function addEntry(

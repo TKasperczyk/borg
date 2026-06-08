@@ -179,6 +179,61 @@ describe("commitment repository", () => {
     db.close();
   });
 
+  it("lists active commitments globally without audience or made-to filtering", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const identityEvents = new IdentityEventRepository({
+      db,
+      clock,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+      identityEventRepository: identityEvents,
+    });
+    const audience = entities.resolve("Sam");
+    const madeTo = entities.resolve("Riley");
+    const restricted = commitments.add({
+      type: "boundary",
+      directiveFamily: "sam_boundary",
+      directive: "Keep Sam-specific boundary active.",
+      priority: 10,
+      restrictedAudience: audience,
+      provenance: manualProvenance,
+    });
+    const madeToCommitment = commitments.add({
+      type: "promise",
+      directiveFamily: "riley_followup",
+      directive: "Follow up with Riley.",
+      priority: 5,
+      madeToEntity: madeTo,
+      provenance: manualProvenance,
+    });
+
+    try {
+      expect(
+        commitments.list({
+          activeOnly: true,
+          nowMs: 1_000,
+        }),
+      ).toEqual(expect.arrayContaining([restricted, madeToCommitment]));
+      expect(
+        commitments.getApplicable({
+          audience: null,
+          nowMs: 1_000,
+        }),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("counts active commitments without materializing expired records", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

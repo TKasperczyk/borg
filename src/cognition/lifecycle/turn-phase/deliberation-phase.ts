@@ -9,7 +9,7 @@ import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
-import type { PerceptionResult } from "../../types.js";
+import { isUserTurnOrigin, type PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { BorgUserContentBlock } from "../../../attachments/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
@@ -148,7 +148,10 @@ export async function runDeliberationPhase(input: {
     input.streamWriter,
   );
 
-  if (deliberation.emissionRecommendation === "no_output") {
+  if (
+    deliberation.emissionRecommendation === "no_output" &&
+    isUserTurnOrigin(input.turnInput.origin)
+  ) {
     return {
       deliberation,
       workingMemory: input.options.discourseStateService.setStopState({

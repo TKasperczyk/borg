@@ -30,8 +30,18 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
 }
 
 export function renderSection(section: EvidenceLedgerSection): string {
+  const framingLines =
+    section.framing === undefined
+      ? []
+      : [
+          `framing: ${section.framing.text}`,
+          ...(section.framing.counts === undefined
+            ? []
+            : [`framing_counts: ${JSON.stringify(section.framing.counts)}`]),
+        ];
+
   if (section.entries.length === 0) {
-    return [`## ${section.label}`, "No entries."].join("\n");
+    return [`## ${section.label}`, ...framingLines, "No entries."].join("\n");
   }
 
   const sourceTypes = [...new Set(section.entries.map((entry) => entry.source_type))].join(", ");
@@ -39,6 +49,7 @@ export function renderSection(section: EvidenceLedgerSection): string {
 
   return [
     `## ${section.label}`,
+    ...framingLines,
     `source_types: ${sourceTypes}`,
     `scopes: ${scopes}`,
     ...section.entries.map((entry) => renderEntry(entry)),

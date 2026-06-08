@@ -880,11 +880,20 @@ function renderSocialMemoryEntryGroupLines(input: {
   ];
 }
 
+const COMMITMENTS_INTERPRETATION =
+  "Your active commitments, rules, preferences, and boundaries are recalled globally across every audience you made them to -- not filtered to the current addressee. The made_to, audience, and about labels are disclosure and scope provenance: they show whom each commitment was made to and concerns, and whether disclosure is restricted -- they do NOT mean the current audience already shares it, is owed it, or is party to it. A commitment made to someone absent from this turn is still yours to keep. Use each commitment's enforcement class and disclosure label to judge whether it binds your action this turn and whether, and how, to honor or mention it to the current audience.";
+
 function renderCommitmentsAndConductLines(context: DeliberationContext, indent: string): string[] {
   const standing = context.evidenceLedger?.audienceStanding;
+  const hasCommitments =
+    (context.applicableCommitments?.length ?? 0) > 0 ||
+    (standing?.commitmentEntries?.length ?? 0) > 0;
 
   return [
     `${indent}<commitments_and_conduct>`,
+    ...(hasCommitments
+      ? [`${indent}  <interpretation>${escapeXmlText(COMMITMENTS_INTERPRETATION)}</interpretation>`]
+      : []),
     ...renderCommitmentDetailsLines(context, `${indent}  `),
     ...renderStandingEntryGroupLines({
       tag: "commitment_ledger_entries",

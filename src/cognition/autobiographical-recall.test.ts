@@ -18,6 +18,7 @@ import {
 } from "../util/ids.js";
 import { AutobiographicalRecallService } from "./autobiographical-recall.js";
 import { createSectionBuckets, finalSections } from "./evidence-ledger/section-buckets.js";
+import { renderSection } from "./evidence-ledger/section-rendering.js";
 import { addAutobiographicalRecallSection } from "./evidence-ledger/sections/autobiographical-recall.js";
 
 const NOW_MS = 10_000;
@@ -136,6 +137,13 @@ describe("AutobiographicalRecallService", () => {
     });
     const section = finalSections(buckets).find((item) => item.id === "autobiographical_recall");
 
+    expect(section?.framing).toEqual({
+      text: expect.stringContaining("past evidence"),
+      counts: {
+        self_decision: 1,
+      },
+    });
+    expect(section?.entries).toHaveLength(2);
     expect(section?.entries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -152,6 +160,7 @@ describe("AutobiographicalRecallService", () => {
         }),
       ]),
     );
+    expect(renderSection(section!)).toContain('framing_counts: {"self_decision":1}');
   });
 
   it("caps stream autobiographical evidence after selecting the most recent in-window entries", async () => {

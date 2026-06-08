@@ -546,7 +546,7 @@ export async function runPostGenerationPhase(input: {
     cognitionInput: input.cognitionInput,
     origin: input.origin,
     autonomyTrigger: input.autonomyTrigger,
-    applicableCommitments: input.retrievalPhase.applicableCommitments,
+    applicableCommitments: input.retrievalPhase.actionApplicableCommitments,
     perceptionEntities: input.perception.entities,
     persistedUserEntry: input.persistedUserEntry,
     persistedUserEntries: input.sourceUserEntries,

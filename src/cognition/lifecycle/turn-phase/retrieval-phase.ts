@@ -155,6 +155,7 @@ export type TurnRetrievalPhaseResult = {
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >;
   applicableCommitments: readonly CommitmentRecord[];
+  actionApplicableCommitments: readonly CommitmentRecord[];
   pendingCorrections: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["pendingCorrections"];
@@ -741,6 +742,10 @@ export async function runRetrievalPhase(input: {
     retrievalContext.applicableCommitments,
     input.correctiveCommitment,
   );
+  const actionApplicableCommitments = appendCommitmentIfMissing(
+    retrievalContext.actionApplicableCommitments,
+    input.correctiveCommitment,
+  );
   const pendingCorrections = retrievalContext.pendingCorrections;
   const pendingCommitmentReviews = retrievalContext.pendingCommitmentReviews;
   const affectiveTrajectory = retrievalContext.affectiveTrajectory;
@@ -918,6 +923,7 @@ export async function runRetrievalPhase(input: {
     executiveFocusWithStep,
     retrievalContext,
     applicableCommitments,
+    actionApplicableCommitments,
     pendingCorrections,
     pendingCommitmentReviews,
     affectiveTrajectory,

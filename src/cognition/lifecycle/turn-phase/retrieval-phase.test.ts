@@ -167,6 +167,7 @@ function minimalRetrievalPhaseOptions(
     turnRetrievalCoordinator: {
       coordinate: vi.fn(async () => ({
         applicableCommitments: [],
+        actionApplicableCommitments: [],
         pendingCorrections: [],
         affectiveTrajectory: [],
         retrieval,
@@ -1771,6 +1772,7 @@ describe("creator directive retrieval briefing", () => {
         turnRetrievalCoordinator: {
           coordinate: vi.fn(async () => ({
             applicableCommitments: [],
+            actionApplicableCommitments: [],
             pendingCorrections: [],
             affectiveTrajectory: [],
             retrieval,
@@ -1989,6 +1991,7 @@ describe("creator directive retrieval briefing", () => {
         turnRetrievalCoordinator: {
           coordinate: vi.fn(async () => ({
             applicableCommitments: [],
+            actionApplicableCommitments: [],
             pendingCorrections: [],
             affectiveTrajectory: [],
             retrieval,
@@ -3946,6 +3949,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       turnRetrievalCoordinator: {
         coordinate: vi.fn(async () => ({
           applicableCommitments: [],
+          actionApplicableCommitments: [],
           pendingCorrections: [],
           affectiveTrajectory: [],
           retrieval,
@@ -4296,6 +4300,7 @@ describe("runRetrievalPhase session re-entry continuity", () => {
       turnRetrievalCoordinator: {
         coordinate: vi.fn(async () => ({
           applicableCommitments: [],
+          actionApplicableCommitments: [],
           pendingCorrections: [],
           affectiveTrajectory: [],
           retrieval,
