@@ -2952,8 +2952,10 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
 
     expect(section).toContain("<reflection_posture>");
     expect(section).toContain("self-directed reflection");
-    // Non-coercive: silence is validated, posting is never instructed.
-    expect(section).toContain("Silence is a complete and ordinary outcome");
+    // Even-handed: acting and not-acting are equally ordinary; the posture neither
+    // instructs Sol to post nor frames silence as the proper default.
+    expect(section).toContain("Acting and not-acting are equally ordinary outcomes");
+    expect(section).toContain("neither performing action for its own sake, nor defaulting to silence");
     expect(section).toContain("tool.outbound.post only when reachable_threads");
     expect(section.toLowerCase()).not.toContain("you should post");
   });

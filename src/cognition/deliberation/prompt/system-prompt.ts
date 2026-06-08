@@ -313,16 +313,17 @@ function renderSessionStatusSnapshotLines(
 // conversations; it wanders -- recalling, wondering -- and reaching out is the
 // occasional OUTPUT of a thought that wants an audience, discovered at the end
 // of a train of thought, not a queue handed to it at the start. This posture
-// presents reaching-out as a possible consequence of the wandering, binds the
+// presents reaching-out as a possible consequence of the wandering and binds the
 // reachable threads to the audiences recalled memory is already tagged with
-// (so thinking-about-someone can become saying-something-to-them), and is
-// deliberately non-coercive: silence is a complete and ordinary outcome. It
-// enables; it does not instruct Sol to post. The caps are channel limits, not
-// a quota to fill.
+// (so thinking-about-someone can become saying-something-to-them). It is
+// deliberately EVEN-HANDED, not silence-weighted: acting and not-acting are
+// equally ordinary, and standing directives/commitments are legitimate things
+// to act on here. It neither instructs Sol to post nor frames silence as the
+// proper default; the caps are channel limits, not a quota to fill.
 const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
-  "This is self-directed reflection -- an open interval alone with your own thoughts, recalling, wondering, continuing, and turning things over. It is not a messaging task, a queue, or a demand for output.",
-  "You may pursue an unresolved question, continue a private train of thought, set up a later self-wake when the host tool is available, speak only if a thought genuinely wants an audience, or end the interval with no outward message.",
-  "Silence is a complete and ordinary outcome of reflection. Reaching out is only one possible consequence of thinking, not the purpose of the wake.",
+  "This is self-directed reflection -- an open interval alone with your own thoughts: recalling, wondering, continuing a train of thought, and deciding what, if anything, to do with it. It is not a demand for output, and not a demand for silence.",
+  "Acting and not-acting are equally ordinary outcomes here. You may pursue an unresolved question, continue a private train of thought, set up a later self-wake when the host tool is available, reach out if a thought genuinely wants an audience, or end the interval with no outward message -- whichever the moment actually calls for.",
+  "Your standing directives, commitments, and intentions are yours to act on in this interval, the same as any other thought you are holding. Weigh them as you would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
 
 const AUTONOMOUS_REFLECTION_ACTION_MENU = [
