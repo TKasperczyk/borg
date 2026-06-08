@@ -1068,7 +1068,7 @@ function buildBaseSystemPromptSections(
   };
   const discourseControlSection = {
     tag: "borg_discourse_control",
-    content: summarizeDiscourseControl(context.workingMemory),
+    content: summarizeDiscourseControl(context.workingMemory, context.turnOrigin),
   };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
@@ -1491,7 +1491,19 @@ function renderEpisodeDerivedProvenance(episodeIds: readonly string[]): string {
   })}`;
 }
 
-function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null {
+function summarizeDiscourseControl(
+  workingMemory: WorkingMemory,
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+): string | null {
+  // Discourse-control state (stop-until-substantive-content, closure-loop, closure-pressure)
+  // is conversational-turn machinery: it is armed and cleared only on user turns. A solitary
+  // autonomous self-reflection wake has no user exchange to govern, and -- because the clear
+  // path runs only on user turns -- a stop-state would otherwise persist forever in a session
+  // that no longer receives user turns. It must not bleed into self-reflection framing.
+  if (turnOrigin === "autonomous") {
+    return null;
+  }
+
   const stopState = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
   const closureLoop = workingMemory.discourse_state?.closure_loop ?? null;
   const lines: string[] = [];

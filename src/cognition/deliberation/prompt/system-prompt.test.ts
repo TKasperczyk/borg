@@ -2034,6 +2034,39 @@ describe("buildBaseSystemPrompt", () => {
     expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
   });
 
+  it("suppresses the discourse-control block on autonomous turns (conversational machinery does not bind self-reflection)", () => {
+    const workingMemoryWithStopState = {
+      ...makeContext().workingMemory,
+      discourse_state: {
+        stop_until_substantive_content: {
+          provenance: "finalizer_no_output" as const,
+          source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+          reason: "Finalizer called no_output.",
+          since_turn: 7,
+        },
+      },
+    };
+
+    // Same stuck stop-state, on a user turn: the block still renders (regression guard
+    // that the suppression is scoped to autonomous turns only).
+    const userPrompt = buildBaseSystemPrompt(
+      makeContext({ workingMemory: workingMemoryWithStopState }),
+      PROMPT_OPTIONS,
+    );
+    expect(userPrompt).toContain("<borg_discourse_control");
+
+    // On an autonomous self-reflection wake the entire block is omitted -- the
+    // stop-until-substantive-content / closure machinery is user-turn-only and would
+    // otherwise bias the wake toward silence (and never clear in a session that no
+    // longer receives user turns).
+    const autonomousPrompt = buildBaseSystemPrompt(
+      makeContext({ turnOrigin: "autonomous", workingMemory: workingMemoryWithStopState }),
+      PROMPT_OPTIONS,
+    );
+    expect(autonomousPrompt).not.toContain("<borg_discourse_control");
+    expect(autonomousPrompt).not.toContain("stop-until-substantive-content");
+  });
+
   it("renders closure-loop finalizer guidance in trusted discourse control", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

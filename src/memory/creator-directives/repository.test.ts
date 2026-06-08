@@ -844,6 +844,76 @@ describe("CreatorDirectiveRepository", () => {
     }
   });
 
+  it("surfaces recipient-keyed activation directives to private self-cognition but still gates them for a live audience", () => {
+    const { db, repository } = createRepository();
+    const creator = createEntityId();
+    const operator = createEntityId();
+    const outsider = createEntityId();
+
+    try {
+      // A standing operator-scoped self-directive whose activation is restricted to a
+      // recipient list (allow_list -> [operator]). Recall is global to Sol, so it MUST
+      // surface to Sol's own solitary reflection cognition; yet it must stay gated for a
+      // live audience who is not on the allow list (disclosure/activation is contextual).
+      const allowListActivation = repository.queue(
+        queueInput({
+          kind: "response_policy",
+          createdByEntityId: creator,
+          operationalDirective:
+            "During reflection I am encouraged to initiate when I have something to say.",
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "operator_only",
+          }),
+          activationPolicy: activationPolicy({
+            scope: "allow_list",
+            allowed_entity_ids: [operator],
+          }),
+        }),
+      );
+
+      // Solitary reflection wake: no audience, no participants. Before the activation
+      // self-cognition bypass this evaluated active:false / unauthorized_omit, so the
+      // directive was dropped from the briefing and Sol never recalled it.
+      const selfApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: null,
+          isPrivateSelfCognition: true,
+          participantEntityIds: [],
+          sessionRole: "participant",
+        }),
+      );
+      expect(selfApplicable[allowListActivation.id]).toMatchObject({
+        activation: {
+          active: true,
+          reason: "self_cognition_operator_only",
+        },
+        disclosure: {
+          render_mode: "content",
+          reason: "self_cognition_operator_only",
+        },
+        render_mode: "content",
+        reason: "self_cognition_operator_only",
+      });
+
+      // Live audience who is NOT on the allow list: the directive stays gated -- the
+      // recall bypass does not loosen audience-gated emission.
+      const outsiderApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: outsider,
+          isPrivateSelfCognition: false,
+          participantEntityIds: [outsider],
+          sessionRole: "participant",
+        }),
+      );
+      expect(outsiderApplicable[allowListActivation.id]?.activation).toEqual({
+        active: false,
+        reason: "unauthorized_omit",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps all_except activation inactive when an excluded recipient is present", () => {
     const { db, repository } = createRepository();
     const group = createEntityId();

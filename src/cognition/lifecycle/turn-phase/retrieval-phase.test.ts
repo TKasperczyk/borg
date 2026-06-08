@@ -526,6 +526,161 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
+  it("briefs an operator-scoped directive with recipient-keyed activation during a solitary reflection wake, but not to a live audience", async () => {
+    // Regression for the recall-gate bug: a standing operator promise stored with
+    // content_scope=operator_only (disclosure) AND activation_scope=allow_list (activation)
+    // was dropped from the briefing in a solitary self wake, because the activation axis
+    // lacked the self-cognition bypass the disclosure axis has -- so Sol never recalled its
+    // own directive during the reflection phase the directive governs. Recall is global to
+    // Sol; the directive must surface to self-cognition, yet stay gated for a live audience.
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const creatorId = createEntityId();
+    const externalAudienceId = createEntityId();
+    const options = minimalRetrievalPhaseOptions(repository);
+
+    try {
+      repository.queue({
+        kind: "response_policy",
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        authorizationStreamEntryIds: [createStreamEntryId()],
+        contentSourceStreamEntryIds: [createStreamEntryId()],
+        subjectKind: "borg_self",
+        operationalDirective:
+          "During reflection I am encouraged to initiate when I have something to say.",
+        disclosurePolicy: disclosurePolicy({
+          content_scope: "operator_only" as const,
+          subject_may_know: null,
+        }),
+        activationPolicy: {
+          scope: "allow_list",
+          allowed_entity_ids: [creatorId],
+          excluded_entity_ids: [],
+        },
+        priority: 8,
+        createdAt: 1_000,
+      });
+
+      const selfResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-self-allow-list-activation-directive",
+        turnInput: {
+          userMessage: "",
+          audience: "self",
+          origin: "autonomous",
+          autonomyTrigger: {
+            source_name: "scheduled_reflection",
+            source_type: "trigger",
+            event_id: "scheduled-reflection:2000",
+            sort_ts: 2_000,
+            payload: {
+              interval_ms: 1_000,
+            },
+          },
+        },
+        isSelfAudience: true,
+        isUserTurn: false,
+        cognitionInput: "Autonomous wake context: scheduled_reflection",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(selfResult.creatorDirectiveBriefing?.directives).toEqual([
+        expect.objectContaining({
+          renderMode: "content",
+          kind: "response_policy",
+          operationalDirective:
+            "During reflection I am encouraged to initiate when I have something to say.",
+        }),
+      ]);
+
+      const externalResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-external-allow-list-activation-directive",
+        turnInput: {
+          userMessage: "Hi",
+          audience: "botarena",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Hi",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: externalAudienceId,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "participant",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(externalResult.creatorDirectiveBriefing).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("selects observed-event recall by topic and global salience with present participants as a boost", async () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
