@@ -17,13 +17,18 @@ import {
   emitTurnTokenTrace,
   toTraceJsonValue,
 } from "../tracing/tracer.js";
-import { traceLlmCallResponse, traceLlmCallStarted } from "../tracing/llm-call-trace.js";
+import {
+  summarizeToolResponseShape,
+  traceLlmCallResponse,
+  traceLlmCallStarted,
+} from "../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SessionId } from "../../util/ids.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
+import { mergeDeliberationUsage, usageFromCompleteResult } from "./usage.js";
 
 const turnPlanSchema = z.object({
   uncertainty: z
@@ -161,7 +166,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       ],
       onTextDelta,
     );
-    usage = aggregatePlannerUsage(usage, result.usage);
+    usage = mergeDeliberationUsage(usage, result.usage);
   }
 
   if (
@@ -173,7 +178,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       turnId: options.turnId,
       ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       attempts: 2,
-      lastResponseShape: summarizePlannerResponseShape(result.planner),
+      lastResponseShape: summarizeToolResponseShape(result.planner),
     });
   }
 
@@ -199,38 +204,6 @@ type PlannerAttemptResult = {
   extraction: ExtractTurnPlanResult;
   usage: DeliberationUsage;
 };
-
-function aggregatePlannerUsage(
-  current: DeliberationUsage,
-  next: DeliberationUsage,
-): DeliberationUsage {
-  const cacheCreation =
-    current.cache_creation_input_tokens === undefined &&
-    next.cache_creation_input_tokens === undefined
-      ? undefined
-      : (current.cache_creation_input_tokens ?? 0) + (next.cache_creation_input_tokens ?? 0);
-  const cacheRead =
-    current.cache_read_input_tokens === undefined && next.cache_read_input_tokens === undefined
-      ? undefined
-      : (current.cache_read_input_tokens ?? 0) + (next.cache_read_input_tokens ?? 0);
-  return {
-    input_tokens: current.input_tokens + next.input_tokens,
-    output_tokens: current.output_tokens + next.output_tokens,
-    stop_reason: next.stop_reason,
-    ...(cacheCreation === undefined ? {} : { cache_creation_input_tokens: cacheCreation }),
-    ...(cacheRead === undefined ? {} : { cache_read_input_tokens: cacheRead }),
-  };
-}
-
-function summarizePlannerResponseShape(planner: Awaited<ReturnType<LLMClient["complete"]>>) {
-  return {
-    textLength: planner.text.length,
-    toolUseBlocks: planner.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
 
 async function callPlannerAttempt(
   options: RunS2PlannerOptions,
@@ -294,7 +267,7 @@ async function callPlannerAttempt(
       sessionId: options.sessionId,
       label: "s2_planner",
       response: planner,
-      responseShape: summarizePlannerResponseShape(planner),
+      responseShape: summarizeToolResponseShape(planner),
       extra:
         options.tracer.includePayloads === true
           ? {
@@ -316,17 +289,7 @@ async function callPlannerAttempt(
   return {
     planner,
     extraction,
-    usage: {
-      input_tokens: planner.input_tokens,
-      output_tokens: planner.output_tokens,
-      stop_reason: planner.stop_reason,
-      ...(planner.cache_creation_input_tokens === undefined
-        ? {}
-        : { cache_creation_input_tokens: planner.cache_creation_input_tokens }),
-      ...(planner.cache_read_input_tokens === undefined
-        ? {}
-        : { cache_read_input_tokens: planner.cache_read_input_tokens }),
-    },
+    usage: usageFromCompleteResult(planner),
   };
 }
 

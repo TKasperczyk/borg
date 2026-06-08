@@ -18,7 +18,6 @@ import {
   effectiveCommitmentEnforcementClass,
   normalizeDirectiveFamily,
 } from "../../memory/commitments/index.js";
-import type { JsonValue } from "../../util/json-value.js";
 import {
   entityIdHelpers,
   streamEntryIdHelpers,
@@ -41,6 +40,7 @@ import {
 } from "../../memory/common/relationship-claims.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -532,16 +532,6 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
   ];
 }
 
-function summarizeCorrectivePreferenceResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 export class CorrectivePreferenceExtractor {
   constructor(private readonly options: CorrectivePreferenceExtractorOptions = {}) {}
 
@@ -626,7 +616,7 @@ export class CorrectivePreferenceExtractor {
       sessionId: this.options.sessionId,
       label: "corrective_preference_extractor",
       response,
-      responseShape: summarizeCorrectivePreferenceResponseShape(response),
+      responseShape: summarizeToolResponseShape(response),
     });
 
     try {

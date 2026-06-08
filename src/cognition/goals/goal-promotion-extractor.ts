@@ -9,7 +9,6 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
-import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
@@ -17,6 +16,7 @@ import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -520,16 +520,6 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
   ];
 }
 
-function summarizeGoalPromotionResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 function degradedReasonForParseError(error: unknown): GoalPromotionExtractorDegradedReason {
   if (error instanceof MissingGoalPromotionToolCallError) {
     return "missing_tool_call";
@@ -642,7 +632,7 @@ export class GoalPromotionExtractor {
         sessionId: this.options.sessionId,
         label: "goal_promotion_extractor",
         response,
-        responseShape: summarizeGoalPromotionResponseShape(response),
+        responseShape: summarizeToolResponseShape(response),
       });
 
       return response;

@@ -9,12 +9,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isNodeError } from "./guards.js";
 
 const DIRECTORY_FSYNC_UNSUPPORTED = new Set(["EBADF", "EINVAL", "ENOTSUP"]);
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
-  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
-}
 
 function syncDirectory(path: string): void {
   let directoryFd: number | undefined;

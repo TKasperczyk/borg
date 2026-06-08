@@ -1,6 +1,4 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -10,6 +8,7 @@ import type { Clock } from "../util/clock.js";
 import { SystemClock } from "../util/clock.js";
 import { AuthError } from "../util/errors.js";
 import { isPlainRecord } from "../util/guards.js";
+import { expandPath } from "../util/path.js";
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
@@ -45,18 +44,6 @@ export type GetFreshCredentialsOptions = ClaudeOAuthOptions & {
   clock?: Clock;
   forceRefresh?: boolean;
 };
-
-function expandPath(pathLike: string): string {
-  if (pathLike === "~") {
-    return homedir();
-  }
-
-  if (pathLike.startsWith("~/")) {
-    return join(homedir(), pathLike.slice(2));
-  }
-
-  return isAbsolute(pathLike) ? pathLike : resolve(pathLike);
-}
 
 function resolveCredentialsPath(options: ClaudeOAuthOptions = {}): string {
   const env = options.env ?? process.env;

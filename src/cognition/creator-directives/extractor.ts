@@ -27,13 +27,13 @@ import {
 } from "../../memory/creator-directives/index.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
-import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { renderParticipantRoster, type ParticipantRoster } from "../perception/index.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { CREATOR_DIRECTIVE_SYSTEM_PROMPT } from "../prompts/creator-directive.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -313,16 +313,6 @@ function buildCreatorDirectiveMessages(input: ExtractCreatorDirectivesInput): LL
   ];
 }
 
-function summarizeCreatorDirectiveResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 export class CreatorDirectiveExtractor {
   constructor(private readonly options: CreatorDirectiveExtractorOptions = {}) {}
 
@@ -393,7 +383,7 @@ export class CreatorDirectiveExtractor {
       sessionId: this.options.sessionId,
       label: "creator_directive_extractor",
       response,
-      responseShape: summarizeCreatorDirectiveResponseShape(response),
+      responseShape: summarizeToolResponseShape(response),
     });
 
     try {

@@ -8,6 +8,7 @@ import {
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
+import { DisjointSet } from "../../util/disjoint-set.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../disclosure-labels.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -194,32 +195,6 @@ export function actionActorDisplay(
   return entityRepository?.get(actor)?.canonical_name ?? "participant";
 }
 
-function findParent(parents: Map<string, string>, id: string): string {
-  const parent = parents.get(id);
-
-  if (parent === undefined || parent === id) {
-    parents.set(id, id);
-    return id;
-  }
-
-  const root = findParent(parents, parent);
-  parents.set(id, root);
-  return root;
-}
-
-function unionParents(parents: Map<string, string>, leftId: string, rightId: string): void {
-  const leftRoot = findParent(parents, leftId);
-  const rightRoot = findParent(parents, rightId);
-
-  if (leftRoot === rightRoot) {
-    return;
-  }
-
-  const root = leftRoot < rightRoot ? leftRoot : rightRoot;
-  const child = root === leftRoot ? rightRoot : leftRoot;
-  parents.set(child, root);
-}
-
 function actionTimestampForState(action: ActionRecord): number {
   const timestampField: ActionStateTimestampField =
     ACTION_STATE_METADATA[action.state].timestamp_field;
@@ -280,11 +255,15 @@ export async function buildActionThreads(input: {
   resolver: ScopeResolver;
   similarityThreshold: number;
 }): Promise<ActionThread[]> {
-  const parents = new Map<string, string>();
+  // Exact lexicographic (`<`) tie-break: union-by-min root, matching the prior
+  // hand-rolled union-find (localeCompare could reorder for non-ActionId strings).
+  const parents = new DisjointSet<string>((leftRoot, rightRoot) =>
+    leftRoot < rightRoot ? -1 : leftRoot > rightRoot ? 1 : 0,
+  );
   const actionsById = new Map(input.records.map((record) => [record.id, record]));
 
   for (const record of input.records) {
-    parents.set(record.id, record.id);
+    parents.add(record.id);
   }
 
   const pairs =
@@ -302,13 +281,13 @@ export async function buildActionThreads(input: {
       continue;
     }
 
-    unionParents(parents, records[0].id, records[1].id);
+    parents.union(records[0].id, records[1].id);
   }
 
   const groups = new Map<string, ActionRecord[]>();
 
   for (const record of input.records) {
-    const root = findParent(parents, record.id);
+    const root = parents.find(record.id);
     groups.set(root, [...(groups.get(root) ?? []), record]);
   }
 

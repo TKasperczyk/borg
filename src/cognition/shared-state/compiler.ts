@@ -38,7 +38,6 @@ import {
 } from "./types.js";
 import {
   parseResponse,
-  summarizeSharedStateArtifactResponseShape,
   traceAddRejectedMissingNewKeyReason,
   traceAddRejectedCapExceeded,
   traceAddRejectedNearDuplicateStateKey,
@@ -53,6 +52,7 @@ import {
   traceReconciliationCompleted,
 } from "./compiler-io.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -756,7 +756,7 @@ export async function compileSharedStateArtifact(
     sessionId: input.sessionId,
     label: "decision_artifact_compiler",
     response,
-    responseShape: summarizeSharedStateArtifactResponseShape(response),
+    responseShape: summarizeToolResponseShape(response),
   });
 
   let parsed: EmitSharedStatePatch | undefined;
@@ -851,7 +851,7 @@ export async function compileSharedStateArtifact(
         sessionId: input.sessionId,
         label: "decision_artifact_compiler",
         response: repairResponse,
-        responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),
+        responseShape: summarizeToolResponseShape(repairResponse),
       });
 
       try {
@@ -1045,7 +1045,7 @@ export async function compileSharedStateArtifact(
       sessionId: input.sessionId,
       label: "decision_artifact_compiler",
       response: repairResponse,
-      responseShape: summarizeSharedStateArtifactResponseShape(repairResponse),
+      responseShape: summarizeToolResponseShape(repairResponse),
     });
 
     let repairedParsed: EmitSharedStatePatch;

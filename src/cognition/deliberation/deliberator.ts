@@ -67,6 +67,7 @@ import type {
 import type { SessionParticipationPolicy } from "../../sessions/index.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import { exposesOutboundTool, type TurnOrigin } from "../types.js";
+import { mergeDeliberationUsage } from "./usage.js";
 
 export type {
   DeliberationContext,
@@ -76,40 +77,6 @@ export type {
   SelfSnapshot,
   TurnStakes,
 } from "./types.js";
-
-function sumOptional(current: number | undefined, next: number | undefined): number | undefined {
-  if (current === undefined && next === undefined) {
-    return undefined;
-  }
-  return (current ?? 0) + (next ?? 0);
-}
-
-function aggregateUsage(
-  current: DeliberationUsage,
-  next: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    stop_reason: string | null;
-  },
-): DeliberationUsage {
-  // Cache token fields are kept separate from input_tokens (per
-  // observability standard: cache_read is ~0.1x input rate and doesn't
-  // count against rate limits, summing them inflates totals by 100x+).
-  const cacheCreation = sumOptional(
-    current.cache_creation_input_tokens,
-    next.cache_creation_input_tokens,
-  );
-  const cacheRead = sumOptional(current.cache_read_input_tokens, next.cache_read_input_tokens);
-  return {
-    input_tokens: current.input_tokens + next.input_tokens,
-    output_tokens: current.output_tokens + next.output_tokens,
-    stop_reason: next.stop_reason,
-    ...(cacheCreation === undefined ? {} : { cache_creation_input_tokens: cacheCreation }),
-    ...(cacheRead === undefined ? {} : { cache_read_input_tokens: cacheRead }),
-  };
-}
 
 function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): RetrievedEpisode[] {
   const seen = new Set<string>();
@@ -768,7 +735,7 @@ export class Deliberator {
         usage:
           responseForResult === response
             ? response.usage
-            : aggregateUsage(response.usage, responseForResult.usage),
+            : mergeDeliberationUsage(response.usage, responseForResult.usage),
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
         referencedEpisodeIds: null,
@@ -816,7 +783,7 @@ export class Deliberator {
           emitted: regeneratedFinalized.emitted,
           emission: regeneratedFinalized.emission,
           tool_calls: regeneratedResponse.toolCallsMade,
-          usage: aggregateUsage(result.usage, regeneratedResponse.usage),
+          usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
         };
       });
     }
@@ -999,9 +966,9 @@ export class Deliberator {
         }),
     });
     const finalResponseForResult = finalizerRetry.result;
-    usage = aggregateUsage(usage, finalResponse.usage);
+    usage = mergeDeliberationUsage(usage, finalResponse.usage);
     if (finalResponseForResult !== finalResponse) {
-      usage = aggregateUsage(usage, finalResponseForResult.usage);
+      usage = mergeDeliberationUsage(usage, finalResponseForResult.usage);
     }
     finalized = buildFinalizerEmission(finalResponseForResult, finalizerStructuralFlags, {
       ...(finalizerRetry.invalidToolAfterRegenerate === undefined
@@ -1073,7 +1040,7 @@ export class Deliberator {
         emitted: regeneratedFinalized.emitted,
         emission: regeneratedFinalized.emission,
         tool_calls: regeneratedResponse.toolCallsMade,
-        usage: aggregateUsage(result.usage, regeneratedResponse.usage),
+        usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
       };
     });
   }

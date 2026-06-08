@@ -111,6 +111,10 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
+function backoffKey(event: DueEvent): string {
+  return `${event.sourceType}:${event.sourceName}:${event.id}`;
+}
+
 export class AutonomyScheduler {
   private readonly clock: Clock;
   private readonly sessionId: SessionId;
@@ -191,9 +195,7 @@ export class AutonomyScheduler {
 
     try {
       const scannedDueEvents = await this.scanDueEvents();
-      const dueEventKeys = new Set(
-        scannedDueEvents.map(({ event }) => `${event.sourceType}:${event.sourceName}:${event.id}`),
-      );
+      const dueEventKeys = new Set(scannedDueEvents.map(({ event }) => backoffKey(event)));
 
       for (const key of this.retryBackoff.keys()) {
         if (!dueEventKeys.has(key)) {
@@ -202,9 +204,7 @@ export class AutonomyScheduler {
       }
 
       const dueEvents = scannedDueEvents.filter(({ event }) => {
-        const backoff = this.retryBackoff.get(
-          `${event.sourceType}:${event.sourceName}:${event.id}`,
-        );
+        const backoff = this.retryBackoff.get(backoffKey(event));
         return backoff === undefined || backoff.nextEligibleTs <= nowMs;
       });
       const writer = this.options.createStreamWriter(this.sessionId);
@@ -350,9 +350,7 @@ export class AutonomyScheduler {
                 // and scan() reconciles row state as a backstop, so a failed
                 // onFired must not demote a successful fire to an error.
               }
-              this.retryBackoff.delete(
-                `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`,
-              );
+              this.retryBackoff.delete(backoffKey(dueEvent));
               firedEvents += 1;
               eventResults.push({
                 id: dueEvent.id,
@@ -674,14 +672,14 @@ export class AutonomyScheduler {
   }
 
   private scheduleRetryBackoff(dueEvent: DueEvent): void {
-    const backoffKey = `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`;
-    const previousBackoff = this.retryBackoff.get(backoffKey);
+    const key = backoffKey(dueEvent);
+    const previousBackoff = this.retryBackoff.get(key);
     const delayMs =
       previousBackoff === undefined
         ? INITIAL_RETRY_BACKOFF_MS
         : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
 
-    this.retryBackoff.set(backoffKey, {
+    this.retryBackoff.set(key, {
       delayMs,
       nextEligibleTs: this.clock.now() + delayMs,
     });

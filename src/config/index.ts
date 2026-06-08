@@ -1,5 +1,4 @@
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
@@ -11,22 +10,11 @@ import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
-import { isPlainRecord } from "../util/guards.js";
+import { isNodeError, isPlainRecord } from "../util/guards.js";
+import { expandPath } from "../util/path.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
 export const DEFAULT_ACTIVE_PARTICIPANT_LIMIT = 8;
-
-export function expandPath(pathLike: string): string {
-  if (pathLike === "~") {
-    return homedir();
-  }
-
-  if (pathLike.startsWith("~/")) {
-    return join(homedir(), pathLike.slice(2));
-  }
-
-  return isAbsolute(pathLike) ? pathLike : resolve(pathLike);
-}
 
 const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
 export const postGenerationGuardModeSchema = z.enum(["enforce", "shadow"]);
@@ -787,10 +775,6 @@ function readOptionalEnvAnthropicAuthMode(
   }
 
   return parsed.data;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
-  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
 
 function mergeConfigOverrides(base: ConfigOverrides, override: ConfigOverrides): ConfigOverrides {

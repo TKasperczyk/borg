@@ -4,7 +4,6 @@ import type {
   SharedStateOperation,
 } from "../../memory/decision-artifacts/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import type { JsonValue } from "../../util/json-value.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
 import { similarStateKeyClusterCount } from "./state-key.js";
@@ -54,16 +53,6 @@ export function parseResponse(result: LLMCompleteResult): EmitSharedStatePatch {
   }
 
   return parsed.data;
-}
-
-export function summarizeSharedStateArtifactResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
 }
 
 export function traceCompileCompleted(options: {

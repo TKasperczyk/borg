@@ -1,5 +1,6 @@
 import { cloneLedgerWithSections } from "./ledger-copy.js";
 import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSectionId } from "./types.js";
+import { DisjointSet } from "../../util/disjoint-set.js";
 
 const CANONICAL_SECTION_PRIORITY = {
   current_user_message: 110,
@@ -117,26 +118,6 @@ function evidenceHandles(
   return handles;
 }
 
-function findParent(parents: Map<number, number>, id: number): number {
-  let parent = parents.get(id) ?? id;
-
-  while (parent !== (parents.get(parent) ?? parent)) {
-    parent = parents.get(parent) ?? parent;
-  }
-
-  parents.set(id, parent);
-  return parent;
-}
-
-function unionParents(parents: Map<number, number>, left: number, right: number): void {
-  const leftRoot = findParent(parents, left);
-  const rightRoot = findParent(parents, right);
-
-  if (leftRoot !== rightRoot) {
-    parents.set(rightRoot, leftRoot);
-  }
-}
-
 type LedgerEntryRef = {
   sectionId: EvidenceLedgerSectionId;
   sectionIndex: number;
@@ -205,7 +186,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
   dedupedEntryCount: number;
 } {
   const refs: LedgerEntryRef[] = [];
-  const parents = new Map<number, number>();
+  const parents = new DisjointSet<number>(() => -1);
   const handleOwners = new Map<string, number>();
 
   for (const [sectionIndex, section] of ledger.sections.entries()) {
@@ -219,7 +200,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
         entry,
         handles,
       });
-      parents.set(refIndex, refIndex);
+      parents.add(refIndex);
 
       for (const handle of handles) {
         const owner = handleOwners.get(handle);
@@ -227,7 +208,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
           handleOwners.set(handle, refIndex);
           continue;
         }
-        unionParents(parents, owner, refIndex);
+        parents.union(owner, refIndex);
       }
     }
   }
@@ -235,7 +216,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
   const groups = new Map<number, LedgerEntryRef[]>();
 
   for (const [index, ref] of refs.entries()) {
-    const root = findParent(parents, index);
+    const root = parents.find(index);
     groups.set(root, [...(groups.get(root) ?? []), ref]);
   }
 

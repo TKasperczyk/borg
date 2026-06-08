@@ -26,6 +26,16 @@ export function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonV
   }));
 }
 
+export function summarizeToolResponseShape(response: LLMCompleteResult): JsonValue {
+  return {
+    textLength: response.text.length,
+    toolUseBlocks: response.tool_calls.map((call) => ({
+      id: call.id,
+      name: call.name,
+    })),
+  };
+}
+
 export function traceLlmCallStarted(options: {
   tracer?: TurnTracer;
   turnId?: string;

@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 
 import { sleep } from "../util/clock.js";
 import { StreamError } from "../util/errors.js";
+import { isNodeError } from "../util/guards.js";
 import { serializeJsonValue } from "../util/json-value.js";
 
 type FileLockOptions = {
@@ -18,10 +19,6 @@ type FileLockMetadata = {
 };
 
 const LOCAL_HOSTNAME = hostname();
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
-  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
-}
 
 function isFileLockMetadata(value: unknown): value is FileLockMetadata {
   return (

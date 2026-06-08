@@ -15,6 +15,7 @@ import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -669,16 +670,6 @@ function parseClosureLoopResponse(
   };
 }
 
-function summarizeClosureLoopResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 export function assessClosureLoopClassification(input: {
   classification: ClosureLoopClassification;
   suppliedMessages: readonly ClosureLoopMessageForClassification[];
@@ -886,7 +877,7 @@ export class ClosureLoopClassifier {
       sessionId: this.options.sessionId,
       label: "closure_loop_classifier",
       response,
-      responseShape: summarizeClosureLoopResponseShape(response),
+      responseShape: summarizeToolResponseShape(response),
     });
 
     try {

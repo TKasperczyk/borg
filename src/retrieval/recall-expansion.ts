@@ -9,13 +9,13 @@ import {
   toToolInputSchema,
 } from "../llm/index.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
 } from "../cognition/tracing/llm-call-trace.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
-import type { JsonValue } from "../util/json-value.js";
 
 const recallExpansionFacetKindSchema = z.enum([
   "topic",
@@ -130,7 +130,7 @@ export async function expandRecall(
     sessionId: options.sessionId,
     label: "recall_expansion",
     response,
-    responseShape: summarizeRecallExpansionResponseShape(response),
+    responseShape: summarizeToolResponseShape(response),
   });
 
   const toolCall = response.tool_calls.find(isRecallExpansionToolCall);
@@ -177,14 +177,4 @@ export async function expandRecall(
 
 function isRecallExpansionToolCall(call: LLMToolCall): boolean {
   return call.name === RECALL_EXPANSION_TOOL_NAME;
-}
-
-function summarizeRecallExpansionResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
 }

@@ -20,6 +20,7 @@ import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -415,16 +416,6 @@ function parseResponse(
   return classification;
 }
 
-function summarizeFrameAnomalyResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 export class FrameAnomalyClassifier {
   constructor(private readonly options: FrameAnomalyClassifierOptions = {}) {}
 
@@ -499,7 +490,7 @@ export class FrameAnomalyClassifier {
       sessionId: this.options.sessionId,
       label: "frame_anomaly_classifier",
       response,
-      responseShape: summarizeFrameAnomalyResponseShape(response),
+      responseShape: summarizeToolResponseShape(response),
     });
 
     try {

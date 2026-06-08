@@ -26,7 +26,6 @@ import {
 import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import type { JsonValue } from "../../util/json-value.js";
 import {
   createActionId,
   type ActionId,
@@ -45,6 +44,7 @@ import {
 } from "../disclosure-labels.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
+  summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
@@ -558,16 +558,6 @@ function toActionRecord(input: {
   };
 }
 
-function summarizeActionStateResponseShape(response: LLMCompleteResult): JsonValue {
-  return {
-    textLength: response.text.length,
-    toolUseBlocks: response.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
-  };
-}
-
 function zeroActionStateCounts(): Record<ActionState, number> {
   return Object.fromEntries(ACTION_STATES.map((state) => [state, 0])) as Record<
     ActionState,
@@ -843,7 +833,7 @@ export class ActionStateExtractor {
       sessionId,
       label: "action_state_extractor",
       response,
-      responseShape: summarizeActionStateResponseShape(response),
+      responseShape: summarizeToolResponseShape(response),
     });
 
     let parsed: ActionStateParseResult;

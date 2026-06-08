@@ -41,9 +41,11 @@ import {
   type CreatorDirectiveReconciliationSubkind,
   type CreatorDirectiveScopeEquivalenceSnapshot,
 } from "../../memory/semantic/index.js";
+import { sortStrings } from "../../util/collections.js";
 import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
 import { positiveIntegerValue } from "../../util/parse.js";
+import { parseErrorMessage } from "../../util/zod-errors.js";
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
 import { offlineProcessError } from "../process-errors.js";
@@ -236,10 +238,6 @@ type ApplyRevocationOutcome =
       change: OfflineChange;
     };
 
-function sortStrings<T extends string>(values: readonly T[]): T[] {
-  return [...values].sort((left, right) => left.localeCompare(right));
-}
-
 function sortDirectiveIds(values: readonly CreatorDirectiveId[]): CreatorDirectiveId[] {
   return sortStrings(values);
 }
@@ -429,16 +427,6 @@ function buildPromptPayload(input: {
     null,
     2,
   );
-}
-
-function parseErrorMessage(error: unknown): string {
-  if (error instanceof z.ZodError) {
-    return error.issues
-      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-      .join("; ");
-  }
-
-  return error instanceof Error ? error.message : String(error);
 }
 
 function invalidReconciliationResponse(message: string, cause?: unknown): LLMError {
