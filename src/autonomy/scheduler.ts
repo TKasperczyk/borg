@@ -28,6 +28,12 @@ type RetryBackoffState = {
 const INITIAL_RETRY_BACKOFF_MS = 30_000;
 const MAX_RETRY_BACKOFF_MS = 3_600_000;
 const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
+// Autonomy wake PREPARATION runs a context-gathering tool (e.g. episodic
+// search = embed + LanceDB vector search) before a background wake. It is not
+// latency-sensitive, and the dispatcher's 5s default is too tight for that
+// search under load, which made prep fail and the trigger retry-loop. Live/
+// reactive tool calls keep the 5s default; only prep gets this longer bound.
+const AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -525,6 +531,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
+          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
         });
 
         if (!result.ok) {
@@ -562,6 +569,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
+          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
         });
 
         if (!result.ok) {
@@ -595,6 +603,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
+          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
         });
 
         if (!result.ok) {
