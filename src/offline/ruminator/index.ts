@@ -19,7 +19,11 @@ import {
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
-import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
+import {
+  SELF_RECALL_SCOPE,
+  computeRetrievalConfidence,
+  type RetrievedEpisode,
+} from "../../retrieval/index.js";
 import {
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
@@ -174,10 +178,10 @@ function buildResolutionPrompt(question: OpenQuestion, evidence: string): string
   };
 
   return [
-    "Resolve the open question using only the evidence below.",
-    `Emit your result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
-    "Only include a growth_marker if the evidence clearly shows new understanding.",
-    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to resolution_note and any growth_marker text fields.`,
+    "I turn over this open question using only the evidence below.",
+    `I emit my result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
+    "I only include a growth_marker if the evidence clearly shows new understanding.",
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to resolution_note and any growth_marker text fields.`,
     "Open question:",
     JSON.stringify(questionRow),
     "Evidence:",
@@ -479,7 +483,7 @@ async function searchResolutionEvidence(
     ...baseOptions,
     limit: Math.max(baseOptions.limit * 5, 20),
     recallContext: {
-      reader: "sol",
+      reader: SELF_RECALL_SCOPE,
       currentSessionId: DEFAULT_SESSION_ID,
       currentAudienceEntityId: question.audience_entity_id,
       currentParticipantEntityIds:
@@ -609,7 +613,7 @@ async function planResolution(
   const response = parseResolutionResponse(
     await llmClient.complete({
       model: ctx.config.anthropic.models.background,
-      system: "You update Borg's open questions conservatively and only from grounded evidence.",
+      system: "I update my open questions conservatively and only from grounded evidence.",
       messages: [
         {
           role: "user",

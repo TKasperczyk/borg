@@ -3,7 +3,6 @@ import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordi
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import { Deliberator } from "../../deliberation/deliberator.js";
 import type { GenerationGate } from "../../generation/generation-gate.js";
-import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "../../generation/canonical-stop-phrase.js";
 import {
   replyTargetEntityId,
   type GenerationSuppressionReason,
@@ -25,7 +24,6 @@ import type { EntityId, SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { CognitiveMode } from "../../types.js";
 import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
 import type { ActivityEventStatus } from "../../../memory/activity/index.js";
-import { valueAppearsIn } from "../../../util/text-presence.js";
 import { CognitionError } from "../../../util/errors.js";
 import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
 import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
@@ -289,13 +287,6 @@ function stopStateApplicationForMessage(input: {
     return {
       provenance: "finalizer_emission_metadata",
       reason: input.emission.discourse_control.reason,
-    };
-  }
-
-  if (valueAppearsIn(input.response, CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE)) {
-    return {
-      provenance: "canonical_stop_phrase",
-      reason: "Borg used the canonical stop-until-substantive-content phrase.",
     };
   }
 

@@ -35,7 +35,7 @@ export const ENTITY_FALLBACK_TOOL = {
 } satisfies LLMToolDefinition;
 
 const ENTITY_LLM_SYSTEM_PROMPT = [
-  "Extract specific named entities from the user's text. Examples of valid entities: a person's name (Otto, Tom Kasperczyk), a place name (Sevilla, Granada), a product or codename (Helios, JetStream, Postgres), an organization (Anthropic, OpenAI), a @-handle (@yourname), a project's working title.",
+  "Extract specific named entities from the user's text. Examples of valid entities: a person's canonical name or stable handle, a place name (Sevilla, Granada), a product or codename (Helios, JetStream, Postgres), an organization (Anthropic, OpenAI), a @-handle (@yourname), a project's working title.",
   "",
   "Do NOT extract any of the following:",
   "- Common words, even when capitalized at sentence start (Good, If, The, And, But)",

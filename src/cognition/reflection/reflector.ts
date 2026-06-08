@@ -197,17 +197,17 @@ const strictReflectionOutputSchema = z.object({
         grounded: z
           .boolean()
           .describe(
-            "True only when evidence is grounded in an actual user signal about the pending attempt, not assistant self-narration.",
+            "True only when evidence is grounded in an actual user signal about the pending attempt, not my self-narration.",
           ),
         skill_actually_applied: z
           .boolean()
           .describe(
-            "True only if the prior assistant turn's response actually executed the attempt's approach_summary. False if the model ignored or substituted a different approach. Drives whether the skill posterior is credited or blamed.",
+            "True only if my prior turn's response actually executed the attempt's approach_summary. False if I ignored or substituted a different approach. Drives whether the skill posterior is credited or blamed.",
           ),
       }),
     )
     .describe(
-      "Outcomes for prior pending_procedural_attempts. Judge success only from the user's follow-up signal, never from the assistant's wording. Use attempt_turn_counter to identify which pending attempt each outcome refers to. Omit attempts that the current turn does not provide evidence about.",
+      "Outcomes for my prior pending_procedural_attempts. I judge success only from the user's follow-up signal, never from my wording. I use attempt_turn_counter to identify which pending attempt each outcome refers to. I omit attempts that the current turn does not provide evidence about.",
     )
     .default([]),
   trait_demonstrations: z
@@ -238,14 +238,14 @@ const strictReflectionOutputSchema = z.object({
     .array(reflectionOpenQuestionSchema)
     .max(5)
     .describe(
-      `Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related episode ids present in the reflection input. For self-clause questions, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Preserve verbatim user-sourced questions exactly in the user's words and language; use source fields supplied for existing questions.`,
+      `Durable unresolved questions from my completed turn that I should remember in self-memory. I emit zero items unless the turn reveals a real question worth revisiting. I write the question in the user's language and attach only related episode ids present in the reflection input. For self-clause questions, I apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I preserve verbatim user-sourced questions exactly in the user's words and language; I use source fields supplied for existing questions.`,
     )
     .default([]),
   resolved_open_questions: z
     .array(resolvedOpenQuestionSchema)
     .max(5)
     .describe(
-      `Previously active open questions clearly answered by the completed turn. Use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence. Apply this voice guidance to resolution_note unless resolving a verbatim user-sourced question whose exact wording must be preserved: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
+      `Previously active open questions clearly answered by my completed turn. I use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence. I apply this voice guidance to resolution_note unless resolving a verbatim user-sourced question whose exact wording must be preserved: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
 });
@@ -255,7 +255,7 @@ type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, and resolved_open_questions only for active questions clearly answered by supplied evidence.",
+    "I emit structured post-turn reflection. I mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for my prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, and resolved_open_questions only for active questions clearly answered by supplied evidence.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
 

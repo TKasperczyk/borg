@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg, ManualClock } from "../../index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
-import { CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE } from "./canonical-stop-phrase.js";
 
 const tempDirs: string[] = [];
 
@@ -285,39 +284,7 @@ describe("stop primitive v8 regressions", () => {
     }
   });
 
-  it("uses only Borg's canonical stop phrase as a deterministic backstop", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        textResponse(CANONICAL_STOP_UNTIL_SUBSTANTIVE_CONTENT_PHRASE),
-        reflectionResponse(),
-        gateResponse({
-          decision: "suppress",
-          substantive: false,
-          reason: "The user sent a minimal probe after the canonical stop phrase.",
-        }),
-      ],
-    });
-    const borg = await openRegressionBorg(llm);
-
-    try {
-      const commitment = await borg.turn({
-        userMessage: "Name the loop once if needed.",
-      });
-      const suppressed = await borg.turn({
-        userMessage: "No.",
-      });
-
-      expect(commitment.emitted).toBe(true);
-      expect(suppressed.emitted).toBe(false);
-      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
-        provenance: "canonical_stop_phrase",
-      });
-    } finally {
-      await borg.close();
-    }
-  });
-
-  it("does not treat non-canonical stop-ish phrasing as a backstop", async () => {
+  it("does not arm a stop-state from closure-ish prose without the structured discourse_control signal", async () => {
     const llm = new FakeLLMClient({
       responses: [textResponse("I think I'll wrap things up here for now."), reflectionResponse()],
     });

@@ -708,10 +708,10 @@ describe("consolidator process", () => {
     expect(llm.requests).toHaveLength(1);
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     expect(prompt).toContain("disclosure_class=relationship_private");
-    expect(prompt).toContain("usable internally");
-    expect(prompt).toContain(`You are entity ${selfEntityId} (self);`);
+    expect(prompt).toContain("I can use this internally");
+    expect(prompt).toContain(`I am the self entity ${selfEntityId};`);
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
-    expect(prompt).toContain("Keep the title topic-neutral and scannable");
+    expect(prompt).toContain("I keep the title topic-neutral and scannable");
     expect(prompt).toContain(alice);
     expect(prompt).toContain(bob);
   });

@@ -58,6 +58,7 @@ import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodi
 import { retrievalMigrations } from "./migrations.js";
 import { RetrievalPipeline } from "./pipeline.js";
 import { RecallStateRepository } from "./recall-state.js";
+import { SELF_RECALL_SCOPE } from "./recall-context.js";
 import type { Episode } from "../memory/episodic/types.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
@@ -574,7 +575,7 @@ describe("retrieval pipeline", () => {
       limit: 5,
       audienceTerms: ["Bob"],
       recallContext: {
-        reader: "sol",
+        reader: SELF_RECALL_SCOPE,
         currentSessionId: DEFAULT_SESSION_ID,
         currentAudienceEntityId: bobEntityId,
         currentParticipantEntityIds: [bobEntityId],

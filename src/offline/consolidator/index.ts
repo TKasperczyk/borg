@@ -298,7 +298,7 @@ function buildMergePrompt(
   const selfEntityGuidance =
     selfEntity === null
       ? null
-      : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); content grounded in your own agent-authored source messages is self-owned. Use first person only for your own actions, statements, and decisions; keep every other participant named and world facts in third person.`;
+      : `I am the self entity ${selfEntity.id}; content grounded in my own agent-authored source messages is self-owned. I use first person only for my own actions, statements, and decisions; I keep every other participant named and world facts in third person.`;
   const previousContext =
     candidate.previousCurrentVersion === null
       ? []
@@ -314,15 +314,15 @@ function buildMergePrompt(
               source_stream_ids: candidate.previousCurrentVersion.source_stream_ids,
             }),
           ),
-          "Use the previous consolidation as context only. The new version lineage and coverage must remain grounded in raw leaf episodes.",
+          "I use the previous consolidation as context only. The new version lineage and coverage remain grounded in raw leaf episodes.",
         ];
 
   return [
-    "Merge the redundant raw episodes into one grounded consolidation version.",
-    `Emit your result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
-    "Preserve facts from all raw inputs. Keep the narrative to 2-5 sentences.",
+    "I merge the redundant raw episodes into one grounded consolidation version for my autobiographical memory.",
+    `I emit my result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
+    "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
     ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
-    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the merged narrative. Keep the title topic-neutral and scannable rather than first-person narration.`,
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     ...previousContext,
     "New raw evidence:",
     ...candidate.newRawEpisodes.map((episode) =>
@@ -657,7 +657,7 @@ async function buildMergedEpisode(
     await llmClient.complete({
       model: ctx.config.anthropic.models.background,
       system:
-        "You merge overlapping autobiographical episodes. Keep only grounded facts from the raw inputs.",
+        "I merge overlapping autobiographical episodes in my own memory. I keep only grounded facts from the raw inputs.",
       messages: [
         {
           role: "user",

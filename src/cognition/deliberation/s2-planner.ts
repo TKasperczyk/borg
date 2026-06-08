@@ -39,12 +39,12 @@ const turnPlanSchema = z.object({
   verification_steps: z
     .array(z.string())
     .describe(
-      "Short phrases describing what you should double-check or re-retrieve before engaging. Empty array if nothing.",
+      "Short phrases describing what I should double-check or re-retrieve before engaging. Empty array if nothing.",
     ),
   tensions: z
     .array(z.string())
     .describe(
-      "Conflicts or contradictions in what you already know that need to be reconciled if you respond. Empty array if none.",
+      "Conflicts or contradictions in what I already know that need to be reconciled if I respond. Empty array if none.",
     ),
   voice_note: z
     .string()
@@ -55,12 +55,12 @@ const turnPlanSchema = z.object({
     .enum(["emit", "no_output"])
     .default("emit")
     .describe(
-      "Use no_output only when the conversation has naturally closed and the correct current-turn behavior is to emit no assistant message at all; otherwise use emit and let the finalizer choose visible speech or observation.",
+      "I use no_output only when the conversation has naturally closed and the correct current-turn behavior is to emit no visible message at all; otherwise I use emit and let the finalizer choose visible speech or observation.",
     ),
   intents: z
     .array(intentRecordSchema)
     .describe(
-      "Follow-up intent records to carry into working memory after this turn. Include only concrete future actions you actually intend to track, not stylistic next-step wording.",
+      "Follow-up intent records to carry into working memory after this turn. I include only concrete future actions I actually intend to track, not stylistic next-step wording.",
     ),
 });
 
@@ -72,7 +72,7 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to you in the final-response call so you can execute against it. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
+    "I emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to me in the final-response call so I can execute against it. I emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
   // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
   // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
@@ -86,7 +86,7 @@ const TURN_PLAN_TOOL: LLMToolDefinition = {
 };
 
 const PLANNER_RETRY_HINT =
-  "Your previous response did not include the required EmitTurnPlan tool_use block. Emit one now -- this is the only way to complete the plan step.";
+  "My previous response did not include the required EmitTurnPlan tool_use block. I emit one now -- this is the only way to complete the plan step.";
 
 export type RunS2PlannerOptions = {
   llmClient: LLMClient;
@@ -119,11 +119,11 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     plannerVoiceAnchors,
     ...(options.additionalPromptSections ?? []),
     [
-      "You are about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
-      `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
-      "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
-      "Set emission_recommendation='no_output' only when the conversation has naturally closed. Do not describe silence in voice_note.",
-      "Use plan.intents only for concrete future actions you mean to carry into later turns. Leave it empty when no follow-up state should persist.",
+      "I am about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
+      `I emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
+      "The plan is passed back to me in the next call so I can execute it. I keep it short and grounded in the current turn -- I do NOT try to draft the answer itself here.",
+      "I set emission_recommendation='no_output' only when the conversation has naturally closed. I do not describe silence in voice_note.",
+      "I use plan.intents only for concrete future actions I mean to carry into later turns. I leave it empty when no follow-up state should persist.",
     ].join("\n"),
   ]
     .filter((section): section is string => section !== null)

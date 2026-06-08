@@ -103,7 +103,7 @@ export class SkillSelector {
           contextStats,
           sampledAlpha: sampledPosterior.alpha,
           sampledBeta: sampledPosterior.beta,
-          // DELIBERATE: skill selection is stochastic -- Thompson sampling over each skill's per-context Beta posterior, not a deterministic best-first sort. The posterior-variance draw makes Sol occasionally pick a less-proven skill so success estimates keep learning instead of locking onto an early winner. A mean/best-first sort would remove this exploration; it is kept on purpose (Tier-3 review). The separate exploreFraction runner-up-swap branch was dead and was removed.
+          // DELIBERATE: skill selection is stochastic -- Thompson sampling over each skill's per-context Beta posterior, not a deterministic best-first sort. The posterior-variance draw makes the being occasionally pick a less-proven skill so success estimates keep learning instead of locking onto an early winner. A mean/best-first sort would remove this exploration; it is kept on purpose (Tier-3 review). The separate exploreFraction runner-up-swap branch was dead and was removed.
           sampledValue: this.sampler(sampledPosterior.alpha, sampledPosterior.beta, this.rng),
         } satisfies SkillSelectionCandidate;
       })

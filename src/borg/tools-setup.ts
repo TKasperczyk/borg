@@ -11,6 +11,7 @@ import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
 import {
+  SELF_RECALL_SCOPE,
   resolveMemoryDisclosureLabelForEpisodeIds,
   type MemoryDisclosureLabel,
   type RetrievalPipeline,
@@ -93,7 +94,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
           const retrieved = await options.retrievalPipeline.recallEpisodesForCognition(query, {
             limit,
             recallContext: {
-              reader: "sol",
+              reader: SELF_RECALL_SCOPE,
               currentSessionId: context.sessionId,
               currentAudienceEntityId,
               currentParticipantEntityIds:

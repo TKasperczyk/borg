@@ -392,11 +392,11 @@ describe("cross-session recall_state integration", () => {
       });
       await ingestion!.ingest(sessionA, { minEntriesThreshold: 1 });
 
-      const stateAfterSessionA = recallStateRepository(deps).load("sol");
+      const stateAfterSessionA = recallStateRepository(deps).load("self");
       const sessionAHandle = stateAfterSessionA?.activeHandles.find(
         (item) => item.handle.source === "episode" && item.handle.episodeId === sessionAEpisodeId,
       );
-      expect(stateAfterSessionA?.scopeKey).toBe("sol");
+      expect(stateAfterSessionA?.scopeKey).toBe("self");
       expect(sessionAHandle?.firstSeenTurn).toBe(2);
 
       const episodeGetSpy = vi.spyOn(deps.episodicRepository, "get");
@@ -430,12 +430,12 @@ describe("cross-session recall_state integration", () => {
       expect(turn3Retrieval!.result.episodes.map((item) => item.episode.id)).toContain(
         sessionAEpisodeId,
       );
-      expect(recallLoadSpy).toHaveBeenCalledWith("sol");
+      expect(recallLoadSpy).toHaveBeenCalledWith("self");
       expect(recallLoadSpy).not.toHaveBeenCalledWith(sessionA);
       expect(recallLoadSpy).not.toHaveBeenCalledWith(sessionB);
 
       const rows = readRecallStateRows(deps);
-      expect(rows.map((row) => row.scope_key)).toEqual(["sol"]);
+      expect(rows.map((row) => row.scope_key)).toEqual(["self"]);
       const storedState = JSON.parse(rows[0]!.state_json) as {
         scopeKey: string;
         activeHandles: Array<{
@@ -449,7 +449,7 @@ describe("cross-session recall_state integration", () => {
       );
       const storedKeys = collectKeys(storedState);
 
-      expect(storedState.scopeKey).toBe("sol");
+      expect(storedState.scopeKey).toBe("self");
       expect(storedState.lastRefreshTurn).toBe(3);
       expect(storedHandle?.firstSeenTurn).toBe(2);
       expect(storedKeys).not.toEqual(

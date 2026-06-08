@@ -552,7 +552,7 @@ describe("session re-entry continuity integration", () => {
 
     expect(promptSection).toContain(`<${SESSION_REENTRY_CONTINUITY_TAG}>`);
     expect(promptSection).toContain(
-      "Surface the carryover as possible prior context and ask whether to continue that thread, reset it, or start a new one.",
+      "I surface the carryover as possible prior context and ask whether to continue that thread, reset it, or start a new one.",
     );
   });
 

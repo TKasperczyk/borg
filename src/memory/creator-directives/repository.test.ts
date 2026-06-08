@@ -852,8 +852,8 @@ describe("CreatorDirectiveRepository", () => {
 
     try {
       // A standing operator-scoped self-directive whose activation is restricted to a
-      // recipient list (allow_list -> [operator]). Recall is global to Sol, so it MUST
-      // surface to Sol's own solitary reflection cognition; yet it must stay gated for a
+      // recipient list (allow_list -> [operator]). Recall is global to the being, so it MUST
+      // surface to the being's own solitary reflection cognition; yet it must stay gated for a
       // live audience who is not on the allow list (disclosure/activation is contextual).
       const allowListActivation = repository.queue(
         queueInput({
@@ -873,7 +873,7 @@ describe("CreatorDirectiveRepository", () => {
 
       // Solitary reflection wake: no audience, no participants. Before the activation
       // self-cognition bypass this evaluated active:false / unauthorized_omit, so the
-      // directive was dropped from the briefing and Sol never recalled it.
+      // directive was dropped from the briefing and the being never recalled it.
       const selfApplicable = applicableById(
         repository.listApplicable({
           currentAudienceEntityId: null,

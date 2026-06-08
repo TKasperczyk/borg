@@ -37,7 +37,7 @@ export function createCommitmentsListTool(
 > {
   return {
     name: "tool.commitments.list",
-    description: "List active commitments from Sol's global memory with disclosure labels.",
+    description: "List active commitments from the being's global memory with disclosure labels.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: commitmentsListInputSchema,

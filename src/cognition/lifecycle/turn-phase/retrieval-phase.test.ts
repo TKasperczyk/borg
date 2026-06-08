@@ -531,9 +531,9 @@ describe("creator directive retrieval briefing", () => {
     // Regression for the recall-gate bug: a standing operator promise stored with
     // content_scope=operator_only (disclosure) AND activation_scope=allow_list (activation)
     // was dropped from the briefing in a solitary self wake, because the activation axis
-    // lacked the self-cognition bypass the disclosure axis has -- so Sol never recalled its
-    // own directive during the reflection phase the directive governs. Recall is global to
-    // Sol; the directive must surface to self-cognition, yet stay gated for a live audience.
+    // lacked the self-cognition bypass the disclosure axis has -- so the being never recalled
+    // its own directive during the reflection phase the directive governs. Recall is global to
+    // the being; the directive must surface to self-cognition, yet stay gated for a live audience.
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
     });

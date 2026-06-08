@@ -1387,7 +1387,7 @@ describe("reflector", () => {
       }),
     );
     expect(llm.requests[0]?.system).toContain(
-      "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
+      "I apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of one of my active goals, I mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
     );
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });

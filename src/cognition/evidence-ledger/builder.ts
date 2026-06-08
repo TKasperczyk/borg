@@ -361,7 +361,7 @@ function applyImageBudgetAnnotations(
       return [
         {
           ...item,
-          text: `${item.text}\nImage attachment unavailable this turn: ledger image budget. Use this perception text only as generated_perception_text evidence.`,
+          text: `${item.text}\nImage attachment unavailable this turn: ledger image budget. I use this perception text only as generated_perception_text evidence.`,
           imageUnavailableReason: "budget",
           citationType: "generated_perception_text" as const,
           imageAttachmentId: undefined,

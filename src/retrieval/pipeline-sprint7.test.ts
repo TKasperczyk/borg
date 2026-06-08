@@ -7,6 +7,7 @@ import {
   TestEmbeddingClient,
 } from "../offline/test-support.js";
 import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
+import { SELF_RECALL_SCOPE } from "./recall-context.js";
 
 function socialAttentionWeights() {
   return {
@@ -25,7 +26,7 @@ function socialAttentionWeights() {
 function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
   return {
     recallContext: {
-      reader: "sol" as const,
+      reader: SELF_RECALL_SCOPE,
       currentSessionId: DEFAULT_SESSION_ID,
       currentAudienceEntityId,
       currentParticipantEntityIds:

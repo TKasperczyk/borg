@@ -19,6 +19,7 @@ import {
   createSemanticNodeFixture,
   createWorkingMemoryFixture,
 } from "../offline/test-support.js";
+import { SELF_RECALL_SCOPE } from "../retrieval/index.js";
 
 function toolResponse(name: string, input: Record<string, unknown>) {
   return {
@@ -177,7 +178,7 @@ describe("cross-language cognition smoke", () => {
         cognitionInput: chineseTurn,
         isSelfAudience: true,
         recallContext: {
-          reader: "sol",
+          reader: SELF_RECALL_SCOPE,
           currentSessionId: DEFAULT_SESSION_ID,
           currentAudienceEntityId: null,
           currentParticipantEntityIds: [],

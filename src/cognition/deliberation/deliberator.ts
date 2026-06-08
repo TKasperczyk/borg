@@ -116,7 +116,7 @@ function renderForcedContradictionOpenQuestionsPrompt(context: DeliberationConte
     );
 
   return [
-    "Planner routing note: An unresolved contradiction is flagged in the open questions above. Either reconcile it via your plan, or explicitly name the conflict in the planning output rather than ignoring it.",
+    "Planner routing note: An unresolved contradiction is flagged in the open questions above. I either reconcile it in my plan, or explicitly name the conflict in the planning output rather than ignoring it.",
     renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
       {
         tag: "borg_unresolved_contradiction_open_questions",
@@ -270,15 +270,15 @@ function finalizerInvalidToolDiagnostic(
 
 function invalidToolRetryCause(decision: InvalidToolDecision): string {
   if (decision.toolName === "none") {
-    return "You emitted 0 terminal emission tool calls; emit exactly one.";
+    return "I emitted 0 terminal emission tool calls; I need to emit exactly one.";
   }
 
   if (decision.toolName === "multiple") {
-    return `You emitted multiple terminal emission tool calls; ${decision.reason}.`;
+    return `I emitted multiple terminal emission tool calls; ${decision.reason}.`;
   }
 
   if (decision.reason === "unknown terminal emission tool") {
-    return `You called an unknown emission tool ${decision.toolName}.`;
+    return `I called an unknown emission tool ${decision.toolName}.`;
   }
 
   return `${decision.toolName} input was invalid: ${decision.reason}`;
@@ -289,9 +289,9 @@ export function buildInvalidToolFinalizerRetryPromptSection(
   availableEmissionNames: readonly EmissionToolName[] = resolveAvailableEmissionNames(undefined),
 ): string {
   return [
-    "Your previous turn did not emit a valid final response.",
+    "My previous turn did not emit a valid final response.",
     invalidToolRetryCause(decision),
-    `Emit exactly one of ${availableEmissionNames.join(" / ")} with valid input.`,
+    `I need to emit exactly one of ${availableEmissionNames.join(" / ")} with valid input.`,
   ].join(" ");
 }
 
@@ -795,7 +795,7 @@ export class Deliberator {
     );
     const thinking = cognitionThinkingOption(this.options);
     const effort = cognitionEffortOption(this.options);
-    // Spread into every Sol-cognition LLM call (finalizer + s2 planner). Thinking
+    // Spread into every being-cognition LLM call (finalizer + s2 planner). Thinking
     // and effort travel together; those call sites use tool_choice:auto when
     // thinking is active, since the API rejects thinking under forced tool use.
     const reasoningCallOptions = {

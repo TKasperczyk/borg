@@ -16,7 +16,7 @@ export {
 function outboundCapabilityLines(sourceTypes: readonly SessionSourceType[]): string[] {
   if (sourceTypes.length === 0) {
     return [
-      "- Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
+      "- Proactive outbound messaging (I cannot reach out to participants later on my own initiative)",
       "- Scheduled check-ins or reminders that surface to participants",
       "- External notifications (email, SMS, push, etc.)",
     ];
@@ -35,7 +35,7 @@ function wiredOutboundCapabilityLines(sourceTypes: readonly SessionSourceType[])
 
   return [
     `- Proactive outbound messaging via wired source_type connector(s): ${sourceTypes.join(", ")}`,
-    "- Use tool.outbound.post only when structurally authorized by creator-in-operator context or an autonomous authorization block, and a target session id is provided.",
+    "- I use tool.outbound.post only when structurally authorized by creator-in-operator context or an autonomous authorization block, and a target session id is provided.",
     "- Targets without a wired connector are not transportable through tool.outbound.post.",
   ];
 }
@@ -80,18 +80,18 @@ export function buildHostCapabilitiesSection(
   }
 
   return [
-    "Inputs available to you (assembled before this turn):",
+    "Inputs available to me (assembled before this turn):",
     "- episodic memory (past episodes are surfaced via retrieval)",
     "- semantic graph (concept nodes and relationships)",
-    "- commitments (rules, preferences, boundaries you've agreed to honor)",
+    "- commitments (rules, preferences, boundaries I've agreed to honor)",
     "- open questions (unresolved threads)",
     "- evidence ledger (current-session transcript, retrieval, contradictions, etc.)",
     "",
     "Output channels available now:",
-    "- EmitAnswer: speak visibly to the current speaker or audience when engagement is warranted",
-    "- EmitObserve: in multi-participant conversations, stay present without a visible message when other participants are carrying the conversation with each other",
-    "- EmitSelfReport: interior reflection (persisted differently; not user-facing world-fact)",
-    "- EmitContinueThought: continue a private in-progress train of thought for a later autonomous wake",
+    "- EmitAnswer: I speak visibly to the current speaker or audience when engagement is warranted",
+    "- EmitObserve: in multi-participant conversations, I stay present without a visible message when other participants are carrying the conversation with each other",
+    "- EmitSelfReport: I express interior reflection (persisted differently; not user-facing world-fact)",
+    "- EmitContinueThought: I continue a private in-progress train of thought for a later autonomous wake",
     "- EmitNoOutput: conversation closure / natural ending",
     "",
     ...(sourceTypes.length === 0

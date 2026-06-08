@@ -30,7 +30,7 @@ const embeddingClient: EmbeddingClient = {
 };
 
 describe("turn self-context human-mind invariants", () => {
-  it("surfaces Sol self-memory evidence regardless of current audience with disclosure labels", async () => {
+  it("surfaces self-memory evidence regardless of current audience with disclosure labels", async () => {
     const aliceId = createEntityId();
     const bobId = createEntityId();
     const episode = createEpisodeFixture({
@@ -109,7 +109,7 @@ describe("turn self-context human-mind invariants", () => {
     expect(prompt).toContain("continuity");
     expect(prompt).toContain("disclosure_class=self_private");
     expect(prompt).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 

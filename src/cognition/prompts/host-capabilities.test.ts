@@ -9,10 +9,10 @@ import {
 describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
   it("distinguishes internal conversation memory from external documents", () => {
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
-      'Conversation memory is internal shared state: if someone says "the log" here',
+      'Conversation memory is my internal shared state: if someone says "the log" here',
     );
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
-      "Do not promise an external shareable link, exportable document, or editable log",
+      "I do not promise an external shareable link, exportable document, or editable log",
     );
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain("log/doc link");
   });
@@ -24,7 +24,9 @@ describe("BORG_HOST_CAPABILITY_BOUNDARY_PROMPT", () => {
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
       "When someone asks about X in this channel again, I'll mention Y",
     );
-    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain('Avoid unqualified "I\'ll prompt you"');
+    expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
+      'I avoid unqualified "I\'ll prompt you"',
+    );
     expect(BORG_HOST_CAPABILITY_BOUNDARY_PROMPT).toContain(
       "A self-scheduled wake is private internal reflection",
     );
@@ -61,10 +63,10 @@ describe("buildHostCapabilitiesSection", () => {
     const section = buildHostCapabilitiesSection();
 
     expect(section).toContain("EmitContinueThought");
-    expect(section).toContain("Pursue an open question privately");
-    expect(section).toContain("Schedule a future self-wake");
+    expect(section).toContain("I can pursue an open question privately");
+    expect(section).toContain("I can schedule a future self-wake");
     expect(section).toContain(
-      "Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
+      "Proactive outbound messaging (I cannot reach out to participants later on my own initiative)",
     );
   });
 

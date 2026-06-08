@@ -38,6 +38,7 @@ export {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
+  SELF_RECALL_SCOPE,
   combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,

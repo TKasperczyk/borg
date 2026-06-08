@@ -290,12 +290,12 @@ async function collectEvidenceClusters(
 
 function buildPrompt(cluster: EvidenceCluster): string {
   return [
-    "Synthesize one reusable procedural skill from repeated successful problem-solving attempts.",
-    `Emit your result by calling the ${SYNTHESIZER_TOOL_NAME} tool exactly once.`,
-    "The skill should describe a reusable problem class and concrete checks or moves.",
-    "Mark abstraction_fit as too_narrow when the skill is tied to a specific named project, person, or incident.",
-    "Mark abstraction_fit as too_broad when it is generic advice rather than a reusable procedure.",
-    "Set rejection_reason to centered_proper_noun when an otherwise usable candidate remains centered on a project/person/product name instead of a reusable class; set unusable_abstraction when abstraction_fit is not usable; otherwise null.",
+    "I synthesize one reusable procedural skill from repeated successful problem-solving attempts.",
+    `I emit my result by calling the ${SYNTHESIZER_TOOL_NAME} tool exactly once.`,
+    "The skill I emit describes a reusable problem class and concrete checks or moves.",
+    "I mark abstraction_fit as too_narrow when the skill is tied to a specific named project, person, or incident.",
+    "I mark abstraction_fit as too_broad when it is generic advice rather than a reusable procedure.",
+    "I set rejection_reason to centered_proper_noun when an otherwise usable candidate remains centered on a project/person/product name instead of a reusable class; I set unusable_abstraction when abstraction_fit is not usable; otherwise null.",
     `Cluster: ${cluster.key}`,
     "Evidence:",
     ...cluster.evidenceRows.map((row) =>
@@ -369,12 +369,12 @@ function sketchContextStats(stats: SkillContextStatsRecord): string {
 
 function buildSplitPrompt(candidate: LabeledSkillSplitCandidate): string {
   return [
-    "A procedural skill has divergent outcomes across context buckets.",
-    `Emit your result by calling the ${SKILL_SPLIT_TOOL_NAME} tool exactly once.`,
-    "Prefer no_split when the evidence does not clearly imply distinct reusable procedures.",
-    "Use refine_in_place only when one narrower skill text would cover the divergence without creating child skills.",
-    "Use split only when each part is narrower than the original and can own one or more listed context_keys.",
-    "target_contexts must be exact context_key strings from the listed buckets.",
+    "One of my procedural skills has divergent outcomes across context buckets.",
+    `I emit my result by calling the ${SKILL_SPLIT_TOOL_NAME} tool exactly once.`,
+    "I prefer no_split when the evidence does not clearly imply distinct reusable procedures.",
+    "I use refine_in_place only when one narrower skill text would cover the divergence without creating child skills.",
+    "I use split only when each part is narrower than the original and can own one or more listed context_keys.",
+    "I set target_contexts to exact context_key strings from the listed buckets.",
     "Original skill:",
     JSON.stringify({
       id: candidate.skill.id,

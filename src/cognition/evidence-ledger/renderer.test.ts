@@ -135,12 +135,12 @@ describe("renderEvidenceLedger", () => {
     expect(rendered).toContain(
       "Current-session transcript is authoritative for what happened in this conversation.",
     );
-    expect(rendered).toContain("Prior-session memory must be attributed or hedged.");
+    expect(rendered).toContain("I attribute or hedge prior-session memory.");
     expect(rendered).toContain(
       "Current user claims about what has or has not happened in this session outrank prior-session shared-state carryover unless the user explicitly asks to continue the prior thread.",
     );
     expect(rendered).toContain(
-      "Episodes and semantic graph are summaries; use source handles when making exact claims.",
+      "Episodes and semantic graph are summaries; I use source handles when making exact claims.",
     );
     expect(rendered).toContain("Quarantined/contested/assistant-seeded values are not facts.");
     expect(rendered).toContain("current_session_transcript=omitted reason=over_budget");
@@ -230,11 +230,11 @@ describe("renderSharedStateArtifact", () => {
     expect(compactIndexStart).toBeGreaterThanOrEqual(0);
     expect(rowStart).toBeGreaterThan(compactIndexStart);
     expect(rendered.slice(compactIndexStart, rowStart)).toContain(
-      `private-to=${audience}; usable internally; do not disclose to current audience unless authorized`,
+      `private-to=${audience}; I can use this internally; I do not disclose it to the current audience unless authorized`,
     );
     expect(rendered.slice(rowStart)).toContain("owner=null");
     expect(rendered.slice(rowStart)).toContain(
-      `private-to=${audience}; usable internally; do not disclose to current audience unless authorized`,
+      `private-to=${audience}; I can use this internally; I do not disclose it to the current audience unless authorized`,
     );
   });
 
@@ -343,10 +343,10 @@ describe("renderSharedStateArtifact", () => {
     const rendered =
       renderSharedStateArtifact(sharedStateWithEntries(entries, source), {
         maxEntries: 12,
-        maxTokens: 2_100,
+        maxTokens: 2_300,
       }) ?? "";
 
-    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(2_100);
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(2_300);
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(2);
     expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(1);
     expect(rendered.match(/kind=tentative/g)?.length ?? 0).toBe(0);

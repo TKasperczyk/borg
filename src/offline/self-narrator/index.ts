@@ -186,14 +186,14 @@ function buildObservationPrompt(
   currentPeriod: AutobiographicalPeriod | null,
 ): string {
   return [
-    "Identify thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
-    `Emit your result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
-    "Return an empty observations array if there is no grounded growth signal.",
-    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to growth marker what_changed, before_description, and after_description fields; autobiographical period narrative text inherits from those observations.`,
-    "Set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; your open_new decision is ignored when cadence has not elapsed.",
-    "Only cite evidence_episode_ids from the provided episodes.",
-    `Each observation must cite at least ${minSupportEpisodes} episodes.`,
-    `Emit at most ${maxObservationsPerRun} observations.`,
+    "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
+    `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
+    "I return an empty observations array if there is no grounded growth signal.",
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to growth marker what_changed, before_description, and after_description fields; autobiographical period narrative text inherits from those observations.`,
+    "I set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; if I emit open_new before cadence has elapsed, the host ignores that decision.",
+    "I only cite evidence_episode_ids from the provided episodes.",
+    `Each observation I emit must cite at least ${minSupportEpisodes} episodes.`,
+    `I emit at most ${maxObservationsPerRun} observations.`,
     "Current period:",
     JSON.stringify(
       currentPeriod === null
@@ -395,7 +395,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               await llmClient.complete({
                 model: ctx.config.anthropic.models.background,
                 system: [
-                  "You identify grounded autobiographical growth markers by clustering candidate episodes thematically. Return no observations when the evidence is weak.",
+                  "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
                   SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
                 ].join("\n"),
                 messages: [

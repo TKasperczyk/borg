@@ -381,12 +381,12 @@ function evaluateActivationMode(
     return { active: true, reason: "public" };
   }
 
-  // CARDINAL MEMORY RULE: recall is global to Sol. In solitary self-cognition there is no
+  // CARDINAL MEMORY RULE: recall is global to the being. In solitary self-cognition there is no
   // audience/recipient in the room, so the recipient-keyed activation scopes below
   // (allow_list / subject_only / all_except) must not gate RECALL -- a recipient list is a
   // disclosure/action-policy axis, never a recall predicate. This mirrors the operator_only
   // activation bypass above and the disclosure-axis self-cognition bypass: whatever the
-  // disclosure axis already surfaces to self is held for Sol's own orientation, never an
+  // disclosure axis already surfaces to self is held for the being's own orientation, never an
   // audience leak. Live audience-gated emission is unaffected -- isPrivateSelfCognition is
   // only true when there is no real recipient present, so the predicates below still gate
   // activation whenever an actual audience is in the room.

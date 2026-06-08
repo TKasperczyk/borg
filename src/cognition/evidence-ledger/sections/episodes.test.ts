@@ -59,7 +59,7 @@ describe("evidence-ledger episode section", () => {
     expect(entry?.state).toContain("disclosure_class=relationship_private");
     expect(entry?.state).toContain(`private-to=${alice}`);
     expect(entry?.state).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
     expect(entry?.state_metadata).toMatchObject({
       disclosure_label: {
@@ -67,7 +67,7 @@ describe("evidence-ledger episode section", () => {
         origin_audience_entity_ids: [alice],
         private_to_entity_ids: [alice],
       },
-      disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
       current_audience_entity_id: bob,
     });
   });
@@ -119,7 +119,7 @@ describe("evidence-ledger episode section", () => {
     expect(entry?.state).toContain("disclosure_class=relationship_private");
     expect(entry?.state).toContain(`private-to=${alice}`);
     expect(entry?.state).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
     expect(entry?.state_metadata).toMatchObject({
       stream_ids: [streamId],
@@ -128,7 +128,7 @@ describe("evidence-ledger episode section", () => {
         origin_audience_entity_ids: [alice],
         private_to_entity_ids: [alice],
       },
-      disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
     });
   });
 
@@ -174,7 +174,7 @@ describe("evidence-ledger episode section", () => {
         private_to_entity_ids: [],
         public_to_entity_ids: [],
       },
-      disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
     });
   });
 });

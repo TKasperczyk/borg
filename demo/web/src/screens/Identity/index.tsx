@@ -158,7 +158,7 @@ function DirectPatchNotice() {
   return (
     <div className="identity-live-write-note">
       <DirectPatchLabel />
-      <span>direct patch -- writes Sol's live self-band now</span>
+      <span>direct patch -- writes the being's live self-band now</span>
     </div>
   );
 }
@@ -178,7 +178,7 @@ function DirectWriteNotice({
         </Tag>
       </div>
       <div>
-        This writes Sol's live self-band immediately. It is not self-derived and does not enter the
+        This writes the being's live self-band immediately. It is not self-derived and does not enter the
         correction review queue.
       </div>
       <label className="identity-ack">
@@ -525,7 +525,7 @@ export function IdentityScreen() {
         <div className="h">
           <span className="ttl">operator-authored direct writes</span>
           <Tag kind="warn" dot>
-            writes Sol's live self-band
+            writes the being's live self-band
           </Tag>
           <span style={{ flex: 1 }}></span>
           <button
@@ -554,7 +554,7 @@ export function IdentityScreen() {
           </button>
         </div>
         <div className="identity-direct-write-copy">
-          operator-authored -- writes Sol's live self-band, not self-derived
+          operator-authored -- writes the being's live self-band, not self-derived
         </div>
       </div>
 

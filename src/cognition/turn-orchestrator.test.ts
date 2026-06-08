@@ -2734,7 +2734,7 @@ describe("TurnOrchestrator creator identity prompt", () => {
 
       expect(finalizerSystem).toContain("<borg_creator_identity>");
       expect(finalizerSystem).toContain("creator_display_name: Tom");
-      expect(finalizerSystem).toContain("relationship_fact: Tom is Borg's creator.");
+      expect(finalizerSystem).toContain("relationship_fact: Tom is my creator.");
       expect(finalizerSystem).toContain(
         "scope_boundary: This block authorizes only the creator's name and creator relationship.",
       );
@@ -4395,7 +4395,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(allRequestText).toContain("Alice private identity evidence narrative.");
       expect(allRequestText).toContain("disclosure_class=relationship_private");
       expect(allRequestText).toContain(
-        "usable internally; do not disclose to current audience unless authorized",
+        "I can use this internally; I do not disclose it to the current audience unless authorized",
       );
     } finally {
       await borg.close();
@@ -4722,7 +4722,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(blockEnd).toBeGreaterThan(blockStart);
       expect(executiveBlock).toContain("Current driving goal: Apollo launch plan");
       expect(executiveBlock).toContain(
-        "Use this as a bias, not an override of the user's request or commitments.",
+        "I use this as a bias, not an override of the user's request or commitments.",
       );
       expect(executiveBlock).not.toContain("Next step:");
       expect(executiveBlock).not.toContain("Background maintenance");

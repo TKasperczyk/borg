@@ -52,7 +52,7 @@ export function createIdentityEventsListForCognitionTool(
 > {
   return {
     name: "tool.identityEvents.listForCognition",
-    description: "List recent identity events from Sol's global memory with disclosure labels.",
+    description: "List recent identity events from the being's global memory with disclosure labels.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: identityEventsListInputSchema,

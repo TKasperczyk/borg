@@ -3631,7 +3631,7 @@ describe("demo server", () => {
     expect(wasClosed()).toBe(true);
   });
 
-  it("GET /api/prompts returns 6 blocks, each defaulted and not overridden", async () => {
+  it("GET /api/prompts returns 7 blocks, each defaulted and not overridden", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
     const hostCapabilities = "Configured host capability block.";
@@ -3655,6 +3655,7 @@ describe("demo server", () => {
       "voice_and_posture",
       "epistemic_posture",
       "identity_posture",
+      "participation_posture",
       "host_capabilities",
     ]);
     expect(body.blocks.every((b) => b.overridden === false)).toBe(true);

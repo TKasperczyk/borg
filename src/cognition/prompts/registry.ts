@@ -6,6 +6,7 @@ import {
   VOICE_AND_POSTURE_SECTION,
 } from "./base-identity.js";
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "./host-capability-contracts.js";
+import { PARTICIPATION_POSTURE_SECTION } from "./participation.js";
 
 export const PROMPT_KEYS = [
   "base_identity_preamble",
@@ -13,6 +14,7 @@ export const PROMPT_KEYS = [
   "voice_and_posture",
   "epistemic_posture",
   "identity_posture",
+  "participation_posture",
   "host_capabilities",
 ] as const;
 
@@ -30,14 +32,14 @@ export const PROMPT_BLOCKS: readonly PromptBlockSpec[] = [
     key: "base_identity_preamble",
     label: "Base identity preamble",
     description:
-      "The opening 'you are an AI being...' framing block. Sets borg's substrate-first stance.",
+      "The opening 'I am an AI being...' framing block. Sets borg's substrate-first stance.",
     default: BASE_IDENTITY_PREAMBLE,
   },
   {
     key: "self_architecture",
     label: "Self architecture",
     description:
-      "How Sol's own mind works: the turn loop, global recall / contextual disclosure, and the offline dream/reflection cycle.",
+      "How the being's own mind works: the turn loop, global recall / contextual disclosure, and the offline dream/reflection cycle.",
     default: SELF_ARCHITECTURE_SECTION,
   },
   {
@@ -60,6 +62,13 @@ export const PROMPT_BLOCKS: readonly PromptBlockSpec[] = [
     description:
       "First-person presence, no third-person narration, group-chat participation, attribution care.",
     default: IDENTITY_POSTURE_SECTION,
+  },
+  {
+    key: "participation_posture",
+    label: "Participation posture",
+    description:
+      "What the being is in the conversation (default: a conversational partner) plus the fact that it is not a physical/embodied participant. Override to reframe the posture -- e.g. to a memory keeper -- without a code change.",
+    default: PARTICIPATION_POSTURE_SECTION,
   },
   {
     key: "host_capabilities",

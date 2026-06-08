@@ -438,11 +438,11 @@ function promptPayload(input: {
           "The decision cites at least one source_bundle.source_entries item whose entry is present and whose taint is none.",
           "The repair is supported by evidence above assistant outputs in the evidence hierarchy, or by a mixed bundle that does not rely on the assistant output under review as independent support.",
           "Do not cite stream ids that are missing from the supplied source bundle as support for accept_repair.",
-          "Example: a target says Alice wrote a deployment script, source entries clearly say Ben wrote it, and the patch surgically corrects that attribution.",
+          "Example: a target says one participant wrote a deployment script, source entries clearly say a different participant wrote it, and the patch surgically corrects that attribution.",
         ],
         dismiss_false_positive: [
           "The source bundle does not actually contradict the target.",
-          "Example: the target says Alice reviewed a deployment script and the source confirms Alice reviewed it.",
+          "Example: the target says a participant reviewed a deployment script and the source confirms that participant reviewed it.",
         ],
         reject_malformed: [
           "The flag refs or proposed patch are broken: missing required fields, invalid ids, type errors, or cited source entries that do not exist.",

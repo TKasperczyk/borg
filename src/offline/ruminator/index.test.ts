@@ -14,7 +14,7 @@ import {
   createSemanticNodeId,
   createStreamEntryId,
 } from "../../util/ids.js";
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import { SELF_RECALL_SCOPE, type RetrievedEpisode } from "../../retrieval/index.js";
 
 import {
   createEpisodeFixture,
@@ -516,7 +516,7 @@ describe("RuminatorProcess", () => {
         {
           limit: 3,
           recallContext: {
-            reader: "sol",
+            reader: SELF_RECALL_SCOPE,
             currentSessionId: DEFAULT_SESSION_ID,
             currentAudienceEntityId: question.audience_entity_id,
             currentParticipantEntityIds:
@@ -619,7 +619,7 @@ describe("RuminatorProcess", () => {
         {
           limit: 3,
           recallContext: {
-            reader: "sol",
+            reader: SELF_RECALL_SCOPE,
             currentSessionId: DEFAULT_SESSION_ID,
             currentAudienceEntityId: question.audience_entity_id,
             currentParticipantEntityIds:

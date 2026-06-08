@@ -11,10 +11,11 @@ import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { LLMCompleteResult } from "../../llm/index.js";
-import type {
-  CognitionRecallContext,
-  DisclosureContext,
-  RetrievedContext,
+import {
+  SELF_RECALL_SCOPE,
+  type CognitionRecallContext,
+  type DisclosureContext,
+  type RetrievedContext,
 } from "../../retrieval/index.js";
 import { createOfflineTestHarness, TestEmbeddingClient } from "../../offline/test-support.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
@@ -236,7 +237,7 @@ function makeContexts(
 
   return {
     recallContext: {
-      reader: "sol",
+      reader: SELF_RECALL_SCOPE,
       currentSessionId,
       currentAudienceEntityId,
       currentParticipantEntityIds: participantEntityIds,
@@ -496,7 +497,7 @@ describe("TurnRetrievalCoordinator", () => {
       expect.objectContaining({
         rankingAudienceEntityId: audienceEntityId,
         recallContext: expect.objectContaining({
-          reader: "sol",
+          reader: SELF_RECALL_SCOPE,
           currentSessionId: DEFAULT_SESSION_ID,
           currentAudienceEntityId: audienceEntityId,
         }),
@@ -899,7 +900,7 @@ describe("TurnRetrievalCoordinator", () => {
       expect(prompt).toContain("disclosure_class=relationship_private");
       expect(prompt).toContain(`private-to=${aliceId}`);
       expect(prompt).toContain(
-        "Do not reveal labeled-private content, source details, or the existence of a private memory",
+        "I do not reveal labeled-private content, source details, or the existence of a private memory",
       );
     } finally {
       await harness.cleanup();

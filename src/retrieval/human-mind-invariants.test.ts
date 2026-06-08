@@ -9,7 +9,11 @@ import {
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { EpisodicExtractor } from "../memory/episodic/extractor.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
-import type { CognitionRecallContext, DisclosureContext } from "./recall-context.js";
+import {
+  SELF_RECALL_SCOPE,
+  type CognitionRecallContext,
+  type DisclosureContext,
+} from "./recall-context.js";
 
 const BOB_RECALL_QUERY = "human mind invariant bob recall";
 const OPERATOR_RECALL_QUERY = "human mind invariant operator recall";
@@ -74,7 +78,7 @@ describe("human-mind memory invariants", () => {
     await harness.episodicRepository.createEpisode(episode);
 
     const recallContext: CognitionRecallContext = {
-      reader: "sol",
+      reader: SELF_RECALL_SCOPE,
       currentSessionId: DEFAULT_SESSION_ID,
       currentAudienceEntityId: bobId,
       currentParticipantEntityIds: [bobId],
@@ -128,7 +132,7 @@ describe("human-mind memory invariants", () => {
     const result = await harness.retrievalPipeline.recallEpisodesForCognition(BOB_RECALL_QUERY, {
       limit: 3,
       recallContext: {
-        reader: "sol",
+        reader: SELF_RECALL_SCOPE,
         currentSessionId: DEFAULT_SESSION_ID,
         currentAudienceEntityId: bobId,
         currentParticipantEntityIds: [bobId],
@@ -177,7 +181,7 @@ describe("human-mind memory invariants", () => {
       {
         limit: 3,
         recallContext: {
-          reader: "sol",
+          reader: SELF_RECALL_SCOPE,
           currentSessionId: DEFAULT_SESSION_ID,
           currentAudienceEntityId: operatorId,
           currentParticipantEntityIds: [],
@@ -211,7 +215,7 @@ describe("human-mind memory invariants", () => {
       {
         limit: 3,
         recallContext: {
-          reader: "sol",
+          reader: SELF_RECALL_SCOPE,
           currentSessionId: DEFAULT_SESSION_ID,
           currentAudienceEntityId: null,
           currentParticipantEntityIds: [],
@@ -293,7 +297,7 @@ describe("human-mind memory invariants", () => {
       graphWalkDepth: 1,
       maxGraphNodes: 4,
       recallContext: {
-        reader: "sol",
+        reader: SELF_RECALL_SCOPE,
         currentSessionId: DEFAULT_SESSION_ID,
         currentAudienceEntityId: bobId,
         currentParticipantEntityIds: [bobId],
@@ -388,7 +392,7 @@ describe("human-mind memory invariants", () => {
       {
         limit: 3,
         recallContext: {
-          reader: "sol",
+          reader: SELF_RECALL_SCOPE,
           currentSessionId: DEFAULT_SESSION_ID,
           currentAudienceEntityId: bobId,
           currentParticipantEntityIds: [bobId],

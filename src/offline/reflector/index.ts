@@ -389,7 +389,7 @@ async function buildInsightCandidate(
     await llmClient.complete({
       model: ctx.config.anthropic.models.background,
       system:
-        "You propose low-confidence semantic propositions grounded in repeated episodic evidence.",
+        "I propose low-confidence semantic propositions grounded in repeated episodic evidence.",
       messages: [
         {
           role: "user",

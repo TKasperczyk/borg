@@ -25,11 +25,12 @@ import {
 } from "../util/ids.js";
 
 import type { RecallStateHandle } from "./recall-state.js";
+import { SELF_RECALL_SCOPE } from "./recall-context.js";
 import { RetrievalPipeline } from "./pipeline.js";
 
 const NOW_MS = 10_000;
 const DISTRACTOR_COUNT = 16;
-const COGNITION_RECALL_SCOPE_KEY = "sol";
+const COGNITION_RECALL_SCOPE_KEY = SELF_RECALL_SCOPE;
 
 function createEmbeddingClient() {
   return new TestEmbeddingClient(
@@ -51,7 +52,7 @@ function createEmbeddingClient() {
 function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
   return {
     recallContext: {
-      reader: "sol" as const,
+      reader: SELF_RECALL_SCOPE,
       currentSessionId: DEFAULT_SESSION_ID,
       currentAudienceEntityId,
       currentParticipantEntityIds:

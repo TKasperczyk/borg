@@ -464,6 +464,7 @@ export {
 
 export {
   MEMORY_DISCLOSURE_CLASSES,
+  SELF_RECALL_SCOPE,
   memoryDisclosureLabelFromEpisodeAccess,
   type CognitionRecallContext,
   type DisclosureContext,

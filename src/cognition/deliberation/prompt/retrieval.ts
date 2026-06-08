@@ -52,7 +52,7 @@ export function summarizeRetrievalConfidence(
   }
 
   const lines = [
-    "Retrieval confidence (internal, for calibrating certainty in your response):",
+    "Retrieval confidence (internal, for calibrating certainty in my response):",
     fragments.join(" "),
   ];
 

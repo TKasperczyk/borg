@@ -40,7 +40,7 @@ describe("config", () => {
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
-    expect(config.host_capabilities).toContain("Inputs available to you");
+    expect(config.host_capabilities).toContain("Inputs available to me");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
     expect(config.affective.llmEnabled).toBe(true);
@@ -328,7 +328,7 @@ describe("config", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const hostCapabilities = [
-      "Inputs available to you:",
+      "Inputs available to me:",
       "- host-owned project tracker",
       "",
       "Output channels available now:",

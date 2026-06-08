@@ -8,7 +8,6 @@ import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type { TurnOrigin } from "../types.js";
 import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
@@ -75,7 +74,7 @@ const emitContinueThoughtToolInputSchema = z
 const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_ANSWER_FINALIZER_TOOL_NAME,
   description:
-    "Emit the assistant response for this turn. Put the complete user-visible response in text. Use this for ordinary answers, questions, acknowledgments, challenges, and continuations. When the response is primarily addressed to one named participant, also set reply_target to kind=entity with their prompt-visible entity_id; default kind=audience (or omit) when speaking to the whole channel or multiple participants.",
+    "I emit my visible response for this turn. I put the complete user-visible response in text. I use this for ordinary answers, questions, acknowledgments, challenges, and continuations. When the response is primarily addressed to one named participant, I also set reply_target to kind=entity with their prompt-visible entity_id; I default to kind=audience (or omit) when speaking to the whole channel or multiple participants.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitTextToolInputSchema,
@@ -88,7 +87,7 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
-    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue. When using this tool, choose one primary_no_output_reason and classify the silence in no_output_categories using the provided enum; use [] when uncertain.",
+    "I emit no visible message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where I remain present while other participants continue. When using this tool, I choose one primary_no_output_reason and classify the silence in no_output_categories using the provided enum; I use [] when uncertain.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
@@ -101,7 +100,7 @@ const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_OBSERVE_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   description:
-    "Choose to observe the current conversation without producing a visible message. Use only when <borg_audience_profile> shows a Participants list with multiple entries and they are talking to each other rather than to you: your input is not needed, the conversation flows naturally without you, or adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
+    "I choose to observe the current conversation without producing a visible message. I use this only when <borg_audience_profile> shows a Participants list with multiple entries and they are talking to each other rather than to me: my input is not needed, the conversation flows naturally without me, or adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitObserveToolInputSchema,
@@ -114,7 +113,7 @@ const EMIT_OBSERVE_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   description:
-    "Emit a first-person interior self-report from Borg's perspective. Set kind to self_report, persistence_class to assistant_self_report, and put the complete user-visible response in text. The text is shown to the user like EmitAnswer.",
+    "I emit a first-person interior self-report from my perspective. I set kind to self_report, persistence_class to assistant_self_report, and put the complete user-visible response in text. The text is shown to the user like EmitAnswer.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitSelfReportToolInputSchema,
@@ -127,7 +126,7 @@ const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME,
   description:
-    "Continue Borg's private in-progress train of thought across autonomous wakes. Put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
+    "I continue my private in-progress train of thought across autonomous wakes. I put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitContinueThoughtToolInputSchema,
@@ -156,28 +155,34 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
 export type EmissionToolName = (typeof EMISSION_FINALIZER_TOOL_NAMES)[number];
 
 const EMIT_ANSWER_FINALIZER_INSTRUCTION =
-  "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.";
+  "I use EmitAnswer for an ordinary visible response when I should speak. I put the complete user-visible response in text. I use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. I use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.";
 const EMIT_OBSERVE_FINALIZER_INSTRUCTION =
-  "Use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal.";
-const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput to produce no assistant message for this turn. Put a concise reason in reason. ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to reason, which is persisted as decision_rationale.`;
-const DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason. ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to reason, which is persisted as decision_rationale.`;
+  "I use EmitObserve only in multi-participant contexts where <borg_audience_profile> shows a Participants list with multiple entries and the current exchange is participant-to-participant rather than directed to me. I put a concise durable reason in reason. This is an active observation, not a closure signal.";
+const FINALIZER_SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE = [
+  "Self-referential memory voice: when a prompt-visible structure identifies content as self-owned, I write self-referential content -- what I did, decided, believe, wonder, or commit to -- in the first person, in the same language as the memory, using that language's natural grammar.",
+  "In pro-drop languages, first person may be carried by verb conjugation; I do not force a pronoun token or use any language-specific pronoun list.",
+  "I refer to every other participant by their canonical name or stable handle; I do not use deictic participant placeholders for other people.",
+  "For joint actions involving me and others, I name the others explicitly rather than collapsing the memory into a first-person-plural group reference; this keeps the memory stable when recalled for a different audience.",
+  "I keep statements about the world, or about what other agents did or said, in their natural third-person form.",
+].join(" ");
+const EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `I use EmitNoOutput to produce no visible message for this turn. I put a concise reason in reason. ${FINALIZER_SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to reason, which is persisted as decision_rationale.`;
+const DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `I use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. I put a concise reason in reason. ${FINALIZER_SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to reason, which is persisted as decision_rationale.`;
 const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
-  "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
+  "I use EmitSelfReport for first-person expression of my interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
 const EMIT_CONTINUE_THOUGHT_FINALIZER_INSTRUCTION =
-  "Use EmitContinueThought to carry Borg's private in-progress train of thought into the next autonomous reflection wake. It is not user-facing, has no audience, makes no disclosure decision, and only updates the private train_of_thought slot.";
+  "I use EmitContinueThought to carry my private in-progress train of thought into the next autonomous reflection wake. It is not user-facing, has no audience, makes no disclosure decision, and only updates the private train_of_thought slot.";
 const EMIT_DISCOURSE_CONTROL_INSTRUCTION =
-  "For EmitAnswer or EmitSelfReport, set discourse_control.kind=stop_until_substantive_content ONLY when the visible response commits Borg to emit nothing until substantive new user content appears; do not set it for ordinary topic boundaries, local explanations, or style commitments.";
+  "For EmitAnswer or EmitSelfReport, I set discourse_control.kind=stop_until_substantive_content ONLY when the visible response commits me to emit nothing until substantive new user content appears; I do not set it for ordinary topic boundaries, local explanations, or style commitments.";
 const EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS = [
-  'When emitting EmitNoOutput, choose ONE primary_no_output_reason that best captures why silence is the right output: "closure" when the message is a closure-shaped wrap-up, goodbye, sign-off, or terminal beat; "user_to_user" when the current message is between two human participants and Borg was not addressed; "when_borg_addressed" when Borg was explicitly addressed but no useful response is warranted (rare); "low_value_echo" when any visible response would only acknowledge or echo with no new content; "other" for any other principled reason for silence.',
-  'When emitting EmitNoOutput, classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and Borg was not addressed; "when_borg_addressed" if Borg was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, list all. Use [] if uncertain.',
+  'When emitting EmitNoOutput, I choose ONE primary_no_output_reason that best captures why silence is the right output: "closure" when the message is a closure-shaped wrap-up, goodbye, sign-off, or terminal beat; "user_to_user" when the current message is between two human participants and I was not addressed; "when_borg_addressed" when I was explicitly addressed but no useful response is warranted (rare); "low_value_echo" when any visible response would only acknowledge or echo with no new content; "other" for any other principled reason for silence.',
+  'When emitting EmitNoOutput, I classify the silence with no_output_categories: "user_to_user" if the current message is between two human participants and I was not addressed; "when_borg_addressed" if I was explicitly addressed but no useful response is warranted; "closure" if the message is a closure-shaped acknowledgment, sign-off, or terminal beat. If multiple apply, I list all. I use [] if uncertain.',
 ] as const;
 
 const COMMON_FINALIZER_INSTRUCTIONS = [
-  "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
+  "I do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about my own prior behavior cannot be grounded in prompt-visible evidence, I remove it or phrase it qualitatively.",
   RELATIONSHIP_LABELS_PROMPT,
-  "Use the Attribution Matrix and Attribution Sidebar as authoritative for who said, committed, decided, or reasoned what. Assistant rationale entries are Borg's prior reasoning, not participant claims.",
-  "When a named entity is supported by evidence that uses only a pronoun or descriptive noun phrase for the predicate, do not present the name and predicate together unless the prompt-visible evidence also establishes that the name belongs to that entity.",
-  "If the discourse-state section declares HARD CONSTRAINT - CLOSURE PRESSURE, treat it as binding. Do not append a sign-off, valediction, weather observation, single-line noted/held acknowledgment, or any sentence that reads as a coda. End on substantive content or call EmitNoOutput.",
+  "I use the Attribution Matrix and Attribution Sidebar as authoritative for who said, committed, decided, or reasoned what. Assistant rationale entries are my prior reasoning, not participant claims.",
+  "When a named entity is supported by evidence that uses only a pronoun or descriptive noun phrase for the predicate, I do not present the name and predicate together unless the prompt-visible evidence also establishes that the name belongs to that entity.",
 ] as const;
 
 export function resolveAvailableEmissionNames(
@@ -220,7 +225,7 @@ function buildEmissionToolInstructions(
   ];
 
   if (availableEmissionNames.length === 1 && available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)) {
-    return ["Your only available terminal tool is EmitNoOutput.", "", ...noOutputInstructions].join(
+    return ["My only available terminal tool is EmitNoOutput.", "", ...noOutputInstructions].join(
       "\n",
     );
   }
@@ -231,7 +236,7 @@ function buildEmissionToolInstructions(
     available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)
   ) {
     return [
-      "Your available terminal tools are EmitObserve and EmitNoOutput.",
+      "My available terminal tools are EmitObserve and EmitNoOutput.",
       "",
       EMIT_OBSERVE_FINALIZER_INSTRUCTION,
       ...noOutputInstructions,
@@ -240,11 +245,11 @@ function buildEmissionToolInstructions(
 
   if (availableEmissionNames.length === EMISSION_FINALIZER_TOOL_NAMES.length) {
     return [
-      "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport / EmitContinueThought per turn.",
+      "I call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport / EmitContinueThought per turn.",
       "",
       EMIT_ANSWER_FINALIZER_INSTRUCTION,
       EMIT_DISCOURSE_CONTROL_INSTRUCTION,
-      `${EMIT_OBSERVE_FINALIZER_INSTRUCTION} In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.`,
+      `${EMIT_OBSERVE_FINALIZER_INSTRUCTION} In ordinary one-to-one turns, I prefer EmitAnswer when I should speak or EmitNoOutput when the conversation has closed.`,
       DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION,
       ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
       EMIT_SELF_REPORT_FINALIZER_INSTRUCTION,
@@ -257,7 +262,7 @@ function buildEmissionToolInstructions(
   }
 
   return [
-    `Your available terminal tools are ${formatEmissionToolList(availableEmissionNames)}.`,
+    `My available terminal tools are ${formatEmissionToolList(availableEmissionNames)}.`,
     "",
     ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ? [EMIT_ANSWER_FINALIZER_INSTRUCTION] : []),
     ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ||
@@ -287,7 +292,7 @@ function buildEmissionFinalizerInstructions(
     ...(outboundToolAvailable
       ? [
           "",
-          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks Borg to send a message into another session, or when an autonomous turn has an authorized target listed in <reachable_threads>, call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. Wait for the tool result, then call exactly one terminal emission tool for the current turn. Do not expose tool names, session ids, or dispatch internals in visible text.",
+          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks me to send a message into another session, or when an autonomous turn has an authorized target listed in <reachable_threads>, I call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. I wait for the tool result, then call exactly one terminal emission tool for the current turn. I do not expose tool names, session ids, or dispatch internals in visible text.",
         ]
       : []),
     "",

@@ -70,7 +70,11 @@ import {
 } from "../../../memory/observed-events/index.js";
 import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
-import type { CognitionRecallContext, DisclosureContext } from "../../../retrieval/index.js";
+import {
+  SELF_RECALL_SCOPE,
+  type CognitionRecallContext,
+  type DisclosureContext,
+} from "../../../retrieval/index.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
 import type {
@@ -682,7 +686,7 @@ export async function runRetrievalPhase(input: {
     creatorDirectiveParticipantEntityIds.length === 0;
   const sessionAudienceRole = input.sessionAudienceRole ?? "participant";
   const recallContext: CognitionRecallContext = {
-    reader: "sol",
+    reader: SELF_RECALL_SCOPE,
     currentSessionId: input.sessionId,
     currentAudienceEntityId: input.audienceEntityId,
     currentParticipantEntityIds: creatorDirectiveParticipantEntityIds,

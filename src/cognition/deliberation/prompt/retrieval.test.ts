@@ -141,7 +141,7 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("disclosure: disclosure_class=relationship_private");
     expect(summary).toContain("private-to=entity_alice");
     expect(summary).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 
@@ -174,7 +174,7 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("disclosure_class=relationship_private");
     expect(summary).toContain("private-to=entity_alice");
     expect(summary).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 
@@ -182,7 +182,7 @@ describe("retrieval confidence prompt rendering", () => {
     const evidence: EvidenceItem = {
       id: "evidence_open_question_oq_aaaaaaaaaaaaaaaa_intent",
       source: "open_question",
-      text: "Should Sol ask Alice about the private launch timing?",
+      text: "Should I ask Alice about the private launch timing?",
       provenance: {
         openQuestionId: "oq_aaaaaaaaaaaaaaaa" as never,
       },
@@ -204,11 +204,11 @@ describe("retrieval confidence prompt rendering", () => {
       1_000,
     );
 
-    expect(summary).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(summary).toContain("Should I ask Alice about the private launch timing?");
     expect(summary).toContain("disclosure_class=relationship_private");
     expect(summary).toContain("private-to=entity_alice");
     expect(summary).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 
@@ -221,7 +221,7 @@ describe("retrieval confidence prompt rendering", () => {
         openQuestions: [
           {
             id: "oq_aaaaaaaaaaaaaaaa",
-            question: "Should Sol ask Alice about the private launch timing?",
+            question: "Should I ask Alice about the private launch timing?",
             urgency: 0.72,
             audience_entity_id: "entity_alice" as never,
           },
@@ -230,11 +230,11 @@ describe("retrieval confidence prompt rendering", () => {
       1_000,
     );
 
-    expect(summary).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(summary).toContain("Should I ask Alice about the private launch timing?");
     expect(summary).toContain("disclosure_class=relationship_private");
     expect(summary).toContain("private-to=entity_alice");
     expect(summary).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 
@@ -296,7 +296,7 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("disclosure_class=relationship_private");
     expect(summary).toContain("private-to=ent_alice");
     expect(summary).toContain(
-      "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized",
+      "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized",
     );
   });
 });
@@ -356,7 +356,7 @@ describe("semantic retrieval prompt rendering", () => {
     expect(summary).toContain("disclosure_class=relationship_private");
     expect(summary).toContain("private-to=ent_alice");
     expect(summary).toContain(
-      "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized",
+      "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized",
     );
   });
 

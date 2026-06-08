@@ -166,8 +166,7 @@ function pendingNewInsightInsertRefs(input: {
           id: nodeId,
           kind: "proposition",
           label: input.label ?? "Rollback planning preference",
-          description:
-            input.description ?? "Sol treats rollback planning as important for release work.",
+          description: input.description ?? "I treat rollback planning as important for release work.",
           domain: null,
           aliases: [],
           confidence: input.confidence ?? 0.5,
@@ -1031,7 +1030,7 @@ describe("review resolver process", () => {
     const sourceAudienceId = createEntityId();
     const source = await insertSource(
       harness,
-      "Sol repeatedly asks for rollback plans before risky release changes.",
+      "I repeatedly ask for rollback plans before risky release changes.",
       {
         audience_entity_id: sourceAudienceId,
         shared: false,
@@ -1045,7 +1044,7 @@ describe("review resolver process", () => {
         nodeId,
         episodeIds: [source.episode.id],
         label: "Rollback planning preference",
-        description: "Sol values rollback planning before risky release changes.",
+        description: "I value rollback planning before risky release changes.",
       }),
     });
     llm.pushResponse(
@@ -1085,7 +1084,7 @@ describe("review resolver process", () => {
     expect(stored).toMatchObject({
       id: nodeId,
       label: "Rollback planning preference",
-      description: "Sol values rollback planning before risky release changes.",
+      description: "I value rollback planning before risky release changes.",
     });
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME);
     expect(llm.requests[0]?.tool_choice).toEqual({
@@ -1093,7 +1092,7 @@ describe("review resolver process", () => {
       name: NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME,
     });
     expect(prompt).toContain("evidence_fetch_bound");
-    expect(prompt).toContain("Sol repeatedly asks for rollback plans");
+    expect(prompt).toContain("I repeatedly ask for rollback plans");
     expect(promptPayload.review).toMatchObject({
       disclosure_label: expect.objectContaining({
         disclosure_class: "relationship_private",
@@ -1128,7 +1127,7 @@ describe("review resolver process", () => {
         nodeId,
         episodeIds: [source.episode.id],
         label: "Release sync identity shift",
-        description: "Sol has a stable identity shift around release syncs.",
+        description: "I have a stable identity shift around release syncs.",
       }),
     });
     llm.pushResponse(
@@ -1238,7 +1237,7 @@ describe("review resolver process", () => {
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
         label: "Atlas deployment preference",
-        description: "Sol prefers Atlas deployment rollback planning.",
+        description: "I prefer Atlas deployment rollback planning.",
         source_episode_ids: [currentSource.episode.id],
       }),
     );
@@ -1255,7 +1254,7 @@ describe("review resolver process", () => {
             mode: "update" as const,
             node_id: node.id,
             patch: {
-              description: "Sol strongly prefers rollback planning before Atlas deployments.",
+              description: "I strongly prefer rollback planning before Atlas deployments.",
               confidence: 0.64,
               source_episode_ids: [patchSource.episode.id],
               last_verified_at: 1_000_000,
@@ -1293,7 +1292,7 @@ describe("review resolver process", () => {
 
     expect(result.errors).toEqual([]);
     expect(promptPayload.proposed_insight).toMatchObject({
-      description: "Sol strongly prefers rollback planning before Atlas deployments.",
+      description: "I strongly prefer rollback planning before Atlas deployments.",
       disclosure_label: {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [currentAudienceId],
@@ -1406,7 +1405,7 @@ describe("review resolver process", () => {
       },
     });
     cleanup.push(harness.cleanup);
-    const source = await insertSource(harness, "Sol wants evidence before retaining memories.");
+    const source = await insertSource(harness, "I want evidence before retaining memories.");
     const nodeId = createSemanticNodeId();
     const item = harness.reviewQueueRepository.enqueue({
       kind: "new_insight",

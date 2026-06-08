@@ -17,7 +17,7 @@ export const CLOSURE_LOOP_SYSTEM_PROMPT = [
   "",
   "Examples:",
   '- "Decision: rollback to v1.2.3. EOD." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
-  '- "Ben owns the writeup now. Talk tomorrow." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
+  '- "A participant owns the writeup now. Talk tomorrow." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
   '- "I need space this week. Talk Saturday." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
   '- "Thanks, goodnight." -> is_closure_shaped=true, has_substantive_content=false, has_substantive_state_delta=false.',
   '- "What\'s the timeline?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',

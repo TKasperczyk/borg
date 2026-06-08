@@ -12,7 +12,7 @@ import {
 import type { EvidenceLedgerSourceType } from "../types.js";
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
-  "Autobiographical recall entries are past evidence for Sol to re-examine during this turn. Treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; revise them when current evidence warrants.";
+  "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants.";
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,

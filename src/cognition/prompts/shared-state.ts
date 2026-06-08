@@ -51,7 +51,7 @@ export function buildSharedStateSystemPrompt(
     "- invalidated: assumptions explicitly overturned by later evidence; kept for context.",
     "",
     "What does not belong:",
-    '- Participant tasks, such as "Alice will write the chapter 3 summary"; those stay as action records.',
+    '- Participant tasks, such as "a participant will write the chapter 3 summary"; those stay as action records.',
     '- Assistant commitments, such as "Borg will send the status note tomorrow"; those stay as commitment records.',
     "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
     "- Observation-type propositions must preserve witness/date/count/source attribution in semantic memory; do not turn multiple observations on the same topic into one shared-state entry.",

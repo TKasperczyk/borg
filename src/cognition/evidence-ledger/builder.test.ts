@@ -536,7 +536,7 @@ describe("EvidenceLedgerBuilder", () => {
     const rendered = renderEvidenceLedger(ledger) ?? "";
     expect(rendered).toContain("citation_type=original_image");
     expect(rendered).toContain("image_unavailable=budget");
-    expect(rendered).toContain("Use this perception text only as generated_perception_text");
+    expect(rendered).toContain("I use this perception text only as generated_perception_text");
     expect(traceEvents).toContainEqual(
       expect.objectContaining({
         event: "evidence_ledger.image_attach",
@@ -643,7 +643,7 @@ describe("EvidenceLedgerBuilder", () => {
           audience_entity_id: aliceEntityId,
           state_key: "relationship:atlas-launch",
           kind: "live",
-          text: "Alice privately told Sol the Atlas launch date should stay scoped to Alice.",
+          text: "Alice privately told me the Atlas launch date should stay scoped to Alice.",
           owner_entity_id: aliceEntityId,
           provenance_stream_entry_ids: [sourceStreamEntryId],
           last_updated_stream_entry_ids: [sourceStreamEntryId],
@@ -889,12 +889,12 @@ describe("EvidenceLedgerBuilder", () => {
           taint: "quarantined",
           beliefEffect: "unchanged",
           disclosureClass: "social_observed",
-          interactionText: "Sol rejected the pushed frame.",
+          interactionText: "I rejected the pushed frame.",
           recurrenceCount: 3,
           speakerEntityId,
           audienceEntityId: groupAudienceEntityId,
           sourceStreamEntryIds: [createStreamEntryId()],
-          text: "Observed 3 times rejected_frame 1m ago: Sol rejected the pushed frame.",
+          text: "Observed 3 times rejected_frame 1m ago: I rejected the pushed frame.",
         },
         {
           id: "obsevt_bbbbbbbbbbbbbbbb",
@@ -907,12 +907,12 @@ describe("EvidenceLedgerBuilder", () => {
           taint: "quarantined",
           beliefEffect: "unchanged",
           disclosureClass: "social_observed",
-          interactionText: "Sol rejected the private-origin push.",
+          interactionText: "I rejected the private-origin push.",
           recurrenceCount: 1,
           speakerEntityId,
           audienceEntityId: privateAudienceEntityId,
           sourceStreamEntryIds: [createStreamEntryId()],
-          text: "Observed rejected_frame 30s ago: Sol rejected the private-origin push.",
+          text: "Observed rejected_frame 30s ago: I rejected the private-origin push.",
         },
       ],
     });
@@ -997,12 +997,12 @@ describe("EvidenceLedgerBuilder", () => {
           taint: "quarantined",
           beliefEffect: "unchanged",
           disclosureClass: "social_observed",
-          interactionText: "Sol rejected an unknown-origin push.",
+          interactionText: "I rejected an unknown-origin push.",
           recurrenceCount: 1,
           speakerEntityId: null,
           audienceEntityId: null,
           sourceStreamEntryIds: [createStreamEntryId()],
-          text: "Observed 30s ago: Sol rejected an unknown-origin push. stance=rejected_frame; taint=quarantined; belief_effect=unchanged; not accepted as true",
+          text: "Observed 30s ago: I rejected an unknown-origin push. stance=rejected_frame; taint=quarantined; belief_effect=unchanged; not accepted as true",
         },
       ],
     });
@@ -1017,7 +1017,7 @@ describe("EvidenceLedgerBuilder", () => {
           disclosure_class: "unknown",
           private_to_entity_ids: [],
         }),
-        disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+        disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
       }),
     );
   });
@@ -2227,7 +2227,7 @@ describe("EvidenceLedgerBuilder", () => {
           origin_audience_entity_ids: sortedAudienceIds,
           private_to_entity_ids: sortedAudienceIds,
         }),
-        disclosure_note: "usable internally; do not disclose to current audience unless authorized",
+        disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
       }),
     });
     expect(entry?.text).toContain("Keep Alice launch replies short.");
@@ -2243,7 +2243,7 @@ describe("EvidenceLedgerBuilder", () => {
     const evidence: EvidenceItem = {
       id: "evidence_open_question_private_intent",
       source: "open_question",
-      text: "Should Sol ask Alice about the private launch timing?",
+      text: "Should I ask Alice about the private launch timing?",
       provenance: {
         openQuestionId: createOpenQuestionId(),
       },
@@ -2300,11 +2300,11 @@ describe("EvidenceLedgerBuilder", () => {
             private_to_entity_ids: [alice],
           }),
           disclosure_note:
-            "usable internally; do not disclose to current audience unless authorized",
+            "I can use this internally; I do not disclose it to the current audience unless authorized",
         }),
       }),
     ]);
-    expect(rendered).toContain("Should Sol ask Alice about the private launch timing?");
+    expect(rendered).toContain("Should I ask Alice about the private launch timing?");
     expect(rendered).toContain("disclosure_class=relationship_private");
     expect(rendered).toContain(`private_to_entity_ids":["${alice}"]`);
   });

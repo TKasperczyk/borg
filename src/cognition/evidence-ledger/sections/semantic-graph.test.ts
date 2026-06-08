@@ -101,7 +101,7 @@ describe("evidence-ledger semantic graph section", () => {
         private_to_entity_ids: [alice],
       },
       disclosure_note:
-        "supported by private source episodes; usable internally; do not reveal source details to current audience unless authorized",
+        "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized",
     });
     expect(edgeEntry?.state).toContain("disclosure_class=relationship_private");
     expect(edgeEntry?.state_metadata).toMatchObject({

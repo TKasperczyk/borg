@@ -11,6 +11,7 @@ import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
 import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
 
 import { mergeCandidates } from "../test-support/episodic-candidates.js";
+import { SELF_RECALL_SCOPE } from "./recall-context.js";
 
 const QUERY = "architecture";
 const MAYA_CORRECTION_QUERY = "my partner's not Maya. Also, Thursday's design review is next week.";
@@ -42,7 +43,7 @@ function searchWeights(
 function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null) {
   return {
     recallContext: {
-      reader: "sol" as const,
+      reader: SELF_RECALL_SCOPE,
       currentSessionId: DEFAULT_SESSION_ID,
       currentAudienceEntityId,
       currentParticipantEntityIds:
@@ -763,7 +764,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(rendered).toContain("disclosure_class=relationship_private");
     expect(rendered).toContain(`private-to=${alice}`);
     expect(rendered).toContain(
-      "usable internally; do not disclose to current audience unless authorized",
+      "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
   });
 

@@ -199,9 +199,11 @@ describe("proactive outbound human-mind invariants", () => {
         expect(text).toContain(targetVisibleContext);
         expect(text).toContain("disclosure_class=relationship_private");
         expect(text).toContain(
-          "usable internally; do not disclose to current audience unless authorized",
+          "I can use this internally; I do not disclose it to the current audience unless authorized",
         );
-        expect(text).toContain("Treat disclosure labels as target-audience constraints");
+        expect(text).toContain(
+          "I do not reveal labeled-private content, source details, or the existence of a private memory to the current audience unless",
+        );
         expect(text).toContain("Memory disclosure labels are input-side guidance");
       }
 

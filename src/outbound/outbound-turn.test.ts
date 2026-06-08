@@ -97,21 +97,21 @@ describe("runDirectedOutboundTurn", () => {
         audience: "Alice",
         origin: "directed_outbound",
         userMessage: expect.stringContaining(
-          "A structurally authorized creator in an operator context directed Borg",
+          "A structurally authorized creator in an operator context directed me",
         ),
       }),
     );
     expect(turnOrchestrator.run).toHaveBeenCalledWith(
       expect.objectContaining({
         userMessage: expect.stringContaining(
-          "Use Sol's prompt-visible internal memory, current goals, autobiographical/social recall",
+          "I use my prompt-visible internal memory, current goals, autobiographical/social recall",
         ),
       }),
     );
     expect(turnOrchestrator.run).toHaveBeenCalledWith(
       expect.objectContaining({
         userMessage: expect.stringContaining(
-          "Treat disclosure labels as target-audience constraints",
+          "I treat disclosure labels as target-audience constraints",
         ),
       }),
     );

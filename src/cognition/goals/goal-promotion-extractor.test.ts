@@ -244,7 +244,7 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.system).toContain(
       "Borg will monitor p95 -> impossible_for_borg_without_capability",
     );
-    expect(llm.requests[0]?.system).toContain("Borg host capability boundary");
+    expect(llm.requests[0]?.system).toContain("My host capability boundary");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {

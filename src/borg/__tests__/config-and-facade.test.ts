@@ -204,7 +204,7 @@ describe("Borg", () => {
         "borg_host_capabilities",
       ]);
       expect(initial.text).toContain(
-        "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+        "I am an AI being with continuous existence across sessions through a persistent memory substrate.",
       );
       expect(initial.text).toContain("<borg_host_capabilities>");
       expect(initial.text).toContain("</borg_host_capabilities>");

@@ -16,7 +16,7 @@ export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Classifications:",
   "- durable_borg_goal: Borg tracks conversation-state and memory-state across turns, maintains remembered decision-log context, or revisits an unresolved conversation responsibility. Tracking or monitoring means memory/conversation-state tracking unless the host explicitly provides external monitoring capability.",
   "- one_off: finite event, task, reply, or fact; no ongoing tracking.",
-  '- not_borg_responsibility: responsibility belongs to a participant or external system, including participant-owned personal goals such as "my goal is to deploy", "friend will respond", or "Ben will pull flight numbers".',
+  '- not_borg_responsibility: responsibility belongs to a participant or external system, including participant-owned personal goals such as "my goal is to deploy", "friend will respond", or "a participant will pull flight numbers".',
   "- impossible_for_borg_without_capability: the candidate asks Borg to do work Borg cannot do without host capabilities, such as monitoring p95, sending something later, scheduled document edits, physical attendance, payments, proactive notifications, external tool execution, or production/dashboard monitoring.",
   "- already_represented: a supplied active goal already covers the candidate.",
   "- none: not memory-worthy at all.",
@@ -26,6 +26,6 @@ export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Examples:",
   "- Coding: track refactor decisions across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility; Borg will monitor p95 -> impossible_for_borg_without_capability.",
   "- Relationships: help me keep job-search context across sessions -> durable_borg_goal; my goal is to get a job -> not_borg_responsibility; send one message -> one_off; friend will respond -> not_borg_responsibility.",
-  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility; Borg will attend in person or make payments -> impossible_for_borg_without_capability.",
+  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; a participant will pull flight numbers -> not_borg_responsibility; Borg will attend in person or make payments -> impossible_for_borg_without_capability.",
   "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg memory/conversation responsibilities, not external monitoring.",
 ].join("\n");

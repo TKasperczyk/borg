@@ -28,7 +28,7 @@ export type AutonomousOutboundPromptTarget = {
   source_type: SessionRecord["source_type"];
   // Human-readable thread/conversation name (the connector's captured label),
   // and the audience entity this thread belongs to. Together these let a
-  // recalled thought ("the debate, what Lunaria argued") bind to a reachable
+  // recalled thought ("the debate, what a participant argued") bind to a reachable
   // route: the label makes the target legible, and audience_entity_id matches
   // the origin_audience provenance that recalled memories already carry, so
   // thinking-about-someone and being-able-to-reach-them are one object rather

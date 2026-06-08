@@ -77,7 +77,7 @@ describe("s2 planner", () => {
     expect(llm.requests[1]?.messages.at(-1)).toEqual({
       role: "user",
       content:
-        "Your previous response did not include the required EmitTurnPlan tool_use block. Emit one now -- this is the only way to complete the plan step.",
+        "My previous response did not include the required EmitTurnPlan tool_use block. I emit one now -- this is the only way to complete the plan step.",
     });
     expect(result.usage).toMatchObject({
       input_tokens: 9,

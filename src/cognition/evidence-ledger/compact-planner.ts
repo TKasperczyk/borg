@@ -85,7 +85,7 @@ export type CompactPlannerLedgerPrompt = {
 
 const COMPACT_PLANNER_LEDGER_GUIDANCE = [
   "CompactPlannerLedger: decision-relevant evidence slice for the S2 planner.",
-  "Use these entries to check current-turn constraints before planning verification steps.",
+  "I use these entries to check current-turn constraints before planning verification steps.",
   "Dialogue messages carry the conversational transcript; this compact ledger carries locked state, constraints, participant context, quarantines, and action threads.",
   "Quarantined/contested/assistant-seeded values are not facts.",
 ].join("\n");

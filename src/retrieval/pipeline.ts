@@ -108,6 +108,7 @@ import {
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
 import {
+  SELF_RECALL_SCOPE,
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
   unknownMemoryDisclosureLabel,
@@ -1788,7 +1789,7 @@ function recallStateScopeKey(
   mode: RetrievalExecutionMode,
 ): string {
   if (mode === "cognition") {
-    return "sol";
+    return SELF_RECALL_SCOPE;
   }
 
   return options.audienceEntityId ?? options.sessionId ?? DEFAULT_SESSION_ID;

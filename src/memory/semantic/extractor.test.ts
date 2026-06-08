@@ -250,7 +250,7 @@ describe("semantic extractor", () => {
     );
     expect(prompt).not.toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("disclosure_class=relationship_private");
-    expect(prompt).toContain("usable internally");
+    expect(prompt).toContain("I can use this internally");
     expect(prompt).toContain(privateAudience);
   });
 

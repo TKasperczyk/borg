@@ -336,7 +336,7 @@ describe("proactive outbound", () => {
       }>(borg);
 
       expect(internal.deps.config.host_capabilities).toContain(
-        "Proactive outbound messaging (you cannot reach out to participants later on your own initiative)",
+        "Proactive outbound messaging (I cannot reach out to participants later on my own initiative)",
       );
       expect(internal.deps.config.host_capabilities).not.toContain(
         "Proactive outbound messaging via wired source_type connector(s): demo",
