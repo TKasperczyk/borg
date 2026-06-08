@@ -63,7 +63,7 @@ import type {
   StreamReader,
   StreamWriter,
 } from "../../../stream/index.js";
-import type { ToolDispatcher } from "../../../tools/index.js";
+import type { ToolDispatcher } from "../../../tools/dispatcher.js";
 import type { Clock } from "../../../util/clock.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";

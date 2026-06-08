@@ -41,8 +41,8 @@ import type {
   RetrievedEpisode,
   RetrievedSemantic,
 } from "../../retrieval/index.js";
-import type { ToolDispatcher } from "../../tools/index.js";
-import type { AutonomousOutboundPromptContext } from "../../outbound/index.js";
+import type { ToolDispatcher } from "../../tools/dispatcher.js";
+import type { AutonomousOutboundPromptContext } from "../../outbound/autonomous-policy.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../turn-action/index.js";

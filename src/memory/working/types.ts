@@ -5,7 +5,7 @@ import {
   intentRecordSchema,
   type CognitiveMode,
   type IntentRecord,
-} from "../../cognition/types.js";
+} from "../../cognition/cognitive-contracts.js";
 import { affectiveSignalSchema } from "../affective/types.js";
 import { proceduralContextSchema } from "../procedural/context.js";
 import {

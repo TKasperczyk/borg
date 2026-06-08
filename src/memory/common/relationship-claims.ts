@@ -7,7 +7,7 @@ import {
   type EntityId,
   type RelationalSlotId,
   type StreamEntryId,
-} from "../util/ids.js";
+} from "../../util/ids.js";
 
 export const RELATIONSHIP_LABEL_FAMILIES = [
   "kinship",

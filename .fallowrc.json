@@ -29,6 +29,204 @@
     //   "**/generated/**"     // OpenAPI, Protobuf codegen
     // ]
   },
+  "boundaries": {
+    "zones": [
+      {
+        "name": "tests",
+        "patterns": [
+          "src/**/*.test.ts",
+          "src/**/*.integration.test.ts",
+          "src/test-support/**",
+          "scripts/**",
+          "eval/**",
+          "simulator/**",
+          "assessor/**",
+          "demo/**"
+        ]
+      },
+      {
+        "name": "foundation",
+        "patterns": [
+          "src/util/**",
+          "src/storage/**",
+          "src/stream/**",
+          "src/embeddings/**",
+          "src/llm/**",
+          "src/auth/**",
+          "src/sessions/**",
+          "src/attachments/**",
+          "src/cognition/tracing/**"
+        ]
+      },
+      {
+        "name": "shared_data",
+        "patterns": [
+          "src/memory/common/**",
+          "src/memory/source-trust.ts",
+          // deferred relocation: EntityRepository belongs in a lower shared
+          // entity layer, tracked for a future move.
+          "src/memory/commitments/**"
+        ]
+      },
+      {
+        "name": "shared_contracts",
+        "patterns": [
+          // deferred relocation: belongs in a lower shared disclosure layer,
+          // tracked for a future move.
+          "src/cognition/disclosure-labels.ts",
+          // shared contract: cognitive mode, turn origin, perception, intent,
+          // temporal cue, and attention-weight domain schemas.
+          "src/cognition/cognitive-contracts.ts",
+          // shared contract: evidence-ledger source schema, section constants,
+          // and result types.
+          "src/cognition/evidence-ledger/types.ts",
+          // shared contract: host capability constants and default prompt
+          // contract consumed by config.
+          "src/cognition/prompts/host-capability-contracts.ts",
+          // shared contract: outbound tool-name constant used to avoid
+          // tool/outbound/cognition cycles.
+          "src/tools/internal/outbound-post-name.ts"
+        ]
+      },
+      {
+        "name": "config",
+        "patterns": [
+          "src/config/**"
+        ]
+      },
+      {
+        "name": "memory",
+        "patterns": [
+          "src/memory/**"
+        ]
+      },
+      {
+        "name": "retrieval",
+        "patterns": [
+          "src/retrieval/**"
+        ]
+      },
+      {
+        "name": "services",
+        "patterns": [
+          "src/executive/**",
+          "src/tools/dispatcher.ts",
+          "src/tools/anthropic.ts",
+          "src/outbound/autonomous-policy.ts",
+          "src/outbound/connector-registry.ts",
+          "src/outbound/delivery.ts",
+          "src/outbound/types.ts"
+        ]
+      },
+      {
+        "name": "cognition",
+        "patterns": [
+          "src/cognition/**"
+        ]
+      },
+      {
+        "name": "app",
+        "patterns": [
+          "src/borg/**",
+          "src/borg.ts",
+          "src/index.ts",
+          "src/cli/**",
+          "src/autonomy/**",
+          "src/offline/**",
+          "src/correction/**",
+          "src/outbound/**",
+          "src/tools/**"
+        ]
+      }
+    ],
+    "rules": [
+      {
+        "from": "tests",
+        "allow": [
+          "tests",
+          "foundation",
+          "shared_data",
+          "shared_contracts",
+          "config",
+          "memory",
+          "retrieval",
+          "services",
+          "cognition",
+          "app"
+        ]
+      },
+      {
+        "from": "foundation",
+        "allow": ["foundation"],
+        "allowTypeOnly": ["shared_contracts"]
+      },
+      {
+        "from": "shared_data",
+        "allow": ["foundation", "shared_data", "memory"]
+      },
+      {
+        "from": "shared_contracts",
+        "allow": ["foundation", "shared_data", "memory", "retrieval", "shared_contracts"]
+      },
+      {
+        "from": "config",
+        "allow": ["foundation", "shared_data", "shared_contracts", "services"]
+      },
+      {
+        "from": "memory",
+        // memory and retrieval are intentional peers below cognition: memory
+        // persists lower-band state and uses retrieval utilities/contracts.
+        "allow": ["foundation", "shared_data", "retrieval", "shared_contracts"],
+        "allowTypeOnly": ["services", "cognition", "app"]
+      },
+      {
+        "from": "retrieval",
+        // retrieval and memory are intentional peers below cognition: retrieval
+        // scores/searches over memory repositories and lower-band records.
+        "allow": ["foundation", "shared_data", "memory", "shared_contracts"],
+        "allowTypeOnly": ["cognition"]
+      },
+      {
+        "from": "services",
+        "allow": [
+          "foundation",
+          "shared_data",
+          "shared_contracts",
+          "config",
+          "memory",
+          "retrieval"
+        ],
+        "allowTypeOnly": ["cognition", "app"]
+      },
+      {
+        "from": "cognition",
+        "allow": [
+          "foundation",
+          "shared_data",
+          "shared_contracts",
+          "config",
+          "memory",
+          "retrieval",
+          "services"
+        ],
+        "allowTypeOnly": ["app"]
+      },
+      {
+        "from": "app",
+        "allow": [
+          "foundation",
+          "shared_data",
+          "shared_contracts",
+          "config",
+          "memory",
+          "retrieval",
+          "services",
+          "cognition",
+          "app"
+        ]
+      }
+    ]
+  },
   "rules": {
     "unused-dependencies": "warn"
   }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { createEntityId, createRelationalSlotId, createStreamEntryId } from "../util/ids.js";
-import { checkRelationshipClaimGrounding } from "./memory-write-relationship-gate.js";
+import { createEntityId, createRelationalSlotId, createStreamEntryId } from "../../util/ids.js";
+import { checkRelationshipClaimGrounding } from "./relationship-claim-grounding.js";
 import type { RelationshipClaim } from "./relationship-claims.js";
 
 function relationshipClaim(overrides: Partial<RelationshipClaim> = {}): RelationshipClaim {

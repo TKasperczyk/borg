@@ -1,10 +1,13 @@
 import type {
   RelationshipEvidenceStreamEntryTrustValidator,
   SyncRelationshipEvidenceStreamEntryTrustValidator,
-} from "../memory/source-trust.js";
-import { streamEntryIdHelpers, type StreamEntryId } from "../util/ids.js";
+} from "../source-trust.js";
+import { streamEntryIdHelpers, type StreamEntryId } from "../../util/ids.js";
 import type { RelationshipClaim } from "./relationship-claims.js";
-import { participantRosterRelationalSlotIds, type ParticipantRoster } from "./perception/index.js";
+import {
+  participantRosterRelationalSlotIds,
+  type ParticipantRosterRelationshipEvidence,
+} from "./relationship-evidence.js";
 
 export type RelationshipEvidenceRejection = {
   id: string;
@@ -29,7 +32,7 @@ export type RelationshipClaimGroundingCheck = {
 
 type RelationshipClaimGroundingInput = {
   claims?: readonly RelationshipClaim[];
-  participantRoster?: ParticipantRoster | null;
+  participantRoster?: ParticipantRosterRelationshipEvidence | null;
   allowedRelationshipEvidenceStreamEntryIds?: ReadonlySet<StreamEntryId> | null;
 };
 

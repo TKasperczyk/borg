@@ -16,7 +16,10 @@ import type {
   SharedStateEntryId,
 } from "../../util/ids.js";
 import type { ParticipantRoster } from "../perception/types.js";
-import { relationshipClaimSchema, type RelationshipClaim } from "../relationship-claims.js";
+import {
+  relationshipClaimSchema,
+  type RelationshipClaim,
+} from "../../memory/common/relationship-claims.js";
 import type { SharedStateCommitmentCanonicalizationType } from "./commitment-canonicalization.js";
 import { MAX_OPERATIONS_PER_COMPILE, SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
 

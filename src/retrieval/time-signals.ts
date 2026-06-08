@@ -1,5 +1,5 @@
 /* Time-signal helpers for retrieval scoring and explicit range filtering. */
-import type { TemporalCue } from "../cognition/types.js";
+import type { TemporalCue } from "../cognition/cognitive-contracts.js";
 import type { Episode } from "../memory/episodic/types.js";
 
 export type ResolvedTimeRange = {

@@ -13,6 +13,8 @@ import type {
   ParticipantRosterSubject,
   ParticipantRosterUncertain,
 } from "./types.js";
+export { participantRosterRelationalSlotIds } from "../../memory/common/relationship-evidence.js";
+export { renderParticipantRoster } from "../../memory/common/participant-roster-rendering.js";
 
 export type {
   ParticipantRoster,
@@ -340,101 +342,4 @@ export function buildParticipantRosterFromRepositories(
     relationalSlots: [...slotsById.values()],
     streamEvidence: input.streamEvidence,
   });
-}
-
-function renderRelationshipSummary(relationships: readonly string[]): string | null {
-  if (relationships.length === 0) {
-    return null;
-  }
-
-  return `relationships: ${relationships.join(", ")}`;
-}
-
-function renderSource(source: string | null): string | null {
-  return source === null ? null : `source: ${source}`;
-}
-
-function renderParts(parts: readonly (string | null)[]): string {
-  return parts.filter((part): part is string => part !== null).join("; ");
-}
-
-export function renderParticipantRoster(
-  roster: ParticipantRoster | null | undefined,
-): string | null {
-  if (
-    roster === null ||
-    roster === undefined ||
-    (roster.participants.length === 0 &&
-      roster.non_chat_subjects.length === 0 &&
-      roster.unknown_or_uncertain.length === 0)
-  ) {
-    return null;
-  }
-
-  const lines = ["Thread roster:"];
-
-  for (const participant of roster.participants) {
-    lines.push(
-      `- ${participant.display_name} (${renderParts([
-        `id: ${participant.entity_id}`,
-        participant.audience_role,
-        renderRelationshipSummary(participant.known_relationships),
-        renderSource(participant.relationship_source),
-      ])})`,
-    );
-  }
-
-  if (roster.non_chat_subjects.length > 0) {
-    lines.push("Non-chat subjects:");
-
-    for (const subject of roster.non_chat_subjects) {
-      lines.push(
-        `- ${subject.display_name} (${renderParts([
-          `id: ${subject.entity_id}`,
-          renderRelationshipSummary(subject.known_relationships),
-          renderSource(subject.relationship_source),
-        ])})`,
-      );
-    }
-  }
-
-  if (roster.unknown_or_uncertain.length > 0) {
-    lines.push("Unknown or uncertain:");
-
-    for (const item of roster.unknown_or_uncertain) {
-      lines.push(
-        `- ${item.display_name ?? "unknown entity"} (${renderParts([
-          item.entity_id === null ? null : `id: ${item.entity_id}`,
-          item.reason,
-          renderRelationshipSummary(item.known_relationships),
-          renderSource(item.relationship_source),
-        ])})`,
-      );
-    }
-  }
-
-  return lines.join("\n");
-}
-
-export function participantRosterRelationalSlotIds(
-  roster: ParticipantRoster | null | undefined,
-): Set<string> {
-  const ids = new Set<string>();
-
-  for (const source of [
-    ...(roster?.participants ?? []).map((participant) => participant.relationship_source),
-    ...(roster?.participants ?? []).flatMap(
-      (participant) => participant.relationship_sources ?? [],
-    ),
-    ...(roster?.non_chat_subjects ?? []).map((subject) => subject.relationship_source),
-    ...(roster?.non_chat_subjects ?? []).flatMap((subject) => subject.relationship_sources ?? []),
-  ]) {
-    if (source === null || !source.startsWith("relational_slot:")) {
-      continue;
-    }
-
-    ids.add(source.slice("relational_slot:".length));
-  }
-
-  return ids;
 }

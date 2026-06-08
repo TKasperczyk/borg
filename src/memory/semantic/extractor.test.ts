@@ -19,7 +19,7 @@ import {
 } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type { ParticipantRoster } from "../../cognition/perception/index.js";
-import type { RelationshipClaim } from "../../cognition/relationship-claims.js";
+import type { RelationshipClaim } from "../common/relationship-claims.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";

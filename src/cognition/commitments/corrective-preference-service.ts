@@ -28,8 +28,8 @@ import {
 import type { TurnTracer } from "../tracing/tracer.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
-import { checkRelationshipClaimGrounding } from "../memory-write-relationship-gate.js";
-import type { RelationshipClaim } from "../relationship-claims.js";
+import { checkRelationshipClaimGrounding } from "../../memory/common/relationship-claim-grounding.js";
+import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,

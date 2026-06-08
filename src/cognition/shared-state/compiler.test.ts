@@ -37,7 +37,7 @@ import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/ind
 import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
 import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
-import type { RelationshipClaim } from "../relationship-claims.js";
+import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import {
   advanceSharedStateCompileSkipAnchor,
   buildSharedStateLedgerPromptContext,

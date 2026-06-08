@@ -20,7 +20,7 @@ import {
   createStreamEntryId,
   type CommitmentId,
 } from "../../util/ids.js";
-import type { RelationshipClaim } from "../relationship-claims.js";
+import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceTurnService } from "./corrective-preference-service.js";
 

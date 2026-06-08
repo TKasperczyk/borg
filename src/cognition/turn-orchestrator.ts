@@ -36,11 +36,9 @@ import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/se
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
-import type {
-  AutonomousOutboundPolicy,
-  OutboundDelivery,
-  OutboundDeliveryReceipt,
-} from "../outbound/index.js";
+import type { AutonomousOutboundPolicy } from "../outbound/autonomous-policy.js";
+import type { OutboundDelivery } from "../outbound/delivery.js";
+import type { OutboundDeliveryReceipt } from "../outbound/types.js";
 import type { SessionSourceType, SessionsRepository } from "../sessions/index.js";
 import {
   ABORTED_TURN_EVENT,
@@ -48,7 +46,7 @@ import {
   StreamWriter,
   type StreamEntryIndexRepository,
 } from "../stream/index.js";
-import type { ToolDispatcher } from "../tools/index.js";
+import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type EntityId, type SessionId } from "../util/ids.js";

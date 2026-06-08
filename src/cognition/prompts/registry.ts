@@ -5,7 +5,7 @@ import {
   SELF_ARCHITECTURE_SECTION,
   VOICE_AND_POSTURE_SECTION,
 } from "./base-identity.js";
-import { DEFAULT_HOST_CAPABILITIES_SECTION } from "./host-capabilities.js";
+import { DEFAULT_HOST_CAPABILITIES_SECTION } from "./host-capability-contracts.js";
 
 export const PROMPT_KEYS = [
   "base_identity_preamble",

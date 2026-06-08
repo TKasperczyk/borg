@@ -1,4 +1,4 @@
-import { bestVectorSimilarity } from "../../retrieval/embedding-similarity.js";
+import { bestVectorSimilarity } from "./embedding-similarity.js";
 
 export function computeGoalRelevanceFromEmbeddings(input: {
   episodeEmbedding: Float32Array;
@@ -19,4 +19,19 @@ export function computeValueAlignmentFromEmbeddings(input: {
   valueVectors: readonly Float32Array[];
 }): number {
   return bestVectorSimilarity(input.episodeEmbedding, input.valueVectors);
+}
+
+export function computeGoalRelevance(input: {
+  episodeEmbedding: Float32Array;
+  goalVectors: readonly Float32Array[];
+  primaryGoalVector?: Float32Array;
+}): number {
+  return computeGoalRelevanceFromEmbeddings(input);
+}
+
+export function computeValueAlignment(input: {
+  episodeEmbedding: Float32Array;
+  valueVectors: readonly Float32Array[];
+}): number {
+  return computeValueAlignmentFromEmbeddings(input);
 }

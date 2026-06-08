@@ -14,7 +14,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
-import type { RelationshipClaim } from "../relationship-claims.js";
+import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";

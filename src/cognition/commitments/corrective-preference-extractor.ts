@@ -35,7 +35,10 @@ import {
   memoryDisclosurePayloadFields,
   relationalSlotMemoryDisclosureLabel,
 } from "../disclosure-labels.js";
-import { relationshipClaimSchema, type RelationshipClaim } from "../relationship-claims.js";
+import {
+  relationshipClaimSchema,
+  type RelationshipClaim,
+} from "../../memory/common/relationship-claims.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   traceLlmCallError,

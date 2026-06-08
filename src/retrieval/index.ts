@@ -26,6 +26,12 @@ export {
   type ComputeRetrievalConfidenceInput,
   type RetrievalConfidence,
 } from "./confidence.js";
+export {
+  computeGoalRelevance,
+  computeGoalRelevanceFromEmbeddings,
+  computeValueAlignment,
+  computeValueAlignmentFromEmbeddings,
+} from "./attention-relevance.js";
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   MEMORY_DISCLOSURE_CLASSES,

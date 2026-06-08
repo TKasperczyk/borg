@@ -13,7 +13,7 @@ import type {
   ToolDispatchResult,
   ToolDispatcher,
   ToolOrigin,
-} from "../../tools/index.js";
+} from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";

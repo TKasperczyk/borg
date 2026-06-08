@@ -1,4 +1,4 @@
-import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
+import type { AttentionWeights, TemporalCue } from "../cognition/cognitive-contracts.js";
 import {
   commitmentMemoryDisclosureLabel,
   imagePerceptionMemoryDisclosureLabel,

@@ -21,9 +21,9 @@ import {
   type SharedStateEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { checkRelationshipClaimGrounding } from "../memory-write-relationship-gate.js";
+import { checkRelationshipClaimGrounding } from "../../memory/common/relationship-claim-grounding.js";
 import type { ParticipantRoster } from "../perception/index.js";
-import { relationshipClaimSchema } from "../relationship-claims.js";
+import { relationshipClaimSchema } from "../../memory/common/relationship-claims.js";
 import type {
   AllowedCanonicalizationIds,
   CanonicalizationDuplicateDrop,

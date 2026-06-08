@@ -3,11 +3,8 @@ import { z } from "zod";
 
 import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
 import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
-import {
-  OUTBOUND_POST_TOOL_NAME,
-  type ToolDefinition,
-  type ToolDispatcher,
-} from "../../tools/index.js";
+import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";

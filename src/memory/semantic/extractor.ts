@@ -2,21 +2,19 @@ import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
-import {
-  renderParticipantRoster,
-  type ParticipantRoster,
-} from "../../cognition/perception/index.js";
+import type { ParticipantRoster } from "../../cognition/perception/index.js";
+import { renderParticipantRoster } from "../common/participant-roster-rendering.js";
 import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
 import {
   HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
-} from "../../cognition/prompts/relationship-labels.js";
-import { checkRelationshipClaimGroundingAsync } from "../../cognition/memory-write-relationship-gate.js";
+} from "../common/relationship-label-prompts.js";
+import { checkRelationshipClaimGroundingAsync } from "../common/relationship-claim-grounding.js";
 import {
   relationshipClaimSchema,
   type RelationshipClaim,
-} from "../../cognition/relationship-claims.js";
+} from "../common/relationship-claims.js";
 import {
   type LLMClient,
   type LLMCompleteResult,
