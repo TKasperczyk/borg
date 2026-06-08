@@ -103,6 +103,8 @@ export const pendingProceduralAttemptSchema = z
 export const discourseStopProvenanceSchema = z.enum([
   "generation_gate",
   "finalizer_no_output",
+  // legacy read-compat: produced by the removed ManifestValidator; retained so
+  // historically-persisted discourse-stop rows still parse. No current producer.
   "manifest_no_output",
   "finalizer_emission_metadata",
   "canonical_stop_phrase",

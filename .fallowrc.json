@@ -63,8 +63,10 @@
         "patterns": [
           "src/memory/common/**",
           "src/memory/source-trust.ts",
-          // deferred relocation: EntityRepository belongs in a lower shared
-          // entity layer, tracked for a future move.
+          // deferred relocation: the whole commitments package is temporarily
+          // treated as shared because EntityRepository is co-located here and is
+          // consumed cross-band; it belongs in a lower shared entity layer
+          // (tracked for a future move).
           "src/memory/commitments/**"
         ]
       },
