@@ -25,7 +25,6 @@ export type CommitmentGuardRunnerOptions = {
   detectionModel: string;
   rewriteModel: string;
   mode?: PostGenerationGuardMode;
-  criticalKinds?: readonly CommitmentKind[];
   regenerateBeforeSuppress?: boolean;
   rewriteOnViolation?: boolean;
   entityRepository: EntityRepository;

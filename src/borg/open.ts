@@ -384,7 +384,6 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
       repairSessionStreamEntryIndex,
       turnOrchestrator,
-      sessionsRepository: repositories.sessionsRepository,
       clock,
       config: {
         quietWindowMs: config.streamIngestion.settle.settleMs,

@@ -13,14 +13,9 @@ export {
   type SelfDecisionIntrospectionRow,
 } from "./projection.js";
 export {
-  SELF_DECISION_DISCLOSURE_CLASSES,
-  SELF_DECISION_ORIGINS,
   selfDecisionDisclosureClassSchema,
-  selfDecisionEventIdSchema,
   selfDecisionEventSchema,
   selfDecisionOriginSchema,
-  selfDecisionSessionIdSchema,
-  selfDecisionStreamEntryIdSchema,
   selfDecisionTriggerTypeSchema,
   type SelfDecisionDisclosureClass,
   type SelfDecisionEvent,

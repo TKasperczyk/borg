@@ -273,15 +273,6 @@ export async function resolveSemanticDisclosureSourceAdapter(input: {
     : adapted;
 }
 
-export async function resolveSemanticSourceAdapter(input: {
-  episodicRepository: EpisodicRepository;
-  sourceEpisodeIds: readonly Episode["id"][];
-  mode: SemanticSourceMode;
-  visibility: SemanticVisibilityOptions;
-}): Promise<SemanticSourceAdapter | null> {
-  return resolveSemanticDisclosureSourceAdapter(input);
-}
-
 export async function resolveMemoryDisclosureLabelForEpisodeIds(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],

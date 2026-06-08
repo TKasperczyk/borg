@@ -86,7 +86,7 @@ import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { SessionLock } from "./session-lock.js";
 import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "./tracing/tracer.js";
-import { isInboundBatchTurnInput, type TurnOrchestratorInput } from "./turn-input.js";
+import type { TurnOrchestratorInput } from "./turn-input.js";
 import { isAutonomousLikeTurnOrigin, type CognitiveMode, type IntentRecord } from "./types.js";
 
 export type TurnResult = {
@@ -185,11 +185,6 @@ export type TurnOrchestratorOptions = {
 };
 
 function stripTurnLockMode(input: TurnOrchestratorInput): TurnPhaseCoordinatorInput {
-  if (isInboundBatchTurnInput(input)) {
-    const { lockMode: _lockMode, ...phaseInput } = input;
-    return phaseInput;
-  }
-
   const { lockMode: _lockMode, ...phaseInput } = input;
   return phaseInput;
 }
@@ -251,7 +246,6 @@ export class TurnOrchestrator {
       detectionModel: options.config.anthropic.models.background,
       rewriteModel: options.config.anthropic.models.cognition,
       mode: options.config.generation.postGenerationGuards.commitment.mode,
-      criticalKinds: options.config.commitments.enforce.criticalKinds,
       regenerateBeforeSuppress: options.config.commitments.enforce.regenerateBeforeSuppress,
       rewriteOnViolation: options.config.commitments.enforce.rewriteOnViolation,
       entityRepository: options.entityRepository,

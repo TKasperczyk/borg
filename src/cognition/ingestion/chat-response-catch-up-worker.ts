@@ -1,7 +1,6 @@
 /*
  * v1 delivery contract: Inbound is durable (committed before ack). Reply generation is replay-safe (cursor-stamped response_to + reconcile-before-generate; at-least-once). External delivery is NOT auto-retried by borg (no durable outbox in v1). Accepted D1 loss window: a crash after the stamped terminal append but before the transport delivers leaves the reply recorded-but-possibly-undelivered, not retried. Dedup is per source_message_key via the single-writer daemon's in-process serialization; cross-process concurrent writers are out of v1 scope.
  */
-import type { SessionsRepository } from "../../sessions/index.js";
 import type { StreamEntry, StreamEntryIndexRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { describeError, SessionBusyError } from "../../util/errors.js";
@@ -45,7 +44,6 @@ export type ChatResponseCatchUpWorkerOptions = {
   entryIndex: Pick<StreamEntryIndexRepository, "listSessionIdsWithPendingResponseBacklog">;
   repairSessionStreamEntryIndex: (sessionId: SessionId) => Promise<unknown>;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
-  sessionsRepository: Pick<SessionsRepository, "count" | "list">;
   clock: Clock;
   setTimeoutFn?: SetTimeoutFn;
   clearTimeoutFn?: ClearTimeoutFn;

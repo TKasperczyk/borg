@@ -153,7 +153,7 @@ describe("TurnDiscourseStateService", () => {
       },
       clock: new FixedClock(1_000),
     });
-    const reasons = ["finalizer_no_output", "manifest_no_output", "no_output_tool"] as const;
+    const reasons = ["finalizer_no_output", "no_output_tool"] as const;
 
     for (const reason of reasons) {
       const sourceStreamEntryId = createStreamEntryId();
@@ -190,10 +190,6 @@ describe("TurnDiscourseStateService", () => {
       {
         reason: "finalizer_no_output",
         expectedReason: "Finalizer called no_output for this turn.",
-      },
-      {
-        reason: "manifest_no_output",
-        expectedReason: "Legacy finalizer emitted no_output for this turn.",
       },
       {
         reason: "no_output_tool",

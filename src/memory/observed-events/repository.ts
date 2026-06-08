@@ -1,4 +1,5 @@
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import { z } from "zod";
 import {
   parseJsonArray,
   quoteSqlString,
@@ -29,9 +30,15 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  observedEventBeliefEffectInputSchema,
   observedEventSchema,
+  observedEventStanceInputSchema,
+  observedEventTaintInputSchema,
   type ObservedEvent,
+  type ObservedEventBeliefEffect,
   type ObservedEventDisclosureClass,
+  type ObservedEventStance,
+  type ObservedEventTaint,
 } from "./types.js";
 
 const OBSERVED_EVENT_JSON_ARRAY_CODEC = {
@@ -43,9 +50,9 @@ export type ObservedEventRecordInput = {
   id?: ObservedEventId;
   occurredAt: number;
   sessionId: SessionId;
-  stance: string;
-  taint: string;
-  beliefEffect: string;
+  stance: ObservedEventStance;
+  taint: ObservedEventTaint;
+  beliefEffect: ObservedEventBeliefEffect;
   classificationKind: string;
   disclosureClass: ObservedEventDisclosureClass;
   interactionText: string;
@@ -57,6 +64,14 @@ export type ObservedEventRecordInput = {
   sourceStreamEntryIds: readonly StreamEntryId[];
   now?: number;
 };
+
+const observedEventRecordDimensionsSchema = z
+  .object({
+    stance: observedEventStanceInputSchema,
+    taint: observedEventTaintInputSchema,
+    beliefEffect: observedEventBeliefEffectInputSchema,
+  })
+  .strict();
 
 export type ObservedEventProjectionSourceEvent = {
   id: ObservedEventId;
@@ -466,6 +481,18 @@ export class ObservedEventRepository {
 
     const now = input.now ?? this.clock.now();
     const id = input.id ?? createObservedEventId();
+    const dimensions = observedEventRecordDimensionsSchema.safeParse({
+      stance: input.stance,
+      taint: input.taint,
+      beliefEffect: input.beliefEffect,
+    });
+
+    if (!dimensions.success) {
+      throw new StorageError("Observed event dimensions failed validation", {
+        cause: dimensions.error,
+        code: "OBSERVED_EVENT_INVALID",
+      });
+    }
 
     this.db
       .prepare(
@@ -487,9 +514,9 @@ export class ObservedEventRepository {
         id,
         input.occurredAt,
         input.sessionId,
-        input.stance,
-        input.taint,
-        input.beliefEffect,
+        dimensions.data.stance,
+        dimensions.data.taint,
+        dimensions.data.beliefEffect,
         input.classificationKind,
         input.disclosureClass,
         input.interactionText,
@@ -569,36 +596,6 @@ export class ObservedEventRepository {
       .get(fireDedupKey) as Record<string, unknown> | undefined;
 
     return row === undefined ? null : mapObservedEventRow(row);
-  }
-
-  listRecentForSession(input: {
-    sessionId: SessionId;
-    disclosureClass: ObservedEventDisclosureClass;
-    sinceMs: number;
-    limit: number;
-  }): ObservedEventProjectionSourceEvent[] {
-    const rows = this.db
-      .prepare(
-        `
-          SELECT
-            id, occurred_at, last_seen_at, stance, taint, belief_effect, disclosure_class,
-            interaction_text, recurrence_count, speaker_entity_id, audience_entity_id,
-            source_stream_entry_ids
-          FROM observed_events
-          WHERE
-            session_id = ?
-            AND disclosure_class = ?
-            AND last_seen_at >= ?
-          ORDER BY last_seen_at DESC, id DESC
-          LIMIT ?
-        `,
-      )
-      .all(input.sessionId, input.disclosureClass, input.sinceMs, input.limit) as Record<
-      string,
-      unknown
-    >[];
-
-    return rows.map(mapProjectionRow);
   }
 
   listRecentGlobal(input: {

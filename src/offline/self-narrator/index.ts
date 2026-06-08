@@ -18,6 +18,7 @@ import {
   GROWTH_MARKER_CATEGORIES,
   autobiographicalPeriodIdSchema,
   autobiographicalPeriodSchema,
+  growthMarkerIdSchema,
   growthMarkerSchema,
   type AutobiographicalPeriod,
 } from "../../memory/self/index.js";
@@ -112,9 +113,30 @@ export type SelfNarratorPlan = z.infer<typeof selfNarratorPlanSchema>;
 
 type SelfNarratorReversal = {
   previous?: AutobiographicalPeriod;
-  period_id?: string;
-  marker_id?: string;
+  period_id?: z.infer<typeof autobiographicalPeriodIdSchema>;
+  marker_id?: z.infer<typeof growthMarkerIdSchema>;
 };
+
+function parseSelfNarratorReversalId<Schema extends z.ZodType>(
+  schema: Schema,
+  value: unknown,
+  label: string,
+): z.infer<Schema> | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const parsed = schema.safeParse(value);
+
+  if (!parsed.success) {
+    throw new StorageError(`Invalid self-narrator reversal ${label}`, {
+      cause: parsed.error,
+      code: "SELF_NARRATOR_REVERSAL_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
@@ -300,10 +322,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
 
   constructor(private readonly options: SelfNarratorProcessOptions) {
     this.options.registry.register(this.name, "open_period", async ({ reversal }) => {
-      const parsed = reversal as Partial<SelfNarratorReversal>;
+      const periodId = parseSelfNarratorReversalId(
+        autobiographicalPeriodIdSchema,
+        reversal.period_id,
+        "period_id",
+      );
 
-      if (typeof parsed.period_id === "string") {
-        this.options.autobiographicalRepository.deletePeriod(parsed.period_id as never);
+      if (periodId !== null) {
+        this.options.autobiographicalRepository.deletePeriod(periodId);
       }
     });
     this.options.registry.register(this.name, "close_period", async ({ reversal }) => {
@@ -321,10 +347,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
     });
     this.options.registry.register(this.name, "add_growth_marker", async ({ reversal }) => {
-      const parsed = reversal as Partial<SelfNarratorReversal>;
+      const markerId = parseSelfNarratorReversalId(
+        growthMarkerIdSchema,
+        reversal.marker_id,
+        "marker_id",
+      );
 
-      if (typeof parsed.marker_id === "string") {
-        this.options.growthMarkersRepository.delete(parsed.marker_id as never);
+      if (markerId !== null) {
+        this.options.growthMarkersRepository.delete(markerId);
       }
     });
   }

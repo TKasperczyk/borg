@@ -530,14 +530,6 @@ export class SemanticNodeRepository {
       .run(input.nodeId, normalizeOutboxReason(input.reason), input.createdAt);
   }
 
-  private enqueueVectorSyncTransactional(input: {
-    nodeId: SemanticNodeId;
-    reason?: string;
-    createdAt: number;
-  }): void {
-    this.enqueueVectorSyncRow(input);
-  }
-
   private enqueueVectorSyncRowForResync(nodeId: SemanticNodeId, reason: string): void {
     this.enqueueVectorSyncRow({
       nodeId,
@@ -870,7 +862,7 @@ export class SemanticNodeRepository {
       return null;
     }
 
-    this.enqueueVectorSyncTransactional({
+    this.enqueueVectorSyncRow({
       nodeId: id,
       reason: input.reason,
       createdAt: updatedAt,

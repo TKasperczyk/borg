@@ -44,7 +44,7 @@ import {
 } from "../../../test-support/factories/shared-state.js";
 import type { PerceptionResult } from "../../types.js";
 import { summarizeSharedStateArtifactRender } from "../../shared-state/render.js";
-import { SHARED_STATE_TOOL_NAME } from "../../shared-state/schema.js";
+import { SHARED_STATE_TOOL_NAME } from "../../shared-state/constants.js";
 import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity.js";
 import {
   compileSharedStateArtifactForEvidenceLedger,

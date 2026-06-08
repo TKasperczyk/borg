@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { createMaintenanceRunId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
@@ -55,6 +56,49 @@ function createSelfNarratorResponse(input: {
 }
 
 describe("SelfNarratorProcess", () => {
+  it("rejects malformed reversal ids before repository deletes", async () => {
+    const harness = await createOfflineTestHarness();
+    new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const deletePeriodSpy = vi.spyOn(harness.autobiographicalRepository, "deletePeriod");
+      const deleteMarkerSpy = vi.spyOn(harness.growthMarkersRepository, "delete");
+      const periodAudit = harness.auditLog.record({
+        run_id: createMaintenanceRunId(),
+        process: "self-narrator",
+        action: "open_period",
+        targets: {},
+        reversal: {
+          period_id: "not-a-period-id",
+        },
+      });
+      const markerAudit = harness.auditLog.record({
+        run_id: createMaintenanceRunId(),
+        process: "self-narrator",
+        action: "add_growth_marker",
+        targets: {},
+        reversal: {
+          marker_id: "not-a-marker-id",
+        },
+      });
+
+      await expect(harness.auditLog.revert(periodAudit.id, "test")).rejects.toMatchObject({
+        code: "SELF_NARRATOR_REVERSAL_INVALID",
+      });
+      await expect(harness.auditLog.revert(markerAudit.id, "test")).rejects.toMatchObject({
+        code: "SELF_NARRATOR_REVERSAL_INVALID",
+      });
+      expect(deletePeriodSpy).not.toHaveBeenCalled();
+      expect(deleteMarkerSpy).not.toHaveBeenCalled();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("opens a period, updates the narrative through the plan, and records growth markers", async () => {
     const llm = new FakeLLMClient({
       responses: [

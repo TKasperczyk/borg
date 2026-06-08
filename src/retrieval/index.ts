@@ -78,6 +78,5 @@ export {
   resolveSemanticContextForCognition,
   resolveSemanticContextForDisclosure,
   resolveSemanticDisclosureSourceAdapter,
-  resolveSemanticSourceAdapter,
   type SemanticSourceAdapter,
 } from "./semantic-retrieval.js";

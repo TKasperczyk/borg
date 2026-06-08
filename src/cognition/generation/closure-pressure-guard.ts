@@ -74,7 +74,7 @@ type ClosurePressureGuardEmission = Extract<
 
 export type ClosurePressureGuardResult = {
   emission: ClosurePressureGuardEmission;
-  verdict: "passed" | "rewritten" | "suppressed";
+  verdict: "passed" | "suppressed";
   removed_spans: string[];
   active_closure_commitments: string[];
   reason: string;
@@ -173,16 +173,15 @@ function traceClosureGuard(input: {
   tracer?: TurnTracer;
   turnId: string;
   sessionId?: SessionId;
-  verdict: "passed" | "rewritten" | "suppressed";
+  verdict: "passed" | "suppressed";
   mode?: PostGenerationGuardMode;
-  wouldHaveVerdict?: "passed" | "rewritten" | "suppressed";
+  wouldHaveVerdict?: "passed" | "suppressed";
   wouldHaveSuppressionReason?: string;
   removedSpans: readonly string[];
   activeClosureCommitments: readonly string[];
   reason: string;
   audit: ClosureResponseAudit | null;
   originalResponse?: string;
-  rewrittenResponse?: string;
   auditError?: string;
 }): void {
   if (input.tracer?.enabled !== true) {
@@ -223,10 +222,6 @@ function traceClosureGuard(input: {
 
   if (includePayloads && input.originalResponse !== undefined) {
     payload.original_response = input.originalResponse;
-  }
-
-  if (includePayloads && input.rewrittenResponse !== undefined) {
-    payload.rewritten_response = input.rewrittenResponse;
   }
 
   input.tracer.emit("closure_response_guard.completed", payload);

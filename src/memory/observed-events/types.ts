@@ -46,6 +46,10 @@ export const observedEventEntityIdSchema = z
   })
   .transform((value) => value as EntityId);
 
+export const observedEventStanceInputSchema = z.enum(OBSERVED_EVENT_STANCES);
+export const observedEventTaintInputSchema = z.enum(OBSERVED_EVENT_TAINTS);
+export const observedEventBeliefEffectInputSchema = z.enum(OBSERVED_EVENT_BELIEF_EFFECTS);
+
 export const observedEventStanceSchema = z.string().regex(SLUG, {
   message: "stance must be a lowercase slug matching /^[a-z][a-z0-9_]*$/",
 });
@@ -84,8 +88,8 @@ export const observedEventSchema = z
   })
   .strict();
 
-export type ObservedEventStance = z.infer<typeof observedEventStanceSchema>;
-export type ObservedEventTaint = z.infer<typeof observedEventTaintSchema>;
-export type ObservedEventBeliefEffect = z.infer<typeof observedEventBeliefEffectSchema>;
+export type ObservedEventStance = (typeof OBSERVED_EVENT_STANCES)[number];
+export type ObservedEventTaint = (typeof OBSERVED_EVENT_TAINTS)[number];
+export type ObservedEventBeliefEffect = (typeof OBSERVED_EVENT_BELIEF_EFFECTS)[number];
 export type ObservedEventDisclosureClass = z.infer<typeof observedEventDisclosureClassSchema>;
 export type ObservedEvent = z.infer<typeof observedEventSchema>;

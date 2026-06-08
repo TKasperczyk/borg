@@ -30,7 +30,7 @@ import {
   type SessionId,
 } from "../../../util/ids.js";
 import { StreamReader, StreamWriter, type StreamResponseTo } from "../../../stream/index.js";
-import { SHARED_STATE_TOOL_NAME } from "../../shared-state/schema.js";
+import { SHARED_STATE_TOOL_NAME } from "../../shared-state/constants.js";
 import type { PerceptionResult } from "../../types.js";
 import { compileSharedStateArtifactForEvidenceLedger } from "./retrieval-phase.js";
 import { runPostGenerationPhase } from "./post-generation-phase.js";

@@ -33,13 +33,9 @@ function isFinalizerNoOutputSuppressionReason(
   reason: SuppressionReason,
 ): reason is Extract<
   SuppressionReason,
-  "finalizer_no_output" | "manifest_no_output" | "no_output_tool"
+  "finalizer_no_output" | "no_output_tool"
 > {
-  return (
-    reason === "finalizer_no_output" ||
-    reason === "manifest_no_output" ||
-    reason === "no_output_tool"
-  );
+  return reason === "finalizer_no_output" || reason === "no_output_tool";
 }
 
 function canonicalFinalizerNoOutputSuppressionReason(
@@ -372,10 +368,7 @@ export class TurnDiscourseStateService {
         provenance: finalizerNoOutputReason,
         sourceStreamEntryId: input.sourceStreamEntryId,
         sourceStreamEntryIds: input.sourceStreamEntryIds,
-        reason:
-          input.reason === "manifest_no_output"
-            ? "Legacy finalizer emitted no_output for this turn."
-            : "Finalizer called no_output for this turn.",
+        reason: "Finalizer called no_output for this turn.",
         turnId: input.turnId,
         sessionId: input.sessionId,
       });
@@ -422,9 +415,7 @@ export class TurnDiscourseStateService {
         reason:
           input.reason === "no_output_tool" || input.reason === "finalizer_no_output"
             ? "Closure loop detected; finalizer chose no_output."
-            : input.reason === "manifest_no_output"
-              ? "Closure loop detected; legacy finalizer chose no_output."
-              : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
+            : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
         turnId: input.turnId,
         sessionId: input.sessionId,
       });

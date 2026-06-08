@@ -176,7 +176,7 @@ export const pendingActionRecordSchema = intentRecordSchema.extend({
 export const PENDING_PROCEDURAL_ATTEMPTS_LIMIT = 5;
 export const PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS = 8;
 
-const workingMemoryObjectSchema = z
+export const workingMemorySchema = z
   .object({
     session_id: workingSessionIdSchema,
     turn_counter: z.number().int().nonnegative(),
@@ -192,8 +192,6 @@ const workingMemoryObjectSchema = z
     updated_at: z.number().finite(),
   })
   .strict();
-
-export const workingMemorySchema = workingMemoryObjectSchema;
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingActionRecord = z.infer<typeof pendingActionRecordSchema>;

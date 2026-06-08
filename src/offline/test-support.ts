@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 
 import { autonomyMigrations } from "../autonomy/index.js";
 import { CorrectionService } from "../correction/index.js";
-import type { AffectiveSignal } from "../memory/affective/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
@@ -60,8 +59,6 @@ import {
   ValuesRepository,
   createOpenQuestionsTableSchema,
   selfMigrations,
-  type AutobiographicalPeriod,
-  type GoalRecord,
 } from "../memory/self/index.js";
 import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
 import { trainOfThoughtMigrations } from "../memory/train-of-thought/index.js";
@@ -104,9 +101,7 @@ import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, type Clock } from "../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
-  createAutobiographicalPeriodId,
   createEpisodeId,
-  createGoalId,
   createMaintenanceRunId,
   createSemanticEdgeId,
   createSemanticNodeId,
@@ -935,16 +930,6 @@ export function createEpisodeFixture(
   };
 }
 
-export function createAffectiveSignalFixture(
-  overrides: Partial<AffectiveSignal> = {},
-): AffectiveSignal {
-  return {
-    valence: overrides.valence ?? 0,
-    arousal: overrides.arousal ?? 0,
-    dominant_emotion: overrides.dominant_emotion ?? null,
-  };
-}
-
 export function createWorkingMemoryFixture(overrides: Partial<WorkingMemory> = {}): WorkingMemory {
   return {
     session_id: overrides.session_id ?? DEFAULT_SESSION_ID,
@@ -1030,55 +1015,6 @@ export function createSemanticEdgeFixture(overrides: Partial<SemanticEdge> = {})
     invalidated_by_review_id: overrides.invalidated_by_review_id ?? null,
     invalidated_by_process: overrides.invalidated_by_process ?? null,
     invalidated_reason: overrides.invalidated_reason ?? null,
-  };
-}
-
-export function createGoalFixture(overrides: Partial<GoalRecord> = {}): GoalRecord {
-  const nowMs = overrides.created_at ?? 1_000_000;
-
-  return {
-    id: overrides.id ?? createGoalId(),
-    record_version: overrides.record_version ?? 1,
-    description: overrides.description ?? "Stabilize Atlas release workflow",
-    priority: overrides.priority ?? 1,
-    parent_goal_id: overrides.parent_goal_id ?? null,
-    status: overrides.status ?? "active",
-    progress_notes: overrides.progress_notes ?? null,
-    last_progress_ts: overrides.last_progress_ts ?? null,
-    created_at: nowMs,
-    target_at: overrides.target_at ?? null,
-    audience_entity_id: overrides.audience_entity_id ?? null,
-    owner_entity_id: overrides.owner_entity_id ?? null,
-    canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
-    ...(overrides.source_stream_entry_ids === undefined
-      ? {}
-      : { source_stream_entry_ids: overrides.source_stream_entry_ids }),
-    provenance: overrides.provenance ?? {
-      kind: "system",
-    },
-  };
-}
-
-export function createAutobiographicalPeriodFixture(
-  overrides: Partial<AutobiographicalPeriod> = {},
-): AutobiographicalPeriod {
-  const nowMs = overrides.created_at ?? 1_000_000;
-
-  return {
-    id: overrides.id ?? createAutobiographicalPeriodId(),
-    record_version: overrides.record_version ?? 1,
-    label: overrides.label ?? "2026-Q1",
-    start_ts: overrides.start_ts ?? nowMs - 10_000,
-    end_ts: overrides.end_ts ?? null,
-    narrative: overrides.narrative ?? "A test autobiographical period.",
-    key_episode_ids: overrides.key_episode_ids ?? [],
-    disclosure_label: overrides.disclosure_label ?? unknownMemoryDisclosureLabel(),
-    themes: overrides.themes ?? ["testing"],
-    provenance: overrides.provenance ?? {
-      kind: "system",
-    },
-    created_at: nowMs,
-    last_updated: overrides.last_updated ?? nowMs,
   };
 }
 

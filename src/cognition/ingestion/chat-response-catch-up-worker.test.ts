@@ -10,7 +10,6 @@ import {
   type StoredAttachmentRecord,
 } from "../../attachments/index.js";
 import { backfillSessionStreamEntryIndexAndAttachments } from "../../borg/reconciliation.js";
-import type { SessionRecord } from "../../sessions/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import {
   StreamEntryIndexRepository,
@@ -61,27 +60,6 @@ function turnResult(): TurnResult {
     intents: [],
     toolCalls: [],
   } as unknown as TurnResult;
-}
-
-function sessionRecord(sessionId: SessionId): SessionRecord {
-  return {
-    session_id: sessionId,
-    source_type: "demo",
-    source_external_id: null,
-    source_url: null,
-    label: "test",
-    audience_label: "test",
-    audience_entity_id: null,
-    conversation_kind: "demo",
-    created_at: 0,
-    last_activity_at: 0,
-    last_turn_id: null,
-    message_count: 0,
-    status: "active",
-    privacy_level: "payload_off",
-    participation_policy: "active",
-    audience_role: "participant",
-  };
 }
 
 function cursor(entryId: StreamEntryId, ts = 1): StreamCursor {
@@ -164,7 +142,6 @@ function deferred<T = void>() {
 function createHarness(
   options: {
     config?: Partial<ChatResponseCatchUpWorkerConfig>;
-    sessions?: readonly SessionId[];
     pendingSessionIds?: readonly SessionId[];
     prefixes?: readonly BacklogPrefixResult[];
     build?: () => Promise<BacklogPrefixResult>;
@@ -174,7 +151,6 @@ function createHarness(
 ) {
   const clock = new ManualClock(0);
   const prefixQueue = [...(options.prefixes ?? [])];
-  const sessions = [...(options.sessions ?? [])];
   const pendingSessionIds = [...(options.pendingSessionIds ?? [])];
   const coordinator = {
     reconcile: vi.fn(() => ({
@@ -193,17 +169,12 @@ function createHarness(
   const turnOrchestrator = {
     run: vi.fn(options.run ?? (async () => turnResult())),
   };
-  const sessionsRepository = {
-    list: vi.fn(() => sessions.slice(0, 100).map(sessionRecord)),
-    count: vi.fn(() => sessions.length),
-  };
   const worker = new ChatResponseCatchUpWorker({
     coordinator,
     prefixBuilder,
     entryIndex,
     repairSessionStreamEntryIndex,
     turnOrchestrator,
-    sessionsRepository,
     clock,
     setTimeoutFn: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimeoutFn: (handle) => clearTimeout(handle),
@@ -220,7 +191,6 @@ function createHarness(
     entryIndex,
     repairSessionStreamEntryIndex,
     turnOrchestrator,
-    sessionsRepository,
     worker,
   };
 }
@@ -312,7 +282,6 @@ describe("ChatResponseCatchUpWorker", () => {
 
   it("startup scan finds backlog and drains immediately", async () => {
     const harness = createHarness({
-      sessions: [DEFAULT_SESSION_ID],
       pendingSessionIds: [DEFAULT_SESSION_ID],
       prefixes: [prefix(), prefix()],
     });
@@ -322,7 +291,6 @@ describe("ChatResponseCatchUpWorker", () => {
     await runPendingTimers();
 
     expect(harness.entryIndex.listSessionIdsWithPendingResponseBacklog).toHaveBeenCalledTimes(1);
-    expect(harness.sessionsRepository.list).not.toHaveBeenCalled();
     expect(harness.coordinator.reconcile).toHaveBeenCalledWith(DEFAULT_SESSION_ID);
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
   });
@@ -331,7 +299,6 @@ describe("ChatResponseCatchUpWorker", () => {
     const activeSessionIds = Array.from({ length: 101 }, () => createSessionId());
     const cappedOutPendingSessionId = activeSessionIds[100]!;
     const harness = createHarness({
-      sessions: activeSessionIds,
       pendingSessionIds: [cappedOutPendingSessionId],
       prefixes: [prefix(), prefix()],
     });
@@ -341,8 +308,6 @@ describe("ChatResponseCatchUpWorker", () => {
     await runPendingTimers();
 
     expect(harness.entryIndex.listSessionIdsWithPendingResponseBacklog).toHaveBeenCalledTimes(1);
-    expect(harness.sessionsRepository.list).not.toHaveBeenCalled();
-    expect(harness.sessionsRepository.count).not.toHaveBeenCalled();
     expect(harness.coordinator.reconcile).toHaveBeenCalledWith(cappedOutPendingSessionId);
     expect(harness.prefixBuilder.build).toHaveBeenCalledWith({
       sessionId: cappedOutPendingSessionId,

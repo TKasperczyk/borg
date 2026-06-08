@@ -6,12 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { FixedClock } from "../util/clock.js";
-import {
-  getFreshCredentials,
-  loadCredentials,
-  refreshAccessToken,
-  saveCredentials,
-} from "./claude-oauth.js";
+import { getFreshCredentials, loadCredentials } from "./claude-oauth.js";
 
 function createTempCredentialsPath(tempDirs: string[]): string {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-auth-"));
@@ -61,48 +56,9 @@ describe("claude oauth auth", () => {
     expect(loadCredentials({ credentialsPath })).toBeNull();
   });
 
-  it("saves refreshed credentials by merging into the existing file", () => {
-    const credentialsPath = createTempCredentialsPath(tempDirs);
-
-    writeJsonFileAtomic(credentialsPath, {
-      claudeAiOauth: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        expiresAt: 111,
-        scopes: ["org:create_api_key", "user:inference"],
-        subscriptionType: "pro",
-        rateLimitTier: "plus",
-      },
-      anotherField: {
-        keep: true,
-      },
-    });
-
-    saveCredentials(
-      {
-        accessToken: "new-access",
-        refreshToken: "new-refresh",
-        expiresAt: 222,
-      },
-      { credentialsPath },
-    );
-
-    expect(loadCredentials({ credentialsPath })?.raw).toMatchObject({
-      anotherField: {
-        keep: true,
-      },
-      claudeAiOauth: {
-        accessToken: "new-access",
-        refreshToken: "new-refresh",
-        expiresAt: 222,
-        scopes: ["org:create_api_key", "user:inference"],
-        subscriptionType: "pro",
-        rateLimitTier: "plus",
-      },
-    });
-  });
-
   it("posts the refresh request payload and parses a successful response", async () => {
+    const credentialsPath = createTempCredentialsPath(tempDirs);
+    const clock = new FixedClock(1_000);
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         return new Response(
@@ -122,11 +78,25 @@ describe("claude oauth auth", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await refreshAccessToken("refresh-token");
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "old-access",
+        refreshToken: "refresh-token",
+        expiresAt: clock.now() + 60_000,
+      },
+    });
 
-    expect(result.accessToken).toBe("new-access");
-    expect(result.refreshToken).toBe("new-refresh");
-    expect(result.expiresAt).toBeGreaterThan(Date.now());
+    const result = await getFreshCredentials({
+      credentialsPath,
+      clock,
+      forceRefresh: true,
+    });
+
+    expect(result).toMatchObject({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+    });
+    expect(result?.expiresAt).toBeGreaterThan(Date.now());
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
@@ -141,15 +111,30 @@ describe("claude oauth auth", () => {
     });
   });
 
-  it("throws when token refresh fails", async () => {
+  it("returns null when token refresh fails", async () => {
+    const credentialsPath = createTempCredentialsPath(tempDirs);
+    const clock = new FixedClock(1_000);
+
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "old-access",
+        refreshToken: "bad-refresh",
+        expiresAt: clock.now() + 60_000,
+      },
+    });
+
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("invalid_grant", { status: 401 })),
     );
 
-    await expect(refreshAccessToken("bad-refresh")).rejects.toMatchObject({
-      code: "AUTH_REFRESH_FAILED",
-    });
+    await expect(
+      getFreshCredentials({
+        credentialsPath,
+        clock,
+        forceRefresh: true,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("returns unchanged credentials when they are not near expiry", async () => {

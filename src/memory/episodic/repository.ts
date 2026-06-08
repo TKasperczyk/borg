@@ -1230,12 +1230,6 @@ export class EpisodicRepository {
       });
     }
 
-    if (parsed.data.source_stream_ids.length === 0) {
-      throw new StorageError("Episodes must include at least one source stream id", {
-        code: "EPISODE_SOURCE_ANCHOR_REQUIRED",
-      });
-    }
-
     return parsed.data;
   }
 

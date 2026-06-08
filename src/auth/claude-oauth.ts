@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -65,10 +65,6 @@ function resolveCredentialsPath(options: ClaudeOAuthOptions = {}): string {
   );
 }
 
-export function getClaudeCredentialsPath(options: ClaudeOAuthOptions = {}): string {
-  return resolveCredentialsPath(options);
-}
-
 function readCredentialsFile(options: ClaudeOAuthOptions = {}): LoadedOAuthCredentials {
   const credentialsPath = resolveCredentialsPath(options);
   let rawValue: unknown;
@@ -113,7 +109,7 @@ export function loadCredentials(options: ClaudeOAuthOptions = {}): LoadedOAuthCr
   }
 }
 
-export function saveCredentials(creds: OAuthCredentials, options: ClaudeOAuthOptions = {}): void {
+function saveCredentials(creds: OAuthCredentials, options: ClaudeOAuthOptions = {}): void {
   const credentialsPath = resolveCredentialsPath(options);
   const existing = loadCredentials({
     ...options,
@@ -133,7 +129,7 @@ export function saveCredentials(creds: OAuthCredentials, options: ClaudeOAuthOpt
   writeJsonFileAtomic(credentialsPath, root);
 }
 
-export async function refreshAccessToken(refreshToken: string): Promise<OAuthCredentials> {
+async function refreshAccessToken(refreshToken: string): Promise<OAuthCredentials> {
   let response: Response;
 
   try {
@@ -239,12 +235,4 @@ export function formatCredentialPathForDisplay(options: ClaudeOAuthOptions = {})
   const resolvedPath = resolveCredentialsPath(options);
   const defaultPath = expandPath(DEFAULT_CREDENTIALS_PATH);
   return resolvedPath === defaultPath ? "~/.claude/.credentials.json" : resolvedPath;
-}
-
-export function getCredentialsLockPath(options: ClaudeOAuthOptions = {}): string {
-  return `${resolveCredentialsPath(options)}.lock`;
-}
-
-export function getCredentialsDirectory(options: ClaudeOAuthOptions = {}): string {
-  return dirname(resolveCredentialsPath(options));
 }

@@ -14,15 +14,9 @@ export {
   type CrossSessionSelfActivityRow,
 } from "./projection.js";
 export {
-  ACTIVITY_EVENT_KINDS,
-  ACTIVITY_EVENT_STATUSES,
-  activityEntityIdSchema,
-  activityEventIdSchema,
   activityEventKindSchema,
   activityEventSchema,
   activityEventStatusSchema,
-  activitySessionIdSchema,
-  activityStreamEntryIdSchema,
   type ActivityEvent,
   type ActivityEventKind,
   type ActivityEventStatus,

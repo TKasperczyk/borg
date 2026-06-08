@@ -8,7 +8,6 @@ import {
   type EvidenceLedgerSectionId,
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
-import { commitmentKindSchema, type CommitmentKind } from "../memory/commitments/types.js";
 import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -79,11 +78,6 @@ const postGenerationGuardConfigSchema = z
   .prefault({});
 const commitmentEnforceConfigSchema = z
   .object({
-    // Deprecated compatibility setting retained for old configs. Stored/effective
-    // enforcement_class controls commitment guard enforcement.
-    criticalKinds: z
-      .array(commitmentKindSchema)
-      .default(["boundary", "audience_rule"] satisfies CommitmentKind[]),
     regenerateBeforeSuppress: z.boolean().default(true),
     rewriteOnViolation: z.boolean().default(false),
   })

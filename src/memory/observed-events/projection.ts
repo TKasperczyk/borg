@@ -2,7 +2,10 @@ import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { clamp } from "../../util/math.js";
 import type { ObservedEventProjectionSourceEvent, ObservedEventRepository } from "./repository.js";
-import type { ObservedEventDisclosureClass } from "./types.js";
+import {
+  OBSERVED_EVENT_DISCLOSURE_CLASSES,
+  type ObservedEventDisclosureClass,
+} from "./types.js";
 
 export const DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS = 90 * 24 * 60 * 60_000;
 export const DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP = 8;
@@ -47,11 +50,6 @@ type ObservedEventCandidate = {
   score: number;
   reasons: Set<ObservedEventRecallReason>;
 };
-
-const OBSERVED_EVENT_DISCLOSURE_CLASSES_FOR_RECALL = [
-  "social_observed",
-  "self_private",
-] as const satisfies readonly ObservedEventDisclosureClass[];
 
 function observedEventStanceNarrative(event: ObservedEventProjectionSourceEvent): string {
   const stance = `stance=${event.stance}`;
@@ -176,7 +174,7 @@ export async function selectObservedEventIntrospection(
     }
   }
 
-  for (const disclosureClass of OBSERVED_EVENT_DISCLOSURE_CLASSES_FOR_RECALL) {
+  for (const disclosureClass of OBSERVED_EVENT_DISCLOSURE_CLASSES) {
     const recentEvents = input.repository.listRecentGlobal({
       disclosureClass,
       sinceMs,

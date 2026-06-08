@@ -12,9 +12,9 @@ import type {
 import type { ActionRecord, ActionRepository } from "../memory/actions/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type {
-  ObservedEventDisclosureClass,
   ObservedEventRepository,
 } from "../memory/observed-events/index.js";
+import { OBSERVED_EVENT_DISCLOSURE_CLASSES } from "../memory/observed-events/types.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type {
   AutobiographicalPeriod,
@@ -42,11 +42,6 @@ const DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_SESSION_CAP = 24;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_SOURCE_CAP = 10;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_TOTAL_CAP = 48;
-
-const OBSERVED_EVENT_DISCLOSURE_CLASSES = [
-  "social_observed",
-  "self_private",
-] as const satisfies readonly ObservedEventDisclosureClass[];
 
 const AUTOBIOGRAPHICAL_STREAM_KINDS = [
   "thought",

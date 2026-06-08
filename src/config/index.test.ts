@@ -114,7 +114,6 @@ describe("config", () => {
     });
     expect(config.commitments).toEqual({
       enforce: {
-        criticalKinds: ["boundary", "audience_rule"],
         regenerateBeforeSuppress: true,
         rewriteOnViolation: false,
       },
@@ -471,7 +470,6 @@ describe("config", () => {
       cooldownTurns: 3,
     });
     expect(config.commitments.enforce).toEqual({
-      criticalKinds: ["boundary", "audience_rule"],
       regenerateBeforeSuppress: true,
       rewriteOnViolation: false,
     });
@@ -548,7 +546,6 @@ describe("config", () => {
     writeJsonFileAtomic(join(tempDir, "config.json"), {
       commitments: {
         enforce: {
-          criticalKinds: ["boundary"],
           rewriteOnViolation: true,
         },
       },
@@ -560,7 +557,6 @@ describe("config", () => {
     });
 
     expect(config.commitments.enforce).toEqual({
-      criticalKinds: ["boundary"],
       regenerateBeforeSuppress: true,
       rewriteOnViolation: true,
     });

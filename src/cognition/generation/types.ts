@@ -10,9 +10,6 @@ export type GenerationSuppressionReason =
   | "finalizer_failed"
   | "finalizer_no_output"
   | "invalid_tool_after_regenerate"
-  | "manifest_no_output"
-  | "legacy_manifest_validation_failed_critical"
-  | "manifest_validation_failed_critical"
   | "no_output_tool"
   | "s2_planner_no_output"
   | "closure_pressure_only"
@@ -74,7 +71,6 @@ export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
   "active_discourse_stop",
   "empty_finalizer",
   "finalizer_no_output",
-  "manifest_no_output",
   "no_output_tool",
   "s2_planner_no_output",
   "closure_pressure_only",

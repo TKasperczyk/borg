@@ -137,7 +137,7 @@ describe("discourse state", () => {
     for (let index = 0; index < 5; index += 1) {
       workingMemory = appendRecentSuppression(workingMemory, {
         turnId: `turn-${index}`,
-        reason: "legacy_manifest_validation_failed_critical",
+        reason: "commitment_violation",
         ts: index,
       });
     }

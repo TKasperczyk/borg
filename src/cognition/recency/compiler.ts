@@ -121,13 +121,6 @@ function sanitizeObservationReason(reason: string): string {
 }
 
 function suppressionCategoryContext(reason: string): string {
-  if (
-    reason === "legacy_manifest_validation_failed_critical" ||
-    reason === "manifest_validation_failed_critical"
-  ) {
-    return "prior unsupported response guard suppressed output";
-  }
-
   if (reason === "closure_pressure_only" || reason === "closure_response_audit_failed_closed") {
     return "closure pressure guard rejected the response";
   }
@@ -136,11 +129,7 @@ function suppressionCategoryContext(reason: string): string {
     return "internal identifier guard rejected the response";
   }
 
-  if (
-    reason === "finalizer_no_output" ||
-    reason === "manifest_no_output" ||
-    reason === "no_output_tool"
-  ) {
+  if (reason === "finalizer_no_output" || reason === "no_output_tool") {
     return "no_output decision";
   }
 

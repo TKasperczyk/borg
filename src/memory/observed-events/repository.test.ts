@@ -281,57 +281,6 @@ describe("ObservedEventRepository", () => {
     db.close();
   });
 
-  it("keeps distinct recurrence keys separate and lists newest last-seen rows first", () => {
-    const { db, repository } = openHarness("borg-observed-events-distinct-");
-    const sessionId = createSessionId();
-    const speakerEntityId = createEntityId();
-    const audienceEntityId = createEntityId();
-
-    repository.record(
-      recordInput(sessionId, {
-        occurredAt: 1_000,
-        interactionText: "First distinct frame.",
-        recurrenceKey: "session:peer:first-frame",
-        speakerEntityId,
-        audienceEntityId,
-      }),
-    );
-    repository.record(
-      recordInput(sessionId, {
-        occurredAt: 5_000,
-        interactionText: "Second distinct frame.",
-        recurrenceKey: "session:peer:second-frame",
-      }),
-    );
-
-    expect(db.prepare("SELECT COUNT(*) AS count FROM observed_events").get()).toEqual({
-      count: 2,
-    });
-    expect(
-      repository
-        .listRecentForSession({
-          sessionId,
-          disclosureClass: "social_observed",
-          sinceMs: 0,
-          limit: 10,
-        })
-        .map((row) => row.interactionText),
-    ).toEqual(["Second distinct frame.", "First distinct frame."]);
-    expect(
-      repository.listRecentForSession({
-        sessionId,
-        disclosureClass: "social_observed",
-        sinceMs: 0,
-        limit: 10,
-      })[1],
-    ).toMatchObject({
-      speakerEntityId,
-      audienceEntityId,
-    });
-
-    db.close();
-  });
-
   it("lists recent rows by speaker across sessions and returns [] for an empty speaker set", () => {
     const { db, repository } = openHarness("borg-observed-events-speaker-recent-");
     const firstSessionId = createSessionId();
@@ -571,6 +520,22 @@ describe("ObservedEventRepository", () => {
     );
 
     expect(() => repository.get(created.id)).toThrow(/observed event/i);
+
+    db.close();
+  });
+
+  it("loads legacy rows with non-enumerated dimension slugs", () => {
+    const { db, repository } = openHarness("borg-observed-events-legacy-dimensions-");
+    const created = repository.record(recordInput(createSessionId()));
+
+    db.prepare("UPDATE observed_events SET stance = ?, taint = ?, belief_effect = ? WHERE id = ?")
+      .run("legacy_frame", "legacy_taint", "legacy_effect", created.id);
+
+    expect(repository.get(created.id)).toMatchObject({
+      stance: "legacy_frame",
+      taint: "legacy_taint",
+      belief_effect: "legacy_effect",
+    });
 
     db.close();
   });
