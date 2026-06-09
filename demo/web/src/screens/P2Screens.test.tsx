@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { renderWithInspector } from "../test/inspector";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { LiveFrame, StreamEntry, WsState } from "../api/types";
+import type { LiveFrame, MaintenanceAuditRow, StreamEntry, WsState } from "../api/types";
 import { LiveEventsProvider } from "../hooks/live-context";
 import type { LiveEventHandler, LiveEvents } from "../hooks/use-live-events";
 import { CommitScreen } from "./Commit";
@@ -96,6 +96,60 @@ function semanticEdgeFixture(id: string, fromNodeId: string, toNodeId: string, e
     invalidated_by_process: null,
     invalidated_reason: null,
   };
+}
+
+function dreamAuditRowFixture(
+  input: Partial<MaintenanceAuditRow> & Pick<MaintenanceAuditRow, "id" | "targets">,
+): MaintenanceAuditRow {
+  return {
+    run_id: "run_dreamrefs",
+    process: "belief-reviser",
+    action: "inspect_target",
+    reversal: {},
+    applied_at: 4,
+    reverted_at: null,
+    reverted_by: null,
+    ...input,
+  };
+}
+
+function dreamStateWithAuditRows(rows: MaintenanceAuditRow[]) {
+  return {
+    processes: [],
+    schedule: [],
+    audit_rows: rows,
+    dream_reports: [],
+    belief_revision_rows: [],
+    scheduler: {
+      enabled: true,
+      light_interval_ms: 1,
+      heavy_interval_ms: 1,
+      light_processes: [],
+      heavy_processes: ["belief-reviser"],
+      process_budgets: {},
+    },
+  };
+}
+
+function installDreamAuditFetch(
+  rows: MaintenanceAuditRow[],
+  extra?: (url: URL, init?: RequestInit) => Promise<Response> | undefined,
+): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(request), "http://test.invalid");
+    if (url.pathname === "/api/dream/state") {
+      return Promise.resolve(jsonResponse(dreamStateWithAuditRows(rows)));
+    }
+
+    const extraResponse = extra?.(url, init);
+    if (extraResponse !== undefined) {
+      return extraResponse;
+    }
+
+    return Promise.resolve(new Response("not found", { status: 404 }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 function jsonErrorResponse(status: number, message: string): Response {
@@ -991,6 +1045,173 @@ describe("P2 screens", () => {
         true,
       );
     });
+  });
+
+  it("opens the inspector from expanded dream audit target refs", async () => {
+    const live = makeLiveSource();
+    const nodeId = "semn_dreamtarget111";
+    const row = dreamAuditRowFixture({
+      id: 31,
+      targets: { target_id: nodeId, related_ids: [nodeId, "review_42"] },
+    });
+    installDreamAuditFetch([row], (url) => {
+      if (url.pathname === `/api/semantic/nodes/${nodeId}`) {
+        return Promise.resolve(
+          jsonResponse({
+            node: semanticNodeFixture(
+              nodeId,
+              "Dream target node",
+              "Loaded through the universal inspector.",
+              "ep_dreamtarget1111",
+            ),
+          }),
+        );
+      }
+      return undefined;
+    });
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+      { inspector: true },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "show audit 31 payload" }));
+    fireEvent.click(screen.getByRole("button", { name: `jump to ${nodeId}` }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Semantic node inspector" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Dream target node")).toBeInTheDocument();
+  });
+
+  it("keeps dream audit payload expansion working after target refs render", async () => {
+    const live = makeLiveSource();
+    const nodeId = "semn_dreamtoggle111";
+    installDreamAuditFetch([
+      dreamAuditRowFixture({
+        id: 32,
+        targets: { target_id: nodeId },
+      }),
+    ]);
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "show audit 32 payload" }));
+    expect(screen.getByText("applied target")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `jump to ${nodeId}` })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "hide audit 32 payload" }));
+    expect(screen.queryByText("applied target")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "show audit 32 payload" }));
+    expect(screen.getByText("applied target")).toBeInTheDocument();
+  });
+
+  it("opens nested dream audit target refs and keeps row expansion working", async () => {
+    const live = makeLiveSource();
+    const streamId = "strm_nestedtarget1";
+    installDreamAuditFetch(
+      [
+        dreamAuditRowFixture({
+          id: 34,
+          targets: {
+            overseer_flag: {
+              cited_stream_ids: [streamId],
+            },
+          },
+        }),
+      ],
+      (url) => {
+        if (url.pathname === "/api/sessions") {
+          return Promise.resolve(
+            jsonResponse({
+              sessions: [
+                {
+                  session_id: "default",
+                  source_type: "demo",
+                  source_external_id: null,
+                  source_url: null,
+                  label: "default",
+                  audience_label: "alice",
+                  audience_entity_id: null,
+                  conversation_kind: "demo",
+                  created_at: 1,
+                  last_activity_at: 2,
+                  last_turn_id: "turn_nested",
+                  message_count: 1,
+                  status: "active",
+                  privacy_level: "payload_on",
+                  participation_policy: "active",
+                  audience_role: "operator",
+                },
+              ],
+            }),
+          );
+        }
+        if (url.pathname === "/api/stream") {
+          return Promise.resolve(
+            jsonResponse({
+              entries: [
+                streamEntry({
+                  id: streamId,
+                  kind: "internal_event",
+                  content: { event: "nested target evidence" },
+                }),
+              ],
+              next_cursor: null,
+            }),
+          );
+        }
+        return undefined;
+      },
+    );
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+      { inspector: true },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "show audit 34 payload" }));
+    expect(screen.getByText("applied target")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: `jump to ${streamId}` }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Stream entry inspector" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("internal_event")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "hide audit 34 payload" }));
+    expect(screen.queryByText("applied target")).not.toBeInTheDocument();
+  });
+
+  it("does not render IdRefs for unrecognized dream audit target values", async () => {
+    const live = makeLiveSource();
+    installDreamAuditFetch([
+      dreamAuditRowFixture({
+        id: 33,
+        targets: { review_id: "42", target_id: "review_42" },
+      }),
+    ]);
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "show audit 33 payload" }));
+
+    expect(screen.getAllByText(/review_42/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "jump to review_42" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "jump to 42" })).not.toBeInTheDocument();
   });
 
   it("renders unified review rows and resolves a generic row", async () => {

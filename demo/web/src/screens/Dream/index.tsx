@@ -17,6 +17,7 @@ import type {
   DreamProcessSummary,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
@@ -143,6 +144,11 @@ type OldNewPair = {
   after: unknown;
 };
 
+type AuditObjectRef = {
+  id: string;
+  type: ObjectType;
+};
+
 function auditRunGroups(rows: readonly MaintenanceAuditRow[]): AuditRunGroup[] {
   return [
     ...rows.reduce((groups, row) => {
@@ -192,6 +198,54 @@ function pairedKeys(pairs: readonly OldNewPair[]): Set<string> {
 
 function hasPayload(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0;
+}
+
+function auditObjectRefsFromRecord(
+  record: Record<string, unknown>,
+  deep: boolean,
+): AuditObjectRef[] {
+  const refs: AuditObjectRef[] = [];
+  const seen = new Set<string>();
+
+  function addId(value: string): void {
+    const type = resolveObjectType(value);
+    if (type === null || seen.has(value)) {
+      return;
+    }
+
+    seen.add(value);
+    refs.push({ id: value, type });
+  }
+
+  function walk(value: unknown): void {
+    if (typeof value === "string") {
+      addId(value);
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string") {
+          addId(item);
+        } else if (deep && (Array.isArray(item) || isRecord(item))) {
+          walk(item);
+        }
+      }
+      return;
+    }
+
+    if (deep && isRecord(value)) {
+      for (const child of Object.values(value)) {
+        walk(child);
+      }
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    walk(value);
+  }
+
+  return refs;
 }
 
 export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
@@ -748,7 +802,10 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                     {process.changes.map((change, index) => (
                       <div key={`${process.name}-${change.action}-${index}`} className="row">
                         <span className="k">{change.action}</span>
-                        <span className="v">{displayTargetSummary(change.targets)}</span>
+                        <span className="v">
+                          {displayTargetSummary(change.targets)}
+                          <AuditTargetRefs targets={change.targets} />
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -861,7 +918,10 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
               </div>
               <div className="row">
                 <span className="k">target</span>
-                <span className="v">{displayTargetSummary(revertCandidate.targets)}</span>
+                <span className="v">
+                  {displayTargetSummary(revertCandidate.targets)}
+                  <AuditTargetRefs targets={revertCandidate.targets} />
+                </span>
               </div>
             </div>
             <AuditPayloadDetail row={revertCandidate} compact />
@@ -936,6 +996,46 @@ function DreamReportInlineSummary({ report }: { report?: DreamReport }) {
   );
 }
 
+function AuditObjectRefList({ refs }: { refs: readonly AuditObjectRef[] }) {
+  if (refs.length === 0) {
+    return null;
+  }
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        gap: 6,
+        alignItems: "center",
+        flexWrap: "wrap",
+        marginLeft: 6,
+      }}
+    >
+      {refs.map((ref) => (
+        <IdRef key={ref.id} id={ref.id} type={ref.type} />
+      ))}
+    </span>
+  );
+}
+
+function AuditTargetRefs({ targets }: { targets: Record<string, unknown> }) {
+  return <AuditObjectRefList refs={auditObjectRefsFromRecord(targets, true)} />;
+}
+
+function PayloadIdRefs({ value }: { value: Record<string, unknown> }) {
+  const refs = auditObjectRefsFromRecord(value, false);
+
+  if (refs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <AuditObjectRefList refs={refs} />
+    </div>
+  );
+}
+
 function AuditPayloadDetail({
   row,
   compact = false,
@@ -963,7 +1063,7 @@ function AuditPayloadDetail({
           gap: 10,
         }}
       >
-        <PayloadPanel title="applied target" value={row.targets} rawLabel="raw target JSON" />
+        <AuditTargetPanel row={row} />
         <PayloadPanel
           title="undo/change payload"
           value={row.reversal}
@@ -971,6 +1071,35 @@ function AuditPayloadDetail({
           emptyText="no reversal payload recorded"
         />
       </div>
+    </div>
+  );
+}
+
+function AuditTargetPanel({ row }: { row: MaintenanceAuditRow }) {
+  return (
+    <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
+      <div className="upper dim" style={{ marginBottom: 8 }}>
+        applied target
+      </div>
+      <div
+        style={{
+          marginBottom: 8,
+          color: "var(--text)",
+          fontFamily: "var(--sans)",
+          fontSize: 12.5,
+          lineHeight: 1.45,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {displayTargetSummary(row.targets)}
+        <AuditTargetRefs targets={row.targets} />
+      </div>
+      {hasPayload(row.targets) ? (
+        <StructuredPayload value={row.targets} />
+      ) : (
+        <div className="dim">empty payload</div>
+      )}
+      <RawJsonDisclosure label="raw target JSON" value={row.targets} />
     </div>
   );
 }
@@ -991,6 +1120,7 @@ function PayloadPanel({
       <div className="upper dim" style={{ marginBottom: 8 }}>
         {title}
       </div>
+      <PayloadIdRefs value={value} />
       {hasPayload(value) ? (
         <StructuredPayload value={value} />
       ) : (
