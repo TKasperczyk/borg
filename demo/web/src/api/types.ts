@@ -154,9 +154,9 @@ export type AttachmentRecord = {
   active: boolean;
   audience: string | null;
   created_turn_global: number | null;
-  parent_entry_id: string;
+  parent_entry_id: string | null;
   stream_entry_id: string | null;
-  parent_turn_id: string;
+  parent_turn_id: string | null;
   created_at: number;
 };
 

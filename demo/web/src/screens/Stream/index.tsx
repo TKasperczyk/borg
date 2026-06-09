@@ -1,24 +1,35 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
-import { getAttachmentMetadata, getAttachmentStatuses, getStream } from "../../api/client";
+import { getAttachmentMetadata, getAttachmentStatuses } from "../../api/client";
 import type {
   AttachmentMetadataResponse,
   AttachmentStatusItem,
+  ImagePerceptionRecord,
   StreamEntry,
   StreamEntryKind,
 } from "../../api/types";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
 import { ImagePlaceholder } from "../../components/ImagePlaceholder";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { Loading } from "../../components/Loading";
 import { Tag, type TagKind } from "../../components/Tag";
-import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
-import { streamOutcomeSummary, type StreamOutcomeSummary } from "../../lib/stream-outcomes";
+import { useStreamWindow } from "../../hooks/use-stream-window";
 import {
-  compactStreamText,
-  formatTime,
-  mergeEntries,
-  streamContentText,
-} from "../../lib/stream-utils";
+  UNCLAIMED_STREAM_GROUP_LABEL,
+  applyStreamStructuralFilters,
+  groupStreamEntriesByTurn,
+  hasStreamAttachment,
+  isAbortedTurnEntry,
+  isCompressed,
+  streamEntryAttachmentId,
+  type StreamStructuralFilterId,
+  type StreamStructuralFilterState,
+  type StreamTurnGroup,
+} from "../../lib/stream-grouping";
+import { streamOutcomeSummary, type StreamOutcomeSummary } from "../../lib/stream-outcomes";
+import { compactStreamText, formatTime, streamContentText } from "../../lib/stream-utils";
 import {
   contentField,
   displayValue,
@@ -62,25 +73,6 @@ function kindTag(kind: StreamEntryKind): TagKind {
     case "internal_event":
       return "";
   }
-}
-
-function attachmentId(entry: StreamEntry): string | undefined {
-  return contentField(entry.content, "attachment_id");
-}
-
-function attachmentStatusInvalidationIds(entries: readonly StreamEntry[]): string[] {
-  return [
-    ...new Set(
-      entries.flatMap((entry) => {
-        if (entry.kind !== "user_image_attachment" && entry.kind !== "internal_event") {
-          return [];
-        }
-
-        const id = attachmentId(entry);
-        return id === undefined ? [] : [id];
-      }),
-    ),
-  ];
 }
 
 function mediaType(entry: StreamEntry): string | undefined {
@@ -432,7 +424,7 @@ function ToolResultSummary({ entry }: { entry: StreamEntry }) {
 
 function attachmentSummary(entry: StreamEntry): string {
   const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
-  const id = attachmentId(entry) ?? optionalString(content.id) ?? "attachment";
+  const id = streamEntryAttachmentId(entry) ?? optionalString(content.id) ?? "attachment";
   const type = mediaType(entry) ?? optionalString(content.kind);
   const perceptionId = optionalString(content.perception_id);
   const parts = [shortId(id)];
@@ -463,6 +455,8 @@ function streamAttachmentPerceptionId(
 }
 
 function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: string }) {
+  const responseSourceEntryIds = sourceEntryIds(entry);
+
   return (
     <div className="props">
       <div className="row">
@@ -517,6 +511,47 @@ function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: s
         <span className="k">status</span>
         <span className="v">{status}</span>
       </div>
+      {entry.entry_index === undefined ? null : (
+        <div className="row">
+          <span className="k">entry_index</span>
+          <span className="v">{entry.entry_index}</span>
+        </div>
+      )}
+      <div className="row">
+        <span className="k">compressed</span>
+        <span className="v">{String(entry.compressed)}</span>
+      </div>
+      {entry.persistence_class === undefined ? null : (
+        <div className="row">
+          <span className="k">persistence_class</span>
+          <span className="v">{entry.persistence_class}</span>
+        </div>
+      )}
+      {entry.token_estimate === undefined ? null : (
+        <div className="row">
+          <span className="k">token_estimate</span>
+          <span className="v">{entry.token_estimate}</span>
+        </div>
+      )}
+      {entry.source_message_key === undefined ? null : (
+        <div className="row">
+          <span className="k">source_message_key</span>
+          <span className="v">
+            {entry.source_message_key.source_type}/{entry.source_message_key.source_external_id}/
+            {entry.source_message_key.external_message_id}
+          </span>
+        </div>
+      )}
+      {responseSourceEntryIds.length === 0 ? null : (
+        <div className="row">
+          <span className="k">response_to</span>
+          <span className="v idref-list">
+            {responseSourceEntryIds.map((id) => (
+              <IdRef key={id} id={id} type="stream_entry" label={id} />
+            ))}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -572,93 +607,448 @@ function summarizeStatus(
   return "active";
 }
 
-export function StreamScreen({ sessionId }: { sessionId: string }) {
-  const live = useLiveEventsContext();
-  const streamApi = useApi(() => getStream({ session: sessionId, limit: 120 }), [sessionId]);
-  const refetchStream = streamApi.refetch;
-  const previousConnectionCountRef = useRef(live.connectionCount);
-  const [entries, setEntries] = useState<StreamEntry[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [kinds, setKinds] = useState<Set<StreamEntryKind>>(() => new Set(STREAM_KINDS));
-  const [audiences, setAudiences] = useState<Set<string>>(() => new Set());
+function groupStatusTagKind(status: StreamTurnGroup["status"]): TagKind {
+  switch (status) {
+    case "active":
+      return "acc";
+    case "aborted":
+      return "bad";
+    case "mixed":
+      return "warn";
+    case "maintenance":
+      return "info";
+  }
+}
 
-  useEffect(() => {
-    const streamData = streamApi.data;
+function groupTimeRange(group: StreamTurnGroup): string {
+  if (group.startTimestamp === group.endTimestamp) {
+    return formatTime(group.endTimestamp);
+  }
+  return `${formatTime(group.startTimestamp)}-${formatTime(group.endTimestamp)}`;
+}
 
-    if (streamData === null) {
-      return;
-    }
-    setEntries((current) => mergeEntries(current, streamData.entries, "desc"));
-    setSelectedId(
-      (current) => current ?? mergeEntries([], streamData.entries, "desc")[0]?.id ?? null,
+function sourceEntryIds(entry: StreamEntry): string[] {
+  const ids = entry.response_to?.source_entry_ids;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
+
+function formatBytes(value: number | undefined): string {
+  if (value === undefined) {
+    return "-";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatIsoTimestamp(value: number | undefined): string {
+  return value === undefined ? "-" : new Date(value).toISOString();
+}
+
+function CopyableHash({ value }: { value: string | undefined }) {
+  if (value === undefined || value.length === 0) {
+    return <span>-</span>;
+  }
+
+  return (
+    <span className="copyable-hash">
+      <span>{value}</span>
+      <button
+        type="button"
+        className="btn sm ghost"
+        aria-label="copy attachment sha256"
+        onClick={() => {
+          void navigator.clipboard?.writeText(value);
+        }}
+      >
+        copy
+      </button>
+    </span>
+  );
+}
+
+function BooleanStatusChip({ label, value }: { label: string; value: boolean | undefined }) {
+  if (value === undefined) {
+    return null;
+  }
+
+  return (
+    <Tag kind={value ? "acc" : "bad"}>
+      {label} {String(value)}
+    </Tag>
+  );
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function perceptionString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function perceptionBoolean(value: unknown): string | undefined {
+  return typeof value === "boolean" ? String(value) : undefined;
+}
+
+function PerceptionField({
+  label,
+  value,
+  chips = false,
+}: {
+  label: string;
+  value: string | readonly string[] | undefined;
+  chips?: boolean;
+}) {
+  if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+    return null;
+  }
+
+  return (
+    <div className="row">
+      <span className="k">{label}</span>
+      <span className={chips ? "v chip-lines" : "v"}>
+        {Array.isArray(value)
+          ? chips
+            ? value.map((item) => <Tag key={item}>{item}</Tag>)
+            : value.join("; ")
+          : value}
+      </span>
+    </div>
+  );
+}
+
+function AttachmentPreview({
+  attachmentId,
+  mediaTypeValue,
+  audience,
+  quarantined,
+}: {
+  attachmentId: string;
+  mediaTypeValue?: string;
+  audience?: string;
+  quarantined: boolean;
+}) {
+  if (audience === undefined) {
+    return (
+      <div className="img-ph stream-no-audience-preview" title={attachmentId}>
+        <span>preview unavailable</span>
+        <span>no audience</span>
+      </div>
     );
-  }, [streamApi.data]);
+  }
 
-  useEffect(() => {
-    return live.subscribe((frame) => {
-      if (frame.type !== "stream:append") {
-        return;
-      }
-      const matchingEntries = frame.entries.filter((entry) => entry.session_id === sessionId);
-      if (matchingEntries.length === 0) {
-        return;
-      }
-      setEntries((current) => mergeEntries(current, matchingEntries, "desc"));
-      setSelectedId((current) => current ?? matchingEntries.at(-1)?.id ?? null);
-      const invalidatedAttachmentIds = attachmentStatusInvalidationIds(matchingEntries);
-      if (invalidatedAttachmentIds.length > 0) {
-        setAttachmentStatusById((current) => {
-          const next = { ...current };
-          for (const id of invalidatedAttachmentIds) {
-            delete next[id];
-          }
-          return next;
-        });
-      }
-    });
-  }, [live, sessionId]);
-
-  useEffect(() => {
-    const previousConnectionCount = previousConnectionCountRef.current;
-    previousConnectionCountRef.current = live.connectionCount;
-
-    if (live.connectionCount <= 1 || live.connectionCount === previousConnectionCount) {
-      return;
-    }
-
-    void refetchStream();
-  }, [live.connectionCount, refetchStream]);
-
-  const windowAudiences = useMemo(
-    () =>
-      [
-        ...new Set(
-          entries.flatMap((entry) => (entry.audience === undefined ? [] : [entry.audience])),
-        ),
-      ].sort(),
-    [entries],
+  return (
+    <ImagePlaceholder
+      attachmentId={attachmentId}
+      mediaType={mediaTypeValue}
+      audience={audience}
+      size="lg"
+      quarantined={quarantined}
+    />
   );
+}
 
-  useEffect(() => {
-    setAudiences((current) => {
-      if (current.size > 0 || windowAudiences.length === 0) {
-        return current;
+function AttachmentPerceptionRows({
+  perception,
+}: {
+  perception: ImagePerceptionRecord | null | undefined;
+}) {
+  if (perception === null || perception === undefined) {
+    return null;
+  }
+
+  return (
+    <>
+      <div className="upper dim" style={{ marginTop: 14, marginBottom: 6 }}>
+        perception
+      </div>
+      <div className="attachment-props compact-props">
+        <PerceptionField label="payload_id" value={perceptionString(perception.payload_id)} />
+        <PerceptionField label="image_kind" value={perceptionString(perception.image_kind)} />
+        <PerceptionField label="active" value={perceptionBoolean(perception.active)} />
+        <PerceptionField label="audience" value={perceptionString(perception.audience)} />
+        <PerceptionField label="visible_text" value={stringList(perception.visible_text)} />
+        <PerceptionField label="objects" value={stringList(perception.objects)} chips />
+        <PerceptionField
+          label="people_or_roles"
+          value={stringList(perception.people_or_roles)}
+          chips
+        />
+        <PerceptionField label="scene" value={perceptionString(perception.scene)} />
+        <PerceptionField
+          label="colors_and_visual_attributes"
+          value={stringList(perception.colors_and_visual_attributes)}
+          chips
+        />
+        <PerceptionField
+          label="spatial_relationships"
+          value={stringList(perception.spatial_relationships)}
+        />
+        <PerceptionField
+          label="possible_user_relevant_details"
+          value={stringList(perception.possible_user_relevant_details)}
+        />
+        <PerceptionField label="search_terms" value={stringList(perception.search_terms)} chips />
+        <PerceptionField label="uncertainties" value={stringList(perception.uncertainties)} />
+        <PerceptionField
+          label="embedding_status"
+          value={perceptionString(perception.embedding_status)}
+        />
+      </div>
+    </>
+  );
+}
+
+function AttachmentDetail({
+  selected,
+  attachmentId,
+  metadata,
+  perceptionId,
+}: {
+  selected: StreamEntry;
+  attachmentId: string;
+  metadata: AttachmentMetadataResponse | null;
+  perceptionId?: string;
+}) {
+  const attachment = metadata?.attachment;
+  const status = metadata?.status;
+  const previewAudience = selected.audience ?? attachment?.audience ?? undefined;
+  const mediaTypeValue = attachment?.media_type ?? mediaType(selected);
+
+  return (
+    <>
+      <div className="upper dim" style={{ marginBottom: 6 }}>
+        attachment
+      </div>
+      <div className="att-card">
+        <AttachmentPreview
+          attachmentId={attachmentId}
+          mediaTypeValue={mediaTypeValue}
+          audience={previewAudience}
+          quarantined={status?.quarantined === true}
+        />
+        <div className="att-card-meta">
+          <div className="att-card-id">
+            <IdRef id={attachmentId} type="attachment" label={attachmentId} hint={attachment} />
+            {perceptionId === undefined ? null : (
+              <IdRef
+                id={perceptionId}
+                type="image_perception"
+                label={`perception ${perceptionId}`}
+                hint={metadata?.perception}
+              />
+            )}
+          </div>
+          <div className="att-card-caption">
+            {metadata?.perception?.caption ?? "perception unavailable"}
+          </div>
+          <div className="att-card-stats">
+            <span>
+              {attachment?.width ?? "?"}x{attachment?.height ?? "?"}
+            </span>
+            <span>{shortId(attachment?.sha256)}</span>
+            <span>{status?.quarantined === true ? "quarantined cascade" : "active"}</span>
+          </div>
+          <div className="att-status-chips">
+            <BooleanStatusChip label="active" value={status?.active} />
+            <BooleanStatusChip label="quarantined" value={status?.quarantined} />
+            <BooleanStatusChip label="stream_active" value={status?.stream_active} />
+            <BooleanStatusChip label="parent_active" value={status?.parent_active} />
+          </div>
+        </div>
+      </div>
+      <div className="attachment-props compact-props">
+        <div className="row">
+          <span className="k">media_type</span>
+          <span className="v">{mediaTypeValue ?? "-"}</span>
+        </div>
+        <div className="row">
+          <span className="k">byte_size</span>
+          <span className="v">{formatBytes(attachment?.byte_size)}</span>
+        </div>
+        <div className="row">
+          <span className="k">sha256</span>
+          <span className="v">
+            <CopyableHash value={attachment?.sha256} />
+          </span>
+        </div>
+        <div className="row">
+          <span className="k">created_at</span>
+          <span className="v">{formatIsoTimestamp(attachment?.created_at)}</span>
+        </div>
+        <div className="row">
+          <span className="k">parent_entry_id</span>
+          <span className="v">
+            {attachment?.parent_entry_id == null ? (
+              "-"
+            ) : (
+              <IdRef
+                id={attachment.parent_entry_id}
+                type="stream_entry"
+                label={attachment.parent_entry_id}
+              />
+            )}
+          </span>
+        </div>
+        <div className="row">
+          <span className="k">parent_turn_id</span>
+          <span className="v">
+            {attachment?.parent_turn_id == null ? (
+              "-"
+            ) : (
+              <IdRef id={attachment.parent_turn_id} type="turn" label={attachment.parent_turn_id} />
+            )}
+          </span>
+        </div>
+      </div>
+      <AttachmentPerceptionRows perception={metadata?.perception} />
+    </>
+  );
+}
+
+function StreamTimelineRow({
+  entry,
+  selected,
+  attachmentStatus,
+  onSelect,
+}: {
+  entry: StreamEntry;
+  selected: boolean;
+  attachmentStatus?: AttachmentStatusItem["status"];
+  onSelect: (id: string) => void;
+}) {
+  const attId = streamEntryAttachmentId(entry);
+  const isAttachment = entry.kind === "user_image_attachment";
+  const outcomeSummary = streamOutcomeSummary(entry);
+  const wake = autonomousWakeInfo(entry);
+
+  return (
+    <div
+      className={`stream-row ${selected ? "selected " : ""}${isAttachment ? "kind-attachment" : ""}`}
+      onClick={() => onSelect(entry.id)}
+    >
+      <span className="t">{formatTime(entry.timestamp)}</span>
+      <span className={`k ${wake !== null ? "purple" : kindTag(entry.kind)}`}>
+        {wake !== null ? "wake" : entry.kind}
+      </span>
+      <span
+        className={
+          isAttachment
+            ? "att-inline"
+            : outcomeSummary === null && !usesTagSummary(entry)
+              ? "body"
+              : "body outcome-tags"
+        }
+      >
+        {isAttachment ? (
+          <>
+            <ImagePlaceholder
+              attachmentId={attId}
+              mediaType={mediaType(entry)}
+              audience={entry.audience}
+              size="xs"
+              quarantined={attachmentStatus?.quarantined === true}
+            />
+            <span className="body-txt">{attachmentSummary(entry)}</span>
+            {attachmentStatus?.quarantined === true ? <Tag kind="bad">quarantined</Tag> : null}
+          </>
+        ) : outcomeSummary !== null ? (
+          <StreamOutcomeTags summary={outcomeSummary} />
+        ) : (
+          <StreamRowSummary entry={entry} />
+        )}
+      </span>
+      <span className="aud">{entry.audience ?? "global"}</span>
+    </div>
+  );
+}
+
+function StreamGroupHeader({
+  group,
+  collapsed,
+  onToggle,
+}: {
+  group: StreamTurnGroup;
+  collapsed: boolean;
+  onToggle: (groupId: string) => void;
+}) {
+  return (
+    <div className="stream-group-head">
+      <button
+        type="button"
+        className="stream-group-toggle"
+        aria-label={`${collapsed ? "expand" : "collapse"} ${group.label}`}
+        aria-expanded={!collapsed}
+        onClick={() => onToggle(group.id)}
+      >
+        {collapsed ? "+" : "-"}
+      </button>
+      <span className="stream-group-id">
+        {group.turnId === null ? (
+          UNCLAIMED_STREAM_GROUP_LABEL
+        ) : (
+          <IdRef id={group.turnId} type="turn" label={group.turnId} />
+        )}
+      </span>
+      <span className="stream-group-meta">{groupTimeRange(group)}</span>
+      <span className="stream-group-meta">{group.entryCount} entries</span>
+      <Tag kind={groupStatusTagKind(group.status)}>{group.status}</Tag>
+    </div>
+  );
+}
+
+export function StreamScreen({ sessionId }: { sessionId: string }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectionSeeded, setSelectionSeeded] = useState(false);
+  const [selectedKinds, setSelectedKinds] = useState<Set<StreamEntryKind>>(
+    () => new Set(STREAM_KINDS),
+  );
+  const [audience, setAudience] = useState("all");
+  const [structuralFilters, setStructuralFilters] = useState<StreamStructuralFilterState>({});
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
+  const [attachmentStatusById, setAttachmentStatusById] = useState<
+    Record<string, AttachmentStatusItem["status"]>
+  >({});
+  const selectedKindList = useMemo(
+    () => STREAM_KINDS.filter((kind) => selectedKinds.has(kind)),
+    [selectedKinds],
+  );
+  const selectedKindKey = selectedKindList.join(",");
+  const serverKinds =
+    selectedKindList.length === STREAM_KINDS.length ? undefined : selectedKindList;
+  const serverAudience = audience === "all" ? undefined : audience;
+  const invalidateAttachmentStatuses = useCallback((ids: readonly string[]) => {
+    setAttachmentStatusById((current) => {
+      const next = { ...current };
+      for (const id of ids) {
+        delete next[id];
       }
-      return new Set(windowAudiences);
+      return next;
     });
-  }, [windowAudiences]);
-
+  }, []);
+  const streamWindow = useStreamWindow({
+    sessionId,
+    kinds: serverKinds,
+    audience: serverAudience,
+    limit: 120,
+    onAttachmentStatusesInvalidated: invalidateAttachmentStatuses,
+  });
+  const entries = streamWindow.entries;
   const filtered = useMemo(
-    () =>
-      entries.filter(
-        (entry) =>
-          kinds.has(entry.kind) &&
-          (entry.audience === undefined || audiences.size === 0 || audiences.has(entry.audience)),
-      ),
-    [audiences, entries, kinds],
+    () => applyStreamStructuralFilters(entries, structuralFilters),
+    [entries, structuralFilters],
   );
-  const selected = filtered.find((entry) => entry.id === selectedId) ?? filtered[0] ?? null;
-  const selectedAttachmentId = selected === null ? undefined : attachmentId(selected);
+  const groups = useMemo(() => groupStreamEntriesByTurn(filtered), [filtered]);
+  const selected =
+    selectedId === null ? null : (filtered.find((entry) => entry.id === selectedId) ?? null);
+  const selectedAttachmentId = selected === null ? undefined : streamEntryAttachmentId(selected);
   const attachmentApi = useApi<AttachmentMetadataResponse | null>(
     () =>
       selectedAttachmentId === undefined
@@ -666,21 +1056,33 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
         : getAttachmentMetadata(selectedAttachmentId).catch(() => null),
     [selectedAttachmentId],
   );
-  const [attachmentStatusById, setAttachmentStatusById] = useState<
-    Record<string, AttachmentStatusItem["status"]>
-  >({});
 
   useEffect(() => {
-    setEntries([]);
     setSelectedId(null);
-    setAudiences(new Set());
+    setSelectionSeeded(false);
+    setCollapsedGroupIds(new Set());
     setAttachmentStatusById({});
-  }, [sessionId]);
+  }, [audience, selectedKindKey, sessionId]);
+
+  useEffect(() => {
+    if (streamWindow.loading || selectionSeeded) {
+      return;
+    }
+    setSelectedId(filtered[0]?.id ?? null);
+    setSelectionSeeded(true);
+  }, [filtered, selectionSeeded, streamWindow.loading]);
+
+  useEffect(() => {
+    if (selectedId !== null && filtered.find((entry) => entry.id === selectedId) === undefined) {
+      setSelectedId(null);
+    }
+  }, [filtered, selectedId]);
+
   const visibleAttachmentIds = useMemo(
     () => [
       ...new Set(
         filtered.flatMap((entry) => {
-          const id = attachmentId(entry);
+          const id = streamEntryAttachmentId(entry);
           return id === undefined ? [] : [id];
         }),
       ),
@@ -715,6 +1117,16 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
     });
   }, [attachmentStatusesApi.data]);
 
+  const windowAudiences = useMemo(
+    () =>
+      [
+        ...new Set([
+          ...entries.flatMap((entry) => (entry.audience === undefined ? [] : [entry.audience])),
+          ...(serverAudience === undefined ? [] : [serverAudience]),
+        ]),
+      ].sort(),
+    [entries, serverAudience],
+  );
   const kindCounts = useMemo(
     () =>
       Object.fromEntries(
@@ -732,12 +1144,27 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       ) as Record<string, number>,
     [entries, windowAudiences],
   );
+  const structuralCounts = useMemo(
+    () => ({
+      aborted: entries.filter(isAbortedTurnEntry).length,
+      hasAttachment: entries.filter(hasStreamAttachment).length,
+      hasTurnId: entries.filter((entry) => entry.turn_id !== undefined).length,
+      hasSourceMessageKey: entries.filter((entry) => entry.source_message_key !== undefined).length,
+      compressed: entries.filter(isCompressed).length,
+    }),
+    [entries],
+  );
   const selectedStatus = selected === null ? null : summarizeStatus(selected, attachmentApi.data);
   const selectedAttachmentPerceptionId =
     selected === null ? undefined : streamAttachmentPerceptionId(selected, attachmentApi.data);
+  const hasOlder = streamWindow.nextCursor !== null;
+  const honestyLabel = hasOlder ? "loaded window only · older entries available" : "loaded window";
 
   const toggleKind = (kind: StreamEntryKind) => {
-    setKinds((current) => {
+    setSelectedKinds((current) => {
+      if (current.has(kind) && current.size === 1) {
+        return current;
+      }
       const next = new Set(current);
       if (next.has(kind)) {
         next.delete(kind);
@@ -747,13 +1174,19 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       return next;
     });
   };
-  const toggleAudience = (audience: string) => {
-    setAudiences((current) => {
+  const toggleStructuralFilter = (filterId: StreamStructuralFilterId) => {
+    setStructuralFilters((current) => ({
+      ...current,
+      [filterId]: current[filterId] !== true,
+    }));
+  };
+  const toggleGroup = (groupId: string) => {
+    setCollapsedGroupIds((current) => {
       const next = new Set(current);
-      if (next.has(audience)) {
-        next.delete(audience);
+      if (next.has(groupId)) {
+        next.delete(groupId);
       } else {
-        next.add(audience);
+        next.add(groupId);
       }
       return next;
     });
@@ -765,127 +1198,129 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
         <div className="group">
           <div className="label">stream</div>
           <div style={{ fontSize: 10.5, color: "var(--text-mute)" }}>
-            append-only · {entries.length} events · window counts
+            append-only · {entries.length} window events · limit 120
+          </div>
+          <div className="stream-honesty">{honestyLabel}</div>
+        </div>
+        <div className="group">
+          <div className="label">server filters</div>
+          <div style={{ fontSize: 10.5, color: "var(--text-mute)", marginBottom: 6 }}>
+            counts are loaded window counts
           </div>
         </div>
         <div className="group">
           <div className="label">kinds</div>
           {STREAM_KINDS.map((kind) => (
-            <div
+            <button
+              type="button"
               key={kind}
-              className={`opt ${kinds.has(kind) ? "on" : ""}`}
+              className={`opt ${selectedKinds.has(kind) ? "on" : ""}`}
               onClick={() => toggleKind(kind)}
             >
               <span>
                 <span className={`dot ${kindTag(kind)}`}></span> {kind}
               </span>
               <span className="count">{kindCounts[kind]}</span>
-            </div>
+            </button>
           ))}
         </div>
         <div className="group">
           <div className="label">audience</div>
-          {windowAudiences.map((audience) => (
-            <div
-              key={audience}
-              className={`opt ${audiences.has(audience) ? "on" : ""}`}
-              onClick={() => toggleAudience(audience)}
-            >
-              <span>{audience}</span>
-              <span className="count">{audienceCounts[audience]}</span>
-            </div>
-          ))}
-          {windowAudiences.length === 0 ? (
-            <div className="opt readonly">
-              <span style={{ color: "var(--text-faint)" }}>none in window</span>
-            </div>
-          ) : null}
+          <select
+            aria-label="stream audience filter"
+            value={audience}
+            onChange={(event) => setAudience(event.currentTarget.value)}
+          >
+            <option value="all">all audiences ({entries.length} window)</option>
+            {windowAudiences.map((item) => (
+              <option key={item} value={item}>
+                {item} ({audienceCounts[item] ?? 0} window)
+              </option>
+            ))}
+          </select>
         </div>
         <div className="group">
-          <div className="label">status</div>
-          <div className="opt readonly">
-            <span>active</span>
-            <span className="count">
-              {entries.filter((entry) => entry.turn_status !== "aborted").length}
-            </span>
-          </div>
-          <div className="opt readonly">
-            <span>aborted-turn</span>
-            <span className="count">
-              {entries.filter((entry) => entry.turn_status === "aborted").length}
-            </span>
-          </div>
+          <div className="label">loaded-window filters</div>
+          {(
+            [
+              ["aborted", "aborted-only", structuralCounts.aborted],
+              ["hasAttachment", "has attachment", structuralCounts.hasAttachment],
+              ["hasTurnId", "has turn id", structuralCounts.hasTurnId],
+              ["hasSourceMessageKey", "has source key", structuralCounts.hasSourceMessageKey],
+              ["compressed", "compressed", structuralCounts.compressed],
+            ] as const
+          ).map(([filterId, label, count]) => (
+            <button
+              type="button"
+              key={filterId}
+              className={`opt ${structuralFilters[filterId] === true ? "on" : ""}`}
+              onClick={() => toggleStructuralFilter(filterId)}
+            >
+              <span>{label}</span>
+              <span className="count">{count}</span>
+            </button>
+          ))}
         </div>
       </div>
 
       <div className="stream-main">
         <div className="stream-main-head">
-          <span>{filtered.length} events</span>
+          <span>{filtered.length} window events</span>
+          <span>{groups.length} groups</span>
+          <span>{honestyLabel}</span>
           <span className="spacer"></span>
           <span className="live-dot"></span>
           <span className="acc upper">tailing</span>
         </div>
-        {streamApi.loading && entries.length === 0 ? (
-          <div className="notice">loading stream</div>
-        ) : null}
-        {streamApi.error !== null ? (
-          <div className="notice bad">{streamApi.error.message}</div>
-        ) : null}
-        {filtered.map((entry) => {
-          const attId = attachmentId(entry);
-          const attachmentStatus = attId === undefined ? undefined : attachmentStatusById[attId];
-          const isAttachment = entry.kind === "user_image_attachment";
-          const outcomeSummary = streamOutcomeSummary(entry);
-          const wake = autonomousWakeInfo(entry);
+        {streamWindow.loading && entries.length === 0 ? <Loading>loading stream</Loading> : null}
+        {streamWindow.error !== null ? <ErrorState>{streamWindow.error.message}</ErrorState> : null}
+        {groups.length === 0 && !streamWindow.loading ? <Empty>no entries in window</Empty> : null}
+        {groups.map((group) => {
+          const collapsed = collapsedGroupIds.has(group.id);
           return (
-            <div
-              key={entry.id}
-              className={`stream-row ${entry.id === selected?.id ? "selected " : ""}${
-                isAttachment ? "kind-attachment" : ""
-              }`}
-              onClick={() => setSelectedId(entry.id)}
-            >
-              <span className="t">{formatTime(entry.timestamp)}</span>
-              <span className={`k ${wake !== null ? "purple" : kindTag(entry.kind)}`}>
-                {wake !== null ? "wake" : entry.kind}
-              </span>
-              <span
-                className={
-                  isAttachment
-                    ? "att-inline"
-                    : outcomeSummary === null && !usesTagSummary(entry)
-                      ? "body"
-                      : "body outcome-tags"
-                }
-              >
-                {isAttachment ? (
-                  <>
-                    <ImagePlaceholder
-                      attachmentId={attId}
-                      mediaType={mediaType(entry)}
-                      audience={entry.audience}
-                      size="xs"
-                      quarantined={attachmentStatus?.quarantined === true}
-                    />
-                    <span className="body-txt">{attachmentSummary(entry)}</span>
-                    {attachmentStatus?.quarantined === true ? (
-                      <Tag kind="bad">quarantined</Tag>
-                    ) : null}
-                  </>
-                ) : outcomeSummary !== null ? (
-                  <StreamOutcomeTags summary={outcomeSummary} />
-                ) : (
-                  <StreamRowSummary entry={entry} />
-                )}
-              </span>
-              <span className="aud">{entry.audience ?? "global"}</span>
+            <div key={group.id} className="stream-group">
+              <StreamGroupHeader group={group} collapsed={collapsed} onToggle={toggleGroup} />
+              {collapsed
+                ? null
+                : group.entries.map((entry) => {
+                    const attId = streamEntryAttachmentId(entry);
+                    return (
+                      <StreamTimelineRow
+                        key={entry.id}
+                        entry={entry}
+                        selected={entry.id === selected?.id}
+                        attachmentStatus={
+                          attId === undefined ? undefined : attachmentStatusById[attId]
+                        }
+                        onSelect={setSelectedId}
+                      />
+                    );
+                  })}
             </div>
           );
         })}
+        <div className="stream-load-older">
+          {hasOlder ? (
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => {
+                void streamWindow.loadOlder();
+              }}
+              disabled={streamWindow.loadingOlder}
+            >
+              {streamWindow.loadingOlder ? "loading older" : "load older"}
+            </button>
+          ) : (
+            <span className="dim">end of loaded stream window</span>
+          )}
+        </div>
       </div>
 
       <div className="stream-detail">
-        {selected === null ? null : (
+        {selected === null ? (
+          <Empty>select a stream entry</Empty>
+        ) : (
           <>
             <div className="det-head">
               <div className="id">
@@ -919,53 +1354,12 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
             </div>
             <div className="det-body">
               {selectedAttachmentId === undefined ? null : (
-                <>
-                  <div className="upper dim" style={{ marginBottom: 6 }}>
-                    attachment
-                  </div>
-                  <div className="att-card">
-                    <ImagePlaceholder
-                      attachmentId={selectedAttachmentId}
-                      mediaType={mediaType(selected)}
-                      audience={selected.audience}
-                      size="lg"
-                      quarantined={attachmentApi.data?.status.quarantined === true}
-                    />
-                    <div className="att-card-meta">
-                      <div className="att-card-id">
-                        <IdRef
-                          id={selectedAttachmentId}
-                          type="attachment"
-                          label={selectedAttachmentId}
-                          hint={attachmentApi.data?.attachment}
-                        />
-                        {selectedAttachmentPerceptionId === undefined ? null : (
-                          <IdRef
-                            id={selectedAttachmentPerceptionId}
-                            type="image_perception"
-                            label={`perception ${selectedAttachmentPerceptionId}`}
-                            hint={attachmentApi.data?.perception}
-                          />
-                        )}
-                      </div>
-                      <div className="att-card-caption">
-                        {attachmentApi.data?.perception?.caption ?? "perception unavailable"}
-                      </div>
-                      <div className="att-card-stats">
-                        <span>
-                          {attachmentApi.data?.attachment.width ?? "?"}x
-                          {attachmentApi.data?.attachment.height ?? "?"}
-                        </span>
-                        <span>{shortId(attachmentApi.data?.attachment.sha256)}</span>
-                        <span>
-                          {attachmentApi.data?.status.quarantined === true
-                            ? "quarantined cascade"
-                            : "active"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </>
+                <AttachmentDetail
+                  selected={selected}
+                  attachmentId={selectedAttachmentId}
+                  metadata={attachmentApi.data}
+                  perceptionId={selectedAttachmentPerceptionId}
+                />
               )}
               <div className="upper dim" style={{ marginTop: 16, marginBottom: 6 }}>
                 body

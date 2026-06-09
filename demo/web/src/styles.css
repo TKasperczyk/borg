@@ -2986,11 +2986,16 @@ g.fc-regen-group.active .fc-regen-label-bg {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: calc(100% + 8px);
+  border: 0;
+  background: transparent;
   padding: 3px 6px;
   margin: 0 -4px;
+  font-family: var(--sans);
   font-size: 11px;
   cursor: pointer;
   color: var(--text-dim);
+  text-align: left;
 }
 .stream-filters .opt:hover {
   background: var(--bg-1);
@@ -3010,6 +3015,12 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .stream-filters .opt.readonly:hover {
   background: none;
   color: var(--text-dim);
+}
+.stream-honesty {
+  margin-top: 5px;
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .stream-main {
@@ -3031,6 +3042,56 @@ g.fc-regen-group.active .fc-regen-label-bg {
 }
 .stream-main-head .spacer {
   flex: 1;
+}
+.stream-group {
+  border-bottom: 1px solid var(--line-soft);
+}
+.stream-group-head {
+  position: sticky;
+  top: 31px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-1);
+  color: var(--text-mute);
+  font-size: 10.5px;
+}
+.stream-group-toggle {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.stream-group-toggle:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.stream-group-id {
+  min-width: 0;
+  color: var(--acc);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stream-group-meta {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.stream-load-older {
+  padding: 12px 14px 18px;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid var(--line-soft);
 }
 .stream-detail {
   border-left: 1px solid var(--line);
@@ -3304,21 +3365,25 @@ g.fc-regen-group.active .fc-regen-label-bg {
 }
 
 /* generic prop list */
-.props {
+.props,
+.attachment-props {
   font-size: 11.5px;
 }
-.props .row {
+.props .row,
+.attachment-props .row {
   display: grid;
   grid-template-columns: 130px 1fr;
   gap: 12px;
   padding: 5px 0;
   border-bottom: 1px solid var(--line-soft);
 }
-.props .row .k {
+.props .row .k,
+.attachment-props .row .k {
   color: var(--text-mute);
   font-size: 11px;
 }
-.props .row .v {
+.props .row .v,
+.attachment-props .row .v {
   color: var(--text-dim);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -5081,6 +5146,50 @@ g.fc-regen-group.active .fc-regen-label-bg {
   font-size: 10px;
   color: var(--text-mute);
   font-family: var(--mono);
+}
+.att-status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.compact-props {
+  margin-top: 8px;
+}
+.chip-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.idref-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.copyable-hash {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.copyable-hash > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stream-no-audience-preview {
+  width: 160px;
+  height: 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: center;
+  border: 1px dashed var(--line);
+  background: var(--bg-1);
 }
 
 /* attachment-in-message: thumb row under chat user message */
