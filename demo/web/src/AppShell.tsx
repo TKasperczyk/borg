@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, getCreatorEntity, openOperatorSession, setCreatorByName } from "./api/client";
 import type { EntityRecord, StateSnapshot } from "./api/types";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { Inspector } from "./components/Inspector/Inspector";
 import { InspectorProvider } from "./components/Inspector/inspector-context";
 import { InstrumentStrip } from "./components/InstrumentStrip";
@@ -13,6 +14,7 @@ import { LiveEventsProvider } from "./hooks/live-context";
 import { useApi } from "./hooks/use-api";
 import { useLiveEvents } from "./hooks/use-live-events";
 import { LiveCacheProvider, useLiveCache } from "./hooks/use-live-cache";
+import { usePaletteHotkey } from "./hooks/use-palette-hotkey";
 import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
 import { useView } from "./hooks/use-view";
@@ -131,6 +133,8 @@ function AppShellContent({
     sessionsApi.data?.sessions.find((session) => session.session_id === sessionId) ?? null;
   const activeAudience = activeSession?.audience_label ?? DEFAULT_AUDIENCE;
   const badges = useMemo(() => railBadges(counts), [counts]);
+  const [resetOpen, setResetOpen] = useState(false);
+  const palette = usePaletteHotkey({ disabled: resetOpen });
 
   const refetchSessionState = async () => {
     await Promise.all([refetchSessions(), refetchState()]);
@@ -176,6 +180,8 @@ function AppShellContent({
           dreamActivity={dreamActivity}
           now={now}
           route={view}
+          resetOpen={resetOpen}
+          onResetOpenChange={setResetOpen}
         />
         <div className="main">
           <SessionFleet
@@ -224,6 +230,13 @@ function AppShellContent({
           state={stateApi.data}
           lastPhase={turnStream.lastPhase}
           lastMaintenanceTick={lastMaintenanceTick}
+        />
+        <CommandPalette
+          open={palette.open}
+          onOpenChange={palette.setOpen}
+          setView={setView}
+          setSessionId={setSessionId}
+          onOpenReset={() => setResetOpen(true)}
         />
         <Inspector />
       </div>

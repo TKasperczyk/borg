@@ -3,19 +3,32 @@ import { useState } from "react";
 import { RESET_CONFIRM_TOKEN, postAdminReset } from "../api/client";
 import { Modal } from "./Modal";
 
-export function ResetButton() {
-  const [open, setOpen] = useState(false);
+export type ResetButtonProps = {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
+
+export function ResetButton({ open, onOpenChange }: ResetButtonProps = {}) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogOpen = open ?? internalOpen;
 
   const canConfirm = typed === RESET_CONFIRM_TOKEN && !busy;
+
+  function setDialogOpen(nextOpen: boolean): void {
+    if (open === undefined) {
+      setInternalOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  }
 
   function close(): void {
     if (busy) {
       return;
     }
-    setOpen(false);
+    setDialogOpen(false);
     setTyped("");
     setError(null);
   }
@@ -40,13 +53,13 @@ export function ResetButton() {
       <button
         type="button"
         className="topbar-reset"
-        onClick={() => setOpen(true)}
+        onClick={() => setDialogOpen(true)}
         title="Wipe all borg state and restart with an empty substrate"
       >
         reset
       </button>
       <Modal
-        open={open}
+        open={dialogOpen}
         title={busy ? "resetting borg..." : "reset borg to clean slate"}
         onClose={close}
         footer={

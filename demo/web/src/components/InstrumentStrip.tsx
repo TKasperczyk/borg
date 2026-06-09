@@ -16,6 +16,8 @@ export type InstrumentStripProps = {
   dreamActivity: DreamActivity | null;
   now: string;
   route: RouteId;
+  resetOpen?: boolean;
+  onResetOpenChange?: (open: boolean) => void;
 };
 
 function moodGlyph(state: StateSnapshot | null): string {
@@ -41,6 +43,8 @@ export function InstrumentStrip({
   dreamActivity,
   now,
   route,
+  resetOpen,
+  onResetOpenChange,
 }: InstrumentStripProps) {
   return (
     <div className="topbar instrument-strip">
@@ -113,7 +117,7 @@ export function InstrumentStrip({
         </span>
       </div>
       <div className="topbar-end">
-        <ResetButton />
+        <ResetButton open={resetOpen} onOpenChange={onResetOpenChange} />
       </div>
     </div>
   );
