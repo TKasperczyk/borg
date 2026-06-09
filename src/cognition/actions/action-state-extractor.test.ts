@@ -4,10 +4,12 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type {
+  ActionState,
   ActionRecord,
   ActionRecordListFilter,
   ActionRecordPatch,
 } from "../../memory/actions/index.js";
+import { ACTION_STATE_METADATA } from "../../memory/actions/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createActionId,
@@ -153,6 +155,9 @@ function makeActionRepository(records: ActionRecord[] = []) {
       ...patch,
     };
   });
+  const get = vi.fn(
+    (id: ActionRecord["id"]) => records.find((record) => record.id === id) ?? null,
+  );
   const list = vi.fn((filter: ActionRecordListFilter = {}) =>
     records.filter((record) => {
       if (filter.state !== undefined && record.state !== filter.state) {
@@ -188,9 +193,19 @@ function makeActionRepository(records: ActionRecord[] = []) {
 
   return {
     add,
+    get,
     update,
     list,
     records,
+  };
+}
+
+function retireActionRecord(record: ActionRecord, state: ActionState, nowMs: number): ActionRecord {
+  return {
+    ...record,
+    state,
+    updated_at: nowMs,
+    [ACTION_STATE_METADATA[state].timestamp_field]: nowMs,
   };
 }
 
@@ -218,6 +233,13 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
     return texts.map((text) => Float32Array.from(this.vectors.get(text) ?? [0, 1]));
   }
 }
+
+const TERMINAL_RACE_CASES = [
+  { terminalState: "completed", candidateState: "completed" },
+  { terminalState: "not_done", candidateState: "not_done" },
+  { terminalState: "archived", candidateState: "completed" },
+  { terminalState: "expired", candidateState: "not_done" },
+] as const;
 
 describe("ActionStateExtractor", () => {
   it("writes a completed ActionRecord from current user evidence", async () => {
@@ -883,6 +905,99 @@ describe("ActionStateExtractor", () => {
     });
   });
 
+  it.each(TERMINAL_RACE_CASES)(
+    "skips embedding terminal closure when lifecycle sees concurrent $terminalState",
+    async ({ terminalState, candidateState }) => {
+      const currentUserStreamEntryId = createStreamEntryId();
+      const audience = createEntityId();
+      const existingDescription = `deploy the fix before ${terminalState}`;
+      const terminalDescription = `deployed the fix before ${terminalState}`;
+      const existingAction = makeActionRecord({
+        description: existingDescription,
+        actor: "user",
+        audience_entity_id: audience,
+        state: "committed_to_do",
+        committed_at: 1_000,
+      });
+      const repository = makeActionRepository([existingAction]);
+      repository.get.mockImplementation((id: ActionRecord["id"]) => {
+        const index = repository.records.findIndex((record) => record.id === id);
+
+        if (index === -1) {
+          return null;
+        }
+
+        const retired = retireActionRecord(repository.records[index]!, terminalState, 1_750);
+        repository.records[index] = retired;
+        return retired;
+      });
+      const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+      const embeddingClient = new ScriptedEmbeddingClient(
+        new Map([
+          [existingDescription, [1, 0]],
+          [terminalDescription, [1, 0]],
+        ]),
+      );
+      const llm = new FakeLLMClient({
+        responses: [
+          actionStateResponse([
+            {
+              description: terminalDescription,
+              state: candidateState,
+              audience_entity_id: audience,
+              evidence_stream_entry_ids: [currentUserStreamEntryId],
+              confidence: 0.94,
+            },
+          ]),
+        ],
+      });
+      const extractor = new ActionStateExtractor({
+        llmClient: llm,
+        model: "haiku",
+        actionRepository: repository,
+        embeddingClient,
+        clock: new FixedClock(2_000),
+        turnId: `turn_embedding_race_${terminalState}`,
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event, data) => events.push({ event, data }),
+        },
+      });
+
+      const records = await extractor.extract({
+        ...makeExtractorInput(currentUserStreamEntryId),
+        userMessage: "X deployed the fix.",
+        audienceEntityId: audience,
+      });
+
+      expect(records).toEqual([]);
+      expect(repository.add).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(repository.records).toHaveLength(1);
+      expect(repository.records[0]).toMatchObject({
+        id: existingAction.id,
+        state: terminalState,
+        updated_at: 1_750,
+      });
+      expect(events).not.toContainEqual({
+        event: "action_state.transitioned",
+        data: expect.anything(),
+      });
+      expect(events).toContainEqual({
+        event: "extraction.actions.completed",
+        data: expect.objectContaining({
+          turnId: `turn_embedding_race_${terminalState}`,
+          persisted_count: 0,
+          skipped_count: 1,
+          skipped_reasons: [{ reason: "lifecycle_no_op", count: 1 }],
+          skipped_candidates: [{ candidate_index: 0, reason: "lifecycle_no_op" }],
+          actions_closed_by_terminal_emission: 0,
+        }),
+      });
+    },
+  );
+
   it("closes a Borg action when post-turn structural evidence says Borg performed it", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const agentStreamEntryId = createStreamEntryId();
@@ -960,6 +1075,7 @@ describe("ActionStateExtractor", () => {
         last_referenced_at_ms: 2_500,
         last_referenced_turn_counter: 18,
       }),
+      { skipSideEffects: undefined },
     );
     expect(events).toContainEqual({
       event: "action_state.borg_self_performance.completed",
@@ -1002,6 +1118,97 @@ describe("ActionStateExtractor", () => {
     );
     expect(promptSharedStateEntry?.disclosure_label?.disclosure_class).not.toBe("public");
   });
+
+  it.each(TERMINAL_RACE_CASES)(
+    "skips matched-action terminal closure when lifecycle sees concurrent $terminalState",
+    async ({ terminalState, candidateState }) => {
+      const currentUserStreamEntryId = createStreamEntryId();
+      const agentStreamEntryId = createStreamEntryId();
+      const existingAction = makeActionRecord({
+        description: `Log the incident before ${terminalState}`,
+        actor: "borg",
+        state: "committed_to_do",
+        committed_at: 1_000,
+      });
+      const repository = makeActionRepository([existingAction]);
+      repository.get.mockImplementation((id: ActionRecord["id"]) => {
+        const index = repository.records.findIndex((record) => record.id === id);
+
+        if (index === -1) {
+          return null;
+        }
+
+        const retired = retireActionRecord(repository.records[index]!, terminalState, 1_750);
+        repository.records[index] = retired;
+        return retired;
+      });
+      const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+      const llm = new FakeLLMClient({
+        responses: [
+          actionStateResponse([
+            {
+              description: `Logged the incident before ${terminalState}`,
+              actor: "borg",
+              state: candidateState,
+              matched_existing_action_id: existingAction.id,
+              evidence_stream_entry_ids: [currentUserStreamEntryId, agentStreamEntryId],
+              confidence: 0.96,
+            },
+          ]),
+        ],
+      });
+      const extractor = new ActionStateExtractor({
+        llmClient: llm,
+        model: "haiku",
+        actionRepository: repository,
+        clock: new FixedClock(2_500),
+        turnId: `turn_self_performed_race_${terminalState}`,
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event, data) => events.push({ event, data }),
+        },
+      });
+
+      const records = await extractor.extract({
+        ...makeExtractorInput(currentUserStreamEntryId),
+        currentAgentStreamEntryId: agentStreamEntryId,
+        postTurnSelfPerformance: {
+          activeBorgActions: [existingAction],
+          currentTurnSharedStateEntries: [],
+          agentResponse: "I logged the incident.",
+        },
+        persistNewActions: false,
+        turnCounter: 18,
+      });
+
+      expect(records).toEqual([]);
+      expect(repository.add).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(repository.records).toHaveLength(1);
+      expect(repository.records[0]).toMatchObject({
+        id: existingAction.id,
+        state: terminalState,
+        updated_at: 1_750,
+      });
+      expect(events).not.toContainEqual({
+        event: "action_state.borg_self_performance.completed",
+        data: expect.anything(),
+      });
+      expect(events).toContainEqual({
+        event: "extraction.actions.completed",
+        data: expect.objectContaining({
+          turnId: `turn_self_performed_race_${terminalState}`,
+          persisted_count: 0,
+          skipped_count: 1,
+          skipped_reasons: [{ reason: "lifecycle_no_op", count: 1 }],
+          skipped_candidates: [{ candidate_index: 0, reason: "lifecycle_no_op" }],
+          actions_closed_by_terminal_emission: 0,
+          actions_closed_by_borg_self_performance: 0,
+        }),
+      });
+    },
+  );
 
   it("does not close a Borg self-performance action when the extractor finds no structural evidence", async () => {
     const currentUserStreamEntryId = createStreamEntryId();

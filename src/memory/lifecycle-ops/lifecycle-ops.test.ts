@@ -11,6 +11,7 @@ import {
   canonicalizeGoalWithSharedStateEntry,
   canonicalizeOpenQuestionWithSharedStateEntry,
   completeAction,
+  markActionNotDone,
   markSemanticContradicted,
   markSemanticSuperseded,
   resolveOpenQuestionWithEvidence,
@@ -498,6 +499,63 @@ describe("lifecycle ops", () => {
       }),
     ).toMatchObject({ status: "no_op", reason: "missing" });
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("marks actions not done directly without completion side effects", () => {
+    const actionId = createActionId();
+    const update = vi.fn();
+
+    const result = markActionNotDone({
+      actionId,
+      repository: {
+        get: vi.fn(() => ({ id: actionId, state: "scheduled" }) as never),
+        update,
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(update).toHaveBeenCalledWith(actionId, { state: "not_done" });
+  });
+
+  it("returns terminal no-op when marking an already-retired action not done", () => {
+    const actionId = createActionId();
+    const previous = { id: actionId, state: "archived" } as never;
+    const update = vi.fn();
+
+    expect(
+      markActionNotDone({
+        actionId,
+        repository: {
+          get: vi.fn(() => previous),
+          update,
+        },
+      }),
+    ).toMatchObject({
+      status: "no_op",
+      reason: "terminal",
+      value: {
+        actionId,
+        previous,
+      },
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("returns conflicts when marking an action not done hits CAS", () => {
+    const actionId = createActionId();
+    const error = casError("action", actionId);
+
+    expect(
+      markActionNotDone({
+        actionId,
+        repository: {
+          get: vi.fn(() => ({ id: actionId, state: "scheduled" }) as never),
+          update: vi.fn(() => {
+            throw error;
+          }),
+        },
+      }),
+    ).toEqual({ status: "conflict", error });
   });
 
   it("resolves open questions with evidence through the repository", () => {

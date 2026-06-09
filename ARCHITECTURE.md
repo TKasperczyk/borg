@@ -1359,6 +1359,30 @@ involved, and terminal records are treated as no-ops rather than overwritten.
 Conflicts surface as operation results or errors instead of silently rewriting
 history.
 
+### Status Vocabulary
+
+Status words are shared across bands, but they do not all mean the same storage
+operation. The common vocabulary is:
+
+- `archived`: retained as history but removed from ordinary active operation; used by Sessions, Actions, and archived Semantic nodes.
+- `inactive`: present in the Stream/index but excluded from ordinary retrieval, citation, or source-trust use; used by Stream turn status and source-trust filters.
+- `revoked`: an authority or relationship constraint was withdrawn with provenance; used by Commitments, Relational Slots, and Creator Directives.
+- `superseded`: replaced by newer evidence or a successor record without erasure; used by Semantic Memory, Shared State, Procedural Memory, Commitments, and identity history.
+- `invalidated`: source support or shared-state content was judged no longer usable as current evidence; used by Semantic edges and Shared State.
+- `quarantined`: preserved as tainted or unsafe-to-promote evidence rather than deleted; used by Stream source trust, Semantic Memory, Relational Slots, and Shared State artifact filtering.
+- `expired`: time or session scope ended without making a final assertion; used by Actions and Commitments.
+- `abandoned`: an identity-bearing goal or open question was intentionally stopped without being completed or resolved; used by Goals and Open Questions.
+- `not_done`: an action-specific final outcome that says the concrete task did not happen; used by Actions.
+- `dormant`: still retained but demoted for age or inactivity rather than retired; used by Shared State salience and Open Question wake triggers.
+
+Transition ownership follows the same split. Identity-bearing records transition
+through Identity Governance. Durable non-identity transitions and cross-pillar
+canonicalization go through lifecycle operations. Repository-internal
+maintenance -- aging, caps, decay, and reversal protocols -- stays inside the
+repositories. This split is deliberate: governance owns identity mutation,
+lifecycle ops own shared durable transition semantics, and repositories own
+local maintenance invariants.
+
 ## Audience And Disclosure Scoping
 
 Audience metadata is a first-class disclosure and ranking dimension, not a

@@ -24,6 +24,11 @@ import {
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
+import {
+  completeAction,
+  markActionNotDone,
+  type LifecycleOperationResult,
+} from "../../memory/lifecycle-ops/index.js";
 import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -132,6 +137,8 @@ type ParsedActionStateCandidateWithIndex = {
 type ActionStateSkippedReason =
   | "missing_current_user_evidence"
   | "repository_failed"
+  | "lifecycle_no_op"
+  | "lifecycle_conflict"
   | "invalid_classification"
   | "invalid_candidate"
   | "non_concrete_classification"
@@ -180,7 +187,7 @@ export type ActionStateExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   actionRepository?: Pick<ActionRepository, "add"> &
-    Partial<Pick<ActionRepository, "list" | "update">>;
+    Partial<Pick<ActionRepository, "get" | "list" | "update">>;
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -574,6 +581,40 @@ function isActiveTerminalTransitionTarget(state: ActionState): boolean {
 
 function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[]): T[] {
   return [...new Set([...left, ...right])];
+}
+
+type TerminalClosureState = "completed" | "not_done";
+type TerminalClosurePatch = Omit<ActionRecordPatch, "state">;
+type TerminalClosureRepository = Pick<ActionRepository, "update"> &
+  Partial<Pick<ActionRepository, "get">>;
+type TerminalClosureLifecycleResult = LifecycleOperationResult<{
+  actionId: ActionId;
+  previous: ActionRecord | null;
+}>;
+
+function closeActionThroughLifecycle(input: {
+  actionId: ActionId;
+  state: TerminalClosureState;
+  repository: TerminalClosureRepository;
+  patch: TerminalClosurePatch;
+}): TerminalClosureLifecycleResult {
+  return input.state === "completed"
+    ? completeAction({
+        actionId: input.actionId,
+        repository: input.repository,
+        patch: input.patch,
+      })
+    : markActionNotDone({
+        actionId: input.actionId,
+        repository: input.repository,
+        patch: input.patch,
+      });
+}
+
+function skippedReasonFromLifecycleResult(
+  result: Exclude<TerminalClosureLifecycleResult, { status: "success" }>,
+): ActionStateSkippedReason {
+  return result.status === "conflict" ? "lifecycle_conflict" : "lifecycle_no_op";
 }
 
 function traceExtractorCompleted(options: {
@@ -980,7 +1021,6 @@ export class ActionStateExtractor {
 
         if (activeBorgAction !== undefined && this.options.actionRepository.update !== undefined) {
           const patch = {
-            state: candidate.state,
             confidence: Math.max(activeBorgAction.confidence, candidate.confidence),
             provenance_stream_entry_ids: mergeUniqueIds(
               activeBorgAction.provenance_stream_entry_ids,
@@ -991,10 +1031,24 @@ export class ActionStateExtractor {
             last_referenced_turn_counter: turnCounter,
             last_referenced_turn_global: turnCounter,
             ...stateTimestampPatch(candidate.state, nowMs),
-          } satisfies ActionRecordPatch;
+          } satisfies TerminalClosurePatch;
 
           try {
-            this.options.actionRepository.update(matchedExistingActionId, patch);
+            const lifecycleResult = closeActionThroughLifecycle({
+              actionId: matchedExistingActionId,
+              state: candidate.state,
+              repository: this.options.actionRepository as TerminalClosureRepository,
+              patch,
+            });
+
+            if (lifecycleResult.status !== "success") {
+              const reason = skippedReasonFromLifecycleResult(lifecycleResult);
+
+              incrementSkippedReason(skippedReasons, reason);
+              incrementSkippedCandidate(skippedCandidates, parsedCandidate.candidateIndex, reason);
+              continue;
+            }
+
             selfPerformanceClosures += 1;
             terminalEmissionClosures += 1;
             traceBorgSelfPerformanceClosure({
@@ -1093,7 +1147,6 @@ export class ActionStateExtractor {
                 persistTerminalWithoutUpdate = true;
               } else {
                 const patch = {
-                  state: record.state,
                   confidence: Math.max(bestMatch.record.confidence, record.confidence),
                   provenance_episode_ids: mergeUniqueIds(
                     bestMatch.record.provenance_episode_ids,
@@ -1108,11 +1161,29 @@ export class ActionStateExtractor {
                   last_referenced_turn_counter: turnCounter,
                   last_referenced_turn_global: turnCounter,
                   ...stateTimestampPatch(record.state, nowMs),
-                } satisfies ActionRecordPatch;
+                } satisfies TerminalClosurePatch;
 
                 try {
-                  this.options.actionRepository.update(bestMatch.actionId, patch);
-                  Object.assign(bestMatch.record, patch);
+                  const lifecycleResult = closeActionThroughLifecycle({
+                    actionId: bestMatch.actionId,
+                    state: record.state,
+                    repository: this.options.actionRepository as TerminalClosureRepository,
+                    patch,
+                  });
+
+                  if (lifecycleResult.status !== "success") {
+                    const reason = skippedReasonFromLifecycleResult(lifecycleResult);
+
+                    incrementSkippedReason(skippedReasons, reason);
+                    incrementSkippedCandidate(
+                      skippedCandidates,
+                      parsedCandidate.candidateIndex,
+                      reason,
+                    );
+                    continue;
+                  }
+
+                  Object.assign(bestMatch.record, patch, { state: record.state });
                   terminalEmissionClosures += 1;
                   traceTerminalEmissionClosure({
                     tracer: this.options.tracer,

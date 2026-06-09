@@ -46,6 +46,7 @@ export type ActionStateMetadata = {
   timestamp_field: ActionStateTimestampField;
   active: boolean;
   terminal: boolean;
+  terminal_closure_guard: boolean;
 };
 
 export const ACTION_STATE_METADATA: Record<ActionState, ActionStateMetadata> = {
@@ -53,41 +54,49 @@ export const ACTION_STATE_METADATA: Record<ActionState, ActionStateMetadata> = {
     timestamp_field: "considering_at",
     active: true,
     terminal: false,
+    terminal_closure_guard: false,
   },
   committed_to_do: {
     timestamp_field: "committed_at",
     active: true,
     terminal: false,
+    terminal_closure_guard: false,
   },
   scheduled: {
     timestamp_field: "scheduled_at",
     active: true,
     terminal: false,
+    terminal_closure_guard: false,
   },
   completed: {
     timestamp_field: "completed_at",
     active: false,
     terminal: true,
+    terminal_closure_guard: true,
   },
   not_done: {
     timestamp_field: "not_done_at",
     active: false,
     terminal: true,
+    terminal_closure_guard: true,
   },
   expired: {
     timestamp_field: "expired_at",
     active: false,
     terminal: false,
+    terminal_closure_guard: true,
   },
   archived: {
     timestamp_field: "archived_at",
     active: false,
     terminal: false,
+    terminal_closure_guard: true,
   },
   unknown: {
     timestamp_field: "unknown_at",
     active: true,
     terminal: false,
+    terminal_closure_guard: false,
   },
 };
 
@@ -95,6 +104,12 @@ export const ACTION_STATE_METADATA: Record<ActionState, ActionStateMetadata> = {
 export const ACTIVE_ACTION_STATES: readonly ActionState[] = ACTION_STATES.filter(
   (state) => ACTION_STATE_METADATA[state].active,
 );
+
+// terminal is the final outcome vocabulary emitted by action extraction; terminal_closure_guard
+// also includes lifecycle retirements that must not be overwritten by later closure evidence.
+export function isActionTerminalClosureGuardState(state: ActionState): boolean {
+  return ACTION_STATE_METADATA[state].terminal_closure_guard;
+}
 
 export const ACTION_SESSION_SCOPES = ["current_session", "next_session"] as const;
 

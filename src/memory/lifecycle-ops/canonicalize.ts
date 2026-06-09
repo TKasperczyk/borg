@@ -26,7 +26,7 @@ const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType
 );
 
 export function isTerminalGoalStatus(status: string): boolean {
-  return status === "done" || status === "abandoned" || status === "superseded";
+  return status === "done" || status === "abandoned";
 }
 
 export function isTerminalCommitment(commitment: CommitmentRecord, nowMs: number): boolean {
