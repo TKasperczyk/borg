@@ -246,11 +246,16 @@ export function CommandPalette({
   const results = useMemo<CommandResult[]>(() => {
     const catalogQuery = trimmedQuery;
     const screenResults: CommandResult[] = RAIL_ITEMS.filter((item) =>
-      catalogMatches(catalogQuery, [`Go to ${item.label}`, item.label, item.short]),
+      catalogMatches(catalogQuery, [
+        `Go to ${item.title ?? item.label}`,
+        item.title ?? item.label,
+        item.label,
+        item.short,
+      ]),
     ).map((item) => ({
       id: `screen:${item.id}`,
       group: "Screens",
-      title: `Go to ${item.label}`,
+      title: `Go to ${item.title ?? item.label}`,
       subtitle: `${item.glyph} ${item.short}`,
       icon: item.glyph,
       hint: `⌘${item.num}`,

@@ -1,6 +1,7 @@
 import { AttachmentChip } from "../../components/AttachmentChip";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { formatTime } from "../../lib/stream-utils";
+import { shortId } from "../screen-utils";
 import type { ChatTurn } from "./chat-utils";
 
 export type ChatMessageProps = {
@@ -37,6 +38,7 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
   const turnId = turn.entry.turn_id;
   const turnShort = shortTurnId(turnId);
   const deliveryStatus = turn.entry.optimistic_status;
+  const messageAudience = turn.entry.audience;
 
   return (
     <div
@@ -49,6 +51,12 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
       <div className="content">
         <div className="meta">
           <span className={`role ${turn.role}`}>{name}</span>
+          {messageAudience === undefined ? null : (
+            <>
+              <span className="sep">·</span>
+              <span className="chat-chip">aud {messageAudience}</span>
+            </>
+          )}
           {turnShort === null || turnId === undefined ? null : (
             <>
               <span className="sep">·</span>
@@ -71,6 +79,20 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
               <span className="when">
                 {turn.attachments.length} attachment
                 {turn.attachments.length > 1 ? "s" : ""}
+              </span>
+            </>
+          )}
+          {turn.sourceEntryIds.length === 0 ? null : (
+            <>
+              <span className="sep">·</span>
+              <span className="response-refs">
+                src{" "}
+                {turn.sourceEntryIds.map((entryId, index) => (
+                  <span key={entryId}>
+                    {index === 0 ? null : ", "}
+                    <IdRef id={entryId} type="stream_entry" label={shortId(entryId)} />
+                  </span>
+                ))}
               </span>
             </>
           )}

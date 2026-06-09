@@ -13,6 +13,7 @@ export type RouteId =
 export type RailItem = {
   id: RouteId;
   label: string;
+  title?: string;
   short: string;
   glyph: string;
   num: number;
@@ -22,7 +23,14 @@ export const DEFAULT_ROUTE_ID: RouteId = "mission";
 
 export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "mission", label: "mission", short: "MC", glyph: "⌂", num: 0 },
-  { id: "cognition", label: "cognition", short: "COG", glyph: "ψ", num: 1 },
+  {
+    id: "cognition",
+    label: "workbench",
+    title: "Conversation Workbench",
+    short: "COG",
+    glyph: "ψ",
+    num: 1,
+  },
   { id: "stream", label: "stream", short: "STR", glyph: "≣", num: 2 },
   { id: "memory", label: "memory", short: "MEM", glyph: "◇", num: 3 },
   { id: "identity", label: "identity", short: "IDN", glyph: "◐", num: 4 },

@@ -29,7 +29,7 @@ export function Rail({ route, setRoute, badges = {} }: RailProps) {
               type="button"
               className={`rail-btn ${route === item.id ? "active" : ""}`}
               onClick={() => setRoute(item.id)}
-              title={`${item.label} (⌘${item.num})`}
+              title={`${item.title ?? item.label} (⌘${item.num})`}
               aria-label={item.label}
               aria-current={route === item.id ? "page" : undefined}
             >

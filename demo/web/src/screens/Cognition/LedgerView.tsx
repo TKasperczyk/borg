@@ -18,6 +18,8 @@ export type LedgerViewProps = {
   cachedLedger?: EvidenceLedger;
   active: boolean;
   audience: string;
+  entryFilter?: (entry: EvidenceLedgerEntry) => boolean;
+  emptyMessage?: string;
 };
 
 type LedgerGroup = {
@@ -154,7 +156,14 @@ function ledgerSourceObjectId(entry: EvidenceLedgerEntry, type: ObjectType): str
   return null;
 }
 
-export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerViewProps) {
+export function LedgerView({
+  turnId,
+  cachedLedger,
+  active,
+  audience,
+  entryFilter,
+  emptyMessage = "ledger not loaded yet",
+}: LedgerViewProps) {
   const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
     turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
   );
@@ -214,10 +223,18 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
   const ledger = ledgerState?.turnId === turnId ? ledgerState.ledger : null;
 
   if (ledger === null) {
-    return <Empty>{error ?? "ledger not loaded yet"}</Empty>;
+    return <Empty>{error ?? emptyMessage}</Empty>;
   }
 
-  const groups = ledger.sections.map(groupForSection);
+  const groups = ledger.sections.map(groupForSection).map((group) => ({
+    ...group,
+    entries: entryFilter === undefined ? group.entries : group.entries.filter(entryFilter),
+  }));
+  const entryCount = groups.reduce((sum, group) => sum + group.entries.length, 0);
+
+  if (entryFilter !== undefined && entryCount === 0) {
+    return <Empty>{emptyMessage}</Empty>;
+  }
 
   return (
     <div>

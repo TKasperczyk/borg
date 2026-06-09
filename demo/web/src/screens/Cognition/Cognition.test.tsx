@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -6,6 +6,7 @@ import type {
   LiveFrame,
   SessionRecord,
   StreamEntry,
+  TurnHistoryRow,
   TurnTerminalOutcome,
   TurnPhaseName,
   WsState,
@@ -97,9 +98,25 @@ function sessionRecord(input: Partial<SessionRecord> = {}): SessionRecord {
   };
 }
 
+function turnRow(input: Partial<TurnHistoryRow> & Pick<TurnHistoryRow, "turn_id">): TurnHistoryRow {
+  return {
+    started_at: 1,
+    audience: "alice",
+    outcome: "emitted",
+    suppression_reason: null,
+    ...input,
+  };
+}
+
 function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
+    turnRows?: TurnHistoryRow[];
+    sharedState?: unknown;
+    commitments?: unknown;
+    identity?: unknown;
+    prompt?: unknown;
+    ledgerResponses?: Record<string, Response | Promise<Response>>;
     turnResponse?: Response | Promise<Response>;
     turnResponses?: Array<Response | Promise<Response>>;
   } = {},
@@ -111,25 +128,61 @@ function installCognitionFetch(
   let streamCallCount = 0;
   let turnCallCount = 0;
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(request);
-    if (url.includes("/api/stream")) {
+    const url = new URL(String(request), "http://test.invalid");
+    if (url.pathname === "/api/stream") {
       const entries = streamResponses[Math.min(streamCallCount, streamResponses.length - 1)];
       streamCallCount += 1;
       return Promise.resolve(jsonResponse({ entries, next_cursor: null }));
     }
-    if (url.endsWith("/api/shared-state?audience=alice")) {
-      return Promise.resolve(jsonResponse({ audience: "alice", entries: [] }));
+    if (url.pathname === "/api/turns") {
+      return Promise.resolve(jsonResponse({ rows: input.turnRows ?? [], next_cursor: null }));
+    }
+    if (url.pathname.startsWith("/api/turns/") && url.pathname.endsWith("/ledger")) {
+      const turnId = decodeURIComponent(
+        url.pathname.replace("/api/turns/", "").replace("/ledger", ""),
+      );
+      return Promise.resolve(
+        input.ledgerResponses?.[turnId] ??
+          new Response(JSON.stringify({ error: { message: "ledger missing" } }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+    }
+    if (url.pathname === "/api/shared-state") {
+      return Promise.resolve(jsonResponse(input.sharedState ?? { audience: "alice", entries: [] }));
+    }
+    if (url.pathname === "/api/commitments") {
+      return Promise.resolve(jsonResponse(input.commitments ?? { commitments: [] }));
+    }
+    if (url.pathname === "/api/identity") {
+      return Promise.resolve(
+        jsonResponse(
+          input.identity ?? {
+            values: [],
+            goals: [],
+            traits: [],
+            open_questions: [],
+            growth_markers: [],
+            periods: [],
+            open_question_events: [],
+          },
+        ),
+      );
+    }
+    if (url.pathname === "/api/prompts/assembled") {
+      return Promise.resolve(jsonResponse(input.prompt ?? { sections: [], text: "" }));
     }
     if (
-      url.includes("/api/sessions/") &&
-      url.endsWith("/participation") &&
+      url.pathname.includes("/api/sessions/") &&
+      url.pathname.endsWith("/participation") &&
       init?.method === "POST"
     ) {
       const body = JSON.parse(String(init.body)) as {
         policy: SessionRecord["participation_policy"];
       };
       const sessionId = decodeURIComponent(
-        url.split("/api/sessions/")[1]?.replace("/participation", "") ?? "default",
+        url.pathname.split("/api/sessions/")[1]?.replace("/participation", "") ?? "default",
       );
 
       return Promise.resolve(
@@ -141,7 +194,7 @@ function installCognitionFetch(
         ),
       );
     }
-    if (url.endsWith("/api/turn") && init?.method === "POST") {
+    if (url.pathname === "/api/turn" && init?.method === "POST") {
       const response =
         input.turnResponses?.[Math.min(turnCallCount, input.turnResponses.length - 1)] ??
         input.turnResponse ??
@@ -163,9 +216,11 @@ function reflectFrame(turnId = "turn_abc"): LiveFrame {
     type: "turn:phase:completed",
     event: "turn_phase.completed",
     ts: Date.now(),
+    session_id: "default",
     data: {
       turnId,
       turn_id: turnId,
+      session_id: "default",
       phase: "reflect",
       duration_ms: 12,
       sub: "done",
@@ -189,9 +244,11 @@ function phaseFrame(
     type,
     event,
     ts: Date.now(),
+    session_id: "default",
     data: {
       turnId,
       turn_id: turnId,
+      session_id: "default",
       phase,
       duration_ms: type === "turn:phase:started" ? undefined : 12,
       sub: type === "turn:phase:started" ? "running" : "done",
@@ -207,9 +264,11 @@ function terminalFrame(
     type: "turn:terminal",
     event: "turn.terminal",
     ts: Date.now(),
+    session_id: "default",
     data: {
       turnId,
       turn_id: turnId,
+      session_id: "default",
       outcome,
       duration_ms: 42,
     },
@@ -253,6 +312,12 @@ function chatUserBodies(): string[] {
 function turnPostCalls(fetchMock: ReturnType<typeof vi.fn>) {
   return fetchMock.mock.calls.filter(
     ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+  );
+}
+
+function fetchPathCalls(fetchMock: ReturnType<typeof vi.fn>, pathname: string): unknown[][] {
+  return fetchMock.mock.calls.filter(
+    ([request]) => new URL(String(request), "http://test.invalid").pathname === pathname,
   );
 }
 
@@ -317,6 +382,97 @@ describe("cognition screen", () => {
 
     expect(screen.getByText("see this")).toBeInTheDocument();
     expect(screen.getByText("[att:att_123]")).toBeInTheDocument();
+  });
+
+  it("renders suppressed and observed stream entries as diagnostic markers", () => {
+    const entries: StreamEntry[] = [
+      streamEntry({
+        id: "strm_user_marker",
+        timestamp: 1,
+        kind: "user_msg",
+        turn_id: "turn_marker",
+        content: "marker source",
+      }),
+      streamEntry({
+        id: "strm_suppressed_marker",
+        timestamp: 2,
+        kind: "agent_suppressed",
+        turn_id: "turn_marker",
+        content: {
+          reason: "finalizer_no_output",
+          user_entry_ids: ["strm_user_marker"],
+          turn_id: "turn_marker",
+          primary_no_output_reason: "low_value_echo",
+          no_output_categories: ["closure"],
+          structural_no_output_flags: ["with_open_question"],
+          finalizer_invalid_tool: {
+            tool_name: "EmitAnswer",
+            reason: "invalid schema",
+            attempt: "regenerate",
+          },
+        },
+      }),
+      streamEntry({
+        id: "strm_observed_marker",
+        timestamp: 3,
+        kind: "agent_observed",
+        turn_id: "turn_observed",
+        content: {
+          reason: "observer policy",
+          user_entry_id: "strm_user_marker",
+          turn_id: "turn_observed",
+        },
+      }),
+    ];
+
+    renderWithInspector(
+      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+    );
+
+    expect(screen.getByText("deliberate silence")).toBeInTheDocument();
+    expect(screen.getByText("observed")).toBeInTheDocument();
+
+    const marker = screen.getByText("deliberate silence").closest("details");
+    expect(marker).not.toBeNull();
+    fireEvent.click(within(marker as HTMLElement).getByText("deliberate silence"));
+
+    expect(within(marker as HTMLElement).getByText("low_value_echo")).toBeInTheDocument();
+    expect(within(marker as HTMLElement).getByText("closure")).toBeInTheDocument();
+    expect(within(marker as HTMLElement).getByText("with_open_question")).toBeInTheDocument();
+    expect(within(marker as HTMLElement).getByText(/EmitAnswer/)).toBeInTheDocument();
+    expect(
+      within(marker as HTMLElement).getByRole("button", { name: "jump to turn_marker" }),
+    ).toBeInTheDocument();
+    expect(
+      within(marker as HTMLElement).getByRole("button", { name: "jump to strm_user_marker" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders message audience chips and response source-entry refs", () => {
+    const entries: StreamEntry[] = [
+      streamEntry({
+        id: "strm_user_source",
+        timestamp: 1,
+        kind: "user_msg",
+        content: "source question",
+      }),
+      streamEntry({
+        id: "strm_agent_response",
+        timestamp: 2,
+        kind: "agent_msg",
+        content: "source answer",
+        response_to: {
+          source_entry_ids: ["strm_user_source"],
+        },
+      }),
+    ];
+
+    renderWithInspector(
+      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+    );
+
+    expect(screen.getAllByText("aud alice").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "jump to strm_user_source" })).toBeInTheDocument();
   });
 
   it("does not render a stale cached ledger after switching turns", () => {
@@ -878,6 +1034,149 @@ describe("cognition screen", () => {
     expect(screen.getByRole("button", { name: "participation policy muted" })).toHaveTextContent(
       "muted",
     );
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.classList.contains("participation-policy-line") === true &&
+          element.textContent?.includes("will stay silent") === true,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders recent turn rows in the workbench strip", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnRows: [
+        turnRow({
+          turn_id: "turn_recent",
+          started_at: 2,
+          outcome: "guard-blocked",
+          suppression_reason: "commitment_violation",
+        }),
+      ],
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    expect(await screen.findByText("turn_recent")).toBeInTheDocument();
+    expect(screen.getByText("guard-blocked")).toBeInTheDocument();
+    expect(screen.getByText("commitment_violation")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "live" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("fetches workbench tab data lazily on first activation and caches it", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch();
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/stream")).toHaveLength(1));
+    expect(fetchPathCalls(fetchMock, "/api/shared-state")).toHaveLength(0);
+    expect(fetchPathCalls(fetchMock, "/api/commitments")).toHaveLength(0);
+    expect(fetchPathCalls(fetchMock, "/api/identity")).toHaveLength(0);
+    expect(fetchPathCalls(fetchMock, "/api/prompts/assembled")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: "shared state" }));
+    await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/shared-state")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("tab", { name: "flow" }));
+    fireEvent.click(screen.getByRole("tab", { name: "shared state" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchPathCalls(fetchMock, "/api/shared-state")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("tab", { name: "commitments" }));
+    await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/commitments")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("tab", { name: "open qs" }));
+    await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/identity")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("tab", { name: "prompt" }));
+    await waitFor(() =>
+      expect(fetchPathCalls(fetchMock, "/api/prompts/assembled")).toHaveLength(1),
+    );
+  });
+
+  it("selects a cached historical turn for replay with its cached ledger", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnRows: [turnRow({ turn_id: "turn_cached", started_at: 2 })],
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_cached"));
+      source.emit({
+        type: "evidence_ledger:built",
+        ts: Date.now(),
+        session_id: "default",
+        turn_id: "turn_cached",
+        ledger: ledgerWithText("cached replay ledger"),
+      });
+      source.emit(terminalFrame("turn_cached", "reflected"));
+      source.emit(phaseFrame("turn:phase:started", "final", "turn_live"));
+    });
+
+    await screen.findByText("turn_cached");
+    expect(screen.getByText("turn_live")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /turn_cached/ }));
+
+    expect(screen.getByLabelText("Replay turn metadata")).toHaveTextContent("replay");
+    expect(screen.getAllByText("turn_cached").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: "ledger" }));
+
+    expect(screen.getByText("cached replay ledger")).toBeInTheDocument();
+  });
+
+  it("shows unavailable trace copy for an uncached replay and lets the ledger 404 degrade", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnRows: [turnRow({ turn_id: "turn_uncached", started_at: 2 })],
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /turn_uncached/ }));
+
+    expect(screen.getByText("trace unavailable this browser session")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "ledger" }));
+
+    expect(await screen.findByText(/ledger not retained \(pre-restart\)/)).toBeInTheDocument();
+  });
+
+  it("returns from replay to live state without blocking later live updates", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch({
+      turnRows: [turnRow({ turn_id: "turn_cached", started_at: 2 })],
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_cached"));
+      source.emit(terminalFrame("turn_cached", "reflected"));
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /turn_cached/ }));
+    expect(screen.getByLabelText("Replay turn metadata")).toBeInTheDocument();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "final", "turn_after_replay"));
+    });
+
+    expect(screen.getByLabelText("Replay turn metadata")).toHaveTextContent("turn_cached");
+    expect(screen.queryByText("turn_after_replay")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "live" }));
+
+    expect(screen.queryByLabelText("Replay turn metadata")).not.toBeInTheDocument();
+    expect(screen.getByText("turn_after_replay")).toBeInTheDocument();
+    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-running");
   });
 
   it("posts participation policy changes with a reason", async () => {
