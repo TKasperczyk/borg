@@ -1,0 +1,9 @@
+base_identity_preamble
+self_architecture
+voice_and_posture
+epistemic_posture
+identity_posture
+participation_posture
+loop_breaking_posture
+trusted_guidance_preamble
+borg_host_capabilities

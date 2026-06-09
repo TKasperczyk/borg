@@ -11,6 +11,7 @@ import {
   THINKING_DELIBERATION_MAX_TOKENS,
 } from "./constants.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
+import type { PromptSurfaceAdditionalSection } from "../prompts/prompt-surface-registry.js";
 import {
   buildDialogueMessages,
   toContentBlockMessages,
@@ -159,7 +160,7 @@ type FinalizerTriadResultInput = {
 type RunFinalizerTriadInput = {
   callContext: FinalizerCallOptionsContext;
   path: RunFinalizerOptions["path"];
-  additionalPromptSections: readonly (string | null)[] | null;
+  additionalPromptSections: readonly PromptSurfaceAdditionalSection[] | null;
   availableEmissionNames: readonly EmissionToolName[];
   priorUsage?: DeliberationUsage;
   buildResult: (input: FinalizerTriadResultInput) => DeliberationResult;
@@ -221,10 +222,23 @@ function mergeFinalizerTriadUsage(input: {
 }
 
 function appendFinalizerPromptSections(
-  base: readonly (string | null)[] | null,
-  extra: readonly (string | null)[],
-): readonly (string | null)[] {
+  base: readonly PromptSurfaceAdditionalSection[] | null,
+  extra: readonly PromptSurfaceAdditionalSection[],
+): readonly PromptSurfaceAdditionalSection[] {
   return base === null ? [...extra] : [...base, ...extra];
+}
+
+function promptSurfaceAdditionalSection(
+  blockId: string,
+  text: string | null | undefined,
+): PromptSurfaceAdditionalSection | null {
+  return text === null || text === undefined ? null : { blockId, text };
+}
+
+function compactPromptSurfaceAdditionalSections(
+  sections: readonly (PromptSurfaceAdditionalSection | null)[],
+): PromptSurfaceAdditionalSection[] {
+  return sections.filter((section): section is PromptSurfaceAdditionalSection => section !== null);
 }
 
 function attachRegenerator(
@@ -606,7 +620,12 @@ export class Deliberator {
             path: input.path,
             additionalPromptSections: appendFinalizerPromptSections(
               input.additionalPromptSections,
-              [retryPromptSection],
+              [
+                {
+                  blockId: "finalizer_invalid_tool_retry_instruction",
+                  text: retryPromptSection,
+                },
+              ],
             ),
             finalizerAttempt: "regenerate",
           }),
@@ -754,11 +773,6 @@ export class Deliberator {
       effectiveContext,
       baseSystemPromptOptions,
     );
-    const sessionReentryContinuityPromptSections =
-      context.sessionReentryContinuityPromptSection === undefined ||
-      context.sessionReentryContinuityPromptSection === null
-        ? []
-        : [context.sessionReentryContinuityPromptSection];
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
     const currentUserBlockMessages = withCurrentUserContentBlocks(
       toContentBlockMessages(dialogueMessages),
@@ -779,15 +793,13 @@ export class Deliberator {
           : renderEvidenceLedger(finalizerEvidenceLedger, {
               sharedState: this.options.sharedStateRenderOptions,
             });
-    const evidenceLedgerPromptSections =
-      finalizerEvidenceLedgerPromptSection === undefined ||
-      finalizerEvidenceLedgerPromptSection === null
-        ? null
-        : [finalizerEvidenceLedgerPromptSection];
-    const finalizerGroundingPromptSections = [
-      ...sessionReentryContinuityPromptSections,
-      ...(evidenceLedgerPromptSections ?? []),
-    ];
+    const finalizerGroundingPromptSections = compactPromptSurfaceAdditionalSections([
+      promptSurfaceAdditionalSection("borg_evidence_ledger", finalizerEvidenceLedgerPromptSection),
+      promptSurfaceAdditionalSection(
+        "borg_session_reentry_continuity",
+        context.sessionReentryContinuityPromptSection,
+      ),
+    ]);
     const dialogueBlockMessages = withLedgerImageContentBlocks(
       currentUserBlockMessages,
       finalizerEvidenceLedger,
@@ -883,11 +895,20 @@ export class Deliberator {
           });
     const forcedContradictionOpenQuestionsPrompt =
       renderForcedContradictionOpenQuestionsPrompt(context);
-    const plannerAdditionalPromptSections = [
-      ...sessionReentryContinuityPromptSections,
-      compactPlannerLedger?.promptSection ?? null,
-      forcedContradictionOpenQuestionsPrompt,
-    ];
+    const plannerAdditionalPromptSections = compactPromptSurfaceAdditionalSections([
+      promptSurfaceAdditionalSection(
+        "borg_unresolved_contradiction_open_questions",
+        forcedContradictionOpenQuestionsPrompt,
+      ),
+      promptSurfaceAdditionalSection(
+        "borg_compact_planner_ledger",
+        compactPlannerLedger?.promptSection,
+      ),
+      promptSurfaceAdditionalSection(
+        "borg_session_reentry_continuity",
+        context.sessionReentryContinuityPromptSection,
+      ),
+    ]);
 
     if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
       this.tracer.emit("deliberation.planner_ledger.completed", {
@@ -980,10 +1001,11 @@ export class Deliberator {
       },
     ]);
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
-    const additionalPromptSections =
-      finalizerGroundingPromptSections.length === 0
-        ? [additionalRetrievalBlock, planSection]
-        : [...finalizerGroundingPromptSections, additionalRetrievalBlock, planSection];
+    const additionalPromptSections = compactPromptSurfaceAdditionalSections([
+      promptSurfaceAdditionalSection("borg_s2_plan", planSection),
+      promptSurfaceAdditionalSection("borg_additional_retrieval", additionalRetrievalBlock),
+      ...finalizerGroundingPromptSections,
+    ]);
     const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext, {
       additionalOpenQuestionsRenderedCount: secondaryRetrieval?.open_questions.length ?? 0,
     });

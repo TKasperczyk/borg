@@ -1013,6 +1013,15 @@ context, and host capabilities. It is instructed that memory-derived guidance
 is evidence about Borg's substrate, while host-capability boundaries and tool
 protocols are direct runtime constraints.
 
+The standing prompt surface is enumerated in
+`src/cognition/prompts/prompt-surface-registry.ts`. That registry records the
+owner, render condition, source file, tag, and per-surface order for the direct
+base prompt, cacheable finalizer split, S2 planner, ledger framing, and smaller
+out-of-band prompt sections. The rendered text remains in the existing prompt
+constants and builders; fixture tests pin representative assembled outputs
+byte-for-byte so structural prompt refactors cannot silently change prompt
+copy.
+
 ### Closure-Loop State
 
 Before deliberation, recent dialogue and the current user turn are classified

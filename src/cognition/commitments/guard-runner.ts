@@ -18,6 +18,11 @@ import {
   isAutonomousLikeTurnOrigin,
   type TurnOrigin,
 } from "../types.js";
+import {
+  PROMPT_SURFACES,
+  renderPromptSurface,
+  type PromptSurfaceRenderContext,
+} from "../prompts/prompt-surface-registry.js";
 import { escapeReservedBorgTags } from "../../util/prompt-tags.js";
 import type { SessionId } from "../../util/ids.js";
 
@@ -111,7 +116,7 @@ function uniqueCommitmentCriticalDomains(
   ];
 }
 
-function buildRegenerationPromptSection(input: {
+export function buildRegenerationPromptSection(input: {
   response: string;
   commitments: readonly CommitmentRecord[];
   violations: CommitmentCheckResult["violations"];
@@ -132,7 +137,7 @@ function buildRegenerationPromptSection(input: {
     };
   });
 
-  return [
+  const promptSection = [
     "<borg_commitment_regeneration_instruction>",
     "A critical commitment guard found that my previous draft violated an enforceable privacy, audience-scope, safety, explicit no-disclosure, or internal-tool-hygiene commitment.",
     "I regenerate the final answer once. I preserve all useful non-violating content and intent from my previous draft, but exclude or neutralize the violating material named below.",
@@ -146,6 +151,13 @@ function buildRegenerationPromptSection(input: {
     escapeReservedBorgTags(input.response),
     "</borg_commitment_regeneration_instruction>",
   ].join("\n");
+  const renderContext: PromptSurfaceRenderContext = {
+    renderBlock: (id) => (id === "borg_commitment_regeneration_instruction" ? promptSection : null),
+  };
+
+  return (
+    renderPromptSurface(PROMPT_SURFACES.commitmentRegenerationInstruction, renderContext) ?? ""
+  );
 }
 
 function commitmentIdsForViolations(

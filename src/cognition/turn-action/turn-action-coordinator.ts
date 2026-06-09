@@ -271,7 +271,12 @@ export class TurnActionCoordinator {
             commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
           } else {
             currentDeliberation = await currentDeliberation.regenerateFinalResponse({
-              additionalPromptSections: [commitmentCheck.emission.regeneration.promptSection],
+              additionalPromptSections: [
+                {
+                  blockId: "borg_commitment_regeneration_instruction",
+                  text: commitmentCheck.emission.regeneration.promptSection,
+                },
+              ],
             });
             const regeneratedEmission = pendingEmissionFromDeliberation(currentDeliberation);
 

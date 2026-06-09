@@ -9,7 +9,11 @@ import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnOrigin } from "../types.js";
-import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../../tracing/tracer.js";
+import {
+  emitTurnTokenFlushTrace,
+  emitTurnTokenTrace,
+  type TurnTracer,
+} from "../../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
 import {
   FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
@@ -23,6 +27,13 @@ import {
   type MessageDiscourseControl,
   type ReplyTarget,
 } from "../generation/types.js";
+import {
+  PROMPT_SURFACES,
+  renderPromptSurfaceAdditionalBlock,
+  renderPromptSurface,
+  type PromptSurfaceAdditionalSection,
+  type PromptSurfaceRenderContext,
+} from "../prompts/prompt-surface-registry.js";
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
@@ -328,7 +339,7 @@ export type RunFinalizerOptions = {
   thinking?: LLMConverseOptions["thinking"];
   effort?: LLMConverseOptions["effort"];
   path: "system_1" | "system_2";
-  additionalPromptSections?: readonly (string | null)[];
+  additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   allowedEmissions?: readonly EmissionToolName[];
   outboundToolAvailable?: boolean;
@@ -383,27 +394,50 @@ export type FinalizerResult = ToolLoopResult & {
 };
 
 function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
-  const baseSystemPrompt =
-    options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt;
+  const renderContext = createFinalizerPromptSurfaceRenderContext(options);
 
-  return options.additionalPromptSections === undefined
-    ? baseSystemPrompt
-    : [baseSystemPrompt, ...options.additionalPromptSections]
-        .filter((section): section is string => section !== null)
-        .join("\n\n");
+  return renderPromptSurface(PROMPT_SURFACES.finalizerDynamicSystem, renderContext) ?? "";
+}
+
+function createFinalizerPromptSurfaceRenderContext(
+  options: RunFinalizerOptions,
+): PromptSurfaceRenderContext {
+  const outboundTool = getOutboundTool(options);
+
+  return {
+    renderBlock: (id) => {
+      switch (id) {
+        case "finalizer_emission_protocol":
+          return buildEmissionFinalizerInstructions(
+            options.allowedEmissions,
+            outboundTool !== null,
+            options.turnOrigin,
+          );
+        case "finalizer_cacheable_static_prefix":
+          return options.cacheableSystemPrompt?.staticPrefix ?? null;
+        case "finalizer_base_dynamic_prompt":
+          return options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt;
+        case "borg_session_reentry_continuity":
+        case "borg_evidence_ledger":
+        case "borg_additional_retrieval":
+        case "borg_s2_plan":
+        case "borg_commitment_regeneration_instruction":
+        case "finalizer_invalid_tool_retry_instruction":
+          return renderPromptSurfaceAdditionalBlock(id, options.additionalPromptSections);
+        default:
+          return null;
+      }
+    },
+  };
 }
 
 function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
-  const outboundTool = getOutboundTool(options);
-  const finalizerInstructions = buildEmissionFinalizerInstructions(
-    options.allowedEmissions,
-    outboundTool !== null,
-    options.turnOrigin,
+  return (
+    renderPromptSurface(
+      PROMPT_SURFACES.finalizerStaticSystem,
+      createFinalizerPromptSurfaceRenderContext(options),
+    ) ?? ""
   );
-
-  return options.cacheableSystemPrompt === undefined
-    ? finalizerInstructions
-    : [finalizerInstructions, options.cacheableSystemPrompt.staticPrefix].join("\n\n");
 }
 
 function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {

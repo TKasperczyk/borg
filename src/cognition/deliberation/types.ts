@@ -54,6 +54,7 @@ import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledge
 import type { ActiveParticipant, ParticipantProfileContext } from "../participants.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
+import type { PromptSurfaceAdditionalSection } from "../prompts/prompt-surface-registry.js";
 import type { PromptKey } from "../prompts/registry.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { OperatorSessionSnapshot } from "../lifecycle/turn-phase/session-snapshot.js";
@@ -299,7 +300,7 @@ export type DeliberationUsage = {
 };
 
 export type DeliberationRegenerationInput = {
-  additionalPromptSections: readonly (string | null)[];
+  additionalPromptSections: readonly PromptSurfaceAdditionalSection[];
 };
 
 export type CognitionThinkingConfig = {

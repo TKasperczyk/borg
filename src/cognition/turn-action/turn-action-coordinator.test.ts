@@ -202,7 +202,7 @@ describe("TurnActionCoordinator commitment regeneration", () => {
     expect(result.deliberation.response).toBe(cleanDraft);
     expect(regenerateFinalResponse).toHaveBeenCalledTimes(1);
     const regenerationPromptSection =
-      regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0] ?? "";
+      regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0]?.text ?? "";
     expect(regenerationPromptSection).toContain("ORCHID-17");
     expect(regenerationPromptSection).toContain("Do not disclose the private deployment codename");
     expect(

@@ -29,6 +29,13 @@ import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
 import { mergeDeliberationUsage, usageFromCompleteResult } from "./usage.js";
+import {
+  PROMPT_SURFACES,
+  renderPromptSurfaceAdditionalBlock,
+  renderPromptSurface,
+  type PromptSurfaceAdditionalSection,
+  type PromptSurfaceRenderContext,
+} from "../prompts/prompt-surface-registry.js";
 
 const turnPlanSchema = z.object({
   uncertainty: z
@@ -94,7 +101,7 @@ export type RunS2PlannerOptions = {
   baseSystemPrompt: string;
   dialogueMessages: readonly LLMMessage[];
   selfSnapshot: SelfSnapshot;
-  additionalPromptSections?: readonly (string | null)[];
+  additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   maxTokens: number;
   thinking?: LLMCompleteOptions["thinking"];
   effort?: LLMCompleteOptions["effort"];
@@ -109,25 +116,48 @@ export type S2PlannerResult = {
   usage: DeliberationUsage;
 };
 
+function buildPlannerDirective(): string {
+  return [
+    "I am about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
+    `I emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
+    "The plan is passed back to me in the next call so I can execute it. I keep it short and grounded in the current turn -- I do NOT try to draft the answer itself here.",
+    "I set emission_recommendation='no_output' only when the conversation has naturally closed. I do not describe silence in voice_note.",
+    "I use plan.intents only for concrete future actions I mean to carry into later turns. I leave it empty when no follow-up state should persist.",
+  ].join("\n");
+}
+
+function createS2PlannerPromptSurfaceRenderContext(
+  options: RunS2PlannerOptions,
+): PromptSurfaceRenderContext {
+  return {
+    renderBlock: (id) => {
+      switch (id) {
+        case "s2_planner_base_system_prompt":
+          return options.baseSystemPrompt;
+        case "borg_voice_anchors":
+          return renderTaggedPromptSection(
+            "borg_voice_anchors",
+            summarizeVoiceAnchors(options.selfSnapshot),
+          );
+        case "borg_session_reentry_continuity":
+        case "borg_compact_planner_ledger":
+        case "borg_unresolved_contradiction_open_questions":
+          return renderPromptSurfaceAdditionalBlock(id, options.additionalPromptSections);
+        case "s2_planner_directive":
+          return buildPlannerDirective();
+        default:
+          return null;
+      }
+    },
+  };
+}
+
 export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2PlannerResult> {
-  const plannerVoiceAnchors = renderTaggedPromptSection(
-    "borg_voice_anchors",
-    summarizeVoiceAnchors(options.selfSnapshot),
-  );
-  const systemPrompt = [
-    options.baseSystemPrompt,
-    plannerVoiceAnchors,
-    ...(options.additionalPromptSections ?? []),
-    [
-      "I am about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
-      `I emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
-      "The plan is passed back to me in the next call so I can execute it. I keep it short and grounded in the current turn -- I do NOT try to draft the answer itself here.",
-      "I set emission_recommendation='no_output' only when the conversation has naturally closed. I do not describe silence in voice_note.",
-      "I use plan.intents only for concrete future actions I mean to carry into later turns. I leave it empty when no follow-up state should persist.",
-    ].join("\n"),
-  ]
-    .filter((section): section is string => section !== null)
-    .join("\n\n");
+  const systemPrompt =
+    renderPromptSurface(
+      PROMPT_SURFACES.s2PlannerSystem,
+      createS2PlannerPromptSurfaceRenderContext(options),
+    ) ?? "";
   const tools = [TURN_PLAN_TOOL];
   let tokenSequence = 0;
   const onTextDelta = (chunkText: string) => {

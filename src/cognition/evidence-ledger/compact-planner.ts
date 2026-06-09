@@ -8,6 +8,11 @@ import {
 } from "../shared-state/render.js";
 import type { SharedStateKindCounts } from "../shared-state/selection.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../prompts/base-identity.js";
+import {
+  PROMPT_SURFACES,
+  renderPromptSurface,
+  type PromptSurfaceRenderContext,
+} from "../prompts/prompt-surface-registry.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { emptySectionCountRecord } from "./budget.js";
 import { renderSection } from "./section-rendering.js";
@@ -247,12 +252,19 @@ function renderCompactPlannerLedgerContent(
 }
 
 function renderCompactPlannerLedgerPromptSection(content: string): string | null {
-  return renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
-    {
-      tag: "borg_compact_planner_ledger",
-      content,
-    },
-  ]);
+  const renderContext: PromptSurfaceRenderContext = {
+    renderBlock: (id) =>
+      id === "borg_compact_planner_ledger"
+        ? renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+            {
+              tag: "borg_compact_planner_ledger",
+              content,
+            },
+          ])
+        : null,
+  };
+
+  return renderPromptSurface(PROMPT_SURFACES.compactPlannerFraming, renderContext);
 }
 
 export function buildCompactPlannerLedgerPrompt(
