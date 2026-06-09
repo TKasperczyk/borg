@@ -6,13 +6,11 @@ import {
   getWhy,
   patchGoal,
   patchOpenQuestion,
-  patchReview,
   postCommitmentRevoke,
   postCorrectionCorrect,
   postCorrectionForget,
   postSemanticEdgeInvalidate,
   putPrompt,
-  resolveCreatorDirectiveReconciliation,
   revertDreamAudit,
   revokeCreatorDirective,
   setSessionPolicy,
@@ -23,12 +21,14 @@ import type {
   PromptKey,
   ReviewKind,
   ReviewResolution,
+  ReviewRow,
   SemanticMemoryEdge,
   SemanticMemoryNode,
   SessionParticipationPolicy,
 } from "../../api/types";
+import { GENERIC_REVIEW_ACTIONS, resolveReviewAction } from "../../lib/review-actions";
+import { formatTime } from "../../lib/stream-utils";
 import { LedgerView } from "../../screens/Cognition/LedgerView";
-import { GENERIC_REVIEW_ACTIONS } from "../../screens/Review";
 import {
   dateLabel,
   displayValue,
@@ -37,7 +37,6 @@ import {
   parseJsonPatch,
   shortId,
 } from "../../screens/screen-utils";
-import { formatTime } from "../../lib/stream-utils";
 import { AttachmentChip } from "../AttachmentChip";
 import { Empty } from "../Empty";
 import { ErrorState } from "../ErrorState";
@@ -357,6 +356,32 @@ function reviewKind(value: unknown): ReviewKind | null {
   return kind !== null && Object.hasOwn(GENERIC_REVIEW_ACTIONS, kind) ? (kind as ReviewKind) : null;
 }
 
+function reviewRowForAction(value: unknown, id: number, kind: ReviewKind): ReviewRow {
+  if (!isRecord(value)) {
+    return {
+      id,
+      kind,
+      refs: {},
+      reason: "",
+      created_at: 0,
+      resolved_at: null,
+      resolution: null,
+    };
+  }
+
+  return {
+    ...value,
+    id,
+    kind,
+    refs: isRecord(value.refs) ? value.refs : {},
+    reason: recordString(value, "reason") ?? "",
+    created_at: typeof value.created_at === "number" ? value.created_at : 0,
+    resolved_at: typeof value.resolved_at === "number" ? value.resolved_at : null,
+    resolution:
+      typeof value.resolution === "string" ? (value.resolution as ReviewResolution) : null,
+  };
+}
+
 function reviewNodeIds(value: unknown): string[] {
   if (!isRecord(value) || !isRecord(value.refs) || !Array.isArray(value.refs.node_ids)) {
     return [];
@@ -606,6 +631,7 @@ function ActionsTab({
     const id = numericId(target.id);
     if (id !== null) {
       const kind = reviewKind(data);
+      const row = kind === null ? null : reviewRowForAction(data, id, kind);
       if (kind === "creator_directive_reconciliation") {
         const directiveIds = reviewDirectiveIds(data);
         addButton("creator-reconcile-supersede", "supersede directive", () =>
@@ -615,9 +641,10 @@ function ActionsTab({
             initialValue: directiveIds[0] ?? "",
             requireValue: true,
             run: (survivorId) =>
-              resolveCreatorDirectiveReconciliation(id, {
+              resolveReviewAction({
+                row: row ?? reviewRowForAction(data, id, "creator_directive_reconciliation"),
                 action: "supersede",
-                survivor_id: survivorId,
+                survivorId,
               }),
           }),
         );
@@ -629,14 +656,15 @@ function ActionsTab({
             reasonLabel: "reason",
             run: (inputReason) => {
               const trimmed = optionalText(inputReason);
-              return resolveCreatorDirectiveReconciliation(id, {
+              return resolveReviewAction({
+                row: row ?? reviewRowForAction(data, id, "creator_directive_reconciliation"),
                 action: "keep",
-                ...(trimmed === undefined ? {} : { reason: trimmed }),
+                note: trimmed,
               });
             },
           }),
         );
-      } else if (kind !== null) {
+      } else if (kind !== null && row !== null) {
         const ids = reviewNodeIds(data);
         for (const action of GENERIC_REVIEW_ACTIONS[kind]) {
           addButton(`review-${action}`, reviewActionLabel(action), () =>
@@ -647,12 +675,14 @@ function ActionsTab({
               reasonLabel: "note",
               run: (note) => {
                 const trimmed = optionalText(note);
-                return patchReview(id, {
+                return resolveReviewAction({
+                  row,
                   action,
-                  ...(trimmed === undefined ? {} : { note: trimmed }),
-                  ...(ids.length > 0 && (action === "supersede" || action === "invalidate")
-                    ? { winner_node_id: ids[0] }
-                    : {}),
+                  note: trimmed,
+                  winnerNodeId:
+                    ids.length > 0 && (action === "supersede" || action === "invalidate")
+                      ? ids[0]
+                      : undefined,
                 });
               },
             }),

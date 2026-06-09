@@ -3389,6 +3389,140 @@ g.fc-regen-group.active .fc-regen-label-bg {
   flex-wrap: wrap;
 }
 
+/* review & repair */
+.review-repair-page {
+  padding: 18px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+.review-wide-notice {
+  grid-column: 1 / -1;
+}
+
+.review-filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.review-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.review-repair-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.78fr) minmax(380px, 1.45fr) minmax(260px, 0.82fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.review-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.review-queue-list,
+.review-kind-group,
+.review-kind-rows,
+.review-evidence {
+  display: grid;
+  gap: 10px;
+}
+
+.review-kind-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-queue-row {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-0);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-queue-row:hover,
+.review-queue-row.selected {
+  background: var(--bg-2);
+  border-color: var(--line);
+}
+
+.review-queue-row.selected {
+  box-shadow: inset 2px 0 0 var(--acc);
+}
+
+.review-row-top,
+.review-row-meta,
+.review-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.review-row-top {
+  justify-content: space-between;
+}
+
+.review-row-reason,
+.review-reason {
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.review-row-meta {
+  font-size: var(--fs-xs);
+}
+
+.review-selected-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-lab {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+.review-lab-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 0.85fr);
+  gap: 12px;
+  min-height: 0;
+}
+
 /* generic prop list */
 .props,
 .attachment-props {

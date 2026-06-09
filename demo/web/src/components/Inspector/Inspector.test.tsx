@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ReviewKind, ReviewResolution } from "../../api/types";
+import { GENERIC_REVIEW_ACTIONS } from "../../lib/review-actions";
 import { Inspector } from "./Inspector";
 import { IdRef } from "./IdRef";
 import { InspectorProvider, useInspector } from "./inspector-context";
@@ -21,6 +23,10 @@ function jsonErrorResponse(status: number, message: string): Response {
 
 function requestUrl(request: RequestInfo | URL): URL {
   return new URL(String(request), "http://test.invalid");
+}
+
+function requestBody(init: RequestInit | undefined): Record<string, unknown> {
+  return JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 }
 
 function semanticNodeFixture(id: string) {
@@ -107,6 +113,34 @@ function reviewFixture(id: number) {
     resolution: null,
   };
 }
+
+type InspectorReviewDispatchCase = {
+  kind: ReviewKind;
+  action: ReviewResolution;
+  path: string;
+  body: Record<string, unknown>;
+};
+
+const INSPECTOR_REVIEW_DISPATCH_CASES: InspectorReviewDispatchCase[] = [
+  {
+    kind: "correction",
+    action: GENERIC_REVIEW_ACTIONS.correction[0]!,
+    path: "/api/correction/reviews/31",
+    body: { action: "accept" },
+  },
+  {
+    kind: "belief_revision",
+    action: GENERIC_REVIEW_ACTIONS.belief_revision[0]!,
+    path: "/api/dream/review/31",
+    body: { action: "dismiss" },
+  },
+  {
+    kind: "new_insight",
+    action: GENERIC_REVIEW_ACTIONS.new_insight[0]!,
+    path: "/api/reviews/31",
+    body: { action: "accept" },
+  },
+];
 
 function stateFixture() {
   return {
@@ -851,6 +885,53 @@ describe("Inspector drawer", () => {
       ),
     ).toBe(false);
   });
+
+  it.each(INSPECTOR_REVIEW_DISPATCH_CASES)(
+    "routes Inspector review $kind $action through the shared dispatcher",
+    async ({ kind, action, path, body }) => {
+      const review = { ...reviewFixture(31), kind, reason: `${kind} inspector route` };
+      const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+        const url = requestUrl(request);
+        if (url.pathname === "/api/reviews" && init?.method === undefined) {
+          return Promise.resolve(jsonResponse({ rows: [review] }));
+        }
+        if (url.pathname === "/api/correction/reviews" && init?.method === undefined) {
+          return Promise.resolve(jsonResponse({ rows: [] }));
+        }
+        if (url.pathname === path) {
+          return Promise.resolve(jsonResponse({ ...review, resolved_at: 2, resolution: action }));
+        }
+        return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderWithInspector(<OpenButton type="review" id="31" />);
+      fireEvent.click(screen.getByRole("button", { name: "open 31" }));
+      fireEvent.click(await screen.findByRole("tab", { name: "Actions" }));
+      fireEvent.click(await screen.findByRole("button", { name: action }));
+      const confirmButtons = await screen.findAllByRole("button", { name: action });
+      fireEvent.click(confirmButtons.at(-1)!);
+
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find(
+          ([request, init]) => requestUrl(request).pathname === path && init?.method !== undefined,
+        );
+        expect(call).toBeDefined();
+        expect(call?.[1]?.method).toBe(
+          kind === "creator_directive_reconciliation" ? "POST" : "PATCH",
+        );
+        expect(requestBody(call?.[1])).toEqual(body);
+      });
+      expect(
+        fetchMock.mock.calls.some(
+          ([request, init]) =>
+            requestUrl(request).pathname === "/api/reviews/31" &&
+            init?.method === "PATCH" &&
+            path !== "/api/reviews/31",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("omits empty optional reason fields for commitment revoke actions", async () => {
     const commitment = commitmentFixture("cmt_revoke11111111");

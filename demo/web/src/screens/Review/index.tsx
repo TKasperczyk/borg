@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  ApiError,
+  getCommitments,
   getCreatorDirectives,
+  getWhy,
   getSemanticEdge,
   getSemanticNode,
   getReviews,
-  patchReview,
-  resolveCreatorDirectiveReconciliation,
+  postCorrectionCorrect,
+  postCorrectionForget,
+  postSemanticEdgeInvalidate,
 } from "../../api/client";
 import type {
+  CommitmentItem,
   CreatorDirectiveItem,
   ReviewKind,
   ReviewResolution,
@@ -18,13 +23,19 @@ import type {
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
+import { isWhySupported } from "../../components/Inspector/inspector-registry";
+import { JsonValueView } from "../../components/JsonValueView";
+import { Modal } from "../../components/Modal";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
+import { GENERIC_REVIEW_ACTIONS, resolveReviewAction } from "../../lib/review-actions";
 import { formatTime } from "../../lib/stream-utils";
-import { displayValue, fieldLabel, isRecord, shortId } from "../screen-utils";
+import { displayValue, fieldLabel, isRecord, parseJsonPatch, shortId } from "../screen-utils";
+
+export { GENERIC_REVIEW_ACTIONS } from "../../lib/review-actions";
 
 const REVIEW_KIND_ORDER: ReviewKind[] = [
   "creator_directive_reconciliation",
@@ -40,31 +51,38 @@ const REVIEW_KIND_ORDER: ReviewKind[] = [
   "skill_split",
 ];
 
-export const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
-  contradiction: ["keep_both", "supersede", "invalidate", "dismiss"],
-  duplicate: ["keep_both", "supersede", "invalidate", "dismiss"],
-  new_insight: ["accept", "invalidate", "dismiss"],
-  misattribution: ["accept", "reject", "dismiss"],
-  temporal_drift: ["accept", "reject", "dismiss"],
-  identity_inconsistency: ["accept", "reject", "dismiss"],
-  correction: ["accept", "reject"],
-  belief_revision: ["dismiss"],
-  skill_split: ["accept", "reject"],
-  creator_directive_reconciliation: [],
-  commitment_reconciliation: ["accept", "reject", "dismiss", "keep"],
-};
-
 const REVIEW_RESOLVER_REF_PREFIX = "__borg_review_resolver_";
 
 type ReviewData = {
   rows: ReviewRow[];
   directives: CreatorDirectiveItem[];
+  commitments: CommitmentItem[];
 };
 
 type BusyState = {
   id: number;
   label: string;
 } | null;
+
+type ReviewMode = "queue" | "lab";
+type AgeBucket = "all" | "hour" | "day" | "week" | "older";
+type AffectedTypeFilter = "all" | ObjectType;
+
+type PendingReviewAction = {
+  row: ReviewRow;
+  action: ReviewResolution;
+  label: string;
+} | null;
+
+type PendingLabAction =
+  | {
+      kind: "forget";
+      id: string;
+    }
+  | {
+      kind: "invalidate";
+      id: string;
+    };
 
 type ScopeField =
   | "content_scope"
@@ -74,6 +92,16 @@ type ScopeField =
   | "activation_scope"
   | "activation_allowed"
   | "activation_excluded";
+
+const AGE_FILTERS: readonly { value: AgeBucket; label: string }[] = [
+  { value: "all", label: "all ages" },
+  { value: "hour", label: "last hour" },
+  { value: "day", label: "last day" },
+  { value: "week", label: "last week" },
+  { value: "older", label: "older" },
+];
+
+const DESTRUCTIVE_REVIEW_ACTIONS = new Set<ReviewResolution>(["invalidate", "supersede", "reject"]);
 
 function recordValue(record: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(record, key) ? record[key] : undefined;
@@ -256,6 +284,20 @@ function kindLabel(kind: ReviewKind): string {
   return kind.replaceAll("_", " ");
 }
 
+function optionalNote(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function isCorrectableId(id: string): boolean {
+  const type = resolveObjectType(id);
+  return type !== null && isWhySupported(type);
+}
+
+function parseLabPatch(text: string): Record<string, unknown> {
+  return parseJsonPatch(text);
+}
+
 function diagnosticEntries(row: ReviewRow): Array<[string, unknown]> {
   const refDiagnostics = Object.entries(row.refs).filter(([key]) =>
     key.startsWith(REVIEW_RESOLVER_REF_PREFIX),
@@ -434,6 +476,134 @@ function reviewRefGroups(refs: Record<string, unknown>): ReviewRefGroup[] {
   }
 
   return groups;
+}
+
+const KNOWN_PREFIXED_STRING_REF_KEYS = [
+  "target_id",
+  "source_target_id",
+  "edge_id",
+  "by_edge_id",
+  "invalidated_edge_id",
+  "invalidated_by_edge_id",
+  "target_node_id",
+  "survivor_commitment_id",
+] as const;
+
+const KNOWN_PREFIXED_ARRAY_REF_KEYS = [
+  "node_ids",
+  "edge_ids",
+  "episode_ids",
+  "evidence_episode_ids",
+  "source_episode_ids",
+  "key_episode_ids",
+  "related_episode_ids",
+  "resolution_evidence_episode_ids",
+  "directive_ids",
+  "commitment_ids",
+  "member_ids",
+  "dependency_path_edge_ids",
+  "surviving_support_edge_ids",
+  "superseded_commitment_ids",
+] as const;
+
+const KNOWN_SOURCE_OVERLAP_ARRAY_REF_KEYS = [
+  "candidate_source_episode_ids",
+  "matched_source_episode_ids",
+  "overlapping_source_episode_ids",
+] as const;
+
+function addTypeForKnownId(value: unknown, output: Set<ObjectType>): void {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const type = resolveObjectType(value);
+  if (type !== null) {
+    output.add(type);
+  }
+}
+
+function addTypesForKnownIds(values: unknown, output: Set<ObjectType>): void {
+  for (const value of stringArray(values)) {
+    addTypeForKnownId(value, output);
+  }
+}
+
+function addMemberIdTypes(value: unknown, output: Set<ObjectType>): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  for (const member of value) {
+    if (isRecord(member)) {
+      addTypeForKnownId(recordValue(member, "id"), output);
+    }
+  }
+}
+
+function affectedObjectTypes(row: ReviewRow): ObjectType[] {
+  const types = new Set<ObjectType>();
+
+  for (const group of reviewRefGroups(row.refs)) {
+    types.add(group.type);
+  }
+
+  for (const key of KNOWN_PREFIXED_STRING_REF_KEYS) {
+    addTypeForKnownId(recordValue(row.refs, key), types);
+  }
+
+  for (const key of KNOWN_PREFIXED_ARRAY_REF_KEYS) {
+    addTypesForKnownIds(recordValue(row.refs, key), types);
+  }
+
+  addMemberIdTypes(recordValue(row.refs, "members"), types);
+
+  const sourceOverlap = recordValue(row.refs, "source_overlap");
+  if (isRecord(sourceOverlap)) {
+    for (const key of KNOWN_SOURCE_OVERLAP_ARRAY_REF_KEYS) {
+      addTypesForKnownIds(recordValue(sourceOverlap, key), types);
+    }
+  }
+
+  const targetId = firstString(recordValue(row.refs, "target_id"));
+  if (targetId !== null) {
+    const targetType = typedTargetType(recordValue(row.refs, "target_type"));
+    if (targetType !== null) {
+      types.add(targetType);
+    }
+  }
+
+  return [...types].sort();
+}
+
+function affectedTypeLabel(type: ObjectType): string {
+  return type.replaceAll("_", " ");
+}
+
+function ageBucketForCreatedAt(createdAt: number, now = Date.now()): Exclude<AgeBucket, "all"> {
+  const ageMs = Math.max(0, now - createdAt);
+  const hourMs = 60 * 60 * 1000;
+  const dayMs = 24 * hourMs;
+  const weekMs = 7 * dayMs;
+
+  if (ageMs < hourMs) {
+    return "hour";
+  }
+  if (ageMs < dayMs) {
+    return "day";
+  }
+  if (ageMs < weekMs) {
+    return "week";
+  }
+  return "older";
+}
+
+function matchesAgeBucket(row: ReviewRow, bucket: AgeBucket): boolean {
+  return bucket === "all" || ageBucketForCreatedAt(row.created_at) === bucket;
+}
+
+function reviewIsOpen(row: ReviewRow): boolean {
+  return row.resolved_at === null && row.resolution === null;
 }
 
 function ReviewRefList({ group }: { group: ReviewRefGroup }) {
@@ -980,22 +1150,16 @@ function GenericReviewActions({
   );
 }
 
-function ReconciliationReview({
+function CreatorDirectiveReconciliationComparison({
   row,
   directivesById,
-  busy,
   survivor,
   onSurvivor,
-  onSupersede,
-  onKeep,
 }: {
   row: ReviewRow;
   directivesById: Map<string, CreatorDirectiveItem>;
-  busy: BusyState;
   survivor: string;
   onSurvivor: (value: string) => void;
-  onSupersede: () => void;
-  onKeep: () => void;
 }) {
   const refs = row.refs;
   const members = Array.isArray(refs.members) ? refs.members : [];
@@ -1046,10 +1210,10 @@ function ReconciliationReview({
 
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(220px, 320px) minmax(240px, 1fr)",
+          display: "flex",
           gap: 10,
-          alignItems: "end",
+          alignItems: "center",
+          flexWrap: "wrap",
         }}
       >
         <div className="modal-field">
@@ -1078,19 +1242,6 @@ function ReconciliationReview({
               />
             )}
           </div>
-        </div>
-        <div className="operator-actions">
-          <button
-            type="button"
-            className="btn sm primary"
-            disabled={busy !== null || survivor.length === 0}
-            onClick={onSupersede}
-          >
-            {busy?.id === row.id && busy.label === "supersede" ? "saving" : "supersede to survivor"}
-          </button>
-          <button type="button" className="btn sm ghost" disabled={busy !== null} onClick={onKeep}>
-            {busy?.id === row.id && busy.label === "keep" ? "saving" : "keep both"}
-          </button>
         </div>
       </div>
     </div>
@@ -1149,15 +1300,582 @@ function DirectiveMemberCard({
   );
 }
 
+type CommitmentScopeField =
+  | "type"
+  | "kind"
+  | "enforcement_class"
+  | "critical_domain"
+  | "state"
+  | "audience"
+  | "made_to"
+  | "about"
+  | "committed_by"
+  | "directive_family";
+
+const COMMITMENT_SCOPE_ROWS: readonly [CommitmentScopeField, string][] = [
+  ["type", "type"],
+  ["kind", "kind"],
+  ["enforcement_class", "enforcement"],
+  ["critical_domain", "critical domain"],
+  ["state", "state"],
+  ["audience", "audience"],
+  ["made_to", "made to"],
+  ["about", "about"],
+  ["committed_by", "committed by"],
+  ["directive_family", "directive family"],
+];
+
+function commitmentIds(row: ReviewRow): string[] {
+  return stringArray(recordValue(row.refs, "commitment_ids"));
+}
+
+function commitmentScopeValue(commitment: CommitmentItem, field: CommitmentScopeField): unknown {
+  return commitment[field];
+}
+
+function commitmentScopeDifferences(
+  commitments: readonly CommitmentItem[],
+): Set<CommitmentScopeField> {
+  const differing = new Set<CommitmentScopeField>();
+
+  for (const [field] of COMMITMENT_SCOPE_ROWS) {
+    const values = new Set(
+      commitments.map((commitment) => displayValue(commitmentScopeValue(commitment, field))),
+    );
+    if (values.size > 1) {
+      differing.add(field);
+    }
+  }
+
+  return differing;
+}
+
+function MaybeIdValue({ value }: { value: unknown }) {
+  if (typeof value !== "string" || value.length === 0) {
+    return <>{displayValue(value)}</>;
+  }
+
+  const type = resolveObjectType(value);
+  if (type === null) {
+    return <>{value}</>;
+  }
+
+  return <IdRef id={value} type={type} label={value} />;
+}
+
+function CommitmentMemberCard({
+  label,
+  id,
+  commitment,
+  differences,
+}: {
+  label: string;
+  id: string;
+  commitment?: CommitmentItem;
+  differences: Set<CommitmentScopeField>;
+}) {
+  if (commitment === undefined) {
+    return (
+      <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
+        <div className="notice bad">
+          commitment unavailable <IdRef id={id} type="commitment" label={id} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Tag>{commitment.enforcement_class}</Tag>
+        <span className="acc">{label}</span>
+        <IdRef
+          id={commitment.id}
+          type="commitment"
+          label={shortId(commitment.id)}
+          hint={commitment}
+        />
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          color: "var(--text)",
+          fontFamily: "var(--sans)",
+          fontSize: 12,
+          lineHeight: 1.45,
+        }}
+      >
+        {commitment.text}
+      </div>
+      <div className="props" style={{ marginTop: 8 }}>
+        {COMMITMENT_SCOPE_ROWS.map(([field, label]) => (
+          <div className="row" key={field}>
+            <span className={`k ${differences.has(field) ? "warn" : ""}`}>{label}</span>
+            <span className={`v ${differences.has(field) ? "warn" : ""}`}>
+              <MaybeIdValue value={commitmentScopeValue(commitment, field)} />
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CommitmentReconciliationComparison({
+  row,
+  commitmentsById,
+}: {
+  row: ReviewRow;
+  commitmentsById: Map<string, CommitmentItem>;
+}) {
+  const ids = commitmentIds(row);
+  const commitments = ids.flatMap((id) => {
+    const commitment = commitmentsById.get(id);
+    return commitment === undefined ? [] : [commitment];
+  });
+  const differences = commitmentScopeDifferences(commitments);
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <ReviewDetail row={row} />
+      <div className="notice">
+        commitment comparison is read-only context; use the resolution panel for generic review
+        actions
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {ids.length === 0 ? (
+          <div className="notice">no commitment refs on this review</div>
+        ) : (
+          ids.map((id, index) => (
+            <CommitmentMemberCard
+              key={id}
+              label={`member ${index + 1}`}
+              id={id}
+              commitment={commitmentsById.get(id)}
+              differences={differences}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InlineWhyEvidence({ id }: { id: string }) {
+  const api = useApi(() => getWhy(id), [id]);
+
+  if (api.loading) {
+    return <div className="notice">loading provenance</div>;
+  }
+  if (api.error !== null) {
+    if (api.error instanceof ApiError && api.error.status === 404) {
+      return <div className="notice">no provenance retained</div>;
+    }
+    return <div className="notice bad">{api.error.message}</div>;
+  }
+  if (api.data === null) {
+    return <div className="notice">no provenance fields</div>;
+  }
+
+  const entries = Object.entries(api.data);
+  if (entries.length === 0) {
+    return <div className="notice">no provenance fields</div>;
+  }
+
+  return (
+    <div className="why-drawer">
+      {entries.map(([key, value]) => (
+        <details key={key} className="why-section" open>
+          <summary>{key}</summary>
+          <JsonValueView value={value} />
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function ReviewQueuePane({
+  groups,
+  selectedRowId,
+  emptyMessage,
+  onSelect,
+}: {
+  groups: readonly { kind: ReviewKind; rows: ReviewRow[] }[];
+  selectedRowId: number | null;
+  emptyMessage: string;
+  onSelect: (row: ReviewRow) => void;
+}) {
+  if (groups.length === 0) {
+    return <div className="notice">{emptyMessage}</div>;
+  }
+
+  return (
+    <div className="review-queue-list">
+      {groups.map((group) => (
+        <section key={group.kind} className="review-kind-group">
+          <div className="review-kind-head">
+            <Tag>{kindLabel(group.kind)}</Tag>
+            <span className="dim">{group.rows.length}</span>
+          </div>
+          <div className="review-kind-rows">
+            {group.rows.map((row) => {
+              const affected = affectedObjectTypes(row);
+              const selected = row.id === selectedRowId;
+              return (
+                <div
+                  key={row.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`review-queue-row${selected ? " selected" : ""}`}
+                  aria-pressed={selected}
+                  onClick={() => onSelect(row)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelect(row);
+                    }
+                  }}
+                >
+                  <span className="review-row-top">
+                    <span>
+                      <IdRef
+                        id={String(row.id)}
+                        type="review"
+                        label={`review ${row.id}`}
+                        hint={row}
+                      />
+                    </span>
+                    <span className="dim">{formatTime(row.created_at)}</span>
+                  </span>
+                  <span className="review-row-reason">{row.reason}</span>
+                  <span className="review-row-meta">
+                    {reviewIsOpen(row) ? (
+                      <Tag>open</Tag>
+                    ) : (
+                      <Tag>
+                        {row.resolution === null ? "resolved" : actionLabel(row.resolution)}
+                      </Tag>
+                    )}
+                    {affected.length === 0 ? (
+                      <span className="dim">affected unknown</span>
+                    ) : (
+                      affected.map((type) => (
+                        <span className="dim" key={type}>
+                          {affectedTypeLabel(type)}
+                        </span>
+                      ))
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ReviewEvidencePane({
+  row,
+  directivesById,
+  commitmentsById,
+  survivor,
+  onSurvivor,
+}: {
+  row: ReviewRow | null;
+  directivesById: Map<string, CreatorDirectiveItem>;
+  commitmentsById: Map<string, CommitmentItem>;
+  survivor: string;
+  onSurvivor: (value: string) => void;
+}) {
+  if (row === null) {
+    return <div className="notice">select a review row</div>;
+  }
+
+  return (
+    <div className="review-evidence">
+      <div className="review-selected-head">
+        <div>
+          <div className="eyebrow">selected review</div>
+          <div className="review-title-line">
+            <IdRef id={String(row.id)} type="review" label={`review ${row.id}`} hint={row} />
+            <Tag>{kindLabel(row.kind)}</Tag>
+            {reviewIsOpen(row) ? <Tag>open</Tag> : <Tag>{row.resolution ?? "resolved"}</Tag>}
+          </div>
+        </div>
+        <span className="dim">{formatTime(row.created_at)}</span>
+      </div>
+      <div className="review-reason">{row.reason}</div>
+
+      {isPairReview(row) ? <ReviewPairDrillthrough row={row} open /> : null}
+      {row.kind === "creator_directive_reconciliation" ? (
+        <CreatorDirectiveReconciliationComparison
+          row={row}
+          directivesById={directivesById}
+          survivor={survivor}
+          onSurvivor={onSurvivor}
+        />
+      ) : row.kind === "commitment_reconciliation" ? (
+        <CommitmentReconciliationComparison row={row} commitmentsById={commitmentsById} />
+      ) : (
+        <ReviewDetail row={row} />
+      )}
+    </div>
+  );
+}
+
+function CreatorDirectiveResolutionPanel({
+  row,
+  busy,
+  note,
+  survivor,
+  onNote,
+  onSupersede,
+  onKeep,
+}: {
+  row: ReviewRow;
+  busy: BusyState;
+  note: string;
+  survivor: string;
+  onNote: (value: string) => void;
+  onSupersede: () => void;
+  onKeep: () => void;
+}) {
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <label className="modal-field">
+        <span>note</span>
+        <input value={note} onChange={(event) => onNote(event.target.value)} />
+      </label>
+      <div className="operator-actions">
+        <button
+          type="button"
+          className="btn sm primary"
+          disabled={busy !== null || survivor.length === 0}
+          onClick={onSupersede}
+        >
+          {busy?.id === row.id && busy.label === "supersede" ? "saving" : "supersede to survivor"}
+        </button>
+        <button type="button" className="btn sm ghost" disabled={busy !== null} onClick={onKeep}>
+          {busy?.id === row.id && busy.label === "keep" ? "saving" : "keep both"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReviewResolutionPanel({
+  row,
+  busy,
+  note,
+  winner,
+  survivor,
+  onNote,
+  onWinner,
+  onAction,
+  onCdrSupersede,
+  onCdrKeep,
+}: {
+  row: ReviewRow | null;
+  busy: BusyState;
+  note: string;
+  winner: string;
+  survivor: string;
+  onNote: (value: string) => void;
+  onWinner: (value: string) => void;
+  onAction: (action: ReviewResolution) => void;
+  onCdrSupersede: () => void;
+  onCdrKeep: () => void;
+}) {
+  if (row === null) {
+    return <div className="notice">select a review row to repair</div>;
+  }
+
+  if (!reviewIsOpen(row)) {
+    return (
+      <div className="notice">
+        resolved as {row.resolution === null ? "resolved" : actionLabel(row.resolution)}
+      </div>
+    );
+  }
+
+  if (row.kind === "creator_directive_reconciliation") {
+    return (
+      <CreatorDirectiveResolutionPanel
+        row={row}
+        busy={busy}
+        note={note}
+        survivor={survivor}
+        onNote={onNote}
+        onSupersede={onCdrSupersede}
+        onKeep={onCdrKeep}
+      />
+    );
+  }
+
+  return (
+    <GenericReviewActions
+      row={row}
+      busy={busy}
+      note={note}
+      winner={winner}
+      onNote={onNote}
+      onWinner={onWinner}
+      onAction={onAction}
+    />
+  );
+}
+
+function CorrectionLab({
+  id,
+  patch,
+  reason,
+  busy,
+  error,
+  status,
+  onId,
+  onPatch,
+  onReason,
+  onCorrect,
+  onForget,
+  onInvalidate,
+}: {
+  id: string;
+  patch: string;
+  reason: string;
+  busy: string | null;
+  error: string | null;
+  status: string | null;
+  onId: (value: string) => void;
+  onPatch: (value: string) => void;
+  onReason: (value: string) => void;
+  onCorrect: () => void;
+  onForget: () => void;
+  onInvalidate: () => void;
+}) {
+  const trimmedId = id.trim();
+  const objectType = trimmedId.length === 0 ? null : resolveObjectType(trimmedId);
+  const correctable = trimmedId.length > 0 && objectType !== null && isWhySupported(objectType);
+
+  return (
+    <div className="page-body review-lab">
+      <section className="panel">
+        <div className="panel-header">
+          <span className="title">Correction Lab</span>
+          <span className="spacer" />
+          {objectType === null ? null : <Tag>{affectedTypeLabel(objectType)}</Tag>}
+        </div>
+        <div className="panel-body pad">
+          <div className="modal-form">
+            <label className="modal-field">
+              <span>object id</span>
+              <input
+                value={id}
+                placeholder="stored-object id"
+                onChange={(event) => onId(event.target.value)}
+              />
+            </label>
+            {trimmedId.length === 0 ? (
+              <div className="notice">enter a correctable stored-object id</div>
+            ) : correctable && objectType !== null ? (
+              <div className="notice">correctable {affectedTypeLabel(objectType)}</div>
+            ) : (
+              <div className="notice bad">not a correctable id</div>
+            )}
+            {status === null ? null : <div className="notice">{status}</div>}
+            {error === null ? null : <div className="notice bad">{error}</div>}
+          </div>
+        </div>
+      </section>
+
+      {correctable ? (
+        <div className="review-lab-grid">
+          <section className="panel">
+            <div className="panel-header">
+              <span className="title">why?</span>
+            </div>
+            <div className="panel-body pad">
+              <InlineWhyEvidence id={trimmedId} />
+            </div>
+          </section>
+          <section className="panel">
+            <div className="panel-header">
+              <span className="title">repair actions</span>
+            </div>
+            <div className="panel-body pad">
+              <div className="modal-form">
+                <label className="modal-field">
+                  <span>json patch</span>
+                  <textarea value={patch} onChange={(event) => onPatch(event.target.value)} />
+                </label>
+                <label className="modal-field">
+                  <span>reason</span>
+                  <textarea value={reason} onChange={(event) => onReason(event.target.value)} />
+                </label>
+                <div className="operator-actions">
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={busy !== null}
+                    onClick={onCorrect}
+                  >
+                    {busy === "correct" ? "saving" : "queue correction"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={busy !== null}
+                    onClick={onForget}
+                  >
+                    forget
+                  </button>
+                  {objectType === "semantic_edge" ? (
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={onInvalidate}
+                    >
+                      invalidate
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ReviewScreen() {
   const live = useLiveEventsContext();
+  const [mode, setMode] = useState<ReviewMode>("queue");
+  const [openOnly, setOpenOnly] = useState(true);
+  const [kindFilter, setKindFilter] = useState<ReviewKind | "all">("all");
+  const [ageFilter, setAgeFilter] = useState<AgeBucket>("all");
+  const [affectedTypeFilter, setAffectedTypeFilter] = useState<AffectedTypeFilter>("all");
+  const [selectedRowId, setSelectedRowId] = useState<number | null>(null);
   const api = useApi<ReviewData>(async () => {
-    const [reviews, directives] = await Promise.all([
-      getReviews({ openOnly: true }),
-      getCreatorDirectives(),
+    const [reviews, directives, commitments] = await Promise.all([
+      getReviews({ openOnly }),
+      getCreatorDirectives({ status: "all" }),
+      getCommitments({ state: "all", enforcement: "all" }),
     ]);
-    return { rows: reviews.rows, directives: directives.directives };
-  }, []);
+    return {
+      rows: reviews.rows,
+      directives: directives.directives,
+      commitments: commitments.commitments,
+    };
+  }, [openOnly]);
   const refetch = api.refetch;
   const previousConnectionCountRef = useRef(live.connectionCount);
   const [busy, setBusy] = useState<BusyState>(null);
@@ -1165,23 +1883,87 @@ export function ReviewScreen() {
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [winners, setWinners] = useState<Record<number, string>>({});
   const [survivors, setSurvivors] = useState<Record<number, string>>({});
-  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
+  const [pendingReviewAction, setPendingReviewAction] = useState<PendingReviewAction>(null);
+  const [labId, setLabId] = useState("");
+  const [labPatch, setLabPatch] = useState("{}");
+  const [labReason, setLabReason] = useState("");
+  const [labBusy, setLabBusy] = useState<string | null>(null);
+  const [labError, setLabError] = useState<string | null>(null);
+  const [labStatus, setLabStatus] = useState<string | null>(null);
+  const [pendingLabAction, setPendingLabAction] = useState<PendingLabAction | null>(null);
 
   const directivesById = useMemo(() => {
     return new Map((api.data?.directives ?? []).map((directive) => [directive.id, directive]));
   }, [api.data?.directives]);
 
+  const commitmentsById = useMemo(() => {
+    return new Map((api.data?.commitments ?? []).map((commitment) => [commitment.id, commitment]));
+  }, [api.data?.commitments]);
+
+  const rows = api.data?.rows ?? [];
+
+  const affectedTypeOptions = useMemo(() => {
+    const types = new Set<ObjectType>();
+    for (const row of rows) {
+      for (const type of affectedObjectTypes(row)) {
+        types.add(type);
+      }
+    }
+    return [...types].sort();
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((row) => {
+      if (kindFilter !== "all" && row.kind !== kindFilter) {
+        return false;
+      }
+      if (!matchesAgeBucket(row, ageFilter)) {
+        return false;
+      }
+      if (
+        affectedTypeFilter !== "all" &&
+        !affectedObjectTypes(row).some((type) => type === affectedTypeFilter)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [affectedTypeFilter, ageFilter, kindFilter, rows]);
+
   const groups = useMemo(() => {
-    const rows = api.data?.rows ?? [];
     return REVIEW_KIND_ORDER.map((kind) => ({
       kind,
-      rows: rows.filter((row) => row.kind === kind),
+      rows: filteredRows.filter((row) => row.kind === kind),
     })).filter((group) => group.rows.length > 0);
-  }, [api.data?.rows]);
+  }, [filteredRows]);
+
+  const selectedRow = useMemo(() => {
+    if (selectedRowId === null) {
+      return null;
+    }
+    return filteredRows.find((row) => row.id === selectedRowId) ?? null;
+  }, [filteredRows, selectedRowId]);
+
+  useEffect(() => {
+    if (filteredRows.length === 0) {
+      if (selectedRowId !== null) {
+        setSelectedRowId(null);
+      }
+      return;
+    }
+
+    if (selectedRowId === null || !filteredRows.some((row) => row.id === selectedRowId)) {
+      setSelectedRowId(filteredRows[0]?.id ?? null);
+    }
+  }, [filteredRows, selectedRowId]);
 
   useEffect(() => {
     return live.subscribe((frame) => {
-      if (frame.type === "maintenance:tick") {
+      if (
+        frame.type === "maintenance:tick" ||
+        frame.type === "dream:process:completed" ||
+        frame.type === "borg:reset"
+      ) {
         void refetch();
       }
     });
@@ -1219,191 +2001,428 @@ export function ReviewScreen() {
     setSurvivors((current) => ({ ...current, [id]: survivor }));
   }
 
-  function toggleExpanded(rowId: number): void {
-    setExpandedRows((current) => ({ ...current, [rowId]: current[rowId] !== true }));
+  function requestReviewAction(row: ReviewRow, action: ReviewResolution): void {
+    if (DESTRUCTIVE_REVIEW_ACTIONS.has(action)) {
+      setPendingReviewAction({ row, action, label: actionLabel(action) });
+      return;
+    }
+
+    void submitReviewResolution(row, action);
   }
 
-  async function submitGeneric(row: ReviewRow, action: ReviewResolution): Promise<void> {
+  function requestCreatorDirectiveSupersede(row: ReviewRow): void {
+    setPendingReviewAction({ row, action: "supersede", label: "supersede to survivor" });
+  }
+
+  async function submitReviewResolution(row: ReviewRow, action: ReviewResolution): Promise<void> {
     const ids = nodeIds(row);
     const winner = winners[row.id] ?? ids[0] ?? "";
-    const note = notes[row.id]?.trim();
+    const note = optionalNote(notes[row.id]);
+    const directiveMemberIds = directiveIds(row);
+    const survivor = survivors[row.id] ?? directiveMemberIds[0] ?? "";
 
     await runReviewAction(row.id, action, async () => {
-      await patchReview(row.id, {
+      await resolveReviewAction({
+        row,
         action,
-        ...(note === undefined || note.length === 0 ? {} : { note }),
-        ...(ids.length > 0 && (action === "supersede" || action === "invalidate")
-          ? { winner_node_id: winner }
-          : {}),
+        note,
+        winnerNodeId:
+          ids.length > 0 && (action === "supersede" || action === "invalidate")
+            ? winner
+            : undefined,
+        survivorId:
+          row.kind === "creator_directive_reconciliation" && action === "supersede"
+            ? survivor
+            : undefined,
       });
     });
   }
 
   async function submitReconciliationSupersede(row: ReviewRow): Promise<void> {
-    const ids = directiveIds(row);
-    const survivor = survivors[row.id] ?? ids[0] ?? "";
-    await runReviewAction(row.id, "supersede", async () => {
-      await resolveCreatorDirectiveReconciliation(row.id, {
-        action: "supersede",
-        survivor_id: survivor,
-      });
-    });
+    await submitReviewResolution(row, "supersede");
   }
 
   async function submitReconciliationKeep(row: ReviewRow): Promise<void> {
-    await runReviewAction(row.id, "keep", async () => {
-      await resolveCreatorDirectiveReconciliation(row.id, { action: "keep" });
+    await submitReviewResolution(row, "keep");
+  }
+
+  async function submitPendingReviewAction(): Promise<void> {
+    if (pendingReviewAction === null) {
+      return;
+    }
+
+    const pending = pendingReviewAction;
+    if (pending.row.kind === "creator_directive_reconciliation" && pending.action === "supersede") {
+      await submitReconciliationSupersede(pending.row);
+    } else {
+      await submitReviewResolution(pending.row, pending.action);
+    }
+    setPendingReviewAction(null);
+  }
+
+  async function runLabAction(label: string, callback: () => Promise<void>): Promise<void> {
+    setLabBusy(label);
+    setLabError(null);
+    setLabStatus(null);
+    try {
+      await callback();
+    } catch (caught) {
+      setLabError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLabBusy(null);
+    }
+  }
+
+  function requireLabCorrectableId(): string {
+    const id = labId.trim();
+    if (!isCorrectableId(id)) {
+      throw new Error("not a correctable id");
+    }
+    return id;
+  }
+
+  async function submitLabCorrect(): Promise<void> {
+    await runLabAction("correct", async () => {
+      const id = requireLabCorrectableId();
+      const review = await postCorrectionCorrect(id, {
+        patch: parseLabPatch(labPatch),
+        ...(optionalNote(labReason) === undefined ? {} : { reason: optionalNote(labReason) }),
+      });
+      setLabStatus(`queued correction review ${review.id}`);
+      await refetch();
+      setOpenOnly(true);
+      setKindFilter("all");
+      setAgeFilter("all");
+      setAffectedTypeFilter("all");
+      setSelectedRowId(review.id);
+      setMode("queue");
     });
   }
 
-  if (api.loading && api.data === null) {
-    return <div className="notice">loading reviews</div>;
+  async function submitPendingLabAction(): Promise<void> {
+    if (pendingLabAction === null) {
+      return;
+    }
+
+    const pending = pendingLabAction;
+    setPendingLabAction(null);
+    if (pending.kind === "forget") {
+      await runLabAction("forget", async () => {
+        await postCorrectionForget(pending.id);
+        setLabStatus(`forgot ${pending.id}`);
+        await refetch();
+      });
+      return;
+    }
+
+    await runLabAction("invalidate", async () => {
+      await postSemanticEdgeInvalidate(pending.id, {
+        ...(optionalNote(labReason) === undefined ? {} : { reason: optionalNote(labReason) }),
+      });
+      setLabStatus(`invalidated ${pending.id}`);
+      await refetch();
+    });
   }
 
-  if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+  const selectedNodeIds = selectedRow === null ? [] : nodeIds(selectedRow);
+  const selectedWinner =
+    selectedRow === null ? "" : (winners[selectedRow.id] ?? selectedNodeIds[0] ?? "");
+  const selectedDirectiveIds = selectedRow === null ? [] : directiveIds(selectedRow);
+  const selectedSurvivor =
+    selectedRow === null ? "" : (survivors[selectedRow.id] ?? selectedDirectiveIds[0] ?? "");
+  const selectedNote = selectedRow === null ? "" : (notes[selectedRow.id] ?? "");
+  const emptyQueueMessage =
+    rows.length === 0 && openOnly && kindFilter === "all" && ageFilter === "all"
+      ? "no open review rows"
+      : "no review rows match filters";
+
+  if (api.loading && api.data === null && mode === "queue") {
+    return <div className="notice">loading reviews</div>;
   }
 
   return (
     <div className="full-page">
       <div className="page-head">
-        <h1>review</h1>
-        <span className="desc">open operator review queue</span>
+        <h1>review & repair</h1>
+        <span className="desc">operator queue and sanctioned repair lab</span>
         <span className="spacer" />
-        <span className="sep">{api.data?.rows.length ?? 0} open</span>
+        <div className="filter-pills" role="tablist" aria-label="review mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "queue"}
+            className={`pill ${mode === "queue" ? "on" : ""}`}
+            onClick={() => setMode("queue")}
+          >
+            queue
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "lab"}
+            className={`pill ${mode === "lab" ? "on" : ""}`}
+            onClick={() => setMode("lab")}
+          >
+            lab
+          </button>
+        </div>
+        <span className="sep">
+          {filteredRows.length}/{rows.length} loaded
+        </span>
       </div>
 
-      <div className="page-body" style={{ padding: 18 }}>
-        {operatorError === null ? null : (
-          <div className="notice bad" style={{ padding: 10, marginBottom: 12 }}>
-            {operatorError}
+      {mode === "lab" ? (
+        <CorrectionLab
+          id={labId}
+          patch={labPatch}
+          reason={labReason}
+          busy={labBusy}
+          error={labError}
+          status={labStatus}
+          onId={(value) => {
+            setLabId(value);
+            setLabError(null);
+            setLabStatus(null);
+          }}
+          onPatch={setLabPatch}
+          onReason={setLabReason}
+          onCorrect={() => void submitLabCorrect()}
+          onForget={() => {
+            const id = labId.trim();
+            if (isCorrectableId(id)) {
+              setPendingLabAction({ kind: "forget", id });
+            }
+          }}
+          onInvalidate={() => {
+            const id = labId.trim();
+            if (resolveObjectType(id) === "semantic_edge") {
+              setPendingLabAction({ kind: "invalidate", id });
+            }
+          }}
+        />
+      ) : (
+        <div className="page-body review-repair-page">
+          {api.error === null ? null : (
+            <div className="notice bad review-wide-notice">{api.error.message}</div>
+          )}
+          {operatorError === null ? null : (
+            <div className="notice bad review-wide-notice">{operatorError}</div>
+          )}
+          {api.loading && api.data !== null ? (
+            <div className="notice review-wide-notice">refreshing review queue</div>
+          ) : null}
+
+          <div className="review-filter-bar">
+            <label className="review-toggle">
+              <input
+                type="checkbox"
+                checked={openOnly}
+                onChange={(event) => setOpenOnly(event.currentTarget.checked)}
+              />
+              <span>open only</span>
+            </label>
+            <label className="modal-field">
+              <span>kind</span>
+              <select
+                aria-label="kind filter"
+                value={kindFilter}
+                onChange={(event) => setKindFilter(event.target.value as ReviewKind | "all")}
+              >
+                <option value="all">all kinds</option>
+                {REVIEW_KIND_ORDER.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {kindLabel(kind)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="modal-field">
+              <span>age</span>
+              <select
+                aria-label="age filter"
+                value={ageFilter}
+                onChange={(event) => setAgeFilter(event.target.value as AgeBucket)}
+              >
+                {AGE_FILTERS.map((filter) => (
+                  <option key={filter.value} value={filter.value}>
+                    {filter.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="modal-field">
+              <span>affected type</span>
+              <select
+                aria-label="affected type filter"
+                value={affectedTypeFilter}
+                onChange={(event) =>
+                  setAffectedTypeFilter(event.target.value as AffectedTypeFilter)
+                }
+              >
+                <option value="all">all types</option>
+                {affectedTypeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {affectedTypeLabel(type)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-        )}
-        {groups.length === 0 ? (
-          <div className="notice">no open review rows</div>
-        ) : (
-          <div style={{ display: "grid", gap: 18 }}>
-            {groups.map((group) => (
-              <section key={group.kind} style={{ display: "grid", gap: 10 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    borderBottom: "1px solid var(--line)",
-                    paddingBottom: 6,
+
+          <div className="review-repair-grid">
+            <section className="panel review-pane">
+              <div className="panel-header">
+                <span className="title">queue</span>
+                <span className="spacer" />
+                <span className="badge">{filteredRows.length}</span>
+              </div>
+              <div className="panel-body pad">
+                <ReviewQueuePane
+                  groups={groups}
+                  selectedRowId={selectedRowId}
+                  emptyMessage={emptyQueueMessage}
+                  onSelect={(row) => setSelectedRowId(row.id)}
+                />
+              </div>
+            </section>
+
+            <section className="panel review-pane">
+              <div className="panel-header">
+                <span className="title">evidence comparison</span>
+              </div>
+              <div className="panel-body pad">
+                <ReviewEvidencePane
+                  row={selectedRow}
+                  directivesById={directivesById}
+                  commitmentsById={commitmentsById}
+                  survivor={selectedSurvivor}
+                  onSurvivor={(value) => {
+                    if (selectedRow !== null) {
+                      setSurvivor(selectedRow.id, value);
+                    }
                   }}
-                >
-                  <Tag>{kindLabel(group.kind)}</Tag>
-                  <span className="dim">{group.rows.length} open</span>
-                </div>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {group.rows.map((row) => {
-                    const ids = nodeIds(row);
-                    const winner = winners[row.id] ?? ids[0] ?? "";
-                    const creatorIds = directiveIds(row);
-                    const survivor = survivors[row.id] ?? creatorIds[0] ?? "";
-                    const pairReview = isPairReview(row);
-                    const expanded = expandedRows[row.id] === true;
-                    return (
-                      <div
-                        className="item"
-                        key={row.id}
-                        style={{ padding: 14, border: "1px solid var(--line)" }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            gap: 10,
-                            alignItems: "flex-start",
-                            marginBottom: 10,
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <div
-                              style={{
-                                display: "flex",
-                                gap: 8,
-                                alignItems: "center",
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <IdRef
-                                id={String(row.id)}
-                                type="review"
-                                label={`review ${row.id}`}
-                                hint={row}
-                              />
-                              <Tag>{kindLabel(row.kind)}</Tag>
-                              <span className="dim">{formatTime(row.created_at)}</span>
-                            </div>
-                            <div
-                              style={{
-                                color: "var(--text)",
-                                fontFamily: "var(--sans)",
-                                fontSize: 12.5,
-                                lineHeight: 1.5,
-                                marginTop: 7,
-                                overflowWrap: "anywhere",
-                              }}
-                            >
-                              {row.reason}
-                            </div>
-                          </div>
-                          {pairReview ? (
-                            <button
-                              className="btn sm ghost"
-                              type="button"
-                              onClick={() => toggleExpanded(row.id)}
-                            >
-                              {expanded ? "hide drill" : "drill"}
-                            </button>
-                          ) : null}
-                        </div>
+                />
+              </div>
+            </section>
 
-                        {row.kind === "creator_directive_reconciliation" ? (
-                          <ReconciliationReview
-                            row={row}
-                            directivesById={directivesById}
-                            busy={busy}
-                            survivor={survivor}
-                            onSurvivor={(value) => setSurvivor(row.id, value)}
-                            onSupersede={() => void submitReconciliationSupersede(row)}
-                            onKeep={() => void submitReconciliationKeep(row)}
-                          />
-                        ) : (
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "minmax(0, 1fr) 320px",
-                              gap: 14,
-                            }}
-                          >
-                            <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
-                              <ReviewPairDrillthrough row={row} open={pairReview && expanded} />
-                              <ReviewDetail row={row} />
-                            </div>
-                            <GenericReviewActions
-                              row={row}
-                              busy={busy}
-                              note={notes[row.id] ?? ""}
-                              winner={winner}
-                              onNote={(value) => setNote(row.id, value)}
-                              onWinner={(value) => setWinner(row.id, value)}
-                              onAction={(action) => void submitGeneric(row, action)}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
+            <section className="panel review-pane">
+              <div className="panel-header">
+                <span className="title">resolution</span>
+              </div>
+              <div className="panel-body pad">
+                <ReviewResolutionPanel
+                  row={selectedRow}
+                  busy={busy}
+                  note={selectedNote}
+                  winner={selectedWinner}
+                  survivor={selectedSurvivor}
+                  onNote={(value) => {
+                    if (selectedRow !== null) {
+                      setNote(selectedRow.id, value);
+                    }
+                  }}
+                  onWinner={(value) => {
+                    if (selectedRow !== null) {
+                      setWinner(selectedRow.id, value);
+                    }
+                  }}
+                  onAction={(action) => {
+                    if (selectedRow !== null) {
+                      requestReviewAction(selectedRow, action);
+                    }
+                  }}
+                  onCdrSupersede={() => {
+                    if (selectedRow !== null) {
+                      requestCreatorDirectiveSupersede(selectedRow);
+                    }
+                  }}
+                  onCdrKeep={() => {
+                    if (selectedRow !== null) {
+                      void submitReconciliationKeep(selectedRow);
+                    }
+                  }}
+                />
+              </div>
+            </section>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      <Modal
+        open={pendingReviewAction !== null}
+        title={pendingReviewAction === null ? "confirm review action" : pendingReviewAction.label}
+        onClose={() => setPendingReviewAction(null)}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={busy !== null}
+              onClick={() => setPendingReviewAction(null)}
+            >
+              cancel
+            </button>
+            <button
+              type="button"
+              className="btn sm live-write"
+              disabled={busy !== null}
+              onClick={() => void submitPendingReviewAction()}
+            >
+              confirm {pendingReviewAction?.label ?? "action"}
+            </button>
+          </>
+        }
+      >
+        <div className="modal-form">
+          <div>
+            Confirm {pendingReviewAction?.label ?? "this action"} for review{" "}
+            {pendingReviewAction?.row.id ?? ""}.
+          </div>
+          {pendingReviewAction?.row.kind === "creator_directive_reconciliation" &&
+          pendingReviewAction.action === "supersede" ? (
+            <div className="dim">survivor {selectedSurvivor}</div>
+          ) : null}
+        </div>
+      </Modal>
+
+      <Modal
+        open={pendingLabAction !== null}
+        title={
+          pendingLabAction === null
+            ? "confirm lab action"
+            : `${pendingLabAction.kind} ${pendingLabAction.id}`
+        }
+        onClose={() => setPendingLabAction(null)}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={labBusy !== null}
+              onClick={() => setPendingLabAction(null)}
+            >
+              cancel
+            </button>
+            <button
+              type="button"
+              className="btn sm live-write"
+              disabled={labBusy !== null}
+              onClick={() => void submitPendingLabAction()}
+            >
+              confirm {pendingLabAction?.kind ?? "action"}
+            </button>
+          </>
+        }
+      >
+        <div className="modal-form">
+          <div>
+            Confirm {pendingLabAction?.kind ?? "this action"} for {pendingLabAction?.id ?? ""}.
+          </div>
+          {pendingLabAction?.kind === "invalidate" ? (
+            <div className="dim">reason: {optionalNote(labReason) ?? "none"}</div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 }

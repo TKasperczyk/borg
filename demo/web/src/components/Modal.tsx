@@ -16,12 +16,15 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
 
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
         onClose();
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [onClose, open]);
 
   if (!open) {

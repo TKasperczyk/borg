@@ -1250,7 +1250,10 @@ describe("P2 screens", () => {
       if (url.pathname === "/api/creator-directives") {
         return Promise.resolve(jsonResponse({ directives: [] }));
       }
-      if (url.pathname === "/api/reviews/41" && init?.method === "PATCH") {
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
+      if (url.pathname === "/api/dream/review/41" && init?.method === "PATCH") {
         return Promise.resolve(
           jsonResponse({
             id: 41,
@@ -1280,7 +1283,7 @@ describe("P2 screens", () => {
       expect(
         fetchMock.mock.calls.some(
           ([request, init]) =>
-            requestPath(request) === "/api/reviews/41" && init?.method === "PATCH",
+            requestPath(request) === "/api/dream/review/41" && init?.method === "PATCH",
         ),
       ).toBe(true);
     });
@@ -1422,6 +1425,9 @@ describe("P2 screens", () => {
           }),
         );
       }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
       return Promise.resolve(new Response("not found", { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1443,12 +1449,15 @@ describe("P2 screens", () => {
       within(winnerControl).getByRole("button", { name: `jump to ${rightNodeId}` }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: `jump to ${edgeId}` }));
+    fireEvent.click(screen.getAllByRole("button", { name: `jump to ${edgeId}` })[0]!);
     expect(
       await screen.findByRole("dialog", { name: "Semantic edge inspector" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
 
+    fireEvent.click(
+      screen.getByText("directive scopes need reconciliation").closest(".review-queue-row")!,
+    );
     const survivorSelect = (await screen.findByLabelText("scope survivor")) as HTMLSelectElement;
     const survivorControl = survivorSelect.parentElement as HTMLElement;
     expect(
@@ -1493,6 +1502,9 @@ describe("P2 screens", () => {
       }
       if (url.pathname === "/api/creator-directives") {
         return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
       }
       if (url.pathname === `/api/semantic/nodes/${leftNodeId}`) {
         return Promise.resolve(
@@ -1571,8 +1583,6 @@ describe("P2 screens", () => {
     expect(optionTexts[0]).toMatch(/^Substrate claim \[semn_aaa.*aaaa\]$/);
     expect(optionTexts[1]).toMatch(/^Runtime claim \[semn_bbb.*bbbb\]$/);
 
-    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
-
     expect(
       await screen.findByText("The substrate is expected to stay online during the demo."),
     ).toBeInTheDocument();
@@ -1634,6 +1644,9 @@ describe("P2 screens", () => {
       if (url.pathname === "/api/creator-directives") {
         return Promise.resolve(jsonResponse({ directives: [] }));
       }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
       if (url.pathname === `/api/semantic/nodes/${availableNodeId}`) {
         return Promise.resolve(
           jsonResponse({
@@ -1665,8 +1678,6 @@ describe("P2 screens", () => {
         <ReviewScreen />
       </LiveEventsProvider>,
     );
-
-    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
 
     expect(await screen.findByText("Available semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("contradicts")).toBeInTheDocument();
@@ -1707,6 +1718,9 @@ describe("P2 screens", () => {
       if (url.pathname === "/api/creator-directives") {
         return Promise.resolve(jsonResponse({ directives: [] }));
       }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
       if (url.pathname === `/api/semantic/nodes/${leftNodeId}`) {
         return Promise.resolve(
           jsonResponse({
@@ -1743,8 +1757,6 @@ describe("P2 screens", () => {
         <ReviewScreen />
       </LiveEventsProvider>,
     );
-
-    fireEvent.click(await screen.findByRole("button", { name: "drill" }));
 
     expect(await screen.findByText("Left semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("Right semantic node description.")).toBeInTheDocument();
@@ -1820,6 +1832,9 @@ describe("P2 screens", () => {
       }
       if (url.pathname === "/api/creator-directives") {
         return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     });
