@@ -10,12 +10,7 @@ import {
   postGrowthMarker,
   postValue,
 } from "../../api/client";
-import type {
-  IdentityGoal,
-  IdentityTrait,
-  IdentityValue,
-  OpenQuestion,
-} from "../../api/types";
+import type { IdentityGoal, IdentityTrait, IdentityValue, OpenQuestion } from "../../api/types";
 import { Empty } from "../../components/Empty";
 import { Modal } from "../../components/Modal";
 import { OpenQuestionEventsSection } from "../../components/OpenQuestionEventsSection";
@@ -110,8 +105,8 @@ function DirectWriteNotice({
         </Tag>
       </div>
       <div>
-        This writes the being's live self-band immediately. It is not self-derived and does not enter the
-        correction review queue.
+        This writes the being's live self-band immediately. It is not self-derived and does not
+        enter the correction review queue.
       </div>
       <label className="identity-ack">
         <input

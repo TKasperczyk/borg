@@ -20,7 +20,9 @@ export function countValue(count: number | undefined): string {
   return count === undefined ? "—" : count.toString();
 }
 
-export function maintenanceTickLabel(frame: MaintenanceTickFrame | null | undefined): string | null {
+export function maintenanceTickLabel(
+  frame: MaintenanceTickFrame | null | undefined,
+): string | null {
   if (frame === null || frame === undefined) {
     return null;
   }

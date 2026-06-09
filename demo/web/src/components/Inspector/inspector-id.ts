@@ -29,12 +29,7 @@ export type PrefixedObjectType =
   | "image_perception"
   | "autonomy_wake";
 
-export type ObjectType =
-  | PrefixedObjectType
-  | "turn"
-  | "review"
-  | "dream_audit"
-  | "prompt_block";
+export type ObjectType = PrefixedObjectType | "turn" | "review" | "dream_audit" | "prompt_block";
 
 export const ID_PREFIX_OBJECT_TYPES: readonly [prefix: string, type: PrefixedObjectType][] = [
   ["strm_", "stream_entry"],

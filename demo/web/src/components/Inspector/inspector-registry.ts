@@ -41,7 +41,13 @@ import type { RouteId } from "../../routes";
 import { isRecord } from "../../screens/screen-utils";
 import { resolveObjectType, type ObjectType } from "./inspector-id";
 
-export type InspectorTab = "summary" | "evidence" | "relationships" | "timeline" | "actions" | "raw";
+export type InspectorTab =
+  | "summary"
+  | "evidence"
+  | "relationships"
+  | "timeline"
+  | "actions"
+  | "raw";
 
 export const INSPECTOR_TABS: readonly InspectorTab[] = [
   "summary",
@@ -161,7 +167,12 @@ function stringArrayValue(record: Record<string, unknown>, key: string): string[
     : [];
 }
 
-function addRef(refs: RelatedObjectRef[], type: ObjectType, id: string | null, fieldLabel: string): void {
+function addRef(
+  refs: RelatedObjectRef[],
+  type: ObjectType,
+  id: string | null,
+  fieldLabel: string,
+): void {
   if (id !== null && id.length > 0) {
     refs.push({ type, id, fieldLabel });
   }
@@ -208,13 +219,23 @@ function streamEntryPivots(obj: unknown): RelatedObjectRef[] {
 
   const responseTo = obj.response_to;
   if (isRecord(responseTo)) {
-    addRefs(refs, "stream_entry", stringArrayValue(responseTo, "source_entry_ids"), "response_to.source_entry_ids");
+    addRefs(
+      refs,
+      "stream_entry",
+      stringArrayValue(responseTo, "source_entry_ids"),
+      "response_to.source_entry_ids",
+    );
   }
 
   const content = obj.content;
   if (isRecord(content)) {
     addRef(refs, "attachment", stringValue(content, "attachment_id"), "content.attachment_id");
-    addRef(refs, "image_perception", stringValue(content, "perception_id"), "content.perception_id");
+    addRef(
+      refs,
+      "image_perception",
+      stringValue(content, "perception_id"),
+      "content.perception_id",
+    );
   }
 
   return refs;
@@ -227,9 +248,24 @@ function attachmentPivots(obj: unknown): RelatedObjectRef[] {
 
   const attachment = obj.attachment;
   const refs: RelatedObjectRef[] = [];
-  addRef(refs, "image_perception", stringValue(attachment, "perception_id"), "attachment.perception_id");
-  addRef(refs, "stream_entry", stringValue(attachment, "parent_entry_id"), "attachment.parent_entry_id");
-  addRef(refs, "stream_entry", stringValue(attachment, "stream_entry_id"), "attachment.stream_entry_id");
+  addRef(
+    refs,
+    "image_perception",
+    stringValue(attachment, "perception_id"),
+    "attachment.perception_id",
+  );
+  addRef(
+    refs,
+    "stream_entry",
+    stringValue(attachment, "parent_entry_id"),
+    "attachment.parent_entry_id",
+  );
+  addRef(
+    refs,
+    "stream_entry",
+    stringValue(attachment, "stream_entry_id"),
+    "attachment.stream_entry_id",
+  );
   addRef(refs, "turn", stringValue(attachment, "parent_turn_id"), "attachment.parent_turn_id");
   return refs;
 }
@@ -268,7 +304,12 @@ function semanticEdgePivots(obj: unknown): RelatedObjectRef[] {
   addRef(refs, "semantic_node", stringValue(obj, "from_node_id"), "from_node_id");
   addRef(refs, "semantic_node", stringValue(obj, "to_node_id"), "to_node_id");
   addRefs(refs, "episode", stringArrayValue(obj, "evidence_episode_ids"), "evidence_episode_ids");
-  addRef(refs, "semantic_edge", stringValue(obj, "invalidated_by_edge_id"), "invalidated_by_edge_id");
+  addRef(
+    refs,
+    "semantic_edge",
+    stringValue(obj, "invalidated_by_edge_id"),
+    "invalidated_by_edge_id",
+  );
   const reviewId = numberValue(obj, "invalidated_by_review_id");
   if (reviewId !== null) {
     addRef(refs, "review", String(reviewId), "invalidated_by_review_id");
@@ -312,7 +353,12 @@ function commitmentPivots(obj: unknown): RelatedObjectRef[] {
   }
 
   const refs: RelatedObjectRef[] = [];
-  addRefs(refs, "stream_entry", stringArrayValue(obj, "source_stream_entry_ids"), "source_stream_entry_ids");
+  addRefs(
+    refs,
+    "stream_entry",
+    stringArrayValue(obj, "source_stream_entry_ids"),
+    "source_stream_entry_ids",
+  );
   addRef(refs, "commitment", stringValue(obj, "superseded_by_id"), "superseded_by_id");
   addRef(
     refs,
@@ -342,7 +388,12 @@ function creatorDirectivePivots(obj: unknown): RelatedObjectRef[] {
     stringArrayValue(obj, "content_source_stream_entry_ids"),
     "content_source_stream_entry_ids",
   );
-  addRefs(refs, "entity", stringArrayValue(obj, "activation_allowed_entity_ids"), "activation_allowed_entity_ids");
+  addRefs(
+    refs,
+    "entity",
+    stringArrayValue(obj, "activation_allowed_entity_ids"),
+    "activation_allowed_entity_ids",
+  );
   addRefs(
     refs,
     "entity",
@@ -362,8 +413,18 @@ function sharedStatePivots(obj: unknown): RelatedObjectRef[] {
   const refs: RelatedObjectRef[] = [];
   addRef(refs, "entity", stringValue(obj, "audience_entity_id"), "audience_entity_id");
   addRef(refs, "entity", stringValue(obj, "owner_entity_id"), "owner_entity_id");
-  addRefs(refs, "stream_entry", stringArrayValue(obj, "provenance_stream_entry_ids"), "provenance_stream_entry_ids");
-  addRefs(refs, "stream_entry", stringArrayValue(obj, "last_updated_stream_entry_ids"), "last_updated_stream_entry_ids");
+  addRefs(
+    refs,
+    "stream_entry",
+    stringArrayValue(obj, "provenance_stream_entry_ids"),
+    "provenance_stream_entry_ids",
+  );
+  addRefs(
+    refs,
+    "stream_entry",
+    stringArrayValue(obj, "last_updated_stream_entry_ids"),
+    "last_updated_stream_entry_ids",
+  );
   addRef(refs, "shared_state_entry", stringValue(obj, "superseded_by_id"), "superseded_by_id");
 
   const canonicalizes = obj.canonicalizes;
@@ -375,7 +436,12 @@ function sharedStatePivots(obj: unknown): RelatedObjectRef[] {
       stringArrayValue(canonicalizes, "commitment_ids"),
       "canonicalizes.commitment_ids",
     );
-    addRefs(refs, "action_record", stringArrayValue(canonicalizes, "action_ids"), "canonicalizes.action_ids");
+    addRefs(
+      refs,
+      "action_record",
+      stringArrayValue(canonicalizes, "action_ids"),
+      "canonicalizes.action_ids",
+    );
     addRefs(
       refs,
       "open_question",
@@ -397,7 +463,12 @@ function reviewPivots(obj: unknown): RelatedObjectRef[] {
   addRefs(related, "semantic_node", stringArrayValue(refs, "node_ids"), "refs.node_ids");
   addRef(related, "semantic_edge", stringValue(refs, "edge_id"), "refs.edge_id");
   addRefs(related, "episode", stringArrayValue(refs, "episode_ids"), "refs.episode_ids");
-  addRefs(related, "creator_directive", stringArrayValue(refs, "directive_ids"), "refs.directive_ids");
+  addRefs(
+    related,
+    "creator_directive",
+    stringArrayValue(refs, "directive_ids"),
+    "refs.directive_ids",
+  );
   addRefs(related, "commitment", stringArrayValue(refs, "commitment_ids"), "refs.commitment_ids");
   addTypedId(related, stringValue(refs, "target_id"), "refs.target_id");
 
@@ -463,17 +534,21 @@ async function sessionIdsForGlobalResolution(): Promise<string[]> {
 
 async function findEpisode(id: string): Promise<EpisodeMemoryItem | null> {
   const detail = await getMemoryBand("episodic", { limit: 100 });
-  return detail.band === "episodic" ? detail.items.find((item) => item.id === id) ?? null : null;
+  return detail.band === "episodic" ? (detail.items.find((item) => item.id === id) ?? null) : null;
 }
 
 async function findSkill(id: string) {
   const detail = await getMemoryBand("procedural", { limit: 100 });
-  return detail.band === "procedural" ? detail.items.find((item) => item.id === id) ?? null : null;
+  return detail.band === "procedural"
+    ? (detail.items.find((item) => item.id === id) ?? null)
+    : null;
 }
 
 async function findRelationalSlot(id: string): Promise<RelationalMemoryItem | null> {
   const detail = await getMemoryBand("relational", { limit: 100 });
-  return detail.band === "relational" ? detail.items.find((item) => item.id === id) ?? null : null;
+  return detail.band === "relational"
+    ? (detail.items.find((item) => item.id === id) ?? null)
+    : null;
 }
 
 async function findValue(id: string): Promise<IdentityValue | null> {
@@ -579,7 +654,9 @@ async function findTurn(id: string) {
   return null;
 }
 
-async function findImagePerception(id: string): Promise<AttachmentMetadataResponse["perception"] | null> {
+async function findImagePerception(
+  id: string,
+): Promise<AttachmentMetadataResponse["perception"] | null> {
   const sessionIds = await sessionIdsForGlobalResolution();
   const responses = fulfilledValues(
     await boundedAllSettled(sessionIds, async (session) => getStream({ session, limit: 100 })),

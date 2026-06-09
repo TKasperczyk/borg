@@ -403,7 +403,9 @@ describe("objectRegistry", () => {
       vi.fn((request: RequestInfo | URL) => {
         const url = requestUrl(request);
         if (url.pathname === "/api/sessions") {
-          return Promise.resolve(jsonResponse({ sessions: [sessionFixture("bob", "sess_nondefault111")] }));
+          return Promise.resolve(
+            jsonResponse({ sessions: [sessionFixture("bob", "sess_nondefault111")] }),
+          );
         }
         if (url.pathname === "/api/stream") {
           const session = url.searchParams.get("session") ?? "";
@@ -441,7 +443,9 @@ describe("objectRegistry", () => {
       vi.fn((request: RequestInfo | URL) => {
         const url = requestUrl(request);
         if (url.pathname === "/api/sessions") {
-          return Promise.resolve(jsonResponse({ sessions: [sessionFixture("bob", "sess_turn1111111")] }));
+          return Promise.resolve(
+            jsonResponse({ sessions: [sessionFixture("bob", "sess_turn1111111")] }),
+          );
         }
         if (url.pathname === "/api/turns") {
           const session = url.searchParams.get("session");
@@ -490,7 +494,9 @@ describe("objectRegistry", () => {
       vi.fn((request: RequestInfo | URL) => {
         const url = requestUrl(request);
         if (url.pathname === "/api/sessions") {
-          return Promise.resolve(jsonResponse({ sessions: [sessionFixture("bob", "sess_image111111")] }));
+          return Promise.resolve(
+            jsonResponse({ sessions: [sessionFixture("bob", "sess_image111111")] }),
+          );
         }
         if (url.pathname === "/api/stream") {
           const session = url.searchParams.get("session");
@@ -542,7 +548,12 @@ describe("objectRegistry", () => {
                 created_at: 1,
               },
               perception,
-              status: { active: true, quarantined: false, stream_active: true, parent_active: true },
+              status: {
+                active: true,
+                quarantined: false,
+                stream_active: true,
+                parent_active: true,
+              },
             }),
           );
         }
@@ -602,7 +613,9 @@ describe("Inspector drawer", () => {
     renderWithInspector(<OpenButton type="semantic_node" id={nodeId} />);
     fireEvent.click(screen.getByRole("button", { name: `open ${nodeId}` }));
 
-    expect(await screen.findByRole("dialog", { name: "Semantic node inspector" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "Semantic node inspector" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("Direct node")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Evidence" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Actions" })).toBeInTheDocument();
@@ -661,7 +674,9 @@ describe("Inspector drawer", () => {
     renderWithInspector(<IdRef id={nodeId} />);
     fireEvent.click(screen.getByRole("button", { name: `jump to ${nodeId}` }));
 
-    expect(await screen.findByRole("dialog", { name: "Semantic node inspector" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "Semantic node inspector" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("Direct node")).toBeInTheDocument();
   });
 
@@ -772,7 +787,10 @@ describe("Inspector drawer", () => {
       ),
     );
     expect(
-      fetchMock.mock.calls.some(([request, init]) => requestUrl(request).pathname === "/api/reviews/9" && init?.method === "PATCH"),
+      fetchMock.mock.calls.some(
+        ([request, init]) =>
+          requestUrl(request).pathname === "/api/reviews/9" && init?.method === "PATCH",
+      ),
     ).toBe(false);
   });
 

@@ -29,7 +29,14 @@ import type {
 } from "../../api/types";
 import { LedgerView } from "../../screens/Cognition/LedgerView";
 import { GENERIC_REVIEW_ACTIONS } from "../../screens/Review";
-import { dateLabel, displayValue, fieldLabel, isRecord, parseJsonPatch, shortId } from "../../screens/screen-utils";
+import {
+  dateLabel,
+  displayValue,
+  fieldLabel,
+  isRecord,
+  parseJsonPatch,
+  shortId,
+} from "../../screens/screen-utils";
 import { formatTime } from "../../lib/stream-utils";
 import { AttachmentChip } from "../AttachmentChip";
 import { Empty } from "../Empty";
@@ -187,7 +194,8 @@ function AttachmentSummary({ metadata }: { metadata: AttachmentMetadataResponse 
         <div className="row">
           <span className="k">status</span>
           <span className="v">
-            active {String(metadata.status.active)}, quarantined {String(metadata.status.quarantined)}
+            active {String(metadata.status.active)}, quarantined{" "}
+            {String(metadata.status.quarantined)}
           </span>
         </div>
         <div className="row">
@@ -203,13 +211,7 @@ function AttachmentSummary({ metadata }: { metadata: AttachmentMetadataResponse 
   );
 }
 
-function SummaryTab({
-  target,
-  data,
-}: {
-  target: InspectorTarget;
-  data: unknown;
-}) {
+function SummaryTab({ target, data }: { target: InspectorTarget; data: unknown }) {
   if (target.type === "semantic_node" && isRecord(data)) {
     return <SemanticNodeDetail node={data as SemanticMemoryNode} />;
   }
@@ -256,13 +258,7 @@ function WhyEvidence({ id }: { id: string }) {
   );
 }
 
-function EvidenceTab({
-  target,
-  audience,
-}: {
-  target: InspectorTarget;
-  audience: string;
-}) {
+function EvidenceTab({ target, audience }: { target: InspectorTarget; audience: string }) {
   if (target.type === "turn") {
     return <LedgerView turnId={target.id} active audience={audience} />;
   }
@@ -287,7 +283,11 @@ function RelationshipsTab({ model, data }: { model: ObjectModel; data: unknown }
         <div className="props row" key={`${ref.fieldLabel}:${ref.id}:${index}`}>
           <span className="k">{ref.fieldLabel}</span>
           <span className="v">
-            <IdRef id={ref.id} type={ref.type} label={`${objectRegistry[ref.type].label} ${shortId(ref.id)}`} />
+            <IdRef
+              id={ref.id}
+              type={ref.type}
+              label={`${objectRegistry[ref.type].label} ${shortId(ref.id)}`}
+            />
           </span>
         </div>
       ))}
@@ -354,23 +354,25 @@ function optionalText(value: string): string | undefined {
 
 function reviewKind(value: unknown): ReviewKind | null {
   const kind = recordString(value, "kind");
-  return kind !== null && Object.hasOwn(GENERIC_REVIEW_ACTIONS, kind)
-    ? (kind as ReviewKind)
-    : null;
+  return kind !== null && Object.hasOwn(GENERIC_REVIEW_ACTIONS, kind) ? (kind as ReviewKind) : null;
 }
 
 function reviewNodeIds(value: unknown): string[] {
   if (!isRecord(value) || !isRecord(value.refs) || !Array.isArray(value.refs.node_ids)) {
     return [];
   }
-  return value.refs.node_ids.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return value.refs.node_ids.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
 }
 
 function reviewDirectiveIds(value: unknown): string[] {
   if (!isRecord(value) || !isRecord(value.refs) || !Array.isArray(value.refs.directive_ids)) {
     return [];
   }
-  return value.refs.directive_ids.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return value.refs.directive_ids.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
 }
 
 function reviewActionLabel(action: ReviewResolution): string {
@@ -477,7 +479,9 @@ function ActionsTab({
         reasonLabel: "reason",
         run: (inputReason) =>
           postSemanticEdgeInvalidate(target.id, {
-            ...(optionalText(inputReason) === undefined ? {} : { reason: optionalText(inputReason) }),
+            ...(optionalText(inputReason) === undefined
+              ? {}
+              : { reason: optionalText(inputReason) }),
           }),
       }),
     );
@@ -529,7 +533,10 @@ function ActionsTab({
         reasonLabel: "note",
         run: (note) => {
           const trimmed = optionalText(note);
-          return patchGoal(target.id, { action: "complete", ...(trimmed === undefined ? {} : { note: trimmed }) });
+          return patchGoal(target.id, {
+            action: "complete",
+            ...(trimmed === undefined ? {} : { note: trimmed }),
+          });
         },
       }),
     );
@@ -541,7 +548,10 @@ function ActionsTab({
         reasonLabel: "note",
         run: (note) => {
           const trimmed = optionalText(note);
-          return patchGoal(target.id, { action: "block", ...(trimmed === undefined ? {} : { note: trimmed }) });
+          return patchGoal(target.id, {
+            action: "block",
+            ...(trimmed === undefined ? {} : { note: trimmed }),
+          });
         },
       }),
     );
@@ -553,7 +563,10 @@ function ActionsTab({
         reasonLabel: "note",
         run: (note) => {
           const trimmed = optionalText(note);
-          return patchGoal(target.id, { action: "progress", ...(trimmed === undefined ? {} : { note: trimmed }) });
+          return patchGoal(target.id, {
+            action: "progress",
+            ...(trimmed === undefined ? {} : { note: trimmed }),
+          });
         },
       }),
     );
@@ -575,7 +588,8 @@ function ActionsTab({
         label: "reason",
         initialValue: "",
         requireValue: true,
-        run: (abandonReason) => patchOpenQuestion(target.id, { action: "abandon", reason: abandonReason }),
+        run: (abandonReason) =>
+          patchOpenQuestion(target.id, { action: "abandon", reason: abandonReason }),
       }),
     );
     addButton("question-bump", "bump", () =>
@@ -763,7 +777,9 @@ function ActionsTab({
               type="button"
               className="btn sm live-write"
               onClick={submitConfirm}
-              disabled={busy || (confirmAction?.requireReason === true && reason.trim().length === 0)}
+              disabled={
+                busy || (confirmAction?.requireReason === true && reason.trim().length === 0)
+              }
             >
               {confirmAction?.confirmLabel ?? "confirm"}
             </button>
@@ -807,7 +823,10 @@ function ActionsTab({
       >
         <label className="modal-field">
           <span>{textAction?.label ?? "value"}</span>
-          <textarea value={textValue} onChange={(event) => setTextValue(event.currentTarget.value)} />
+          <textarea
+            value={textValue}
+            onChange={(event) => setTextValue(event.currentTarget.value)}
+          />
         </label>
       </Modal>
 
@@ -820,7 +839,12 @@ function ActionsTab({
             <button type="button" className="btn sm ghost" onClick={() => setCorrectOpen(false)}>
               cancel
             </button>
-            <button type="button" className="btn sm primary" onClick={submitCorrection} disabled={busy}>
+            <button
+              type="button"
+              className="btn sm primary"
+              onClick={submitCorrection}
+              disabled={busy}
+            >
               queue correction
             </button>
           </>
@@ -829,11 +853,17 @@ function ActionsTab({
         <div className="modal-form">
           <label className="modal-field">
             <span>json patch object</span>
-            <textarea value={correctPatch} onChange={(event) => setCorrectPatch(event.currentTarget.value)} />
+            <textarea
+              value={correctPatch}
+              onChange={(event) => setCorrectPatch(event.currentTarget.value)}
+            />
           </label>
           <label className="modal-field">
             <span>reason</span>
-            <textarea value={correctReason} onChange={(event) => setCorrectReason(event.currentTarget.value)} />
+            <textarea
+              value={correctReason}
+              onChange={(event) => setCorrectReason(event.currentTarget.value)}
+            />
           </label>
         </div>
       </Modal>
@@ -899,15 +929,12 @@ function InspectorBody({
   onActionModalOpenChange: (open: boolean) => void;
 }) {
   const { sessionId, audience } = useInspector();
-  const api = useApi(
-    async () => {
-      if (model.reliability === "needs_backend") {
-        return null;
-      }
-      return model.fetch(target.id, { sessionId, audience });
-    },
-    [target.type, target.id, target.hint, model, sessionId, audience],
-  );
+  const api = useApi(async () => {
+    if (model.reliability === "needs_backend") {
+      return null;
+    }
+    return model.fetch(target.id, { sessionId, audience });
+  }, [target.type, target.id, target.hint, model, sessionId, audience]);
 
   if (api.loading && target.hint !== undefined && target.hint !== null) {
     return (
@@ -1014,7 +1041,12 @@ export function Inspector() {
           </div>
           <div className="inspector-header-actions">
             {inspector.canBack ? (
-              <button type="button" className="btn sm ghost" onClick={inspector.back} aria-label="back">
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={inspector.back}
+                aria-label="back"
+              >
                 back
               </button>
             ) : null}

@@ -15,7 +15,11 @@ function readViewFromUrl(): RouteId {
   const view = normalizeView(url.searchParams.get("view"));
   if (view === DEFAULT_ROUTE_ID && url.searchParams.has("view")) {
     url.searchParams.delete("view");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
   }
 
   return view;
@@ -38,7 +42,11 @@ export function useView(): { view: RouteId; setView: (view: RouteId) => void } {
     } else {
       url.searchParams.set("view", normalized);
     }
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
     setViewState(normalized);
   }, []);
 
