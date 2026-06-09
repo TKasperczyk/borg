@@ -4344,6 +4344,332 @@ g.fc-regen-group.active .fc-regen-label-bg {
   color: var(--text-mute);
 }
 
+.identity-studio {
+  gap: 16px;
+}
+
+.identity-snapshot {
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
+  gap: 22px;
+}
+
+.identity-snapshot-main {
+  min-width: 0;
+}
+
+.identity-snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.identity-snapshot-stat {
+  min-width: 0;
+}
+
+.identity-recent-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-mute);
+}
+
+.identity-recent-event > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.identity-region {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.identity-region-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.identity-region-head h2 {
+  margin: 2px 0 0 0;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+.identity-state-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.identity-state-column,
+.identity-kanban-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.identity-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.identity-lane-head .n {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.identity-record-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-0);
+  min-width: 0;
+}
+
+.identity-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.identity-card-title {
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.identity-card-copy {
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.identity-metric-row,
+.identity-idrefs,
+.identity-card-actions,
+.identity-chip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.identity-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.identity-metric strong {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.identity-idrefs {
+  font-size: 10.5px;
+}
+
+.identity-card-actions {
+  justify-content: flex-end;
+}
+
+.identity-field-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.35fr) minmax(0, 1fr);
+  gap: 8px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.identity-field-row .k {
+  color: var(--text-mute);
+}
+
+.identity-field-row .v {
+  min-width: 0;
+}
+
+.identity-kanban {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.identity-question-layout {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.identity-question-queue-card {
+  grid-column: span 4;
+}
+
+.identity-question-detail-card {
+  grid-column: span 8;
+}
+
+.identity-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.identity-queue-item {
+  appearance: none;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-0);
+  color: var(--text-dim);
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.identity-queue-item.selected {
+  border-color: var(--acc-dim);
+  background: var(--acc-tint);
+}
+
+.identity-queue-question {
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.identity-queue-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.identity-question-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.identity-question-meter {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.identity-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 12px;
+}
+
+.identity-events-toolbar {
+  grid-column: span 12;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.identity-timeline-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.identity-before-after {
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.identity-growth-timeline .ev,
+.identity-period-timeline .ev {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.identity-growth-timeline .ev:last-child,
+.identity-period-timeline .ev:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 1100px) {
+  .identity-snapshot,
+  .identity-timeline-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .identity-snapshot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .identity-kanban {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .identity-question-queue-card,
+  .identity-question-detail-card {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 760px) {
+  .identity-state-board,
+  .identity-detail-grid,
+  .identity-kanban,
+  .identity-snapshot-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* growth timeline */
 .timeline {
   position: relative;

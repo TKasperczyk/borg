@@ -239,6 +239,8 @@ describe("operator actions", () => {
 
     renderWithInspector(<IdentityScreen />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "all events" }));
+
     const eventSection = await screen.findByLabelText("open question events history");
     const rows = within(eventSection).getAllByTestId("identity-event-row");
     expect(rows).toHaveLength(3);
@@ -250,7 +252,8 @@ describe("operator actions", () => {
     expect(rows[1]).toHaveTextContent("open_question_duplicate_merge");
     expect(rows[2]).toHaveTextContent("oq_old");
 
-    expect(screen.getByLabelText("empty values")).toHaveTextContent("no values recorded");
+    expect(screen.getByLabelText("established values")).toHaveTextContent("no established values");
+    expect(screen.getByLabelText("candidate values")).toHaveTextContent("no candidate values");
     expect(screen.getByLabelText("empty growth markers")).toHaveTextContent(
       "no growth markers recorded",
     );

@@ -804,9 +804,9 @@ describe("P2 screens", () => {
     installFetch();
     renderWithInspector(<IdentityScreen />);
 
-    expect(await screen.findByText("what remains unresolved?")).toBeInTheDocument();
+    expect((await screen.findAllByText("what remains unresolved?")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("abandoned")[0]).toBeInTheDocument();
-    expect(screen.getByText(/current period: current arc/)).toBeInTheDocument();
+    expect(screen.getByText(/current autobiographical period:/)).toHaveTextContent("current arc");
   });
 
   it("filters commitment lifecycle rows", async () => {

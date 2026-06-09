@@ -67,20 +67,28 @@ function eventRecordSummary(value: unknown): string {
   return parts.length === 0 ? displayValue(value) : parts.join(" · ");
 }
 
-export function OpenQuestionEventsSection({ events }: { events: readonly IdentityEvent[] }) {
+export function OpenQuestionEventsSection({
+  events,
+  title = "open question events",
+  ariaLabel = "open question events history",
+  emptyLabel = "no open question events recorded",
+  gridColumn = "span 7",
+}: {
+  events: readonly IdentityEvent[];
+  title?: string;
+  ariaLabel?: string;
+  emptyLabel?: string;
+  gridColumn?: string;
+}) {
   const sortedEvents = useMemo(
     () => [...events].sort((left, right) => right.ts - left.ts || right.id - left.id),
     [events],
   );
 
   return (
-    <div
-      className="id-card"
-      style={{ gridColumn: "span 7" }}
-      aria-label="open question events history"
-    >
+    <div className="id-card" style={{ gridColumn }} aria-label={ariaLabel}>
       <div className="h">
-        <span className="ttl">open question events</span>
+        <span className="ttl">{title}</span>
         <span className="n">{events.length}</span>
       </div>
       <div className="body">
@@ -133,7 +141,7 @@ export function OpenQuestionEventsSection({ events }: { events: readonly Identit
           })}
           {sortedEvents.length === 0 ? (
             <div className="identity-empty-band">
-              <Empty>no open question events recorded</Empty>
+              <Empty>{emptyLabel}</Empty>
             </div>
           ) : null}
         </div>
